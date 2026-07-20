@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#10b981" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HD Manager" />
+    <title>HD Manager</title>
+  </head>
+  <body class="bg-slate-100">
+    <div id="root"></div>
+    <script>
+      (function () {
+        try {
+          const buildMarker = 'hd-manager-build-20260714-iphone-layout-v2';
+          window.HD_MANAGER_BUILD = buildMarker;
+          window.localStorage.setItem('hd-manager-installed-build', buildMarker);
+        } catch (error) {
+          console.warn('Khong the luu dau phien ban app.', error);
+        }
+      })();
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

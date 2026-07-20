@@ -1,0 +1,471 @@
+{
+  "startedAt": "2026-07-17T05:23:10.408Z",
+  "results": [
+    {
+      "users": 100,
+      "docs": {
+        "companies": 100,
+        "employees": 120,
+        "customers": 280,
+        "customer_accounts": 140,
+        "customer_points": 140,
+        "products": 90,
+        "orders": 1000,
+        "orderRequests": 600,
+        "warehouseImports": 220,
+        "warehouseDispatches": 450,
+        "warehouseStockCounts": 160,
+        "deliveryReports": 380,
+        "payments": 400,
+        "expenses": 260,
+        "messages": 1600,
+        "notifications": 1000,
+        "assets": 50,
+        "attendance": 220,
+        "performance": 160,
+        "bankTransactions": 260,
+        "payment_reconciliations": 260,
+        "total": 7890
+      },
+      "cpu": {
+        "sampleRows": 1850,
+        "groupedRows": 300,
+        "cpuMs": 0.9121000000000024,
+        "heapDeltaBytes": 692152
+      },
+      "current": {
+        "status": "WARN",
+        "openMs": 1262.9016550000001,
+        "ramPerSessionBytes": 7732200,
+        "initialReadsPerSession": 7890,
+        "initialReadsAllUsers": 789000,
+        "realtimeChannels": 4100,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 6.3,
+        "downloadMbPerDay": 946.8
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 188160,
+        "initialReadsPerSession": 192,
+        "initialReadsAllUsers": 19200,
+        "realtimeChannels": 800,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 6.3,
+        "downloadMbPerDay": 320
+      }
+    },
+    {
+      "users": 500,
+      "docs": {
+        "companies": 500,
+        "employees": 120,
+        "customers": 1400,
+        "customer_accounts": 700,
+        "customer_points": 700,
+        "products": 175,
+        "orders": 5000,
+        "orderRequests": 3000,
+        "warehouseImports": 800,
+        "warehouseDispatches": 2100,
+        "warehouseStockCounts": 400,
+        "deliveryReports": 1750,
+        "payments": 2000,
+        "expenses": 1200,
+        "messages": 8000,
+        "notifications": 5000,
+        "assets": 75,
+        "attendance": 1100,
+        "performance": 400,
+        "bankTransactions": 1250,
+        "payment_reconciliations": 450,
+        "total": 36120
+      },
+      "cpu": {
+        "sampleRows": 9100,
+        "groupedRows": 1500,
+        "cpuMs": 3.4175000000000004,
+        "heapDeltaBytes": 1192848
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 5781.079624999999,
+        "ramPerSessionBytes": 35397600,
+        "initialReadsPerSession": 36120,
+        "initialReadsAllUsers": 18060000,
+        "realtimeChannels": 20500,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 31.499999999999996,
+        "downloadMbPerDay": 21671.999999999996
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 235200,
+        "initialReadsPerSession": 240,
+        "initialReadsAllUsers": 120000,
+        "realtimeChannels": 4000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 31.499999999999996,
+        "downloadMbPerDay": 1600
+      }
+    },
+    {
+      "users": 1000,
+      "docs": {
+        "companies": 1000,
+        "employees": 120,
+        "customers": 2800,
+        "customer_accounts": 1400,
+        "customer_points": 1400,
+        "products": 350,
+        "orders": 10000,
+        "orderRequests": 6000,
+        "warehouseImports": 1600,
+        "warehouseDispatches": 4200,
+        "warehouseStockCounts": 800,
+        "deliveryReports": 3500,
+        "payments": 4000,
+        "expenses": 2400,
+        "messages": 16000,
+        "notifications": 10000,
+        "assets": 150,
+        "attendance": 2200,
+        "performance": 800,
+        "bankTransactions": 2500,
+        "payment_reconciliations": 900,
+        "total": 72120
+      },
+      "cpu": {
+        "sampleRows": 18200,
+        "groupedRows": 3000,
+        "cpuMs": 5.7812999999999946,
+        "heapDeltaBytes": 1147880
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 11542.379715000001,
+        "ramPerSessionBytes": 70677600,
+        "initialReadsPerSession": 72120,
+        "initialReadsAllUsers": 72120000,
+        "realtimeChannels": 41000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 62.99999999999999,
+        "downloadMbPerDay": 86544
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 294000,
+        "initialReadsPerSession": 300,
+        "initialReadsAllUsers": 300000,
+        "realtimeChannels": 8000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 62.99999999999999,
+        "downloadMbPerDay": 3200
+      }
+    },
+    {
+      "users": 5000,
+      "docs": {
+        "companies": 5000,
+        "employees": 400,
+        "customers": 14000,
+        "customer_accounts": 7000,
+        "customer_points": 7000,
+        "products": 1750,
+        "orders": 50000,
+        "orderRequests": 30000,
+        "warehouseImports": 8000,
+        "warehouseDispatches": 21000,
+        "warehouseStockCounts": 4000,
+        "deliveryReports": 17500,
+        "payments": 20000,
+        "expenses": 12000,
+        "messages": 80000,
+        "notifications": 50000,
+        "assets": 750,
+        "attendance": 11000,
+        "performance": 4000,
+        "bankTransactions": 12500,
+        "payment_reconciliations": 4500,
+        "total": 360400
+      },
+      "cpu": {
+        "sampleRows": 91000,
+        "groupedRows": 15000,
+        "cpuMs": 27.898799999999994,
+        "heapDeltaBytes": 11810248
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 57679.34434,
+        "ramPerSessionBytes": 353192000,
+        "initialReadsPerSession": 360400,
+        "initialReadsAllUsers": 1802000000,
+        "realtimeChannels": 205000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 315,
+        "downloadMbPerDay": 2162400
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 764400,
+        "initialReadsPerSession": 780,
+        "initialReadsAllUsers": 3900000,
+        "realtimeChannels": 40000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 315,
+        "downloadMbPerDay": 16000
+      }
+    },
+    {
+      "users": 10000,
+      "docs": {
+        "companies": 10000,
+        "employees": 800,
+        "customers": 28000,
+        "customer_accounts": 14000,
+        "customer_points": 14000,
+        "products": 3500,
+        "orders": 100000,
+        "orderRequests": 60000,
+        "warehouseImports": 16000,
+        "warehouseDispatches": 42000,
+        "warehouseStockCounts": 8000,
+        "deliveryReports": 35000,
+        "payments": 40000,
+        "expenses": 24000,
+        "messages": 160000,
+        "notifications": 100000,
+        "assets": 1500,
+        "attendance": 22000,
+        "performance": 8000,
+        "bankTransactions": 25000,
+        "payment_reconciliations": 9000,
+        "total": 720800
+      },
+      "cpu": {
+        "sampleRows": 180000,
+        "groupedRows": 15000,
+        "cpuMs": 49.93018333333333,
+        "heapDeltaBytes": 8628808
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 115355.46160083334,
+        "ramPerSessionBytes": 706384000,
+        "initialReadsPerSession": 720800,
+        "initialReadsAllUsers": 7208000000,
+        "realtimeChannels": 410000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 630,
+        "downloadMbPerDay": 8649600
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 1352400,
+        "initialReadsPerSession": 1380,
+        "initialReadsAllUsers": 13800000,
+        "realtimeChannels": 80000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 630,
+        "downloadMbPerDay": 32000
+      }
+    },
+    {
+      "users": 50000,
+      "docs": {
+        "companies": 50000,
+        "employees": 4000,
+        "customers": 140000,
+        "customer_accounts": 70000,
+        "customer_points": 70000,
+        "products": 17500,
+        "orders": 500000,
+        "orderRequests": 300000,
+        "warehouseImports": 80000,
+        "warehouseDispatches": 210000,
+        "warehouseStockCounts": 40000,
+        "deliveryReports": 175000,
+        "payments": 200000,
+        "expenses": 120000,
+        "messages": 800000,
+        "notifications": 500000,
+        "assets": 7500,
+        "attendance": 110000,
+        "performance": 40000,
+        "bankTransactions": 125000,
+        "payment_reconciliations": 45000,
+        "total": 3604000
+      },
+      "cpu": {
+        "sampleRows": 180000,
+        "groupedRows": 15000,
+        "cpuMs": 273.8174833333333,
+        "heapDeltaBytes": 17056112
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 576790.5996158334,
+        "ramPerSessionBytes": 3531920000,
+        "initialReadsPerSession": 3604000,
+        "initialReadsAllUsers": 180200000000,
+        "realtimeChannels": 2050000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 3150,
+        "downloadMbPerDay": 216239999.99999997
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 1568000,
+        "initialReadsPerSession": 1600,
+        "initialReadsAllUsers": 80000000,
+        "realtimeChannels": 400000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 3150,
+        "downloadMbPerDay": 160000
+      }
+    },
+    {
+      "users": 100000,
+      "docs": {
+        "companies": 100000,
+        "employees": 8000,
+        "customers": 280000,
+        "customer_accounts": 140000,
+        "customer_points": 140000,
+        "products": 35000,
+        "orders": 1000000,
+        "orderRequests": 600000,
+        "warehouseImports": 160000,
+        "warehouseDispatches": 420000,
+        "warehouseStockCounts": 80000,
+        "deliveryReports": 350000,
+        "payments": 400000,
+        "expenses": 240000,
+        "messages": 1600000,
+        "notifications": 1000000,
+        "assets": 15000,
+        "attendance": 220000,
+        "performance": 80000,
+        "bankTransactions": 250000,
+        "payment_reconciliations": 90000,
+        "total": 7208000
+      },
+      "cpu": {
+        "sampleRows": 180000,
+        "groupedRows": 15000,
+        "cpuMs": 514.4401888888887,
+        "heapDeltaBytes": 16673520
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 1153562.9421038888,
+        "ramPerSessionBytes": 7063840000,
+        "initialReadsPerSession": 7208000,
+        "initialReadsAllUsers": 720800000000,
+        "realtimeChannels": 4100000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 6300,
+        "downloadMbPerDay": 864959999.9999999
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 1568000,
+        "initialReadsPerSession": 1600,
+        "initialReadsAllUsers": 160000000,
+        "realtimeChannels": 800000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 6300,
+        "downloadMbPerDay": 320000
+      }
+    },
+    {
+      "users": 200000,
+      "docs": {
+        "companies": 200000,
+        "employees": 16000,
+        "customers": 560000,
+        "customer_accounts": 280000,
+        "customer_points": 280000,
+        "products": 70000,
+        "orders": 2000000,
+        "orderRequests": 1200000,
+        "warehouseImports": 320000,
+        "warehouseDispatches": 840000,
+        "warehouseStockCounts": 160000,
+        "deliveryReports": 700000,
+        "payments": 800000,
+        "expenses": 480000,
+        "messages": 3200000,
+        "notifications": 2000000,
+        "assets": 30000,
+        "attendance": 440000,
+        "performance": 160000,
+        "bankTransactions": 500000,
+        "payment_reconciliations": 180000,
+        "total": 14416000
+      },
+      "cpu": {
+        "sampleRows": 180000,
+        "groupedRows": 15000,
+        "cpuMs": 969.4937777777785,
+        "heapDeltaBytes": 16711016
+      },
+      "current": {
+        "status": "FAIL",
+        "openMs": 2307093.221577778,
+        "ramPerSessionBytes": 14127680000,
+        "initialReadsPerSession": 14416000,
+        "initialReadsAllUsers": 2883200000000,
+        "realtimeChannels": 8200000,
+        "webhookReadsWorstCase": 2006,
+        "uploadMbPerDay": 12600,
+        "downloadMbPerDay": 3459839999.9999995
+      },
+      "optimizedTarget": {
+        "status": "PASS",
+        "openMs": 350,
+        "ramPerSessionBytes": 1568000,
+        "initialReadsPerSession": 1600,
+        "initialReadsAllUsers": 320000000,
+        "realtimeChannels": 1600000,
+        "webhookReadsWorstCase": 3,
+        "uploadMbPerDay": 12600,
+        "downloadMbPerDay": 640000
+      }
+    }
+  ],
+  "bottlenecks": [
+    {
+      "name": "Realtime full-collection listeners",
+      "severity": "HIGH",
+      "evidence": "App.jsx đang mở onSnapshot cho nhiều collection đầy đủ.",
+      "recommendation": "Tách listener theo màn hình, where(companyId/dateKey), orderBy + limit, pagination và tổng hợp dashboard."
+    },
+    {
+      "name": "REST fallback full pagination",
+      "severity": "MEDIUM",
+      "evidence": "Có REST fallback đọc theo pageSize=1000 cho từng collection.",
+      "recommendation": "Chỉ fallback collection quan trọng khi app foreground; tránh đọc nền và tránh refresh toàn bộ nếu listener đang khỏe."
+    },
+    {
+      "name": "Webhook legacy scan",
+      "severity": "HIGH",
+      "evidence": "functions/index.js có fallback quét 2000 orders nếu mã thanh toán cũ thiếu field lookup.",
+      "recommendation": "Bắt buộc lưu paymentCode/orderCode/invoiceCode đã chuẩn hóa và index; migration bổ sung field lookup cho đơn cũ."
+    },
+    {
+      "name": "Large single React file",
+      "severity": "MEDIUM",
+      "evidence": "App.jsx hiện khoảng 3.788.985 ký tự.",
+      "recommendation": "Tách module theo route/service để lazy loading thật sự, giảm parse/compile trên máy RAM 3GB."
+    }
+  ]
+}

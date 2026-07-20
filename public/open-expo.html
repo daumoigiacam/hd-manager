@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Mo HD Manager iOS Test</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f4f8f6;
+        color: #0f172a;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .card {
+        width: min(420px, 100%);
+        border-radius: 28px;
+        background: #fff;
+        box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
+        padding: 24px;
+        text-align: center;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        border-radius: 18px;
+        background: linear-gradient(135deg, #10b981, #06b6d4);
+        color: #fff;
+        font-weight: 900;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.2;
+      }
+      p {
+        margin: 12px 0 0;
+        color: #64748b;
+        line-height: 1.55;
+        font-weight: 600;
+      }
+      .button {
+        display: block;
+        margin-top: 18px;
+        border-radius: 18px;
+        background: #10b981;
+        color: white;
+        padding: 15px 18px;
+        text-decoration: none;
+        font-size: 16px;
+        font-weight: 900;
+      }
+      .secondary {
+        background: #eef2f7;
+        color: #334155;
+      }
+      code {
+        display: block;
+        margin-top: 14px;
+        padding: 12px;
+        border-radius: 14px;
+        background: #f8fafc;
+        color: #0f172a;
+        font-size: 13px;
+        word-break: break-all;
+      }
+      .hint {
+        margin-top: 14px;
+        font-size: 13px;
+        color: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="badge">HD</div>
+      <h1>Mo HD Manager tren iPhone</h1>
+      <p>Mo trang nay bang Safari tren iPhone, sau do bam nut xanh. Neu iPhone hoi, chon mo bang Expo Go.</p>
+      <a id="openExpo" class="button" href="#">Mo bang Expo Go</a>
+      <a id="openWeb" class="button secondary" href="#">Mo ban web de kiem tra</a>
+      <code id="expoUrl"></code>
+      <p class="hint">Neu khong cung WiFi, hay chay `npm.cmd run ios:expo:tunnel` de test qua internet.</p>
+      <p class="hint">Nhan vien dung that nen mo ban online da deploy, vi ban do khong phu thuoc WiFi noi bo.</p>
+      <p class="hint">Neu Expo Go bao Project is incompatible, hay cap nhat Expo Go tren App Store roi mo lai link nay.</p>
+    </main>
+    <script>
+      const host = location.hostname || "192.168.2.45";
+      const expoUrl = `exp://${host}:8081`;
+      const webUrl = `http://${host}:5173`;
+      document.getElementById("openExpo").href = expoUrl;
+      document.getElementById("openWeb").href = webUrl;
+      document.getElementById("expoUrl").textContent = expoUrl;
+    </script>
+  </body>
+</html>

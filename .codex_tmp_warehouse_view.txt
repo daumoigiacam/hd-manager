@@ -1,0 +1,2731 @@
+﻿                    />
+                    <span className="text-[11px] font-black text-slate-500">{stockVarianceReport.unit}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-[0.8fr_1fr] gap-2">
+              <button
+                type="button"
+                onClick={() => setStockVarianceReport(null)}
+                className="rounded-2xl bg-white py-3 text-sm font-black text-slate-600"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveStockVarianceReport}
+                disabled={isSavingStockCount || !canRecordActualStockReason}
+                className="rounded-2xl bg-red-500 py-3 text-sm font-black text-white shadow-lg shadow-red-500/20 disabled:opacity-60"
+              >
+                {isSavingStockCount ? 'Đang lưu...' : 'Lưu nguyên nhân'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WarehouseDispatchView({ employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canUseWarehouseVoice = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false }) {
+  const isOwner = isOwnerPosition(employee?.position);
+  const isOwnerAccount = isOwner || employee?.role === 'super_admin';
+  const isAccounting = isAccountingPosition(employee?.position);
+  const isWarehouseScale = isWarehouseScalePosition(employee?.position);
+  const canCreate = Boolean(canCreateWarehouseDispatch || canCreateDispatchWithoutOrderRequest);
+  const canEdit = Boolean(canEditWarehouseDispatch);
+  const canShare = Boolean(canShareWarehouseDispatch);
+  const canAccess = Boolean(employee && canViewWarehouseDispatch);
+  const [workingDate, setWorkingDate] = useState(getTodayString());
+  const [selectedOrderRequestDate, setSelectedOrderRequestDate] = useState(getTodayString());
+  const canDeleteCurrentDispatch = Boolean(canDeleteWarehouseDispatch);
+  const canDeleteHistoryDispatch = Boolean(canDeleteDispatchHistory);
+  const isViewingPastDispatchDate = workingDate !== getTodayString();
+  const canDelete = isViewingPastDispatchDate ? canDeleteHistoryDispatch : canDeleteCurrentDispatch;
+  const canManageDispatchRows = canEdit || canDelete;
+  const dispatchListRef = useRef(null);
+  const weightEntryRowSize = 5;
+  const dispatchQuantityUnitOptions = ['Con', 'Cái', 'Bộ', 'Bọc', 'Bao', 'Thùng', 'Can', 'Túi', 'Kg'];
+  const createEmptyDispatchDraft = () => ({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', weightEntries: [], note: '', transcript: '' });
+  const [dispatchDraft, setDispatchDraft] = useState(createEmptyDispatchDraft());
+  const [dispatchStatus, setDispatchStatus] = useState('');
+  const [dispatchError, setDispatchError] = useState('');
+  const [isDispatchExporting, setIsDispatchExporting] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [isVoiceProcessing, setIsVoiceProcessing] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState('');
+  const [dispatchPickerOpen, setDispatchPickerOpen] = useState('');
+  const [dispatchListSearch, setDispatchListSearch] = useState('');
+  const [showWeightEntriesModal, setShowWeightEntriesModal] = useState(false);
+  const [weightEntriesDraft, setWeightEntriesDraft] = useState(['']);
+  const [inlineEditingDispatchId, setInlineEditingDispatchId] = useState('');
+  const [inlineEditingDispatchDraft, setInlineEditingDispatchDraft] = useState({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', note: '' });
+  const [selectedShortageLine, setSelectedShortageLine] = useState(null);
+  const [showAllDispatchShortageCustomers, setShowAllDispatchShortageCustomers] = useState(false);
+  const [selectedHistoryDispatchGroup, setSelectedHistoryDispatchGroup] = useState(null);
+  const [selectedHistoryMonth, setSelectedHistoryMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
+  const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const voiceChunksRef = useRef([]);
+  const dispatchCustomerSearchInputRef = useRef(null);
+  const dispatchProductSearchInputRef = useRef(null);
+  const weightEntryInputRefs = useRef([]);
+  const weightEntryAutoAdvanceTimerRef = useRef(null);
+
+  const resolveRequestDateKey = (request = {}) => {
+    const rawDate = `${request?.date || ''}`.trim();
+    if (rawDate && parseDateInputValue(rawDate)) return rawDate;
+    const stamp = getEntityTimestamp(request);
+    if (!stamp) return workingDate;
+    const parsed = new Date(stamp);
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+  };
+  const selectedOrderRequestDateKey = selectedOrderRequestDate || getTodayString();
+  const autoCancelAfterDays = getWarehouseOrderAutoCancelDays(currentCompany);
+
+  const todayOrderRequests = useMemo(
+    () => (orderRequests || []).filter(request => {
+      if (request.isArchived) return false;
+      const requestDate = resolveRequestDateKey(request);
+      if (requestDate !== selectedOrderRequestDateKey) return false;
+      if (autoCancelAfterDays <= 0) return true;
+      return getDaysBetweenDateKeys(requestDate, workingDate) <= autoCancelAfterDays;
+    }),
+    [autoCancelAfterDays, orderRequests, selectedOrderRequestDateKey, workingDate]
+  );
+  const expiredOrderRequestsForDispatchDate = useMemo(
+    () => (orderRequests || []).filter(request => {
+      if (request.isArchived || autoCancelAfterDays <= 0) return false;
+      const requestDate = resolveRequestDateKey(request);
+      return requestDate === selectedOrderRequestDateKey && getDaysBetweenDateKeys(requestDate, workingDate) > autoCancelAfterDays;
+    }),
+    [autoCancelAfterDays, orderRequests, selectedOrderRequestDateKey, workingDate]
+  );
+
+  const requestCustomerOptions = useMemo(() => {
+    const activeCustomers = (customers || []).filter(customer => !customer.isArchived);
+    const requestCustomerIds = new Set(todayOrderRequests.map(request => request.customerId).filter(Boolean));
+    const requestCustomers = activeCustomers.filter(customer => requestCustomerIds.has(customer.id));
+    const otherCustomers = activeCustomers.filter(customer => !requestCustomerIds.has(customer.id));
+    return [...requestCustomers, ...otherCustomers];
+  }, [todayOrderRequests, customers]);
+
+  const requestProductOptions = useMemo(() => {
+    const collected = [];
+    todayOrderRequests.forEach(request => {
+      const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
+      requestItems.forEach(item => {
+        const matchedProduct = products.find(product => product.id === item.productId);
+        if (matchedProduct) collected.push(matchedProduct);
+      });
+    });
+    const deduped = Array.from(new Map(collected.map(product => [product.id, product])).values());
+    return deduped.length > 0 ? deduped : products.filter(product => !product.isArchived);
+  }, [todayOrderRequests, products]);
+
+  const customerLookup = useMemo(() => new Map(customers.map(customer => [customer.id, customer])), [customers]);
+  const productLookup = useMemo(() => new Map(products.map(product => [product.id, product])), [products]);
+  const employeeLookup = useMemo(() => new Map((employees || []).map(emp => [emp.id, emp])), [employees]);
+  const normalizeDispatchQuantityUnit = (unit = '') => {
+    const normalized = normalizeLookupText(unit || '');
+    const unitMap = {
+      con: 'Con',
+      cai: 'Cái',
+      bo: 'Bộ',
+      boc: 'Bọc',
+      bao: 'Bao',
+      thung: 'Thùng',
+      can: 'Can',
+      tui: 'Túi',
+      kg: 'Kg',
+      ky: 'Kg',
+      ki: 'Kg',
+      kilo: 'Kg'
+    };
+    return unitMap[normalized] || normalizeLeadingLabel(unit || 'Con');
+  };
+  const getDispatchRowQuantity = (row = {}) => parseLooseQuantityValue(row.quantity ?? row.pieceCount ?? row.quantityCount);
+  const getDispatchRowQuantityUnit = (row = {}) => normalizeDispatchQuantityUnit(row.quantityUnit || row.unit || (getDispatchRowQuantity(row) > 0 ? 'Con' : ''));
+  const getWarehouseStockGroupLabel = (item = {}, product = null) => normalizeLeadingLabel(
+    item.groupName
+    || item.productGroup
+    || product?.category
+    || product?.mainGroup
+    || getProductMainGroupLabel(product, product?.name || item.productNameSnapshot || item.productName || '')
+    || item.productNameSnapshot
+    || item.productName
+    || 'Nhóm hàng'
+  );
+  const warehouseVoiceOrderRows = useMemo(() => todayOrderRequests.flatMap((request) => {
+    const requestCustomer = customerLookup.get(request.customerId) || request.customer || null;
+    const customerName = getCustomerDisplayName(requestCustomer) || requestCustomer?.name || request.customerName || request.customerNameSnapshot || '';
+    const requestItems = Array.isArray(request.items) && request.items.length > 0
+      ? request.items
+      : (request.primaryItem ? [request.primaryItem] : []);
+
+    return requestItems.map((item, index) => {
+      const matchedProduct = item?.productId ? productLookup.get(item.productId) || null : null;
+      const productName = matchedProduct?.name || item?.description || item?.productName || item?.productNameSnapshot || '';
+      return {
+        rowKey: `${request.id || 'request'}_${item?.productId || index}`,
+        requestId: request.id || '',
+        customerId: request.customerId || requestCustomer?.id || '',
+        customerName,
+        customerPhone: requestCustomer?.phone || request.customerPhone || '',
+        customerAddress: requestCustomer?.address || request.customerAddress || '',
+        customerGroup: requestCustomer?.group || requestCustomer?.customerGroup || '',
+        productId: matchedProduct?.id || item?.productId || '',
+        productName,
+        productShortName: getProductShortName(matchedProduct),
+        productCategory: matchedProduct?.category || matchedProduct?.mainGroup || '',
+        productUnit: matchedProduct?.unit || item?.quantityUnit || '',
+        productBarcode: matchedProduct?.barcode || '',
+        product: matchedProduct,
+        item
+      };
+    }).filter(row => row.customerName || row.productName);
+  }), [todayOrderRequests, customerLookup, productLookup]);
+  const warehouseVoiceOrderCustomers = useMemo(() => {
+    const grouped = new Map();
+    warehouseVoiceOrderRows.forEach((row) => {
+      const key = row.customerId || normalizeLookupText(row.customerName || '');
+      if (!key) return;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: row.customerId || '',
+          name: row.customerName || '',
+          plainName: getCustomerPlainName({ name: row.customerName }),
+          displayName: row.customerName || '',
+          phone: row.customerPhone || '',
+          address: row.customerAddress || '',
+          group: row.customerGroup || '',
+          orderRows: []
+        });
+      }
+      grouped.get(key).orderRows.push(row);
+    });
+    return Array.from(grouped.values());
+  }, [warehouseVoiceOrderRows]);
+  const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '') => {
+    if (!customerId || !productId) return null;
+    return warehouseVoiceOrderRows.find(row => row.customerId === customerId && row.productId === productId) || null;
+  };
+  const buildWarehouseDispatchSourceType = (baseType = 'manual', matchedOrderRow = null) => {
+    const normalizedBase = `${baseType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
+    return matchedOrderRow ? normalizedBase : `${normalizedBase}_without_order_request`;
+  };
+  const selectedDispatchCustomer = customerLookup.get(dispatchDraft.customerId) || null;
+  const selectedDispatchProduct = productLookup.get(dispatchDraft.productId) || null;
+  const dispatchCustomerSearchKeyword = normalizeLookupText(dispatchDraft.customerSearch || '');
+  const dispatchProductSearchKeyword = normalizeLookupText(dispatchDraft.productSearch || '');
+  const rankDispatchPickerOptions = (options = [], keyword = '', getLabels = () => []) => {
+    const normalizedKeyword = normalizeLookupText(keyword || '');
+    if (!normalizedKeyword) return options;
+    const keywordCandidates = [
+      normalizedKeyword,
+      collapseLookupText(normalizedKeyword),
+      ...buildTranscriptSearchCandidates(normalizedKeyword, 6)
+    ].filter(Boolean);
+    const keywordTokens = tokenizeLookupText(normalizedKeyword).filter(Boolean);
+    return options
+      .map((item, index) => {
+        const labels = (getLabels(item) || []).map(value => `${value || ''}`.trim()).filter(Boolean);
+        let bestScore = 0;
+        labels.forEach((label) => {
+          const normalizedLabel = normalizeLookupText(label);
+          const collapsedLabel = collapseLookupText(normalizedLabel);
+          if (normalizedLabel.includes(normalizedKeyword) || normalizedKeyword.includes(normalizedLabel)) {
+            bestScore = Math.max(bestScore, 0.96);
+          }
+          if (collapsedLabel && (collapsedLabel.includes(collapseLookupText(normalizedKeyword)) || collapseLookupText(normalizedKeyword).includes(collapsedLabel))) {
+            bestScore = Math.max(bestScore, 0.94);
+          }
+          keywordCandidates.forEach(candidate => {
+            bestScore = Math.max(bestScore, scoreLookupTextMatch(candidate, label));
+          });
+          const labelTokens = tokenizeLookupText(normalizedLabel);
+          const matchedTokens = keywordTokens.filter(token => labelTokens.includes(token)).length;
+          if (matchedTokens > 0) {
+            bestScore = Math.max(bestScore, (matchedTokens / Math.max(keywordTokens.length, 1)) * 0.88);
+          }
+        });
+        return { item, index, score: bestScore };
+      })
+      .filter(row => row.score >= 0.34)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map(row => row.item);
+  };
+  const filteredDispatchCustomers = rankDispatchPickerOptions(
+    requestCustomerOptions,
+    dispatchCustomerSearchKeyword,
+    (customer) => [
+      customer.name,
+      getCustomerPlainName(customer),
+      getCustomerDisplayName(customer),
+      ...buildCustomerNameAliases(customer),
+      customer.phone,
+      customer.address,
+      formatCustomerLocationForDisplay(customer.location),
+      customer.group,
+      customer.customerGroup
+    ]
+  );
+  const filteredDispatchProducts = rankDispatchPickerOptions(
+    selectedDispatchCustomer
+      ? Array.from(new Map([
+          ...warehouseVoiceOrderRows
+            .filter(row => row.customerId && row.customerId === selectedDispatchCustomer.id)
+            .map(row => row.productId ? productLookup.get(row.productId) : null)
+            .filter(Boolean),
+          ...requestProductOptions,
+          ...(products || []).filter(product => !product?.isArchived)
+        ].map(product => [product.id, product])).values())
+      : Array.from(new Map([
+          ...requestProductOptions,
+          ...(products || []).filter(product => !product?.isArchived)
+        ].map(product => [product.id, product])).values()),
+    dispatchProductSearchKeyword,
+    (product) => [
+      product.name,
+      getProductShortName(product),
+      buildLookupInitials(product.name),
+      product.category,
+      product.mainGroup,
+      product.barcode,
+      product.unit,
+      ...(Array.isArray(product.attributes) ? product.attributes : []),
+      ...(Array.isArray(product.productAttributes) ? product.productAttributes : [])
+    ]
+  );
+  const inlineEditingCustomer = customerLookup.get(inlineEditingDispatchDraft.customerId) || null;
+  const inlineEditingProduct = productLookup.get(inlineEditingDispatchDraft.productId) || null;
+
+  const todayDispatchRows = useMemo(
+    () => (warehouseDispatches || [])
+      .filter(item => !item.isArchived && `${item.date || ''}` === workingDate)
+      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)),
+    [warehouseDispatches, workingDate]
+  );
+  const editableDispatchRows = useMemo(() => todayDispatchRows.map((item) => {
+    const customer = customerLookup.get(item.customerId);
+    const product = productLookup.get(item.productId);
+    return {
+      ...item,
+      customerName: item.customerNameSnapshot || customer?.name || 'Khách hàng',
+      productName: item.productNameSnapshot || product?.name || 'Hàng hóa',
+      productShortName: getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase()
+    };
+  }), [todayDispatchRows, customerLookup, productLookup]);
+  const inlineEditingDispatchRow = useMemo(
+    () => editableDispatchRows.find(row => row.id === inlineEditingDispatchId) || null,
+    [editableDispatchRows, inlineEditingDispatchId]
+  );
+  const filteredEditableDispatchRows = useMemo(() => {
+    const keyword = normalizeLookupText(dispatchListSearch || '');
+    if (!keyword) return editableDispatchRows;
+    const collapsedKeyword = collapseLookupText(keyword);
+    const keywordCandidates = [keyword, collapsedKeyword, ...buildTranscriptSearchCandidates(keyword, 6)].filter(Boolean);
+    return editableDispatchRows.filter((row) => {
+      const labels = [
+        row.customerName,
+        row.productName,
+        row.productShortName,
+        getCompactProductName(null, row.productName || ''),
+        row.note
+      ].filter(Boolean);
+      return labels.some((label) => {
+        const normalizedLabel = normalizeLookupText(label);
+        const collapsedLabel = collapseLookupText(normalizedLabel);
+        return normalizedLabel.includes(keyword)
+          || keyword.includes(normalizedLabel)
+          || (collapsedKeyword && collapsedLabel.includes(collapsedKeyword))
+          || keywordCandidates.some(candidate => scoreLookupTextMatch(candidate, label) >= 0.52);
+      });
+    });
+  }, [dispatchListSearch, editableDispatchRows]);
+
+  const historyDispatchGroups = useMemo(() => {
+    const groups = (warehouseDispatches || []).reduce((acc, item) => {
+      if (item.isArchived || !item.date || item.date === workingDate) return acc;
+      if (!acc[item.date]) acc[item.date] = [];
+      acc[item.date].push(item);
+      return acc;
+    }, {});
+
+    return Object.entries(groups)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, items]) => {
+        const mergedRows = items.reduce((acc, item) => {
+          const customer = customerLookup.get(item.customerId);
+          const product = productLookup.get(item.productId);
+          const customerName = item.customerNameSnapshot || customer?.name || 'Khách hàng';
+          const productName = item.productNameSnapshot || product?.name || 'Hàng hóa';
+          const productShortName = getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase();
+          const quantityUnit = getDispatchRowQuantityUnit(item);
+          const mergeKey = `${item.customerId || customerName}__${item.productId || productName}__${normalizeLookupText(quantityUnit)}`;
+          const weightKg = parseFloat(item.weightKg) || 0;
+          const pieceCount = getDispatchRowQuantity(item);
+          const current = acc.get(mergeKey);
+          if (current) {
+            current.weightKg += weightKg;
+            current.pieceCount += pieceCount;
+            return acc;
+          }
+          acc.set(mergeKey, {
+            customerName,
+            productName,
+            productShortName,
+            weightKg,
+            pieceCount,
+            quantityUnit
+          });
+          return acc;
+        }, new Map());
+
+        const mergedValues = Array.from(mergedRows.values());
+        return {
+          dateKey,
+          items,
+          mergedRows: mergedValues,
+          totalLines: mergedValues.length,
+          totalCustomers: new Set(items.map(item => item.customerId || item.customerNameSnapshot).filter(Boolean)).size,
+          totalWeight: mergedValues.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0),
+          totalQuantity: mergedValues.reduce((sum, item) => sum + getDispatchRowQuantity(item), 0)
+        };
+      });
+  }, [warehouseDispatches, workingDate, customerLookup, productLookup]);
+
+  const historyCalendarWeekdays = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+  const historyMonthOptions = useMemo(() => {
+    const monthKeySet = new Set([buildMonthKeyFromDate(workingDate), buildMonthKeyFromDate(selectedHistoryMonth)]);
+    historyDispatchGroups.forEach((group) => monthKeySet.add(buildMonthKeyFromDate(group.dateKey)));
+    return Array.from(monthKeySet).sort((a, b) => b.localeCompare(a));
+  }, [historyDispatchGroups, selectedHistoryMonth, workingDate]);
+  const historyYearOptions = useMemo(() => {
+    const yearSet = new Set(historyMonthOptions.map((monthKey) => monthKey.split('-')[0]).filter(Boolean));
+    return Array.from(yearSet).sort((a, b) => Number(b) - Number(a));
+  }, [historyMonthOptions]);
+  const selectedHistoryMonthKey = buildMonthKeyFromDate(selectedHistoryMonth);
+  const selectedHistoryYear = selectedHistoryMonthKey.split('-')[0] || getTodayString().slice(0, 4);
+  const selectedHistoryMonthNumber = selectedHistoryMonthKey.split('-')[1] || getTodayString().slice(5, 7);
+  const historyDispatchGroupMap = useMemo(
+    () => new Map(historyDispatchGroups.map((group) => [group.dateKey, group])),
+    [historyDispatchGroups]
+  );
+  const historyCalendarCells = useMemo(
+    () => buildCalendarMonthCells(selectedHistoryMonthKey).map((cell) => ({
+      ...cell,
+      group: historyDispatchGroupMap.get(cell.dateKey) || null,
+      isWorkingDate: cell.dateKey === workingDate
+    })),
+    [historyDispatchGroupMap, selectedHistoryMonthKey, workingDate]
+  );
+  const selectedHistoryMonthGroups = useMemo(
+    () => historyDispatchGroups.filter((group) => buildMonthKeyFromDate(group.dateKey) === selectedHistoryMonthKey),
+    [historyDispatchGroups, selectedHistoryMonthKey]
+  );
+  const selectedHistoryMonthSummary = useMemo(() => selectedHistoryMonthGroups.reduce((acc, group) => {
+    acc.totalDays += 1;
+    acc.totalLines += group.totalLines || 0;
+    acc.totalWeight += group.totalWeight || 0;
+    acc.totalCustomers += group.totalCustomers || 0;
+    return acc;
+  }, { totalDays: 0, totalLines: 0, totalWeight: 0, totalCustomers: 0 }), [selectedHistoryMonthGroups]);
+  const selectedHistoryDispatchRows = useMemo(() => {
+    if (!selectedHistoryDispatchGroup?.items?.length) return [];
+    return [...selectedHistoryDispatchGroup.items]
+      .sort((a, b) => (getEntityTimestamp(a) || 0) - (getEntityTimestamp(b) || 0))
+      .map((item) => {
+        const customer = customerLookup.get(item.customerId);
+        const product = productLookup.get(item.productId);
+        return {
+          id: item.id,
+          customerName: item.customerNameSnapshot || customer?.name || 'Khach hang',
+          productName: item.productNameSnapshot || product?.name || 'Hang hoa',
+          productShortName: getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase(),
+          pieceCount: getDispatchRowQuantity(item),
+          quantityUnit: getDispatchRowQuantityUnit(item),
+          weightKg: parseFloat(item.weightKg) || 0,
+          note: item.note || '',
+          createdAt: getEntityTimestamp(item) || 0
+        };
+      });
+  }, [customerLookup, productLookup, selectedHistoryDispatchGroup]);
+
+  useEffect(() => {
+    if (!historyDispatchGroups.length) return;
+    const availableMonthKeySet = new Set(historyDispatchGroups.map((group) => buildMonthKeyFromDate(group.dateKey)));
+    if (availableMonthKeySet.has(selectedHistoryMonthKey)) return;
+    setSelectedHistoryMonth(buildMonthKeyFromDate(historyDispatchGroups[0]?.dateKey || getTodayString()));
+  }, [historyDispatchGroups, selectedHistoryMonthKey]);
+
+  const mergedDispatchRows = useMemo(() => {
+    const grouped = new Map();
+    todayDispatchRows.forEach((item, index) => {
+      const customer = customerLookup.get(item.customerId);
+      const product = productLookup.get(item.productId);
+      const customerName = item.customerNameSnapshot || customer?.name || 'Khách hàng';
+      const productName = item.productNameSnapshot || product?.name || 'Hàng hóa';
+      const productShortName = getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase();
+      const groupKey = `${item.customerId || customerName}__${item.productId || productName}`;
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, {
+          id: `${groupKey}_${index}`,
+          sortIndex: index,
+          customerName,
+          productName,
+          productShortName,
+          pieceCount: getDispatchRowQuantity(item),
+          quantityUnit: getDispatchRowQuantityUnit(item),
+          weightKg: parseFloat(item.weightKg) || 0
+        });
+        return;
+      }
+      const current = grouped.get(groupKey);
+      current.weightKg += parseFloat(item.weightKg) || 0;
+      current.pieceCount += getDispatchRowQuantity(item);
+    });
+
+    return Array.from(grouped.values())
+      .sort((a, b) => a.sortIndex - b.sortIndex)
+      .map(({ sortIndex, ...row }) => row);
+  }, [todayDispatchRows, customerLookup, productLookup]);
+
+  const buildDispatchPreviewRows = (sourceRows = []) => {
+    const rows = (sourceRows || []).slice(0, 40);
+    const minRows = Math.max(6, rows.length);
+    return [
+      ...rows,
+      ...Array.from({ length: Math.max(0, minRows - rows.length) }, (_, index) => ({
+        id: `dispatch_blank_${index}`,
+        customerName: '',
+        productName: '',
+        productShortName: '',
+        pieceCount: '',
+        quantityUnit: '',
+        weightKg: ''
+      }))
+    ];
+  };
+
+  const previewDispatchRows = useMemo(() => buildDispatchPreviewRows(mergedDispatchRows), [mergedDispatchRows]);
+
+  const dispatchSummary = useMemo(() => ({
+    totalCustomers: new Set(todayDispatchRows.map(item => item.customerId).filter(Boolean)).size,
+    totalLines: todayDispatchRows.length,
+    totalWeight: todayDispatchRows.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0)
+  }), [todayDispatchRows]);
+  const dispatchShortageSummary = useMemo(() => buildWarehouseDispatchShortageSummary({
+    orderRequests,
+    warehouseDispatches,
+    customers,
+    products,
+    dateKey: selectedOrderRequestDateKey,
+    dispatchDateKey: workingDate,
+    autoCancelAfterDays
+  }), [autoCancelAfterDays, customers, orderRequests, products, selectedOrderRequestDateKey, warehouseDispatches, workingDate]);
+  const shouldShowDispatchShortage = canViewDispatchShortage || isOwnerAccount;
+  const dispatchShortageCustomerGroups = useMemo(() => {
+    const groups = new Map();
+    (dispatchShortageSummary.issueLines || []).forEach((line) => {
+      const customerKey = line.customerId || normalizeLookupText(line.customerName || '');
+      if (!customerKey) return;
+      if (!groups.has(customerKey)) {
+        groups.set(customerKey, {
+          key: customerKey,
+          customerId: line.customerId || '',
+          customerName: line.customerName || 'Khách hàng',
+          issueLines: [],
+          requestLines: [],
+          productLabels: [],
+          totalMissingLines: 0,
+          totalDispatchedKg: 0
+        });
+      }
+      const group = groups.get(customerKey);
+      const productLabel = line.productShortName || getCompactProductName(null, line.productName || 'Hàng hóa');
+      group.issueLines.push(line);
+      group.requestLines.push(...(Array.isArray(line.requestLines) ? line.requestLines : []));
+      if (productLabel && !group.productLabels.includes(productLabel)) group.productLabels.push(productLabel);
+      group.totalMissingLines += 1;
+      group.totalDispatchedKg += line.dispatchedKg || 0;
+    });
+    return Array.from(groups.values()).sort((a, b) => a.customerName.localeCompare(b.customerName, 'vi'));
+  }, [dispatchShortageSummary.issueLines]);
+  useEffect(() => {
+    setShowAllDispatchShortageCustomers(false);
+  }, [selectedOrderRequestDateKey, workingDate]);
+  const selectedShortageTableRows = useMemo(() => {
+    const requestLines = Array.isArray(selectedShortageLine?.requestLines) ? selectedShortageLine.requestLines : [];
+    return requestLines.map((line, index) => ({
+      id: `${line.requestId || 'shortage'}_${line.productId || index}_${index}`,
+      productLabel: line.productShortName || getCompactProductName(null, line.productName || selectedShortageLine?.productName || 'Hàng hóa'),
+      quantityLabel: `${formatNumber(line.quantity || 0)} ${line.quantityUnit || ''}`.trim(),
+      sizeLabel: line.attributeLabel || line.sizeLabel || ''
+    }));
+  }, [selectedShortageLine]);
+
+  const getRecognitionConstructor = () => {
+    if (typeof window === 'undefined') return null;
+    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  };
+
+  const getSupportedVoiceRecorderMimeType = () => {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    return [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/mp4;codecs=mp4a.40.2'
+    ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+  };
+
+  const cleanupRecordedVoiceResources = () => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    voiceChunksRef.current = [];
+  };
+
+  const stopVoiceCapture = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current) {
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      } else {
+        cleanupRecordedVoiceResources();
+      }
+    }
+    setIsVoiceListening(false);
+  };
+
+  const resetDispatchVoiceDraft = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.onresult = null;
+      recognitionRef.current.onerror = null;
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.ondataavailable = null;
+      mediaRecorderRef.current.onerror = null;
+      mediaRecorderRef.current.onstop = null;
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    }
+    cleanupRecordedVoiceResources();
+    if (typeof window !== 'undefined' && weightEntryAutoAdvanceTimerRef.current) {
+      window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
+      weightEntryAutoAdvanceTimerRef.current = null;
+    }
+    setDispatchPickerOpen('');
+    setShowWeightEntriesModal(false);
+    setWeightEntriesDraft(['']);
+    setDispatchDraft(createEmptyDispatchDraft());
+    setDispatchError('');
+    setDispatchStatus('');
+    setVoiceStatus('');
+    setIsVoiceListening(false);
+    setIsVoiceProcessing(false);
+  };
+
+  useEffect(() => () => {
+    if (typeof window !== 'undefined' && weightEntryAutoAdvanceTimerRef.current) {
+      window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
+    }
+    stopVoiceCapture();
+    cleanupRecordedVoiceResources();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    if (dispatchPickerOpen !== 'customer' && dispatchPickerOpen !== 'product') return undefined;
+    const inputRef = dispatchPickerOpen === 'customer' ? dispatchCustomerSearchInputRef : dispatchProductSearchInputRef;
+    const focusTimer = window.setTimeout(() => {
+      inputRef.current?.focus?.({ preventScroll: true });
+      inputRef.current?.select?.();
+    }, 80);
+    return () => window.clearTimeout(focusTimer);
+  }, [dispatchPickerOpen]);
+
+  const normalizeWeightEntryValues = (entries = []) => entries
+    .flatMap(entry => {
+      const matches = [...`${entry ?? ''}`.matchAll(/\d+(?:[.,]\d+)?/g)].map(match => match[0]);
+      return matches.length > 0 ? matches : [`${entry ?? ''}`];
+    })
+    .map(entry => parseVoiceNumber(entry))
+    .filter(value => value > 0);
+
+  const formatWeightEntrySum = (entries = []) => formatVoiceNumberValue(
+    normalizeWeightEntryValues(entries).reduce((sum, value) => sum + value, 0)
+  );
+
+  const getWeightEntryTotal = (entries = []) => normalizeWeightEntryValues(entries)
+    .reduce((sum, value) => sum + value, 0);
+
+  const createEmptyWeightEntryRow = () => Array.from({ length: weightEntryRowSize }, () => '');
+
+  const ensureWeightEntryDraftRows = (entries = [], appendEmptyRowWhenFull = false) => {
+    const cleanedEntries = (Array.isArray(entries) ? entries : [])
+      .map(entry => `${entry ?? ''}`);
+    const baseEntries = cleanedEntries.length > 0 ? cleanedEntries : [''];
+    const rowCount = Math.max(1, Math.ceil(baseEntries.length / weightEntryRowSize));
+    const paddedEntries = [
+      ...baseEntries,
+      ...Array.from({ length: (rowCount * weightEntryRowSize) - baseEntries.length }, () => '')
+    ];
+    const lastRow = paddedEntries.slice(-weightEntryRowSize);
+    if (appendEmptyRowWhenFull && lastRow.every(entry => `${entry}`.trim())) {
+      return [...paddedEntries, ...createEmptyWeightEntryRow()];
+    }
+    return paddedEntries;
+  };
+
+  const sanitizeWeightEntryDraftValue = (value = '') => {
+    const rawValue = `${value ?? ''}`.replace(/[^\d.,]/g, '');
+    const separatorMatch = rawValue.match(/[.,]/);
+    if (!separatorMatch) return rawValue;
+    const separator = separatorMatch[0];
+    const separatorIndex = rawValue.indexOf(separator);
+    const integerPart = rawValue.slice(0, separatorIndex);
+    const decimalPart = rawValue.slice(separatorIndex + 1).replace(/[^\d]/g, '').slice(0, 3);
+    return `${integerPart}${separator}${decimalPart}`;
+  };
+
+  const clearWeightEntryAutoAdvanceTimer = () => {
+    if (typeof window === 'undefined' || !weightEntryAutoAdvanceTimerRef.current) return;
+    window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
+    weightEntryAutoAdvanceTimerRef.current = null;
+  };
+
+  const shouldAutoAdvanceWeightEntry = (value = '') => /^\d+[.,]\d{1,3}$/.test(`${value || ''}`.trim());
+
+  useEffect(() => {
+    if (showWeightEntriesModal) return;
+    clearWeightEntryAutoAdvanceTimer();
+  }, [showWeightEntriesModal]);
+
+  const openWeightEntriesEditor = () => {
+    const currentEntries = Array.isArray(dispatchDraft.weightEntries) && dispatchDraft.weightEntries.length > 0
+      ? dispatchDraft.weightEntries
+      : (dispatchDraft.weightKg ? [dispatchDraft.weightKg] : ['']);
+    clearWeightEntryAutoAdvanceTimer();
+    weightEntryInputRefs.current = [];
+    setWeightEntriesDraft(ensureWeightEntryDraftRows(currentEntries.map(entry => `${entry ?? ''}`), true));
+    setShowWeightEntriesModal(true);
+  };
+
+  const focusWeightEntryInput = (index) => {
+    if (typeof window === 'undefined') return;
+    window.setTimeout(() => {
+      weightEntryInputRefs.current[index]?.focus?.();
+      weightEntryInputRefs.current[index]?.select?.();
+    }, 40);
+  };
+
+  const handleWeightEntryDraftChange = (index, value) => {
+    const cleanedValue = sanitizeWeightEntryDraftValue(value);
+    clearWeightEntryAutoAdvanceTimer();
+    setWeightEntriesDraft(prev => {
+      const next = ensureWeightEntryDraftRows(prev);
+      next[index] = cleanedValue;
+      const isLastCellInRow = (index + 1) % weightEntryRowSize === 0;
+      const hasNextRow = next.length > index + 1;
+      if (isLastCellInRow && `${cleanedValue}`.trim() && !hasNextRow) {
+        return [...next, ...createEmptyWeightEntryRow()];
+      }
+      return next;
+    });
+
+    if (typeof window === 'undefined' || !shouldAutoAdvanceWeightEntry(cleanedValue)) return;
+    weightEntryAutoAdvanceTimerRef.current = window.setTimeout(() => {
+      const nextIndex = index + 1;
+      setWeightEntriesDraft(prev => {
+        const next = ensureWeightEntryDraftRows(prev);
+        if (nextIndex >= next.length) return [...next, ...createEmptyWeightEntryRow()];
+        return next;
+      });
+      focusWeightEntryInput(nextIndex);
+      weightEntryAutoAdvanceTimerRef.current = null;
+    }, 80);
+  };
+
+  const handleWeightEntryKeyDown = (event, index) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    clearWeightEntryAutoAdvanceTimer();
+    const nextIndex = index + 1;
+    setWeightEntriesDraft(prev => {
+      const next = ensureWeightEntryDraftRows(prev);
+      if (nextIndex >= next.length) return [...next, ...createEmptyWeightEntryRow()];
+      return next;
+    });
+    focusWeightEntryInput(nextIndex);
+  };
+
+  const saveWeightEntries = () => {
+    clearWeightEntryAutoAdvanceTimer();
+    const normalizedEntries = normalizeWeightEntryValues(weightEntriesDraft);
+    const totalWeight = normalizedEntries.reduce((sum, value) => sum + value, 0);
+    setDispatchDraft(prev => ({
+      ...prev,
+      weightEntries: normalizedEntries,
+      weightKg: formatVoiceNumberValue(totalWeight)
+    }));
+    setShowWeightEntriesModal(false);
+  };
+
+  const normalizeWarehouseVoiceText = (value = '') => normalizeLookupText(value)
+    .replace(/\b(?:vit|bit|bich)\s+(?:khong|hong|ko|k)\s+(?:moc|mat|mot|mok|mog)\b/g, 'vit khong moc')
+    .replace(/\b(?:bit|bich|vit)\s+(?:mat|mot|mok|mog|moc)\b/g, 'vit moc')
+    .replace(/\b(?:long|longg)\s+(?:ga|ga)\b/g, 'long ga')
+    .replace(/\bbit\b/g, 'vit')
+    .replace(/\bbich\b/g, 'vit')
+    .replace(/\bmat\b/g, 'moc')
+    .replace(/\bmot\b/g, 'moc')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const buildWarehouseVoiceSearchCandidates = (value = '', maxWordsPerCandidate = 5) => {
+    const normalized = normalizeWarehouseVoiceText(Array.isArray(value) ? value.join(' ') : value);
+    if (!normalized) return [];
+    const rawCandidates = buildTranscriptSearchCandidates(normalized, maxWordsPerCandidate);
+    return [...new Set([normalized, collapseLookupText(normalized), ...rawCandidates.map(normalizeWarehouseVoiceText)])].filter(Boolean);
+  };
+
+  const isVoicePayloadKeywordTrusted = (keyword = '', transcript = '') => {
+    const normalizedKeyword = normalizeWarehouseVoiceText(keyword);
+    if (!normalizedKeyword) return false;
+    const normalizedTranscript = normalizeWarehouseVoiceText(transcript);
+    if (!normalizedTranscript) return true;
+    return normalizedTranscript.includes(normalizedKeyword)
+      || collapseLookupText(normalizedTranscript).includes(collapseLookupText(normalizedKeyword));
+  };
+
+  const findTranscriptEntity = (
+    transcript,
+    collection,
+    getLabel = (item) => item?.name || '',
+    getAliases = () => []
+  ) => {
+    const normalizedTranscript = normalizeWarehouseVoiceText(transcript);
+    if (!normalizedTranscript) return null;
+    const transcriptCandidates = buildWarehouseVoiceSearchCandidates(transcript);
+    const sorted = [...collection].sort((a, b) => normalizeWarehouseVoiceText(getLabel(b)).length - normalizeWarehouseVoiceText(getLabel(a)).length);
+    const contained = sorted.find((item) => {
+      const labels = [getLabel(item), ...(getAliases(item) || [])]
+        .map((value) => normalizeWarehouseVoiceText(value))
+        .filter(Boolean);
+      return labels.some((label) => normalizedTranscript.includes(label) || collapseLookupText(normalizedTranscript).includes(collapseLookupText(label)));
+    });
+    return contained || findBestEntityMatch([transcript, ...transcriptCandidates], collection, getLabel, getAliases);
+  };
+
+  const extractSpokenWeight = (transcript = '') => {
+    const matches = [...`${transcript}`.matchAll(/(\d+(?:[.,]\d+)?)/g)];
+    if (!matches.length) return '';
+    return matches[matches.length - 1][1].replace(',', '.');
+  };
+
+  const parseVoiceNumber = (value) => {
+    const parsed = parseFloat(`${value ?? ''}`.replace(',', '.'));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
+
+  const formatVoiceNumberValue = (value) => {
+    const parsed = parseVoiceNumber(value);
+    if (!parsed) return '';
+    return Number.isInteger(parsed) ? `${parsed}` : `${Number(parsed.toFixed(2))}`;
+  };
+
+  const extractSpokenWeightValues = (transcript = '') => {
+    const raw = `${transcript || ''}`;
+    const directMatches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:kg|kgs|kilogram|kilograms|kilo|ki\s*lo|ký|kí|cân|ky|ki)\b/gi)]
+      .map(match => parseVoiceNumber(match[1]))
+      .filter(value => value > 0);
+    const normalizedRaw = normalizeLookupText(raw);
+    const sequenceMatches = [...normalizedRaw.matchAll(/((?:\d+(?:[.,]\d+)?\s*(?:va|voi|cong|\+|,|;|-)?\s*){1,6})\s*(?:kg|kgs|kilogram|kilograms|kilo|ki\s*lo|ky|ki)\b/gi)]
+      .flatMap(match => [...`${match[1] || ''}`.matchAll(/\d+(?:[.,]\d+)?/g)].map(numberMatch => parseVoiceNumber(numberMatch[0])))
+      .filter(value => value > 0);
+    return sequenceMatches.length > directMatches.length ? sequenceMatches : directMatches;
+  };
+
+  const resolveVoiceWeightValue = (payload = {}, transcript = '') => {
+    const normalizedTranscript = normalizeLookupText(transcript || '');
+    const transcriptHasWeightUnit = /\b(?:kg|kgs|kilogram|kilograms|kilo|ky|ki)\b/.test(normalizedTranscript) || /\bcân\b/i.test(`${transcript || ''}`);
+    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
+    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
+    const explicitValues = payload.weight_values_kg || payload.weightValuesKg || payload.weights_kg || payload.weightsKg;
+    if (Array.isArray(explicitValues)) {
+      const total = explicitValues.reduce((sum, value) => sum + parseVoiceNumber(value), 0);
+      if (total > 0 && transcriptHasWeightUnit) return formatVoiceNumberValue(total);
+    }
+
+    const weightsFromTranscript = extractSpokenWeightValues(transcript);
+    if (weightsFromTranscript.length > 1) {
+      return formatVoiceNumberValue(weightsFromTranscript.reduce((sum, value) => sum + value, 0));
+    }
+
+    const explicitWeight = payload.total_weight_kg ?? payload.totalWeightKg ?? payload.weight_kg ?? payload.weightKg ?? '';
+    const explicitWeightValue = parseVoiceNumber(explicitWeight);
+    if (explicitWeightValue > 0) {
+      if (!transcriptHasWeightUnit && explicitCount > 0 && explicitWeightValue === explicitCount && !isKgQuantityUnit(explicitUnit)) return '';
+      if (!transcriptHasWeightUnit) return '';
+      return formatVoiceNumberValue(explicitWeightValue);
+    }
+
+    if (weightsFromTranscript.length > 0) {
+      return formatVoiceNumberValue(weightsFromTranscript[0]);
+    }
+
+    return transcriptHasWeightUnit ? extractSpokenWeight(transcript) : '';
+  };
+
+  const resolveVoiceWeightEntries = (payload = {}, transcript = '') => {
+    const explicitValues = payload.weight_values_kg || payload.weightValuesKg || payload.weights_kg || payload.weightsKg;
+    const payloadValues = Array.isArray(explicitValues)
+      ? explicitValues.map(value => parseVoiceNumber(value)).filter(value => value > 0)
+      : [];
+    const transcriptValues = extractSpokenWeightValues(transcript);
+    return (transcriptValues.length ? transcriptValues : payloadValues)
+      .map(value => formatVoiceNumberValue(value))
+      .filter(Boolean);
+  };
+
+  const extractSpokenPieceCount = (transcript = '', payload = {}) => {
+    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
+    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
+    if (explicitCount > 0 && (!explicitUnit || !isKgQuantityUnit(explicitUnit))) {
+      return formatVoiceNumberValue(explicitCount);
+    }
+
+    const raw = `${transcript || ''}`;
+    const matches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cái|cai|bọc|boc|thùng|thung|can|túi|tui)\b/gi)];
+    const firstCount = matches.map(match => parseVoiceNumber(match[1])).find(value => value > 0);
+    if (firstCount) return formatVoiceNumberValue(firstCount);
+
+    const normalizedMatches = [...normalizeWarehouseVoiceText(raw).matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cai|bo|boc|bao|thung|can|tui)\b/gi)];
+    const normalizedCount = normalizedMatches.map(match => parseVoiceNumber(match[1])).find(value => value > 0);
+    return normalizedCount ? formatVoiceNumberValue(normalizedCount) : '';
+  };
+
+  const findVoiceEntityMatch = (candidates, primaryCollection, fallbackCollection, getLabel, getAliases) => {
+    const primaryMatch = findBestEntityMatch(candidates, primaryCollection, getLabel, getAliases)
+      || findTranscriptEntity(candidates.join(' '), primaryCollection, getLabel, getAliases);
+    if (primaryMatch) return primaryMatch;
+
+    const fallbackItems = (fallbackCollection || []).filter(item => !item?.isArchived);
+    return findBestEntityMatch(candidates, fallbackItems, getLabel, getAliases)
+      || findTranscriptEntity(candidates.join(' '), fallbackItems, getLabel, getAliases);
+  };
+
+  const buildVoicePayloadSearchText = (payload = {}, transcript = '') => [
+    transcript,
+    payload?.customer_name,
+    payload?.customerName,
+    payload?.customer_id,
+    payload?.customerId,
+    payload?.product_name,
+    payload?.productName,
+    payload?.product_id,
+    payload?.productId,
+    payload?.order_line_key,
+    payload?.orderLineKey,
+    payload?.raw_text,
+    payload?.rawText
+  ].filter(Boolean).join(' ');
+
+  const findStrictVoiceEntityMatch = (
+    searchText = '',
+    collection = [],
+    getLabel = (item) => item?.name || '',
+    getAliases = () => [],
+    minScore = 0.62
+  ) => {
+    const isGenericVoiceLabel = (label = '') => {
+      const normalizedLabel = normalizeWarehouseVoiceText(label);
+      return ['a', 'c', 'anh', 'chi', 'co', 'chu', 'bac', 'ong', 'ba', 'em', 'khach', 'khach hang'].includes(normalizedLabel);
+    };
+    const normalizedText = normalizeWarehouseVoiceText(searchText);
+    if (!normalizedText || !Array.isArray(collection) || !collection.length) return null;
+    const collapsedText = collapseLookupText(normalizedText);
+    const candidates = buildWarehouseVoiceSearchCandidates(searchText, 6)
+      .filter((candidate) => {
+        const normalizedCandidate = normalizeWarehouseVoiceText(candidate);
+        return normalizedCandidate.length >= 2 && !isGenericVoiceLabel(normalizedCandidate);
+      });
+    const sorted = [...collection].sort((a, b) => normalizeWarehouseVoiceText(getLabel(b)).length - normalizeWarehouseVoiceText(getLabel(a)).length);
+
+    const contained = sorted.find((item) => {
+      const labels = [getLabel(item), ...(getAliases(item) || [])]
+        .map((value) => normalizeWarehouseVoiceText(value))
+        .filter((label) => label.length >= 2 && !isGenericVoiceLabel(label));
+      return labels.some((label) => normalizedText.includes(label) || collapsedText.includes(collapseLookupText(label)));
+    });
+    if (contained) return contained;
+
+    let bestMatch = null;
+    let bestScore = 0;
+    sorted.forEach((item) => {
+      const labels = [getLabel(item), ...(getAliases(item) || [])]
+        .map((value) => `${value || ''}`.trim())
+        .filter((label) => label && !isGenericVoiceLabel(label));
+      labels.forEach((label) => {
+        candidates.forEach((candidate) => {
+          const score = scoreLookupTextMatch(candidate, label);
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = item;
+          }
+        });
+      });
+    });
+
+    return bestScore >= minScore ? bestMatch : null;
+  };
+
+  const getOrderRowsForVoiceCustomer = (customer = null) => {
+    if (!customer) return [];
+    const customerId = customer.id || '';
+    const normalizedName = normalizeWarehouseVoiceText(customer.displayName || customer.name || '');
+    const normalizedPlainName = normalizeWarehouseVoiceText(getCustomerPlainName(customer));
+    return warehouseVoiceOrderRows.filter((row) => {
+      if (customerId && row.customerId === customerId) return true;
+      const rowName = normalizeWarehouseVoiceText(row.customerName || '');
+      const rowPlainName = normalizeWarehouseVoiceText(getCustomerPlainName({ name: row.customerName || '' }));
+      return Boolean(normalizedName && rowName === normalizedName)
+        || Boolean(normalizedPlainName && rowPlainName === normalizedPlainName);
+    });
+  };
+
+  const resolveVoiceCustomerFromOrders = (searchText = '') => {
+    const orderCustomer = findStrictVoiceEntityMatch(
+      searchText,
+      warehouseVoiceOrderCustomers,
+      (item) => item?.displayName || item?.name || '',
+      (item) => [
+        item?.displayName,
+        item?.name,
+        item?.plainName,
+        getCustomerPlainName(item)
+      ],
+      0.58
+    );
+    if (!orderCustomer) return null;
+    return (orderCustomer.id && customerLookup.get(orderCustomer.id)) || {
+      ...orderCustomer,
+      name: orderCustomer.displayName || orderCustomer.name
+    };
+  };
+
+  const resolveVoiceProductFromOrderRows = (searchText = '', orderRows = []) => findStrictVoiceEntityMatch(
+    searchText,
+    orderRows,
+    (row) => row?.productName || '',
+    (row) => [
+      row?.productShortName,
+      row?.productBarcode,
+      row?.item?.description,
+      row?.item?.productName,
+      row?.item?.productNameSnapshot
+    ],
+    0.52
+  );
+
+  const extractSpokenQuantityUnit = (transcript = '') => {
+    const normalized = normalizeWarehouseVoiceText(transcript || '');
+    const matched = normalized.match(/\d+(?:[.,]\d+)?\s*(con|cai|bo|boc|bao|thung|can|tui|kg|ky|ki|kilo)\b/i);
+    return matched?.[1] ? normalizeDispatchQuantityUnit(matched[1]) : '';
+  };
+
+  const resolveVoiceQuantityUnit = (payload = {}, orderRow = null, product = null, transcript = '') => normalizeDispatchQuantityUnit(
+    payload.quantity_unit
+    || payload.quantityUnit
+    || payload.unit
+    || orderRow?.item?.quantityUnit
+    || orderRow?.productUnit
+    || product?.unit
+    || extractSpokenQuantityUnit(transcript)
+    || 'Con'
+  );
+
+  const extractSpokenNonWeightNumbers = (transcript = '') => {
+    const raw = `${transcript || ''}`;
+    const matches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*([^\d\s,.;:+-]*)/gi)];
+    return matches
+      .filter((match) => !isKgQuantityUnit(normalizeLookupText(match[2] || '')))
+      .map((match) => parseVoiceNumber(match[1]))
+      .filter((value) => value > 0);
+  };
+
+  const resolveVoicePieceCountValue = (payload = {}, transcript = '', orderRow = null, quantityUnit = 'Con') => {
+    const directCount = extractSpokenPieceCount(transcript, payload);
+    if (directCount) return directCount;
+
+    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
+    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
+    if (explicitCount > 0 && (!explicitUnit || !isKgQuantityUnit(explicitUnit))) {
+      return formatVoiceNumberValue(explicitCount);
+    }
+
+    if (!isKgQuantityUnit(quantityUnit)) {
+      const nonWeightNumbers = extractSpokenNonWeightNumbers(transcript);
+      if (nonWeightNumbers.length) return formatVoiceNumberValue(nonWeightNumbers[0]);
+      const orderQuantity = parseLooseQuantityValue(orderRow?.item?.quantity ?? orderRow?.item?.quantityCount);
+      if (orderQuantity > 0) return formatVoiceNumberValue(orderQuantity);
+    }
+
+    return '';
+  };
+
+  const getWarehouseVoiceCustomerLabels = (source = {}) => {
+    const customer = source?.customer || source;
+    return [...new Set([
+      customer?.displayName,
+      customer?.name,
+      customer?.plainName,
+      source?.customerName,
+      getCustomerPlainName(customer),
+      getCustomerDisplayName(customer),
+      ...buildCustomerNameAliases(customer)
+    ].map(value => `${value || ''}`.trim()).filter(Boolean))];
+  };
+
+  const getWarehouseVoiceProductLabels = (source = {}) => {
+    const product = source?.product || source;
+    return [...new Set([
+      source?.productName,
+      source?.productShortName,
+      product?.name,
+      getProductShortName(product),
+      buildLookupInitials(source?.productName || product?.name),
+      source?.item?.description,
+      source?.item?.productName,
+      source?.item?.productNameSnapshot
+    ].map(value => `${value || ''}`.trim()).filter(Boolean))];
+  };
+
+  const scoreWarehouseVoiceLabels = (candidates = [], labels = []) => {
+    const getVoiceLabelTokens = (value = '') => tokenizeLookupText(normalizeWarehouseVoiceText(value))
+      .filter(token => token && !/^\d+(?:[.,]\d+)?$/.test(token))
+      .filter(token => !['a', 'c', 'anh', 'chi', 'co', 'chu', 'bac', 'ong', 'ba', 'em', 'khach', 'hang'].includes(token));
+    const scoreOrderedVoiceTokens = (candidate = '', label = '') => {
+      const candidateTokens = getVoiceLabelTokens(candidate);
+      const labelTokens = getVoiceLabelTokens(label);
+      if (!candidateTokens.length || !labelTokens.length) return 0;
+
+      let matched = 0;
+      let cursor = 0;
+      let consecutive = 0;
+      let bestConsecutive = 0;
+      labelTokens.forEach((labelToken) => {
+        let foundIndex = -1;
+        for (let index = cursor; index < candidateTokens.length; index += 1) {
+          const candidateToken = candidateTokens[index];
+          const tokenScore = scoreLookupTextMatch(candidateToken, labelToken);
+          if (candidateToken === labelToken || tokenScore >= 0.78) {
+            foundIndex = index;
+            break;
+          }
+        }
+        if (foundIndex >= 0) {
+          matched += 1;
+          consecutive = foundIndex === cursor ? consecutive + 1 : 1;
+          bestConsecutive = Math.max(bestConsecutive, consecutive);
+          cursor = foundIndex + 1;
+        }
+      });
+
+      if (!matched) return 0;
+      const coverage = matched / Math.max(labelTokens.length, 1);
+      const density = matched / Math.max(candidateTokens.length, 1);
+      const consecutiveBonus = bestConsecutive >= Math.min(2, labelTokens.length) ? 0.12 : 0;
+      const singleTokenPenalty = labelTokens.length >= 2 && matched === 1 ? 0.18 : 0;
+      return Math.max(0, Math.min(1, (coverage * 0.78) + (density * 0.16) + consecutiveBonus - singleTokenPenalty));
+    };
+    let bestScore = 0;
+    candidates
+      .map(value => normalizeWarehouseVoiceText(value || ''))
+      .filter(Boolean)
+      .forEach((candidate) => {
+        labels.forEach((label) => {
+          const normalizedLabel = normalizeWarehouseVoiceText(label);
+          const score = Math.max(
+            scoreLookupTextMatch(candidate, normalizedLabel),
+            scoreOrderedVoiceTokens(candidate, normalizedLabel)
+          );
+          if (score > bestScore) bestScore = score;
+        });
+      });
+    return bestScore;
+  };
+
+  const extractWarehouseVoiceSegments = (payload = {}, transcript = '') => {
+    const normalizedTranscript = normalizeWarehouseVoiceText(transcript || '');
+    const countMatch = [...normalizedTranscript.matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cai|bo|boc|bao|thung|can|tui)\b/gi)]
+      .find(match => parseVoiceNumber(match[1]) > 0);
+    const kgPattern = /\d+(?:[.,]\d+)?\s*(?:kg|kgs|kilogram|kilograms|kilo|ky|ki)\b/gi;
+    let customerSegment = normalizedTranscript;
+    let productSegment = normalizedTranscript;
+
+    if (countMatch) {
+      const startIndex = countMatch.index || 0;
+      const endIndex = startIndex + `${countMatch[0] || ''}`.length;
+      customerSegment = normalizedTranscript.slice(0, startIndex).trim();
+      productSegment = normalizedTranscript.slice(endIndex).replace(kgPattern, ' ').replace(/\b(?:va|voi|cong|them)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    } else {
+      const firstKgMatch = [...normalizedTranscript.matchAll(kgPattern)][0];
+      if (firstKgMatch) {
+        const beforeKg = normalizedTranscript.slice(0, firstKgMatch.index || 0).trim();
+        customerSegment = beforeKg;
+        productSegment = beforeKg;
+      }
+    }
+
+    return {
+      normalizedTranscript,
+      customerSegment,
+      productSegment,
+      customerCandidates: [
+        payload?.customer_name,
+        payload?.customerName,
+        customerSegment,
+        normalizedTranscript
+      ].filter(Boolean),
+      productCandidates: [
+        payload?.product_name,
+        payload?.productName,
+        productSegment,
+        normalizedTranscript
+      ].filter(Boolean)
+    };
+  };
+
+  const findBestWarehouseVoiceOrderRow = (payload = {}, transcript = '') => {
+    if (!warehouseVoiceOrderRows.length) return null;
+    const explicitRowKey = `${payload?.order_line_key || payload?.orderLineKey || payload?.rowKey || ''}`.trim();
+    const explicitCustomerId = `${payload?.customer_id || payload?.customerId || ''}`.trim();
+    const explicitProductId = `${payload?.product_id || payload?.productId || ''}`.trim();
+    const segments = extractWarehouseVoiceSegments(payload, transcript);
+    const explicitRow = explicitRowKey
+      ? warehouseVoiceOrderRows.find(row => row.rowKey === explicitRowKey || `${row.requestId || ''}_${row.productId || ''}` === explicitRowKey)
+      : null;
+    const shortageKeySet = new Set((dispatchShortageSummary?.issueLines || []).map(line => line.key).filter(Boolean));
+
+    const scoredRows = warehouseVoiceOrderRows.map((row) => {
+      const customerScore = scoreWarehouseVoiceLabels(segments.customerCandidates, getWarehouseVoiceCustomerLabels(row));
+      const productScore = scoreWarehouseVoiceLabels(segments.productCandidates, getWarehouseVoiceProductLabels(row));
+      const shortageKey = [
+        row.customerId || normalizeLookupText(row.customerName || ''),
+        row.productId || normalizeLookupText(row.productName || '')
+      ].join('__');
+      const shortageBoost = shortageKeySet.has(shortageKey) ? 0.08 : 0;
+      const explicitScore = (
+        (explicitRow && explicitRow.rowKey === row.rowKey)
+        || (explicitCustomerId && explicitProductId && row.customerId === explicitCustomerId && row.productId === explicitProductId)
+      ) ? 0.18 : 0;
+      const score = (customerScore * 0.58) + (productScore * 0.42) + explicitScore + shortageBoost;
+      return { row, customerScore, productScore, score };
+    }).sort((a, b) => b.score - a.score);
+
+    const best = scoredRows[0];
+    const runnerUp = scoredRows[1];
+    if (!best) return null;
+
+    const customerLooksSafe = best.customerScore >= 0.58;
+    const productLooksSafe = best.productScore >= 0.54;
+    const gapLooksSafe = !runnerUp || (best.score - runnerUp.score) >= 0.035 || best.score >= 0.9;
+    if (customerLooksSafe && productLooksSafe && gapLooksSafe) return best.row;
+
+    const sameCustomerRows = scoredRows.filter(rowScore => {
+      const sameCustomer = best.row.customerId
+        ? rowScore.row.customerId === best.row.customerId
+        : normalizeWarehouseVoiceText(rowScore.row.customerName) === normalizeWarehouseVoiceText(best.row.customerName);
+      return sameCustomer && rowScore.customerScore >= 0.58;
+    });
+    if (customerLooksSafe && sameCustomerRows.length === 1 && best.productScore >= 0.28) {
+      return best.row;
+    }
+
+    if (explicitRow && best.row.rowKey === explicitRow.rowKey && best.customerScore >= 0.5 && best.productScore >= 0.45) {
+      return explicitRow;
+    }
+
+    return null;
+  };
+
+  const applyVoiceExtraction = (payload = {}, options = {}) => {
+    const shouldReplaceDraft = Boolean(options.replaceDraft);
+    const transcript = `${payload?.transcript || ''}`.trim();
+    const customerKeyword = `${payload?.customer_name || payload?.customerName || ''}`.trim() || transcript;
+    const productKeyword = `${payload?.product_name || payload?.productName || ''}`.trim() || transcript;
+    const combinedText = buildVoicePayloadSearchText(payload, transcript);
+    const customerSearchText = [customerKeyword, combinedText].filter(Boolean).join(' ');
+    const productSearchText = [productKeyword, combinedText].filter(Boolean).join(' ');
+    const customerCandidates = [customerKeyword, transcript].filter(Boolean);
+    const productCandidates = [transcript, productKeyword].filter(Boolean);
+    const bestOrderRowMatch = findBestWarehouseVoiceOrderRow(payload, transcript);
+    const bestOrderCustomer = bestOrderRowMatch
+      ? ((bestOrderRowMatch.customerId ? customerLookup.get(bestOrderRowMatch.customerId) : null) || {
+        id: bestOrderRowMatch.customerId || '',
+        name: bestOrderRowMatch.customerName || '',
+        displayName: bestOrderRowMatch.customerName || '',
+        plainName: getCustomerPlainName({ name: bestOrderRowMatch.customerName || '' })
+      })
+      : null;
+    const orderCustomerMatch = bestOrderCustomer || resolveVoiceCustomerFromOrders(customerSearchText);
+    const customerMatch = orderCustomerMatch || findVoiceEntityMatch(
+      customerCandidates,
+      requestCustomerOptions,
+      customers,
+      (item) => item?.name || '',
+      (item) => [getCustomerPlainName(item), getCustomerDisplayName(item), ...(buildCustomerNameAliases(item) || [])]
+    );
+    const customerOrderRows = getOrderRowsForVoiceCustomer(customerMatch);
+    let matchedOrderRow = bestOrderRowMatch || (customerOrderRows.length
+      ? resolveVoiceProductFromOrderRows(productSearchText, customerOrderRows)
+      : null);
+    if (!matchedOrderRow && customerOrderRows.length === 1) {
+      matchedOrderRow = customerOrderRows[0];
+    }
+
+    const fallbackProductMatch = findVoiceEntityMatch(
+      productCandidates,
+      requestProductOptions,
+      products,
+      (item) => item?.name || '',
+      (item) => [getProductShortName(item), buildLookupInitials(item?.name), item?.barcode, item?.attributes, item?.productAttributes]
+    );
+    const productMatch = (matchedOrderRow?.productId && productLookup.get(matchedOrderRow.productId))
+      || matchedOrderRow?.product
+      || fallbackProductMatch;
+
+    if (!matchedOrderRow && customerOrderRows.length && productMatch) {
+      matchedOrderRow = customerOrderRows.find((row) => row.productId && row.productId === productMatch.id)
+        || customerOrderRows.find((row) => normalizeWarehouseVoiceText(row.productName) === normalizeWarehouseVoiceText(productMatch.name))
+        || null;
+    }
+    const quantityUnit = resolveVoiceQuantityUnit(payload, matchedOrderRow, productMatch, transcript);
+    const weightValue = resolveVoiceWeightValue(payload, transcript);
+    const weightEntries = resolveVoiceWeightEntries(payload, transcript);
+    const pieceCountValue = resolveVoicePieceCountValue(payload, transcript, matchedOrderRow, quantityUnit);
+    const productLabel = productMatch?.name || matchedOrderRow?.productName || '';
+
+    setDispatchDraft(prev => {
+      const baseDraft = shouldReplaceDraft ? createEmptyDispatchDraft() : prev;
+      return {
+        ...baseDraft,
+        transcript: transcript || baseDraft.transcript,
+        customerId: customerMatch?.id || baseDraft.customerId,
+        customerSearch: customerMatch ? getCustomerDisplayName(customerMatch) : baseDraft.customerSearch,
+        productId: productMatch?.id || matchedOrderRow?.productId || baseDraft.productId,
+        productSearch: productLabel || baseDraft.productSearch,
+        pieceCount: pieceCountValue || baseDraft.pieceCount,
+        quantityUnit: pieceCountValue ? quantityUnit : baseDraft.quantityUnit,
+        weightKg: weightValue || baseDraft.weightKg,
+        weightEntries: weightEntries.length > 0 ? weightEntries : baseDraft.weightEntries
+      };
+    });
+
+    if (customerMatch && productLabel && (weightValue || pieceCountValue)) {
+      setVoiceStatus(`Da nhan: ${getCustomerDisplayName(customerMatch) || customerMatch.name} - ${productLabel}${pieceCountValue ? ` - ${pieceCountValue} ${quantityUnit}` : ''}${weightValue ? ` - ${weightValue} kg` : ''}`);
+      setDispatchError('');
+      return;
+    }
+
+    if (transcript) {
+      const missingFields = [
+        !customerMatch ? 'khach hang' : '',
+        !productLabel ? 'loai hang' : '',
+        !weightValue && !pieceCountValue ? 'so luong hoac so kg' : ''
+      ].filter(Boolean);
+      setVoiceStatus(
+        missingFields.length
+          ? `AI da nhan giong noi nhung con thieu ${missingFields.join(', ')}. Ban kiem tra lai hoac nhap tay.`
+          : 'Da nhan noi dung giong noi. Ban vui long kiem tra lai truoc khi luu.'
+      );
+      return;
+    }
+
+    setVoiceStatus('AI chua doc duoc noi dung giong noi. Ban hay kiem tra lai khach hang, loai hang hoac so kg roi nhap tay.');
+  };
+
+  const applyVoiceTranscript = (transcript = '') => {
+    applyVoiceExtraction({ transcript }, { replaceDraft: true });
+  };
+
+  const transcribeRecordedVoice = async (audioBlob) => {
+    setIsVoiceProcessing(true);
+    setVoiceStatus('Dang gui ghi am cho AI doc phieu xuat kho...');
+    try {
+      const prioritizedVoiceCustomers = Array.from(new Map([
+        ...warehouseVoiceOrderCustomers,
+        ...requestCustomerOptions,
+        ...(customers || []).filter(item => !item?.isArchived)
+      ].map(item => [item?.id || item?.name, item])).values()).filter(Boolean);
+      const prioritizedVoiceProducts = Array.from(new Map([
+        ...warehouseVoiceOrderRows.map(row => ({
+          id: row.productId || row.productName,
+          name: row.productName,
+          shortName: row.productShortName,
+          category: row.productCategory,
+          unit: row.productUnit
+        })),
+        ...requestProductOptions,
+        ...(products || []).filter(item => !item?.isArchived)
+      ].map(item => [item?.id || item?.name, item])).values()).filter(Boolean);
+      const shortageKeySet = new Set((dispatchShortageSummary?.issueLines || []).map(line => line.key).filter(Boolean));
+      const prioritizedVoiceOrderRows = [...warehouseVoiceOrderRows].sort((a, b) => {
+        const getRowShortageScore = (row) => {
+          const key = [
+            row.customerId || normalizeLookupText(row.customerName || ''),
+            row.productId || normalizeLookupText(row.productName || '')
+          ].join('__');
+          return shortageKeySet.has(key) ? 0 : 1;
+        };
+        return getRowShortageScore(a) - getRowShortageScore(b);
+      });
+      const parsed = await requestWarehouseDispatchDraftFromGemini(audioBlob, {
+        customers: prioritizedVoiceCustomers.map((item) => item?.name || ''),
+        products: prioritizedVoiceProducts.map((item) => [item?.name, item?.shortName].filter(Boolean).join(' / ')),
+        orderLines: prioritizedVoiceOrderRows.map((row) => [
+          `ROW_KEY=${row.rowKey || ''}`,
+          `CUSTOMER_ID=${row.customerId || ''}`,
+          `PRODUCT_ID=${row.productId || ''}`,
+          row.customerName || '',
+          [row.productName, row.productShortName ? `(${row.productShortName})` : ''].filter(Boolean).join(' '),
+          row.item?.size ? `size ${row.item.size}` : '',
+          row.item?.quantity ? `${formatNumber(parseLooseQuantityValue(row.item.quantity))} ${row.item.quantityUnit || row.productUnit || ''}`.trim() : ''
+        ].filter(Boolean).join(' - '))
+      });
+      applyVoiceExtraction(parsed, { replaceDraft: true });
+    } catch (error) {
+      setVoiceStatus(error?.message || 'Khong the doc ghi am. Ban hay thu lai hoac nhap tay.');
+    } finally {
+      setIsVoiceProcessing(false);
+    }
+  };
+
+  const startRecordedVoiceCapture = async () => {
+    if (!GEMINI_API_KEY) {
+      setVoiceStatus('App chua co khoa AI de doc ghi am tren thiet bi nay. Ban hay nhap tay.');
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceStatus('Thiet bi nay chua ho tro ghi am truc tiep. Ban hay nhap tay.');
+      return;
+    }
+
+    const customer = { name: '' };
+    const product = { name: '' };
+    const pieceCount = 0;
+    const weightKg = 0;
+    cleanupRecordedVoiceResources();
+    setDispatchStatus(`Đã thêm phiếu xuất cho ${customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} con` : ''} • ${formatNumber(weightKg)} kg.`);
+    setDispatchError('');
+    setDispatchStatus('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedVoiceRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      voiceChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) voiceChunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        cleanupRecordedVoiceResources();
+        setIsVoiceListening(false);
+        setIsVoiceProcessing(false);
+        setVoiceStatus('Khong the ghi am. Ban hay thu lai hoac nhap tay.');
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        cleanupRecordedVoiceResources();
+        if (!audioBlob.size) {
+          setVoiceStatus('Khong ghi nhan duoc am thanh. Ban hay thu noi gan micro hon.');
+          return;
+        }
+        await transcribeRecordedVoice(audioBlob);
+      };
+
+      recorder.start();
+      setIsVoiceListening(true);
+      setVoiceStatus('Dang ghi am... Hay doc ten khach hang, loai hang va so kg roi bam Dung nghe.');
+    } catch (error) {
+      cleanupRecordedVoiceResources();
+      setIsVoiceListening(false);
+      const rawMessage = `${error?.message || ''}`.toLowerCase();
+      if (rawMessage.includes('notallowed') || rawMessage.includes('permission') || rawMessage.includes('denied')) {
+        setVoiceStatus('Ban chua cap quyen micro cho trinh duyet hoac app.');
+        return;
+      }
+      setVoiceStatus('Khong the bat micro de ghi am. Ban hay thu lai hoac nhap tay.');
+    }
+  };
+
+  const handleStartVoice = async () => {
+    if (isVoiceProcessing) return;
+    setVoiceStatus('Đang xin quyền micro...');
+    const microphoneAccess = await ensureMicrophoneAccess();
+    if (!microphoneAccess.granted) {
+      setVoiceStatus(microphoneAccess.message || 'Ung dung chua duoc cap quyen micro.');
+      return;
+    }
+    const Recognition = getRecognitionConstructor();
+    if (!Recognition) {
+      await startRecordedVoiceCapture();
+      return;
+    }
+
+    stopVoiceCapture();
+    setVoiceStatus('Dang nghe giong noi...');
+    setDispatchError('');
+
+    const recognition = new Recognition();
+    recognition.lang = 'vi-VN';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+    setIsVoiceListening(true);
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results || []).map((result) => result?.[0]?.transcript || '').join(' ').trim();
+      if (transcript) applyVoiceTranscript(transcript);
+    };
+
+    recognition.onerror = async (event) => {
+      setIsVoiceListening(false);
+      recognitionRef.current = null;
+      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network'].includes(event?.error)) {
+        await startRecordedVoiceCapture();
+        return;
+      }
+      setVoiceStatus(event?.error === 'not-allowed'
+        ? 'Ban chua cap quyen micro cho trinh duyet hoac app.'
+        : 'Khong the nhan giong noi. Ban hay thu lai hoac nhap tay.');
+    };
+
+    recognition.onend = () => {
+      setIsVoiceListening(false);
+      recognitionRef.current = null;
+    };
+
+    try {
+      recognition.start();
+    } catch (error) {
+      recognitionRef.current = null;
+      setIsVoiceListening(false);
+      await startRecordedVoiceCapture();
+    }
+  };
+
+  const handleDispatchCustomerChange = (customerId) => {
+    const selectedCustomer = customerLookup.get(customerId);
+    const customerOrderProducts = selectedCustomer
+      ? Array.from(new Map(getOrderRowsForVoiceCustomer(selectedCustomer)
+        .map(row => row.productId ? productLookup.get(row.productId) || row.product : null)
+        .filter(Boolean)
+        .map(product => [product.id, product])).values())
+      : [];
+    const autoProduct = customerOrderProducts.length === 1 ? customerOrderProducts[0] : null;
+    const customer = { name: '' };
+    const product = { name: '' };
+    const pieceCount = 0;
+    const weightKg = 0;
+    setDispatchDraft(prev => ({
+      ...prev,
+      customerId,
+      customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
+      productId: prev.productId || autoProduct?.id || '',
+      productSearch: prev.productSearch || autoProduct?.name || ''
+    }));
+    setDispatchStatus(`Đã thêm phiếu xuất cho ${customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} con` : ''} • ${formatNumber(weightKg)} kg.`);
+    setDispatchStatus('');
+    setDispatchError('');
+    setDispatchPickerOpen('');
+  };
+
+  const handleDispatchProductChange = (productId) => {
+    const selectedProduct = productLookup.get(productId);
+    setDispatchDraft(prev => ({
+      ...prev,
+      productId,
+      productSearch: selectedProduct?.name || ''
+    }));
+    setDispatchError('');
+    setDispatchPickerOpen('');
+  };
+
+  const resetInlineDispatchEdit = () => {
+    setInlineEditingDispatchId('');
+    setInlineEditingDispatchDraft({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', note: '' });
+  };
+
+  const startInlineDispatchEdit = (row) => {
+    if (!row || !canEdit) return;
+    setInlineEditingDispatchId(row.id);
+    setInlineEditingDispatchDraft({
+      customerId: row.customerId || '',
+      customerSearch: row.customerName || '',
+      productId: row.productId || '',
+      productSearch: row.productName || '',
+      pieceCount: row.pieceCount ?? '',
+      quantityUnit: row.quantityUnit || 'Con',
+      weightKg: row.weightKg ?? '',
+      note: row.note || ''
+    });
+    setDispatchStatus('');
+    setDispatchError('');
+  };
+
+  const saveInlineDispatchRow = async (row) => {
+    if (!row?.id || !employee?.id || !canEdit) return;
+    const customer = customerLookup.get(inlineEditingDispatchDraft.customerId);
+    const product = productLookup.get(inlineEditingDispatchDraft.productId);
+    const weightKg = parseFloat(`${inlineEditingDispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
+    const pieceCount = parseLooseQuantityValue(inlineEditingDispatchDraft.pieceCount);
+    const quantityUnit = normalizeDispatchQuantityUnit(inlineEditingDispatchDraft.quantityUnit || 'Con');
+
+    if (!customer || !product || (weightKg <= 0 && pieceCount <= 0)) {
+      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le truoc khi luu.');
+      return;
+    }
+
+    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id);
+    const isOutsideOrderRequest = !matchedOrderRow;
+    const baseSourceType = `${row.sourceType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
+    if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
+      setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
+      return;
+    }
+
+    await onEditWarehouseDispatch(row.id, {
+      customerId: customer.id,
+      customerNameSnapshot: getCustomerDisplayName(customer) || customer.name,
+      productId: product.id,
+      productNameSnapshot: product.name,
+      weightKg,
+      pieceCount,
+      quantity: pieceCount,
+      quantityCount: pieceCount,
+      quantityUnit: pieceCount > 0 ? quantityUnit : '',
+      note: capitalizeFirst(inlineEditingDispatchDraft.note || '').trim(),
+      transcript: row.transcript || '',
+      sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow),
+      sourceOrderRequestDate: row.sourceOrderRequestDate || selectedOrderRequestDateKey,
+      sourceOrderRequestId: matchedOrderRow?.requestId || '',
+      sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
+      isOutsideOrderRequest,
+      createdWithoutOrderRequest: isOutsideOrderRequest,
+      sourceOrderRequestMissing: isOutsideOrderRequest,
+      date: row.date || workingDate
+    }, employee.id);
+
+    setDispatchStatus(`Da cap nhat dong xuat kho cua ${customer.name}.`);
+    setDispatchError('');
+    resetInlineDispatchEdit();
+  };
+
+  const deleteInlineDispatchRow = async (row) => {
+    if (!row?.id || !canDelete) return;
+    const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
+    if (!window.confirm(`Xoa dong xuat kho cua ${customerName}?`)) return;
+    await onDeleteWarehouseDispatch(row.id);
+    setDispatchStatus(`Da xoa dong xuat kho cua ${customerName}.`);
+    setDispatchError('');
+    if (inlineEditingDispatchId === row.id) resetInlineDispatchEdit();
+  };
+
+  const deleteHistoryDispatchRow = async (row) => {
+    if (!row?.id || !canDeleteHistoryDispatch) return;
+    const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
+    if (!window.confirm(`Xoa phieu xuat kho trong lich su cua ${customerName}?`)) return;
+    await onDeleteWarehouseDispatch(row.id);
+    setSelectedHistoryDispatchGroup((currentGroup) => {
+      if (!currentGroup?.items?.length) return currentGroup;
+      const nextItems = currentGroup.items.filter(item => item.id !== row.id);
+      if (!nextItems.length) return null;
+      return {
+        ...currentGroup,
+        items: nextItems,
+        totalLines: nextItems.length,
+        totalCustomers: new Set(nextItems.map(item => item.customerId || item.customerNameSnapshot).filter(Boolean)).size,
+        totalWeight: nextItems.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0)
+      };
+    });
+    setDispatchStatus(`Da xoa phieu xuat kho trong lich su cua ${customerName}.`);
+    setDispatchError('');
+  };
+
+  const openHistoryDispatchGroup = (group) => {
+    if (!group?.dateKey) return;
+    resetInlineDispatchEdit();
+    setDispatchPickerOpen('');
+    setWorkingDate(group.dateKey);
+    setDispatchError('');
+    setDispatchStatus(
+      canEdit
+        ? `Đang xem phiếu xuất kho ngày ${formatDateLabel(group.dateKey)}. Bấm vào từng dòng để chỉnh sửa khi cần.`
+        : `Đang xem phiếu xuất kho ngày ${formatDateLabel(group.dateKey)}.`
+    );
+    window.setTimeout(() => {
+      dispatchListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  };
+
+  const handleSubmitDispatch = async (e) => {
+    e.preventDefault();
+    if (!canCreate || !employee?.id) return;
+    const customer = customerLookup.get(dispatchDraft.customerId);
+    const product = productLookup.get(dispatchDraft.productId);
+    const weightKg = parseFloat(`${dispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
+    const pieceCount = parseFloat(`${dispatchDraft.pieceCount || ''}`.replace(',', '.')) || 0;
+    const quantityUnit = normalizeDispatchQuantityUnit(dispatchDraft.quantityUnit || 'Con');
+
+    if (!customer || !product || (weightKg <= 0 && pieceCount <= 0)) {
+      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le.');
+      return;
+    }
+
+    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id);
+    const isOutsideOrderRequest = !matchedOrderRow;
+    const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
+    if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
+      setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
+      return;
+    }
+
+    await onAddWarehouseDispatch(employee.id, {
+      date: workingDate,
+      customerId: customer.id,
+      customerNameSnapshot: getCustomerDisplayName(customer) || customer.name,
+      productId: product.id,
+      productNameSnapshot: product.name,
+      weightKg,
+      pieceCount,
+      quantity: pieceCount,
+      quantityCount: pieceCount,
+      quantityUnit: pieceCount > 0 ? quantityUnit : '',
+      weightEntries: normalizeWeightEntryValues(dispatchDraft.weightEntries || []),
+      note: capitalizeFirst(dispatchDraft.note || '').trim(),
+      transcript: dispatchDraft.transcript || '',
+      sourceOrderRequestDate: selectedOrderRequestDateKey,
+      sourceOrderRequestId: matchedOrderRow?.requestId || '',
+      sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
+      isOutsideOrderRequest,
+      createdWithoutOrderRequest: isOutsideOrderRequest,
+      sourceOrderRequestMissing: isOutsideOrderRequest,
+      sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow)
+    });
+
+    setDispatchStatus(`Da them phieu xuat cho ${customer.name} • ${product.name} • ${formatNumber(weightKg)} kg.`);
+    setDispatchStatus(`Đã thêm phiếu xuất cho ${getCustomerDisplayName(customer) || customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} ${quantityUnit}` : ''}${weightKg > 0 ? ` • ${formatNumber(weightKg)} kg` : ''}.`);
+    setDispatchError('');
+    setDispatchPickerOpen('');
+    setDispatchDraft(createEmptyDispatchDraft());
+  };
+
+  const buildDispatchSheetFilename = (targetDate = workingDate) => `phieu-xuat-kho-${targetDate}`;
+
+  const renderDispatchSheetCanvas = async (sourceRows = mergedDispatchRows, targetDate = workingDate) => {
+    if (!sourceRows.length) throw new Error('Chưa có dữ liệu xuất kho để chia sẻ.');
+    const rows = buildDispatchPreviewRows(sourceRows);
+    const canvasWidth = 1080;
+    const pagePadding = 36;
+    const tableX = pagePadding;
+    const tableY = 122;
+    const tableWidth = canvasWidth - pagePadding * 2;
+    const headerHeight = 58;
+    const rowHeight = 54;
+    const tableHeight = headerHeight + (rows.length * rowHeight);
+    const canvasHeight = tableY + tableHeight + 40;
+    const columnWidths = [
+      Math.round(tableWidth * 0.32),
+      Math.round(tableWidth * 0.30),
+      Math.round(tableWidth * 0.18),
+      tableWidth - Math.round(tableWidth * 0.32) - Math.round(tableWidth * 0.30) - Math.round(tableWidth * 0.18)
+    ];
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Khong the dung phieu xuat kho de chia se.');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.fillStyle = '#0f172a';
+    ctx.textAlign = 'center';
+    ctx.font = '900 32px Arial';
+    ctx.fillText('PHIEU XUAT KHO', canvasWidth / 2, 58);
+    ctx.font = '600 18px Arial';
+    ctx.fillStyle = '#475569';
+    ctx.fillText(`${currentCompany?.name || 'Công ty'} • ${formatDateLabel(targetDate)}`, canvasWidth / 2, 90);
+
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(tableX, tableY, tableWidth, tableHeight);
+
+    let runningX = tableX;
+    columnWidths.forEach((columnWidth, index) => {
+      if (index > 0) {
+        ctx.beginPath();
+        ctx.moveTo(runningX, tableY);
+        ctx.lineTo(runningX, tableY + tableHeight);
+        ctx.stroke();
+      }
+      runningX += columnWidth;
+    });
+
+    ctx.beginPath();
+    ctx.moveTo(tableX, tableY + headerHeight);
+    ctx.lineTo(tableX + tableWidth, tableY + headerHeight);
+    ctx.stroke();
+
+    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+      const y = tableY + headerHeight + rowIndex * rowHeight;
+      ctx.beginPath();
+      ctx.moveTo(tableX, y);
+      ctx.lineTo(tableX + tableWidth, y);
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    const columnTitles = ['Tên KH', 'Loại hàng', 'Số lượng', 'Số kg'];
+    ctx.fillStyle = '#0f172a';
+    ctx.font = '700 24px Arial';
+    let titleX = tableX;
+    columnTitles.forEach((title, index) => {
+      const width = columnWidths[index];
+      ctx.fillText(title, titleX + width / 2, tableY + 38);
+      titleX += width;
+    });
+
+    rows.forEach((row, rowIndex) => {
+      const rowTop = tableY + headerHeight + rowIndex * rowHeight;
+      const centerY = rowTop + 34;
+      const quantityLabel = row.pieceCount > 0 ? `${formatNumber(row.pieceCount)} ${row.quantityUnit || 'Con'}` : '';
+      const weightLabel = row.weightKg ? `${formatNumber(row.weightKg)}kg` : '';
+      const values = [row.customerName || '', row.productShortName || getCompactProductName(null, row.productName || ''), quantityLabel, weightLabel];
+      let valueX = tableX;
+      values.forEach((value, index) => {
+        const width = columnWidths[index];
+        ctx.fillStyle = '#0f172a';
+        ctx.font = value ? '600 22px Arial' : '400 22px Arial';
+        ctx.fillText(value, valueX + width / 2, centerY);
+        valueX += width;
+      });
+    });
+
+    return canvas;
+  };
+
+  const handleShareDispatchSheet = async (sourceRows = mergedDispatchRows, targetDate = workingDate) => {
+    if (!canShare) {
+      setDispatchStatus('Bạn chưa được cấp quyền chia sẻ phiếu xuất kho.');
+      return;
+    }
+    if (!sourceRows.length) {
+      setDispatchStatus('Chưa có phiếu xuất kho để chia sẻ.');
+      return;
+    }
+    setIsDispatchExporting(true);
+    try {
+      const canvas = await renderDispatchSheetCanvas(sourceRows, targetDate);
+      const blob = await canvasToBlob(canvas, 'image/png');
+      const result = await shareBlobFile({
+        filename: `${buildDispatchSheetFilename(targetDate)}.png`,
+        blob,
+        title: 'Phieu xuat kho',
+        text: 'Phieu xuat kho trong ngay san sang de chia se.',
+        dialogTitle: 'Chia se phieu xuat kho'
+      });
+      if (result.status === 'shared') setDispatchStatus('Da mo bang chia se phieu xuat kho.');
+      else if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
+      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
+      else setDispatchStatus('Thiet bi nay chua ho tro chia se truc tiep. Ban hay dung nut tai xuong.');
+    } catch (error) {
+      setDispatchStatus(error?.message || 'Khong the chia se phieu xuat kho.');
+    } finally {
+      setIsDispatchExporting(false);
+    }
+  };
+
+  const handleDownloadDispatchSheet = async (sourceRows = mergedDispatchRows, targetDate = workingDate) => {
+    if (!sourceRows.length) {
+      setDispatchStatus('Chua co phieu xuat kho trong ngay de tai xuong.');
+      return;
+    }
+    setIsDispatchExporting(true);
+    try {
+      const canvas = await renderDispatchSheetCanvas(sourceRows, targetDate);
+      const blob = await canvasToBlob(canvas, 'image/png');
+      const result = await saveBlobFile(`${buildDispatchSheetFilename(targetDate)}.png`, blob);
+      if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
+      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
+      else setDispatchStatus('Khong the tai phieu xuat kho tren thiet bi nay.');
+    } catch (error) {
+      setDispatchStatus(error?.message || 'Khong the tai phieu xuat kho.');
+    } finally {
+      setIsDispatchExporting(false);
+    }
+  };
+
+  if (!canAccess) {
+    return <div className="p-4 text-center text-sm text-gray-500">Ban khong co quyen xem phieu xuat kho.</div>;
+  }
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      {dispatchStatus && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{dispatchStatus}</div>}
+      {voiceStatus && <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-700">{voiceStatus}</div>}
+
+      {shouldShowDispatchShortage && (
+        <div className={`order-2 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+          <div className="flex min-w-0 items-center gap-2 rounded-2xl bg-white/80 px-3 py-2 shadow-sm">
+              <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${dispatchShortageSummary.issueLines.length > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                {dispatchShortageSummary.issueLines.length > 0 ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
+              </div>
+              <p className={`min-w-0 flex-1 truncate text-[clamp(11px,3.2vw,14px)] font-black uppercase tracking-[0.06em] ${dispatchShortageSummary.issueLines.length > 0 ? 'text-amber-800' : 'text-emerald-800'}`}>
+                Đơn Thiếu
+              </p>
+              <span className={`shrink-0 rounded-full px-2.5 py-1 text-[clamp(10px,2.8vw,12px)] font-black ${dispatchShortageSummary.issueLines.length > 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                SL: {dispatchShortageCustomerGroups.length}
+              </span>
+              <label className="relative inline-flex shrink-0 items-center">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[clamp(10px,2.8vw,12px)] font-black text-slate-700">
+                  {formatCompactDateLabel(selectedOrderRequestDateKey)}
+                </span>
+                <input
+                  type="date"
+                  value={selectedOrderRequestDateKey}
+                  onChange={(event) => {
+                    setSelectedOrderRequestDate(event.target.value || getTodayString());
+                    setSelectedShortageLine(null);
+                    setShowAllDispatchShortageCustomers(false);
+                  }}
+                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  aria-label="Chọn ngày đơn đặt cần đóng"
+                />
+              </label>
+          </div>
+
+          {dispatchShortageSummary.issueLines.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {(showAllDispatchShortageCustomers ? dispatchShortageCustomerGroups : dispatchShortageCustomerGroups.slice(0, 5)).map(group => {
+                return (
+                <button
+                  key={group.key}
+                  type="button"
+                  onClick={() => setSelectedShortageLine(group)}
+                  className="w-full rounded-2xl border border-amber-200 bg-white px-3 py-2 text-left transition hover:border-amber-300 hover:bg-amber-50 active:scale-[0.99]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-black text-slate-900">{group.customerName}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-black text-amber-700">
+                        <span>Còn thiếu:</span>
+                        {group.productLabels.map(label => (
+                          <span key={`${group.key}_${label}`} className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-800">{label}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-red-50 px-2.5 py-1 text-[10px] font-black text-red-600">
+                      {group.totalMissingLines}
+                    </span>
+                  </div>
+                </button>
+                );
+              })}
+              {dispatchShortageCustomerGroups.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllDispatchShortageCustomers(prev => !prev)}
+                  className="w-full rounded-2xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-black text-amber-700 transition hover:bg-amber-50 active:scale-[0.99]"
+                >
+                  {showAllDispatchShortageCustomers ? 'Thu gọn danh sách' : `Xem thêm ${dispatchShortageCustomerGroups.length - 5} khách`}
+                </button>
+              )}
+            </div>
+          ) : dispatchShortageSummary.totalRequiredLines > 0 ? (
+            <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-emerald-700">
+              Tốt rồi: các khách và loại hàng trong đơn đặt ngày {formatCompactDateLabel(selectedOrderRequestDateKey)} đều đã có phiếu xuất kho tương ứng.
+            </div>
+          ) : (
+            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs font-bold text-slate-500">
+              Chưa có đơn đặt nào cho ngày {formatCompactDateLabel(selectedOrderRequestDateKey)}.
+            </div>
+          )}
+        </div>
+      )}
+
+      {selectedShortageLine && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="max-h-[86vh] w-full max-w-md overflow-y-auto rounded-3xl border-2 border-red-300 bg-orange-50 p-5 shadow-2xl animate-in zoom-in-95">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-amber-700">Đơn còn thiếu</p>
+                <h3 className="mt-1 text-lg font-black text-slate-900">{selectedShortageLine.customerName}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedShortageLine(null)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                aria-label="Đóng chi tiết đơn đặt"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-red-200 bg-white shadow-sm">
+              <div className="grid grid-cols-[1.2fr_0.8fr_0.8fr] bg-orange-100 text-center text-[11px] font-black uppercase tracking-[0.08em] text-amber-900">
+                <div className="border-r border-red-200 px-2 py-3">Loại</div>
+                <div className="border-r border-red-200 px-2 py-3">Số lượng</div>
+                <div className="px-2 py-3">Size</div>
+              </div>
+              {selectedShortageTableRows.length > 0 ? selectedShortageTableRows.map((row) => (
+                <div key={row.id} className="grid grid-cols-[1.2fr_0.8fr_0.8fr] items-center text-center text-sm font-bold text-slate-900">
+                  <div className="min-w-0 border-r border-t border-red-100 px-2 py-3 break-words">{row.productLabel}</div>
+                  <div className="border-r border-t border-red-100 px-2 py-3 text-emerald-700">{row.quantityLabel || '-'}</div>
+                  <div className="border-t border-red-100 px-2 py-3">{row.sizeLabel || '-'}</div>
+                </div>
+              )) : (
+                <div className="px-3 py-4 text-center text-sm font-bold text-slate-500">Chưa có dữ liệu đơn đặt.</div>
+              )}
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {canCreate && (
+        <div className="order-1 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <div className="mb-4 flex flex-col items-center gap-3 text-center">
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Nhập nhanh bằng giọng nói</p>
+            <button
+              type="button"
+              onClick={isVoiceListening ? stopVoiceCapture : handleStartVoice}
+              disabled={isVoiceProcessing}
+              className={`relative inline-flex min-w-[210px] items-center justify-center gap-3 rounded-[28px] px-8 py-4 text-base font-black text-white transition-all disabled:cursor-not-allowed disabled:opacity-60 ${isVoiceListening ? 'bg-gradient-to-r from-rose-500 to-red-600 shadow-[0_12px_0_#991b1b,0_22px_34px_rgba(225,29,72,0.32)] active:translate-y-1 active:shadow-[0_7px_0_#991b1b,0_16px_24px_rgba(225,29,72,0.26)]' : 'bg-gradient-to-r from-sky-500 via-cyan-500 to-emerald-500 shadow-[0_12px_0_#047857,0_22px_34px_rgba(14,165,233,0.28)] active:translate-y-1 active:shadow-[0_7px_0_#047857,0_16px_24px_rgba(14,165,233,0.22)]'}`}
+            >
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white/20 shadow-inner">
+                {isVoiceProcessing ? <Loader2 size={22} className="animate-spin" /> : <Mic size={22} className={isVoiceListening ? 'animate-pulse' : ''} />}
+              </span>
+              {isVoiceProcessing ? 'Đang xử lý...' : isVoiceListening ? 'Dừng nghe' : 'Ghi âm'}
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmitDispatch} className="space-y-3">
+            <textarea
+              value={dispatchDraft.transcript}
+              onChange={(e) => setDispatchDraft(prev => ({ ...prev, transcript: e.target.value }))}
+              className="w-full min-h-[82px] border border-slate-200 rounded-2xl p-3 text-sm outline-none focus:ring-2 focus:ring-sky-500"
+              placeholder="Nội dung ghi âm sẽ hiện ở đây"
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="relative">
+                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
+                <input
+                  ref={dispatchCustomerSearchInputRef}
+                  type="text"
+                  value={dispatchDraft.customerSearch || ''}
+                  onFocus={(event) => {
+                    setDispatchPickerOpen('customer');
+                    window.setTimeout(() => event.target.select(), 0);
+                  }}
+                  onClick={() => setDispatchPickerOpen('customer')}
+                  onChange={(e) => setDispatchDraft(prev => ({
+                    ...prev,
+                    customerId: '',
+                    customerSearch: capitalizeFirstPreservingSpacing(e.target.value)
+                  }))}
+                  className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-10 pr-9 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500"
+                  placeholder="Tên KH"
+                  aria-label="Tìm tên khách hàng"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDispatchPickerOpen(prev => prev === 'customer' ? '' : 'customer');
+                    window.setTimeout(() => dispatchCustomerSearchInputRef.current?.focus(), 0);
+                  }}
+                  className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full p-1 text-gray-400"
+                  aria-label="Mở danh sách khách hàng"
+                >
+                  {dispatchPickerOpen === 'customer' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
+                {dispatchPickerOpen === 'customer' && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
+                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
+                      {filteredDispatchCustomers.map(customer => (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => handleDispatchCustomerChange(customer.id)}
+                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.customerId === customer.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
+                        >
+                          <p className="text-sm font-semibold text-slate-900">{getCustomerDisplayName(customer) || customer.name}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">{customer.phone || 'Chua co so dien thoai'}{customer.address ? ` • ${customer.address}` : ''}</p>
+                        </button>
+                      ))}
+                      {dispatchCustomerSearchKeyword && filteredDispatchCustomers.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="relative">
+                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
+                <input
+                  ref={dispatchProductSearchInputRef}
+                  type="text"
+                  value={dispatchDraft.productSearch || ''}
+                  onFocus={(event) => {
+                    setDispatchPickerOpen('product');
+                    window.setTimeout(() => event.target.select(), 0);
+                  }}
+                  onClick={() => setDispatchPickerOpen('product')}
+                  onChange={(e) => setDispatchDraft(prev => ({
+                    ...prev,
+                    productId: '',
+                    productSearch: capitalizeFirstPreservingSpacing(e.target.value)
+                  }))}
+                  className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-10 pr-9 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500"
+                  placeholder="Loại Hàng"
+                  aria-label="Tìm loại hàng"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDispatchPickerOpen(prev => prev === 'product' ? '' : 'product');
+                    window.setTimeout(() => dispatchProductSearchInputRef.current?.focus(), 0);
+                  }}
+                  className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full p-1 text-gray-400"
+                  aria-label="Mở danh sách loại hàng"
+                >
+                  {dispatchPickerOpen === 'product' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
+                {dispatchPickerOpen === 'product' && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
+                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
+                      {filteredDispatchProducts.map(product => (
+                        <button
+                          key={product.id}
+                          type="button"
+                          onClick={() => handleDispatchProductChange(product.id)}
+                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.productId === product.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
+                        >
+                          <p className="text-sm font-semibold text-slate-900">{product.name}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">{product.category || 'Chua co nhom'}{product.unit ? ` • ${product.unit}` : ''}</p>
+                        </button>
+                      ))}
+                      {dispatchProductSearchKeyword && filteredDispatchProducts.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-slate-500">Không tìm thấy loại hàng phù hợp.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={dispatchDraft.pieceCount}
+                onChange={(e) => setDispatchDraft(prev => ({ ...prev, pieceCount: e.target.value }))}
+                className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="Số lượng"
+              />
+              <select
+                value={dispatchDraft.quantityUnit || 'Con'}
+                onChange={(e) => setDispatchDraft(prev => ({ ...prev, quantityUnit: normalizeDispatchQuantityUnit(e.target.value) }))}
+                className="w-full min-w-0 rounded-xl border border-gray-200 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                aria-label="Đơn vị xuất kho"
+              >
+                {dispatchQuantityUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+              </select>
+              <button
+                type="button"
+                onClick={openWeightEntriesEditor}
+                className="w-full rounded-xl border border-gray-200 bg-white p-3 text-left text-sm font-semibold text-slate-900 outline-none transition hover:border-emerald-200 hover:bg-emerald-50 focus:ring-2 focus:ring-emerald-500"
+                aria-label="Nhập các lần cân kg"
+              >
+                <span className={dispatchDraft.weightKg ? 'text-slate-900' : 'text-gray-400'}>
+                  {dispatchDraft.weightKg ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.weightKg))} kg` : 'Số kg'}
+                </span>
+              </button>
+            </div>
+
+            {dispatchError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchError}</div>}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={resetDispatchVoiceDraft}
+                className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700"
+              >
+                Làm mới
+              </button>
+              <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu và thêm mới</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showWeightEntriesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl animate-in zoom-in-95">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Số kg</p>
+                <h3 className="mt-1 text-lg font-black text-slate-900">Nhập các lần cân</h3>
+                <p className="mt-1 text-xs font-semibold text-slate-500">Ví dụ: 30, 40, 50 kg. App sẽ tự cộng tổng.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWeightEntriesModal(false)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500"
+                aria-label="Đóng nhập kg"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-5 gap-2">
+              {weightEntriesDraft.map((entry, index) => (
+                <input
+                  key={`weight_entry_${index}`}
+                  ref={(node) => { weightEntryInputRefs.current[index] = node; }}
+                  type="text"
+                  inputMode="decimal"
+                  pattern="[0-9]*[.,]?[0-9]*"
+                  enterKeyHint={(index + 1) < weightEntriesDraft.length ? 'next' : 'done'}
+                  value={entry}
+                  onChange={(event) => handleWeightEntryDraftChange(index, event.target.value)}
+                  onKeyDown={(event) => handleWeightEntryKeyDown(event, index)}
+                  onFocus={(event) => event.target.select()}
+                  className="weight-entry-input h-12 min-w-0 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-2 text-center text-lg font-medium tabular-nums tracking-tight text-slate-950 antialiased outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500"
+                  placeholder=""
+                  autoFocus={index === 0}
+                  autoComplete="off"
+                  aria-label={`Lần cân ${index + 1}`}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
+              Tổng: <span className="text-lg font-black text-emerald-700">{formatNumber(getWeightEntryTotal(weightEntriesDraft))} kg</span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setShowWeightEntriesModal(false)}
+                className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={saveWeightEntries}
+                className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white"
+              >
+                Cập nhật
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {todayDispatchRows.length > 0 ? (
+        <div ref={dispatchListRef} className="order-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-600">Xuất kho trong ngày</p>
+                <label className="relative inline-flex shrink-0 items-center rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700 shadow-sm">
+                  {formatCompactDateLabel(workingDate)}
+                  <input
+                    type="date"
+                    value={workingDate}
+                    onChange={(event) => setWorkingDate(event.target.value || getTodayString())}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    aria-label="Chọn ngày xuất kho"
+                  />
+                </label>
+              </div>
+              <p className="mt-2 text-xs font-bold text-slate-500">
+                Tổng {dispatchSummary.totalCustomers} khách • {dispatchSummary.totalLines} đơn • {formatNumber(dispatchSummary.totalWeight)} kg
+              </p>
+            </div>
+            {canShare && (
+            <div className="shrink-0 flex flex-col gap-2">
+              <button type="button" onClick={() => handleShareDispatchSheet()} disabled={isDispatchExporting} className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60">
+                <Send size={14} />
+                {isDispatchExporting ? 'Dang chuan bi...' : 'Chia se'}
+              </button>
+            </div>
+            )}
+          </div>
+
+          <div className="hidden">
+            <div className="flex items-center gap-2 rounded-2xl border border-white/80 bg-white px-3 py-2 shadow-sm">
+              <Search size={17} className="shrink-0 text-emerald-600" />
+              <input
+                type="search"
+                value={dispatchListSearch}
+                onChange={(event) => setDispatchListSearch(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+                placeholder="Tìm nhanh tên khách, sản phẩm, viết tắt SP..."
+                aria-label="Tìm nhanh phiếu xuất kho"
+              />
+              {dispatchListSearch && (
+                <button
+                  type="button"
+                  onClick={() => setDispatchListSearch('')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                  aria-label="Xóa tìm kiếm phiếu xuất"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-2xl border-2 border-slate-800">
+            <table className="w-full table-fixed border-collapse text-center text-[clamp(11px,2.8vw,13px)] text-slate-900">
+              <colgroup>
+                <col className="w-[34%]" />
+                <col className="w-[28%]" />
+                <col className="w-[20%]" />
+                <col className="w-[18%]" />
+              </colgroup>
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="border border-slate-800 px-1.5 py-2 font-black leading-tight">Tên KH</th>
+                  <th className="border border-slate-800 px-1.5 py-2 font-black leading-tight">Loại</th>
+                  <th className="border border-slate-800 px-1.5 py-2 font-black leading-tight">Số lượng</th>
+                  <th className="border border-slate-800 px-1.5 py-2 font-black leading-tight">Kg</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEditableDispatchRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="border border-slate-700 px-3 py-5 text-center text-sm font-bold text-slate-500">
+                      Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.
+                    </td>
+                  </tr>
+                ) : filteredEditableDispatchRows.map(row => {
+                  const isEditingRow = inlineEditingDispatchId === row.id;
+                  return (
+                    <tr
+                      key={row.id}
+                      onClick={() => {
+                        if (!isEditingRow && canEdit) startInlineDispatchEdit(row);
+                      }}
+                      className={`min-h-[56px] transition ${isEditingRow ? 'bg-amber-50/70' : canEdit ? 'cursor-pointer hover:bg-emerald-50/70 active:bg-emerald-100/70' : ''}`}
+                    >
+                      <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                        {isEditingRow ? (
+                          <select
+                            value={inlineEditingDispatchDraft.customerId}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(e) => {
+                              const selectedCustomer = customerLookup.get(e.target.value);
+                              setInlineEditingDispatchDraft(prev => ({
+                                ...prev,
+                                customerId: e.target.value,
+                                customerSearch: selectedCustomer?.name || prev.customerSearch
+                              }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          >
+                            <option value="">Chon khach hang</option>
+                            {requestCustomerOptions.map(customer => (
+                              <option key={customer.id} value={customer.id}>{customer.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="font-semibold">{row.customerName || ''}</p>
+                        )}
+                      </td>
+                      <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                        {isEditingRow ? (
+                          <select
+                            value={inlineEditingDispatchDraft.productId}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(e) => {
+                              const selectedProduct = productLookup.get(e.target.value);
+                              setInlineEditingDispatchDraft(prev => ({
+                                ...prev,
+                                productId: e.target.value,
+                                productSearch: selectedProduct?.name || prev.productSearch
+                              }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          >
+                            <option value="">Chon loai hang</option>
+                            {requestProductOptions.map(product => (
+                              <option key={product.id} value={product.id}>{product.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="text-center">
+                            <p className="font-bold tracking-tight">{row.productShortName || getCompactProductName(null, row.productName || '')}</p>
+                            {row.note && <p className="mt-0.5 text-[10px] font-medium leading-tight text-slate-500">{row.note}</p>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                        {isEditingRow ? (
+                          <div className="grid grid-cols-1 gap-1">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={inlineEditingDispatchDraft.pieceCount}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(e) => {
+                                setInlineEditingDispatchDraft(prev => ({ ...prev, pieceCount: e.target.value }));
+                                setDispatchError('');
+                              }}
+                              className="w-full rounded-lg border border-amber-200 bg-white px-1.5 py-1.5 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                              placeholder="SL"
+                            />
+                            <select
+                              value={inlineEditingDispatchDraft.quantityUnit || 'Con'}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(e) => {
+                                setInlineEditingDispatchDraft(prev => ({ ...prev, quantityUnit: normalizeDispatchQuantityUnit(e.target.value) }));
+                                setDispatchError('');
+                              }}
+                              className="w-full rounded-lg border border-amber-200 bg-white px-1.5 py-1.5 text-center text-[11px] font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                              aria-label="Đơn vị số lượng xuất kho"
+                            >
+                              {dispatchQuantityUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+                            </select>
+                          </div>
+                        ) : (
+                          <span className="font-black text-emerald-700">
+                            {getDispatchRowQuantity(row) > 0 ? `${formatNumber(getDispatchRowQuantity(row))} ${getDispatchRowQuantityUnit(row)}`.trim() : '-'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                        {isEditingRow ? (
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={inlineEditingDispatchDraft.weightKg}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(e) => {
+                              setInlineEditingDispatchDraft(prev => ({ ...prev, weightKg: e.target.value }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                            placeholder="So kg"
+                          />
+                        ) : (
+                          <span className="font-semibold">{row.weightKg ? `${formatNumber(row.weightKg)}kg` : ''}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {inlineEditingDispatchRow && canManageDispatchRows && (
+            <div className="mt-3 flex items-center justify-between gap-2 rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-2">
+              <p className="min-w-0 truncate text-xs font-bold text-amber-700">
+                Đang chỉnh phiếu: {inlineEditingDispatchRow.customerName || 'Khách hàng'}
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => saveInlineDispatchRow(inlineEditingDispatchRow)}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm hover:bg-emerald-600"
+                    aria-label="Lưu phiếu xuất"
+                    title="Lưu"
+                  >
+                    <Check size={16} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={resetInlineDispatchEdit}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  aria-label="Hủy chỉnh sửa"
+                  title="Hủy"
+                >
+                  <X size={16} />
+                </button>
+                {canDelete && (
+                  <button
+                    type="button"
+                    onClick={() => deleteInlineDispatchRow(inlineEditingDispatchRow)}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+                    aria-label="Xóa phiếu xuất"
+                    title="Xóa"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="order-3 bg-white rounded-2xl border border-dashed border-slate-200 shadow-sm p-6 text-center text-sm font-medium text-slate-500">
+          Chua co dong xuat kho nao trong ngay.
+        </div>
+      )}
+
+      {historyDispatchGroups.length > 0 && (
+        <div className="order-5 overflow-hidden rounded-[28px] border border-emerald-100 bg-white shadow-sm">
+          <div className="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 px-4 py-4 text-white">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="min-w-0 text-[11px] font-black uppercase tracking-[0.18em] text-white/90">Lịch sử xuất kho</p>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-bold text-white backdrop-blur">
+                  <CalendarDays size={14} className="shrink-0" />
+                  <select
+                    value={selectedHistoryMonthNumber}
+                    onChange={(event) => setSelectedHistoryMonth(`${selectedHistoryYear}-${String(event.target.value || '01').padStart(2, '0')}`)}
+                    className="bg-transparent outline-none"
+                  >
+                    {Array.from({ length: 12 }, (_, index) => {
+                      const monthValue = String(index + 1).padStart(2, '0');
+                      return (
+                        <option key={monthValue} value={monthValue} className="text-slate-900">
+                          Tháng {monthValue}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+
+                <label className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-bold text-white backdrop-blur">
+                  <Archive size={14} className="shrink-0" />
+                  <select
+                    value={selectedHistoryYear}
+                    onChange={(event) => setSelectedHistoryMonth(`${event.target.value || getTodayString().slice(0, 4)}-${selectedHistoryMonthNumber}`)}
+                    className="bg-transparent outline-none"
+                  >
+                    {historyYearOptions.map((yearOption) => (
+                      <option key={yearOption} value={yearOption} className="text-slate-900">
+                        Năm {yearOption}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
+                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Ngày có phiếu</p>
+                <p className="mt-1 text-lg font-black leading-none">{selectedHistoryMonthSummary.totalDays}</p>
+              </div>
+              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
+                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Tổng đơn</p>
+                <p className="mt-1 text-lg font-black leading-none">{selectedHistoryMonthSummary.totalLines}</p>
+              </div>
+              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
+                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Tổng kg</p>
+                <p className="mt-1 text-lg font-black leading-none">{formatNumber(selectedHistoryMonthSummary.totalWeight)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4">
+            <div className="mb-2 grid grid-cols-7 gap-1.5">
+              {historyCalendarWeekdays.map((weekday) => (
+                <div key={weekday} className="px-1 py-1.5 text-center text-[10px] font-black uppercase tracking-wide text-slate-400">
+                  {weekday}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7 gap-1.5">
+              {historyCalendarCells.map((cell) => {
+                const hasDispatchGroup = Boolean(cell.group);
+                return (
+                  <button
+                    key={cell.dateKey}
+                    type="button"
+                    onClick={() => hasDispatchGroup && setSelectedHistoryDispatchGroup(cell.group)}
+                    disabled={!hasDispatchGroup}
+                    title={hasDispatchGroup ? `${cell.group.totalLines} don xuat kho` : ''}
+                    className={`relative flex min-h-[64px] flex-col items-center justify-center rounded-2xl border p-1.5 text-center transition sm:min-h-[76px] ${
+                      !cell.isCurrentMonth
+                        ? 'border-transparent bg-slate-50/50 text-slate-300'
+                        : hasDispatchGroup
+                          ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white shadow-sm hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md'
+                          : 'border-slate-100 bg-white text-slate-400'
+                    } ${cell.isWorkingDate ? 'ring-2 ring-sky-200' : ''}`}
+                  >
+                    <span className={`absolute left-2 top-1.5 text-[11px] font-black ${hasDispatchGroup ? 'text-slate-900' : cell.isCurrentMonth ? 'text-slate-500' : 'text-slate-300'}`}>
+                      {cell.dayNumber}
+                    </span>
+
+                    {hasDispatchGroup ? (
+                      <div className="mt-3 inline-flex h-9 min-w-9 items-center justify-center rounded-full bg-emerald-500 px-2 text-base font-black leading-none text-white shadow-sm">
+                        {cell.group.totalLines}
+                        <span className="hidden">
+                          {cell.group.totalLines} đơn
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {cell.isWorkingDate && <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-sky-500 shadow-[0_0_0_3px_rgba(14,165,233,0.15)]" />}
+
+                    {cell.isWorkingDate && false && (
+                      <p className="mt-auto pt-2 text-[10px] font-black uppercase tracking-wide text-sky-600">Hôm nay</p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedHistoryDispatchGroup && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 px-3 py-5 pb-[calc(96px+env(safe-area-inset-bottom))] sm:p-4">
+          <div className="max-h-[calc(100dvh-150px)] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl sm:max-h-[88vh]">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Chi tiết phiếu xuất</p>
+                <h3 className="mt-1 text-xl font-black text-slate-900">{formatDateLabel(selectedHistoryDispatchGroup.dateKey)}</h3>
+                <p className="mt-1 text-xs font-bold text-slate-500">
+                  {selectedHistoryDispatchGroup.totalCustomers} khách • {selectedHistoryDispatchGroup.items.length} dòng xuất • {formatNumber(selectedHistoryDispatchGroup.totalWeight)} kg
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryDispatchGroup(null)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                aria-label="Đóng chi tiết phiếu xuất"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {canShare && (
+              <button
+                type="button"
+                onClick={() => handleShareDispatchSheet(selectedHistoryDispatchGroup.mergedRows, selectedHistoryDispatchGroup.dateKey)}
+                disabled={isDispatchExporting}
+                className="mb-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60"
+              >
+                <Send size={16} />
+                {isDispatchExporting ? 'Đang chuẩn bị...' : 'Chia sẻ phiếu này'}
+              </button>
+            )}
+
+            <div className="overflow-hidden rounded-2xl border-2 border-slate-800 bg-white">
+              <table className="w-full table-fixed border-collapse text-center text-[12px] text-slate-900">
+                <thead>
+                  <tr className="bg-slate-50">
+                    <th className="w-[34%] border border-slate-800 px-2 py-2 font-black">Tên KH</th>
+                    <th className="w-[30%] border border-slate-800 px-2 py-2 font-black">Loại</th>
+                    <th className="w-[18%] border border-slate-800 px-2 py-2 font-black">SL</th>
+                    <th className="w-[18%] border border-slate-800 px-2 py-2 font-black">Kg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedHistoryDispatchRows.map((row, index) => (
+                    <tr key={`${row.id || `${row.customerName}-${row.productName}-${index}`}`}>
+                      <td className="border border-slate-700 px-2 py-2 font-semibold break-words">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <span className="min-w-0 break-words">{row.customerName || '-'}</span>
+                          {canDeleteHistoryDispatch && (
+                            <button
+                              type="button"
+                              onClick={() => deleteHistoryDispatchRow(row)}
+                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-red-500 hover:bg-red-100"
+                              aria-label="Xóa lịch sử xuất kho"
+                              title="Xóa lịch sử"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="border border-slate-700 px-2 py-2 font-semibold break-words">{row.productShortName || getCompactProductName(null, row.productName || '') || '-'}</td>
+                      <td className="border border-slate-700 px-2 py-2 font-bold text-emerald-700">
+                        {row.pieceCount ? `${formatNumber(row.pieceCount)} ${row.quantityUnit || ''}`.trim() : '-'}
+                      </td>
+                      <td className="border border-slate-700 px-2 py-2 font-bold">{row.weightKg ? formatNumber(row.weightKg) : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canDeleteOrderRequest = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+  const isSales = isSalesPosition(employee?.position);
+  const isOwner = isOwnerPosition(employee?.position);
+  const isWarehouseScale = isWarehouseScalePosition(employee?.position);
+  const isOwnerAccount = isOwner || employee?.role === 'super_admin';
+  const canViewAllRequests = Boolean(canViewAllOrderRequests && !isSales);
+  const canViewSalesDownlineRequests = Boolean(canViewAllOrderRequests && isSales);
+  const canCreate = Boolean(canCreateOrderRequest);
+  const canEdit = Boolean(canEditOrderRequest);
+  const canDelete = Boolean(canDeleteOrderRequest);
+  const canManage = Boolean(canEdit || canDelete);
+  const canAccess = Boolean(employee);
+  const quantityUnitOptions = ORDER_REQUEST_QUANTITY_UNIT_OPTIONS;
+  const defaultQuantityUnit = 'Con';
+  const createDraftItem = (seed = {}) => ({
+    localItemId: seed.localItemId || `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    productId: seed.productId || '',
+    productSearch: seed.productSearch || '',
+    attributeLabel: seed.attributeLabel ?? seed.productAttribute ?? seed.attribute ?? '',
+    weightKg: seed.weightKg ?? seed.sizeLabel ?? '',
+    quantity: seed.quantity ?? '',
+    quantityUnit: seed.quantityUnit || defaultQuantityUnit,
+    unitPrice: seed.unitPrice ?? ''
+  });
+  const createDraft = (seed = {}) => ({
+    localId: seed.localId || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    customerId: seed.customerId || '',
+    customerSearch: seed.customerSearch || '',
+    note: seed.note || '',
+    upfrontPayment: seed.upfrontPayment ?? seed.depositAmount ?? seed.prepaidAmount ?? '',
+    items: Array.isArray(seed.items) && seed.items.length > 0
+      ? seed.items.map(item => createDraftItem(item))
+      : [createDraftItem()]

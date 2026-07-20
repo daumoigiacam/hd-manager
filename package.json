@@ -1,0 +1,96 @@
+{
+  "name": "hd-manager-local-app",
+  "private": true,
+  "version": "2026.7.17-p1",
+  "description": "HD Manager desktop and mobile business management app",
+  "author": "Codex",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test:ai-zalo": "node tests/ai-zalo-assistant.test.mjs",
+    "test:ai-zalo-order": "node tests/ai-zalo-order-request.test.mjs",
+    "test:stress": "node tests/hd-manager-stress-suite.mjs",
+    "test:performance": "node --expose-gc tests/hd-manager-performance-suite.mjs",
+    "test:all": "npm.cmd run test:ai-zalo && npm.cmd run test:ai-zalo-order && npm.cmd run test:stress",
+    "preview": "vite preview --host 127.0.0.1",
+    "serve:dist": "node serve-dist.mjs",
+    "desktop:start": "npm run build && electron .",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist:win": "npm run desktop:installer:one",
+    "desktop:installer:one": "npm run build && electron-builder --win nsis && powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\keep-one-windows-installer.ps1",
+    "desktop:portable": "npm run build && npx.cmd electron-builder --win portable --config.win.artifactName=\"HD Manager 0.0.0.${ext}\" && powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\keep-one-windows-installer.ps1 -KeepPortable",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:apk:debug": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug",
+    "android:apk:release": "npm run build && npx cap sync android && cd android && gradlew.bat assembleRelease",
+    "android:aab:release": "npm run build && npx cap sync android && cd android && gradlew.bat bundleRelease",
+    "ios:web:lan": "vite --host 0.0.0.0",
+    "ios:web:lan:dist": "npm run build && vite preview --host 0.0.0.0",
+    "ios:expo:lan": "cd ios-expo && npx expo start --lan --clear",
+    "ios:expo:tunnel": "cd ios-expo && npx expo start --tunnel --clear",
+    "functions:install": "npm.cmd --prefix functions install",
+    "firebase:deploy:rules": "npx firebase-tools deploy --only firestore:rules,storage",
+    "store:preflight": "npm run build && npm.cmd --prefix functions install && node --check functions/index.js",
+    "web:deploy:firebase": "npm run build && npm.cmd --prefix functions install && npx firebase-tools deploy --only hosting,functions",
+    "ios:eas:preview": "cd ios-expo && npx eas-cli build -p ios --profile preview"
+  },
+  "build": {
+    "appId": "com.hdmanager.desktop",
+    "productName": "HD Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "HD-Manager-Setup.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HD Manager"
+    }
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/core": "^8.3.1",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/geolocation": "^8.2.0",
+    "@capacitor/local-notifications": "^8.0.0",
+    "@capacitor/share": "^8.0.1",
+    "@zxing/browser": "^0.2.0",
+    "firebase": "^12.12.1",
+    "html-to-image": "^1.11.13",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^0.552.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "read-excel-file": "^9.3.1",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.3.1",
+    "@vitejs/plugin-react": "^5.1.0",
+    "autoprefixer": "^10.4.20",
+    "eas-cli": "^19.1.0",
+    "electron": "^38.7.3",
+    "electron-builder": "^26.0.12",
+    "playwright-core": "^1.59.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^7.1.10"
+  }
+}

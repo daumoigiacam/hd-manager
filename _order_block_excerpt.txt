@@ -1,0 +1,131 @@
+﻿                <button type="button" onClick={() => setOrderSearchKeyword('')} className="text-gray-400 hover:text-gray-600">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          )}
+          {showFilterPanel && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <button type="button" onClick={() => setTab('all')} className={`rounded-xl border px-3 py-3 text-sm font-bold transition-colors ${tab === 'all' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}>Tất cả đơn</button>
+                <button type="button" onClick={() => setTab('pending')} className={`rounded-xl border px-3 py-3 text-sm font-bold transition-colors ${tab === 'pending' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}>Chờ xác nhận</button>
+              </div>
+              <p className="text-[11px] text-gray-500">Đang hiển thị {displayOrders.length} đơn phù hợp với bộ lọc hiện tại.</p>
+            </div>
+          )}
+        </div>
+      )}
+      
+      <div className="space-y-3">
+        {displayOrders.length === 0 && (
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center text-sm text-gray-400">
+            Chưa có đơn hàng nào phù hợp với bộ lọc hiện tại.
+          </div>
+        )}
+
+        {displayOrders.map(order => {
+          const statusMeta = getOrderStatusMeta(order);
+          const itemCount = (order.items || []).reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0);
+          const primaryItem = (order.items || [])[0] || null;
+          const extraItemCount = Math.max(0, (order.items || []).length - 1);
+          const priceValues = (order.items || [])
+            .map(item => parseFloat(item.unitPrice) || 0)
+            .filter(value => value > 0);
+          const uniquePriceValues = [...new Set(priceValues)];
+          const itemTypeLabel = primaryItem
+            ? `${primaryItem.description || 'Mặt hàng'}${extraItemCount > 0 ? ` +${extraItemCount} loại` : ''}`
+            : 'Chưa có mặt hàng';
+          const unitPriceLabel = uniquePriceValues.length === 0
+            ? 'Chưa có'
+            : uniquePriceValues.length === 1
+              ? `${formatCurrency(uniquePriceValues[0])} đ/kg`
+              : `${formatCurrency(Math.min(...uniquePriceValues))} - ${formatCurrency(Math.max(...uniquePriceValues))} đ/kg`;
+
+          return (
+            <div key={`detail_${order.id}`} className="relative">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openEditOrderModal(order);
+                }}
+                className={`absolute top-3 z-10 text-gray-300 hover:text-blue-500 ${isAccounting ? 'right-10' : 'right-3'}`}
+              >
+                <Edit3 size={14} />
+              </button>
+              {isAccounting && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (window.confirm('Xóa vĩnh viễn đơn hàng này?')) onDeleteOrder(order.id);
+                  }}
+                  className="absolute top-3 right-3 z-10 text-gray-300 hover:text-red-500"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => openOrderDetail(order.id)}
+                className="w-full bg-white p-4 rounded-2xl shadow-sm border border-gray-100 text-left hover:border-emerald-200 hover:shadow-md transition-all"
+              >
+                <div className="flex justify-between items-start gap-3 pr-7">
+                  <div>
+                    <h3 className="font-bold text-gray-800">{order.customer?.name || 'Khách lẻ'}</h3>
+                    <p className="text-xs text-gray-500 mt-1">{formatDateTimeLabel(order.date)} • {formatOrderCode(order.id)}</p>
+                  </div>
+                  <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${statusMeta.chipClasses}`}>{statusMeta.label}</span>
+                </div>
+
+                <div className="mt-3 text-[11px]">
+                  <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Loại hàng</p>
+                        <p className="font-semibold text-gray-700 leading-5">{itemTypeLabel}</p>
+                      </div>
+                      <div>
+                        <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Số kg</p>
+                        <p className="font-semibold text-gray-700 leading-5">{formatNumber(itemCount || 0)} kg</p>
+                      </div>
+                      <div>
+                        <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Đơn giá</p>
+                        <p className="font-semibold text-gray-700 leading-5">{unitPriceLabel}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Tổng đơn</p>
+                    <p className="text-sm font-black text-gray-800">{formatCurrency(order.amount || 0)} đ</p>
+                  </div>
+                  <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3">
+                    <p className="text-[10px] uppercase font-bold text-emerald-600 mb-1">Đã thu</p>
+                    <p className="text-sm font-black text-emerald-700">{formatCurrency(order.appliedAmount || 0)} đ</p>
+                  </div>
+                  <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+                    <p className="text-[10px] uppercase font-bold text-amber-600 mb-1">Còn nợ</p>
+                    <p className={`text-sm font-black ${statusMeta.amountClasses}`}>{formatCurrency(order.outstandingAmount || 0)} đ</p>
+                  </div>
+                </div>
+
+                {order.extraExpenseName && (order.customerExtraExpense || 0) > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 text-sm text-blue-600 font-medium">
+                    + {order.extraExpenseName} ({formatCurrency(order.customerExtraExpense || 0)} đ)
+                  </div>
+                )}
+              </button>
+            </div>
+          );
+        })}
+
+        {false && activeOrders.reverse().map(o => {
+          const cus = customers.find(c => c.id === o.customerId);
+          const createdBy = employees.find(e => e.id === (o.createdByEmpId || o.empId));
+          const salesOwner = employees.find(e => e.id === getOrderSalesEmpId(o, customers));
+          return (
+            <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 relative group">

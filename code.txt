@@ -1,0 +1,2243 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, ChevronRight, ChevronLeft, 
+  UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
+  Edit3, LogOut, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star, 
+  Package, Trash2, Wallet, Banknote, History, Target, CalendarDays, Filter, Building, Crown, 
+  Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
+  Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid,
+  Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift
+} from 'lucide-react';
+
+// --- FIREBASE CLOUD SETUP ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
+
+// BẢO VỆ CRASH: Kiểm tra và Khởi tạo Firebase an toàn
+let app, auth, db;
+let isFirebaseConfigured = true;
+
+try {
+  const firebaseConfig = typeof __firebase_config !== 'undefined' 
+    ? JSON.parse(__firebase_config) 
+    : {};
+
+  if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
+    isFirebaseConfigured = false; 
+  } else {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (error) {
+  console.error("Lỗi khởi tạo Firebase:", error);
+  isFirebaseConfigured = false;
+}
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const getTodayString = () => new Date().toISOString().split('T')[0];
+const STANDARD_WORK_DAYS = 26;
+
+// --- UTILS & SHARED LOGIC ---
+
+const toTitleCase = (str) => {
+  if (!str) return '';
+  return str.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+};
+
+const capitalizeFirst = (str) => {
+  if (!str) return '';
+  return str.charAt(0).toUpperCase() + str.slice(1);
+};
+
+const formatInputCurrency = (val) => {
+  if (val === '' || val === undefined || val === null) return '';
+  const num = parseInt(val.toString().replace(/\D/g, ''), 10);
+  return isNaN(num) ? '' : new Intl.NumberFormat('vi-VN').format(num);
+};
+
+const parseInputCurrency = (val) => {
+  if (val === '' || val === undefined || val === null) return '';
+  const num = parseInt(val.toString().replace(/\D/g, ''), 10);
+  return isNaN(num) ? '' : num;
+};
+
+const formatCurrency = (amount) => {
+  if (amount === undefined || amount === null || isNaN(amount)) return '0';
+  return new Intl.NumberFormat('vi-VN').format(amount);
+};
+
+const formatTime = (dateObj) => {
+  if (!dateObj) return '--:--';
+  if (typeof dateObj === 'string') return dateObj.substring(11, 16); 
+  return dateObj.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+};
+
+const calculateTieredBonus = (revenue, target) => {
+  if (!target || revenue <= target) return 0;
+  const excess = revenue - target;
+  if (excess <= 20000000) return excess * 0.02;
+  if (excess <= 50000000) return (20000000 * 0.02) + ((excess - 20000000) * 0.05);
+  return (20000000 * 0.02) + (30000000 * 0.05) + ((excess - 50000000) * 0.1);
+};
+
+const getCustomerDebt = (customerId, allOrders, allPayments) => {
+  const totalO = allOrders.filter(o => o.customerId === customerId && !o.isArchived).reduce((s, o) => s + (o.amount||0), 0);
+  const totalP = allPayments.filter(p => p.customerId === customerId && !p.isArchived).reduce((s, p) => s + (p.amount||0), 0);
+  return totalO - totalP;
+};
+
+const getCustomerPoints = (customerId, allOrders) => {
+  const totalO = allOrders.filter(o => o.customerId === customerId && !o.isArchived).reduce((s, o) => s + (o.amount||0), 0);
+  return Math.floor(totalO / 100000); 
+};
+
+const calculateMonthRevenue = (empId, orders) => {
+  const currentMonth = getTodayString().substring(0, 7);
+  return orders.filter(o => o.empId === empId && o.date.startsWith(currentMonth) && !o.isArchived).reduce((sum, o) => sum + (o.amount||0), 0);
+};
+
+const calculateSalaryDetails = (empId, employees, attendance, financials, performance, allCustomers = [], allOrders = [], allPayments = [], holidays = []) => {
+  const emp = employees.find(e => e.id === empId);
+  if (!emp) return null;
+  const perf = performance[empId] || { revenue: 0, overtime: 0 };
+  
+  let workDaysProbation = 0;
+  let workDaysOfficial = 0;
+  let holidayBonus = 0; 
+  
+  const dailyBaseWage = (emp.basicSalary || 0) / STANDARD_WORK_DAYS;
+  const probationRate = (emp.probationRate !== undefined ? emp.probationRate : 100) / 100;
+
+  // Tính ngày hết hạn thử việc
+  let probationEndDate = null;
+  if (emp.startDate && emp.probationDuration > 0) {
+    probationEndDate = new Date(emp.startDate);
+    probationEndDate.setHours(23, 59, 59, 999);
+    if (emp.probationUnit === 'days') probationEndDate.setDate(probationEndDate.getDate() + parseInt(emp.probationDuration));
+    else if (emp.probationUnit === 'weeks') probationEndDate.setDate(probationEndDate.getDate() + parseInt(emp.probationDuration) * 7);
+    else if (emp.probationUnit === 'months') probationEndDate.setMonth(probationEndDate.getMonth() + parseInt(emp.probationDuration));
+  }
+
+  // Quét qua các ngày đi làm để phân tách Lương chính thức vs Lương thử việc
+  Object.keys(attendance).forEach(key => {
+    if (key.endsWith(`_${empId}`)) {
+      const rec = attendance[key];
+      const dateStr = key.split('_')[0]; 
+      
+      if (rec.status === 'present' || rec.status === 'late') {
+        const workDate = new Date(dateStr);
+        
+        // Phân loại ngày làm thử việc hay chính thức
+        if (probationEndDate && workDate <= probationEndDate) {
+          workDaysProbation += 1;
+        } else {
+          workDaysOfficial += 1;
+        }
+
+        // Dò xem ngày đi làm này có phải ngày Lễ không
+        const isHoliday = holidays.find(h => h.date === dateStr);
+        if (isHoliday) {
+          if (isHoliday.type === 'fixed') holidayBonus += isHoliday.value;
+          else if (isHoliday.type === 'percentage') holidayBonus += dailyBaseWage * (isHoliday.value / 100);
+        }
+      }
+    }
+  });
+
+  const workDays = workDaysProbation + workDaysOfficial;
+  
+  // Tính lương cơ bản theo ngày thử việc + ngày chính thức
+  const baseSalaryCalc = (workDaysProbation * dailyBaseWage * probationRate) + (workDaysOfficial * dailyBaseWage);
+  const supportSalaryCalc = ((emp.supportSalary || 0) / STANDARD_WORK_DAYS) * workDays;
+
+  // Tính lương kinh nghiệm tự động (+50k/tháng kể từ ngày vào làm)
+  let experienceSalaryCalc = 0;
+  let expMonths = 0;
+  if (emp.startDate) {
+    const start = new Date(emp.startDate);
+    const now = new Date();
+    expMonths = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+    if (expMonths > 0) experienceSalaryCalc = expMonths * 50000; 
+  }
+
+  const commission = (perf.revenue || 0) * (emp.commissionRate || 0);
+  const tieredBonus = calculateTieredBonus(perf.revenue || 0, emp.targetRevenue || 0);
+  const overtimePay = (perf.overtime || 0) * (emp.overtimeRate || 0);
+
+  let totalBonus = 0; let totalPenalty = 0; let totalAdvance = 0;
+  financials.filter(f => f.empId === empId && !f.isArchived).forEach(record => {
+    if (record.type === 'bonus') totalBonus += record.amount;
+    if (record.type === 'penalty') totalPenalty += record.amount;
+    if (record.type === 'advance') totalAdvance += record.amount;
+  });
+
+  totalBonus += holidayBonus;
+
+  let badDebt = 0;
+  if (['Kinh doanh', 'Bán hàng'].includes(emp.position)) {
+    const myCustomers = allCustomers.filter(c => c.empId === empId);
+    badDebt = myCustomers.reduce((sum, cus) => sum + getCustomerDebt(cus.id, allOrders, allPayments), 0);
+    if (badDebt < 0) badDebt = 0; 
+  }
+
+  const netSalary = baseSalaryCalc + supportSalaryCalc + experienceSalaryCalc + commission + tieredBonus + overtimePay + totalBonus - totalPenalty - totalAdvance - badDebt;
+  
+  return { 
+    workDays, workDaysProbation, workDaysOfficial, expMonths, perf, baseSalaryCalc, supportSalary: supportSalaryCalc, experienceSalary: experienceSalaryCalc, 
+    commission, tieredBonus, overtimePay, totalBonus, holidayBonus, totalPenalty, totalAdvance, badDebt, netSalary 
+  };
+};
+
+function MissingFirebaseError() {
+  return (
+    <div className="flex flex-col h-screen items-center justify-center bg-gray-50 p-6 overflow-y-auto">
+      <div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-md text-center border border-red-100 my-auto">
+        <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4"><Database size={32} /></div>
+        <h2 className="text-xl font-bold text-gray-800 mb-2">Chưa kết nối Đám Mây</h2>
+        <p className="text-gray-600 text-sm mb-4 text-left">
+          Ứng dụng trên điện thoại cần cơ sở dữ liệu riêng để hoạt động. Bạn chưa điền mã <strong>firebaseConfig</strong> vào file <code className="bg-gray-100 px-1 rounded text-red-500">App.jsx</code>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SmartAIAssistant({ employee, company, activeTab, customers, orders, expenses }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState([{ role: 'model', text: `Chào ${employee?.name || 'bạn'}! Mình là Trợ lý AI của công ty. Bạn cần hỗ trợ phân tích số liệu, hướng dẫn sử dụng app hay tư vấn công việc hôm nay?` }]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const newMessages = [...messages, { role: 'user', text: capitalizeFirst(input) }];
+    setMessages(newMessages);
+    setInput('');
+    setIsLoading(true);
+
+    const todaysOrders = orders.filter(o => o.date === getTodayString() && !o.isArchived);
+    const revenueToday = todaysOrders.reduce((s, o) => s + (o.amount || 0), 0);
+    const contextStr = `Bạn là Trợ lý AI thông minh của phần mềm Quản Lý Doanh Nghiệp (Cty ${company?.name || 'HD'}). 
+Tên người dùng đang trò chuyện: ${employee?.name || 'Chưa rõ'}, Chức vụ: ${employee?.position || 'Chưa rõ'}.
+Màn hình thao tác hiện tại của người dùng: ${activeTab}. 
+Số liệu kinh doanh hôm nay: Tổng doanh thu ${new Intl.NumberFormat('vi-VN').format(revenueToday)} VNĐ, ${todaysOrders.length} đơn hàng mới. 
+Tổng số lượng khách hàng trong hệ thống: ${customers.length} người.
+Nhiệm vụ của bạn: Trả lời thật ngắn gọn, súc tích, thân thiện. Tư vấn cách làm việc hiệu quả, phân tích nhanh số liệu hoặc hướng dẫn nhân viên cách dùng app.`;
+
+    const apiKey = ""; 
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    const payload = {
+      contents: newMessages.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: [{ text: m.text }] })),
+      systemInstruction: { parts: [{ text: contextStr }] }
+    };
+
+    const delays = [1000, 2000, 4000, 8000, 16000];
+    let attempt = 0;
+    let aiResponseText = "Xin lỗi, hệ thống AI đang bận xử lý. Vui lòng thử lại sau giây lát.";
+
+    while (attempt < 6) {
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!res.ok) throw new Error('API Error');
+        const data = await res.json();
+        aiResponseText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Mình chưa hiểu rõ ý bạn, hãy thử diễn đạt lại nhé.";
+        break;
+      } catch (err) {
+        if (attempt >= 5) break;
+        await new Promise(r => setTimeout(r, delays[attempt]));
+        attempt++;
+      }
+    }
+
+    setMessages([...newMessages, { role: 'model', text: aiResponseText }]);
+    setIsLoading(false);
+  };
+
+  return (
+    <>
+      <div className="fixed bottom-[80px] left-3 z-50">
+        <button onClick={() => setIsOpen(true)} className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white p-3.5 rounded-full shadow-[0_4px_20px_rgba(16,185,129,0.5)] flex items-center justify-center hover:scale-105 transition-transform active:scale-95 border-2 border-white">
+          <Sparkles size={24} className="animate-pulse" />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
+          <div className="bg-gray-50 w-full h-[85vh] sm:h-[600px] sm:max-w-md sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300 overflow-hidden border border-gray-200">
+            <div className="bg-gradient-to-r from-emerald-600 to-emerald-500 text-white p-4 flex justify-between items-center shrink-0 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 rounded-full shadow-inner"><Bot size={22} /></div>
+                <div>
+                  <h3 className="font-bold text-sm flex items-center gap-1">Trợ lý AI <span className="bg-emerald-400 text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wider">Pro</span></h3>
+                  <p className="text-[10px] text-emerald-100 font-medium">Trực tuyến • Hỗ trợ {employee?.position}</p>
+                </div>
+              </div>
+              <button onClick={() => setIsOpen(false)} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20} /></button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-5 flex flex-col">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === 'model' ? 'bg-white border border-gray-100 text-gray-800 self-start shadow-sm rounded-tl-sm' : 'bg-emerald-500 text-white self-end shadow-md rounded-tr-sm'}`}>
+                  {msg.text}
+                </div>
+              ))}
+              {isLoading && (
+                <div className="bg-white border border-gray-100 text-gray-500 self-start shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2 text-sm font-medium">
+                  <Loader2 size={16} className="animate-spin text-emerald-500" /> AI đang phân tích dữ liệu...
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-white border-t border-gray-100 shrink-0 pb-safe">
+              <form onSubmit={handleSend} className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-full p-1.5 pl-4 focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100 transition-all">
+                <input type="text" value={input} onChange={e => setInput(capitalizeFirst(e.target.value))} placeholder="Nhập câu hỏi tại đây..." className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400" />
+                <button type="submit" disabled={isLoading || !input.trim()} className="bg-emerald-500 text-white p-2.5 rounded-full hover:bg-emerald-600 disabled:opacity-50 transition-colors shadow-sm">
+                  <Send size={16} className="ml-0.5" />
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// --- APP ENTRY POINT ---
+export default function App() {
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [isFirebaseLoading, setIsFirebaseLoading] = useState(true);
+
+  const [currentUser, setCurrentUser] = useState(null); 
+  const [currentCompany, setCurrentCompany] = useState(null);
+  const [activeTab, setActiveTab] = useState('home');
+  const [currentDate, setCurrentDate] = useState(getTodayString());
+
+  // RAW DATA
+  const [rawCompanies, setRawCompanies] = useState([]);
+  const [rawEmployees, setRawEmployees] = useState([]);
+  const [rawAttendance, setRawAttendance] = useState({});
+  const [rawFinancials, setRawFinancials] = useState([]);
+  const [rawAdvanceRequests, setRawAdvanceRequests] = useState([]); 
+  const [rawPerformance, setRawPerformance] = useState({});
+  const [rawCustomers, setRawCustomers] = useState([]);
+  const [rawProducts, setRawProducts] = useState([]);
+  const [rawOrders, setRawOrders] = useState([]);
+  const [rawPayments, setRawPayments] = useState([]);
+  const [rawExpenses, setRawExpenses] = useState([]); 
+  const [rawHolidays, setRawHolidays] = useState([]);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) { console.error("Lỗi xác thực:", err); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => { setFirebaseUser(u); setIsFirebaseLoading(false); });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseUser || !isFirebaseConfigured) return;
+    const listeners = [];
+
+    const bindCollection = (colName, setFn, isObject = false, parser = null) => {
+      const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', colName), (snap) => {
+        if (isObject) {
+          const obj = {};
+          snap.forEach(d => { obj[d.id] = parser ? parser(d.data()) : d.data(); });
+          setFn(obj);
+        } else {
+          const arr = [];
+          snap.forEach(d => { arr.push(parser ? parser(d.data()) : d.data()); });
+          setFn(arr);
+        }
+      }, console.error);
+      listeners.push(unsub);
+    };
+
+    bindCollection('companies', setRawCompanies);
+    bindCollection('employees', setRawEmployees);
+    bindCollection('customers', setRawCustomers);
+    bindCollection('products', setRawProducts);
+    bindCollection('orders', setRawOrders);
+    bindCollection('payments', setRawPayments);
+    bindCollection('advances', setRawAdvanceRequests);
+    bindCollection('financials', setRawFinancials);
+    bindCollection('expenses', setRawExpenses);
+    bindCollection('holidays', setRawHolidays); 
+    bindCollection('performance', setRawPerformance, true);
+    bindCollection('attendance', setRawAttendance, true, (data) => ({
+      ...data,
+      checkIn: data.checkIn ? new Date(data.checkIn) : null,
+      checkOut: data.checkOut ? new Date(data.checkOut) : null,
+    }));
+
+    return () => { listeners.forEach(unsub => unsub()); };
+  }, [firebaseUser]);
+
+  const myCompanyId = currentUser?.companyId;
+
+  const employees = useMemo(() => rawEmployees.filter(e => e.companyId === myCompanyId), [rawEmployees, myCompanyId]);
+  const customers = useMemo(() => rawCustomers.filter(c => c.companyId === myCompanyId), [rawCustomers, myCompanyId]);
+  const products = useMemo(() => rawProducts.filter(p => p.companyId === myCompanyId), [rawProducts, myCompanyId]);
+  const orders = useMemo(() => rawOrders.filter(o => o.companyId === myCompanyId), [rawOrders, myCompanyId]);
+  const payments = useMemo(() => rawPayments.filter(p => p.companyId === myCompanyId), [rawPayments, myCompanyId]);
+  const expenses = useMemo(() => rawExpenses.filter(e => e.companyId === myCompanyId), [rawExpenses, myCompanyId]);
+  const advanceRequests = useMemo(() => rawAdvanceRequests.filter(a => a.companyId === myCompanyId), [rawAdvanceRequests, myCompanyId]);
+  const financials = useMemo(() => rawFinancials.filter(f => f.companyId === myCompanyId), [rawFinancials, myCompanyId]);
+  const holidays = useMemo(() => rawHolidays.filter(h => h.companyId === myCompanyId), [rawHolidays, myCompanyId]);
+  
+  const attendanceRecords = useMemo(() => {
+    const filtered = {};
+    Object.keys(rawAttendance).forEach(key => {
+      if (rawAttendance[key]?.companyId === myCompanyId) filtered[key] = rawAttendance[key];
+    });
+    return filtered;
+  }, [rawAttendance, myCompanyId]);
+
+  const performanceRecords = useMemo(() => {
+    const filtered = {};
+    Object.keys(rawPerformance).forEach(key => {
+      if (rawPerformance[key]?.companyId === myCompanyId) filtered[key] = rawPerformance[key];
+    });
+    return filtered;
+  }, [rawPerformance, myCompanyId]);
+
+  const aggregatedPerformance = useMemo(() => {
+    const agg = { ...performanceRecords };
+    employees.forEach(emp => {
+      if (!agg[emp.id]) agg[emp.id] = { overtime: 0 };
+      agg[emp.id].revenue = calculateMonthRevenue(emp.id, orders);
+    });
+    return agg;
+  }, [performanceRecords, orders, employees]);
+
+  const handleRegisterCompany = async (companyName, phone) => {
+    if (!firebaseUser) return { success: false, message: "Lỗi kết nối máy chủ." };
+    const exist = rawEmployees.find(e => e.phone === phone);
+    if (exist) return { success: false, message: "Số điện thoại này đã được đăng ký!" };
+
+    const newCompanyId = `comp_${Date.now()}`;
+    const newEmpId = `emp_${Date.now()}`;
+
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', newCompanyId), {
+      id: newCompanyId, name: companyName, ownerPhone: phone, createdAt: getTodayString(), status: 'trial', expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
+    });
+
+    const adminData = {
+      id: newEmpId, companyId: newCompanyId, phone: phone, name: 'Chủ doanh nghiệp', position: 'Chủ doanh nghiệp', role: 'super_admin', 
+      startDate: getTodayString(), probationDuration: 0, probationUnit: 'days', probationRate: 100,
+      basicSalary: 0, supportSalary: 0, experienceSalary: 0, commissionRate: 0, targetRevenue: 0, overtimeRate: 0
+    };
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', newEmpId), adminData);
+
+    setCurrentUser({ role: 'super_admin', id: newEmpId, companyId: newCompanyId });
+    setCurrentCompany({ id: newCompanyId, name: companyName, status: 'trial' });
+    setActiveTab('home');
+    return { success: true };
+  };
+
+  const handleLogin = (phone) => {
+    const emp = rawEmployees.find(e => e.phone === phone);
+    if (emp) { 
+      const comp = rawCompanies.find(c => c.id === emp.companyId);
+      setCurrentUser({ role: emp.role || 'employee', id: emp.id, companyId: emp.companyId }); 
+      setCurrentCompany(comp);
+      setActiveTab('home'); 
+      return true; 
+    }
+    return false;
+  };
+
+  const handleLogout = () => { setCurrentUser(null); setCurrentCompany(null); setActiveTab('home'); };
+
+  const handleCheckIn = async (empId, method) => {
+    if (!firebaseUser) return;
+    const now = new Date(); const key = `${currentDate}_${empId}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, checkIn: now.toISOString(), checkInMethod: method, status: (now.getHours() >= 8 && now.getMinutes() > 0) ? 'late' : 'present' }, { merge: true });
+  };
+  
+  const handleCheckOut = async (empId, method) => {
+    if (!firebaseUser) return;
+    const now = new Date(); const key = `${currentDate}_${empId}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, checkOut: now.toISOString(), checkOutMethod: method }, { merge: true });
+  };
+  
+  const handleLeave = async (empId) => {
+    if (!firebaseUser) return;
+    const key = `${currentDate}_${empId}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, status: 'leave', checkIn: null, checkOut: null }, { merge: true });
+  };
+
+  const handleEditAttendance = async (empId, targetDate, editData) => {
+    if (!firebaseUser) return;
+    const key = `${targetDate}_${empId}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { 
+      ...editData, companyId: myCompanyId,
+      checkIn: editData.checkIn ? editData.checkIn.toISOString() : null,
+      checkOut: editData.checkOut ? editData.checkOut.toISOString() : null,
+      checkInMethod: 'Kế toán điều chỉnh' 
+    }, { merge: true });
+  };
+
+  const handleAddAdvanceRequest = async (empId, amount, reason) => {
+    if (!firebaseUser) return;
+    const id = `adv_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'advances', id), { id, companyId: myCompanyId, empId, amount: parseInt(amount), reason, date: getTodayString(), status: 'pending' });
+  };
+  
+  const handleApproveAdvance = async (reqId) => {
+    if (!firebaseUser) return;
+    const req = advanceRequests.find(r => r.id === reqId);
+    if (req && req.status === 'pending') {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'advances', reqId), { status: 'approved' }, { merge: true });
+      await addFinancialRecord(req.empId, 'advance', req.amount, req.reason);
+    }
+  };
+
+  const handleRejectAdvance = async (reqId) => {
+    if (!firebaseUser) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'advances', reqId), { status: 'rejected' }, { merge: true });
+  };
+
+  const handleToggleArchive = async (collectionName, itemId, currentStatus) => {
+    if (!firebaseUser) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, itemId), { isArchived: !currentStatus }, { merge: true });
+  };
+
+  const handleAddPayment = async (paymentData) => {
+    if (!firebaseUser) return;
+    const id = `p_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', id), { ...paymentData, id, companyId: myCompanyId, isArchived: false });
+  };
+
+  const handleDeletePayment = async (paymentId) => {
+    if (!firebaseUser) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId));
+  };
+
+  const handleAddExpense = async (empId, expenseData) => {
+    if (!firebaseUser) return;
+    const id = `exp_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', id), { ...expenseData, empId, id, companyId: myCompanyId, isArchived: false });
+  };
+
+  const handleDeleteExpense = async (expenseId) => {
+    if (!firebaseUser) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', expenseId));
+  };
+
+  const addFinancialRecord = async (empId, type, amount, reason) => {
+    if (!firebaseUser) return;
+    const id = `f_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'financials', id), { id, companyId: myCompanyId, empId, type, amount: parseInt(amount), reason, date: getTodayString(), isArchived: false });
+  };
+
+  const updatePerformance = async (empId, overtime) => {
+    if (!firebaseUser) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performance', empId), { companyId: myCompanyId, overtime: parseFloat(overtime) || 0 }, { merge: true });
+  };
+
+  const handleAddEmployee = async (newEmpData) => {
+    if (!firebaseUser) return;
+    const id = Date.now().toString();
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', id), { ...newEmpData, id, companyId: myCompanyId });
+  };
+
+  const handleEditEmployee = async (empId, updatedData) => {
+    if (!firebaseUser) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), updatedData, { merge: true });
+  };
+
+  const handleAddCustomer = async (empId, customerData) => {
+    if (!firebaseUser) return;
+    const id = `c_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', id), { ...customerData, empId, id, companyId: myCompanyId, isArchived: false });
+  };
+
+  const handleAddProduct = async (productData) => {
+    if (!firebaseUser) return;
+    const id = `prod_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', id), { ...productData, id, companyId: myCompanyId, isArchived: false });
+  };
+
+  const handleEditProduct = async (prodId, updatedData) => {
+    if (!firebaseUser) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', prodId), updatedData, { merge: true });
+  };
+
+  const handleDeleteProduct = async (prodId) => {
+    if (!firebaseUser) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', prodId));
+  };
+
+  const handleAddOrder = async (empId, orderData) => {
+    if (!firebaseUser) return;
+    const id = `o_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', id), { ...orderData, empId, id, companyId: myCompanyId, isArchived: false });
+  };
+
+  const handleDeleteOrder = async (orderId) => {
+    if (!firebaseUser) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId));
+  };
+
+  const handleAddHoliday = async (holidayData) => {
+    if (!firebaseUser) return;
+    const id = `hol_${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'holidays', id), { ...holidayData, id, companyId: myCompanyId });
+  };
+
+  const handleDeleteHoliday = async (holidayId) => {
+    if (!firebaseUser) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'holidays', holidayId));
+  };
+
+  if (!isFirebaseConfigured) return <MissingFirebaseError />;
+  if (isFirebaseLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối Đám mây...</p></div>;
+  
+  if (!currentUser) {
+    return (
+      <>
+        <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
+        <LoginRegisterView onLogin={handleLogin} onRegister={handleRegisterCompany} />
+      </>
+    );
+  }
+
+  const employeeInfo = employees.find(e => e.id === currentUser.id);
+
+  return (
+    <>
+      <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
+      <MainAppView 
+        currentUser={currentUser} employee={employeeInfo} currentCompany={currentCompany} activeTab={activeTab} setActiveTab={setActiveTab}
+        employees={employees} attendance={attendanceRecords} date={currentDate} financials={financials} performance={aggregatedPerformance}
+        customers={customers} orders={orders} payments={payments} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays}
+        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout}
+        onAddCustomer={handleAddCustomer} onAddOrder={handleAddOrder} onDeleteOrder={handleDeleteOrder}
+        onAddPayment={handleAddPayment} onDeletePayment={handleDeletePayment}
+        onAddExpense={handleAddExpense} onDeleteExpense={handleDeleteExpense}
+        onAddAdvanceRequest={handleAddAdvanceRequest} onEditAttendance={handleEditAttendance}
+        onAddFinancial={addFinancialRecord} onUpdatePerformance={updatePerformance}
+        onApproveAdvance={handleApproveAdvance} onRejectAdvance={handleRejectAdvance}
+        onAddEmployee={handleAddEmployee} onEditEmployee={handleEditEmployee}
+        onOverrideCheckIn={handleCheckIn} onOverrideCheckOut={handleCheckOut}
+        onAddProduct={handleAddProduct} onEditProduct={handleEditProduct} onDeleteProduct={handleDeleteProduct}
+        onAddHoliday={handleAddHoliday} onDeleteHoliday={handleDeleteHoliday}
+        onToggleArchiveOrder={(id, status) => handleToggleArchive('orders', id, status)}
+        onToggleArchivePayment={(id, status) => handleToggleArchive('payments', id, status)}
+        onToggleArchiveExpense={(id, status) => handleToggleArchive('expenses', id, status)}
+        onToggleArchiveProduct={(id, status) => handleToggleArchive('products', id, status)}
+      />
+    </>
+  );
+}
+
+// --- MAIN LAYOUT ---
+function MainAppView({ 
+  currentUser, employee, currentCompany, activeTab, setActiveTab, employees, attendance, date, financials, performance, customers, orders, payments, products, advanceRequests, expenses, holidays,
+  onCheckIn, onCheckOut, onLeave, onLogout, onAddCustomer, onAddOrder, onDeleteOrder, onAddPayment, onDeletePayment, onAddExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onAddEmployee, onEditEmployee, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onToggleArchiveOrder, onToggleArchivePayment, onToggleArchiveExpense, onToggleArchiveProduct
+}) {
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+  const position = employee?.position || '';
+  const isAccounting = isSuperAdmin || ['Kế toán nhân sự', 'Kế toán', 'Admin'].includes(position);
+  const isSales = ['Kinh doanh', 'Bán hàng'].includes(position);
+  const isDriver = position === 'Tài xế';
+
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authType, setAuthType] = useState('in'); 
+  const [authMethod, setAuthMethod] = useState('GPS');
+  
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false);
+  const [advanceAmount, setAdvanceAmount] = useState('');
+  const [advanceReason, setAdvanceReason] = useState('');
+
+  const record = attendance[`${date}_${employee?.id}`];
+  const isCheckedIn = record?.checkIn; 
+  const isCheckedOut = record?.checkOut; 
+  const isLeave = record?.status === 'leave';
+
+  const details = calculateSalaryDetails(employee?.id, employees, attendance, financials, performance, customers, orders, payments, holidays) || { netSalary: 0, workDays: 0, workDaysProbation: 0, workDaysOfficial: 0, expMonths: 0, baseSalaryCalc: 0, supportSalary: 0, experienceSalary: 0, commission: 0, tieredBonus: 0, overtimePay: 0, totalBonus: 0, holidayBonus: 0, totalPenalty: 0, totalAdvance: 0, badDebt: 0, perf: {overtime: 0} };
+
+  const handleConfirmAuth = () => {
+    setShowAuthModal(false); 
+    if (authType === 'in') onCheckIn(employee.id, authMethod); else onCheckOut(employee.id, authMethod);
+  };
+  
+  const handleAdvanceSubmit = (e) => {
+    e.preventDefault();
+    if(advanceAmount && parseInt(parseInputCurrency(advanceAmount)) > 0) {
+      onAddAdvanceRequest(employee.id, parseInputCurrency(advanceAmount), advanceReason);
+      setShowAdvanceModal(false);
+      setAdvanceAmount(''); setAdvanceReason('');
+    }
+  };
+
+  const renderHeader = () => {
+    if (activeTab === 'home') return null;
+    if (activeTab === 'more') {
+      return (
+        <header className="bg-emerald-500 text-white p-4 shadow-sm shrink-0">
+          <h1 className="text-xl font-bold">Thêm</h1>
+        </header>
+      );
+    }
+    return (
+      <header className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setActiveTab('home')} className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
+            <h1 className="text-lg font-bold">
+              {activeTab === 'profile' ? 'Cá nhân' : 
+               activeTab === 'customers' ? 'Khách hàng' : 
+               activeTab === 'orders' ? 'Đơn hàng' : 
+               activeTab === 'products' ? 'Sản phẩm' : 
+               activeTab === 'debt' ? 'Sổ nợ' : 
+               activeTab === 'finance' ? 'Thu chi' : 
+               activeTab === 'company_attendance' ? 'Chấm công' : 
+               activeTab === 'payroll' ? 'Bảng lương' : 
+               activeTab === 'employees' ? 'Nhân sự' : 
+               activeTab === 'settings' ? 'Cấu hình Lễ Tết' : 
+               activeTab === 'billing' ? 'Gói cước' : 'Quản lý'}
+            </h1>
+          </div>
+          <div className="flex items-center gap-3">
+            <Search size={20} />
+            <Filter size={20} />
+          </div>
+        </div>
+      </header>
+    );
+  };
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'home': return <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} orders={orders} setActiveTab={setActiveTab} />;
+      case 'profile': return (
+        <div className="space-y-4 animate-in fade-in zoom-in-95">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-base font-bold text-gray-800">Chấm công hôm nay</h2>
+              <span className="text-sm font-medium text-gray-500">{new Date(date).toLocaleDateString('vi-VN')}</span>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3 text-center mb-5">
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100"><p className="text-xs text-gray-500 mb-1">Giờ vào</p><p className="font-bold text-xl text-gray-800">{formatTime(record?.checkIn)}</p></div>
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100"><p className="text-xs text-gray-500 mb-1">Giờ ra</p><p className="font-bold text-xl text-gray-800">{formatTime(record?.checkOut)}</p></div>
+            </div>
+
+            {!isCheckedIn && !isLeave && !isSuperAdmin ? (
+              <div className="flex gap-3">
+                <button onClick={() => {setAuthType('in'); setShowAuthModal(true);}} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-semibold shadow-sm hover:bg-emerald-600">Vào ca</button>
+                <button onClick={() => onLeave(employee.id)} className="flex-1 bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-semibold">Xin nghỉ</button>
+              </div>
+            ) : isCheckedIn && !isCheckedOut && !isLeave && !isSuperAdmin ? (
+              <button onClick={() => {setAuthType('out'); setShowAuthModal(true);}} className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold shadow-sm">Ra ca</button>
+            ) : <div className="bg-gray-50 text-emerald-600 p-3 rounded-xl text-center text-sm font-semibold border border-emerald-100">{isSuperAdmin ? 'Admin không cần chấm công' : isLeave ? 'Đang nghỉ phép' : 'Đã hoàn thành ca'}</div>}
+            
+          </div>
+
+          {!isSuperAdmin && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="font-bold text-gray-800 text-base">Bảng Lương Dự Kiến</h2>
+                <button onClick={() => setShowAdvanceModal(true)} className="text-orange-600 bg-orange-50 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center"><Banknote size={14} className="mr-1"/> Ứng lương</button>
+              </div>
+              <div className="text-center mb-5 pb-5 border-b border-dashed border-gray-200">
+                <p className="text-xs text-gray-500 mb-1 uppercase tracking-wide">Thực lãnh</p>
+                <p className={`text-4xl font-bold ${details.netSalary < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(details.netSalary)} đ</p>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <h4 className="text-[10px] font-bold text-emerald-600 uppercase mb-2">Thu nhập (+)</h4>
+                  <div className="space-y-1.5 px-1 text-sm">
+                    <div className="flex justify-between flex-wrap"><span className="text-gray-500">Lương CB ({details.workDays} ngày)</span> <span className="font-medium text-right">{formatCurrency(details.baseSalaryCalc)}</span>
+                      {details.workDaysProbation > 0 && <span className="w-full text-right text-[10px] text-gray-400 mt-0.5">({details.workDaysProbation} ngày thử việc, {details.workDaysOfficial} ngày chính thức)</span>}
+                    </div>
+                    <div className="flex justify-between"><span className="text-gray-500">Kinh nghiệm ({details.expMonths} tháng)</span> <span className="font-medium text-blue-600">+{formatCurrency(details.experienceSalary)}</span></div>
+                    {isSales && (<div className="flex justify-between"><span className="text-gray-500">Hoa hồng</span> <span className="font-medium text-emerald-600">+{formatCurrency(details.commission)}</span></div>)}
+                    <div className="flex justify-between"><span className="text-gray-500">Thưởng / Tăng ca</span> <span className="font-medium text-emerald-600">+{formatCurrency(details.overtimePay + details.totalBonus - details.holidayBonus)}</span></div>
+                    {details.holidayBonus > 0 && <div className="flex justify-between"><span className="text-gray-500">Thưởng Lễ Tết tự động</span> <span className="font-medium text-purple-600">+{formatCurrency(details.holidayBonus)}</span></div>}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold text-red-500 uppercase mb-2">Khấu trừ (-)</h4>
+                  <div className="space-y-1.5 px-1 text-sm">
+                    <div className="flex justify-between"><span className="text-gray-500">Tạm ứng / Phạt</span> <span className="font-medium text-red-500">-{formatCurrency(details.totalAdvance + details.totalPenalty)}</span></div>
+                    {isSales && details.badDebt > 0 && (<div className="flex justify-between"><span className="text-red-500 font-medium">Khấu trừ nợ</span> <span className="font-medium text-red-500">-{formatCurrency(details.badDebt)}</span></div>)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+      case 'settings': return <SettingsView isAccounting={isAccounting} holidays={holidays} onAddHoliday={onAddHoliday} onDeleteHoliday={onDeleteHoliday} />;
+      case 'billing': return <BillingView company={currentCompany} />;
+      case 'company_attendance': return <AttendanceView employees={employees} attendance={attendance} date={date} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, 'Kế toán chấm hộ')} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, 'Kế toán chấm hộ')} />;
+      case 'products': return <ProductManagementView isAccounting={isAccounting} products={products} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} />;
+      case 'employees': return <EmployeeView employees={employees} onAddEmployee={onAddEmployee} onEditEmployee={onEditEmployee} isSuperAdmin={isSuperAdmin} />;
+      case 'customers': return <CustomerCRMView employee={employee} customers={isSales ? customers.filter(c=>c.empId===employee.id) : customers} orders={orders} payments={payments} onAddCustomer={onAddCustomer} employees={employees} />;
+      case 'orders': return <OrderManagementView isAccounting={isAccounting} employee={employee} employees={employees} customers={customers} orders={orders} products={products} onAddOrder={onAddOrder} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} />;
+      case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} />;
+      case 'finance': return <FinanceView isAccounting={isAccounting} employee={employee} expenses={expenses} payments={payments} onAddExpense={(data) => onAddExpense(employee.id, data)} onAddPayment={onAddPayment} onToggleArchiveExpense={onToggleArchiveExpense} onToggleArchivePayment={onToggleArchivePayment} onDeleteExpense={onDeleteExpense} onDeletePayment={onDeletePayment} employees={employees} customers={customers} />;
+      case 'payroll': return <SalaryView employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={payments} holidays={holidays} onAddFinancial={onAddFinancial} onUpdatePerformance={onUpdatePerformance} advanceRequests={advanceRequests} onApproveAdvance={onApproveAdvance} onRejectAdvance={onRejectAdvance} />;
+      case 'more': return <MoreMenu isAccounting={isAccounting} isSales={isSales} isDriver={isDriver} isSuperAdmin={isSuperAdmin} setActiveTab={setActiveTab} onLogout={onLogout} employee={employee} />;
+      default: return <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} orders={orders} setActiveTab={setActiveTab} />;
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
+      {renderHeader()}
+      
+      <main className="flex-1 overflow-y-auto pb-24 px-4 pt-4">{renderContent()}</main>
+
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-md animate-in slide-in-from-bottom-10">
+            <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-xl text-gray-800">{authType === 'in' ? 'Vào ca' : 'Ra ca'}</h3><button onClick={() => setShowAuthModal(false)}><X/></button></div>
+            <button onClick={handleConfirmAuth} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-3.5 rounded-xl font-bold shadow-sm transition-colors">Xác nhận</button>
+          </div>
+        </div>
+      )}
+
+      {showAdvanceModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">Yêu Cầu Tạm Ứng</h3><button onClick={() => setShowAdvanceModal(false)} className="text-gray-400"><X /></button></div>
+            <form onSubmit={handleAdvanceSubmit} className="space-y-4">
+              <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input type="tel" required value={formatInputCurrency(advanceAmount)} onChange={(e) => setAdvanceAmount(parseInputCurrency(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="VD: 2.000.000" /></div>
+              <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input type="text" required value={advanceReason} onChange={(e) => setAdvanceReason(capitalizeFirst(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Lý do cá nhân..." /></div>
+              <button type="submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-lg font-semibold mt-4 transition-colors">Gửi Yêu Cầu</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <SmartAIAssistant employee={employee} company={currentCompany} activeTab={activeTab} customers={customers} orders={orders} expenses={expenses} />
+
+      <nav className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
+        <div className="flex justify-around items-center px-1 py-1.5">
+          {isAccounting && <NavButton icon={<Store />} label="Quản lý" active={activeTab === 'home'} onClick={() => setActiveTab('home')} />}
+          {(isAccounting || isSales) && <NavButton icon={<ClipboardList />} label="Đơn hàng" active={activeTab === 'orders'} onClick={() => setActiveTab('orders')} />}
+          {(isAccounting || isDriver) && <NavButton icon={<BookText />} label="Sổ nợ" active={activeTab === 'debt'} onClick={() => setActiveTab('debt')} />}
+          {isAccounting && <NavButton icon={<ArrowRightLeft />} label="Thu chi" active={activeTab === 'finance'} onClick={() => setActiveTab('finance')} />}
+          <NavButton icon={<MoreHorizontal />} label="Thêm" active={['more','profile','customers','products','employees','payroll','company_attendance','settings','billing'].includes(activeTab) || (!isAccounting && !isSales && !isDriver)} onClick={() => setActiveTab('more')} />
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+// --- SUB-COMPONENTS ---
+
+function SettingsView({ isAccounting, holidays, onAddHoliday, onDeleteHoliday }) {
+  const [showForm, setShowForm] = useState(false);
+  const [newHoliday, setNewHoliday] = useState({ date: getTodayString(), name: '', type: 'fixed', value: '' });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!newHoliday.name || !newHoliday.value) return;
+    onAddHoliday({ ...newHoliday, value: parseInt(newHoliday.value) || 0 });
+    setShowForm(false);
+    setNewHoliday({ date: getTodayString(), name: '', type: 'fixed', value: '' });
+  };
+
+  if (!isAccounting) return <div className="p-4 text-center">Bạn không có quyền truy cập.</div>;
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-lg font-bold text-gray-800">Cấu Hình Lễ Tết</h2>
+        <button onClick={() => setShowForm(true)} className="bg-purple-600 text-white p-2 rounded-full shadow-sm hover:bg-purple-700"><Plus size={20} /></button>
+      </div>
+
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+        <p className="text-sm text-gray-600 mb-4 leading-relaxed">Nhân viên có lịch sử đi làm (hoặc đi trễ) vào các ngày được cấu hình dưới đây sẽ tự động được cộng thêm tiền thưởng vào Bảng Lương tháng.</p>
+        
+        <div className="space-y-3">
+          {holidays.length === 0 ? <p className="text-center text-sm text-gray-400 py-4">Chưa có cấu hình ngày lễ nào.</p> : null}
+          {[...holidays].sort((a,b) => new Date(b.date) - new Date(a.date)).map(h => (
+            <div key={h.id} className="p-3 border border-purple-100 bg-purple-50/30 rounded-xl relative group">
+              <button onClick={() => { if(window.confirm('Xóa cấu hình này?')) onDeleteHoliday(h.id); }} className="absolute top-3 right-3 text-gray-400 hover:text-red-500"><Trash2 size={16}/></button>
+              <h3 className="font-bold text-gray-800 mb-1">{h.name}</h3>
+              <p className="text-xs text-gray-500 flex items-center gap-1 mb-1"><Calendar size={12}/> {new Date(h.date).toLocaleDateString('vi-VN')}</p>
+              <p className="text-sm font-semibold text-purple-600">
+                Thưởng: {h.type === 'fixed' ? `+${formatCurrency(h.value)} đ` : `+${h.value}% lương ngày`}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <h3 className="font-bold text-lg mb-4 text-gray-800">Thêm Ngày Lễ</h3>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Tên Ngày Lễ</label>
+                <input required type="text" value={newHoliday.name} onChange={e=>setNewHoliday({...newHoliday, name: capitalizeFirst(e.target.value)})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-purple-500" placeholder="VD: Quốc Khánh 2/9" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Chọn Ngày</label>
+                <input required type="date" value={newHoliday.date} onChange={e=>setNewHoliday({...newHoliday, date: e.target.value})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-purple-500 bg-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Hình Thức Thưởng</label>
+                <select value={newHoliday.type} onChange={e=>setNewHoliday({...newHoliday, type: e.target.value})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none bg-white focus:ring-2 focus:ring-purple-500">
+                  <option value="fixed">Tiền mặt cố định (VNĐ)</option>
+                  <option value="percentage">Phần trăm (%) Lương ngày</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Mức thưởng</label>
+                <input required type="tel" value={formatInputCurrency(newHoliday.value)} onChange={e=>setNewHoliday({...newHoliday, value: parseInputCurrency(e.target.value)})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-purple-500 font-bold text-purple-600" placeholder={newHoliday.type === 'fixed' ? 'VD: 500.000' : 'VD: 200'} />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-xl font-bold transition-colors">Hủy</button>
+                <button type="submit" className="flex-[2] bg-purple-600 text-white py-3.5 rounded-xl font-bold transition-colors shadow-md shadow-purple-500/30">Lưu Cấu Hình</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MoreMenu({ isAccounting, isSales, isDriver, isSuperAdmin, setActiveTab, onLogout, employee }) {
+  const menuItems = [
+    { id: 'profile', label: 'Hồ sơ cá nhân', icon: <UserCircle className="text-blue-500" />, show: true },
+    { id: 'customers', label: 'Khách hàng', icon: <Users className="text-green-500" />, show: isAccounting || isSales },
+    { id: 'products', label: 'Kho sản phẩm', icon: <Package className="text-orange-500" />, show: isAccounting },
+    { id: 'company_attendance', label: 'Chấm công', icon: <CalendarDays className="text-purple-500" />, show: isAccounting },
+    { id: 'payroll', label: 'Bảng lương', icon: <DollarSign className="text-yellow-600" />, show: isAccounting },
+    { id: 'employees', label: 'Nhân sự', icon: <Settings className="text-gray-500" />, show: isAccounting },
+    { id: 'settings', label: 'Cấu hình Lễ Tết', icon: <Gift className="text-pink-500" />, show: isAccounting },
+    { id: 'billing', label: 'Gói cước', icon: <Crown className="text-yellow-500" />, show: isSuperAdmin },
+  ];
+
+  return (
+    <div className="space-y-4 animate-in fade-in">
+      <div className="bg-white p-4 rounded-xl shadow-sm flex items-center gap-3">
+        <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xl">{employee?.name?.charAt(0) || 'U'}</div>
+        <div className="flex-1">
+          <h2 className="font-bold text-gray-800">{employee?.name || 'Người dùng'}</h2>
+          <p className="text-xs text-gray-500">{employee?.phone} • {employee?.position}</p>
+        </div>
+      </div>
+      
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-50">
+        {menuItems.filter(i => i.show).map((item, idx) => (
+          <button key={item.id} onClick={() => setActiveTab(item.id)} className={`w-full flex items-center justify-between p-4 bg-white hover:bg-gray-50 transition ${idx !== 0 ? 'border-t border-gray-50' : ''}`}>
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center">{item.icon}</div>
+              <span className="text-sm font-medium text-gray-700">{item.label}</span>
+            </div>
+            <ChevronRight size={16} className="text-gray-300" />
+          </button>
+        ))}
+      </div>
+
+      <button onClick={onLogout} className="w-full bg-white text-red-500 font-bold py-4 rounded-xl shadow-sm flex justify-center items-center gap-2 hover:bg-red-50 transition border border-red-50">
+        <LogOut size={18} /> Đăng xuất
+      </button>
+    </div>
+  );
+}
+
+function DashboardView({ employee, company, employees, attendance, date, orders = [], setActiveTab }) {
+  const todaysOrders = orders.filter(o => o.date === date && !o.isArchived);
+  const revenueToday = todaysOrders.reduce((s, o) => s + (o.amount || 0), 0);
+  
+  return (
+    <div className="relative animate-in fade-in -mx-4 -mt-4">
+      <div className="bg-gradient-to-b from-[#10b981] to-[#059669] pt-4 px-4 pb-16 rounded-b-[2rem]">
+        <div className="flex justify-between items-center mb-4 text-white">
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm">
+              <span className="text-emerald-600 font-black text-xs leading-none text-center block">Cty<br/>HD</span>
+            </div>
+            <div>
+              <h1 className="font-bold text-sm">Chào {company?.name} <Edit3 size={12} className="inline opacity-80"/></h1>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="bg-white/20 p-1.5 rounded-full"><Scan size={20} /></div>
+            <div className="bg-white/20 p-1.5 rounded-full relative">
+              <Bell size={20} />
+              <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full border border-emerald-600"></span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white/20 rounded-full flex items-center px-4 py-2 text-white shadow-inner">
+          <Search size={18} className="opacity-80" />
+          <input type="text" placeholder="Tìm kiếm" className="bg-transparent border-none outline-none text-sm ml-2 text-white placeholder-white/80 w-full" />
+        </div>
+      </div>
+
+      <div className="px-4 -mt-8 relative z-10">
+        <div className="bg-white rounded-2xl shadow-md p-4 mb-5 border border-gray-50">
+          <div className="flex justify-between items-center mb-3">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center">HÔM NAY, {new Date(date).toLocaleDateString('vi-VN')} <span className="ml-1 opacity-50"><MoreHorizontal size={14}/></span></p>
+          </div>
+          <div className="grid grid-cols-2 gap-4 divide-x divide-gray-100">
+            <div className="pl-1">
+              <p className="text-[10px] text-gray-500 mb-1 flex items-center gap-1"><TrendingUp size={12} className="text-orange-500"/> Doanh thu</p>
+              <p className="text-xl font-bold text-gray-800">{formatCurrency(revenueToday)}</p>
+            </div>
+            <div className="pl-4">
+              <p className="text-[10px] text-gray-500 mb-1 flex items-center gap-1"><ClipboardList size={12} className="text-blue-500"/> Đơn hàng</p>
+              <p className="text-xl font-bold text-gray-800">{todaysOrders.length}</p>
+            </div>
+          </div>
+        </div>
+
+        <h3 className="font-bold text-gray-800 mb-3 text-sm">Tính năng cho bạn</h3>
+        <div className="grid grid-cols-3 gap-3 mb-5">
+          <button onClick={() => setActiveTab('orders')} className="bg-white p-3 rounded-xl shadow-sm flex flex-col items-center justify-center gap-2 active:bg-gray-50 transition border border-gray-50">
+            <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600"><ClipboardList size={22} /></div>
+            <span className="text-[11px] font-medium text-gray-700">Đơn hàng</span>
+          </button>
+          <button onClick={() => setActiveTab('customers')} className="bg-white p-3 rounded-xl shadow-sm flex flex-col items-center justify-center gap-2 active:bg-gray-50 transition border border-gray-50">
+            <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600"><Users size={22} /></div>
+            <span className="text-[11px] font-medium text-gray-700">Khách hàng</span>
+          </button>
+          <button onClick={() => setActiveTab('products')} className="bg-white p-3 rounded-xl shadow-sm flex flex-col items-center justify-center gap-2 active:bg-gray-50 transition border border-gray-50">
+            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600"><Package size={22} /></div>
+            <span className="text-[11px] font-medium text-gray-700">Sản phẩm</span>
+          </button>
+        </div>
+
+        <h3 className="font-bold text-gray-800 mb-3 text-sm">Việc cần làm</h3>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-50 p-4 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <CalendarDays className="text-orange-500" size={20} />
+            <span className="text-sm font-medium text-gray-700">Chưa có lịch nhắc nợ</span>
+          </div>
+          <ChevronRight size={16} className="text-gray-400" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, isRestoring }) {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
+      <div className="bg-white rounded-2xl p-5 w-full max-w-xs animate-in zoom-in-95 duration-200">
+        <h3 className="font-bold text-lg text-gray-800 mb-2">{title || 'Xác nhận'}</h3>
+        <p className="text-sm text-gray-600 mb-6">{message}</p>
+        <div className="flex space-x-3">
+          <button onClick={onCancel} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold transition-colors text-sm">Hủy</button>
+          <button onClick={onConfirm} className={`flex-1 py-2.5 rounded-xl font-semibold transition-colors text-sm text-white ${isRestoring ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'}`}>
+            {isRestoring ? 'Khôi phục' : 'Đồng ý'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FinanceView({ isAccounting, employee, expenses, payments, onAddExpense, onAddPayment, onToggleArchiveExpense, onToggleArchivePayment, onDeleteExpense, onDeletePayment, employees, customers }) {
+  const [filterMonth, setFilterMonth] = useState(getTodayString().substring(0, 7));
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [actionItem, setActionItem] = useState(null);
+
+  const [newExpense, setNewExpense] = useState({ category: 'Chi mua hàng hóa', amount: '', note: '', date: getTodayString() });
+  const [newPayment, setNewPayment] = useState({ customerId: '', amount: '', note: 'Thu nợ', date: getTodayString() });
+
+  const categories = ['Chi mua hàng hóa', 'Chi xăng dầu', 'Chi phí văn phòng', 'Chi phí khác'];
+
+  const allTransactions = useMemo(() => {
+    const list = [
+      ...expenses.map(e => ({ ...e, isExpense: true })),
+      ...payments.map(p => ({ ...p, isExpense: false }))
+    ];
+    return list.filter(t => t.date.startsWith(filterMonth) && !t.isArchived).sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [expenses, payments, filterMonth]);
+
+  const totalExpense = allTransactions.filter(t => t.isExpense).reduce((sum, t) => sum + (t.amount || 0), 0);
+  const totalIncome = allTransactions.filter(t => !t.isExpense).reduce((sum, t) => sum + (t.amount || 0), 0);
+  const balance = totalIncome - totalExpense;
+
+  const handleExpenseSubmit = (e) => {
+    e.preventDefault();
+    if (newExpense.amount > 0) onAddExpense({ ...newExpense, note: capitalizeFirst(newExpense.note) });
+    setShowExpenseModal(false);
+    setNewExpense({ category: 'Chi mua hàng hóa', amount: '', note: '', date: getTodayString() });
+  };
+  const handlePaymentSubmit = (e) => {
+    e.preventDefault();
+    if (newPayment.amount > 0 && newPayment.customerId) onAddPayment({ ...newPayment, note: capitalizeFirst(newPayment.note) });
+    setShowPaymentModal(false);
+    setNewPayment({ customerId: '', amount: '', note: 'Thu nợ', date: getTodayString() });
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex gap-2 mb-4">
+        <select className="bg-white border border-gray-200 rounded-full px-3 py-1.5 text-xs font-semibold outline-none" value={filterMonth} onChange={e=>setFilterMonth(e.target.value)}>
+          <option value={getTodayString().substring(0, 7)}>Tháng này</option>
+          <option value="">Tất cả</option>
+        </select>
+        <button className="bg-white border border-gray-200 rounded-full px-3 py-1.5 text-xs font-semibold outline-none flex items-center gap-1">Khách hàng <ChevronDown size={12}/></button>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-50 p-4">
+        <div className="flex justify-between items-end mb-4 border-b border-gray-100 pb-4">
+          <span className="text-xs font-bold text-gray-500 uppercase">Chênh lệch</span>
+          <span className="text-2xl font-bold text-gray-800">{formatCurrency(balance)} đ</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-orange-50/50 border border-orange-100 rounded-lg p-3">
+            <p className="text-[10px] text-orange-800 font-bold mb-1 flex items-center gap-1"><ArrowRightLeft size={12} className="rotate-90"/> TỔNG CHI</p>
+            <p className="font-bold text-orange-600">{formatCurrency(totalExpense)}</p>
+          </div>
+          <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-3">
+            <p className="text-[10px] text-emerald-800 font-bold mb-1 flex items-center gap-1"><ArrowRightLeft size={12} className="-rotate-90"/> TỔNG THU</p>
+            <p className="font-bold text-emerald-600">{formatCurrency(totalIncome)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-0 bg-white rounded-xl border border-gray-50 shadow-sm overflow-hidden">
+        {allTransactions.length === 0 ? <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch.</p> : 
+          allTransactions.map(t => {
+            const isChi = t.isExpense;
+            const empName = employees.find(e => e.id === t.empId)?.name || 'Admin';
+            const cusName = isChi ? null : customers.find(c => c.id === t.customerId)?.name || 'Khách vô danh';
+            return (
+              <div key={t.id} className="p-3 border-b border-gray-50 last:border-0 relative group flex items-start gap-3 bg-white">
+                {isAccounting && <button onClick={() => { if(window.confirm('Xóa vĩnh viễn giao dịch này?')) isChi ? onDeleteExpense(t.id) : onDeletePayment(t.id); }} className="absolute top-3 right-3 text-gray-300 hover:text-red-500"><Trash2 size={14}/></button>}
+                <div className={`mt-1 w-6 h-6 rounded-full flex items-center justify-center shrink-0 border ${isChi ? 'border-orange-200 text-orange-500 bg-orange-50' : 'border-emerald-200 text-emerald-500 bg-emerald-50'}`}>
+                  {isChi ? <MinusCircle size={14}/> : <PlusCircle size={14}/>}
+                </div>
+                <div className="flex-1 pr-6">
+                  <div className="flex justify-between items-start mb-1">
+                    <h3 className="font-bold text-sm text-gray-800 line-clamp-1">{isChi ? t.note : cusName}</h3>
+                    <span className={`font-bold shrink-0 ${isChi ? 'text-orange-600' : 'text-emerald-600'}`}>{isChi ? '-' : '+'}{formatCurrency(t.amount)}</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mb-0.5">{isChi ? t.category : t.note}</p>
+                  <p className="text-[10px] text-gray-400">{new Date(t.date).toLocaleDateString('vi-VN')} • Tạo bởi: {empName}</p>
+                </div>
+              </div>
+            )
+          })
+        }
+      </div>
+
+      <div className="fixed bottom-[70px] left-0 w-full px-4 flex gap-3 pointer-events-none">
+        <div className="w-full max-w-md mx-auto flex gap-3 pointer-events-auto">
+          <button onClick={() => setShowExpenseModal(true)} className="flex-1 bg-orange-500 text-white rounded-xl py-3 font-bold shadow-lg flex items-center justify-center gap-2 hover:bg-orange-600"><MinusCircle size={18}/> Khoản chi</button>
+          <button onClick={() => setShowPaymentModal(true)} className="flex-1 bg-emerald-500 text-white rounded-xl py-3 font-bold shadow-lg flex items-center justify-center gap-2 hover:bg-emerald-600"><PlusCircle size={18}/> Khoản thu</button>
+        </div>
+      </div>
+
+      {showExpenseModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <h3 className="font-bold text-lg mb-4">Tạo Khoản Chi</h3>
+            <form onSubmit={handleExpenseSubmit} className="space-y-3">
+              <select value={newExpense.category} onChange={e=>setNewExpense({...newExpense, category: e.target.value})} className="w-full border p-2.5 rounded-xl text-sm outline-none bg-white">{categories.map(c=><option key={c}>{c}</option>)}</select>
+              <input required type="tel" value={formatInputCurrency(newExpense.amount)} onChange={e=>setNewExpense({...newExpense, amount: parseInputCurrency(e.target.value)})} placeholder="Số tiền" className="w-full border p-2.5 rounded-xl text-sm" />
+              <input required type="text" value={newExpense.note} onChange={e=>setNewExpense({...newExpense, note: capitalizeFirst(e.target.value)})} placeholder="Nội dung" className="w-full border p-2.5 rounded-xl text-sm" />
+              <div className="flex gap-2">
+                <button type="button" onClick={()=>setShowExpenseModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                <button type="submit" className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold">Lưu chi</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showPaymentModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <h3 className="font-bold text-lg mb-4">Tạo Khoản Thu</h3>
+            <form onSubmit={handlePaymentSubmit} className="space-y-3">
+              <select required value={newPayment.customerId} onChange={e=>setNewPayment({...newPayment, customerId: e.target.value})} className="w-full border p-2.5 rounded-xl text-sm outline-none bg-white">
+                <option value="">-- Chọn khách hàng --</option>
+                {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <input required type="tel" value={formatInputCurrency(newPayment.amount)} onChange={e=>setNewPayment({...newPayment, amount: parseInputCurrency(e.target.value)})} placeholder="Số tiền" className="w-full border p-2.5 rounded-xl text-sm" />
+              <input required type="text" value={newPayment.note} onChange={e=>setNewPayment({...newPayment, note: capitalizeFirst(e.target.value)})} placeholder="Nội dung (Mặc định: Thu nợ)" className="w-full border p-2.5 rounded-xl text-sm" />
+              <div className="flex gap-2">
+                <button type="button" onClick={()=>setShowPaymentModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu thu</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NavButton({ icon, label, active, onClick }) { 
+  return (
+    <button onClick={onClick} className={`flex flex-col items-center justify-center space-y-1 w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>
+      {React.cloneElement(icon, { size: 22, className: active ? 'stroke-2' : 'stroke-[1.5px]' })}
+      <span className={`text-[10px] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{label}</span>
+    </button>
+  ); 
+}
+
+function OrderManagementView({ isAccounting, employee, employees, customers, orders, products, onAddOrder, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense }) {
+  const [showAddOrder, setShowAddOrder] = useState(false); 
+  const [showQuickAddCus, setShowQuickAddCus] = useState(false);
+  const [tab, setTab] = useState('all');
+  const [searchCus, setSearchCus] = useState('');
+  const [showCusDropdown, setShowCusDropdown] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const [newOrder, setNewOrder] = useState({ 
+    customerId: '', 
+    items: [{ description: '', quantity: 1, unitPrice: '' }], 
+    discount: '', 
+    extraExpenseName: '',
+    extraExpenseAmount: '',
+    extraExpensePayer: 'buyer', 
+    date: getTodayString(), 
+    upfrontPayment: '', 
+    paymentMethod: 'Chuyển khoản' 
+  });
+  
+  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '' });
+
+  const activeOrders = orders.filter(o => !o.isArchived);
+  const filteredCustomers = customers.filter(c => (c.name || '').toLowerCase().includes(searchCus.toLowerCase()) || (c.phone || '').includes(searchCus));
+  
+  const subTotal = newOrder.items.reduce((sum, item) => sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unitPrice)||0), 0);
+  const discountAmount = parseFloat(newOrder.discount) || 0;
+  const extraExpense = parseFloat(newOrder.extraExpenseAmount) || 0;
+  
+  let customerExtraExpense = 0;
+  let sellerExtraExpense = 0;
+  
+  if (newOrder.extraExpensePayer === 'buyer') {
+    customerExtraExpense = extraExpense;
+  } else if (newOrder.extraExpensePayer === 'shared') {
+    customerExtraExpense = extraExpense / 2;
+    sellerExtraExpense = extraExpense / 2;
+  } else if (newOrder.extraExpensePayer === 'seller') {
+    sellerExtraExpense = extraExpense;
+  }
+
+  const totalAmount = Math.max(0, subTotal - discountAmount + customerExtraExpense);
+
+  const handleAddItem = () => setNewOrder({...newOrder, items: [...newOrder.items, { description: '', quantity: 1, unitPrice: '' }]});
+  const handleRemoveItem = (index) => {
+    const newItems = [...newOrder.items]; newItems.splice(index, 1);
+    setNewOrder({...newOrder, items: newItems});
+  };
+  const handleItemChange = (index, field, value) => {
+    const newItems = [...newOrder.items]; newItems[index][field] = value;
+    setNewOrder({...newOrder, items: newItems});
+  };
+  const handleItemProductChange = (index, prodId) => {
+    const prod = products?.find(p => p.id === prodId);
+    const newItems = [...newOrder.items]; 
+    if(prod) { newItems[index].description = prod.name; newItems[index].unitPrice = prod.sellingPrice; } 
+    else { newItems[index].description = ''; newItems[index].unitPrice = ''; }
+    setNewOrder({...newOrder, items: newItems});
+  };
+
+  const handleQuickAddCustomer = (e) => {
+    e.preventDefault();
+    const finalEmpId = ['Kinh doanh', 'Bán hàng'].includes(employee?.position) ? employee.id : employee?.id;
+    if (!finalEmpId) return setErrorMsg("Vui lòng chọn nhân viên phụ trách khách hàng này!");
+    
+    onAddCustomer(finalEmpId, { name: newCus.name, phone: newCus.phone, address: newCus.address });
+    setSearchCus(newCus.name);
+    setShowQuickAddCus(false);
+    setNewCus({name:'', phone:'', address:''});
+  };
+
+  const handleAddSubmit = (e) => {
+    e.preventDefault(); 
+    setErrorMsg('');
+    if (!newOrder.customerId) { setErrorMsg("Vui lòng chọn khách hàng!"); return; }
+    const validItems = newOrder.items.filter(i => i.description.trim() !== '');
+    if (validItems.length === 0) { setErrorMsg("Vui lòng nhập ít nhất 1 sản phẩm!"); return; }
+
+    const empId = employee?.id || 'admin';
+
+    onAddOrder(empId, { 
+      customerId: newOrder.customerId, 
+      items: validItems, 
+      discount: discountAmount, 
+      extraExpenseName: capitalizeFirst(newOrder.extraExpenseName),
+      extraExpenseAmount: extraExpense,
+      extraExpensePayer: newOrder.extraExpensePayer,
+      customerExtraExpense: customerExtraExpense,
+      sellerExtraExpense: sellerExtraExpense,
+      amount: totalAmount, 
+      date: newOrder.date 
+    });
+
+    const upfront = parseFloat(newOrder.upfrontPayment) || 0;
+    if (upfront > 0 && onAddPayment) {
+      onAddPayment({ customerId: newOrder.customerId, amount: upfront, note: `Khách thanh toán trước - ${newOrder.paymentMethod}`, date: newOrder.date });
+    }
+
+    if (sellerExtraExpense > 0 && onAddExpense) {
+      const cusName = customers.find(c => c.id === newOrder.customerId)?.name || 'Khách hàng';
+      onAddExpense({
+        category: 'Chi phí khác',
+        amount: sellerExtraExpense,
+        note: `Phụ phí đơn hàng (${capitalizeFirst(newOrder.extraExpenseName) || 'Không tên'}) - Khách: ${cusName}`,
+        date: newOrder.date
+      });
+    }
+
+    setShowAddOrder(false); 
+    setSearchCus('');
+    setNewOrder({ customerId: '', items: [{ description: '', quantity: 1, unitPrice: '' }], discount: '', extraExpenseName: '', extraExpenseAmount: '', extraExpensePayer: 'buyer', date: getTodayString(), upfrontPayment: '', paymentMethod: 'Chuyển khoản' });
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex border-b border-gray-200">
+        <button onClick={()=>setTab('all')} className={`flex-1 py-2 text-sm font-semibold border-b-2 ${tab==='all'?'border-emerald-500 text-emerald-600':'border-transparent text-gray-500'}`}>Tất cả</button>
+        <button onClick={()=>setTab('pending')} className={`flex-1 py-2 text-sm font-semibold border-b-2 ${tab==='pending'?'border-emerald-500 text-emerald-600':'border-transparent text-gray-500'}`}>Chờ xác nhận</button>
+      </div>
+      
+      <div className="space-y-3">
+        {activeOrders.reverse().map(o => {
+          const cus = customers.find(c => c.id === o.customerId);
+          const emp = employees.find(e => e.id === o.empId);
+          return (
+            <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 relative group">
+              {isAccounting && <button onClick={() => { if(window.confirm('Xóa vĩnh viễn đơn hàng này?')) onDeleteOrder(o.id); }} className="absolute top-3 right-3 text-gray-300 hover:text-red-500"><Trash2 size={14}/></button>}
+              <div className="flex justify-between items-start mb-2 pr-6">
+                <h3 className="font-bold text-gray-800">{cus?.name}</h3>
+                <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded font-bold">Đã giao</span>
+              </div>
+              <div className="text-xs text-gray-500 mb-3 border-b border-gray-50 pb-3">
+                {formatTime(o.date)} {new Date(o.date).toLocaleDateString('vi-VN')} - HD{o.id.substring(o.id.length-6).toUpperCase()}<br/>
+                Tạo bởi {emp?.name || 'Admin'}
+                {o.extraExpenseName && o.customerExtraExpense > 0 && <span className="block mt-1 text-blue-600 font-medium">+ {o.extraExpenseName} ({formatCurrency(o.customerExtraExpense)})</span>}
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Tổng cộng</span>
+                <div className="text-right">
+                  <span className="text-base font-black text-gray-800 block">{formatCurrency(o.amount)} đ</span>
+                  <span className="text-[10px] text-orange-500 font-medium">Ghi nhận nợ</span>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="fixed bottom-[70px] right-4 left-4 pointer-events-none flex justify-center">
+         <button onClick={() => setShowAddOrder(true)} className="pointer-events-auto bg-blue-600 text-white rounded-full px-6 py-3 font-bold shadow-lg flex items-center gap-2 hover:bg-blue-700">
+            <Plus size={18}/> Bán hàng
+         </button>
+      </div>
+
+      {showAddOrder && (
+         <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-bottom">
+            <header className="bg-blue-600 text-white p-4 flex items-center justify-between shrink-0 shadow-sm">
+               <h2 className="font-bold text-lg">Tạo Đơn Hàng Mới</h2>
+               <button onClick={() => setShowAddOrder(false)} className="hover:bg-blue-700 p-1 rounded-full"><X size={24}/></button>
+            </header>
+            
+            <div className="p-4 flex-1 overflow-y-auto">
+               <form id="order-form" onSubmit={handleAddSubmit} className="space-y-4 max-w-lg mx-auto pb-6">
+                {errorMsg && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 font-medium border border-red-100">{errorMsg}</div>}
+                
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-2">1. Khách hàng *</label>
+                  <div className="flex gap-2 items-center">
+                    <div className="relative flex-1">
+                      <Search size={18} className="absolute left-3 top-3 text-gray-400" />
+                      <input type="text" value={searchCus} onChange={e => { setSearchCus(e.target.value); setShowCusDropdown(true); setNewOrder({...newOrder, customerId: ''}); }} onFocus={() => setShowCusDropdown(true)} className="w-full border border-gray-300 p-2.5 pl-10 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tìm tên khách hàng..." />
+                      {showCusDropdown && (
+                        <ul className="absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                          {filteredCustomers.map(c => (
+                            <li key={c.id} onClick={() => { setNewOrder({...newOrder, customerId: c.id}); setSearchCus(c.name); setShowCusDropdown(false); }} className="p-3 text-sm hover:bg-blue-50 cursor-pointer border-b border-gray-50">
+                              <span className="font-semibold block text-gray-800">{c.name}</span><span className="text-[10px] text-gray-500">{c.phone || c.address}</span>
+                            </li>
+                          ))}
+                          {filteredCustomers.length === 0 && <li className="p-3 text-sm text-gray-500 text-center">Không tìm thấy</li>}
+                        </ul>
+                      )}
+                    </div>
+                    <button type="button" onClick={() => setShowQuickAddCus(true)} className="bg-emerald-50 text-emerald-600 px-3.5 py-2.5 rounded-xl border border-emerald-200 flex items-center justify-center font-bold hover:bg-emerald-100 transition-colors shrink-0">
+                      <Plus size={20} />
+                    </button>
+                  </div>
+                  {newOrder.customerId && (
+                     <div className="mt-3 p-2.5 bg-blue-50 border border-blue-100 rounded-lg flex justify-between items-center">
+                        <span className="text-sm font-semibold text-blue-800 flex items-center gap-2"><CheckCircle size={16}/> Đã chọn: {customers.find(c => c.id === newOrder.customerId)?.name}</span>
+                        <button type="button" onClick={() => {setNewOrder({...newOrder, customerId: ''}); setSearchCus('');}}><X size={16} className="text-blue-500 hover:text-blue-700"/></button>
+                     </div>
+                  )}
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                  <div className="flex justify-between items-center mb-3">
+                    <label className="block text-xs font-bold text-gray-500 uppercase">2. Sản phẩm</label>
+                    <button type="button" onClick={handleAddItem} className="text-xs text-blue-600 font-semibold flex items-center bg-blue-50 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"><Plus size={14} className="mr-1"/> Thêm dòng</button>
+                  </div>
+                  <div className="space-y-3">
+                    {newOrder.items.map((item, index) => (
+                      <div key={index} className="relative bg-gray-50 p-3 rounded-xl border border-gray-100">
+                        {newOrder.items.length > 1 && <button type="button" onClick={() => handleRemoveItem(index)} className="absolute -top-2 -right-2 bg-red-100 text-red-600 rounded-full p-1.5 hover:bg-red-200 shadow-sm"><X size={14}/></button>}
+                        <select value={products.find(p=>p.name === item.description)?.id || ''} onChange={e=>handleItemProductChange(index, e.target.value)} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none bg-white mb-2 focus:ring-2 focus:ring-blue-500">
+                          <option value="">-- Chọn nhanh từ kho --</option>
+                          {products.filter(p => !p.isArchived).map(p => <option key={p.id} value={p.id}>{p.name} ({formatCurrency(p.sellingPrice)})</option>)}
+                        </select>
+                        <input type="text" placeholder="Hoặc nhập tên hàng hóa thủ công..." value={item.description} onChange={e=>handleItemChange(index, 'description', capitalizeFirst(e.target.value))} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm mb-2 outline-none focus:ring-2 focus:ring-blue-500" />
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <div className="flex-1 flex gap-2">
+                            <input required type="number" step="0.01" placeholder="Số lượng" value={item.quantity} onChange={e=>handleItemChange(index, 'quantity', e.target.value)} className="w-1/3 border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                            <input required type="tel" placeholder="Đơn giá (VNĐ)" value={formatInputCurrency(item.unitPrice)} onChange={e=>handleItemChange(index, 'unitPrice', parseInputCurrency(e.target.value))} className="w-2/3 border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-blue-600 font-semibold mt-3 pt-3 border-t border-dashed border-gray-200">Tạm tính: {formatCurrency((parseFloat(item.quantity)||0) * (parseFloat(item.unitPrice)||0))} đ</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-3">3. Thanh toán & Phụ phí</label>
+                  <div className="flex justify-between items-center mb-2"><span className="text-sm text-gray-600">Tổng tiền hàng:</span><span className="font-semibold">{formatCurrency(subTotal)} đ</span></div>
+                  <div className="flex justify-between items-center mb-3 pb-3 border-b border-gray-100">
+                    <span className="text-sm text-gray-600">Giảm giá / C.Khấu:</span>
+                    <input type="tel" value={formatInputCurrency(newOrder.discount)} onChange={e=>setNewOrder({...newOrder, discount: parseInputCurrency(e.target.value)})} className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm text-right outline-none focus:ring-2 focus:ring-blue-500" placeholder="0 ₫" />
+                  </div>
+
+                  <div className="mb-4 bg-gray-50 p-3 rounded-xl border border-gray-200">
+                    <p className="text-xs font-bold text-gray-700 mb-2">Chi phí khác (Vận chuyển, thùng xốp...)</p>
+                    <div className="flex gap-2 mb-2">
+                      <input type="text" placeholder="Tên phí (VD: Ship...)" value={newOrder.extraExpenseName} onChange={e=>setNewOrder({...newOrder, extraExpenseName: capitalizeFirst(e.target.value)})} className="flex-1 border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                      <input type="tel" placeholder="Số tiền" value={formatInputCurrency(newOrder.extraExpenseAmount)} onChange={e=>setNewOrder({...newOrder, extraExpenseAmount: parseInputCurrency(e.target.value)})} className="w-1/3 border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    {parseFloat(newOrder.extraExpenseAmount) > 0 && (
+                      <select value={newOrder.extraExpensePayer} onChange={e=>setNewOrder({...newOrder, extraExpensePayer: e.target.value})} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none bg-white text-emerald-700 font-medium focus:ring-2 focus:ring-emerald-500">
+                        <option value="buyer">Khách chịu phí (+100% vào hóa đơn)</option>
+                        <option value="shared">Chia đôi phí (+50% hóa đơn, 50% vào Chi phí)</option>
+                        <option value="seller">Shop chịu phí (Tự động hạch toán Chi phí)</option>
+                      </select>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center mb-5 bg-blue-50 p-3 rounded-xl border border-blue-100">
+                    <span className="text-sm font-bold text-blue-800">Khách Cần Trả:</span>
+                    <span className="text-2xl font-black text-blue-600">{formatCurrency(totalAmount)} đ</span>
+                  </div>
+                  
+                  <div className="bg-orange-50 p-3.5 rounded-xl border border-orange-100 mb-4">
+                    <p className="text-xs font-bold text-orange-700 mb-2 flex items-center"><DollarSign size={14} className="mr-1"/> Khách trả trước / Đặt cọc</p>
+                    <input type="tel" value={formatInputCurrency(newOrder.upfrontPayment)} onChange={e=>setNewOrder({...newOrder, upfrontPayment: parseInputCurrency(e.target.value)})} className="w-full border border-orange-200 p-2.5 rounded-lg text-sm mb-2 outline-none focus:ring-2 focus:ring-orange-400 bg-white" placeholder="Nhập số tiền đã nhận..." />
+                    {parseFloat(newOrder.upfrontPayment) > 0 && (
+                      <select value={newOrder.paymentMethod} onChange={e=>setNewOrder({...newOrder, paymentMethod: e.target.value})} className="w-full border border-orange-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-400 bg-white">
+                        <option>Chuyển khoản</option><option>Tiền mặt</option><option>Tài xế thu hộ</option>
+                      </select>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-gray-500 font-bold uppercase">Ngày lập đơn</span>
+                    <input required type="date" value={newOrder.date} onChange={e=>setNewOrder({...newOrder, date: e.target.value})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                  </div>
+                </div>
+               </form>
+            </div>
+
+            <div className="bg-white p-4 border-t border-gray-100 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] shrink-0 pb-safe">
+              <div className="max-w-lg mx-auto">
+                <button type="submit" form="order-form" className="w-full bg-blue-600 text-white p-4 rounded-xl font-bold shadow-lg shadow-blue-600/30 hover:bg-blue-700 transition-all active:scale-[0.98]">Xác Nhận Tạo Đơn Hàng</button>
+              </div>
+            </div>
+
+            {showQuickAddCus && (
+              <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
+                  <h3 className="font-bold text-lg mb-4 text-gray-800">Thêm Khách Hàng Nhanh</h3>
+                  <form onSubmit={handleQuickAddCustomer} className="space-y-4">
+                    <input required type="text" value={newCus.name} onChange={e=>setNewCus({...newCus, name: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Tên khách hàng / Công ty *" />
+                    <input required type="tel" value={newCus.phone} onChange={e=>setNewCus({...newCus, phone: e.target.value})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Số điện thoại *" />
+                    <input type="text" value={newCus.address} onChange={e=>setNewCus({...newCus, address: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Địa chỉ giao hàng" />
+                    
+                    <div className="flex gap-2 pt-2">
+                      <button type="button" onClick={()=>setShowQuickAddCus(false)} className="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-xl font-bold transition-colors">Hủy</button>
+                      <button type="submit" className="flex-[2] bg-emerald-500 text-white py-3.5 rounded-xl font-bold transition-colors shadow-md shadow-emerald-500/30">Lưu Khách Hàng</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+         </div>
+      )}
+    </div>
+  );
+}
+
+function ProductManagementView({ isAccounting, products, onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct }) {
+  const [showForm, setShowForm] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [actionItem, setActionItem] = useState(null);
+  const [editingProd, setEditingProd] = useState(null);
+  
+  const [prodData, setProdData] = useState({ 
+    name: '', category: '', unit: 'Cái', costPrice: '', sellingPrice: '', 
+    barcode: '', image: '', discount: '' 
+  });
+
+  const [activeCategory, setActiveCategory] = useState('Tất cả');
+
+  const activeProducts = products.filter(p => !!p.isArchived === showArchived);
+  
+  const categories = useMemo(() => {
+    const cats = activeProducts.map(p => p.category).filter(Boolean);
+    return ['Tất cả', ...new Set(cats)];
+  }, [activeProducts]);
+
+  const displayedProducts = useMemo(() => {
+    if (activeCategory === 'Tất cả') return activeProducts;
+    return activeProducts.filter(p => p.category === activeCategory);
+  }, [activeProducts, activeCategory]);
+
+  const handleOpenEdit = (p) => {
+    setEditingProd(p);
+    setProdData({ 
+      name: p.name, category: p.category, unit: p.unit, 
+      costPrice: p.costPrice || '', sellingPrice: p.sellingPrice || '',
+      barcode: p.barcode || '', image: p.image || '', discount: p.discount || ''
+    });
+    setShowForm(true);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const pData = { 
+      ...prodData, 
+      costPrice: parseInt(prodData.costPrice) || 0, 
+      sellingPrice: parseInt(prodData.sellingPrice) || 0,
+      discount: parseInt(prodData.discount) || 0
+    };
+    if (editingProd) onEditProduct(editingProd.id, pData); 
+    else onAddProduct(pData);
+    setShowForm(false);
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 500000) {
+        alert("Vui lòng chọn ảnh có kích thước nhỏ hơn 500KB để tối ưu tốc độ.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => setProdData({...prodData, image: reader.result});
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleScanBarcode = () => {
+    const code = prompt("Mô phỏng máy quét: Vui lòng nhập hoặc dùng súng bắn mã vạch bắn vào đây:", Math.floor(Math.random() * 1000000000000).toString());
+    if (code) setProdData({...prodData, barcode: code});
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+        <div className="flex gap-4">
+          <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap pb-2 text-sm font-semibold border-b-2 ${!showArchived ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Sản phẩm</button>
+          <button className="whitespace-nowrap pb-2 text-sm font-semibold border-b-2 border-transparent text-gray-500">Tồn kho</button>
+          {isAccounting && (
+            <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap pb-2 text-sm font-semibold border-b-2 ${showArchived ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Đã ẩn</button>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Search size={20} className="text-gray-500"/>
+        </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+        {categories.map(cat => (
+          <button 
+            key={cat} 
+            onClick={() => setActiveCategory(cat)}
+            className={`px-4 py-1.5 rounded-full text-xs font-bold shrink-0 transition-colors ${activeCategory === cat ? 'bg-emerald-50 border border-emerald-500 text-emerald-600' : 'bg-white border border-gray-200 text-gray-600'}`}
+          >
+            {cat}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        {displayedProducts.map(p => (
+          <div key={p.id} className={`bg-white p-3 rounded-xl shadow-sm border flex items-center gap-3 relative ${showArchived ? 'border-gray-200 opacity-75' : 'border-gray-50'}`}>
+             {isAccounting && (
+               <button onClick={() => { if(window.confirm('Xóa vĩnh viễn sản phẩm này?')) onDeleteProduct(p.id); }} className={`absolute top-2 right-2 p-1.5 rounded-lg transition-colors text-gray-300 hover:text-red-500 hover:bg-red-50`}>
+                 <Trash2 size={14}/>
+               </button>
+             )}
+            
+            <div className="w-16 h-16 bg-gray-100 rounded-lg flex justify-center items-center text-gray-300 shrink-0 overflow-hidden border border-gray-100">
+              {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" /> : <Package size={24}/>}
+            </div>
+            
+            <div className="flex-1 cursor-pointer pr-6" onClick={() => !showArchived && handleOpenEdit(p)}>
+              <h3 className="font-semibold text-gray-800 text-sm line-clamp-1">{p.barcode ? `[${p.barcode}] ` : ''}{p.name}</h3>
+              <p className="text-xs text-gray-500 mt-0.5">{p.category} • ĐVT: {p.unit}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="font-bold text-emerald-600 text-sm">{formatCurrency(p.sellingPrice)} đ</p>
+                {p.discount > 0 && <span className="text-[9px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded font-bold">-{formatCurrency(p.discount)}</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+        {displayedProducts.length === 0 && (
+          <div className="text-center py-10">
+            <Package size={48} className="mx-auto text-gray-300 mb-3" />
+            <p className="text-sm text-gray-400">Chưa có sản phẩm nào trong danh mục này.</p>
+          </div>
+        )}
+      </div>
+
+      {!showArchived && (
+        <div className="fixed bottom-[70px] right-4 pointer-events-none flex justify-end">
+           <button onClick={() => { setEditingProd(null); setProdData({ name: '', category: '', unit: 'Cái', costPrice: '', sellingPrice: '', barcode: '', image: '', discount: '' }); setShowForm(true); }} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
+              <Plus size={28}/>
+           </button>
+        </div>
+      )}
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl p-5 w-full max-w-md animate-in slide-in-from-bottom-full duration-300 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-4 shrink-0 border-b border-gray-100 pb-3">
+              <h3 className="font-bold text-lg text-gray-800">{editingProd ? 'Sửa Sản Phẩm' : 'Thêm Sản Phẩm Mới'}</h3>
+              <button onClick={()=>setShowForm(false)} className="bg-gray-100 p-1.5 rounded-full text-gray-500 hover:bg-gray-200"><X size={20}/></button>
+            </div>
+            
+            <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
+              
+              <div className="flex justify-center mb-2">
+                <label className="relative cursor-pointer group">
+                  <div className="w-24 h-24 rounded-2xl bg-gray-50 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 overflow-hidden hover:border-emerald-500 transition-colors">
+                    {prodData.image ? (
+                      <img src={prodData.image} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <><ImagePlus size={28} className="mb-1" /><span className="text-[10px] font-medium">Tải ảnh</span></>
+                    )}
+                  </div>
+                  <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                </label>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Mã vạch / SKU</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Barcode size={18} className="absolute left-3 top-3 text-gray-400" />
+                    <input type="text" value={prodData.barcode} onChange={e=>setProdData({...prodData, barcode: e.target.value})} className="w-full border border-gray-200 p-2.5 pl-10 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Nhập hoặc quét mã..."/>
+                  </div>
+                  <button type="button" onClick={handleScanBarcode} className="bg-emerald-50 text-emerald-600 px-4 rounded-xl border border-emerald-100 flex items-center justify-center font-bold hover:bg-emerald-100 transition-colors">
+                    <Camera size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Tên sản phẩm *</label>
+                <input required type="text" value={prodData.name} onChange={e=>setProdData({...prodData, name: capitalizeFirst(e.target.value)})} className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Ví dụ: Gà Ta Nguyên Con"/>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Nhóm hàng *</label>
+                  <input required type="text" value={prodData.category} onChange={e=>setProdData({...prodData, category: capitalizeFirst(e.target.value)})} list="category-list" className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Nhập hoặc chọn..."/>
+                  <datalist id="category-list">
+                    {categories.filter(c => c !== 'Tất cả').map(c => <option key={c} value={c} />)}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Đơn vị tính *</label>
+                  <input required type="text" value={prodData.unit} onChange={e=>setProdData({...prodData, unit: capitalizeFirst(e.target.value)})} list="unit-list" className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Ví dụ: Kg"/>
+                  <datalist id="unit-list">
+                    <option value="Cái" /><option value="Kg" /><option value="Con" /><option value="Lít" /><option value="Hộp" /><option value="Thùng" /><option value="Gói" />
+                  </datalist>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Giá vốn</label>
+                    <input type="tel" value={formatInputCurrency(prodData.costPrice)} onChange={e=>setProdData({...prodData, costPrice: parseInputCurrency(e.target.value)})} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" placeholder="0 ₫"/>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-emerald-600 uppercase mb-1">Giá bán *</label>
+                    <input required type="tel" value={formatInputCurrency(prodData.sellingPrice)} onChange={e=>setProdData({...prodData, sellingPrice: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white" placeholder="0 ₫"/>
+                  </div>
+                </div>
+                
+                <div className="relative">
+                  <label className="block text-[10px] font-bold text-orange-600 uppercase mb-1">Chiết khấu mặc định (VNĐ)</label>
+                  <Percent size={14} className="absolute left-3 top-[26px] text-orange-400" />
+                  <input type="tel" value={formatInputCurrency(prodData.discount)} onChange={e=>setProdData({...prodData, discount: parseInputCurrency(e.target.value)})} className="w-full border border-orange-200 p-2.5 pl-9 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500 bg-white" placeholder="Khuyến mãi giảm giá..."/>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2 shrink-0">
+                <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 text-gray-700 py-3.5 rounded-xl font-bold hover:bg-gray-200 transition-colors">Hủy bỏ</button>
+                <button type="submit" className="flex-[2] bg-emerald-500 text-white py-3.5 rounded-xl font-bold shadow-lg shadow-emerald-500/30 hover:bg-emerald-600 active:scale-[0.98] transition-all">Lưu Sản Phẩm</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog 
+        isOpen={!!actionItem} 
+        isRestoring={actionItem?.isArchived}
+        title={actionItem?.isArchived ? "Khôi phục sản phẩm" : "Ẩn sản phẩm"} 
+        message={actionItem?.isArchived ? "Sản phẩm này sẽ xuất hiện trở lại trong danh mục bán hàng. Bạn đồng ý chứ?" : "Sản phẩm này sẽ bị ẩn để dọn dẹp danh sách, có thể khôi phục từ tab Đã ẩn."}
+        onConfirm={() => { onToggleArchiveProduct(actionItem.id, actionItem.isArchived); setActionItem(null); }} 
+        onCancel={() => setActionItem(null)} 
+      />
+    </div>
+  );
+}
+
+function CustomerCRMView({ employee, customers, orders, payments, onAddCustomer, employees }) {
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const activeCustomers = customers.filter(c => !c.isArchived);
+  
+  const isSales = ['Kinh doanh', 'Bán hàng'].includes(employee?.position);
+  const salesEmployees = employees ? employees.filter(e => ['Kinh doanh', 'Bán hàng'].includes(e.position)) : [];
+  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', empId: employee?.id || '' });
+
+  const handleAddCustomerSubmit = (e) => { 
+    e.preventDefault(); 
+    const finalEmpId = isSales ? employee.id : newCus.empId;
+    if (!finalEmpId) return;
+    onAddCustomer(finalEmpId, { name: newCus.name, phone: newCus.phone, address: newCus.address }); 
+    setShowAddCustomer(false); 
+    setNewCus({name:'', phone:'', address:'', empId: employee?.id || ''}); 
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex border-b border-gray-200">
+        <button className="flex-1 py-2 text-sm font-semibold border-b-2 border-emerald-500 text-emerald-600">Khách hàng</button>
+        <button className="flex-1 py-2 text-sm font-semibold border-b-2 border-transparent text-gray-500">Nhóm KH</button>
+      </div>
+
+      <div className="bg-white px-3 py-2 rounded-lg border border-gray-100 shadow-sm flex items-center gap-2 mb-2">
+        <Search size={18} className="text-gray-400" />
+        <input type="text" placeholder="Tìm kiếm khách hàng..." className="flex-1 text-sm outline-none" />
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-50 overflow-hidden divide-y divide-gray-50">
+        {activeCustomers.map(cus => {
+          const initials = (cus.name || '').split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase();
+          return (
+            <div key={cus.id} className="flex items-center p-3 gap-3 hover:bg-gray-50 transition cursor-pointer">
+              <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0">
+                {initials}
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-gray-800 text-sm">{cus.name}</h3>
+                <p className="text-xs text-gray-500">{cus.phone || cus.address}</p>
+              </div>
+              <div className="text-emerald-500"><Banknote size={16} /></div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="fixed bottom-[70px] right-4 pointer-events-none flex justify-end">
+         <button onClick={() => setShowAddCustomer(true)} className="pointer-events-auto bg-blue-600 text-white rounded-full px-5 py-3 font-bold shadow-lg flex items-center gap-2 hover:bg-blue-700">
+            <Plus size={18}/> Tạo khách hàng
+         </button>
+      </div>
+
+      {showAddCustomer && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <h3 className="font-bold text-lg mb-4">Thêm Khách Hàng</h3>
+            <form onSubmit={handleAddCustomerSubmit} className="space-y-4">
+              <input required type="text" value={newCus.name} onChange={e=>setNewCus({...newCus, name: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Tên khách hàng/Công ty" />
+              <input required type="tel" value={newCus.phone} onChange={e=>setNewCus({...newCus, phone: e.target.value})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Số điện thoại" />
+              <input type="text" value={newCus.address} onChange={e=>setNewCus({...newCus, address: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Địa chỉ giao hàng" />
+              {!isSales && (
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Nhân viên phụ trách</label>
+                  <select required value={newCus.empId} onChange={e=>setNewCus({...newCus, empId: e.target.value})} className="w-full border p-3 rounded-xl outline-none bg-white text-sm">
+                    <option value="">-- Chọn Sales phụ trách --</option>
+                    {salesEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                  </select>
+                </div>
+              )}
+              <button type="submit" className="w-full bg-emerald-500 text-white py-3 rounded-xl font-bold mt-2">Lưu Khách Hàng</button>
+              <button type="button" onClick={()=>setShowAddCustomer(false)} className="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold">Hủy</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmployeeView({ employees, onAddEmployee, onEditEmployee, isSuperAdmin }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editingEmp, setEditingEmp] = useState(null);
+  const [empData, setEmpData] = useState({ name: '', phone: '', position: 'Kinh doanh', startDate: getTodayString(), probationDuration: '0', probationUnit: 'days', probationRate: '100', basicSalary: '', supportSalary: '', experienceSalary: '', commissionRate: '', targetRevenue: '', overtimeRate: '' });
+
+  const handleOpenEdit = (emp) => {
+    setEditingEmp(emp);
+    setEmpData({ 
+      name: emp.name, phone: emp.phone, position: emp.position, 
+      startDate: emp.startDate || getTodayString(), 
+      probationDuration: emp.probationDuration || 0,
+      probationUnit: emp.probationUnit || 'days',
+      probationRate: emp.probationRate !== undefined ? emp.probationRate : 100,
+      basicSalary: emp.basicSalary, supportSalary: emp.supportSalary || 0, experienceSalary: emp.experienceSalary || 0, commissionRate: emp.commissionRate || 0, targetRevenue: emp.targetRevenue || 0, overtimeRate: emp.overtimeRate || 0 
+    });
+    setShowForm(true);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const pData = { 
+      ...empData, 
+      probationDuration: parseInt(empData.probationDuration)||0,
+      probationRate: parseInt(empData.probationRate)||100,
+      basicSalary: parseInt(empData.basicSalary)||0, 
+      supportSalary: parseInt(empData.supportSalary)||0, 
+      experienceSalary: parseInt(empData.experienceSalary)||0, 
+      commissionRate: parseFloat(empData.commissionRate)||0, 
+      targetRevenue: parseInt(empData.targetRevenue)||0, 
+      overtimeRate: parseInt(empData.overtimeRate)||0 
+    };
+    if (editingEmp) onEditEmployee(editingEmp.id, pData); else onAddEmployee(pData);
+    setShowForm(false);
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-lg font-bold text-gray-800">Quản Lý Nhân Sự</h2>
+        <button onClick={() => { setEditingEmp(null); setEmpData({ name: '', phone: '', position: 'Kinh doanh', startDate: getTodayString(), probationDuration: '0', probationUnit: 'days', probationRate: '100', basicSalary: '', supportSalary: '', experienceSalary: '', commissionRate: '', targetRevenue: '', overtimeRate: '' }); setShowForm(true); }} className="bg-blue-600 text-white p-2 rounded-full shadow-sm hover:bg-blue-700"><Plus size={20} /></button>
+      </div>
+      <div className="space-y-3">
+        {employees.map(emp => (
+          <div key={emp.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600"><UserCircle size={28} /></div>
+              <div>
+                <h3 className="font-semibold text-gray-800">{emp.name}</h3>
+                <span className="text-[10px] font-medium bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full inline-block mt-1">{emp.position}</span>
+                <div className="text-[10px] text-gray-500 mt-1">LCB: <strong className="text-gray-700">{formatCurrency(emp.basicSalary)}</strong> đ</div>
+              </div>
+            </div>
+            <button onClick={() => handleOpenEdit(emp)} className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-lg border border-emerald-100"><Edit3 size={18} /></button>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-md my-auto animate-in zoom-in-95">
+            <h3 className="font-bold text-lg mb-4">{editingEmp ? 'Sửa Nhân Viên' : 'Thêm Nhân Viên'}</h3>
+            <form onSubmit={handleSubmit} className="space-y-3 max-h-[70vh] overflow-y-auto pr-2">
+              <input required type="text" placeholder="Tên nhân viên" value={empData.name} onChange={e=>setEmpData({...empData, name: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+              <div className="grid grid-cols-2 gap-3">
+                <input required type="tel" placeholder="SĐT (Đăng nhập)" value={empData.phone} onChange={e=>setEmpData({...empData, phone: e.target.value})} className="w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                <select value={empData.position} onChange={e=>setEmpData({...empData, position: e.target.value})} className="w-full border p-3 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                  <option>Kinh doanh</option><option>Kế toán nhân sự</option><option>Tài xế</option><option>Sản xuất</option>{isSuperAdmin && <option value="Chủ doanh nghiệp">Chủ doanh nghiệp</option>}
+                </select>
+              </div>
+              
+              <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
+                <label className="block text-[10px] font-bold text-blue-700 uppercase mb-1">Ngày bắt đầu vào làm (Tính Lương Kinh Nghiệm)</label>
+                <input required type="date" value={empData.startDate} onChange={e=>setEmpData({...empData, startDate: e.target.value})} className="w-full border border-blue-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"/>
+                <p className="text-[10px] text-blue-600 mt-1.5 font-medium">Hệ thống tự động cộng +50.000đ/tháng dựa trên ngày này.</p>
+              </div>
+
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-3 mt-2">
+                <h4 className="text-xs font-bold text-gray-700 border-b border-gray-200 pb-1">Chính sách Lương & Thử việc</h4>
+                <input required type="tel" placeholder="Lương Cơ Bản (Chính thức)" value={formatInputCurrency(empData.basicSalary)} onChange={e=>setEmpData({...empData, basicSalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                
+                <div className="bg-white p-3 rounded-lg border border-gray-200 space-y-3 shadow-sm">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase">Giai đoạn thử việc</label>
+                  <div className="flex gap-2">
+                    <input type="number" placeholder="Thời gian" value={empData.probationDuration} onChange={e=>setEmpData({...empData, probationDuration: e.target.value})} className="w-1/3 border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                    <select value={empData.probationUnit} onChange={e=>setEmpData({...empData, probationUnit: e.target.value})} className="w-2/3 border p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                      <option value="days">Ngày</option>
+                      <option value="weeks">Tuần</option>
+                      <option value="months">Tháng</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-gray-600 whitespace-nowrap">Hưởng mức lương:</span>
+                    <div className="relative flex-1">
+                      <input type="number" placeholder="%" value={empData.probationRate} onChange={e=>setEmpData({...empData, probationRate: e.target.value})} className="w-full border p-2.5 pl-3 pr-8 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 text-right font-bold text-emerald-600 bg-emerald-50/50"/>
+                      <Percent size={14} className="absolute right-3 top-3 text-emerald-500" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <input type="tel" placeholder="Hỗ trợ/Phụ cấp cố định" value={formatInputCurrency(empData.supportSalary)} onChange={e=>setEmpData({...empData, supportSalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                  <input type="number" placeholder="Đơn giá Tăng ca / giờ" value={empData.overtimeRate} onChange={e=>setEmpData({...empData, overtimeRate: e.target.value})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                </div>
+              </div>
+
+              {['Kinh doanh', 'Bán hàng'].includes(empData.position) && (
+                <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3 mt-2">
+                  <h4 className="text-xs font-bold text-emerald-800 border-b border-emerald-200 pb-1">Hoa Hồng (Sales)</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="number" step="0.01" placeholder="% Hoa Hồng (VD: 0.05)" value={empData.commissionRate} onChange={e=>setEmpData({...empData, commissionRate: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm"/>
+                    <input type="tel" placeholder="Chỉ Tiêu Doanh Số" value={formatInputCurrency(empData.targetRevenue)} onChange={e=>setEmpData({...empData, targetRevenue: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm"/>
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex gap-2 mt-4 pt-2">
+                <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SalaryView({ employees, attendance, financials, performance, customers, orders, payments, holidays, onAddFinancial, onUpdatePerformance, advanceRequests, onApproveAdvance, onRejectAdvance }) {
+  const [selectedEmp, setSelectedEmp] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [modalType, setModalType] = useState('bonus'); 
+  const [amountInput, setAmountInput] = useState('');
+  const [reasonInput, setReasonInput] = useState('');
+  const [overtimeInput, setOvertimeInput] = useState('');
+  const [expandedEmp, setExpandedEmp] = useState(null);
+
+  const aggregateData = useMemo(() => {
+    let totalSalary = 0; let totalDays = 0;
+    employees.forEach(emp => {
+      const details = calculateSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays);
+      if (details) { totalSalary += details.netSalary; totalDays += details.workDays; }
+    });
+    return { totalSalary, totalDays, avgDaily: totalDays > 0 ? totalSalary / totalDays : 0 };
+  }, [employees, attendance, financials, performance, customers, orders, payments, holidays]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (modalType === 'performance') onUpdatePerformance(selectedEmp.id, overtimeInput);
+    else { 
+      const val = parseInputCurrency(amountInput);
+      if (!val || isNaN(val)) return; 
+      onAddFinancial(selectedEmp.id, modalType, val, capitalizeFirst(reasonInput)); 
+    }
+    setShowModal(false);
+  };
+
+  const pendingAdvances = advanceRequests ? advanceRequests.filter(r => r.status === 'pending') : [];
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      {pendingAdvances.length > 0 && (
+        <div className="bg-orange-50 border border-orange-200 p-4 rounded-2xl shadow-sm mb-6">
+          <h2 className="font-bold text-orange-800 mb-3 flex items-center text-sm"><AlertCircle size={16} className="mr-1"/> Yêu Cầu Tạm Ứng</h2>
+          <div className="space-y-2">
+            {pendingAdvances.map(req => {
+              const e = employees.find(emp => emp.id === req.empId);
+              return (
+                <div key={req.id} className="bg-white p-3 rounded-xl border border-orange-100 flex flex-col shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-bold text-gray-800 text-sm">{e?.name}</span>
+                    <span className="text-orange-600 font-bold">{formatCurrency(req.amount)} đ</span>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">Lý do: {req.reason}</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => onRejectAdvance(req.id)} className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg text-xs font-bold">Từ chối</button>
+                    <button onClick={() => onApproveAdvance(req.id)} className="flex-1 bg-emerald-500 text-white py-2 rounded-lg text-xs font-bold">Phê duyệt</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 text-white p-5 rounded-2xl shadow-md mb-6">
+        <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Tổng quỹ lương dự kiến</p>
+        <h3 className="text-3xl font-black mb-4">{formatCurrency(aggregateData.totalSalary)} đ</h3>
+        <div className="grid grid-cols-2 gap-4 border-t border-emerald-400/50 pt-3">
+          <div><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ngày công</p><p className="font-bold text-sm">{aggregateData.totalDays}</p></div>
+          <div><p className="text-emerald-100 text-[10px] uppercase mb-1">Trung bình/ngày</p><p className="font-bold text-sm">{formatCurrency(aggregateData.avgDaily)}</p></div>
+        </div>
+      </div>
+      
+      <div className="space-y-3">
+        {employees.map(emp => {
+          const details = calculateSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays);
+          const isExpanded = expandedEmp === emp.id;
+          const isSales = ['Kinh doanh', 'Bán hàng'].includes(emp.position);
+          if(!details) return null;
+          return (
+            <div key={emp.id} className="bg-white rounded-xl shadow-sm border border-gray-50 overflow-hidden transition-all">
+              <div className="p-4 cursor-pointer" onClick={() => setExpandedEmp(isExpanded ? null : emp.id)}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-gray-800 text-sm flex items-center">{emp.name}</h3>
+                    <p className="text-[10px] text-gray-500 mt-1 flex gap-2">
+                      <span className="bg-gray-100 px-1.5 py-0.5 rounded">Công: {details.workDays}</span> 
+                      <span className="bg-gray-100 px-1.5 py-0.5 rounded">TC: {details.perf.overtime}h</span>
+                    </p>
+                  </div>
+                  <div className="text-right flex items-center gap-2">
+                    <span className={`font-bold ${details.netSalary < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(details.netSalary)} đ</span>
+                    {isExpanded ? <ChevronUp size={16} className="text-gray-400"/> : <ChevronDown size={16} className="text-gray-400"/>}
+                  </div>
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="px-4 pb-4 border-t border-gray-50 pt-3 bg-gray-50/50">
+                  <div className="space-y-3 text-xs">
+                    <div className="grid grid-cols-2 gap-2 text-gray-600">
+                      <div className="flex justify-between"><span>Lương CB:</span> <strong>{formatCurrency(details.baseSalaryCalc)}</strong></div>
+                      <div className="flex justify-between"><span>Hỗ trợ:</span> <strong>{formatCurrency(details.supportSalary + details.experienceSalary)}</strong></div>
+                      {isSales && <div className="flex justify-between text-emerald-600"><span>Hoa hồng:</span> <strong>+{formatCurrency(details.commission)}</strong></div>}
+                      <div className="flex justify-between text-emerald-600"><span>Tăng ca:</span> <strong>+{formatCurrency(details.overtimePay)}</strong></div>
+                      <div className="flex justify-between text-emerald-600"><span>Thưởng:</span> <strong>+{formatCurrency(details.totalBonus)}</strong></div>
+                      <div className="flex justify-between text-red-500"><span>Phạt/Ứng:</span> <strong>-{formatCurrency(details.totalPenalty + details.totalAdvance)}</strong></div>
+                    </div>
+                  </div>
+                  <div className="flex space-x-2 mt-4 pt-3 border-t border-gray-100">
+                    <button onClick={(e) => { e.stopPropagation(); setSelectedEmp(emp); setModalType('performance'); setOvertimeInput(details.perf.overtime.toString()); setShowModal(true); }} className="flex-1 bg-white text-gray-700 py-1.5 rounded border border-gray-200 text-[10px] font-bold flex justify-center items-center gap-1"><Clock size={12}/> Giờ Tăng Ca</button>
+                    <button onClick={(e) => { e.stopPropagation(); setSelectedEmp(emp); setModalType('bonus'); setAmountInput(''); setReasonInput(''); setShowModal(true); }} className="flex-1 bg-white text-emerald-600 py-1.5 rounded border border-emerald-200 text-[10px] font-bold flex justify-center items-center gap-1"><Plus size={12}/> Thưởng</button>
+                    <button onClick={(e) => { e.stopPropagation(); setSelectedEmp(emp); setModalType('penalty'); setAmountInput(''); setReasonInput(''); setShowModal(true); }} className="flex-1 bg-white text-red-500 py-1.5 rounded border border-red-200 text-[10px] font-bold flex justify-center items-center gap-1"><MinusCircle size={12}/> Phạt</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
+            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">{modalType === 'performance' ? 'Cập nhật Giờ làm thêm' : modalType === 'bonus' ? 'Thêm Tiền Thưởng' : 'Trừ Tiền Phạt'}</h3><button onClick={() => setShowModal(false)} className="text-gray-400"><X /></button></div>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {modalType === 'performance' ? (
+                <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số giờ tăng ca</label><input type="number" step="0.5" value={overtimeInput} onChange={(e) => setOvertimeInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500" /></div>
+              ) : (
+                <><div className="mb-2"><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input type="tel" required value={formatInputCurrency(amountInput)} onChange={(e) => setAmountInput(parseInputCurrency(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input type="text" required value={reasonInput} onChange={(e) => setReasonInput(capitalizeFirst(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div></>
+              )}
+              <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 transition-colors text-white py-3 rounded-lg font-semibold mt-4">Xác nhận</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillingView({ company }) {
+  if (!company) return null;
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16 text-center pt-10">
+      <div className="w-20 h-20 bg-yellow-100 text-yellow-600 rounded-full flex items-center justify-center mx-auto mb-4"><Crown size={40}/></div>
+      <h2 className="text-xl font-bold text-gray-800">Gói Doanh Nghiệp</h2>
+      <p className="text-sm text-gray-500">Đang sử dụng bản Trial. Liên hệ nhà phát triển để nâng cấp và mở khóa tính năng tự động sao lưu Đám mây vĩnh viễn.</p>
+    </div>
+  );
+}
+
+function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, employees, onAddPayment }) {
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [newPayment, setNewPayment] = useState({ amount: '', note: '', date: getTodayString() });
+
+  const totalCompanyDebt = customers.reduce((sum, cus) => sum + getCustomerDebt(cus.id, orders, payments), 0);
+
+  const handlePaymentSubmit = (e) => {
+    e.preventDefault();
+    if (!selectedCustomer) return;
+    onAddPayment({ customerId: selectedCustomer.id, amount: parseInt(parseInputCurrency(newPayment.amount)) || 0, note: newPayment.note || (isDriver ? 'Tài xế thu tiền mặt' : 'Thu nợ'), date: newPayment.date });
+    setShowPaymentModal(false); setNewPayment({ amount: '', note: '', date: getTodayString() });
+  };
+
+  if (selectedCustomer) {
+    const currentDebt = getCustomerDebt(selectedCustomer.id, orders, payments);
+    return (
+      <div className="space-y-4 animate-in fade-in pb-16">
+        <button onClick={() => setSelectedCustomer(null)} className="text-gray-500 flex items-center text-sm font-semibold mb-2"><ChevronLeft size={18} className="mr-1" /> Trở về danh sách</button>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-50">
+          <h2 className="font-bold text-xl text-gray-800 mb-4">{selectedCustomer.name}</h2>
+          <div className="bg-red-50 border border-red-100 rounded-xl p-4 flex justify-between items-center mb-6">
+            <span className="text-red-800 font-medium">Khách Đang Nợ:</span>
+            <span className="text-2xl font-black text-red-600">{formatCurrency(currentDebt)} đ</span>
+          </div>
+          
+          <button onClick={() => setShowPaymentModal(true)} className="w-full py-4 rounded-xl font-bold text-white shadow-lg flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-700">
+            {isDriver ? <Banknote size={20}/> : <Wallet size={20}/>} {isDriver ? 'Báo Tài Xế Đã Thu Tiền' : 'Lập Phiếu Thu Nợ'}
+          </button>
+        </div>
+
+        {showPaymentModal && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+              <h3 className="font-bold text-lg mb-4">{isDriver ? 'Báo Thu Tiền' : 'Ghi nhận Thanh toán'}</h3>
+              <form onSubmit={handlePaymentSubmit} className="space-y-3">
+                <input required type="tel" value={formatInputCurrency(newPayment.amount)} onChange={e=>setNewPayment({...newPayment, amount: parseInputCurrency(e.target.value)})} className="w-full border p-3 rounded-xl text-lg font-bold text-emerald-600 outline-none" placeholder="Số tiền (VNĐ)" />
+                <input required type="text" value={newPayment.note} onChange={e=>setNewPayment({...newPayment, note: capitalizeFirst(e.target.value)})} className="w-full border p-3 rounded-xl text-sm outline-none" placeholder="Ghi chú" />
+                <div className="flex gap-2 mt-4">
+                  <button type="button" onClick={() => setShowPaymentModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                  <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Xác nhận thu</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      {isAccounting && (
+        <div className="bg-gradient-to-r from-red-500 to-orange-500 p-5 rounded-2xl shadow-md text-white mb-6">
+          <p className="text-red-100 text-xs font-bold uppercase tracking-wider mb-1">Tổng Công Nợ Thị Trường</p>
+          <h3 className="text-3xl font-black">{formatCurrency(totalCompanyDebt)} đ</h3>
+        </div>
+      )}
+      
+      <div className="bg-white px-3 py-2 rounded-lg border border-gray-100 shadow-sm flex items-center gap-2 mb-4">
+        <Search size={18} className="text-gray-400" />
+        <input type="text" placeholder="Tìm kiếm khách nợ..." className="flex-1 text-sm outline-none" />
+      </div>
+
+      <div className="space-y-3">
+        {customers.map(cus => {
+          const debt = getCustomerDebt(cus.id, orders, payments);
+          if (debt <= 0) return null; 
+          return (
+            <div key={cus.id} onClick={() => setSelectedCustomer(cus)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition">
+              <div>
+                <h3 className="font-bold text-gray-800 text-sm">{cus.name}</h3>
+                <span className="text-[10px] text-gray-500 flex items-center mt-1"><MapPin size={10} className="mr-1"/> {cus.address}</span>
+              </div>
+              <div className="text-right">
+                <span className="block font-bold text-red-500">{formatCurrency(debt)} đ</span>
+                <span className="text-[10px] text-gray-400">Cần thu</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LoginRegisterView({ onLogin, onRegister }) {
+  const [isLogin, setIsLogin] = useState(true);
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [regCompanyName, setRegCompanyName] = useState('');
+  const [regPhone, setRegPhone] = useState('');
+  const [regError, setRegError] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  const handleLoginSubmit = (e) => {
+    e.preventDefault();
+    if (!loginPhone.trim()) { setLoginError('Vui lòng nhập số điện thoại'); return; }
+    if (!onLogin(loginPhone)) setLoginError('Số điện thoại không đúng hoặc công ty chưa đăng ký.');
+  };
+
+  const handleRegisterSubmit = async (e) => {
+    e.preventDefault();
+    if (!regCompanyName.trim() || !regPhone.trim()) { setRegError('Vui lòng điền đủ thông tin'); return; }
+    setIsRegistering(true);
+    const result = await onRegister(toTitleCase(regCompanyName), regPhone);
+    if (!result.success) setRegError(result.message);
+    setIsRegistering(false);
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-[#f4f6f8] max-w-md mx-auto relative overflow-hidden items-center justify-center p-6 font-sans">
+      <div className="bg-white w-full p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
+        
+        {/* --- KHU VỰC LOGO & THƯƠNG HIỆU --- */}
+        <div className="flex flex-col items-center justify-center mb-8 space-y-3">
+          <div className="w-24 h-24 bg-white rounded-2xl flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden border border-gray-50 p-2">
+            <img 
+              src="https://api.dicebear.com/7.x/shapes/svg?seed=HDManager&backgroundColor=10b981" 
+              alt="App Logo" 
+              className="w-full h-full object-contain rounded-xl" 
+            />
+          </div>
+          <h1 className="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 tracking-tight uppercase">
+            HD MANAGER
+          </h1>
+          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em]">Nền tảng quản lý số</p>
+        </div>
+        
+        <div className="flex bg-gray-50 p-1.5 rounded-xl mb-8">
+          <button onClick={() => {setIsLogin(true); setRegError(''); setLoginError('');}} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all duration-200 ${isLogin ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>Đăng nhập</button>
+          <button onClick={() => {setIsLogin(false); setRegError(''); setLoginError('');}} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all duration-200 ${!isLogin ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>Tạo Công ty</button>
+        </div>
+
+        {isLogin ? (
+          <div>
+            <h2 className="text-xl font-bold text-center text-gray-800 mb-2">Đăng Nhập</h2>
+            <p className="text-center text-xs text-gray-500 mb-6 font-medium">Dành cho chủ doanh nghiệp & nhân viên</p>
+            {loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="Nhập số điện thoại..." />
+              <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-emerald-500/30 transition-all active:scale-[0.98]">Vào Ứng Dụng</button>
+            </form>
+          </div>
+        ) : (
+          <div>
+            <h2 className="text-xl font-bold text-center text-gray-800 mb-2">Tạo Mới</h2>
+            <p className="text-center text-xs text-gray-500 mb-6 font-medium">Tạo vùng dữ liệu Đám mây riêng</p>
+            {regError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{regError}</div>}
+            <form onSubmit={handleRegisterSubmit} className="space-y-4">
+              <input type="text" value={regCompanyName} onChange={(e) => { setRegCompanyName(toTitleCase(e.target.value)); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="Tên Doanh Nghiệp (VD: Cty HD)" />
+              <input type="tel" value={regPhone} onChange={(e) => { setRegPhone(e.target.value); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="SĐT Chủ Doanh Nghiệp" />
+              <button type="submit" disabled={isRegistering} className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-500/30 transition-all active:scale-[0.98] mt-2">
+                {isRegistering ? 'Đang khởi tạo Cloud...' : 'Bắt Đầu Miễn Phí'}
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+      <p className="text-[10px] text-gray-400 mt-8 text-center px-8 font-medium leading-relaxed">Bằng việc đăng nhập, bạn đồng ý với Chính sách Bảo mật. Dữ liệu được mã hóa trên Cloud.</p>
+    </div>
+  );
+}

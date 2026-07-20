@@ -1,0 +1,15 @@
+{
+  "appId": "com.hdmanager.app",
+  "appName": "HD Manager",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "plugins": {
+    "LocalNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
+}

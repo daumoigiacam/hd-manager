@@ -1,0 +1,30 @@
+{
+  "name": "ios-expo",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~54.0.34",
+    "expo-status-bar": "~3.0.8",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-web": "^0.21.2",
+    "react-native-webview": "13.15.0"
+  },
+  "scripts": {
+    "start": "expo start",
+    "start:lan": "expo start --lan --clear",
+    "start:tunnel": "expo start --tunnel --clear",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:ios:preview": "npx eas-cli build -p ios --profile preview",
+    "build:ios:simulator": "npx eas-cli build -p ios --profile simulator",
+    "build:ios:production": "npx eas-cli build -p ios --profile production"
+  },
+  "private": true,
+  "devDependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

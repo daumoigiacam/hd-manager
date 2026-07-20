@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="HD CONNECT">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f7fbff"/>
+      <stop offset=".55" stop-color="#e8f1ff"/>
+      <stop offset="1" stop-color="#dff8f3"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0f62fe"/>
+      <stop offset="1" stop-color="#0f9f8f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="72" y="78" width="1056" height="474" rx="34" fill="#ffffff" opacity=".86"/>
+  <rect x="112" y="124" width="106" height="106" rx="18" fill="url(#mark)"/>
+  <text x="139" y="190" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="800">HD</text>
+  <text x="112" y="302" fill="#07192e" font-family="Arial, Helvetica, sans-serif" font-size="78" font-weight="800">HD CONNECT</text>
+  <text x="112" y="374" fill="#334862" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700">Nền tảng quản lý doanh nghiệp hiện đại</text>
+  <text x="112" y="430" fill="#5c6b82" font-family="Arial, Helvetica, sans-serif" font-size="28">Quản lý khách hàng, kho, đơn hàng, công nợ, thu chi và báo cáo tập trung.</text>
+  <rect x="800" y="148" width="250" height="310" rx="24" fill="#07192e"/>
+  <rect x="835" y="190" width="180" height="18" rx="9" fill="#d9e6f8"/>
+  <rect x="835" y="244" width="92" height="82" rx="14" fill="#0f62fe"/>
+  <rect x="948" y="244" width="67" height="82" rx="14" fill="#0f9f8f"/>
+  <rect x="835" y="356" width="180" height="20" rx="10" fill="#22a06b"/>
+  <rect x="835" y="398" width="124" height="20" rx="10" fill="#f5a524"/>
+</svg>

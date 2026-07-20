@@ -1,0 +1,792 @@
+  const applyVoiceExtraction = (payload = {}) => {
+    const transcript = `${payload?.transcript || ''}`.trim();
+    const customerKeyword = `${payload?.customer_name || payload?.customerName || ''}`.trim() || transcript;
+    const productKeyword = `${payload?.product_name || payload?.productName || ''}`.trim() || transcript;
+    const extractedWeight = payload?.weight_kg ?? payload?.weightKg ?? '';
+    const customerCandidates = [customerKeyword, transcript].filter(Boolean);
+    const productCandidates = [productKeyword, transcript].filter(Boolean);
+    const customerMatch = findBestEntityMatch(
+      customerCandidates,
+      requestCustomerOptions,
+      (item) => item?.name || '',
+      (item) => [item?.phone, item?.address, item?.group, item?.customerGroup]
+    ) || findTranscriptEntity(
+      transcript,
+      requestCustomerOptions,
+      (item) => item?.name || '',
+      (item) => [item?.phone, item?.address, item?.group, item?.customerGroup]
+    );
+    const productMatch = findBestEntityMatch(
+      productCandidates,
+      requestProductOptions,
+      (item) => item?.name || '',
+      (item) => [item?.category, item?.unit, item?.barcode]
+    ) || findTranscriptEntity(
+      transcript,
+      requestProductOptions,
+      (item) => item?.name || '',
+      (item) => [item?.category, item?.unit, item?.barcode]
+    );
+    const weightValue = `${extractedWeight}`.trim() ? `${extractedWeight}`.replace(',', '.') : extractSpokenWeight(transcript);
+
+    setDispatchDraft(prev => ({
+      ...prev,
+      transcript: transcript || prev.transcript,
+      customerId: customerMatch?.id || prev.customerId,
+      customerSearch: customerMatch?.name || prev.customerSearch,
+      productId: productMatch?.id || prev.productId,
+      productSearch: productMatch?.name || prev.productSearch,
+      weightKg: weightValue || prev.weightKg
+    }));
+
+    if (customerMatch && productMatch && weightValue) {
+      setVoiceStatus(`Da nhan: ${customerMatch.name} • ${productMatch.name} • ${weightValue} kg`);
+      setDispatchError('');
+      return;
+    }
+
+    if (transcript) {
+      const missingFields = [
+        !customerMatch ? 'khach hang' : '',
+        !productMatch ? 'loai hang' : '',
+        !weightValue ? 'so kg' : ''
+      ].filter(Boolean);
+      setVoiceStatus(
+        missingFields.length
+          ? `AI da nhan giong noi nhung con thieu ${missingFields.join(', ')}. Ban kiem tra lai hoac nhap tay.`
+          : 'Da nhan noi dung giong noi. Ban vui long kiem tra lai truoc khi luu.'
+      );
+      return;
+    }
+
+    setVoiceStatus('AI chua doc duoc noi dung giong noi. Ban hay kiem tra lai khach hang, loai hang hoac so kg roi nhap tay.');
+  };
+
+  const applyVoiceTranscript = (transcript = '') => {
+    applyVoiceExtraction({ transcript });
+  };
+
+  const transcribeRecordedVoice = async (audioBlob) => {
+    setIsVoiceProcessing(true);
+    setVoiceStatus('Dang gui ghi am cho AI doc phieu xuat kho...');
+    try {
+      const parsed = await requestWarehouseDispatchDraftFromGemini(audioBlob, {
+        customers: requestCustomerOptions.map((item) => item?.name || ''),
+        products: requestProductOptions.map((item) => item?.name || '')
+      });
+      applyVoiceExtraction(parsed);
+    } catch (error) {
+      setVoiceStatus(error?.message || 'Khong the doc ghi am. Ban hay thu lai hoac nhap tay.');
+    } finally {
+      setIsVoiceProcessing(false);
+    }
+  };
+
+  const startRecordedVoiceCapture = async () => {
+    if (!GEMINI_API_KEY) {
+      setVoiceStatus('App chua co khoa AI de doc ghi am tren thiet bi nay. Ban hay nhap tay.');
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceStatus('Thiet bi nay chua ho tro ghi am truc tiep. Ban hay nhap tay.');
+      return;
+    }
+
+    cleanupRecordedVoiceResources();
+    setDispatchError('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedVoiceRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      voiceChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) voiceChunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        cleanupRecordedVoiceResources();
+        setIsVoiceListening(false);
+        setIsVoiceProcessing(false);
+        setVoiceStatus('Khong the ghi am. Ban hay thu lai hoac nhap tay.');
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        cleanupRecordedVoiceResources();
+        if (!audioBlob.size) {
+          setVoiceStatus('Khong ghi nhan duoc am thanh. Ban hay thu noi gan micro hon.');
+          return;
+        }
+        await transcribeRecordedVoice(audioBlob);
+      };
+
+      recorder.start();
+      setIsVoiceListening(true);
+      setVoiceStatus('Dang ghi am... Hay doc ten khach hang, loai hang va so kg roi bam Dung nghe.');
+    } catch (error) {
+      cleanupRecordedVoiceResources();
+      setIsVoiceListening(false);
+      const rawMessage = `${error?.message || ''}`.toLowerCase();
+      if (rawMessage.includes('notallowed') || rawMessage.includes('permission') || rawMessage.includes('denied')) {
+        setVoiceStatus('Ban chua cap quyen micro cho trinh duyet hoac app.');
+        return;
+      }
+      setVoiceStatus('Khong the bat micro de ghi am. Ban hay thu lai hoac nhap tay.');
+    }
+  };
+
+  const handleStartVoice = async () => {
+    if (isVoiceProcessing) return;
+    const microphoneAccess = await ensureMicrophoneAccess();
+    if (!microphoneAccess.granted) {
+      setVoiceStatus(microphoneAccess.message || 'Ung dung chua duoc cap quyen micro.');
+      return;
+    }
+    const Recognition = getRecognitionConstructor();
+    if (!Recognition) {
+      await startRecordedVoiceCapture();
+      return;
+    }
+
+    stopVoiceCapture();
+    setVoiceStatus('Dang nghe giong noi...');
+    setDispatchError('');
+
+    const recognition = new Recognition();
+    recognition.lang = 'vi-VN';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+    setIsVoiceListening(true);
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results || []).map((result) => result?.[0]?.transcript || '').join(' ').trim();
+      if (transcript) applyVoiceTranscript(transcript);
+    };
+
+    recognition.onerror = async (event) => {
+      setIsVoiceListening(false);
+      recognitionRef.current = null;
+      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network'].includes(event?.error)) {
+        await startRecordedVoiceCapture();
+        return;
+      }
+      setVoiceStatus(event?.error === 'not-allowed'
+        ? 'Ban chua cap quyen micro cho trinh duyet hoac app.'
+        : 'Khong the nhan giong noi. Ban hay thu lai hoac nhap tay.');
+    };
+
+    recognition.onend = () => {
+      setIsVoiceListening(false);
+      recognitionRef.current = null;
+    };
+
+    try {
+      recognition.start();
+    } catch (error) {
+      recognitionRef.current = null;
+      setIsVoiceListening(false);
+      await startRecordedVoiceCapture();
+    }
+  };
+
+  const handleDispatchCustomerChange = (customerId) => {
+    const selectedCustomer = customerLookup.get(customerId);
+    setDispatchDraft(prev => ({
+      ...prev,
+      customerId,
+      customerSearch: selectedCustomer?.name || ''
+    }));
+    setDispatchError('');
+    setDispatchPickerOpen('');
+  };
+
+  const handleDispatchProductChange = (productId) => {
+    const selectedProduct = productLookup.get(productId);
+    setDispatchDraft(prev => ({
+      ...prev,
+      productId,
+      productSearch: selectedProduct?.name || ''
+    }));
+    setDispatchError('');
+    setDispatchPickerOpen('');
+  };
+
+  const resetInlineDispatchEdit = () => {
+    setInlineEditingDispatchId('');
+    setInlineEditingDispatchDraft({ customerId: '', customerSearch: '', productId: '', productSearch: '', weightKg: '', note: '' });
+  };
+
+  const startInlineDispatchEdit = (row) => {
+    if (!row) return;
+    setInlineEditingDispatchId(row.id);
+    setInlineEditingDispatchDraft({
+      customerId: row.customerId || '',
+      customerSearch: row.customerName || '',
+      productId: row.productId || '',
+      productSearch: row.productName || '',
+      weightKg: row.weightKg ?? '',
+      note: row.note || ''
+    });
+    setDispatchStatus('');
+    setDispatchError('');
+  };
+
+  const saveInlineDispatchRow = async (row) => {
+    if (!row?.id || !employee?.id) return;
+    const customer = customerLookup.get(inlineEditingDispatchDraft.customerId);
+    const product = productLookup.get(inlineEditingDispatchDraft.productId);
+    const weightKg = parseFloat(`${inlineEditingDispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
+
+    if (!customer || !product || weightKg <= 0) {
+      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le truoc khi luu.');
+      return;
+    }
+
+    await onEditWarehouseDispatch(row.id, {
+      customerId: customer.id,
+      customerNameSnapshot: customer.name,
+      productId: product.id,
+      productNameSnapshot: product.name,
+      weightKg,
+      note: capitalizeFirst(inlineEditingDispatchDraft.note || '').trim(),
+      transcript: row.transcript || '',
+      sourceType: row.sourceType || 'manual',
+      date: row.date || workingDate
+    }, employee.id);
+
+    setDispatchStatus(`Da cap nhat dong xuat kho cua ${customer.name}.`);
+    setDispatchError('');
+    resetInlineDispatchEdit();
+  };
+
+  const deleteInlineDispatchRow = async (row) => {
+    if (!row?.id || !canCreate) return;
+    const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
+    if (!window.confirm(`Xoa dong xuat kho cua ${customerName}?`)) return;
+    await onDeleteWarehouseDispatch(row.id);
+    setDispatchStatus(`Da xoa dong xuat kho cua ${customerName}.`);
+    setDispatchError('');
+    if (inlineEditingDispatchId === row.id) resetInlineDispatchEdit();
+  };
+
+  const handleSubmitDispatch = async (e) => {
+    e.preventDefault();
+    if (!canCreate || !employee?.id) return;
+    const customer = customerLookup.get(dispatchDraft.customerId);
+    const product = productLookup.get(dispatchDraft.productId);
+    const weightKg = parseFloat(`${dispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
+
+    if (!customer || !product || weightKg <= 0) {
+      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le.');
+      return;
+    }
+
+    await onAddWarehouseDispatch(employee.id, {
+      date: workingDate,
+      customerId: customer.id,
+      customerNameSnapshot: customer.name,
+      productId: product.id,
+      productNameSnapshot: product.name,
+      weightKg,
+      note: capitalizeFirst(dispatchDraft.note || '').trim(),
+      transcript: dispatchDraft.transcript || '',
+      sourceType: dispatchDraft.transcript ? 'voice' : 'manual'
+    });
+
+    setDispatchStatus(`Da them phieu xuat cho ${customer.name} • ${product.name} • ${formatNumber(weightKg)} kg.`);
+    setDispatchError('');
+    setDispatchPickerOpen('');
+    setDispatchDraft({ customerId: '', customerSearch: '', productId: '', productSearch: '', weightKg: '', note: '', transcript: '' });
+  };
+
+  const buildDispatchSheetFilename = () => `phieu-xuat-kho-${workingDate}`;
+
+  const renderDispatchSheetCanvas = async () => {
+    if (mergedDispatchRows.length === 0) throw new Error('Chua co du lieu xuat kho trong ngay de chia se.');
+    const rows = previewDispatchRows;
+    const canvasWidth = 1080;
+    const pagePadding = 36;
+    const tableX = pagePadding;
+    const tableY = 122;
+    const tableWidth = canvasWidth - pagePadding * 2;
+    const headerHeight = 58;
+    const rowHeight = 54;
+    const tableHeight = headerHeight + (rows.length * rowHeight);
+    const canvasHeight = tableY + tableHeight + 40;
+    const columnWidths = [
+      Math.round(tableWidth * 0.36),
+      Math.round(tableWidth * 0.36),
+      tableWidth - Math.round(tableWidth * 0.36) - Math.round(tableWidth * 0.36)
+    ];
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Khong the dung phieu xuat kho de chia se.');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.fillStyle = '#0f172a';
+    ctx.textAlign = 'center';
+    ctx.font = '900 32px Arial';
+    ctx.fillText('PHIEU XUAT KHO', canvasWidth / 2, 58);
+    ctx.font = '600 18px Arial';
+    ctx.fillStyle = '#475569';
+    ctx.fillText(`${currentCompany?.name || 'Cong ty'} • ${formatDateLabel(workingDate)}`, canvasWidth / 2, 90);
+
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(tableX, tableY, tableWidth, tableHeight);
+
+    let runningX = tableX;
+    columnWidths.forEach((columnWidth, index) => {
+      if (index > 0) {
+        ctx.beginPath();
+        ctx.moveTo(runningX, tableY);
+        ctx.lineTo(runningX, tableY + tableHeight);
+        ctx.stroke();
+      }
+      runningX += columnWidth;
+    });
+
+    ctx.beginPath();
+    ctx.moveTo(tableX, tableY + headerHeight);
+    ctx.lineTo(tableX + tableWidth, tableY + headerHeight);
+    ctx.stroke();
+
+    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+      const y = tableY + headerHeight + rowIndex * rowHeight;
+      ctx.beginPath();
+      ctx.moveTo(tableX, y);
+      ctx.lineTo(tableX + tableWidth, y);
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    const columnTitles = ['Ten KH', 'Loai hang', 'So kg'];
+    ctx.fillStyle = '#0f172a';
+    ctx.font = '700 24px Arial';
+    let titleX = tableX;
+    columnTitles.forEach((title, index) => {
+      const width = columnWidths[index];
+      ctx.fillText(title, titleX + width / 2, tableY + 38);
+      titleX += width;
+    });
+
+    rows.forEach((row, rowIndex) => {
+      const rowTop = tableY + headerHeight + rowIndex * rowHeight;
+      const centerY = rowTop + 34;
+      const values = [row.customerName || '', row.productName || '', row.weightKg ? `${formatNumber(row.weightKg)}kg` : ''];
+      let valueX = tableX;
+      values.forEach((value, index) => {
+        const width = columnWidths[index];
+        ctx.fillStyle = '#0f172a';
+        ctx.font = value ? '600 22px Arial' : '400 22px Arial';
+        ctx.fillText(value, valueX + width / 2, centerY);
+        valueX += width;
+      });
+    });
+
+    return canvas;
+  };
+
+  const handleShareDispatchSheet = async () => {
+    if (mergedDispatchRows.length === 0) {
+      setDispatchStatus('Chua co phieu xuat kho trong ngay de chia se.');
+      return;
+    }
+    setIsDispatchExporting(true);
+    try {
+      const canvas = await renderDispatchSheetCanvas();
+      const blob = await canvasToBlob(canvas, 'image/png');
+      const result = await shareBlobFile({
+        filename: `${buildDispatchSheetFilename()}.png`,
+        blob,
+        title: 'Phieu xuat kho',
+        text: 'Phieu xuat kho trong ngay san sang de chia se.',
+        dialogTitle: 'Chia se phieu xuat kho'
+      });
+      if (result.status === 'shared') setDispatchStatus('Da mo bang chia se phieu xuat kho.');
+      else if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
+      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
+      else setDispatchStatus('Thiet bi nay chua ho tro chia se truc tiep. Ban hay dung nut tai xuong.');
+    } catch (error) {
+      setDispatchStatus(error?.message || 'Khong the chia se phieu xuat kho.');
+    } finally {
+      setIsDispatchExporting(false);
+    }
+  };
+
+  const handleDownloadDispatchSheet = async () => {
+    if (mergedDispatchRows.length === 0) {
+      setDispatchStatus('Chua co phieu xuat kho trong ngay de tai xuong.');
+      return;
+    }
+    setIsDispatchExporting(true);
+    try {
+      const canvas = await renderDispatchSheetCanvas();
+      const blob = await canvasToBlob(canvas, 'image/png');
+      const result = await saveBlobFile(`${buildDispatchSheetFilename()}.png`, blob);
+      if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
+      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
+      else setDispatchStatus('Khong the tai phieu xuat kho tren thiet bi nay.');
+    } catch (error) {
+      setDispatchStatus(error?.message || 'Khong the tai phieu xuat kho.');
+    } finally {
+      setIsDispatchExporting(false);
+    }
+  };
+
+  if (!canAccess) {
+    return <div className="p-4 text-center text-sm text-gray-500">Ban khong co quyen xem phieu xuat kho.</div>;
+  }
+
+  return (
+    <div className="space-y-4 animate-in fade-in pb-16">
+      {dispatchStatus && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{dispatchStatus}</div>}
+      {voiceStatus && <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-700">{voiceStatus}</div>}
+
+      {canCreate && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <p className="text-xs font-bold uppercase text-sky-600 mb-1">Nhap nhanh bang giong noi</p>
+              <p className="text-xs text-slate-500 mt-2 leading-5">Vi du: <strong>Hoang Duc vit moc 30,2 kg</strong>. App se tu tim khach hang, loai hang va dien so kg vao phieu xuat.</p>
+            </div>
+            <button
+              type="button"
+              onClick={isVoiceListening ? stopVoiceCapture : handleStartVoice}
+              disabled={isVoiceProcessing}
+              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed ${isVoiceListening ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-sky-500 text-white hover:bg-sky-600'}`}
+            >
+              {isVoiceProcessing ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
+              {isVoiceProcessing ? 'Dang xu ly...' : isVoiceListening ? 'Dung nghe' : 'Bat dau noi'}
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmitDispatch} className="space-y-3">
+            <textarea
+              value={dispatchDraft.transcript}
+              onChange={(e) => setDispatchDraft(prev => ({ ...prev, transcript: e.target.value }))}
+              className="w-full min-h-[82px] border border-slate-200 rounded-2xl p-3 text-sm outline-none focus:ring-2 focus:ring-sky-500"
+              placeholder="Vi du: Hoang Duc vit moc 30,2 kg"
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setDispatchPickerOpen(prev => prev === 'customer' ? '' : 'customer')}
+                  className="w-full border border-gray-200 bg-white rounded-xl px-3 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500 flex items-center justify-between gap-3 text-left"
+                >
+                  <span className={selectedDispatchCustomer ? 'text-slate-900' : 'text-gray-400'}>
+                    {selectedDispatchCustomer ? selectedDispatchCustomer.name : '-- Chon khach hang --'}
+                  </span>
+                  {dispatchPickerOpen === 'customer' ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+                </button>
+                {dispatchPickerOpen === 'customer' && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
+                    <div className="p-3 border-b border-gray-100">
+                      <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
+                        <Search size={14} className="text-emerald-600 shrink-0" />
+                        <input
+                          type="text"
+                          value={dispatchDraft.customerSearch || ''}
+                          onChange={(e) => setDispatchDraft(prev => ({ ...prev, customerSearch: capitalizeFirstPreservingSpacing(e.target.value) }))}
+                          className="w-full bg-transparent text-xs outline-none placeholder:text-gray-400"
+                          placeholder="Tim khach hang"
+                        />
+                      </div>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
+                      {filteredDispatchCustomers.map(customer => (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => handleDispatchCustomerChange(customer.id)}
+                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.customerId === customer.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
+                        >
+                          <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">{customer.phone || 'Chua co so dien thoai'}{customer.address ? ` • ${customer.address}` : ''}</p>
+                        </button>
+                      ))}
+                      {dispatchCustomerSearchKeyword && filteredDispatchCustomers.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-slate-500">Khong tim thay khach hang phu hop.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setDispatchPickerOpen(prev => prev === 'product' ? '' : 'product')}
+                  className="w-full border border-gray-200 bg-white rounded-xl px-3 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500 flex items-center justify-between gap-3 text-left"
+                >
+                  <span className={selectedDispatchProduct ? 'text-slate-900' : 'text-gray-400'}>
+                    {selectedDispatchProduct ? selectedDispatchProduct.name : '-- Chon loai hang --'}
+                  </span>
+                  {dispatchPickerOpen === 'product' ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+                </button>
+                {dispatchPickerOpen === 'product' && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
+                    <div className="p-3 border-b border-gray-100">
+                      <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
+                        <Search size={14} className="text-emerald-600 shrink-0" />
+                        <input
+                          type="text"
+                          value={dispatchDraft.productSearch || ''}
+                          onChange={(e) => setDispatchDraft(prev => ({ ...prev, productSearch: capitalizeFirstPreservingSpacing(e.target.value) }))}
+                          className="w-full bg-transparent text-xs outline-none placeholder:text-gray-400"
+                          placeholder="Tim loai hang"
+                        />
+                      </div>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
+                      {filteredDispatchProducts.map(product => (
+                        <button
+                          key={product.id}
+                          type="button"
+                          onClick={() => handleDispatchProductChange(product.id)}
+                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.productId === product.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
+                        >
+                          <p className="text-sm font-semibold text-slate-900">{product.name}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">{product.category || 'Chua co nhom'}{product.unit ? ` • ${product.unit}` : ''}</p>
+                        </button>
+                      ))}
+                      {dispatchProductSearchKeyword && filteredDispatchProducts.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-slate-500">Khong tim thay loai hang phu hop.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={dispatchDraft.weightKg}
+                onChange={(e) => setDispatchDraft(prev => ({ ...prev, weightKg: e.target.value }))}
+                className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="So kg"
+              />
+              <input
+                type="text"
+                value={dispatchDraft.note}
+                onChange={(e) => setDispatchDraft(prev => ({ ...prev, note: capitalizeFirstPreservingSpacing(e.target.value) }))}
+                className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="Ghi chu neu can"
+              />
+            </div>
+
+            {dispatchError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchError}</div>}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setDispatchPickerOpen('');
+                  setDispatchDraft({ customerId: '', customerSearch: '', productId: '', productSearch: '', weightKg: '', note: '', transcript: '' });
+                }}
+                className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700"
+              >
+                Lam moi
+              </button>
+              <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Luu dong xuat</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {todayDispatchRows.length > 0 ? (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase text-emerald-600 mb-1">Xuat kho trong ngay</p>
+              <h3 className="text-base font-black text-slate-900 mt-1">Bang xuat kho ngay {formatDateLabel(workingDate)}</h3>
+              <p className="text-xs text-slate-500 mt-2">{dispatchSummary.totalLines} dong • {dispatchSummary.totalCustomers} khach • {formatNumber(dispatchSummary.totalWeight)} kg</p>
+            </div>
+            <div className="shrink-0 flex flex-col gap-2">
+              <button type="button" onClick={handleShareDispatchSheet} disabled={isDispatchExporting} className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60">
+                <Send size={14} />
+                {isDispatchExporting ? 'Dang chuan bi...' : 'Chia se'}
+              </button>
+              <button type="button" onClick={handleDownloadDispatchSheet} disabled={isDispatchExporting} className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                <Download size={14} />
+                Tai xuong
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-x-auto rounded-2xl border-2 border-slate-800">
+            <table className="w-full table-auto border-collapse text-center text-[13px] text-slate-900">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="border border-slate-800 px-2 py-2 font-black">Ten KH</th>
+                  <th className="border border-slate-800 px-2 py-2 font-black">Loai hang</th>
+                  <th className="border border-slate-800 px-2 py-2 font-black">So kg</th>
+                  {canCreate && <th className="border border-slate-800 px-2 py-2 font-black whitespace-nowrap">Thao tac</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {editableDispatchRows.map(row => {
+                  const isEditingRow = inlineEditingDispatchId === row.id;
+                  return (
+                    <tr key={row.id} className={`min-h-[56px] ${isEditingRow ? 'bg-amber-50/70' : ''}`}>
+                      <td className="border border-slate-700 px-2 py-2 align-middle break-words whitespace-normal">
+                        {isEditingRow ? (
+                          <select
+                            value={inlineEditingDispatchDraft.customerId}
+                            onChange={(e) => {
+                              const selectedCustomer = customerLookup.get(e.target.value);
+                              setInlineEditingDispatchDraft(prev => ({
+                                ...prev,
+                                customerId: e.target.value,
+                                customerSearch: selectedCustomer?.name || prev.customerSearch
+                              }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          >
+                            <option value="">Chon khach hang</option>
+                            {requestCustomerOptions.map(customer => (
+                              <option key={customer.id} value={customer.id}>{customer.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="font-semibold">{row.customerName || ''}</p>
+                        )}
+                      </td>
+                      <td className="border border-slate-700 px-2 py-2 align-middle break-words whitespace-normal">
+                        {isEditingRow ? (
+                          <select
+                            value={inlineEditingDispatchDraft.productId}
+                            onChange={(e) => {
+                              const selectedProduct = productLookup.get(e.target.value);
+                              setInlineEditingDispatchDraft(prev => ({
+                                ...prev,
+                                productId: e.target.value,
+                                productSearch: selectedProduct?.name || prev.productSearch
+                              }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          >
+                            <option value="">Chon loai hang</option>
+                            {requestProductOptions.map(product => (
+                              <option key={product.id} value={product.id}>{product.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="text-center">
+                            <p className="font-semibold">{row.productName || ''}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">{row.note || 'Khong co ghi chu'}</p>
+                          </div>
+                        )}
+                      </td>
+                      <td className="border border-slate-700 px-2 py-2 align-middle break-words whitespace-normal">
+                        {isEditingRow ? (
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={inlineEditingDispatchDraft.weightKg}
+                            onChange={(e) => {
+                              setInlineEditingDispatchDraft(prev => ({ ...prev, weightKg: e.target.value }));
+                              setDispatchError('');
+                            }}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                            placeholder="So kg"
+                          />
+                        ) : (
+                          <span className="font-semibold">{row.weightKg ? `${formatNumber(row.weightKg)}kg` : ''}</span>
+                        )}
+                      </td>
+                      {canCreate && (
+                        <td className="border border-slate-700 px-2 py-2 align-middle whitespace-nowrap">
+                          {isEditingRow ? (
+                            <div className="flex flex-col gap-1">
+                              <button
+                                type="button"
+                                onClick={() => saveInlineDispatchRow(row)}
+                                className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-500 px-2 py-2 text-[11px] font-bold text-white hover:bg-emerald-600"
+                              >
+                                <Check size={13} />
+                                Luu
+                              </button>
+                              <button
+                                type="button"
+                                onClick={resetInlineDispatchEdit}
+                                className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50"
+                              >
+                                <X size={13} />
+                                Huy
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-1">
+                              <button
+                                type="button"
+                                onClick={() => startInlineDispatchEdit(row)}
+                                className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-2 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
+                              >
+                                <Edit3 size={13} />
+                                Sua
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteInlineDispatchRow(row)}
+                                className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-2 text-[11px] font-bold text-red-600 hover:bg-red-100"
+                              >
+                                <Trash2 size={13} />
+                                Xoa
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-dashed border-slate-200 shadow-sm p-6 text-center text-sm font-medium text-slate-500">
+          Chua co dong xuat kho nao trong ngay.
+        </div>
+      )}
+
+      {historyDispatchGroups.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <h3 className="font-bold text-lg mb-4">Lich su xuat kho</h3>
+          <div className="space-y-2 mt-4">
+            {historyDispatchGroups.map(group => (
+              <div key={group.dateKey} className="rounded-2xl border border-gray-100 bg-slate-50 p-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-bold text-slate-900">{formatDateLabel(group.dateKey)}</p>
+                  <p className="text-xs text-slate-500 mt-1">{group.totalLines} dong • {formatNumber(group.totalWeight)} kg</p>
+                </div>
+                <span className="text-sm text-gray-600">Da luu</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

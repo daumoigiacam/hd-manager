@@ -1,0 +1,41 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasCompanyClaim() {
+      return signedIn() && request.auth.token.companyId is string;
+    }
+
+    function hasNoCompanyField(data) {
+      return !('companyId' in data);
+    }
+
+    function belongsToSignedInCompany(data) {
+      return !hasCompanyClaim() || hasNoCompanyField(data) || data.companyId == request.auth.token.companyId;
+    }
+
+    // HD Manager currently scopes company data in the app layer under:
+    // artifacts/{appId}/public/data/{collection}/{docId}
+    //
+    // These rules intentionally block unauthenticated public access first.
+    // Before public App Store / Google Play launch, migrate app login to
+    // Firebase Auth users with companyId/role custom claims so rules can
+    // enforce strict company-level isolation server-side.
+    match /artifacts/{appId}/public/data/{collectionId}/{docId} {
+      allow read: if signedIn() && belongsToSignedInCompany(resource.data);
+      allow create: if signedIn() && belongsToSignedInCompany(request.resource.data);
+      allow update: if signedIn()
+        && belongsToSignedInCompany(resource.data)
+        && belongsToSignedInCompany(request.resource.data);
+      allow delete: if signedIn() && belongsToSignedInCompany(resource.data);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
