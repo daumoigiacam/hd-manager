@@ -2,7 +2,16 @@ import { seedData } from './seed-data.js';
 
 const STORAGE_KEY = 'hd-manager-local-db-v2-clean-preview';
 const BROADCAST_CHANNEL_NAME = `${STORAGE_KEY}-channel`;
-const clone = (value) => JSON.parse(JSON.stringify(value));
+class MockIncrementSentinel {
+  constructor(amount) {
+    this.amount = Number(amount) || 0;
+  }
+}
+
+const clone = (value) => {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+};
 
 function createInitialStore() {
   return Object.fromEntries(
@@ -82,14 +91,63 @@ function emitCollection(name) {
 function createSnapshot(name) {
   const entries = Object.values(store[name] || {});
   return {
+    docs: entries.map((entry) => ({
+      id: entry.id,
+      exists: () => true,
+      data: () => clone(entry)
+    })),
+    empty: entries.length === 0,
+    size: entries.length,
     forEach(callback) {
       entries.forEach((entry) => {
         callback({
           id: entry.id,
+          exists: () => true,
           data: () => clone(entry)
         });
       });
     }
+  };
+}
+
+function createDocumentSnapshot(docRef) {
+  const entry = store[docRef.collectionName]?.[docRef.id];
+  return {
+    id: docRef.id,
+    exists: () => Boolean(entry),
+    data: () => (entry ? clone(entry) : undefined)
+  };
+}
+
+function applyFirestoreValue(value, existingValue) {
+  if (value instanceof MockIncrementSentinel) {
+    const current = Number(existingValue) || 0;
+    return current + value.amount;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) => applyFirestoreValue(item, existingValue?.[index]));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        applyFirestoreValue(nestedValue, existingValue?.[key])
+      ])
+    );
+  }
+  return value;
+}
+
+function applySetDoc(docRef, data, options = {}) {
+  const collectionName = docRef.collectionName;
+  const currentCollection = store[collectionName] || {};
+  const existingDoc = currentCollection[docRef.id] || { id: docRef.id };
+  const appliedData = applyFirestoreValue(data, existingDoc);
+  const nextDoc = options.merge ? { ...existingDoc, ...clone(appliedData), id: docRef.id } : { ...clone(appliedData), id: docRef.id };
+
+  store[collectionName] = {
+    ...currentCollection,
+    [docRef.id]: nextDoc
   };
 }
 
@@ -145,6 +203,10 @@ export function getFirestore(app) {
   return { app };
 }
 
+export function initializeFirestore(app) {
+  return getFirestore(app);
+}
+
 export function collection(_, ...segments) {
   return {
     kind: 'collection',
@@ -163,18 +225,9 @@ export function doc(_, ...segments) {
 }
 
 export async function setDoc(docRef, data, options = {}) {
-  const collectionName = docRef.collectionName;
-  const currentCollection = store[collectionName] || {};
-  const existingDoc = currentCollection[docRef.id] || { id: docRef.id };
-  const nextDoc = options.merge ? { ...existingDoc, ...clone(data), id: docRef.id } : { ...clone(data), id: docRef.id };
-
-  store[collectionName] = {
-    ...currentCollection,
-    [docRef.id]: nextDoc
-  };
-
+  applySetDoc(docRef, data, options);
   persistStore();
-  emitCollection(collectionName);
+  emitCollection(docRef.collectionName);
 }
 
 export async function deleteDoc(docRef) {
@@ -204,4 +257,52 @@ export function onSnapshot(ref, onNext) {
       collectionListeners.delete(ref.name);
     }
   };
+}
+
+export async function getDocs(ref) {
+  if (ref.kind !== 'collection') {
+    throw new Error('Preview mock currently supports getDocs(collection) only.');
+  }
+  return createSnapshot(ref.name);
+}
+
+export function increment(amount) {
+  return new MockIncrementSentinel(amount);
+}
+
+export async function enableNetwork() {
+  return undefined;
+}
+
+export async function runTransaction(_, updateFunction) {
+  const touchedCollections = new Set();
+  const transaction = {
+    async get(docRef) {
+      return createDocumentSnapshot(docRef);
+    },
+    set(docRef, data, options = {}) {
+      applySetDoc(docRef, data, options);
+      touchedCollections.add(docRef.collectionName);
+      return transaction;
+    },
+    update(docRef, data) {
+      applySetDoc(docRef, data, { merge: true });
+      touchedCollections.add(docRef.collectionName);
+      return transaction;
+    },
+    delete(docRef) {
+      const currentCollection = { ...(store[docRef.collectionName] || {}) };
+      delete currentCollection[docRef.id];
+      store[docRef.collectionName] = currentCollection;
+      touchedCollections.add(docRef.collectionName);
+      return transaction;
+    }
+  };
+
+  const result = await updateFunction(transaction);
+  if (touchedCollections.size > 0) {
+    persistStore();
+    touchedCollections.forEach((collectionName) => emitCollection(collectionName));
+  }
+  return result;
 }

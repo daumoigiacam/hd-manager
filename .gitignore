@@ -1,8 +1,21 @@
-node_modules
-dist
-.vite
-.vite-dev.log
-.vite-dev.err
+# Dependencies
+node_modules/
+ios-expo/node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+release/
+out/
+dist-packages/
+stable-apk-web/
+*.apk
+*.aab
+*.exe
+*.msi
+
+# Local env files
 .env
 .env.*
 !.env.example
@@ -10,25 +23,47 @@ functions/.env
 functions/.env.*
 !functions/.env.example
 
-# Generated release/build outputs
-dist
-release
-dist-packages
-stable-apk-web
-.firebase
-*.apk
-*.aab
-*.exe
-*.msi
+# Firebase
+.firebase/
+.firebase-cache/
+firebase-debug.log
+
+# Logs
+logs/
+.codex-logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.vite-dev.log
+.vite-dev.err
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Vite / local dev
+.vite/
+
+# Android / Capacitor
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
+# Electron
+release/
+out/
 
 # Local backup / recovery snapshots can contain stale secrets or old code.
-backups
-logs
-_recovered-source-*
-temp-restore-unzip
-tmp-edge-profile-*
-ios-expo/node_modules
+backups/
+source-archives/
+_recovered-source-*/
+temp-restore-unzip/
+tmp-*/
+tmp-*.*
 src/*.bak*
 src/*.before*
 src/*.backup*
@@ -42,3 +77,6 @@ src/*.tmp
 src/*.write-test
 src/*.auto-fix-preview*
 src/*.extract.js
+
+# Expo local state
+ios-expo/.expo/
