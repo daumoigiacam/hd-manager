@@ -277,6 +277,45 @@ const requestWarehouseDispatchDraftDisabled = async () => {
   throw new Error('Gemini voice extraction is disabled for warehouse dispatch.');
 };
 
+const LOGIN_DEBUG_STORAGE_KEY = 'hd-manager-login-debug';
+const isLoginDebugEnabled = () => {
+  try {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search || '');
+    return params.get('loginDebug') === '1' || window.localStorage?.getItem(LOGIN_DEBUG_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const maskLoginPhone = (value = '') => {
+  const digits = normalizeCustomerPhone(value);
+  if (!digits) return '';
+  if (digits.length <= 4) return '*'.repeat(digits.length);
+  return `${digits.slice(0, 3)}***${digits.slice(-2)}`;
+};
+
+const buildSafeLoginDiagnosticPayload = (payload = {}) => {
+  const safePayload = {};
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    const lowerKey = `${key}`.toLowerCase();
+    if (lowerKey.includes('phone')) {
+      safePayload[key] = maskLoginPhone(value);
+    } else if (value instanceof Error) {
+      safePayload[key] = { code: value.code || '', message: value.message || '' };
+    } else {
+      safePayload[key] = value;
+    }
+  });
+  return safePayload;
+};
+
+const logLoginStep = (step, payload = {}, level = 'info') => {
+  if (!isLoginDebugEnabled()) return;
+  const logger = level === 'warn' ? console.warn : level === 'error' ? console.error : console.info;
+  logger(`[HD Login] ${step}`, buildSafeLoginDiagnosticPayload(payload));
+};
+
 // BAO VE CRASH: Kiem tra va khoi tao Firebase an toan
 let app, auth, db;
 let isFirebaseConfigured = true;
@@ -298,9 +337,16 @@ try {
         Object.entries(envFirebaseConfig).filter(([, value]) => `${value || ''}`.trim())
       );
   activeFirebaseConfig = firebaseConfig;
+  logLoginStep('Firebase initialize', {
+    configured: Boolean(firebaseConfig?.apiKey),
+    projectId: firebaseConfig?.projectId || '',
+    authDomain: firebaseConfig?.authDomain || '',
+    dataMode: import.meta.env.VITE_DATA_MODE || 'cloud'
+  });
 
   if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
     isFirebaseConfigured = false; 
+    logLoginStep('Firebase initialize missing config', { configured: false }, 'warn');
   } else {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
@@ -316,12 +362,14 @@ try {
   }
 } catch (error) {
   console.error("Lỗi khởi tạo Firebase:", error);
+  logLoginStep('Firebase initialize error', { error }, 'error');
   isFirebaseConfigured = false;
 }
 
 const appId = typeof __app_id !== 'undefined'
   ? __app_id
   : (import.meta.env.VITE_HD_APP_ID || import.meta.env.VITE_FIREBASE_PROJECT_ID || 'hd-manager-production');
+logLoginStep('Data app id', { appId, projectId: activeFirebaseConfig?.projectId || '' });
 
 const FIRESTORE_WRITE_EVENT = 'hd-manager:firestore-write';
 const ACTIVITY_LOG_COLLECTION_NAME = 'activityLogs';
@@ -572,9 +620,33 @@ const REALTIME_COLLECTION_CACHEABLE_NAMES = new Set(DATA_COLLECTION_NAMES.filter
   'zalo_inbox_bridge_logs',
   'zalo_campaign_queue'
 ].includes(name)));
+const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
+  'companies',
+  'employees',
+  'customers',
+  'products',
+  'orders',
+  'orderRequests',
+  'warehouseDispatches',
+  'payments',
+  'notifications',
+  'advances',
+  'attendance',
+  'performance'
+]);
 const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|imageData|photoData|fileData|documentData|attachmentData|previewData|rawImage|rawFile)/i;
 let realtimeCollectionCacheWriteTimer = null;
 let realtimeCollectionCacheWriteMap = null;
+const isNativeAppShellRuntime = () => {
+  try {
+    return typeof Capacitor !== 'undefined' && Capacitor.getPlatform?.() !== 'web';
+  } catch {
+    return false;
+  }
+};
+const canUseRealtimeCollectionCache = (collectionName = '') => (
+  !isNativeAppShellRuntime() || NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES.has(collectionName)
+);
 const getIdleScheduler = () => (
   typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
     ? (callback) => window.requestIdleCallback(callback, { timeout: 2500 })
@@ -634,7 +706,12 @@ const loadRealtimeCollectionCache = () => {
     const collections = parsed?.collections && typeof parsed.collections === 'object' ? parsed.collections : {};
     const now = Date.now();
     const entries = Object.entries(collections)
-      .filter(([name, entry]) => REALTIME_COLLECTION_CACHEABLE_NAMES.has(name) && entry?.savedAt && now - Date.parse(entry.savedAt) <= REALTIME_COLLECTION_CACHE_MAX_AGE_MS)
+      .filter(([name, entry]) => (
+        REALTIME_COLLECTION_CACHEABLE_NAMES.has(name)
+        && canUseRealtimeCollectionCache(name)
+        && entry?.savedAt
+        && now - Date.parse(entry.savedAt) <= REALTIME_COLLECTION_CACHE_MAX_AGE_MS
+      ))
       .map(([name, entry]) => [name, entry.value]);
     return new Map(entries);
   } catch (error) {
@@ -647,7 +724,7 @@ const writeRealtimeCollectionCacheNow = (cacheMap) => {
   try {
     const collections = {};
     cacheMap.forEach((value, name) => {
-      if (!REALTIME_COLLECTION_CACHEABLE_NAMES.has(name)) return;
+      if (!REALTIME_COLLECTION_CACHEABLE_NAMES.has(name) || !canUseRealtimeCollectionCache(name)) return;
       collections[name] = {
         savedAt: new Date().toISOString(),
         value: sanitizeRealtimeCacheValue(value)
@@ -11165,7 +11242,8 @@ export default function App() {
       }
     };
 
-    const initialRealtimePriority = new Set([
+    const nativeRealtimeStartup = isNativeRuntime();
+    const webInitialRealtimePriority = new Set([
       'customers',
       'customer_accounts',
       'customer_points',
@@ -11191,15 +11269,34 @@ export default function App() {
       'pricingInputs',
       'pricingRules'
     ]);
+    const nativeInitialRealtimePriority = new Set([
+      'companies',
+      'employees',
+      'customers',
+      'products',
+      'orders',
+      'orderRequests',
+      'warehouseDispatches',
+      'payments',
+      'notifications',
+      'advances',
+      'attendance'
+    ]);
+    const initialRealtimePriority = nativeRealtimeStartup ? nativeInitialRealtimePriority : webInitialRealtimePriority;
     let priorityListenerIndex = 0;
     let deferredListenerIndex = 0;
 
     collectionBindings.forEach((binding) => {
       const [colName] = binding;
       const isPriority = initialRealtimePriority.has(colName);
+      const priorityStepMs = nativeRealtimeStartup ? 180 : 32;
+      const priorityMaxMs = nativeRealtimeStartup ? 4200 : 900;
+      const deferredBaseMs = nativeRealtimeStartup ? 5200 : 1200;
+      const deferredStepMs = nativeRealtimeStartup ? 260 : 110;
+      const deferredMaxMs = nativeRealtimeStartup ? 12000 : 5200;
       const delay = isPriority
-        ? Math.min(priorityListenerIndex++ * 32, 900)
-        : 1200 + Math.min(deferredListenerIndex++ * 110, 5200);
+        ? Math.min(priorityListenerIndex++ * priorityStepMs, priorityMaxMs)
+        : deferredBaseMs + Math.min(deferredListenerIndex++ * deferredStepMs, deferredMaxMs);
       const timerId = window.setTimeout(() => {
         if (cancelled) return;
         startCollectionListener(binding);
@@ -11759,20 +11856,38 @@ export default function App() {
   };
 
   const getLoginFirebaseUser = async () => {
-    if (!isFirebaseConfigured || !auth) return null;
-    if (firebaseUser) return firebaseUser;
+    logLoginStep('Firebase Auth start', {
+      configured: isFirebaseConfigured,
+      hasAuth: Boolean(auth),
+      hasStateUser: Boolean(firebaseUser),
+      hasCurrentUser: Boolean(auth?.currentUser)
+    });
+    if (!isFirebaseConfigured || !auth) {
+      logLoginStep('Firebase Auth unavailable', {
+        configured: isFirebaseConfigured,
+        hasAuth: Boolean(auth)
+      }, 'warn');
+      return null;
+    }
+    if (firebaseUser) {
+      logLoginStep('Firebase Auth reuse state user', { signedIn: true });
+      return firebaseUser;
+    }
     if (auth.currentUser) {
       setFirebaseUser(auth.currentUser);
       setIsFirebaseLoading(false);
+      logLoginStep('Firebase Auth reuse current user', { signedIn: true });
       return auth.currentUser;
     }
     try {
       const credential = await signInAnonymously(auth);
       setFirebaseUser(credential.user);
       setIsFirebaseLoading(false);
+      logLoginStep('Firebase Auth anonymous success', { signedIn: true });
       return credential.user;
     } catch (error) {
       console.error('Không thể khôi phục Firebase Auth trước khi đăng nhập:', error);
+      logLoginStep('Firebase Auth error', { error }, 'error');
       setRealtimeStatus({
         state: 'error',
         collection: 'auth',
@@ -11785,32 +11900,75 @@ export default function App() {
 
   const readLoginCollectionsFromCloud = async () => {
     const loginFirebaseUser = await getLoginFirebaseUser();
-    if (!loginFirebaseUser || !isFirebaseConfigured) {
+    if (!loginFirebaseUser || !isFirebaseConfigured || !db) {
+      logLoginStep('Cloud login collections skipped', {
+        hasLoginFirebaseUser: Boolean(loginFirebaseUser),
+        configured: isFirebaseConfigured,
+        hasDb: Boolean(db),
+        appId
+      }, 'warn');
       return { employeesFromCloud: [], companiesFromCloud: [], customersFromCloud: [], customerAccountsFromCloud: [] };
     }
-    const [employeeSnapshot, companySnapshot, customerSnapshot, customerAccountSnapshot] = await Promise.all([
-      getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'employees')),
-      getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'companies')),
-      getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'customers')),
-      getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'customer_accounts'))
+    const readLoginCollection = async (collectionName, label) => {
+      const startedAt = Date.now();
+      logLoginStep(label, { state: 'start', appId, collectionName });
+      try {
+        const snapshot = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', collectionName));
+        logLoginStep(label, {
+          state: 'success',
+          appId,
+          collectionName,
+          count: snapshot.size,
+          ms: Date.now() - startedAt
+        });
+        return snapshot.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }));
+      } catch (error) {
+        logLoginStep(label, {
+          state: 'error',
+          appId,
+          collectionName,
+          ms: Date.now() - startedAt,
+          error
+        }, 'error');
+        throw error;
+      }
+    };
+    const [employeesFromCloud, companiesFromCloud, customersFromCloud, customerAccountsFromCloud] = await Promise.all([
+      readLoginCollection('employees', 'Query employee'),
+      readLoginCollection('companies', 'Query company'),
+      readLoginCollection('customers', 'Query customer'),
+      readLoginCollection('customer_accounts', 'Query customer account')
     ]);
     return {
-      employeesFromCloud: employeeSnapshot.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() })),
-      companiesFromCloud: companySnapshot.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() })),
-      customersFromCloud: customerSnapshot.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() })),
-      customerAccountsFromCloud: customerAccountSnapshot.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }))
+      employeesFromCloud,
+      companiesFromCloud,
+      customersFromCloud,
+      customerAccountsFromCloud
     };
   };
 
   const handleLogin = async (phone) => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+    logLoginStep('Staff login start', {
+      phone: normalizedPhone,
+      appId,
+      localEmployees: rawEmployees.length,
+      localCompanies: rawCompanies.length,
+      localCustomers: rawCustomers.length,
+      localCustomerAccounts: rawCustomerAccounts.length
+    });
 
     let employeeSource = rawEmployees;
     let companySource = rawCompanies;
     let customerSource = rawCustomers;
     let customerAccountSource = rawCustomerAccounts;
     let emp = employeeSource.find(e => !e.isArchived && isSameLoginPhone(e.phone, normalizedPhone));
+    logLoginStep('Query employee local', {
+      phone: normalizedPhone,
+      found: Boolean(emp),
+      count: employeeSource.length
+    });
 
     if (!emp || companySource.length === 0) {
       try {
@@ -11820,6 +11978,14 @@ export default function App() {
         if (customersFromCloud.length) customerSource = customersFromCloud;
         if (customerAccountsFromCloud.length) customerAccountSource = customerAccountsFromCloud;
         emp = employeeSource.find(e => !e.isArchived && isSameLoginPhone(e.phone, normalizedPhone));
+        logLoginStep('Staff login cloud result', {
+          phone: normalizedPhone,
+          employeeFound: Boolean(emp),
+          employeesFromCloud: employeesFromCloud.length,
+          companiesFromCloud: companiesFromCloud.length,
+          customersFromCloud: customersFromCloud.length,
+          customerAccountsFromCloud: customerAccountsFromCloud.length
+        });
         if (employeesFromCloud.length) {
           setRawEmployees(prev => {
             const merged = new Map(prev.map(item => [item.id, item]));
@@ -11861,6 +12027,11 @@ export default function App() {
 
     if (emp) { 
       const comp = companySource.find(c => c.id === emp.companyId) || rawCompanies.find(c => c.id === emp.companyId) || { id: emp.companyId, name: 'Công ty' };
+      logLoginStep('Staff login success', {
+        employeeId: emp.id,
+        companyId: emp.companyId,
+        companyFound: Boolean(comp?.id)
+      });
       const nextUser = {
         role: emp.role || 'employee',
         id: emp.id,
@@ -11878,14 +12049,35 @@ export default function App() {
     const matchedCustomerAccount = customerAccountSource.find(item => !item.isArchived && item.status !== 'blocked' && isSameLoginPhone(item.phone, normalizedPhone));
     const matchedCustomer = customerSource.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
     if (matchedCustomerAccount || matchedCustomer) {
+      logLoginStep('Staff login matched customer account', {
+        phone: normalizedPhone,
+        matchedCustomerAccount: Boolean(matchedCustomerAccount),
+        matchedCustomer: Boolean(matchedCustomer)
+      }, 'warn');
       return { success: false, message: 'Số này là tài khoản khách hàng. Vui lòng chọn "Khách hàng" rồi đăng nhập.' };
     }
+    logLoginStep('Staff login no match', {
+      phone: normalizedPhone,
+      employeeCount: employeeSource.length,
+      companyCount: companySource.length,
+      customerCount: customerSource.length,
+      customerAccountCount: customerAccountSource.length,
+      appId
+    }, 'warn');
     return { success: false, message: 'Số điện thoại không đúng hoặc công ty chưa đăng ký.' };
   };
 
   const handleCustomerLogin = async (phone) => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+    logLoginStep('Customer login start', {
+      phone: normalizedPhone,
+      appId,
+      localCustomers: rawCustomers.length,
+      localCustomerAccounts: rawCustomerAccounts.length,
+      localCompanies: rawCompanies.length,
+      localEmployees: rawEmployees.length
+    });
 
     let customerSource = rawCustomers;
     let accountSource = rawCustomerAccounts;
@@ -11895,6 +12087,13 @@ export default function App() {
     let customer = account
       ? customerSource.find(item => item.id === (account.customer_id || account.customerId) && !item.isArchived)
       : customerSource.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
+    logLoginStep('Query customer local', {
+      phone: normalizedPhone,
+      accountFound: Boolean(account),
+      customerFound: Boolean(customer),
+      customerCount: customerSource.length,
+      accountCount: accountSource.length
+    });
 
     if (!customer || companySource.length === 0) {
       try {
@@ -11907,6 +12106,15 @@ export default function App() {
         customer = account
           ? customerSource.find(item => item.id === (account.customer_id || account.customerId) && !item.isArchived)
           : customerSource.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
+        logLoginStep('Customer login cloud result', {
+          phone: normalizedPhone,
+          accountFound: Boolean(account),
+          customerFound: Boolean(customer),
+          customersFromCloud: customersFromCloud.length,
+          customerAccountsFromCloud: customerAccountsFromCloud.length,
+          companiesFromCloud: companiesFromCloud.length,
+          employeesFromCloud: employeesFromCloud.length
+        });
         if (customersFromCloud.length) {
           setRawCustomers(prev => {
             const merged = new Map(prev.map(item => [item.id, item]));
@@ -11949,8 +12157,19 @@ export default function App() {
     if (!customer) {
       const matchedEmployee = employeeSource.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
       if (matchedEmployee) {
+        logLoginStep('Customer login matched employee account', {
+          phone: normalizedPhone,
+          matchedEmployee: true
+        }, 'warn');
         return { success: false, message: 'Số này là tài khoản nhân sự. Vui lòng chọn "Nhân sự" rồi đăng nhập.' };
       }
+      logLoginStep('Customer login no match', {
+        phone: normalizedPhone,
+        customerCount: customerSource.length,
+        customerAccountCount: accountSource.length,
+        companyCount: companySource.length,
+        appId
+      }, 'warn');
       return { success: false, message: 'Số điện thoại này chưa được liên kết với khách hàng nào.' };
     }
     if (account?.status === 'blocked') return { success: false, message: 'Tài khoản khách hàng đang bị khóa. Vui lòng liên hệ công ty.' };
@@ -11964,6 +12183,12 @@ export default function App() {
       companyId: customerCompanyId,
       phone: customer.phone || normalizedPhone
     };
+    logLoginStep('Customer login success', {
+      customerId: customer.id,
+      companyId: customerCompanyId,
+      accountId,
+      companyFound: Boolean(comp?.id)
+    });
     const accountPayload = {
       ...(account || {}),
       id: accountId,
@@ -17709,6 +17934,7 @@ function MainAppView({
 
   useEffect(() => {
     if (!currentUser?.id || !currentCompany?.id || typeof window === 'undefined') return;
+    if (isNativeRuntime()) return;
     const promptKey = `hd-manager-system-notification-permission-prompted:${currentCompany.id}:${currentUser.id}`;
     try {
       if (window.localStorage.getItem(promptKey)) return;
@@ -18139,6 +18365,7 @@ function MainAppView({
 
   useEffect(() => {
     if (!systemNotificationStorageKey || !systemNotificationReadyRef.current || notificationItems.length === 0 || typeof window === 'undefined') return;
+    if (isNativeRuntime()) return;
     const now = Date.now();
     const latestNewItem = notificationItems
       .map((item) => ({

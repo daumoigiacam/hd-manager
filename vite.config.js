@@ -8,19 +8,34 @@ const previewFirebaseConfig = {
   appId: 'preview-app-id'
 };
 
+const defaultCloudFirebaseConfig = {
+  apiKey: 'AIzaSyArlXDv5D_u1nSsZfK_hiytCZP5ifRczVs',
+  authDomain: 'hd-manager-c5839.firebaseapp.com',
+  projectId: 'hd-manager-c5839',
+  storageBucket: 'hd-manager-c5839.firebasestorage.app',
+  messagingSenderId: '644131886856',
+  appId: '1:644131886856:web:f8d9b0713c4ba842d97ebd',
+  measurementId: 'G-VL3C6P5RH4'
+};
+const defaultProductionAppId = 'hd-manager-production';
+
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env };
-  const useCloudData = env.VITE_DATA_MODE === 'cloud';
+  const usePreviewData = env.VITE_DATA_MODE === 'preview';
+  const useCloudData = !usePreviewData;
   const cloudFirebaseConfig = {
-    apiKey: env.VITE_FIREBASE_API_KEY || '',
-    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || '',
-    projectId: env.VITE_FIREBASE_PROJECT_ID || '',
-    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || '',
-    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-    appId: env.VITE_FIREBASE_APP_ID || '',
-    measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || ''
+    apiKey: env.VITE_FIREBASE_API_KEY || defaultCloudFirebaseConfig.apiKey,
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultCloudFirebaseConfig.authDomain,
+    projectId: env.VITE_FIREBASE_PROJECT_ID || defaultCloudFirebaseConfig.projectId,
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || defaultCloudFirebaseConfig.storageBucket,
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultCloudFirebaseConfig.messagingSenderId,
+    appId: env.VITE_FIREBASE_APP_ID || defaultCloudFirebaseConfig.appId,
+    measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || defaultCloudFirebaseConfig.measurementId
   };
   const firebaseConfig = useCloudData ? cloudFirebaseConfig : previewFirebaseConfig;
+  const dataAppId = usePreviewData
+    ? (env.VITE_HD_APP_ID || 'preview-app')
+    : (env.VITE_HD_APP_ID || defaultProductionAppId);
   const firebaseAliases = useCloudData
     ? {}
     : {
@@ -34,7 +49,7 @@ export default defineConfig(({ mode }) => {
     base: './',
     define: {
       __firebase_config: JSON.stringify(JSON.stringify(firebaseConfig)),
-      __app_id: JSON.stringify(env.VITE_HD_APP_ID || env.VITE_FIREBASE_PROJECT_ID || 'preview-app')
+      __app_id: JSON.stringify(dataAppId)
     },
     resolve: {
       alias: firebaseAliases

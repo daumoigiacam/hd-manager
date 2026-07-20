@@ -429,6 +429,17 @@ function installVisibleTextRepairObserver() {
   });
 }
 
+function shouldEnableVisibleTextRepairObserver() {
+  try {
+    if (Capacitor.isNativePlatform?.()) return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('repairText') === '1'
+      || window.localStorage?.getItem('hd_enable_text_repair_observer') === '1';
+  } catch {
+    return false;
+  }
+}
+
 class AppErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -487,4 +498,6 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </AppErrorBoundary>
 );
 
-installVisibleTextRepairObserver();
+if (shouldEnableVisibleTextRepairObserver()) {
+  installVisibleTextRepairObserver();
+}
