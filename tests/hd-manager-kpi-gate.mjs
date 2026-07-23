@@ -27,7 +27,14 @@ const latestJson = (prefix) => {
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] || null;
 };
 
-const makeCheck = (name, actual, target, pass, source) => ({ name, actual, target, pass, source });
+const makeCheck = (name, actual, target, pass, source, warning = '') => ({
+  name,
+  actual,
+  target,
+  pass,
+  source,
+  warning
+});
 
 const formatValue = (value) => {
   if (typeof value === 'number') return Number.isInteger(value) ? `${value}` : value.toFixed(2);
@@ -44,8 +51,7 @@ const loadDeviceLog = () => {
 
 const shouldRequireDeviceLog = () => {
   const requireExplicitly = ['1', 'true', 'yes'].includes(`${process.env.HD_REQUIRE_DEVICE_KPI || ''}`.toLowerCase());
-  const allowMissingOnCi = ['1', 'true', 'yes'].includes(`${process.env.HD_ALLOW_MISSING_DEVICE_KPI || ''}`.toLowerCase());
-  return requireExplicitly || (!!process.env.CI && !allowMissingOnCi);
+  return requireExplicitly;
 };
 
 const main = () => {
@@ -98,7 +104,17 @@ const main = () => {
     checks.push(makeCheck('UI freeze', deviceLog.uiFreeze || 0, KPI.uiFreeze, (deviceLog.uiFreeze || 0) <= KPI.uiFreeze, 'device'));
   } else {
     const requireDevice = shouldRequireDeviceLog();
-    checks.push(makeCheck('Device KPI log', 'not provided', 'HD_DEVICE_PERF_LOG', !requireDevice, 'device'));
+    const message = requireDevice
+      ? 'HD_DEVICE_PERF_LOG is required when HD_REQUIRE_DEVICE_KPI=true.'
+      : 'Physical-device benchmark log is not available; continuing with a warning.';
+    checks.push(makeCheck(
+      'Device KPI log',
+      'not provided',
+      'optional (required only when explicitly enabled)',
+      !requireDevice,
+      'device',
+      message
+    ));
   }
 
   const failed = checks.filter((check) => !check.pass);
@@ -110,7 +126,9 @@ const main = () => {
   ];
 
   checks.forEach((check) => {
-    lines.push(`| ${check.name} | ${formatValue(check.actual)} | ${formatValue(check.target)} | ${check.source} | ${check.pass ? 'PASS' : 'FAIL'} |`);
+    const result = check.pass ? (check.warning ? 'WARNING' : 'PASS') : 'FAIL';
+    lines.push(`| ${check.name} | ${formatValue(check.actual)} | ${formatValue(check.target)} | ${check.source} | ${result} |`);
+    if (check.warning) lines.push(`| Note | ${check.warning} |  |  | WARNING |`);
   });
 
   lines.push('');

@@ -82,6 +82,8 @@ Nếu muốn bắt buộc có log thiết bị thật:
 HD_REQUIRE_DEVICE_KPI=true npm run test:kpi
 ```
 
+Log benchmark trên thiết bị thật là tùy chọn trong CI và khi deploy production. Nếu chưa có `HD_DEVICE_PERF_LOG`, KPI gate chỉ ghi cảnh báo và vẫn tiếp tục. Chỉ đặt `HD_REQUIRE_DEVICE_KPI=true` khi chủ động chạy benchmark trên thiết bị thật và muốn bắt buộc log phải có.
+
 ## KPI mục tiêu
 
 | Hạng mục | Mục tiêu |
@@ -97,4 +99,3 @@ HD_REQUIRE_DEVICE_KPI=true npm run test:kpi
 | FPS khi cuộn danh sách | khoảng 60 FPS |
 | App tự thoát | 0 |
 | Đơ giao diện | 0 |
-
