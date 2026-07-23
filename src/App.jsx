@@ -2,7 +2,6 @@
 import { useCallback } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
-import QRCode from 'qrcode';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -17,13 +16,26 @@ import {
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { initializeFirestore, getFirestore, collection, doc, getDocs, setDoc as firebaseSetDoc, deleteDoc as firebaseDeleteDoc, runTransaction, increment, enableNetwork, onSnapshot } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  collection,
+  doc,
+  getDocs as firebaseGetDocs,
+  setDoc as firebaseSetDoc,
+  deleteDoc as firebaseDeleteDoc,
+  runTransaction as firebaseRunTransaction,
+  increment,
+  enableNetwork as firebaseEnableNetwork,
+  onSnapshot as firebaseOnSnapshot,
+} from 'firebase/firestore';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Geolocation } from '@capacitor/geolocation';
 import { Share as CapacitorShare } from '@capacitor/share';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { useChunkedList, useDebouncedValue } from './services/renderOptimization';
 import {
   AI_ZALO_ASSISTANT_SYSTEM_PROMPT,
   AI_ZALO_OUTPUT_SCHEMA,
@@ -43,6 +55,14 @@ import {
   getDefaultMapProvider,
   isValidLatLng,
 } from './services/mapEngineService.js';
+import {
+  createPerformanceSpan,
+  recordFirestoreOperation,
+  recordPerformanceEvent,
+} from './services/performanceMonitor.js';
+import {
+  initFirebaseObservability,
+} from './services/firebaseObservability.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -349,6 +369,10 @@ try {
     logLoginStep('Firebase initialize missing config', { configured: false }, 'warn');
   } else {
     app = initializeApp(firebaseConfig);
+    initFirebaseObservability(app, {
+      appName: 'HD Manager',
+      projectId: firebaseConfig?.projectId || '',
+    });
     auth = getAuth(app);
     try {
       db = initializeFirestore(app, {
@@ -548,17 +572,99 @@ const sanitizeFirestoreWritePayload = (payload) => {
 
 const setDoc = async (documentRef, payload, options) => {
   const sanitizedPayload = sanitizeFirestoreWritePayload(payload);
-  const result = await firebaseSetDoc(documentRef, sanitizedPayload, options);
+  const result = await recordFirestoreOperation('setDoc', {
+    path: getDocumentPathFromDocRef(documentRef),
+    id: documentRef?.id || '',
+    merge: Boolean(options?.merge),
+  }, () => firebaseSetDoc(documentRef, sanitizedPayload, options));
   notifyFirestoreDocumentChanged(documentRef, 'set', sanitizedPayload, options || {});
   queueActivityAuditLog({ documentRef, action: 'set', payload: sanitizedPayload, options });
   return result;
 };
 
 const deleteDoc = async (documentRef) => {
-  const result = await firebaseDeleteDoc(documentRef);
+  const result = await recordFirestoreOperation('deleteDoc', {
+    path: getDocumentPathFromDocRef(documentRef),
+    id: documentRef?.id || '',
+  }, () => firebaseDeleteDoc(documentRef));
   notifyFirestoreDocumentChanged(documentRef, 'delete');
   queueActivityAuditLog({ documentRef, action: 'delete', payload: {}, options: {} });
   return result;
+};
+
+const getFirestoreTargetPath = (targetRef) => {
+  if (!targetRef) return '';
+  if (targetRef.path) return targetRef.path;
+  try {
+    return targetRef?._query?.path?.canonicalString?.() || '';
+  } catch {
+    return '';
+  }
+};
+
+const getDocs = async (queryRef) => recordFirestoreOperation('getDocs', {
+  path: getFirestoreTargetPath(queryRef),
+}, () => firebaseGetDocs(queryRef));
+
+const enableNetwork = async (database) => recordFirestoreOperation('enableNetwork', {
+  appName: database?.app?.name || '',
+}, () => firebaseEnableNetwork(database));
+
+const runTransaction = async (database, updateFunction, options) => recordFirestoreOperation('runTransaction', {
+  appName: database?.app?.name || '',
+}, () => firebaseRunTransaction(database, updateFunction, options));
+
+const onSnapshot = (targetRef, ...snapshotArgs) => {
+  const path = getFirestoreTargetPath(targetRef);
+  const subscribeSpan = createPerformanceSpan('realtime.subscribe', {
+    provider: 'firestore',
+    path,
+  });
+  const wrappedArgs = [...snapshotArgs];
+  const nextIndex = typeof wrappedArgs[0] === 'function' ? 0 : 1;
+  const nextHandler = wrappedArgs[nextIndex];
+  const errorHandler = wrappedArgs[nextIndex + 1];
+
+  if (typeof nextHandler === 'function') {
+    wrappedArgs[nextIndex] = (snapshot) => {
+      recordPerformanceEvent('realtime.snapshot', {
+        provider: 'firestore',
+        path,
+        docs: typeof snapshot?.size === 'number' ? snapshot.size : undefined,
+        changes: typeof snapshot?.docChanges === 'function' ? snapshot.docChanges().length : undefined,
+        fromCache: snapshot?.metadata?.fromCache,
+        hasPendingWrites: snapshot?.metadata?.hasPendingWrites,
+      });
+      return nextHandler(snapshot);
+    };
+  }
+
+  if (typeof errorHandler === 'function') {
+    wrappedArgs[nextIndex + 1] = (error) => {
+      recordPerformanceEvent('realtime.error', {
+        provider: 'firestore',
+        path,
+        error: {
+          name: error?.name,
+          message: error?.message,
+          code: error?.code,
+        },
+      }, 'error');
+      return errorHandler(error);
+    };
+  }
+
+  try {
+    const unsubscribe = firebaseOnSnapshot(targetRef, ...wrappedArgs);
+    subscribeSpan.end({ status: 'subscribed' });
+    return () => {
+      recordPerformanceEvent('realtime.unsubscribe', { provider: 'firestore', path });
+      unsubscribe();
+    };
+  } catch (error) {
+    subscribeSpan.fail(error);
+    throw error;
+  }
 };
 if (typeof window !== 'undefined') {
   window.HD_SYNC_INFO = {
@@ -613,13 +719,29 @@ const decodeFirestoreRestFields = (fields = {}) => Object.fromEntries(
 const PENDING_FIREBASE_WRITES_STORAGE_KEY = 'hd-manager-pending-firebase-writes-v1';
 const REALTIME_COLLECTION_CACHE_STORAGE_KEY = 'hd-manager-realtime-collection-cache-v1';
 const REALTIME_COLLECTION_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const REALTIME_COLLECTION_CACHE_MAX_ITEMS = 2000;
-const REALTIME_COLLECTION_CACHEABLE_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => ![
-  'messages',
-  'zalo_inbox_messages',
-  'zalo_inbox_bridge_logs',
-  'zalo_campaign_queue'
-].includes(name)));
+const REALTIME_COLLECTION_CACHE_MAX_ITEMS = 120;
+const REALTIME_COLLECTION_CACHE_MAX_BYTES = 850000;
+const REALTIME_COLLECTION_CACHE_COMPACT_ITEMS = 50;
+const REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
+  'companies',
+  'employees',
+  'customers',
+  'products',
+  'orders',
+  'orderRequests',
+  'warehouseImports',
+  'warehouseDispatches',
+  'warehouseStockCounts',
+  'deliveryReports',
+  'payments',
+  'expenses',
+  'financials',
+  'bankAccounts',
+  'notifications',
+  'advances',
+  'attendance',
+  'performance'
+]);
 const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
   'companies',
   'employees',
@@ -634,9 +756,10 @@ const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
   'attendance',
   'performance'
 ]);
-const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|imageData|photoData|fileData|documentData|attachmentData|previewData|rawImage|rawFile)/i;
+const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|image|photo|file|document|attachment|preview|raw|blob|html|qr|canvas|screenshot)/i;
 let realtimeCollectionCacheWriteTimer = null;
 let realtimeCollectionCacheWriteMap = null;
+let realtimeCollectionCacheDisabled = false;
 const isNativeAppShellRuntime = () => {
   try {
     return typeof Capacitor !== 'undefined' && Capacitor.getPlatform?.() !== 'web';
@@ -680,21 +803,21 @@ const savePendingFirebaseWrites = (writes = []) => {
     console.warn('Khong the luu hang cho dong bo Firebase:', error);
   }
 };
-const sanitizeRealtimeCacheValue = (value, depth = 0) => {
+const sanitizeRealtimeCacheValue = (value, depth = 0, maxItems = REALTIME_COLLECTION_CACHE_MAX_ITEMS) => {
   if (depth > 3) return value;
   if (Array.isArray(value)) {
-    return value.slice(-REALTIME_COLLECTION_CACHE_MAX_ITEMS).map(item => sanitizeRealtimeCacheValue(item, depth + 1));
+    return value.slice(-maxItems).map(item => sanitizeRealtimeCacheValue(item, depth + 1, maxItems));
   }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
-        .slice(-REALTIME_COLLECTION_CACHE_MAX_ITEMS)
+        .slice(-maxItems)
         .filter(([key]) => !REALTIME_COLLECTION_CACHE_DROP_FIELD.test(key))
-        .map(([key, item]) => [key, sanitizeRealtimeCacheValue(item, depth + 1)])
+        .map(([key, item]) => [key, sanitizeRealtimeCacheValue(item, depth + 1, maxItems)])
     );
   }
-  if (typeof value === 'string' && value.length > 8000) {
-    return value.startsWith('data:') ? '' : value.slice(0, 8000);
+  if (typeof value === 'string' && value.length > 1200) {
+    return value.startsWith('data:') ? '' : value.slice(0, 1200);
   }
   return value;
 };
@@ -702,6 +825,10 @@ const loadRealtimeCollectionCache = () => {
   if (typeof window === 'undefined') return new Map();
   try {
     const raw = window.localStorage.getItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+    if (raw && raw.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
+      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+      return new Map();
+    }
     const parsed = raw ? JSON.parse(raw) : null;
     const collections = parsed?.collections && typeof parsed.collections === 'object' ? parsed.collections : {};
     const now = Date.now();
@@ -720,7 +847,7 @@ const loadRealtimeCollectionCache = () => {
   }
 };
 const writeRealtimeCollectionCacheNow = (cacheMap) => {
-  if (typeof window === 'undefined' || !(cacheMap instanceof Map)) return;
+  if (typeof window === 'undefined' || !(cacheMap instanceof Map) || realtimeCollectionCacheDisabled) return;
   try {
     const collections = {};
     cacheMap.forEach((value, name) => {
@@ -730,12 +857,35 @@ const writeRealtimeCollectionCacheNow = (cacheMap) => {
         value: sanitizeRealtimeCacheValue(value)
       };
     });
-    window.localStorage.setItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY, JSON.stringify({
+    let payload = JSON.stringify({
       savedAt: new Date().toISOString(),
       collections
-    }));
+    });
+    if (payload.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
+      const compactCollections = {};
+      Object.entries(collections).forEach(([name, entry]) => {
+        compactCollections[name] = {
+          ...entry,
+          value: sanitizeRealtimeCacheValue(entry.value, 0, REALTIME_COLLECTION_CACHE_COMPACT_ITEMS)
+        };
+      });
+      payload = JSON.stringify({
+        savedAt: new Date().toISOString(),
+        collections: compactCollections
+      });
+    }
+    if (payload.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
+      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+      realtimeCollectionCacheDisabled = true;
+      return;
+    }
+    window.localStorage.setItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY, payload);
   } catch (error) {
-    console.warn('Khong the luu cache realtime Firebase:', error);
+    try {
+      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+    } catch {}
+    realtimeCollectionCacheDisabled = true;
+    console.warn('Da tat cache realtime cuc bo vi thiet bi khong du dung luong:', error);
   }
 };
 const saveRealtimeCollectionCache = (cacheMap, options = {}) => {
@@ -1182,9 +1332,7 @@ const getDeliveryAssignmentIds = (source = {}) => Array.from(new Set([
 const getPrimaryDeliveryAssignmentId = (source = {}) => getDeliveryAssignmentIds(source)[0] || '';
 const isWarehouseScalePosition = (position = '') => normalizeEmployeePosition(position) === WAREHOUSE_EXPORT_POSITION;
 const parseEmployeeRoleSalaryAmount = (value) => {
-  const normalized = `${value ?? ''}`.replace(/[^\d.-]/g, '');
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
+  return parseLooseMoneyValue(value);
 };
 const normalizeEmployeePositionList = (positions = []) => Array.from(new Set(
   (Array.isArray(positions) ? positions : [])
@@ -2224,9 +2372,9 @@ const normalizeWarehouseStockVisibilitySettings = (settings = {}) => {
   return { hiddenGroupKeys, hiddenUnitKeysByGroup };
 };
 const normalizeExpenseCategoryLabel = (str = '') => normalizeLeadingLabel(str);
-const resolveSalaryMonthDays = (employee = {}) => {
+const resolveSalaryMonthDays = (employee = {}, monthKey = getTodayString().substring(0, 7)) => {
   const parsed = parseInt(employee?.salaryMonthDays, 10);
-  return parsed > 0 ? parsed : BASE_SALARY_MONTH_DAYS;
+  return parsed > 0 ? parsed : getActualCalendarDaysInMonth(monthKey);
 };
 
 const formatInputCurrency = (val) => {
@@ -2266,7 +2414,7 @@ const normalizeLatePenaltyTiers = (tiers = DEFAULT_LATE_PENALTY_TIERS) => {
 };
 
 const getEmployeeLatePenaltyTiers = (employee = {}) => normalizeLatePenaltyTiers(
-  Array.isArray(employee?.latePenaltyTiers) && employee.latePenaltyTiers.length > 0
+  Object.prototype.hasOwnProperty.call(employee || {}, 'latePenaltyTiers')
     ? employee.latePenaltyTiers
     : DEFAULT_LATE_PENALTY_TIERS
 );
@@ -2274,15 +2422,24 @@ const getEmployeeLatePenaltyTiers = (employee = {}) => normalizeLatePenaltyTiers
 const resolveLatePenaltyForMinutes = (lateMinutes = 0, tiers = DEFAULT_LATE_PENALTY_TIERS) => {
   const normalizedMinutes = Math.max(0, parseMinutesInput(lateMinutes, 0));
   if (normalizedMinutes <= 0) return { lateMinutes: normalizedMinutes, penaltyAmount: 0, noSalaryDay: false, matchedTier: null };
-  const matchedTier = normalizeLatePenaltyTiers(tiers)
-    .filter(tier => normalizedMinutes >= tier.lateMinutes)
-    .pop() || null;
+  const normalizedTiers = normalizeLatePenaltyTiers(tiers);
+  // Each row is the lower bound of a range. The selected row is the
+  // highest configured bound that the actual late duration reaches.
+  let matchedTierIndex = -1;
+  normalizedTiers.forEach((tier, index) => {
+    if (normalizedMinutes >= tier.lateMinutes) matchedTierIndex = index;
+  });
+  const matchedTier = matchedTierIndex >= 0 ? normalizedTiers[matchedTierIndex] : null;
   if (!matchedTier) return { lateMinutes: normalizedMinutes, penaltyAmount: 0, noSalaryDay: false, matchedTier: null };
+  const nextTier = normalizedTiers[matchedTierIndex + 1] || null;
   return {
     lateMinutes: normalizedMinutes,
     penaltyAmount: matchedTier.action === 'fine' ? roundMoneyValue(matchedTier.penaltyAmount || 0) : 0,
     noSalaryDay: matchedTier.action === 'no_salary',
-    matchedTier
+    matchedTier: {
+      ...matchedTier,
+      maxLateMinutes: nextTier ? nextTier.lateMinutes - 1 : null
+    }
   };
 };
 
@@ -2293,8 +2450,9 @@ const parseAttendanceTimestamp = (value = null) => {
 };
 
 const calculateAttendanceTiming = (employee = {}, entry = {}) => {
-  const checkInDate = parseAttendanceTimestamp(entry?.checkIn);
-  const checkOutDate = parseAttendanceTimestamp(entry?.checkOut);
+  const normalizedEntry = normalizeAttendanceRecordForWorkDate(entry, employee, entry?.date);
+  const checkInDate = parseAttendanceTimestamp(normalizedEntry?.checkIn);
+  const checkOutDate = parseAttendanceTimestamp(normalizedEntry?.checkOut);
   if (!checkInDate || !entry?.date) {
     return { lateMinutes: 0, earlyOvertimeMinutes: 0, afterShiftOvertimeMinutes: 0, autoOvertimeMinutes: 0, latePenaltyAmount: 0, noSalaryDay: false, matchedLateTier: null };
   }
@@ -2551,6 +2709,46 @@ const formatDateTimeLabel = (value) => {
   return Number.isNaN(parsed.getTime())
     ? `${value}`
     : `${parsed.toLocaleDateString('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS)} ${parsed.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS)}`;
+};
+
+const formatAttendanceMoment = (value) => {
+  const parsed = parseAttendanceTimestamp(value);
+  if (!parsed) return '--';
+  return `${parsed.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS)} • ${parsed.toLocaleDateString('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS)}`;
+};
+
+const getAttendanceMethodDisplay = (record = {}, direction = 'checkIn') => {
+  if (!record?.[direction]) return '-';
+  const method = `${record?.[`${direction}Method`] || ''}`;
+  const meta = record?.[`${direction}MethodMeta`] || {};
+  const isProxy = Boolean(
+    meta?.proxyAttendance
+      || meta?.type === 'proxy'
+      || /chấm hộ|điều chỉnh/i.test(method)
+  );
+
+  if (isProxy) {
+    const proxyName = [
+      meta?.proxyByName,
+      meta?.checkedByName,
+      meta?.performedByName,
+      meta?.actorName,
+      meta?.byName,
+      meta?.proxyName
+    ].find(value => `${value || ''}`.trim());
+    return proxyName ? `Chấm hộ: ${proxyName}` : 'Chấm hộ: Chưa xác định người chấm';
+  }
+
+  if (hasAttendanceGpsMeta(meta)) {
+    return `GPS: ${formatAttendanceGpsSummary(meta)}`;
+  }
+
+  if (meta?.type === 'wifi') {
+    const wifiName = meta?.ssid || meta?.networkLabel || '--';
+    return `WiFi: ${wifiName}`;
+  }
+
+  return /gps/i.test(method) ? 'GPS: Chưa có tọa độ' : (method || 'GPS: Chưa có tọa độ');
 };
 
 const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase()}`;
@@ -3030,6 +3228,14 @@ const isLegacyVietQrPaymentSource = (value = '') => /img\.vietqr\.io/i.test(`${v
 const LOCAL_PAYMENT_QR_DATA_URL_CACHE_LIMIT = 160;
 const LOCAL_PAYMENT_QR_DATA_URL_CACHE_TTL_MS = 10 * 60 * 1000;
 const localPaymentQrDataUrlCache = new Map();
+let qrCodeModulePromise = null;
+
+const getQRCodeModule = async () => {
+  if (!qrCodeModulePromise) {
+    qrCodeModulePromise = import('qrcode').then((module) => module.default || module);
+  }
+  return qrCodeModulePromise;
+};
 
 const rememberLocalPaymentQrDataUrl = (key = '', dataUrl = '') => {
   if (!key || !dataUrl) return;
@@ -3065,6 +3271,7 @@ const buildLocalPaymentQrDataUrl = async (value = '', options = {}) => {
     localPaymentQrDataUrlCache.delete(cacheKey);
   }
   try {
+    const QRCode = await getQRCodeModule();
     const dataUrl = await QRCode.toDataURL(payload, {
       errorCorrectionLevel: 'M',
       margin: 1,
@@ -4645,6 +4852,45 @@ const parseLooseMoneyValue = (value) => {
   return digits ? parseInt(digits, 10) : 0;
 };
 
+const getOrderLineUnitPriceValue = (item = {}) => parseLooseMoneyValue(
+  item?.unitPrice
+  ?? item?.price
+  ?? item?.sellingPrice
+  ?? item?.salePrice
+  ?? item?.unitPriceVnd
+  ?? item?.unit_price_vnd
+  ?? item?.unit_price
+);
+
+const getOrderLineQuantityValue = (item = {}) => parseLooseQuantityValue(
+  item?.quantity
+  ?? item?.quantityValue
+  ?? item?.quantityCount
+  ?? item?.qty
+  ?? item?.count
+  ?? item?.pieceCount
+);
+
+const getOrderLineWeightKgValue = (item = {}) => parseLooseQuantityValue(
+  item?.weightKg
+  ?? item?.totalKg
+  ?? item?.kg
+  ?? item?.weight
+  ?? (['kg', 'ky', 'ki', 'kilo'].includes(normalizeLookupText(item?.quantityUnit || item?.unit || '')) ? item?.quantity : 0)
+);
+
+const getOrderLineSizeLabel = (item = {}) => `${item?.size || item?.sizeLabel || item?.productSize || item?.variantSize || ''}`.trim();
+
+const getOrderLineAttributeLabel = (item = {}) => `${item?.attributeLabel || item?.attribute || item?.variantLabel || item?.packaging || item?.packageUnit || ''}`.trim();
+
+const areLooseQuantityValuesClose = (left, right, tolerance = 0.05) => {
+  const leftValue = parseLooseQuantityValue(left);
+  const rightValue = parseLooseQuantityValue(right);
+  if (leftValue <= 0 || rightValue <= 0) return false;
+  const allowedDelta = Math.max(tolerance, Math.max(leftValue, rightValue) * 0.01);
+  return Math.abs(leftValue - rightValue) <= allowedDelta;
+};
+
 const RETURN_GOODS_STATUS_LABELS = {
   pending_pickup: 'Chưa lấy về kho',
   retrieved: 'Đã lấy về kho',
@@ -5924,7 +6170,7 @@ const buildBackupFilename = (companyName = 'HD Manager') => {
 
 const AUTO_BACKUP_STORAGE_KEY = 'hd-manager-auto-backup-state-v1';
 const AUTO_BACKUP_NATIVE_DIR = 'HDManager/AutoBackups';
-const AUTO_BACKUP_DELAY_MS = 45000;
+const AUTO_BACKUP_DELAY_MS = isNativeAppShellRuntime() ? 5 * 60 * 1000 : 45000;
 
 const normalizeBackupSerializableValue = (value) => {
   if (value === undefined) return null;
@@ -6786,10 +7032,16 @@ const buildShiftDateTime = (dateStr, timeStr) => new Date(`${dateStr}T${normaliz
 const buildShiftRangeDateTimes = (dateStr, shiftStart = '08:00', shiftEnd = '17:00') => {
   const start = buildShiftDateTime(dateStr, shiftStart);
   const end = buildShiftDateTime(dateStr, shiftEnd);
-  if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end.getTime() <= start.getTime()) {
-    end.setDate(end.getDate() + 1);
+  if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && isOvernightShiftRange(shiftStart, shiftEnd)) {
+    // Ca qua dem duoc tinh vao ngay ket thuc ca: 22:00 ngay 20 -> 11:00 ngay 21 la cong ngay 21.
+    start.setDate(start.getDate() - 1);
   }
   return { start, end };
+};
+
+const shouldMoveAttendanceTimeToPreviousShiftDate = (dateStr, safeTime, shiftPolicy = {}) => {
+  if (!dateStr || !safeTime || !isOvernightShiftRange(shiftPolicy.shiftStart, shiftPolicy.shiftEnd)) return false;
+  return timeStringToMinutes(safeTime) >= timeStringToMinutes(shiftPolicy.shiftStart);
 };
 
 const buildAttendanceDateTimeForShift = (dateStr, timeValue, employee = {}, field = 'checkIn') => {
@@ -6799,35 +7051,118 @@ const buildAttendanceDateTimeForShift = (dateStr, timeValue, employee = {}, fiel
   const dateTime = buildShiftDateTime(dateStr, safeTime);
   if (Number.isNaN(dateTime.getTime())) return null;
 
-  if (field === 'checkOut') {
-    const shiftPolicy = resolveEmployeeShiftPolicy(employee);
-    if (isOvernightShiftRange(shiftPolicy.shiftStart, shiftPolicy.shiftEnd)) {
-      const timeMinutes = timeStringToMinutes(safeTime);
-      const shiftStartMinutes = timeStringToMinutes(shiftPolicy.shiftStart);
-      if (timeMinutes <= shiftStartMinutes) {
-        dateTime.setDate(dateTime.getDate() + 1);
-      }
-    }
+  const shiftPolicy = resolveEmployeeShiftPolicy(employee);
+  if (shouldMoveAttendanceTimeToPreviousShiftDate(dateStr, safeTime, shiftPolicy, field)) {
+    dateTime.setDate(dateTime.getDate() - 1);
   }
 
   return dateTime;
 };
+
+const getAttendanceLocalDateKey = (value) => {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return '';
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, '0');
+  const day = `${value.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getAttendanceDateKeyOffset = (dateStr, days = 0) => {
+  const [year, month, day] = `${dateStr || ''}`.split('-').map(Number);
+  if (![year, month, day].every(Number.isFinite)) return `${dateStr || ''}`;
+  const date = new Date(year, month - 1, day, 12, 0, 0, 0);
+  date.setDate(date.getDate() + days);
+  return getAttendanceLocalDateKey(date);
+};
+
+const normalizeAttendanceTimestampForWorkDate = (value, workDate, employee = {}, field = 'checkIn') => {
+  const parsed = parseAttendanceTimestamp(value);
+  if (!parsed || !workDate) return parsed;
+
+  const shiftPolicy = resolveEmployeeShiftPolicy(employee);
+  if (!isOvernightShiftRange(shiftPolicy.shiftStart, shiftPolicy.shiftEnd)) return parsed;
+
+  const timeMinutes = parsed.getHours() * 60 + parsed.getMinutes();
+  const shiftStartMinutes = timeStringToMinutes(shiftPolicy.shiftStart);
+  const shiftEndMinutes = timeStringToMinutes(shiftPolicy.shiftEnd);
+  const actualDateKey = getAttendanceLocalDateKey(parsed);
+  const previousDateKey = getAttendanceDateKeyOffset(workDate, -1);
+  const nextDateKey = getAttendanceDateKeyOffset(workDate, 1);
+
+  // Older overnight records may contain the timestamp on the calendar day
+  // the shift starts, although their attendance date is the shift end day.
+  // Normalize only at read time so existing Firestore data remains untouched.
+  if (field === 'checkIn' && actualDateKey === workDate && timeMinutes >= shiftStartMinutes) {
+    const normalized = new Date(parsed.getTime());
+    normalized.setDate(normalized.getDate() - 1);
+    return normalized;
+  }
+
+  if (field === 'checkOut' && actualDateKey === nextDateKey && timeMinutes <= shiftEndMinutes) {
+    const normalized = new Date(parsed.getTime());
+    normalized.setDate(normalized.getDate() - 1);
+    return normalized;
+  }
+
+  // Keep this explicit for readability and to document the intended range:
+  // a work date of 23/07 owns 23:00 on 22/07 through 11:00 on 23/07.
+  if (field === 'checkIn' && actualDateKey === previousDateKey && timeMinutes >= shiftStartMinutes) return parsed;
+  return parsed;
+};
+
+const normalizeAttendanceRecordForWorkDate = (record, employee = {}, workDate = '') => {
+  if (!record || !workDate) return record;
+  return {
+    ...record,
+    checkIn: record.checkIn
+      ? normalizeAttendanceTimestampForWorkDate(record.checkIn, workDate, employee, 'checkIn')
+      : record.checkIn,
+    checkOut: record.checkOut
+      ? normalizeAttendanceTimestampForWorkDate(record.checkOut, workDate, employee, 'checkOut')
+      : record.checkOut
+  };
+};
+
+const formatAttendanceMomentForWorkDate = (value, workDate, employee = {}, field = 'checkIn') => (
+  formatAttendanceMoment(normalizeAttendanceTimestampForWorkDate(value, workDate, employee, field))
+);
+
+const ATTENDANCE_ANOMALY_VISIBLE_AFTER_SHIFT_MS = 12 * 60 * 60 * 1000;
+const ATTENDANCE_OVERNIGHT_EARLY_CHECKIN_MS = 4 * 60 * 60 * 1000;
 
 const resolveAttendanceActionDateForShift = (employee = {}, attendance = {}, dateStr = getTodayString(), action = 'checkIn', now = new Date()) => {
   if (!employee?.id || !dateStr) return dateStr;
   const shiftPolicy = resolveEmployeeShiftPolicy(employee);
   if (!isOvernightShiftRange(shiftPolicy.shiftStart, shiftPolicy.shiftEnd)) return dateStr;
 
-  const previousDate = shiftDateString(dateStr, -1);
-  const previousRecord = attendance?.[`${previousDate}_${employee.id}`];
-  const { start: previousShiftStart, end: previousShiftEnd } = buildShiftRangeDateTimes(previousDate, shiftPolicy.shiftStart, shiftPolicy.shiftEnd);
-  if (Number.isNaN(previousShiftStart.getTime()) || Number.isNaN(previousShiftEnd.getTime())) return dateStr;
+  const nowTime = now.getTime();
+  const buildCandidate = (candidateDate) => {
+    const record = attendance?.[`${candidateDate}_${employee.id}`];
+    const { start, end } = buildShiftRangeDateTimes(candidateDate, shiftPolicy.shiftStart, shiftPolicy.shiftEnd);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+    const windowStart = start.getTime() - ATTENDANCE_OVERNIGHT_EARLY_CHECKIN_MS;
+    const windowEnd = end.getTime() + ATTENDANCE_ANOMALY_VISIBLE_AFTER_SHIFT_MS;
+    return { date: candidateDate, record, start, end, isInWindow: nowTime >= windowStart && nowTime <= windowEnd };
+  };
 
-  const isInsidePreviousOvernightShift = now.getTime() >= previousShiftStart.getTime() && now.getTime() <= previousShiftEnd.getTime() + (12 * 60 * 60 * 1000);
-  if (!isInsidePreviousOvernightShift) return dateStr;
+  const currentCandidate = buildCandidate(dateStr);
+  const nextCandidate = buildCandidate(shiftDateString(dateStr, 1));
+  const previousCandidate = buildCandidate(shiftDateString(dateStr, -1));
 
-  if (action === 'checkOut' && previousRecord?.checkIn && !previousRecord?.checkOut) return previousDate;
-  if (action === 'checkIn' && !previousRecord?.checkIn) return previousDate;
+  if (action === 'checkOut') {
+    const openRecord = [currentCandidate, previousCandidate, nextCandidate]
+      .find(candidate => candidate?.isInWindow && candidate.record?.checkIn && !candidate.record?.checkOut);
+    if (openRecord) return openRecord.date;
+  }
+
+  if (action === 'checkIn') {
+    const nextShiftIsStarting = nextCandidate?.isInWindow && nowTime >= nextCandidate.start.getTime() - ATTENDANCE_OVERNIGHT_EARLY_CHECKIN_MS;
+    if (nextShiftIsStarting && !nextCandidate.record?.checkIn) return nextCandidate.date;
+
+    const currentShiftNeedsCheckIn = currentCandidate?.isInWindow && !currentCandidate.record?.checkIn;
+    if (currentShiftNeedsCheckIn) return currentCandidate.date;
+  }
+
   return dateStr;
 };
 
@@ -6839,16 +7174,23 @@ const calculateCheckInStatus = (employee, checkInDate, referenceDateStr = getTod
 };
 
 const getAttendanceAnomaly = (employee, record, dateStr, now = new Date()) => {
-  if (!employee || !dateStr || dateStr !== getTodayString()) return null;
+  if (!employee || !dateStr) return null;
   if (isSalesCollaboratorPosition(employee.position)) return null;
   if (record?.status === 'leave') return null;
 
   const shiftPolicy = resolveEmployeeShiftPolicy(employee);
   const { start: shiftStart, end: shiftEnd } = buildShiftRangeDateTimes(dateStr, shiftPolicy.shiftStart, shiftPolicy.shiftEnd);
+  if (Number.isNaN(shiftStart.getTime()) || Number.isNaN(shiftEnd.getTime())) return null;
+
+  const nowTime = now.getTime();
+  const visibleUntil = shiftEnd.getTime() + ATTENDANCE_ANOMALY_VISIBLE_AFTER_SHIFT_MS;
+  if (nowTime < shiftStart.getTime() || nowTime > visibleUntil) return null;
+
   const alertDelay = shiftPolicy.missingAlertMinutes || 0;
 
   if (!record?.checkIn) {
-    if (now.getTime() >= shiftStart.getTime() + ((shiftPolicy.graceMinutes + alertDelay) * 60000)) {
+    if (nowTime > shiftEnd.getTime()) return null;
+    if (nowTime >= shiftStart.getTime() + ((shiftPolicy.graceMinutes + alertDelay) * 60000)) {
       return {
         type: 'missing_check_in',
         title: 'Chưa chấm vào ca',
@@ -6859,7 +7201,7 @@ const getAttendanceAnomaly = (employee, record, dateStr, now = new Date()) => {
     return null;
   }
 
-  if (!record?.checkOut && now.getTime() >= shiftEnd.getTime() + (alertDelay * 60000)) {
+  if (!record?.checkOut && nowTime >= shiftEnd.getTime() + (alertDelay * 60000)) {
     return {
       type: 'missing_check_out',
       title: 'Chưa chấm ra ca',
@@ -6869,6 +7211,22 @@ const getAttendanceAnomaly = (employee, record, dateStr, now = new Date()) => {
   }
 
   return null;
+};
+
+const resolveAttendanceAnomalyForDate = (employee = {}, attendance = {}, dateStr = getTodayString(), now = new Date()) => {
+  if (!employee?.id || !dateStr) return null;
+
+  const currentRecord = attendance?.[`${dateStr}_${employee.id}`];
+  const currentAnomaly = getAttendanceAnomaly(employee, currentRecord, dateStr, now);
+  if (currentAnomaly) return { ...currentAnomaly, record: currentRecord, date: dateStr };
+
+  const shiftPolicy = resolveEmployeeShiftPolicy(employee);
+  if (!isOvernightShiftRange(shiftPolicy.shiftStart, shiftPolicy.shiftEnd)) return null;
+
+  const nextDate = shiftDateString(dateStr, 1);
+  const nextRecord = attendance?.[`${nextDate}_${employee.id}`];
+  const nextAnomaly = getAttendanceAnomaly(employee, nextRecord, nextDate, now);
+  return nextAnomaly ? { ...nextAnomaly, record: nextRecord, date: nextDate } : null;
 };
 
 const normalizeAttendanceMethod = (method, fallbackLabel = 'Thủ công') => {
@@ -7937,9 +8295,6 @@ const shouldUseTotalRevenueCommission = (employee = {}) => (
 const calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
   if (!commissionRate) return 0;
-  if (shouldUseTotalRevenueCommission(employee)) {
-    return roundMoneyValue((revenue || 0) * commissionRate);
-  }
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
 const buildSalesDownlineCommissionRows = (leaderEmpId, employees = [], orders = [], customers = [], monthKey = getTodayString().substring(0, 7)) => {
@@ -7973,6 +8328,12 @@ const getMonthEndDateInputValue = (monthKey = getTodayString().substring(0, 7)) 
   const [year, month] = safeMonthKey.split('-').map(Number);
   const lastDay = new Date(year, month, 0).getDate();
   return `${safeMonthKey}-${String(lastDay).padStart(2, '0')}`;
+};
+
+const getActualCalendarDaysInMonth = (monthKey = getTodayString().substring(0, 7)) => {
+  const safeMonthKey = /^\d{4}-\d{2}$/.test(`${monthKey}`) ? `${monthKey}` : getTodayString().substring(0, 7);
+  const [year, month] = safeMonthKey.split('-').map(Number);
+  return new Date(year, month, 0).getDate();
 };
 
 const calculateExperienceSalaryAtDate = (startDate, amount, period = 'months', referenceDate = getTodayString()) => {
@@ -8034,17 +8395,23 @@ const calculateDailyPayrollExpenseForEmployee = (employee = {}, attendanceRecord
 
   const workDate = parseDateInputValue(targetDate);
   const probationEndDate = resolveProbationEndDate(employee.startDate, employee.probationDuration, employee.probationUnit);
-  const salaryMonthDays = resolveSalaryMonthDays(employee);
-  const dailyBaseWage = (employee.basicSalary || 0) / salaryMonthDays;
-  const dailySupportWage = (employee.supportSalary || 0) / salaryMonthDays;
+  const salaryMonthDays = resolveSalaryMonthDays(employee, `${targetDate || getTodayString()}`.substring(0, 7));
+  const basicSalaryMonthDays = salaryMonthDays;
+  const supportSalaryMonthDays = basicSalaryMonthDays;
+  const basicSalary = parseLooseMoneyValue(employee.basicSalary);
+  const supportSalary = parseLooseMoneyValue(employee.supportSalary);
+  const responsibilitySalary = parseLooseMoneyValue(employee.responsibilitySalary);
+  const experienceSalary = parseLooseMoneyValue(employee.experienceSalary);
+  const dailyBaseWage = basicSalary / basicSalaryMonthDays;
+  const dailySupportWage = supportSalary / supportSalaryMonthDays;
   const probationRate = (employee.probationRate !== undefined ? employee.probationRate : 100) / 100;
   const isProbationDay = probationEndDate && workDate <= probationEndDate;
   const baseComponent = isProbationDay ? dailyBaseWage * probationRate : dailyBaseWage;
   const supportComponent = isProbationDay ? dailySupportWage * probationRate : dailySupportWage;
-  const responsibilityComponent = (employee.responsibilitySalary || 0) / salaryMonthDays;
+  const responsibilityComponent = responsibilitySalary / basicSalaryMonthDays;
   const experienceMonthlyAmount = calculateExperienceSalaryAtDate(
     employee.startDate,
-    employee.experienceSalary || 0,
+    experienceSalary,
     employee.experienceSalaryPeriod || 'months',
     targetDate
   ).total;
@@ -8053,8 +8420,9 @@ const calculateDailyPayrollExpenseForEmployee = (employee = {}, attendanceRecord
   let holidayComponent = 0;
   const matchedHolidays = holidays.filter(holiday => holiday.date === targetDate && !holiday.isArchived);
   matchedHolidays.forEach(matchedHoliday => {
-    if (matchedHoliday.type === 'fixed') holidayComponent += matchedHoliday.value || 0;
-    else if (matchedHoliday.type === 'percentage') holidayComponent += dailyBaseWage * ((matchedHoliday.value || 0) / 100);
+    const holidayValue = parseLooseMoneyValue(matchedHoliday.value);
+    if (matchedHoliday.type === 'fixed') holidayComponent += holidayValue;
+    else if (matchedHoliday.type === 'percentage') holidayComponent += dailyBaseWage * (holidayValue / 100);
   });
 
   return {
@@ -8094,7 +8462,7 @@ const buildPositiveDailyPayrollRowsFromSalary = ({
       const details = buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, monthKey);
       const netSalary = parseLooseMoneyValue(details?.netSalary);
       if (netSalary <= 0) return null;
-      const salaryMonthDays = resolveSalaryMonthDays(emp);
+      const salaryMonthDays = resolveSalaryMonthDays(emp, monthKey);
       const dailyAmount = netSalary / Math.max(1, salaryMonthDays);
       const attendanceRecord = attendance?.[`${targetDate}_${emp.id}`] || null;
       return {
@@ -9495,7 +9863,7 @@ const buildLocalAssistantReply = ({ input, activeTab, employee, company, custome
     return `Mình đang ở mục ${currentTabLabel}. Bạn có thể hỏi nhanh về khách hàng, đơn hàng, công nợ, thu chi hoặc báo cáo hôm nay.`;
 };
 
-const calculateSalaryDetails = (empId, employees, attendance, financials, performance, allCustomers = [], allOrders = [], allPayments = [], holidays = []) => {
+const calculateSalaryDetails = (empId, employees, attendance, financials, performance, allCustomers = [], allOrders = [], allPayments = [], holidays = [], monthKey = getTodayString().substring(0, 7)) => {
   const emp = employees.find(e => e.id === empId);
   if (!emp) return null;
 
@@ -9506,9 +9874,15 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   let earlyOvertimeMinutesTotal = 0;
   let afterShiftOvertimeMinutesTotal = 0;
 
-  const salaryMonthDays = resolveSalaryMonthDays(emp);
-  const dailyBaseWage = (emp.basicSalary || 0) / salaryMonthDays;
-  const dailySupportWage = (emp.supportSalary || 0) / salaryMonthDays;
+  const salaryMonthDays = resolveSalaryMonthDays(emp, monthKey);
+  const basicSalary = parseLooseMoneyValue(emp.basicSalary);
+  const supportSalary = parseLooseMoneyValue(emp.supportSalary);
+  const responsibilitySalary = parseLooseMoneyValue(emp.responsibilitySalary);
+  const experienceSalary = parseLooseMoneyValue(emp.experienceSalary);
+  const basicSalaryMonthDays = salaryMonthDays;
+  const supportSalaryMonthDays = basicSalaryMonthDays;
+  const dailyBaseWage = basicSalary / basicSalaryMonthDays;
+  const dailySupportWage = supportSalary / supportSalaryMonthDays;
   const probationRate = (emp.probationRate !== undefined ? emp.probationRate : 100) / 100;
 
   const probationEndDate = resolveProbationEndDate(emp.startDate, emp.probationDuration, emp.probationUnit);
@@ -9535,23 +9909,25 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
 
     const matchedHolidays = holidays.filter(h => h.date === dateStr && !h.isArchived);
     matchedHolidays.forEach(isHoliday => {
-      if (isHoliday.type === 'fixed') holidayBonus += isHoliday.value || 0;
-      else if (isHoliday.type === 'percentage') holidayBonus += dailyBaseWage * ((isHoliday.value || 0) / 100);
+      const holidayValue = parseLooseMoneyValue(isHoliday.value);
+      if (isHoliday.type === 'fixed') holidayBonus += holidayValue;
+      else if (isHoliday.type === 'percentage') holidayBonus += dailyBaseWage * (holidayValue / 100);
     });
   });
 
   const workDays = workDaysProbation + workDaysOfficial;
   const baseSalaryCalc = roundMoneyValue((workDaysProbation * dailyBaseWage * probationRate) + (workDaysOfficial * dailyBaseWage));
   const supportSalaryCalc = roundMoneyValue((workDaysProbation * dailySupportWage * probationRate) + (workDaysOfficial * dailySupportWage));
+  const responsibilitySalaryCalc = roundMoneyValue((responsibilitySalary / basicSalaryMonthDays) * workDays);
   const roleSalaryRows = normalizeEmployeeRoleSalaryComponents(emp.roleSalaryComponents || emp.departmentSalaryComponents || emp.salaryByDepartment)
     .map(row => {
-      const dailyRoleWage = (row.amount || 0) / salaryMonthDays;
+      const dailyRoleWage = parseLooseMoneyValue(row.amount) / salaryMonthDays;
       const calculatedAmount = roundMoneyValue((workDaysProbation * dailyRoleWage * probationRate) + (workDaysOfficial * dailyRoleWage));
       return { ...row, calculatedAmount };
     });
   const roleSalaryCalc = roundMoneyValue(roleSalaryRows.reduce((sum, row) => sum + (row.calculatedAmount || 0), 0));
 
-  const experienceDetails = calculateExperienceSalary(emp.startDate, emp.experienceSalary || 0, emp.experienceSalaryPeriod || 'months');
+  const experienceDetails = calculateExperienceSalary(emp.startDate, experienceSalary, emp.experienceSalaryPeriod || 'months');
   const experienceSalaryCalc = roundMoneyValue(experienceDetails.total);
   const expMonths = experienceDetails.expMonths;
   const experienceCycles = experienceDetails.experienceCycles;
@@ -9567,19 +9943,21 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const tieredBonus = 0;
   const earlyOvertimeHours = roundMoneyValue((earlyOvertimeMinutesTotal / 60) * 100) / 100;
   const afterShiftOvertimeHours = roundMoneyValue((afterShiftOvertimeMinutesTotal / 60) * 100) / 100;
-  const automaticOvertimeHours = roundMoneyValue((earlyOvertimeHours + afterShiftOvertimeHours) * 100) / 100;
+  const automaticOvertimeHours = afterShiftOvertimeHours;
   const approvedOvertimeHours = parseFloat(perf.overtime || 0) || 0;
-  const overtimePay = roundMoneyValue((approvedOvertimeHours + automaticOvertimeHours) * (emp.overtimeRate || 0));
+  const overtimeRate = parseLooseMoneyValue(emp.overtimeRate);
+  const overtimePay = roundMoneyValue((approvedOvertimeHours + automaticOvertimeHours) * overtimeRate);
 
   let totalBonus = 0;
   let totalPenalty = 0;
   let totalAdvance = 0;
   let totalEmployeePurchase = 0;
   financials.filter(f => f.empId === empId && !f.isArchived).forEach(record => {
-    if (record.type === 'bonus') totalBonus += record.amount;
-    if (record.type === 'penalty') totalPenalty += record.amount;
-    if (record.type === 'advance') totalAdvance += record.amount;
-    if (record.type === 'employee_purchase') totalEmployeePurchase += record.amount;
+    const amount = parseLooseMoneyValue(record.amount);
+    if (record.type === 'bonus') totalBonus += amount;
+    if (record.type === 'penalty') totalPenalty += amount;
+    if (record.type === 'advance') totalAdvance += amount;
+    if (record.type === 'employee_purchase') totalEmployeePurchase += amount;
   });
 
   holidayBonus = roundMoneyValue(holidayBonus);
@@ -9597,7 +9975,7 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   }
   badDebt = roundMoneyValue(badDebt);
 
-  const netSalary = roundMoneyValue(baseSalaryCalc + supportSalaryCalc + roleSalaryCalc + experienceSalaryCalc + commission + tieredBonus + overtimePay + totalBonus - totalPenalty - totalAdvance - totalEmployeePurchase - badDebt);
+  const netSalary = roundMoneyValue(baseSalaryCalc + supportSalaryCalc + responsibilitySalaryCalc + roleSalaryCalc + experienceSalaryCalc + commission + tieredBonus + overtimePay + totalBonus - totalPenalty - totalAdvance - totalEmployeePurchase - badDebt);
 
   return {
     workDays,
@@ -9610,6 +9988,7 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
+    responsibilitySalary: responsibilitySalaryCalc,
     roleSalary: roleSalaryCalc,
     roleSalaryRows,
     experienceSalary: experienceSalaryCalc,
@@ -9649,9 +10028,15 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
     revenue: monthlyPerformance.revenue ?? legacyPerformance.revenue ?? 0,
     overtime: monthlyPerformance.overtime ?? legacyPerformance.overtime ?? 0
   };
-  const salaryMonthDays = resolveSalaryMonthDays(emp);
-  const dailyBaseWage = (emp.basicSalary || 0) / salaryMonthDays;
-  const dailySupportWage = (emp.supportSalary || 0) / salaryMonthDays;
+  const salaryMonthDays = resolveSalaryMonthDays(emp, monthKey);
+  const basicSalary = parseLooseMoneyValue(emp.basicSalary);
+  const supportSalary = parseLooseMoneyValue(emp.supportSalary);
+  const responsibilitySalary = parseLooseMoneyValue(emp.responsibilitySalary);
+  const experienceSalary = parseLooseMoneyValue(emp.experienceSalary);
+  const basicSalaryMonthDays = salaryMonthDays;
+  const supportSalaryMonthDays = basicSalaryMonthDays;
+  const dailyBaseWage = basicSalary / basicSalaryMonthDays;
+  const dailySupportWage = supportSalary / supportSalaryMonthDays;
   const probationRate = (emp.probationRate !== undefined ? emp.probationRate : 100) / 100;
 
   let workDaysProbation = 0;
@@ -9698,15 +10083,15 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
       const matchedHolidays = holidays.filter(h => h.date === entry.date && !h.isArchived);
       matchedHolidays.forEach(isHoliday => {
         const amount = isHoliday.type === 'fixed'
-          ? (isHoliday.value || 0)
-          : dailyBaseWage * ((isHoliday.value || 0) / 100);
+          ? parseLooseMoneyValue(isHoliday.value)
+          : dailyBaseWage * (parseLooseMoneyValue(isHoliday.value) / 100);
         holidayBonus += amount;
         holidayRecords.push({
           id: isHoliday.id || `${entry.date}-${isHoliday.name || 'holiday'}`,
           date: entry.date,
           name: isHoliday.name || 'Ngày lễ',
           type: isHoliday.type || 'percentage',
-          value: isHoliday.value || 0,
+           value: parseLooseMoneyValue(isHoliday.value),
           amount: roundMoneyValue(amount)
         });
       });
@@ -9716,10 +10101,10 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const workDays = workDaysProbation + workDaysOfficial;
   const baseSalaryCalc = roundMoneyValue((workDaysProbation * dailyBaseWage * probationRate) + (workDaysOfficial * dailyBaseWage));
   const supportSalaryCalc = roundMoneyValue((workDaysProbation * dailySupportWage * probationRate) + (workDaysOfficial * dailySupportWage));
-  const responsibilitySalaryCalc = roundMoneyValue(((emp.responsibilitySalary || 0) / salaryMonthDays) * workDays);
+  const responsibilitySalaryCalc = isSalesCollaborator ? 0 : roundMoneyValue((responsibilitySalary / basicSalaryMonthDays) * workDays);
   const roleSalaryRows = normalizeEmployeeRoleSalaryComponents(emp.roleSalaryComponents || emp.departmentSalaryComponents || emp.salaryByDepartment)
     .map(row => {
-      const dailyRoleWage = (row.amount || 0) / salaryMonthDays;
+      const dailyRoleWage = parseLooseMoneyValue(row.amount) / salaryMonthDays;
       const calculatedAmount = isSalesCollaborator ? 0 : roundMoneyValue((workDaysProbation * dailyRoleWage * probationRate) + (workDaysOfficial * dailyRoleWage));
       return { ...row, calculatedAmount };
     });
@@ -9727,7 +10112,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
 
   const experienceDetails = calculateExperienceSalaryAtDate(
     emp.startDate,
-    emp.experienceSalary || 0,
+    experienceSalary,
     emp.experienceSalaryPeriod || 'months',
     getMonthEndDateInputValue(monthKey)
   );
@@ -9748,9 +10133,10 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const tieredBonus = 0;
   const earlyOvertimeHours = roundMoneyValue((earlyOvertimeMinutesTotal / 60) * 100) / 100;
   const afterShiftOvertimeHours = roundMoneyValue((afterShiftOvertimeMinutesTotal / 60) * 100) / 100;
-  const automaticOvertimeHours = roundMoneyValue((earlyOvertimeHours + afterShiftOvertimeHours) * 100) / 100;
+  const automaticOvertimeHours = afterShiftOvertimeHours;
   const approvedOvertimeHours = parseFloat(perf.overtime || 0) || 0;
-  const overtimePay = isSalesCollaborator ? 0 : roundMoneyValue((approvedOvertimeHours + automaticOvertimeHours) * (emp.overtimeRate || 0));
+  const overtimeRate = parseLooseMoneyValue(emp.overtimeRate);
+  const overtimePay = isSalesCollaborator ? 0 : roundMoneyValue((approvedOvertimeHours + automaticOvertimeHours) * overtimeRate);
 
   const monthlyFinancials = financials
     .filter(f => f.empId === empId && !f.isArchived && (!f.date || f.date.startsWith(monthKey)))
@@ -9761,8 +10147,8 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const advanceRecords = monthlyFinancials.filter(record => record.type === 'advance');
   const employeePurchaseRecords = monthlyFinancials.filter(record => record.type === 'employee_purchase');
 
-  let totalBonus = bonusRecords.reduce((sum, record) => sum + (record.amount || 0), 0);
-  const totalManualPenalty = penaltyRecords.reduce((sum, record) => sum + (record.amount || 0), 0);
+  let totalBonus = bonusRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
+  const totalManualPenalty = penaltyRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
   const latePenaltyRecords = attendanceEntries
     .filter(entry => (entry.latePenaltyAmount || 0) > 0 || entry.noSalaryDay)
     .map(entry => ({
@@ -9777,8 +10163,8 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
       noSalaryDay: Boolean(entry.noSalaryDay)
     }));
   const totalPenalty = totalManualPenalty + latePenaltyTotal;
-  const totalAdvance = advanceRecords.reduce((sum, record) => sum + (record.amount || 0), 0);
-  const totalEmployeePurchase = employeePurchaseRecords.reduce((sum, record) => sum + (record.amount || 0), 0);
+  const totalAdvance = advanceRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
+  const totalEmployeePurchase = employeePurchaseRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
 
   holidayBonus = isSalesCollaborator ? 0 : roundMoneyValue(holidayBonus);
   totalBonus += holidayBonus;
@@ -9986,6 +10372,7 @@ const useMobileKeyboardViewportGuard = () => {
 
     const editableSelector = 'input, textarea, select, [contenteditable="true"]';
     const isEditableElement = (target) => target instanceof Element && target.matches(editableSelector);
+    const nativeRuntime = isNativeRuntime();
     const timers = new Set();
     let frameId = 0;
 
@@ -9997,8 +10384,8 @@ const useMobileKeyboardViewportGuard = () => {
         if (activeElement.closest('[data-keyboard-guard="off"]')) return;
 
         activeElement.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
+          behavior: nativeRuntime ? 'auto' : 'smooth',
+          block: nativeRuntime ? 'nearest' : 'center',
           inline: 'nearest'
         });
       });
@@ -10014,22 +10401,33 @@ const useMobileKeyboardViewportGuard = () => {
 
     const handleFocusIn = (event) => {
       if (!isEditableElement(event.target)) return;
+      if (nativeRuntime) {
+        scheduleScroll(120);
+        return;
+      }
       scheduleScroll(60);
       scheduleScroll(260);
       scheduleScroll(520);
     };
 
-    const handleViewportChange = () => scheduleScroll(30);
+    const handleViewportChange = () => {
+      if (nativeRuntime && !isEditableElement(document.activeElement)) return;
+      scheduleScroll(nativeRuntime ? 120 : 30);
+    };
 
     document.addEventListener('focusin', handleFocusIn, true);
     window.visualViewport?.addEventListener('resize', handleViewportChange);
-    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+    if (!nativeRuntime) {
+      window.visualViewport?.addEventListener('scroll', handleViewportChange);
+    }
     window.addEventListener('resize', handleViewportChange);
 
     return () => {
       document.removeEventListener('focusin', handleFocusIn, true);
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
-      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      if (!nativeRuntime) {
+        window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      }
       window.removeEventListener('resize', handleViewportChange);
       window.cancelAnimationFrame(frameId);
       timers.forEach(timerId => window.clearTimeout(timerId));
@@ -11276,19 +11674,45 @@ export default function App() {
       'products',
       'orders',
       'orderRequests',
+      'warehouseImports',
       'warehouseDispatches',
+      'warehouseStockCounts',
+      'deliveryReports',
       'payments',
+      'bankAccounts',
+      'bankTransactions',
+      'payment_reconciliations',
+      'expenses',
+      'financials',
       'notifications',
+      'messages',
       'advances',
       'attendance'
     ]);
     const initialRealtimePriority = nativeRealtimeStartup ? nativeInitialRealtimePriority : webInitialRealtimePriority;
     let priorityListenerIndex = 0;
     let deferredListenerIndex = 0;
+    let readOnlyCollectionIndex = 0;
+
+    const scheduleNativeReadOnlyCollection = (binding) => {
+      const [colName, setFn, isObject, parser] = binding;
+      const delay = 9000 + Math.min(readOnlyCollectionIndex++ * 380, 16000);
+      const timerId = window.setTimeout(() => {
+        if (cancelled) return;
+        // Native WebView dễ bị kill khi giữ quá nhiều listener. Collection phụ vẫn được tải
+        // một lần để có dữ liệu, còn realtime chỉ giữ cho dữ liệu vận hành cốt lõi.
+        readCollection(colName, setFn, isObject, parser).catch(() => {});
+      }, delay);
+      listenerStartTimers.push(timerId);
+    };
 
     collectionBindings.forEach((binding) => {
       const [colName] = binding;
       const isPriority = initialRealtimePriority.has(colName);
+      if (nativeRealtimeStartup && !isPriority) {
+        scheduleNativeReadOnlyCollection(binding);
+        return;
+      }
       const priorityStepMs = nativeRealtimeStartup ? 180 : 32;
       const priorityMaxMs = nativeRealtimeStartup ? 4200 : 900;
       const deferredBaseMs = nativeRealtimeStartup ? 5200 : 1200;
@@ -11311,7 +11735,7 @@ export default function App() {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       refreshAllCollections();
-    }, 5 * 60 * 1000);
+    }, (nativeRealtimeStartup ? 12 : 5) * 60 * 1000);
 
     return () => {
       cancelled = true;
@@ -12311,12 +12735,24 @@ export default function App() {
   const handleEditAttendance = async (empId, targetDate, editData) => {
     if (!firebaseUser) return;
     const key = `${targetDate}_${empId}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { 
+    const actingEmployee = employees.find(item => item.id === currentUser?.id) || {};
+    const adjustmentMethodMeta = {
+      type: 'proxy',
+      proxyAttendance: true,
+      proxyByEmployeeId: actingEmployee.id || currentUser?.employeeId || currentUser?.id || '',
+      proxyByName: actingEmployee.name || currentUser?.name || 'Người quản lý',
+      proxyByRole: actingEmployee.position || currentUser?.role || ''
+    };
+    const attendancePayload = {
       ...editData, companyId: myCompanyId,
       checkIn: editData.checkIn ? editData.checkIn.toISOString() : null,
       checkOut: editData.checkOut ? editData.checkOut.toISOString() : null,
-      checkInMethod: 'Kế toán điều chỉnh' 
-    }, { merge: true });
+      checkInMethod: 'Kế toán điều chỉnh',
+      checkInMethodMeta: adjustmentMethodMeta,
+      checkOutMethod: editData.checkOut ? 'Kế toán điều chỉnh' : null,
+      checkOutMethodMeta: editData.checkOut ? adjustmentMethodMeta : null
+    };
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), attendancePayload, { merge: true });
   };
 
   const handleAddAdvanceRequest = async (empId, amount, reason, extraData = {}) => {
@@ -12336,7 +12772,9 @@ export default function App() {
       createdBy: currentUser?.id || empId,
       ...extraData
     };
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'advances', id), payload);
+    upsertLocalListRecord(setRawAdvanceRequests, payload);
+    rememberRecentLocalWrite('advances', id, payload);
+    await saveDataDocument('advances', id, payload, { merge: true }, 8000, 'Firebase phản hồi chậm khi tạo lệnh ứng lương.');
     return { success: true, id };
   };
   
@@ -13142,7 +13580,8 @@ export default function App() {
     if (state?.status === 'saved' || state?.status === 'manual_required') return undefined;
     if (autoBackupInFlightRef.current.has(stateKey)) return undefined;
 
-    const timerId = window.setTimeout(async () => {
+    let idleTaskId = null;
+    const runAutoBackupSafely = async () => {
       autoBackupInFlightRef.current.add(stateKey);
       try {
         await handleRunDailyAutoBackup();
@@ -13155,9 +13594,20 @@ export default function App() {
       } finally {
         autoBackupInFlightRef.current.delete(stateKey);
       }
+    };
+
+    const timerId = window.setTimeout(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      idleTaskId = getIdleScheduler(() => {
+        runAutoBackupSafely();
+      });
     }, AUTO_BACKUP_DELAY_MS);
 
-    return () => window.clearTimeout(timerId);
+    return () => {
+      window.clearTimeout(timerId);
+      cancelIdleScheduler(idleTaskId);
+    };
   }, [firebaseUser, myCompanyId, currentCompany]);
 
   const buildPaymentConfirmationMessage = ({ customer = {}, payment = {}, remainingDebt = 0, matchedOrder = null } = {}) => {
@@ -17568,6 +18018,8 @@ const OnboardingHintService = {
 
 const hasEmployeePayrollCompensationConfig = (employee = {}) => {
   if (!employee || employee.isArchived) return false;
+  // Cộng tác viên chỉ hưởng hoa hồng theo doanh thu, không bắt buộc có lương cơ bản.
+  if (isSalesCollaboratorPosition(employee.position)) return true;
   const salaryCandidates = [
     employee.salary,
     employee.baseSalary,
@@ -17783,6 +18235,55 @@ function MainAppView({
     tabPermissions.warehouse_dispatch
   ]);
 
+  // Keep footer ordering local to this device/account. Permissions remain the
+  // source of truth; usage only decides which allowed modules are promoted.
+  const footerUsageKey = useMemo(
+    () => `hd-footer-usage-v1:${currentCompany?.id || currentUser?.companyId || 'local'}:${employee?.id || currentUser?.employeeId || currentUser?.id || 'anonymous'}`,
+    [currentCompany?.id, currentUser?.companyId, currentUser?.employeeId, currentUser?.id, employee?.id]
+  );
+  const [footerUsage, setFooterUsage] = useState({});
+  const [footerUsageLoadedKey, setFooterUsageLoadedKey] = useState('');
+  const footerUsageEventRef = useRef('');
+
+  useEffect(() => {
+    let savedUsage = {};
+    try {
+      const rawUsage = typeof window !== 'undefined' ? window.localStorage.getItem(footerUsageKey) : null;
+      const parsedUsage = rawUsage ? JSON.parse(rawUsage) : {};
+      if (parsedUsage && typeof parsedUsage === 'object' && !Array.isArray(parsedUsage)) {
+        savedUsage = Object.fromEntries(
+          Object.entries(parsedUsage)
+            .filter(([id, count]) => typeof id === 'string' && Number.isFinite(Number(count)))
+            .map(([id, count]) => [id, Math.max(0, Number(count))])
+        );
+      }
+    } catch {
+      savedUsage = {};
+    }
+    setFooterUsage(savedUsage);
+    setFooterUsageLoadedKey(footerUsageKey);
+    footerUsageEventRef.current = '';
+  }, [footerUsageKey]);
+
+  useEffect(() => {
+    if (footerUsageLoadedKey !== footerUsageKey || !activeTab || activeTab === 'more') return;
+    const eventKey = `${footerUsageKey}:${activeTab}`;
+    if (footerUsageEventRef.current === eventKey) return;
+    footerUsageEventRef.current = eventKey;
+    setFooterUsage(previousUsage => {
+      const nextUsage = {
+        ...previousUsage,
+        [activeTab]: Number(previousUsage[activeTab] || 0) + 1
+      };
+      try {
+        window.localStorage.setItem(footerUsageKey, JSON.stringify(nextUsage));
+      } catch {
+        // Private browsing or storage limits must not block navigation.
+      }
+      return nextUsage;
+    });
+  }, [activeTab, footerUsageKey, footerUsageLoadedKey]);
+
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authType, setAuthType] = useState('in'); 
   const [authMethod, setAuthMethod] = useState('gps');
@@ -17837,12 +18338,11 @@ function MainAppView({
   const authWifiDefaultConfigured = Boolean(attendanceWifiSettings.ssid);
   const authWifiLabelMatchesDefault = authWifiDefaultConfigured && normalizeWifiCompareKey(authWifiLabel) === normalizeWifiCompareKey(attendanceWifiSettings.ssid);
   const isAuthConfirmDisabled = isAuthSubmitting || (authType === 'in' && authMethod === 'wifi' && (!authWifiReady || !authWifiDefaultConfigured || !authWifiLabelMatchesDefault));
-  const currentAttendanceAlert = getAttendanceAnomaly(employee, record, date);
+  const currentAttendanceAlert = resolveAttendanceAnomalyForDate(employee, attendance, date);
   const attendanceAlerts = useMemo(() => employees
     .map(emp => {
-      const empRecord = attendance[`${date}_${emp.id}`];
-      const anomaly = getAttendanceAnomaly(emp, empRecord, date);
-      return anomaly ? { emp, record: empRecord, ...anomaly } : null;
+      const anomaly = resolveAttendanceAnomalyForDate(emp, attendance, date);
+      return anomaly ? { emp, ...anomaly } : null;
     })
     .filter(Boolean), [employees, attendance, date]);
   useEffect(() => {
@@ -19026,6 +19526,7 @@ function MainAppView({
   const renderEmployeeHomeDashboard = () => (
     <EmployeePersonalHomeView
       employee={employee}
+      currentCompany={currentCompany}
       employees={employees}
       attendance={attendance}
       date={date}
@@ -19330,22 +19831,41 @@ function MainAppView({
       maps: { id: 'maps', label: 'Bản đồ', icon: <MapPin /> },
       company_attendance: { id: 'company_attendance', label: 'Chấm công', icon: <Clock /> },
       employee_reviews: { id: 'employee_reviews', label: 'Đánh giá', icon: <Star /> },
+      asset_management: { id: 'asset_management', label: 'Tài sản', icon: <Building /> },
+      payroll: { id: 'payroll', label: 'Bảng lương', icon: <Wallet /> },
+      employees: { id: 'employees', label: 'Nhân sự', icon: <Users /> },
+      products: { id: 'products', label: 'Sản phẩm', icon: <Package /> },
+      price_quotes: { id: 'price_quotes', label: 'Báo giá', icon: <Receipt /> },
+      report: { id: 'report', label: 'Báo cáo', icon: <FileText /> },
+      settings: { id: 'settings', label: 'Cài đặt', icon: <Settings /> },
+      role_permissions: { id: 'role_permissions', label: 'Vai trò', icon: <ShieldAlert /> },
+      billing: { id: 'billing', label: 'Gói dịch vụ', icon: <CreditCard /> },
       more: { id: 'more', label: 'Thêm', icon: <MoreHorizontal /> }
     };
     const rolePriorityIds = isWarehouseScale
-        ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'more']
+        ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'warehouse_import', 'more']
         : isDriver
-          ? ['home', 'delivery_reports', 'customers', 'more']
+          ? ['home', 'delivery_reports', 'customers', 'maps', 'more']
           : isSales
-            ? ['home', 'order_requests', 'debt', 'customers', 'more']
+            ? ['home', 'order_requests', 'debt', 'customers', 'pricing', 'more']
             : (!isOwnerAccount && isAccounting)
-              ? ['home', 'orders', 'order_requests', 'customers', 'more']
-              : ['home', 'orders', 'warehouse_dispatch', 'order_requests', 'more'];
-    return rolePriorityIds
-      .map(id => itemMap[id])
-      .filter(Boolean)
-      .filter(item => item.id === 'more' || tabPermissions[item.id]);
+              ? ['home', 'orders', 'order_requests', 'customers', 'debt', 'more']
+              : ['home', 'orders', 'warehouse_dispatch', 'order_requests', 'customers', 'more'];
+    const rolePriorityIndex = new Map(rolePriorityIds.map((id, index) => [id, index]));
+    const allowedItems = Object.keys(itemMap)
+      .filter(id => id !== 'more' && tabPermissions[id])
+      .sort((leftId, rightId) => {
+        if (leftId === 'home') return -1;
+        if (rightId === 'home') return 1;
+        const usageDifference = Number(footerUsage[rightId] || 0) - Number(footerUsage[leftId] || 0);
+        if (usageDifference !== 0) return usageDifference;
+        return (rolePriorityIndex.get(leftId) ?? 999) - (rolePriorityIndex.get(rightId) ?? 999);
+      })
+      .slice(0, 4)
+      .map(id => itemMap[id]);
+    return [...allowedItems, itemMap.more];
   }, [
+    footerUsage,
     isAccounting,
     isDriver,
     isOwnerAccount,
@@ -19365,7 +19885,17 @@ function MainAppView({
     tabPermissions.order_requests,
     tabPermissions.orders,
     tabPermissions.pricing,
-    tabPermissions.warehouse_dispatch
+    tabPermissions.warehouse_dispatch,
+    tabPermissions.warehouse_import,
+    tabPermissions.asset_management,
+    tabPermissions.payroll,
+    tabPermissions.employees,
+    tabPermissions.products,
+    tabPermissions.price_quotes,
+    tabPermissions.report,
+    tabPermissions.settings,
+    tabPermissions.role_permissions,
+    tabPermissions.billing
   ]);
   const directFooterTabIds = new Set(footerNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
@@ -20334,7 +20864,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
 
   const filteredAlerts = useMemo(() => filteredEmployees
     .map(emp => {
-      const anomaly = getAttendanceAnomaly(emp, getRecord(emp.id), safeDate);
+      const anomaly = resolveAttendanceAnomalyForDate(emp, safeAttendance, safeDate);
       return anomaly ? { emp, ...anomaly } : null;
     })
     .filter(Boolean), [filteredEmployees, safeAttendance, safeDate]);
@@ -20546,7 +21076,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
             checkIn: submittedAt.toISOString(),
             checkInMethod: methodPayload.label,
             checkInMethodMeta: methodPayload,
-            status: calculateCheckInStatus(currentEmployee, submittedAt, safeDate)
+            status: calculateCheckInStatus(currentEmployee, submittedAt, currentAttendanceDate)
           }
       });
       setSelfStatusMsg(type === 'in' ? 'Đã chấm vào ca thành công.' : 'Đã chấm ra ca thành công.');
@@ -20751,8 +21281,8 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
             </div>
           )}
 
-          {currentRecord?.checkInMethod && <p className="text-[11px] text-gray-500 mt-3">Phương thức vào ca: <strong className="text-gray-700">{currentRecord.checkInMethod}</strong></p>}
-          {currentRecord?.checkOutMethod && <p className="text-[11px] text-gray-500 mt-1">Phương thức ra ca: <strong className="text-gray-700">{currentRecord.checkOutMethod}</strong></p>}
+          {currentRecord?.checkIn && <p className="text-[11px] text-gray-500 mt-3">Phương thức vào ca: <strong className="text-gray-700">{getAttendanceMethodDisplay(currentRecord, 'checkIn')}</strong></p>}
+          {currentRecord?.checkOut && <p className="text-[11px] text-gray-500 mt-1">Phương thức ra ca: <strong className="text-gray-700">{getAttendanceMethodDisplay(currentRecord, 'checkOut')}</strong></p>}
           <AttendanceGpsMetaCard title="Vị trí vào ca" meta={currentRecord?.checkInMethodMeta} />
           <AttendanceGpsMetaCard title="Vị trí ra ca" meta={currentRecord?.checkOutMethodMeta} />
 
@@ -20870,12 +21400,12 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
                 <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] uppercase text-gray-500 mb-1">Giờ vào</p>
                   <p className="text-base font-bold text-gray-800">{formatTime(record?.checkIn)}</p>
-                  <p className="text-[11px] text-gray-500 mt-1">{record?.checkInMethod || '--'}</p>
+                  <p className="text-[11px] text-gray-500 mt-1">{getAttendanceMethodDisplay(record, 'checkIn')}</p>
                 </div>
                 <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] uppercase text-gray-500 mb-1">Giờ ra</p>
                   <p className="text-base font-bold text-gray-800">{formatTime(record?.checkOut)}</p>
-                  <p className="text-[11px] text-gray-500 mt-1">{record?.checkOutMethod || '--'}</p>
+                  <p className="text-[11px] text-gray-500 mt-1">{getAttendanceMethodDisplay(record, 'checkOut')}</p>
                 </div>
               </div>
 
@@ -29400,10 +29930,15 @@ function GoogleDeliveryMap({
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
+  const onSelectRef = useRef(onSelect);
   const routeLineRef = useRef(null);
   const currentLocationMarkerRef = useRef(null);
   const [loadState, setLoadState] = useState(apiKey ? 'loading' : 'missing_key');
   const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
 
   const validPoints = useMemo(() => (points || [])
     .map((point, index) => ({
@@ -29503,7 +30038,7 @@ function GoogleDeliveryMap({
         },
         zIndex: isSelected ? 1000 : 10 + index,
       });
-      marker.addListener('click', () => onSelect?.(selectedId === pointId ? '' : pointId));
+      marker.addListener('click', () => onSelectRef.current?.(selectedId === pointId ? '' : pointId));
       markersRef.current.push(marker);
       addBoundsPoint(point);
     });
@@ -29549,7 +30084,7 @@ function GoogleDeliveryMap({
       markersRef.current.forEach(marker => marker.setMap(null));
       markersRef.current = [];
     };
-  }, [bounds, currentLocation, loadState, onSelect, selectedId, validPoints, warehouseLocation]);
+  }, [bounds, currentLocation, loadState, selectedId, validPoints, warehouseLocation]);
 
   useEffect(() => {
     const google = window.google;
@@ -36519,6 +37054,7 @@ function EmployeeHomeQuickRow({ label, value, tone = 'slate' }) {
 
 function EmployeePersonalHomeView({
   employee,
+  currentCompany = null,
   employees = [],
   attendance = {},
   date = getTodayString(),
@@ -36540,12 +37076,23 @@ function EmployeePersonalHomeView({
   onOpenNotifications = () => {}
 }) {
   const reviewSectionRef = useRef(null);
+  const payrollPdfRef = useRef(null);
+  const [payrollPdfStatus, setPayrollPdfStatus] = useState('');
   const monthKey = buildMonthKeyFromDate(date || getTodayString());
   const details = useMemo(() => (
     buildSalaryDetails(employee?.id, employees, attendance, financials, performance, customers, orders, payments, holidays, monthKey)
       || { netSalary: 0, grossSalary: 0, deductionTotal: 0, workDays: 0, baseSalaryCalc: 0, supportSalary: 0, responsibilitySalary: 0, experienceSalary: 0, commission: 0, tieredBonus: 0, overtimePay: 0, totalBonus: 0, holidayBonus: 0, totalPenalty: 0, totalAdvance: 0, totalEmployeePurchase: 0, badDebt: 0, salesRevenue: 0, attendanceEntries: [], bonusRecords: [], penaltyRecords: [], advanceRecords: [], employeePurchaseRecords: [] }
   ), [attendance, customers, employee?.id, employees, financials, holidays, monthKey, orders, payments, performance]);
-  const todayRecord = record || (employee?.id ? attendance?.[`${date}_${employee.id}`] : null);
+  const employeeShiftPolicy = useMemo(() => resolveEmployeeShiftPolicy(employee || {}), [employee]);
+  const todayRecord = useMemo(() => {
+    const rawRecord = (employee?.id ? attendance?.[`${date}_${employee.id}`] : null) || record || null;
+    return normalizeAttendanceRecordForWorkDate(rawRecord, employee || {}, date);
+  }, [attendance, date, employee, record]);
+  const todayAttendanceTiming = useMemo(() => (
+    todayRecord
+      ? calculateAttendanceTiming(employee || {}, { ...todayRecord, date })
+      : { lateMinutes: 0, earlyOvertimeMinutes: 0, afterShiftOvertimeMinutes: 0, autoOvertimeMinutes: 0 }
+  ), [date, employee, todayRecord]);
   const attendanceStatus = todayRecord?.status === 'leave'
     ? 'Nghỉ phép'
     : todayRecord?.checkIn && todayRecord?.checkOut
@@ -36631,11 +37178,6 @@ function EmployeePersonalHomeView({
       rows
     };
   }, [employeeDeliveryMonthReports, employeeDeliveryMonthStandaloneExpenses]);
-  const latestAttendanceRows = useMemo(() => (
-    [...(details.attendanceEntries || [])]
-      .sort((a, b) => `${b.date || ''}`.localeCompare(`${a.date || ''}`))
-      .slice(0, 5)
-  ), [details.attendanceEntries]);
   const recentSalaryRows = useMemo(() => (
     [
       ...(details.bonusRecords || []).map(row => ({ ...row, kindLabel: 'Thưởng', tone: 'good', sign: '+' })),
@@ -36648,6 +37190,67 @@ function EmployeePersonalHomeView({
   ), [details.advanceRecords, details.bonusRecords, details.employeePurchaseRecords, details.penaltyRecords]);
   const totalBonusDisplay = parseLooseMoneyValue(details.totalBonus) + parseLooseMoneyValue(details.tieredBonus);
   const totalPenaltyDisplay = parseLooseMoneyValue(details.totalPenalty) + parseLooseMoneyValue(details.badDebt);
+  const payrollSummaryRows = useMemo(() => {
+    const rows = [
+      { label: 'Thực lĩnh', amount: parseLooseMoneyValue(details.netSalary), group: 'total', tone: parseLooseMoneyValue(details.netSalary) < 0 ? 'bad' : 'good' },
+      { label: 'Lương cơ bản', amount: parseLooseMoneyValue(details.baseSalaryCalc), group: 'income' },
+      { label: 'Hỗ trợ + trách nhiệm', amount: parseLooseMoneyValue(details.supportSalary) + parseLooseMoneyValue(details.responsibilitySalary), group: 'income' },
+      { label: 'Lương theo bộ phận', amount: parseLooseMoneyValue(details.roleSalary), group: 'income' },
+      { label: 'Lương thâm niên', amount: parseLooseMoneyValue(details.experienceSalary), group: 'income' },
+      { label: 'Hoa hồng', amount: parseLooseMoneyValue(details.commission), group: 'income' },
+      { label: 'Tăng ca', amount: parseLooseMoneyValue(details.overtimePay), group: 'income' },
+      { label: 'Thưởng', amount: totalBonusDisplay, group: 'income' },
+      { label: 'Tổng bị trừ', amount: parseLooseMoneyValue(details.deductionTotal), group: 'deduction' },
+      { label: 'Ứng lương', amount: parseLooseMoneyValue(details.totalAdvance), group: 'deduction' },
+      { label: 'Mua hàng nội bộ', amount: parseLooseMoneyValue(details.totalEmployeePurchase), group: 'deduction' },
+      { label: 'Công nợ phải thu', amount: parseLooseMoneyValue(details.badDebt), group: 'deduction' }
+    ];
+    const groupRank = row => row.amount === 0 ? 3 : row.group === 'deduction' ? 2 : row.group === 'total' ? 0 : 1;
+    return rows
+      .map((row, index) => ({ ...row, order: index }))
+      .filter(row => row.amount !== 0)
+      .sort((a, b) => groupRank(a) - groupRank(b) || a.order - b.order);
+  }, [details, totalBonusDisplay]);
+  const handleCreatePayrollPdf = async () => {
+    if (!payrollPdfRef.current) return;
+    setPayrollPdfStatus('Đang tạo PDF bảng lương...');
+    try {
+      const [{ toPng }, { jsPDF }] = await Promise.all([
+        import('html-to-image'),
+        import('jspdf')
+      ]);
+      const dataUrl = await toPng(payrollPdfRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff'
+      });
+      const image = new Image();
+      image.src = dataUrl;
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+      });
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const margin = 12;
+      const pageWidth = 210;
+      const pageHeight = 297;
+      const contentWidth = pageWidth - (margin * 2);
+      const imageHeight = (image.height / image.width) * contentWidth;
+      const pageContentHeight = pageHeight - (margin * 2);
+      let renderedHeight = 0;
+      while (renderedHeight < imageHeight) {
+        pdf.addImage(dataUrl, 'PNG', margin, margin - renderedHeight, contentWidth, imageHeight);
+        renderedHeight += pageContentHeight;
+        if (renderedHeight < imageHeight) pdf.addPage();
+      }
+      const employeeName = sanitizeShareFileName(employee?.name || 'nhan-su');
+      pdf.save(`bang-luong-${employeeName}-${monthKey}.pdf`);
+      setPayrollPdfStatus('Đã tạo file PDF bảng lương.');
+    } catch (error) {
+      console.error('Không thể tạo PDF bảng lương:', error);
+      setPayrollPdfStatus('Không thể tạo PDF. Vui lòng thử lại.');
+    }
+  };
   const employeeAssignedAssets = useMemo(() => {
     if (!employee?.id) return [];
     return (assets || [])
@@ -36740,7 +37343,7 @@ function EmployeePersonalHomeView({
             )}
           </button>
         </div>
-        <div className={`mt-5 grid gap-1.5 sm:gap-2 ${shouldShowAssetHomeTile ? 'grid-cols-4' : 'grid-cols-3'}`}>
+        <div className={`mt-5 grid gap-1.5 sm:gap-2 ${shouldShowAssetHomeTile ? 'grid-cols-3' : 'grid-cols-2'}`}>
           <div className="rounded-2xl bg-white/15 px-2 py-3 text-center">
             <p className="text-[9px] font-black uppercase tracking-wide text-emerald-100">Thực lĩnh</p>
             <p className="mt-1 text-sm font-black sm:text-lg">{formatCurrency(details.netSalary)} đ</p>
@@ -36748,10 +37351,6 @@ function EmployeePersonalHomeView({
           <div className="rounded-2xl bg-white/15 px-2 py-3 text-center">
             <p className="text-[9px] font-black uppercase tracking-wide text-emerald-100">Công tháng</p>
             <p className="mt-1 text-sm font-black sm:text-lg">{formatNumber(details.workDays)}</p>
-          </div>
-          <div className="rounded-2xl bg-white/15 px-2 py-3 text-center">
-            <p className="text-[9px] font-black uppercase tracking-wide text-emerald-100">Hôm nay</p>
-            <p className="mt-1 text-xs font-black sm:text-sm">{attendanceStatus}</p>
           </div>
           {shouldShowAssetHomeTile && (
             <button
@@ -36813,47 +37412,104 @@ function EmployeePersonalHomeView({
       )}
 
       <section ref={reviewSectionRef} className="scroll-mt-24 rounded-[2rem] border border-slate-100 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <div>
-            <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Chấm công hôm nay</p>
-            <h3 className="mt-1 text-lg font-black text-slate-950">{formatDateLabel(date)}</h3>
-          </div>
+        <div className="mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Chấm công hôm nay</p>
+              <span className="text-sm font-black text-slate-950">{formatDateLabel(date)}</span>
+            </div>
           <span className={`rounded-full px-3 py-1 text-xs font-black ${attendanceTone === 'emerald' ? 'bg-emerald-50 text-emerald-700' : attendanceTone === 'blue' ? 'bg-blue-50 text-blue-700' : attendanceTone === 'amber' ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700'}`}>{attendanceStatus}</span>
+          </div>
+          <p className="mt-1 text-xs font-bold text-slate-500">
+            {employeeShiftPolicy.shiftName} • {formatShiftRangeLabel(employeeShiftPolicy)}
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <EmployeeHomeQuickRow label="Vào ca" value={todayRecord?.checkIn || '-'} tone={todayRecord?.checkIn ? 'good' : 'bad'} />
-          <EmployeeHomeQuickRow label="Ra ca" value={todayRecord?.checkOut || '-'} tone={todayRecord?.checkOut ? 'good' : 'warn'} />
-          <EmployeeHomeQuickRow label="Phương thức vào" value={todayRecord?.checkInMethod || '-'} />
-          <EmployeeHomeQuickRow label="Phương thức ra" value={todayRecord?.checkOutMethod || '-'} />
+          <EmployeeHomeQuickRow label="Vào" value={todayRecord?.checkIn ? formatAttendanceMomentForWorkDate(todayRecord.checkIn, date, employee, 'checkIn') : '-'} tone={todayRecord?.checkIn ? 'good' : 'bad'} />
+          <EmployeeHomeQuickRow label="Ra" value={todayRecord?.checkOut ? formatAttendanceMomentForWorkDate(todayRecord.checkOut, date, employee, 'checkOut') : '-'} tone={todayRecord?.checkOut ? 'good' : 'warn'} />
+          <EmployeeHomeQuickRow label="Phương thức vào" value={getAttendanceMethodDisplay(todayRecord, 'checkIn')} />
+          <EmployeeHomeQuickRow label="Phương thức ra" value={getAttendanceMethodDisplay(todayRecord, 'checkOut')} />
         </div>
+        {todayRecord && (todayAttendanceTiming.lateMinutes > 0 || todayAttendanceTiming.autoOvertimeMinutes > 0) && (
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
+            {todayAttendanceTiming.lateMinutes > 0 && (
+              <span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">Đi muộn {formatNumber(todayAttendanceTiming.lateMinutes)} phút</span>
+            )}
+            {todayAttendanceTiming.autoOvertimeMinutes > 0 && (
+              <span className="rounded-full bg-blue-50 px-3 py-1.5 text-blue-700">Tăng ca {formatNumber(todayAttendanceTiming.autoOvertimeMinutes)} phút</span>
+            )}
+          </div>
+        )}
         <button type="button" onClick={() => setActiveTab('company_attendance')} className="mt-3 w-full rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-100">
           Mở chấm công
         </button>
       </section>
 
       <section className="rounded-[2rem] border border-slate-100 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-xs font-black uppercase tracking-widest text-blue-600">Lương tháng</p>
-            <h3 className="mt-1 text-lg font-black text-slate-950">{formatMonthYearLabel(monthKey)}</h3>
+            <p className="text-xs font-black uppercase tracking-widest text-blue-600">Bảng lương tháng</p>
           </div>
-          <button type="button" onClick={() => setActiveTab('payroll')} className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-black text-blue-700">Chi tiết</button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={handleCreatePayrollPdf} className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700" aria-label="Tạo PDF bảng lương">
+              <Download size={13} /> PDF
+            </button>
+            <button type="button" onClick={() => setActiveTab('payroll')} className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-black text-blue-700">Chi tiết</button>
+          </div>
         </div>
         <div className="space-y-2">
-          <EmployeeHomeQuickRow label="Lương cơ bản" value={`${formatCurrency(details.baseSalaryCalc)} đ`} />
-          <EmployeeHomeQuickRow label="Hỗ trợ + trách nhiệm" value={`${formatCurrency((details.supportSalary || 0) + (details.responsibilitySalary || 0))} đ`} />
-          <EmployeeHomeQuickRow label="Hoa hồng" value={`${formatCurrency(details.commission || 0)} đ`} tone={(details.commission || 0) > 0 ? 'good' : 'slate'} />
-          <EmployeeHomeQuickRow label="Tăng ca" value={`${formatCurrency(details.overtimePay || 0)} đ`} tone={(details.overtimePay || 0) > 0 ? 'good' : 'slate'} />
-          <EmployeeHomeQuickRow label="Tổng trừ" value={`${formatCurrency(details.deductionTotal || 0)} đ`} tone={(details.deductionTotal || 0) > 0 ? 'bad' : 'slate'} />
-          <EmployeeHomeQuickRow label="Thực lĩnh" value={`${formatCurrency(details.netSalary || 0)} đ`} tone={(details.netSalary || 0) >= 0 ? 'good' : 'bad'} />
+          {payrollSummaryRows.map(row => (
+            <EmployeeHomeQuickRow
+              key={row.label}
+              label={row.label}
+              value={`${formatCurrency(row.amount)} đ`}
+              tone={row.tone || (row.amount === 0 ? 'slate' : row.group === 'deduction' ? 'bad' : 'good')}
+            />
+          ))}
         </div>
+        {payrollPdfStatus && <p className="mt-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600" role="status">{payrollPdfStatus}</p>}
       </section>
+
+      <div ref={payrollPdfRef} aria-hidden="true" className="pointer-events-none absolute -left-[10000px] top-0 w-[794px] bg-white p-10 text-slate-900">
+        <div className="border-b-2 border-slate-900 pb-4 text-center">
+          <p className="text-lg font-black uppercase">{currentCompany?.name || currentCompany?.companyName || 'CÔNG TY'}</p>
+          <p className="mt-1 text-2xl font-black uppercase">BẢNG THANH TOÁN TIỀN LƯƠNG</p>
+          <p className="mt-1 text-base font-bold">Tháng {formatMonthYearLabel(monthKey)}</p>
+        </div>
+        <div className="mt-6 grid grid-cols-2 gap-x-8 gap-y-2 text-base">
+          <p><strong>Họ và tên:</strong> {employee?.name || '-'}</p>
+          <p><strong>Bộ phận:</strong> {positionLabel || '-'}</p>
+          <p><strong>Kỳ lương:</strong> {monthKey}</p>
+          <p><strong>Ngày công:</strong> {formatNumber(details.workDays)}</p>
+        </div>
+        <table className="mt-6 w-full border-collapse text-base">
+          <thead>
+            <tr className="bg-slate-100">
+              <th className="border border-slate-700 px-3 py-2 text-center">STT</th>
+              <th className="border border-slate-700 px-3 py-2 text-left">Nội dung</th>
+              <th className="border border-slate-700 px-3 py-2 text-right">Số tiền (VNĐ)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {payrollSummaryRows.map((row, index) => (
+              <tr key={`pdf-${row.label}`}>
+                <td className="border border-slate-700 px-3 py-2 text-center">{index + 1}</td>
+                <td className="border border-slate-700 px-3 py-2">{row.label}</td>
+                <td className="border border-slate-700 px-3 py-2 text-right">{formatCurrency(row.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="mt-8 grid grid-cols-2 gap-8 text-center text-base">
+          <div><p className="font-bold">Người lập bảng</p><p className="mt-16">{employee?.name || ''}</p></div>
+          <div><p className="font-bold">Người nhận lương</p><p className="mt-16">{employee?.name || ''}</p></div>
+        </div>
+      </div>
 
       <section className="rounded-[2rem] border border-slate-100 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div>
-            <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Báo cáo giao hàng tháng</p>
-            <h3 className="mt-1 text-lg font-black text-slate-950">{formatMonthYearLabel(monthKey)}</h3>
+            <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Báo cáo giao hàng</p>
           </div>
           <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
             {formatNumber(employeeDeliveryMonthSummary.reportCount)} báo cáo
@@ -44416,6 +45072,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const resolveDispatchOrderRequestPrice = useCallback((dispatch = {}, product = null, customer = null, productLabel = '') => {
     const dispatchCustomerId = dispatch.customerId || customer?.id || '';
     const dispatchProductId = dispatch.productId || product?.id || '';
+    const dispatchDate = resolveEntityDateKey(dispatch, workingDate) || workingDate;
+    const dispatchDateValue = parseDateInputValue(dispatchDate || workingDate);
+    const dispatchDateMs = dispatchDateValue ? dispatchDateValue.getTime() : 0;
     const dispatchBranchId = `${dispatch.branchId || dispatch.customerBranchId || ''}`.trim();
     const dispatchBranchName = normalizeLookupText(dispatch.branchName || dispatch.customerBranchName || '');
     const normalizedCustomerName = normalizeLookupText(dispatch.customerNameSnapshot || customer?.name || '');
@@ -44433,20 +45092,47 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       || dispatch.orderRequestDate
       || dispatch.requestDate
       || dispatch.requestDateKey
-      || workingDate;
+      || dispatchDate;
     const sourceRequestId = `${dispatch.sourceOrderRequestId || dispatch.orderRequestId || dispatch.requestId || ''}`.trim();
     const sourceRequestRowKey = `${dispatch.sourceOrderRequestRowKey || dispatch.orderRequestRowKey || dispatch.requestRowKey || ''}`.trim();
     const dispatchTimestamp = getEntityTimestamp(dispatch)
-      || new Date(`${dispatch.date || workingDate}T23:59:59.999`).getTime();
+      || new Date(`${dispatchDate || workingDate}T23:59:59.999`).getTime();
+    const directSourceUnitPrice = parseLooseMoneyValue(
+      dispatch.sourceOrderRequestUnitPrice
+      ?? dispatch.orderRequestUnitPrice
+      ?? dispatch.requestUnitPrice
+      ?? dispatch.orderedUnitPrice
+      ?? dispatch.customerOrderUnitPrice
+    );
+    const fallbackUnitPrice = directSourceUnitPrice || parseLooseMoneyValue(
+      dispatch.unitPrice
+      ?? dispatch.price
+      ?? dispatch.sellingPrice
+      ?? dispatch.unitPriceVnd
+      ?? dispatch.unit_price_vnd
+    );
+    const dispatchQuantityForMatch = parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount);
+    const dispatchWeightForMatch = parseLooseQuantityValue(dispatch.weightKg ?? dispatch.totalKg ?? dispatch.kg ?? dispatch.actualWeightKg ?? dispatch.weight);
+    const dispatchSizeKey = normalizeLookupText(dispatch.size || dispatch.sizeLabel || dispatch.productSize || dispatch.variantSize || '');
+    const dispatchUnitKey = normalizeLookupText(dispatch.quantityUnit || dispatch.unit || product?.unit || '');
     const candidates = [];
 
     (orderRequests || []).filter(request => !request?.isArchived).forEach((request) => {
-      const requestDate = resolveEntityDateKey(request, workingDate);
+      const requestDate = resolveEntityDateKey(request, dispatchDate || workingDate);
+      const requestDateValue = parseDateInputValue(requestDate || '');
+      const requestDateMs = requestDateValue ? requestDateValue.getTime() : 0;
       const isExactRequest = Boolean(sourceRequestId && request.id === sourceRequestId);
-      if (!isExactRequest && requestDate > workingDate) return;
+      if (!isExactRequest && dispatchDateMs && requestDateMs && requestDateMs > dispatchDateMs) return;
       const requestTimestamp = getEntityTimestamp(request)
-        || new Date(`${requestDate || workingDate}T00:00:00.000`).getTime();
-      if (!isExactRequest && dispatchTimestamp && requestTimestamp && requestTimestamp > dispatchTimestamp) return;
+        || new Date(`${requestDate || dispatchDate || workingDate}T00:00:00.000`).getTime();
+      if (!isExactRequest && dispatchTimestamp && requestTimestamp && requestTimestamp > dispatchTimestamp) {
+        const sameBusinessDay = Boolean(requestDate && (
+          requestDate === dispatchDate
+          || requestDate === sourceRequestDate
+          || requestDate === workingDate
+        ));
+        if (!sameBusinessDay) return;
+      }
 
       const requestCustomer = customerLookup.get(request.customerId);
       const requestCustomerName = request.customerNameSnapshot || request.customerName || requestCustomer?.name || '';
@@ -44486,36 +45172,66 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         );
         if (!requestProductMatches) return;
 
-        const unitPrice = parseLooseMoneyValue(
-          item?.unitPrice
-          ?? item?.price
-          ?? item?.sellingPrice
-          ?? item?.unitPriceVnd
-          ?? item?.unit_price_vnd
-        );
+        const unitPrice = getOrderLineUnitPriceValue(item);
         if (unitPrice <= 0) return;
         const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || ''}`.trim();
+        const legacyProductRowKey = `${request.id || 'request'}_${item?.productId || index}`;
+        const compositeRowKey = `${request.id || 'request'}_${itemRowKey || item?.productId || index}`;
+        const itemQuantity = getOrderLineQuantityValue(item);
+        const itemWeightKg = getOrderLineWeightKgValue(item);
+        const itemSizeKey = normalizeLookupText(getOrderLineSizeLabel(item));
+        const itemUnitKey = normalizeLookupText(item?.quantityUnit || item?.unit || product?.unit || '');
         candidates.push({
           unitPrice,
           unitLabel: normalizeLeadingLabel(item?.quantityUnit || item?.unit || dispatch.quantityUnit || dispatch.unit || product?.unit || ''),
           requestTimestamp: requestTimestamp || 0,
           exactRequest: isExactRequest ? 1 : 0,
-          exactRow: sourceRequestRowKey && itemRowKey === sourceRequestRowKey ? 1 : 0,
+          exactRow: sourceRequestRowKey && [itemRowKey, compositeRowKey, legacyProductRowKey].includes(sourceRequestRowKey) ? 1 : 0,
           sameSourceDate: sourceRequestDate && requestDate === sourceRequestDate ? 1 : 0,
+          sameDispatchDate: dispatchDate && requestDate === dispatchDate ? 1 : 0,
+          exactProductId: dispatchProductId && item?.productId === dispatchProductId ? 1 : 0,
+          quantityMatch: dispatchQuantityForMatch > 0 && areLooseQuantityValuesClose(dispatchQuantityForMatch, itemQuantity, 0.001) ? 1 : 0,
+          weightMatch: dispatchWeightForMatch > 0 && areLooseQuantityValuesClose(dispatchWeightForMatch, itemWeightKg) ? 1 : 0,
+          sizeMatch: dispatchSizeKey && itemSizeKey && dispatchSizeKey === itemSizeKey ? 1 : 0,
+          unitMatch: dispatchUnitKey && itemUnitKey && dispatchUnitKey === itemUnitKey ? 1 : 0,
+          requestDateMs,
           itemIndex: index
         });
       });
     });
 
     candidates.sort((a, b) => (
-      b.exactRequest - a.exactRequest
-      || b.exactRow - a.exactRow
+      b.exactRow - a.exactRow
+      || b.exactRequest - a.exactRequest
       || b.sameSourceDate - a.sameSourceDate
+      || b.sameDispatchDate - a.sameDispatchDate
+      || b.quantityMatch - a.quantityMatch
+      || b.weightMatch - a.weightMatch
+      || b.sizeMatch - a.sizeMatch
+      || b.unitMatch - a.unitMatch
+      || b.exactProductId - a.exactProductId
+      || b.requestDateMs - a.requestDateMs
       || b.requestTimestamp - a.requestTimestamp
       || a.itemIndex - b.itemIndex
     ));
 
-    return candidates[0] || null;
+    if (candidates[0]) return candidates[0];
+    return fallbackUnitPrice > 0 ? {
+      unitPrice: fallbackUnitPrice,
+      unitLabel: normalizeLeadingLabel(dispatch.quantityUnit || dispatch.unit || product?.unit || ''),
+      requestTimestamp: dispatchTimestamp || 0,
+      exactRequest: 0,
+      exactRow: 0,
+      sameSourceDate: 0,
+      sameDispatchDate: 0,
+      exactProductId: 0,
+      quantityMatch: 0,
+      weightMatch: 0,
+      sizeMatch: 0,
+      unitMatch: 0,
+      requestDateMs: dispatchDateMs,
+      itemIndex: 0
+    } : null;
   }, [customerLookup, orderRequests, productLookup, workingDate]);
   const reportCustomerGroups = useMemo(() => {
     const grouped = new Map();
@@ -49599,8 +50315,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       const matchedProduct = item?.productId ? productLookup.get(item.productId) || null : null;
       const productName = matchedProduct?.name || item?.description || item?.productName || item?.productNameSnapshot || '';
       const branchRef = getDispatchOrderBranchRef(requestCustomer, request, item);
+      const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || index}`.trim();
       return {
-        rowKey: `${request.id || 'request'}_${item?.productId || index}`,
+        rowKey: `${request.id || 'request'}_${itemRowKey || item?.productId || index}`,
         requestId: request.id || '',
         requestDate,
         customerId: request.customerId || requestCustomer?.id || '',
@@ -49620,6 +50337,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         productCategory: matchedProduct?.category || matchedProduct?.mainGroup || '',
         productUnit: matchedProduct?.unit || item?.quantityUnit || '',
         productBarcode: matchedProduct?.barcode || '',
+        unitPrice: getOrderLineUnitPriceValue(item),
+        quantity: getOrderLineQuantityValue(item),
+        quantityUnit: item?.quantityUnit || item?.unit || matchedProduct?.unit || '',
+        weightKg: getOrderLineWeightKgValue(item),
+        sizeLabel: getOrderLineSizeLabel(item),
+        attributeLabel: getOrderLineAttributeLabel(item),
         product: matchedProduct,
         item
       };
@@ -49669,6 +50392,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       productShortName: shortageLine.productShortName || requestLine.productShortName || getProductShortName(product),
       productUnit: product?.unit || requestLine.quantityUnit || '',
       productBarcode: product?.barcode || '',
+      unitPrice: getOrderLineUnitPriceValue(requestLine),
+      quantity: getOrderLineQuantityValue(requestLine),
+      quantityUnit: requestLine.quantityUnit || requestLine.unit || product?.unit || '',
+      weightKg: getOrderLineWeightKgValue(requestLine),
+      sizeLabel: getOrderLineSizeLabel(requestLine),
+      attributeLabel: getOrderLineAttributeLabel(requestLine),
       product,
       item: requestLine
     };
@@ -49684,28 +50413,83 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         || (a.productShortName || a.productName || '').localeCompare(b.productShortName || b.productName || '', 'vi')
       ));
   };
-  const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '') => {
+  const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '', dispatchLike = {}) => {
     if (!customerId || !productId) return null;
-    const shortageLine = (dispatchShortageSummary?.issueLines || []).find(line => (
-      line.customerId === customerId
-      && line.productId === productId
-      && Array.isArray(line.requestLines)
-      && line.requestLines.length > 0
-    ));
-    const shortageRequestLine = shortageLine?.requestLines?.[0] || null;
-    if (shortageRequestLine) {
-      const matchedOpenRow = warehouseVoiceOrderRows.find(row => (
-        row.customerId === customerId
-        && row.productId === productId
-        && (
-          (shortageRequestLine.requestId && row.requestId === shortageRequestLine.requestId)
-          || (shortageRequestLine.rowKey && row.rowKey === shortageRequestLine.rowKey)
-        )
-      ));
-      if (matchedOpenRow) return matchedOpenRow;
-      return buildDispatchOrderRowFromShortageLine(shortageLine, shortageRequestLine);
-    }
-    return warehouseVoiceOrderRows.find(row => row.customerId === customerId && row.productId === productId) || null;
+    const candidateRows = [];
+    (dispatchShortageSummary?.issueLines || [])
+      .filter(line => (
+        line.customerId === customerId
+        && line.productId === productId
+        && Array.isArray(line.requestLines)
+        && line.requestLines.length > 0
+      ))
+      .forEach((line) => {
+        line.requestLines.forEach((requestLine) => {
+          const matchedOpenRow = warehouseVoiceOrderRows.find(row => (
+            row.customerId === customerId
+            && row.productId === productId
+            && (
+              (requestLine.requestId && row.requestId === requestLine.requestId)
+              || (requestLine.rowKey && (row.rowKey === requestLine.rowKey || row.item?.rowKey === requestLine.rowKey))
+            )
+          ));
+          candidateRows.push(matchedOpenRow || buildDispatchOrderRowFromShortageLine(line, requestLine));
+        });
+      });
+    warehouseVoiceOrderRows
+      .filter(row => row.customerId === customerId && row.productId === productId)
+      .forEach(row => candidateRows.push(row));
+
+    const uniqueRows = Array.from(candidateRows.reduce((rowMap, row) => {
+      const key = row?.rowKey || `${row?.requestId || ''}_${row?.productId || ''}_${row?.item?.requestTimestamp || row?.item?.createdAt || row?.item?.updatedAt || rowMap.size}`;
+      if (row && !rowMap.has(key)) rowMap.set(key, row);
+      return rowMap;
+    }, new Map()).values());
+    if (!uniqueRows.length) return null;
+
+    const dispatchQuantity = getDispatchRowQuantity(dispatchLike);
+    const dispatchWeight = getDispatchRowWeight(dispatchLike);
+    const dispatchSizeKey = normalizeLookupText(dispatchLike.size || dispatchLike.sizeLabel || dispatchLike.productSize || '');
+    const dispatchUnitKey = normalizeLookupText(dispatchLike.quantityUnit || dispatchLike.unit || '');
+    const sourceRowKey = `${dispatchLike.sourceOrderRequestRowKey || dispatchLike.orderRequestRowKey || dispatchLike.requestRowKey || ''}`.trim();
+    const sourceRequestId = `${dispatchLike.sourceOrderRequestId || dispatchLike.orderRequestId || dispatchLike.requestId || ''}`.trim();
+    const sourceDate = `${dispatchLike.sourceOrderRequestDate || dispatchLike.orderRequestDate || dispatchLike.requestDate || dispatchLike.requestDateKey || ''}`.trim();
+
+    return uniqueRows
+      .map((row, index) => {
+        const item = row.item || row;
+        const rowQuantity = getOrderLineQuantityValue(item) || getOrderLineQuantityValue(row);
+        const rowWeight = getOrderLineWeightKgValue(item) || getOrderLineWeightKgValue(row);
+        const rowSizeKey = normalizeLookupText(row.sizeLabel || getOrderLineSizeLabel(item));
+        const rowUnitKey = normalizeLookupText(row.quantityUnit || item?.quantityUnit || item?.unit || row.productUnit || '');
+        const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || ''}`.trim();
+        const legacyProductRowKey = `${row.requestId || 'request'}_${row.productId || productId}`;
+        const rowTimestamp = item?.requestTimestamp || item?.timestamp || getEntityTimestamp(item) || 0;
+        return {
+          row,
+          score: (
+            (sourceRowKey && (row.rowKey === sourceRowKey || itemRowKey === sourceRowKey || legacyProductRowKey === sourceRowKey) ? 10000 : 0)
+            + (sourceRequestId && row.requestId === sourceRequestId ? 6000 : 0)
+            + (sourceDate && row.requestDate === sourceDate ? 1200 : 0)
+            + (dispatchQuantity > 0 && areLooseQuantityValuesClose(dispatchQuantity, rowQuantity, 0.001) ? 500 : 0)
+            + (dispatchWeight > 0 && areLooseQuantityValuesClose(dispatchWeight, rowWeight) ? 450 : 0)
+            + (dispatchSizeKey && rowSizeKey && dispatchSizeKey === rowSizeKey ? 120 : 0)
+            + (dispatchUnitKey && rowUnitKey && dispatchUnitKey === rowUnitKey ? 80 : 0)
+            + (getOrderLineUnitPriceValue(item) > 0 || getOrderLineUnitPriceValue(row) > 0 ? 20 : 0)
+          ),
+          rowTimestamp,
+          index
+        };
+      })
+      .sort((a, b) => (
+        b.score - a.score
+        || b.rowTimestamp - a.rowTimestamp
+        || a.index - b.index
+      ))[0]?.row || null;
+  };
+  const getDispatchOrderRowUnitPrice = (orderRow = null) => {
+    if (!orderRow) return 0;
+    return getOrderLineUnitPriceValue(orderRow.item || orderRow) || getOrderLineUnitPriceValue(orderRow);
   };
   const getPreferredOrderRowForDispatchCustomer = (customerId = '') => {
     if (!customerId) return null;
@@ -51590,7 +52374,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const handleDispatchProductChange = (productId) => {
     const selectedProduct = productLookup.get(productId);
     const matchedOrderRow = dispatchDraft.customerId
-      ? findMatchingOrderRequestRowForDispatch(dispatchDraft.customerId, productId)
+      ? findMatchingOrderRequestRowForDispatch(dispatchDraft.customerId, productId, { ...dispatchDraft, productId })
       : null;
     const orderDefaults = buildDispatchDefaultsFromOrderRow(matchedOrderRow);
     const fallbackUnit = normalizeDispatchQuantityUnit(selectedProduct?.unit || dispatchDraft.quantityUnit || 'Con');
@@ -51642,8 +52426,28 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       return;
     }
 
-    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id);
+    const dispatchLikeForOrderMatch = {
+      ...row,
+      ...inlineEditingDispatchDraft,
+      customerId: customer.id,
+      productId: product.id,
+      weightKg,
+      pieceCount,
+      quantity: pieceCount,
+      quantityCount: pieceCount,
+      quantityUnit
+    };
+    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
     const isOutsideOrderRequest = !matchedOrderRow;
+    const orderRequestUnitPrice = getDispatchOrderRowUnitPrice(matchedOrderRow) || parseLooseMoneyValue(
+      row.sourceOrderRequestUnitPrice
+      ?? row.orderRequestUnitPrice
+      ?? row.requestUnitPrice
+      ?? row.orderedUnitPrice
+      ?? row.customerOrderUnitPrice
+      ?? row.unitPrice
+      ?? row.price
+    );
     const baseSourceType = `${row.sourceType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || row, row);
     const nextDriverId = canAssignDriver ? `${inlineEditingDispatchDraft.assignedDriverId || ''}`.trim() : getDispatchDriverId(row);
@@ -51680,6 +52484,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       sourceOrderRequestDate: matchedOrderRow?.requestDate || row.sourceOrderRequestDate || selectedOrderRequestDateKey,
       sourceOrderRequestId: matchedOrderRow?.requestId || '',
       sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
+      ...(orderRequestUnitPrice > 0 ? {
+        unitPrice: orderRequestUnitPrice,
+        price: orderRequestUnitPrice,
+        sourceOrderRequestUnitPrice: orderRequestUnitPrice,
+        orderRequestUnitPrice,
+        requestUnitPrice: orderRequestUnitPrice
+      } : {}),
       isOutsideOrderRequest,
       createdWithoutOrderRequest: isOutsideOrderRequest,
       sourceOrderRequestMissing: isOutsideOrderRequest,
@@ -51756,8 +52567,19 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     dispatchSaveLockRef.current = true;
     setIsSavingDispatch(true);
     try {
-    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id);
+    const dispatchLikeForOrderMatch = {
+      ...dispatchDraft,
+      customerId: customer.id,
+      productId: product.id,
+      weightKg,
+      pieceCount,
+      quantity: pieceCount,
+      quantityCount: pieceCount,
+      quantityUnit
+    };
+    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
     const isOutsideOrderRequest = !matchedOrderRow;
+    const orderRequestUnitPrice = getDispatchOrderRowUnitPrice(matchedOrderRow) || parseLooseMoneyValue(dispatchDraft.unitPrice ?? dispatchDraft.price);
     const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
     const assignedDriverId = `${dispatchDraft.assignedDriverId || ''}`.trim();
@@ -51796,6 +52618,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       sourceOrderRequestDate: matchedOrderRow?.requestDate || selectedOrderRequestDateKey,
       sourceOrderRequestId: matchedOrderRow?.requestId || '',
       sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
+      ...(orderRequestUnitPrice > 0 ? {
+        unitPrice: orderRequestUnitPrice,
+        price: orderRequestUnitPrice,
+        sourceOrderRequestUnitPrice: orderRequestUnitPrice,
+        orderRequestUnitPrice,
+        requestUnitPrice: orderRequestUnitPrice
+      } : {}),
       isOutsideOrderRequest,
       createdWithoutOrderRequest: isOutsideOrderRequest,
       sourceOrderRequestMissing: isOutsideOrderRequest,
@@ -58589,7 +59418,27 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const dispatchBranchId = `${dispatch.branchId || dispatch.customerBranchId || ''}`.trim();
       const dispatchBranchName = normalizeLookupText(dispatch.branchName || dispatch.customerBranchName || '');
       const normalizedCustomerName = normalizeLookupText(customerName || dispatch.customerNameSnapshot || customer?.name || '');
-      const normalizedProductName = normalizeLookupText(productName || dispatch.productNameSnapshot || product?.name || '');
+      const productNameCandidates = [
+        productName,
+        dispatch.productNameSnapshot,
+        dispatch.productShortName,
+        dispatch.productShortNameSnapshot,
+        product?.name,
+        getProductShortName(product)
+      ].filter(Boolean);
+      const normalizedProductNames = new Set(productNameCandidates.map(normalizeLookupText).filter(Boolean));
+      const collapsedProductNames = new Set(productNameCandidates.map(collapseLookupText).filter(Boolean));
+      const dispatchQuantityForMatch = parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount);
+      const dispatchWeightForMatch = parseLooseQuantityValue(dispatch.weightKg ?? dispatch.totalKg ?? dispatch.kg ?? dispatch.actualWeightKg ?? dispatch.weight);
+      const dispatchSizeKey = normalizeLookupText(dispatch.size || dispatch.sizeLabel || dispatch.productSize || dispatch.variantSize || '');
+      const dispatchUnitKey = normalizeLookupText(dispatch.quantityUnit || dispatch.unit || product?.unit || '');
+      const dispatchSourceUnitPrice = parseLooseMoneyValue(
+        dispatch.sourceOrderRequestUnitPrice
+        ?? dispatch.orderRequestUnitPrice
+        ?? dispatch.requestUnitPrice
+        ?? dispatch.orderedUnitPrice
+        ?? dispatch.customerOrderUnitPrice
+      );
       const sourceRequestDate = dispatch.sourceOrderRequestDate
         || dispatch.orderRequestDate
         || dispatch.requestDate
@@ -58633,8 +59482,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           : (request.primaryItem ? [request.primaryItem] : []);
         const requestBranchId = `${request.branchId || request.customerBranchId || ''}`.trim();
         const requestBranchName = normalizeLookupText(request.branchName || request.customerBranchName || '');
-        for (const item of requestItems) {
+        for (const [itemIndex, item] of requestItems.entries()) {
           const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || ''}`.trim();
+          const legacyProductRowKey = `${request.id || 'request'}_${item?.productId || itemIndex}`;
+          const compositeRowKey = `${request.id || 'request'}_${itemRowKey || item?.productId || itemIndex}`;
           const itemBranchId = `${item?.branchId || item?.customerBranchId || requestBranchId || ''}`.trim();
           const itemBranchName = normalizeLookupText(item?.branchName || item?.customerBranchName || requestBranchName || '');
           const branchMatches = Boolean(
@@ -58649,38 +59500,48 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
             || item?.description
             || requestProduct?.name
             || '';
+          const requestProductShortName = getProductShortName(requestProduct) || item?.productShortName || item?.productShortNameSnapshot || '';
+          const requestProductCandidates = [requestProductName, requestProductShortName].filter(Boolean);
           const requestProductMatches = Boolean(
             (dispatchProductId && item?.productId === dispatchProductId)
-            || (normalizedProductName && normalizeLookupText(requestProductName) === normalizedProductName)
+            || requestProductCandidates.some(name => normalizedProductNames.has(normalizeLookupText(name)) || collapsedProductNames.has(collapseLookupText(name)))
           );
           if (!requestProductMatches) continue;
 
-          const requestUnitPrice = parseLooseMoneyValue(
-            item?.unitPrice
-            ?? item?.price
-            ?? item?.sellingPrice
-            ?? item?.unitPriceVnd
-            ?? item?.unit_price_vnd
-          );
+          const requestUnitPrice = getOrderLineUnitPriceValue(item);
           if (requestUnitPrice > 0) {
+            const itemQuantity = getOrderLineQuantityValue(item);
+            const itemWeightKg = getOrderLineWeightKgValue(item);
+            const itemSizeKey = normalizeLookupText(getOrderLineSizeLabel(item));
+            const itemUnitKey = normalizeLookupText(item?.quantityUnit || item?.unit || product?.unit || '');
             matchedPriceCandidates.push({
               price: requestUnitPrice,
               requestTimestamp: requestTimestamp || 0,
               exactRequest: isExactSourceRequest ? 1 : 0,
-              exactRow: sourceRequestRowKey && itemRowKey === sourceRequestRowKey ? 1 : 0,
-              sameSourceDate: sourceRequestDate && requestDate === sourceRequestDate ? 1 : 0
+              exactRow: sourceRequestRowKey && [itemRowKey, compositeRowKey, legacyProductRowKey].includes(sourceRequestRowKey) ? 1 : 0,
+              sameSourceDate: sourceRequestDate && requestDate === sourceRequestDate ? 1 : 0,
+              exactProductId: dispatchProductId && item?.productId === dispatchProductId ? 1 : 0,
+              quantityMatch: dispatchQuantityForMatch > 0 && areLooseQuantityValuesClose(dispatchQuantityForMatch, itemQuantity, 0.001) ? 1 : 0,
+              weightMatch: dispatchWeightForMatch > 0 && areLooseQuantityValuesClose(dispatchWeightForMatch, itemWeightKg) ? 1 : 0,
+              sizeMatch: dispatchSizeKey && itemSizeKey && dispatchSizeKey === itemSizeKey ? 1 : 0,
+              unitMatch: dispatchUnitKey && itemUnitKey && dispatchUnitKey === itemUnitKey ? 1 : 0
             });
           }
         }
       }
 
       matchedPriceCandidates.sort((a, b) => (
-        b.exactRequest - a.exactRequest
-        || b.exactRow - a.exactRow
+        b.exactRow - a.exactRow
+        || b.exactRequest - a.exactRequest
         || b.sameSourceDate - a.sameSourceDate
+        || b.quantityMatch - a.quantityMatch
+        || b.weightMatch - a.weightMatch
+        || b.sizeMatch - a.sizeMatch
+        || b.unitMatch - a.unitMatch
+        || b.exactProductId - a.exactProductId
         || b.requestTimestamp - a.requestTimestamp
       ));
-      return matchedPriceCandidates[0]?.price || 0;
+      return matchedPriceCandidates[0]?.price || dispatchSourceUnitPrice || 0;
     };
     const groupedDrafts = pendingWarehouseDispatches.reduce((groupMap, dispatch) => {
       const customer = customerLookup.get(dispatch.customerId);
@@ -61975,6 +62836,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   };
   const salesEmployees = useMemo(() => (employees ? employees.filter(e => isEmployeeSalesPosition(e)) : []), [employees]);
   const customerSearch = externalSearchKeyword ?? localCustomerSearchKeyword;
+  const debouncedCustomerSearch = useDebouncedValue(customerSearch, 160);
   const setCustomerSearch = setExternalSearchKeyword ?? setLocalCustomerSearchKeyword;
   const showSearchBox = externalShowSearchBox ?? localShowSearchBox;
   const setShowSearchBox = setExternalShowSearchBox ?? setLocalShowSearchBox;
@@ -62060,7 +62922,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   );
 
   const filteredCustomers = useMemo(() => {
-    const rawKeyword = `${customerSearch || ''}`.trim();
+    const rawKeyword = `${debouncedCustomerSearch || ''}`.trim();
     const normalizedKeyword = normalizeLookupText(rawKeyword);
     const collapsedKeyword = collapseLookupText(rawKeyword);
     const keywordTokens = tokenizeLookupText(rawKeyword);
@@ -62180,7 +63042,14 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       }
       return (a.displayName || a.name || '').localeCompare(b.displayName || b.name || '', 'vi');
     });
-  }, [activeProductForPricingLookup, customerSummaries, customerSearch, customerStatusFilter, customerSortFilter, customerDateFilter, customerManagerFilter, employees, canSeeCustomerStats, canSeeCustomerPhone, canSeeCustomerLocation, canSeeCustomerDebt]);
+  }, [activeProductForPricingLookup, customerSummaries, debouncedCustomerSearch, customerStatusFilter, customerSortFilter, customerDateFilter, customerManagerFilter, employees, canSeeCustomerStats, canSeeCustomerPhone, canSeeCustomerLocation, canSeeCustomerDebt]);
+
+  const visibleFilteredCustomers = useChunkedList(
+    filteredCustomers,
+    70,
+    90,
+    `${debouncedCustomerSearch}|${customerStatusFilter}|${customerSortFilter}|${customerDateFilter}|${customerManagerFilter}`
+  );
 
   const duplicateCustomerPhoneGroups = useMemo(() => {
     const phoneMap = new Map();
@@ -65518,7 +66387,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           </div>
         )}
 
-        {filteredCustomers.map(cus => {
+        {visibleFilteredCustomers.map(cus => {
           const displayName = cus.displayName || getCustomerDisplayName(cus) || cus.name || '';
           const initials = displayName.split(' ').map(part => part[0]).join('').substring(0, 2).toUpperCase();
           const isDuplicatePhone = duplicateCustomerPhoneKeySet.has(buildCustomerPhoneDuplicateKey(cus.phone));
@@ -65962,8 +66831,9 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
     probationDuration: '0',
     probationUnit: 'days',
     probationRate: '100',
-    basicSalary: '',
-    salaryMonthDays: `${BASE_SALARY_MONTH_DAYS}`,
+        basicSalary: '',
+        // Leave blank to use the actual calendar days of the selected month.
+        salaryMonthDays: '',
     supportSalary: '',
     responsibilitySalary: '',
     experienceSalary: '',
@@ -67538,7 +68408,7 @@ function EmployeeView({
       salaryBankAccountName: emp.salaryBankAccountName || emp.payrollBankAccountName || emp.bankAccountName || emp.accountName || '',
       salaryBankAccountNumber: emp.salaryBankAccountNumber || emp.payrollBankAccountNumber || emp.bankAccountNumber || emp.accountNumber || '',
       basicSalary: emp.basicSalary,
-      salaryMonthDays: emp.salaryMonthDays || BASE_SALARY_MONTH_DAYS,
+      salaryMonthDays: emp.salaryMonthDays ?? '',
       supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
       shiftName: shiftPolicy.shiftName,
       shiftStart: shiftPolicy.shiftStart,
@@ -67589,7 +68459,9 @@ function EmployeeView({
       probationDuration: isCollaboratorPayload ? 0 : (parseInt(empData.probationDuration)||0),
       probationRate: isCollaboratorPayload ? 100 : (parseInt(empData.probationRate)||100),
       basicSalary: isCollaboratorPayload ? 0 : (parseInt(empData.basicSalary)||0), 
-      salaryMonthDays: isCollaboratorPayload ? BASE_SALARY_MONTH_DAYS : (parseInt(empData.salaryMonthDays)||BASE_SALARY_MONTH_DAYS),
+      salaryMonthDays: isCollaboratorPayload
+        ? ''
+        : (parseInt(empData.salaryMonthDays, 10) > 0 ? parseInt(empData.salaryMonthDays, 10) : ''),
       supportSalary: isCollaboratorPayload ? 0 : (parseInt(empData.supportSalary)||0), 
       responsibilitySalary: isCollaboratorPayload ? 0 : (parseInt(empData.responsibilitySalary)||0),
       experienceSalary: isCollaboratorPayload ? 0 : (parseInt(empData.experienceSalary)||0), 
@@ -67626,7 +68498,7 @@ function EmployeeView({
       if (!canEditEmployeeSalaryPolicy) {
         Object.assign(pData, {
           basicSalary: editingEmp.basicSalary,
-          salaryMonthDays: editingEmp.salaryMonthDays || BASE_SALARY_MONTH_DAYS,
+        salaryMonthDays: editingEmp.salaryMonthDays ?? '',
           supportSalary: editingEmp.supportSalary || 0,
           responsibilitySalary: editingEmp.responsibilitySalary || 0,
           experienceSalary: editingEmp.experienceSalary || 0,
@@ -68000,7 +68872,7 @@ function EmployeeView({
                       <div className="text-[10px] text-emerald-600 mt-1">Hoa hồng: <strong>{formatCommissionPercentLabel(emp.commissionRate)}</strong> trên doanh thu</div>
                     ) : (
                       <>
-                        <div className="text-[10px] text-gray-500 mt-1">LCB: <strong className="text-gray-700">{formatCurrency(emp.basicSalary)}</strong> đ</div>
+                        <div className="text-[10px] text-gray-500 mt-1">LCB: <strong className="text-gray-700">{formatCurrency(parseLooseMoneyValue(emp.basicSalary))}</strong> đ</div>
                         <div className="text-[10px] text-gray-500 mt-1">{resolveEmployeeShiftPolicy(emp).shiftName}: {formatShiftRangeLabel(resolveEmployeeShiftPolicy(emp))}</div>
                       </>
                     )}
@@ -68850,6 +69722,7 @@ function SalaryViewLegacy({ employees, attendance, financials, performance, cust
                     <div className="grid grid-cols-2 gap-2 text-gray-600">
                       <div className="flex justify-between"><span>Lương CB:</span> <strong>{formatCurrency(details.baseSalaryCalc)}</strong></div>
                       <div className="flex justify-between"><span>Hỗ trợ:</span> <strong>{formatCurrency(details.supportSalary)}</strong></div>
+                      {!isSalesCollaborator && <div className="flex justify-between"><span>Trách nhiệm:</span> <strong>{formatCurrency(details.responsibilitySalary)}</strong></div>}
                       <div className="flex justify-between"><span>Kinh nghiệm:</span> <strong>{formatCurrency(details.experienceSalary)}</strong></div>
                       {details.roleSalary > 0 && <div className="flex justify-between text-sky-600"><span>Kiêm nhiệm:</span> <strong>+{formatCurrency(details.roleSalary)}</strong></div>}
                       {isSales && <div className="flex justify-between text-emerald-600"><span>Hoa hồng:</span> <strong>+{formatCurrency(details.commission)}</strong></div>}
@@ -69009,6 +69882,7 @@ function SalaryView({
   };
 
   const currentEmployeeId = currentEmployee?.id || '';
+  const canCreateOwnSalaryAdvanceRequest = Boolean(currentEmployeeId && (canCreateSalaryAdvanceRequest || currentEmployee?.id === currentEmployeeId));
   const visibleSalaryEmployees = useMemo(() => {
     if (!currentEmployeeId) return [];
     if (canViewCompanyPayroll) {
@@ -69227,7 +70101,7 @@ function SalaryView({
   };
 
   const openAdvanceRequestModal = () => {
-    if (!canCreateSalaryAdvanceRequest || (!salaryAdvanceIsUnlimited && salaryAdvanceRemainingAmount <= 0)) return;
+    if (!canCreateOwnSalaryAdvanceRequest || (!salaryAdvanceIsUnlimited && salaryAdvanceRemainingAmount <= 0)) return;
     setAdvanceRequestAmount('');
     setAdvanceRequestReason('');
     setAdvanceRequestStatus('');
@@ -69540,7 +70414,7 @@ function SalaryView({
           const employeeAdvanceLimitAmount = employeeAdvanceIsUnlimited ? null : roundMoneyValue(employeeAdvanceBaseAmount * (employeeSalaryAdvancePercent / 100));
           const employeeAdvanceUsedAmount = roundMoneyValue((details?.totalAdvance || 0) + employeePendingAdvanceAmount);
           const employeeAdvanceRemainingAmount = employeeAdvanceIsUnlimited ? null : Math.max(0, roundMoneyValue(employeeAdvanceLimitAmount - employeeAdvanceUsedAmount));
-          const canCreateThisAdvanceRequest = canCreateSalaryAdvanceRequest && emp.id === currentEmployeeId;
+          const canCreateThisAdvanceRequest = canCreateOwnSalaryAdvanceRequest && emp.id === currentEmployeeId;
 
           return (
             <div key={emp.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all">
@@ -69548,7 +70422,7 @@ function SalaryView({
                 <div className="flex justify-between items-start gap-3">
                   <div>
                     <h3 className="font-bold text-gray-800 text-sm">{emp.name}</h3>
-                    <p className="text-[11px] text-gray-500 mt-1">{getEmployeePositionSummary(emp)} • {currentMonthLabel}</p>
+                    <p className="text-[11px] text-gray-500 mt-1">{getEmployeePositionSummary(emp)}</p>
                   </div>
                   <div className="text-right flex items-center gap-2">
                     <div>
@@ -69593,12 +70467,28 @@ function SalaryView({
                     <p className="text-[10px] uppercase font-bold text-red-600 mb-1">Tổng phạt</p>
                     <p className="text-sm font-black text-red-700">{formatCurrency(details.totalPenalty)} đ</p>
                   </div>
-                  <div className="bg-blue-50 rounded-xl border border-blue-100 p-3">
-                    <p className="text-[10px] uppercase font-bold text-blue-600 mb-1">{isSalesCollaborator ? '% hoa hồng' : 'Tăng ca'}</p>
-                    <p className="text-sm font-black text-blue-700">{isSalesCollaborator ? formatCommissionPercentLabel(emp.commissionRate) : `${(details.approvedOvertimeHours || 0) + (details.automaticOvertimeHours || details.earlyOvertimeHours || 0)} giờ`}</p>
-                  </div>
-                </div>
-              </div>
+                       <div className="bg-blue-50 rounded-xl border border-blue-100 p-3">
+                         <p className="text-[10px] uppercase font-bold text-blue-600 mb-1">{isSalesCollaborator ? '% hoa hồng' : 'Tăng ca'}</p>
+                         <p className="text-sm font-black text-blue-700">{isSalesCollaborator ? formatCommissionPercentLabel(emp.commissionRate) : `${(details.approvedOvertimeHours || 0) + (details.automaticOvertimeHours || details.earlyOvertimeHours || 0)} giờ`}</p>
+                       </div>
+                     </div>
+                     {!isSalesCollaborator && (
+                       <div className="grid grid-cols-3 gap-2 mt-2">
+                         <div className="min-w-0 rounded-xl border border-blue-100 bg-blue-50 px-2 py-2 text-center">
+                           <p className="truncate text-[9px] font-bold uppercase text-blue-600">Lương cơ bản</p>
+                           <p className="mt-1 truncate text-[11px] font-black text-blue-800">{formatCurrency(details.baseSalaryCalc)} đ</p>
+                         </div>
+                         <div className="min-w-0 rounded-xl border border-emerald-100 bg-emerald-50 px-2 py-2 text-center">
+                           <p className="truncate text-[9px] font-bold uppercase text-emerald-600">Lương hỗ trợ</p>
+                           <p className="mt-1 truncate text-[11px] font-black text-emerald-800">{formatCurrency(details.supportSalary)} đ</p>
+                         </div>
+                         <div className="min-w-0 rounded-xl border border-indigo-100 bg-indigo-50 px-2 py-2 text-center">
+                           <p className="truncate text-[9px] font-bold uppercase text-indigo-600">Lương trách nhiệm</p>
+                           <p className="mt-1 truncate text-[11px] font-black text-indigo-800">{formatCurrency(details.responsibilitySalary)} đ</p>
+                         </div>
+                       </div>
+                     )}
+                   </div>
 
               {isExpanded && (
                 <div className="px-4 pb-4 border-t border-gray-100 pt-4 bg-gray-50/60 space-y-4">
@@ -70169,6 +71059,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   });
   const selectedDebtCustomerSnapshotRef = useRef(null);
   const searchKeyword = externalSearchKeyword ?? localSearchKeyword;
+  const debouncedDebtSearchKeyword = useDebouncedValue(searchKeyword, 160);
   const setSearchKeyword = setExternalSearchKeyword ?? setLocalSearchKeyword;
   const showSearchBox = externalShowSearchBox ?? localShowSearchBox;
   const setShowSearchBox = setExternalShowSearchBox ?? setLocalShowSearchBox;
@@ -70337,7 +71228,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   }, [selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
-    const keyword = searchKeyword.trim().toLowerCase();
+    const keyword = debouncedDebtSearchKeyword.trim().toLowerCase();
     return accessibleCustomers
       .filter(customer => {
         if (debtViewFilter === 'debt') return customer.ledger.currentDebt > 0;
@@ -70383,7 +71274,14 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
         if (b.ledger.currentDebt !== a.ledger.currentDebt) return b.ledger.currentDebt - a.ledger.currentDebt;
         return (a.name || '').localeCompare(b.name || '', 'vi');
       });
-  }, [accessibleCustomers, debtDateRange, debtSalesEmpId, debtTransactionSort, debtViewFilter, searchKeyword]);
+  }, [accessibleCustomers, debtDateRange, debtSalesEmpId, debtTransactionSort, debtViewFilter, debouncedDebtSearchKeyword]);
+
+  const visibleDebtCustomers = useChunkedList(
+    filteredCustomers,
+    70,
+    90,
+    `${debouncedDebtSearchKeyword}|${debtViewFilter}|${debtTransactionSort}|${debtSalesEmpId}|${debtDateRange?.start || ''}|${debtDateRange?.end || ''}`
+  );
 
   const debtOverviewSummary = useMemo(() => accessibleCustomers.reduce((acc, customer) => {
     const currentDebt = Math.max(0, roundMoneyValue(customer.ledger?.currentDebt || 0));
@@ -71021,7 +71919,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       )}
 
       <div className="space-y-3">
-        {filteredCustomers.map(customer => (
+        {visibleDebtCustomers.map(customer => (
           <div key={customer.id} onClick={() => openDebtCustomerDetail(customer)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition">
             <div>
               <h3 className="font-bold text-gray-800 text-sm">{customer.name}</h3>

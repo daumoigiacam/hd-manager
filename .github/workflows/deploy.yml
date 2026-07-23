@@ -1,6 +1,9 @@
 name: Deploy HD Manager
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -27,6 +30,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Performance architecture audit
+        run: npm run test:performance
+
+      - name: Stress test
+        run: npm run test:stress:big
+
+      - name: KPI gate
+        run: npm run test:kpi
+
       - name: Build project
         run: npm run build
 
@@ -36,6 +48,7 @@ jobs:
           echo "Build successful"
 
       - name: Deploy to VPS
+        if: github.event_name == 'push'
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}

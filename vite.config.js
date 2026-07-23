@@ -21,7 +21,8 @@ const defaultProductionAppId = 'hd-manager-production';
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env };
-  const usePreviewData = env.VITE_DATA_MODE === 'preview';
+  const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
+  const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
   const useCloudData = !usePreviewData;
   const cloudFirebaseConfig = {
     apiKey: env.VITE_FIREBASE_API_KEY || defaultCloudFirebaseConfig.apiKey,
@@ -65,6 +66,7 @@ export default defineConfig(({ mode }) => {
             if (!id.includes('node_modules')) return undefined;
             if (id.includes('firebase')) return 'vendor-firebase';
             if (id.includes('lucide-react')) return 'vendor-icons';
+            if (/[\\/]node_modules[\\/]qrcode[\\/]/.test(id)) return 'vendor-qrcode';
             if (id.includes('html-to-image') || id.includes('jspdf')) return 'vendor-export';
             if (id.includes('tesseract') || id.includes('@zxing') || id.includes('read-excel-file')) return 'vendor-tools';
             return 'vendor';

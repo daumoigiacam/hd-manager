@@ -645,3 +645,233 @@ html.hd-low-power-ui .hd-soft-red-outline {
     transform: translateY(0);
   }
 }
+
+/* Desktop shell: keep the compact phone layout below this breakpoint. */
+@media (min-width: 1100px) {
+  :root {
+    --hd-app-max-width: 92rem;
+    --hd-page-x: 2rem;
+    --hd-card-pad: 1.25rem;
+    --hd-footer-height: 0px;
+    --hd-keyboard-safe-bottom: 1rem;
+    --hd-customer-footer-space: 1.5rem;
+  }
+
+  html {
+    font-size: 16px;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 10% 0%, rgba(16, 185, 129, 0.12), transparent 34rem),
+      #eaf0f2;
+  }
+
+  #root {
+    min-height: 100vh;
+    padding: 1rem;
+  }
+
+  /* Staff/company desktop layout: sidebar + content instead of a phone column. */
+  .mobile-app-shell {
+    display: grid !important;
+    grid-template-columns: 15.5rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(100%, var(--hd-app-max-width)) !important;
+    max-width: none !important;
+    min-height: calc(100vh - 2rem) !important;
+    max-height: calc(100vh - 2rem) !important;
+    height: calc(100vh - 2rem) !important;
+    margin: 0 auto !important;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 1.75rem;
+    box-shadow: 0 1.5rem 4rem rgba(15, 23, 42, 0.15);
+  }
+
+  .mobile-app-shell > header {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .mobile-app-shell > main {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    padding: 1.5rem 2rem 2rem !important;
+    scrollbar-width: thin;
+  }
+
+  .mobile-app-shell:not(:has(> header)) {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .mobile-app-shell:not(:has(> header)) > main {
+    grid-row: 1;
+  }
+
+  .mobile-app-shell > nav {
+    position: relative !important;
+    inset: auto !important;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0;
+    border-top: 0 !important;
+    border-right: 1px solid #e2e8f0;
+    border-radius: 1.75rem 0 0 1.75rem;
+    padding: 1.25rem 0.85rem !important;
+    box-shadow: none !important;
+  }
+
+  .mobile-app-shell > nav > div {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0.4rem;
+    height: 100%;
+    padding: 0 !important;
+  }
+
+  .mobile-app-shell > nav > div::before {
+    content: 'HD MANAGER';
+    display: block;
+    margin: 0.35rem 0.8rem 1.25rem;
+    color: #047857;
+    font-size: 0.78rem;
+    font-weight: 900;
+    letter-spacing: 0.16em;
+  }
+
+  .mobile-app-shell > nav button {
+    width: 100% !important;
+    min-height: 3rem;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 0.75rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.9rem;
+    text-align: left;
+  }
+
+  .mobile-app-shell > nav button:hover {
+    background: #f0fdf4;
+  }
+
+  .mobile-app-shell > nav button > span {
+    font-size: 0.82rem;
+  }
+
+  /* Give wide screens useful working space without forcing every card to stretch. */
+  .mobile-app-shell > main > * {
+    width: 100%;
+    max-width: 78rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .mobile-app-shell :where(.grid-cols-2) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-app-shell :where(.grid-cols-3) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* Customer desktop layout: keep the portal readable while using the extra width. */
+  .customer-portal-shell {
+    display: grid;
+    grid-template-columns: 15.5rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(100%, var(--hd-app-max-width)) !important;
+    max-width: none !important;
+    min-height: calc(100vh - 2rem) !important;
+    margin: 0 auto;
+    padding: 0 !important;
+    overflow: hidden;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 1.75rem;
+    box-shadow: 0 1.5rem 4rem rgba(15, 23, 42, 0.15);
+  }
+
+  .customer-portal-shell > div.sticky {
+    grid-column: 2;
+    grid-row: 1;
+    position: relative !important;
+    top: auto !important;
+    padding: 1rem 2rem !important;
+  }
+
+  .customer-portal-main {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    max-width: 78rem;
+    width: 100%;
+    margin: 0 auto;
+    overflow-y: auto;
+    padding: 1.5rem 2rem 2rem !important;
+  }
+
+  .customer-portal-nav {
+    position: relative !important;
+    inset: auto !important;
+    transform: none !important;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    width: auto !important;
+    max-width: none !important;
+    border-top: 0 !important;
+    border-right: 1px solid #e2e8f0;
+    border-radius: 1.75rem 0 0 1.75rem;
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+    padding: 1.25rem 0.85rem !important;
+    box-shadow: none !important;
+  }
+
+  .customer-portal-nav::before {
+    content: 'HD MANAGER';
+    display: block;
+    margin: 0.35rem 0.8rem 1.25rem;
+    color: #047857;
+    font-size: 0.78rem;
+    font-weight: 900;
+    letter-spacing: 0.16em;
+  }
+
+  .customer-portal-nav button {
+    min-height: 3rem;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 0.75rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.9rem;
+    text-align: left;
+  }
+
+  .customer-portal-nav-label {
+    margin-top: 0 !important;
+    font-size: 0.82rem !important;
+  }
+
+  .customer-portal-nav-icon {
+    width: 1.25rem !important;
+    height: 1.25rem !important;
+  }
+
+  .ios-web-login-shell {
+    width: min(100%, 52rem);
+    max-width: none;
+    min-height: calc(100vh - 2rem);
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  .ios-web-login-card {
+    max-width: 30rem;
+  }
+}

@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { Capacitor } from '@capacitor/core';
 import App from './App.jsx';
 import './index.css';
+import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
@@ -119,7 +120,9 @@ function installResponsiveViewportVars() {
   window.addEventListener('focusin', scheduleKeyboardUpdate, true);
   window.addEventListener('focusout', scheduleKeyboardBlurUpdate, true);
   window.visualViewport?.addEventListener('resize', scheduleViewportAndKeyboardUpdate, { passive: true });
-  window.visualViewport?.addEventListener('scroll', scheduleViewportAndKeyboardUpdate, { passive: true });
+  if (!isNativePlatform()) {
+    window.visualViewport?.addEventListener('scroll', scheduleViewportAndKeyboardUpdate, { passive: true });
+  }
 }
 
 const BROKEN_TEXT_HINT = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|Ã|Â|Ä|Æ|áº|á»|ï¿|â¬|⬞|�/;
@@ -451,6 +454,14 @@ class AppErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
+    recordPerformanceEvent('crash.react_error_boundary', {
+      error: {
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack,
+      },
+      componentStack: info?.componentStack,
+    }, 'error');
     console.error('Application render error:', error, info);
   }
 
@@ -489,12 +500,15 @@ class AppErrorBoundary extends React.Component {
   }
 }
 
+initPerformanceMonitor({ appName: 'HD Manager' });
 installResponsiveViewportVars();
 installRuntimePerformanceMode();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <AppErrorBoundary>
-    <App />
+    <React.Profiler id="HDManagerRoot" onRender={recordReactRender}>
+      <App />
+    </React.Profiler>
   </AppErrorBoundary>
 );
 
