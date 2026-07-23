@@ -1071,8 +1071,11 @@ export const BusinessAnalysisService = {
     const customerRevenue = new Map();
     const customerProfit = new Map();
     const customerDebt = new Map();
+    const customerDebtFromProfile = new Map();
     const productRevenue = new Map();
+    const productRevenueMonth = new Map();
     const productProfit = new Map();
+    const productProfitMonth = new Map();
     const productProfitByDay = new Map();
     const employeeRevenue = new Map();
     const employeeProfit = new Map();
@@ -1167,7 +1170,15 @@ export const BusinessAnalysisService = {
     source.customers.forEach(customer => {
       const name = customer.name || customer.displayName || 'Khách chưa rõ';
       const debt = Math.max(0, toNumber(customer.currentDebt ?? customer.debt ?? customer.balanceDue));
-      if (debt > 0) customerDebt.set(name, { debt, value: debt });
+      const key = normalizeText(name);
+      if (key && debt > 0) {
+        customerDebtFromProfile.set(key, {
+          id: customer.id || customer.customerId || key,
+          name,
+          debt,
+          value: debt
+        });
+      }
     });
 
     source.orders.forEach(order => {
@@ -1180,7 +1191,17 @@ export const BusinessAnalysisService = {
       const currentCustomerRevenue = customerRevenue.get(customerName) || { revenue: 0, orders: 0 };
       customerRevenue.set(customerName, { revenue: currentCustomerRevenue.revenue + revenue, orders: currentCustomerRevenue.orders + 1 });
       customerProfit.set(customerName, { profit: (customerProfit.get(customerName)?.profit || 0) + profit });
-      if (debt > 0) customerDebt.set(customerName, { debt: (customerDebt.get(customerName)?.debt || 0) + debt });
+      if (debt > 0) {
+        const debtKey = normalizeText(customerName);
+        const currentDebt = customerDebt.get(debtKey);
+        const nextDebt = (currentDebt?.debt || 0) + debt;
+        customerDebt.set(debtKey, {
+          id: order.customerId || currentDebt?.id || debtKey,
+          name: currentDebt?.name || customerName,
+          debt: nextDebt,
+          value: nextDebt
+        });
+      }
       const currentEmployeeRevenue = employeeRevenue.get(employeeKey) || { id: employeeKey, name: salesOwner.name, revenue: 0, orders: 0 };
       employeeRevenue.set(employeeKey, {
         ...currentEmployeeRevenue,
@@ -1202,12 +1223,47 @@ export const BusinessAnalysisService = {
         const itemProfit = itemProfitFromProfitability(item).profit;
         const productRevenueRow = productRevenue.get(productName) || { revenue: 0, quantity: 0 };
         productRevenue.set(productName, { revenue: productRevenueRow.revenue + itemRevenue, quantity: productRevenueRow.quantity + itemQty });
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          const monthRevenueRow = productRevenueMonth.get(productName) || {
+            id: item.productId || normalizeText(productName),
+            name: productName,
+            revenue: 0,
+            quantity: 0
+          };
+          productRevenueMonth.set(productName, {
+            ...monthRevenueRow,
+            revenue: monthRevenueRow.revenue + itemRevenue,
+            quantity: monthRevenueRow.quantity + itemQty
+          });
+        }
         const productProfitRow = productProfit.get(productName) || { profit: 0, revenue: 0, quantity: 0 };
         productProfit.set(productName, { profit: productProfitRow.profit + itemProfit, revenue: productProfitRow.revenue + itemRevenue, quantity: productProfitRow.quantity + itemQty });
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          const monthProfitRow = productProfitMonth.get(productName) || {
+            id: item.productId || normalizeText(productName),
+            name: productName,
+            profit: 0,
+            revenue: 0,
+            quantity: 0
+          };
+          productProfitMonth.set(productName, {
+            ...monthProfitRow,
+            profit: monthProfitRow.profit + itemProfit,
+            revenue: monthProfitRow.revenue + itemRevenue,
+            quantity: monthProfitRow.quantity + itemQty
+          });
+        }
         if (!productProfitByDay.has(productName)) productProfitByDay.set(productName, new Map());
         const dayMap = productProfitByDay.get(productName);
         dayMap.set(orderDay, (dayMap.get(orderDay) || 0) + itemProfit);
       });
+    });
+
+    // The profile debt is a fallback for legacy/old-debt records. When an
+    // order has an outstanding balance, use that order total instead of
+    // adding it to the profile total a second time.
+    customerDebtFromProfile.forEach((profileDebt, key) => {
+      if (!customerDebt.has(key)) customerDebt.set(key, profileDebt);
     });
 
     const topProductsByAverageDailyProfit = [...productProfitByDay.entries()]
@@ -1248,8 +1304,9 @@ export const BusinessAnalysisService = {
       .filter(row => toNumber(row[valueKey]) > 0)
       .sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]))
       .slice(0, 10);
-    const topProductsByRevenueFromProfitability = profitabilityTopRows(profitabilityProductRows, 'revenue');
+    const topProductsByRevenueFromMonth = topRows(productRevenueMonth, 'revenue', productRevenueMonth.size || 10);
     const topProductsByProfitFromProfitability = profitabilityTopRows(profitabilityProductRows, 'profit');
+    const topProductsByProfitFromMonth = topRows(productProfitMonth, 'profit', productProfitMonth.size || 10);
     const topProductsByAverageDailyProfitFromProfitability = topProductsByProfitFromProfitability
       .map(row => ({
         ...row,
@@ -1262,12 +1319,8 @@ export const BusinessAnalysisService = {
     return {
       topCustomersByRevenue: topRows(customerRevenue, 'revenue'),
       topCustomersByProfit: topRows(customerProfit, 'profit'),
-      topProductsByRevenue: topProductsByRevenueFromProfitability.length
-        ? topProductsByRevenueFromProfitability
-        : topRows(productRevenue, 'revenue'),
-      topProductsByProfit: topProductsByProfitFromProfitability.length
-        ? topProductsByProfitFromProfitability
-        : topRows(productProfit, 'profit'),
+      topProductsByRevenue: topProductsByRevenueFromMonth,
+      topProductsByProfit: topProductsByProfitFromMonth,
       topProductsByAverageDailyProfit: topProductsByAverageDailyProfitFromProfitability.length
         ? topProductsByAverageDailyProfitFromProfitability
         : topProductsByAverageDailyProfit,

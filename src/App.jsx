@@ -1589,7 +1589,7 @@ const ROLE_PERMISSION_MODULES = [
       { id: 'create_delivery_report_without_dispatch', label: 'Báo cáo trước khi có phiếu xuất' },
       { id: 'edit_delivery_report', label: 'Sửa báo cáo giao hàng' },
       { id: 'delete_delivery_report', label: 'Xóa báo cáo giao hàng' },
-      { id: 'view_delivery_reports', label: 'Xem báo cáo giao hàng' },
+      { id: 'view_delivery_reports', label: 'Hiển thị báo cáo giao hàng' },
       { id: 'view_all_delivery_reports', label: 'Xem báo cáo của toàn bộ tài xế' },
       { id: 'view_own_delivery_reports', label: 'Chỉ xem báo cáo của mình' },
       { id: 'view_dispatch_weight_in_report', label: 'Xem số kg phiếu xuất trong báo cáo' },
@@ -1713,7 +1713,7 @@ const ROLE_PERMISSION_MODULES = [
     actions: [
       { id: 'view_debt', label: 'Xem công nợ' },
       { id: 'view_all_debt', label: 'Xem công nợ toàn bộ khách' },
-      { id: 'view_assigned_debt', label: 'Chỉ xem công nợ khách được giao' },
+      { id: 'view_assigned_debt', label: 'Xem công nợ khách hàng mình quản lý' },
       { id: 'record_payment', label: 'Ghi nhận thu tiền' },
       { id: 'edit_debt', label: 'Chỉnh sửa công nợ' },
       { id: 'delete_debt', label: 'Xóa công nợ' },
@@ -1886,6 +1886,7 @@ const ROLE_PERMISSION_MODULES = [
       { id: 'view_commission', label: 'Xem hoa hồng / doanh thu tính lương' },
       { id: 'view_salary_advance', label: 'Xem hạn mức ứng lương' },
       { id: 'create_salary_advance_request', label: 'Tạo lệnh ứng lương' },
+      { id: 'create_salary_advance_for_others', label: 'Tạo lệnh ứng hộ cho nhân sự khác' },
       { id: 'view_salary_advance_requests', label: 'Xem lệnh ứng lương chờ duyệt' },
       { id: 'approve_salary_advance', label: 'Duyệt lệnh ứng lương' },
       { id: 'reject_salary_advance', label: 'Từ chối lệnh ứng lương' },
@@ -2051,6 +2052,13 @@ const DEFAULT_ROLE_PERMISSION_ACTIONS = Object.entries(DEFAULT_ROLE_PERMISSIONS)
   DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll = {
     ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll,
     configure_salary_advance_limit: false
+  };
+});
+['accounting', 'sales', 'driver', 'production', 'warehouse'].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.payroll) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll,
+    create_salary_advance_for_others: false
   };
 });
 ['sales', 'driver', 'production', 'warehouse'].forEach((departmentKey) => {
@@ -2749,6 +2757,33 @@ const getAttendanceMethodDisplay = (record = {}, direction = 'checkIn') => {
   }
 
   return /gps/i.test(method) ? 'GPS: Chưa có tọa độ' : (method || 'GPS: Chưa có tọa độ');
+};
+
+const getAttendanceCompactSource = (record = {}, direction = 'checkIn') => {
+  if (!record?.[direction]) return '';
+  const method = `${record?.[`${direction}Method`] || ''}`;
+  const meta = record?.[`${direction}MethodMeta`] || {};
+  const isProxy = Boolean(
+    meta?.proxyAttendance
+      || meta?.type === 'proxy'
+      || /chấm hộ|điều chỉnh/i.test(method)
+  );
+
+  if (isProxy) {
+    const proxyName = [
+      meta?.proxyByName,
+      meta?.checkedByName,
+      meta?.performedByName,
+      meta?.actorName,
+      meta?.byName,
+      meta?.proxyName
+    ].find(value => `${value || ''}`.trim());
+    return `Chấm hộ - ${proxyName || 'Chưa xác định người chấm'}`;
+  }
+
+  return hasAttendanceGpsMeta(meta)
+    ? `Định vị: ${formatAttendanceGpsSummary(meta)}`
+    : '';
 };
 
 const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase()}`;
@@ -18161,15 +18196,13 @@ function MainAppView({
     order_requests: canAccess('order_requests'),
     warehouse_import: canAccess('warehouse_import'),
     warehouse_dispatch: canAccess('warehouse_dispatch'),
-    delivery_reports: canAccess('delivery_reports'),
-    maps: canAccess('maps') && (
-      canRoleAction('maps', 'view_map') ||
-      canRoleAction('maps', 'view_customer_map') ||
-      canRoleAction('maps', 'view_driver_route') ||
-      canRoleAction('maps', 'view_dispatch_dashboard') ||
-      canRoleAction('maps', 'view_map_heatmap') ||
-      canRoleAction('maps', 'view_route_history')
-    ),
+    // This action is the visibility switch for the whole delivery-report module.
+    // Other actions (create/edit/delete) must not make the module visible by accident.
+    delivery_reports: canAccess('delivery_reports') && canRoleAction('delivery_reports', 'view_delivery_reports'),
+    // Map visibility is controlled by the module switch and the primary view action.
+    // Sub-permissions must not expose the module when the role has not been granted access.
+    maps: (isOwnerAccount || isSuperAdmin || Boolean(rolePermissions?.maps))
+      && (isOwnerAccount || isSuperAdmin || canRoleAction('maps', 'view_map')),
     asset_management: canAccess('asset_management') && canRoleAction('asset_management', 'view_asset_management'),
     orders: canAccess('orders'),
     customers: canAccess('customers'),
@@ -19546,6 +19579,7 @@ function MainAppView({
       record={currentAttendanceAlert?.record}
       notificationUnreadCount={employeeHomeInboxUnreadCount}
       onOpenNotifications={handleOpenEmployeeHomeInbox}
+      showDeliveryReportHome={!(isSales || (isAccounting && !isOwnerAccount))}
     />
   );
 
@@ -19556,6 +19590,12 @@ function MainAppView({
   );
 
   const renderContent = () => {
+    if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
+      return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
+    }
+    if (activeTab === 'maps' && !tabPermissions.maps) {
+      return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
+    }
     if (!canAccess(activeTab)) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
     }
@@ -19731,7 +19771,7 @@ function MainAppView({
         }
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return (canQuickCreateOrder && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
+      case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
           return renderWorkflowGuide({
@@ -19795,6 +19835,7 @@ function MainAppView({
           canViewSalaryAdvance={canRoleAction('payroll', 'view_salary_advance') || canRoleAction('payroll', 'view_salary_detail_records')}
           canViewAllPayroll={canRoleAction('payroll', 'view_all_payroll')}
           canCreateSalaryAdvanceRequest={canRoleAction('payroll', 'create_salary_advance_request')}
+          canCreateSalaryAdvanceForOthers={canRoleAction('payroll', 'create_salary_advance_for_others')}
           canViewSalaryAdvanceRequests={canRoleAction('payroll', 'view_salary_advance_requests') || canRoleAction('payroll', 'view_salary_detail_records')}
           canApproveSalaryAdvance={canRoleAction('payroll', 'approve_salary_advance') || canRoleAction('payroll', 'approve_advance')}
           canRejectSalaryAdvance={canRoleAction('payroll', 'reject_salary_advance') || canRoleAction('payroll', 'approve_advance')}
@@ -35863,6 +35904,14 @@ function ExecutiveDashboardView({
   const [activeExecutiveTab, setActiveExecutiveTab] = useState('overview');
   const [overviewPeriod, setOverviewPeriod] = useState('today');
   const [showDailyFinanceDetails, setShowDailyFinanceDetails] = useState(false);
+  const [expandedExecutiveLists, setExpandedExecutiveLists] = useState({});
+  const toggleExecutiveList = (listId) => {
+    if (!listId) return;
+    setExpandedExecutiveLists((current) => ({
+      ...current,
+      [listId]: !current[listId]
+    }));
+  };
   const snapshot = useMemo(() => buildExecutiveDashboardSnapshot({
     employee,
     company,
@@ -36345,8 +36394,10 @@ function ExecutiveDashboardView({
     </div>
   );
 
-  const renderProfitabilityRows = (rows = [], limit = 5) => {
-    const visibleRows = (rows || []).slice(0, limit);
+  const renderProfitabilityRows = (rows = [], limit = 5, { listId, onRowClick } = {}) => {
+    const allRows = rows || [];
+    const isExpanded = Boolean(expandedExecutiveLists[listId]);
+    const visibleRows = isExpanded ? allRows : allRows.slice(0, limit);
     if (visibleRows.length === 0) {
       return (
         <p className="rounded-3xl bg-slate-50 px-4 py-4 text-center text-sm font-semibold text-slate-500">
@@ -36369,8 +36420,8 @@ function ExecutiveDashboardView({
           const movementLabel = dispatchParts.length > 0
             ? `Xuất ${dispatchParts.join(' • ')}`
             : `Đơn bán ${formatNumber(row.soldQuantity || row.quantitySold || 0)} ${row.unit || 'đv'}`;
-          return (
-            <div key={row.id || row.name || index} className="rounded-3xl border border-emerald-100 bg-white px-3 py-3 shadow-sm">
+          const rowContent = (
+            <>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-black text-slate-950">{index + 1}. {row.name}</p>
@@ -36396,9 +36447,34 @@ function ExecutiveDashboardView({
                   <p className="mt-1 text-xs font-black text-emerald-700">{formatCurrency(row.profitPerUnit || 0)} đ</p>
                 </div>
               </div>
+            </>
+          );
+          return onRowClick ? (
+            <button
+              key={row.id || row.name || index}
+              type="button"
+              onClick={() => onRowClick(row)}
+              className="block w-full rounded-3xl border border-emerald-100 bg-white px-3 py-3 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              aria-label={`Mở thông tin ${row.name || 'mặt hàng'}`}
+            >
+              {rowContent}
+            </button>
+          ) : (
+            <div key={row.id || row.name || index} className="rounded-3xl border border-emerald-100 bg-white px-3 py-3 shadow-sm">
+              {rowContent}
             </div>
           );
         })}
+        {allRows.length > limit && (
+          <button
+            type="button"
+            onClick={() => toggleExecutiveList(listId)}
+            className="flex w-full items-center justify-center gap-1 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
+          >
+            {isExpanded ? 'Thu gọn' : `Xem thêm ${allRows.length - limit}`}
+            <ChevronRight size={14} className={isExpanded ? '-rotate-90' : 'rotate-90'} />
+          </button>
+        )}
       </div>
     );
   };
@@ -36415,7 +36491,10 @@ function ExecutiveDashboardView({
         </div>
         <div className="mt-3">
           <p className="mb-2 text-[11px] font-black uppercase tracking-widest text-slate-400">Nhóm hàng lãi cao</p>
-          {renderProfitabilityRows(profitability?.groupRows || [], 3)}
+          {renderProfitabilityRows(profitability?.groupRows || [], 3, {
+            listId: 'overview-profitability-groups',
+            onRowClick: () => setActiveTab?.('products')
+          })}
         </div>
       </ExecutiveSectionCard>
     );
@@ -36432,7 +36511,10 @@ function ExecutiveDashboardView({
         </div>
       </ExecutiveSectionCard>
       <ExecutiveSectionCard title="Lợi nhuận hôm nay theo nhóm hàng">
-        {renderProfitabilityRows(profitability?.groupRows || [], 6)}
+        {renderProfitabilityRows(profitability?.groupRows || [], 6, {
+          listId: 'business-profitability-groups',
+          onRowClick: () => setActiveTab?.('products')
+        })}
       </ExecutiveSectionCard>
       <section className="rounded-[30px] border border-slate-100 bg-white p-4 shadow-sm">
         <ExecutiveTopList
@@ -36440,21 +36522,24 @@ function ExecutiveDashboardView({
           rows={business.topEmployeesByRevenue || []}
           valueKey="revenue"
           emptyText="Chưa có doanh thu theo nhân viên kinh doanh."
-          limit={business.topEmployeesByRevenue?.length || 5}
+          limit={5}
+          onRowClick={() => setActiveTab?.('employees')}
         />
       </section>
       <div className="grid gap-3 md:grid-cols-2">
-        <ExecutiveTopList title="Top khách theo doanh thu" rows={business.topCustomersByRevenue} valueKey="revenue" />
-        <ExecutiveTopList title="Top khách theo lợi nhuận" rows={business.topCustomersByProfit} valueKey="profit" />
-        <ExecutiveTopList title="Top sản phẩm doanh thu" rows={business.topProductsByRevenue} valueKey="revenue" />
-        <ExecutiveTopList title="Top sản phẩm lợi nhuận" rows={business.topProductsByProfit} valueKey="profit" />
-        <ExecutiveTopList title="Lãi bình quân/ngày theo sản phẩm" rows={business.topProductsByAverageDailyProfit || []} valueKey="averageDailyProfit" emptyText="Chưa đủ dữ liệu lợi nhuận theo ngày." />
-        <ExecutiveTopList title="Top công nợ khách hàng" rows={business.topCustomersByDebt} valueKey="debt" emptyText="Chưa có khách hàng còn công nợ." />
+        <ExecutiveTopList title="Top khách theo doanh thu" rows={business.topCustomersByRevenue} valueKey="revenue" onRowClick={() => setActiveTab?.('customers')} />
+        <ExecutiveTopList title="Top khách theo lợi nhuận" rows={business.topCustomersByProfit} valueKey="profit" onRowClick={() => setActiveTab?.('customers')} />
+        <ExecutiveTopList title="Top sản phẩm doanh thu" rows={business.topProductsByRevenue} valueKey="revenue" onRowClick={() => setActiveTab?.('products')} />
+        <ExecutiveTopList title="Top sản phẩm lợi nhuận" rows={business.topProductsByProfit} valueKey="profit" onRowClick={() => setActiveTab?.('products')} />
+        <ExecutiveTopList title="Lãi bình quân/ngày theo sản phẩm" rows={business.topProductsByAverageDailyProfit || []} valueKey="averageDailyProfit" emptyText="Chưa đủ dữ liệu lợi nhuận theo ngày." onRowClick={() => setActiveTab?.('products')} />
+        <ExecutiveTopList title="Top công nợ khách hàng" rows={business.topCustomersByDebt} valueKey="debt" emptyText="Chưa có khách hàng còn công nợ." onRowClick={() => setActiveTab?.('debt')} />
       </div>
     </div>
   );
-  const renderCostRankingRows = (rows = [], { emptyText = 'Chưa có dữ liệu chi phí.', limit = 8, valueTone = 'text-rose-600' } = {}) => {
-    const visibleRows = (rows || []).slice(0, limit);
+  const renderCostRankingRows = (rows = [], { emptyText = 'Chưa có dữ liệu chi phí.', limit = 8, valueTone = 'text-rose-600', listId, onRowClick } = {}) => {
+    const allRows = rows || [];
+    const isExpanded = Boolean(expandedExecutiveLists[listId]);
+    const visibleRows = isExpanded ? allRows : allRows.slice(0, limit);
     if (visibleRows.length === 0) {
       return (
         <p className="rounded-2xl bg-white px-3 py-3 text-center text-xs font-semibold text-slate-400">
@@ -36468,8 +36553,8 @@ function ExecutiveDashboardView({
         {visibleRows.map((row, index) => {
           const value = finiteFinanceNumber(row.value);
           const pct = Math.max(4, Math.min(100, (value / maxValue) * 100));
-          return (
-            <div key={row.id || row.name || index} className="rounded-2xl bg-white px-3 py-2 shadow-sm ring-1 ring-slate-100">
+          const rowContent = (
+            <>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-black text-slate-900">{index + 1}. {row.name}</p>
@@ -36480,9 +36565,34 @@ function ExecutiveDashboardView({
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
                 <div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-rose-500" style={{ width: `${pct}%` }} />
               </div>
+            </>
+          );
+          return onRowClick ? (
+            <button
+              key={row.id || row.name || index}
+              type="button"
+              onClick={() => onRowClick(row)}
+              className="block w-full rounded-2xl bg-white px-3 py-2 text-left shadow-sm ring-1 ring-slate-100 transition hover:ring-amber-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-amber-300"
+              aria-label={`Mở thông tin chi phí ${row.name || ''}`}
+            >
+              {rowContent}
+            </button>
+          ) : (
+            <div key={row.id || row.name || index} className="rounded-2xl bg-white px-3 py-2 shadow-sm ring-1 ring-slate-100">
+              {rowContent}
             </div>
           );
         })}
+        {allRows.length > limit && (
+          <button
+            type="button"
+            onClick={() => toggleExecutiveList(listId)}
+            className="flex w-full items-center justify-center gap-1 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 transition hover:bg-amber-100"
+          >
+            {isExpanded ? 'Thu gọn' : `Xem thêm ${allRows.length - limit}`}
+            <ChevronRight size={14} className={isExpanded ? '-rotate-90' : 'rotate-90'} />
+          </button>
+        )}
       </div>
     );
   };
@@ -36536,28 +36646,36 @@ function ExecutiveDashboardView({
           <ExecutiveSectionCard title="Top hạng mục chi phí">
             {renderCostRankingRows(topCostCategoryRows, {
               emptyText: 'Chưa có hạng mục chi phí trong tháng này.',
-              limit: 10
+              limit: 10,
+              listId: 'cost-categories',
+              onRowClick: () => setActiveTab?.('finance')
             })}
           </ExecutiveSectionCard>
           <ExecutiveSectionCard title="Top bộ phận / nhóm chi">
             {renderCostRankingRows(topCostDepartmentRows, {
               emptyText: 'Chưa có dữ liệu chi theo bộ phận.',
               limit: 8,
-              valueTone: 'text-amber-700'
+              valueTone: 'text-amber-700',
+              listId: 'cost-departments',
+              onRowClick: () => setActiveTab?.('finance')
             })}
           </ExecutiveSectionCard>
           <ExecutiveSectionCard title="Phiếu chi lớn nhất tháng này">
             {renderCostRankingRows(topExpenseTicketRows, {
               emptyText: 'Chưa có phiếu chi trong tháng này.',
               limit: 8,
-              valueTone: 'text-slate-900'
+              valueTone: 'text-slate-900',
+              listId: 'cost-expense-tickets',
+              onRowClick: () => setActiveTab?.('finance')
             })}
           </ExecutiveSectionCard>
           <ExecutiveSectionCard title="Ngày chi cao nhất">
             {renderCostRankingRows(topCostDayRows, {
               emptyText: 'Chưa có ngày phát sinh chi phí.',
               limit: 6,
-              valueTone: 'text-rose-600'
+              valueTone: 'text-rose-600',
+              listId: 'cost-days',
+              onRowClick: () => setActiveTab?.('finance')
             })}
           </ExecutiveSectionCard>
         </div>
@@ -36983,26 +37101,55 @@ function ExecutiveMetric({ label, value, tone = 'neutral' }) {
   );
 }
 
-function ExecutiveTopList({ title, rows = [], valueKey = 'revenue', emptyText = 'Chưa có dữ liệu.', limit = 5 }) {
+function ExecutiveTopList({ title, rows = [], valueKey = 'revenue', emptyText = 'Chưa có dữ liệu.', limit = 5, onRowClick }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleRows = expanded ? rows : rows.slice(0, limit);
   return (
     <div className="rounded-3xl bg-slate-50 p-3">
       <p className="mb-2 text-xs font-black uppercase tracking-widest text-slate-500">{title}</p>
       <div className="space-y-2">
         {rows.length === 0 ? (
           <p className="rounded-2xl bg-white px-3 py-3 text-xs font-semibold text-slate-400">{emptyText}</p>
-        ) : rows.slice(0, limit).map((row, index) => (
-          <div key={row.id || row.name || index} className="flex items-center justify-between gap-2 rounded-2xl bg-white px-3 py-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-black text-slate-900">{index + 1}. {row.name}</p>
-              <p className="text-[11px] font-semibold text-slate-400">
-                {valueKey === 'debt'
-                  ? 'Công nợ cần theo dõi'
-                  : `${formatNumber(row.quantity || row.orders || 0)} ${row.quantity ? 'SL' : 'đơn'}`}
-              </p>
+        ) : visibleRows.map((row, index) => {
+          const rowContent = (
+            <>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black text-slate-900">{index + 1}. {row.name}</p>
+                <p className="text-[11px] font-semibold text-slate-400">
+                  {valueKey === 'debt'
+                    ? 'Công nợ cần theo dõi'
+                    : `${formatNumber(row.quantity || row.orders || 0)} ${row.quantity ? 'SL' : 'đơn'}`}
+                </p>
+              </div>
+              <p className="shrink-0 text-right text-xs font-black text-emerald-700">{formatCurrency(row[valueKey] || 0)} đ</p>
+            </>
+          );
+          return onRowClick ? (
+            <button
+              key={row.id || row.name || index}
+              type="button"
+              onClick={() => onRowClick(row)}
+              className="flex w-full items-center justify-between gap-2 rounded-2xl bg-white px-3 py-2 text-left transition hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              aria-label={`Mở thông tin ${row.name || 'mục tổng hợp'}`}
+            >
+              {rowContent}
+            </button>
+          ) : (
+            <div key={row.id || row.name || index} className="flex items-center justify-between gap-2 rounded-2xl bg-white px-3 py-2">
+              {rowContent}
             </div>
-            <p className="shrink-0 text-right text-xs font-black text-emerald-700">{formatCurrency(row[valueKey] || 0)} đ</p>
-          </div>
-        ))}
+          );
+        })}
+        {rows.length > limit && (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="flex w-full items-center justify-center gap-1 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
+          >
+            {expanded ? 'Thu gọn' : `Xem thêm ${rows.length - limit}`}
+            <ChevronRight size={14} className={expanded ? '-rotate-90' : 'rotate-90'} />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -37035,7 +37182,7 @@ function formatEmployeeHomeDisplayValue(value) {
   return value;
 }
 
-function EmployeeHomeQuickRow({ label, value, tone = 'slate' }) {
+function EmployeeHomeQuickRow({ label, value, tone = 'slate', secondary = '' }) {
   const displayValue = formatEmployeeHomeDisplayValue(value);
   const toneClass = tone === 'good'
     ? 'text-emerald-700'
@@ -37047,7 +37194,10 @@ function EmployeeHomeQuickRow({ label, value, tone = 'slate' }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
       <span className="text-xs font-bold text-slate-500">{label}</span>
-      <span className={`text-right text-sm font-black ${toneClass}`}>{displayValue}</span>
+      <span className="text-right">
+        <span className={`block text-sm font-black ${toneClass}`}>{displayValue}</span>
+        {secondary && <span className="mt-0.5 block text-[10px] font-bold text-slate-500">{secondary}</span>}
+      </span>
     </div>
   );
 }
@@ -37073,7 +37223,8 @@ function EmployeePersonalHomeView({
   setActiveTab = () => {},
   record = null,
   notificationUnreadCount = 0,
-  onOpenNotifications = () => {}
+  onOpenNotifications = () => {},
+  showDeliveryReportHome = true
 }) {
   const reviewSectionRef = useRef(null);
   const payrollPdfRef = useRef(null);
@@ -37425,10 +37576,18 @@ function EmployeePersonalHomeView({
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <EmployeeHomeQuickRow label="Vào" value={todayRecord?.checkIn ? formatAttendanceMomentForWorkDate(todayRecord.checkIn, date, employee, 'checkIn') : '-'} tone={todayRecord?.checkIn ? 'good' : 'bad'} />
-          <EmployeeHomeQuickRow label="Ra" value={todayRecord?.checkOut ? formatAttendanceMomentForWorkDate(todayRecord.checkOut, date, employee, 'checkOut') : '-'} tone={todayRecord?.checkOut ? 'good' : 'warn'} />
-          <EmployeeHomeQuickRow label="Phương thức vào" value={getAttendanceMethodDisplay(todayRecord, 'checkIn')} />
-          <EmployeeHomeQuickRow label="Phương thức ra" value={getAttendanceMethodDisplay(todayRecord, 'checkOut')} />
+          <EmployeeHomeQuickRow
+            label="Vào"
+            value={todayRecord?.checkIn ? formatAttendanceMomentForWorkDate(todayRecord.checkIn, date, employee, 'checkIn') : '-'}
+            tone={todayRecord?.checkIn ? 'good' : 'bad'}
+            secondary={getAttendanceCompactSource(todayRecord, 'checkIn')}
+          />
+          <EmployeeHomeQuickRow
+            label="Ra"
+            value={todayRecord?.checkOut ? formatAttendanceMomentForWorkDate(todayRecord.checkOut, date, employee, 'checkOut') : '-'}
+            tone={todayRecord?.checkOut ? 'good' : 'warn'}
+            secondary={getAttendanceCompactSource(todayRecord, 'checkOut')}
+          />
         </div>
         {todayRecord && (todayAttendanceTiming.lateMinutes > 0 || todayAttendanceTiming.autoOvertimeMinutes > 0) && (
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
@@ -37506,6 +37665,7 @@ function EmployeePersonalHomeView({
         </div>
       </div>
 
+      {showDeliveryReportHome && (
       <section className="rounded-[2rem] border border-slate-100 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div>
@@ -37543,6 +37703,7 @@ function EmployeePersonalHomeView({
           Mở báo cáo giao hàng
         </button>
       </section>
+      )}
 
     </div>
   );
@@ -67110,9 +67271,15 @@ const summarizeEmployeeReviews = (reviews = [], empId = '', monthKey = '', sourc
   ));
   const totalStars = filtered.reduce((sum, item) => sum + getEmployeeReviewRatingValue(item), 0);
   const avgStars = filtered.length ? totalStars / filtered.length : 0;
+  const reviewerIds = new Set(
+    filtered
+      .map(item => `${item?.reviewerEmployeeId || ''}`.trim())
+      .filter(Boolean)
+  );
   return {
     items: filtered,
     count: filtered.length,
+    reviewerCount: reviewerIds.size || filtered.length,
     avgStars,
     score: avgStars ? Math.max(0, Math.min(100, avgStars * 20)) : 0,
     latestReason: filtered.slice().sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))[0]?.reason || ''
@@ -67176,6 +67343,8 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
   const systemCriteriaScores = buildEmployeeSystemReviewCriteriaScores(system);
   const peerCriteriaScores = summarizeEmployeeReviewCriteriaScores(peer.items || []);
   const customerCriteriaScores = summarizeEmployeeReviewCriteriaScores(customer.items || []);
+  const peerBonus = peer.count ? getEmployeeReviewCriteriaBonusTotal(peerCriteriaScores) : 0;
+  const customerBonus = customer.count ? getEmployeeReviewCriteriaBonusTotal(customerCriteriaScores) : 0;
   const finalCriteriaScores = mergeEmployeeReviewCriteriaScores({
     system: systemCriteriaScores,
     peer: peerCriteriaScores,
@@ -67192,6 +67361,8 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
     system,
     peer,
     customer,
+    peerBonus,
+    customerBonus,
     finalCriteriaScores,
     finalCriteriaAverage,
     finalScore,
@@ -67229,8 +67400,12 @@ const summarizeEmployeeReviewCriteriaScores = (reviews = [], criteriaList = EMPL
     counts[criteria.id] = 0;
   });
   reviews.forEach((review) => {
+    const fallbackRating = getEmployeeReviewRatingValue(review);
     criteriaList.forEach((criteria) => {
-      const value = clampEmployeeReviewStar((review.criteriaScores || review.criteria || {})?.[criteria.id], Number.NaN);
+      const value = clampEmployeeReviewStar(
+        (review.criteriaScores || review.criteria || {})?.[criteria.id],
+        fallbackRating
+      );
       if (Number.isFinite(value)) {
         totals[criteria.id] += value;
         counts[criteria.id] += 1;
@@ -67545,6 +67720,11 @@ function EmployeeReviewModuleView({
   const finalAverage = getEmployeeReviewCriteriaAverage(finalScores);
   const finalStars = getEmployeeReviewStars(finalAverage * 20);
   const peerReviewBonus = peerReviews.length ? getEmployeeReviewCriteriaBonusTotal(peerScores, criteriaList) : 0;
+  const peerReviewerCount = new Set(
+    peerReviews
+      .map(review => `${review?.reviewerEmployeeId || ''}`.trim())
+      .filter(Boolean)
+  ).size || peerReviews.length;
   const advice = getEmployeeReviewAdvice(finalStars, finalScores, criteriaList);
   const starText = finalStars > 0 ? `${finalStars} sao` : 'Chưa có sao';
   const datasets = [
@@ -67763,7 +67943,7 @@ function EmployeeReviewModuleView({
       <section className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-100">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Bình quân đánh giá</p>
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Bình quân đồng nghiệp</p>
             <h3 className="mt-1 text-xl font-black text-slate-950">
               {peerReviews.length
                 ? `${getEmployeeReviewCriteriaAverage(peerScores).toLocaleString('vi-VN', { maximumFractionDigits: 1 })} sao`
@@ -67772,10 +67952,10 @@ function EmployeeReviewModuleView({
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
-              {peerReviews.length} phiếu đã lưu
+              {peerReviewerCount} nhân viên đã đánh giá
             </span>
             <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
-              Thưởng {formatCurrency(peerReviewBonus)} đ
+              Thưởng theo bình quân {formatCurrency(peerReviewBonus)} đ
             </span>
           </div>
         </div>
@@ -69793,6 +69973,7 @@ function SalaryView({
   canViewSalaryAdvance = true,
   canViewAllPayroll = false,
   canCreateSalaryAdvanceRequest = true,
+  canCreateSalaryAdvanceForOthers = false,
   canViewSalaryAdvanceRequests = false,
   canApproveSalaryAdvance = false,
   canRejectSalaryAdvance = false,
@@ -69821,6 +70002,7 @@ function SalaryView({
   const [financialModalError, setFinancialModalError] = useState('');
   const [advanceRequestAmount, setAdvanceRequestAmount] = useState('');
   const [advanceRequestReason, setAdvanceRequestReason] = useState('');
+  const [advanceRequestTargetEmployeeId, setAdvanceRequestTargetEmployeeId] = useState(currentEmployee?.id || '');
   const [advanceRequestStatus, setAdvanceRequestStatus] = useState('');
   const [isSubmittingAdvanceRequest, setIsSubmittingAdvanceRequest] = useState(false);
   const [reviewingAdvanceId, setReviewingAdvanceId] = useState('');
@@ -69964,6 +70146,54 @@ function SalaryView({
   const salaryAdvanceUsedAmount = roundMoneyValue((currentSalaryDetails?.totalAdvance || 0) + pendingAdvanceAmount);
   const salaryAdvanceRemainingAmount = salaryAdvanceIsUnlimited ? null : Math.max(0, roundMoneyValue(salaryAdvanceLimitAmount - salaryAdvanceUsedAmount));
 
+  const advanceTargetEmployees = useMemo(() => {
+    if (!canCreateSalaryAdvanceForOthers) return [];
+    return (employees || []).filter(emp => (
+      emp?.id
+      && !emp?.isArchived
+      && emp.role !== 'super_admin'
+      && !isOwnerPosition(emp.position)
+    ));
+  }, [canCreateSalaryAdvanceForOthers, employees]);
+  const advanceTargetSelectEmployees = useMemo(() => {
+    if (!canCreateSalaryAdvanceForOthers) return [];
+    const targets = [...advanceTargetEmployees];
+    if (currentEmployee?.id && canCreateOwnSalaryAdvanceRequest && !targets.some(emp => emp.id === currentEmployee.id)) {
+      targets.unshift(currentEmployee);
+    }
+    return targets;
+  }, [advanceTargetEmployees, canCreateSalaryAdvanceForOthers, canCreateOwnSalaryAdvanceRequest, currentEmployee]);
+
+  const advanceRequestTargetSummary = useMemo(() => {
+    const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
+    const targetEmployee = (employees || []).find(emp => emp.id === targetId) || null;
+    if (!targetEmployee?.id) return null;
+    const targetDetails = buildSalaryDetails(targetEmployee.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth);
+    const targetLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, targetEmployee, null);
+    const targetPercent = targetLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, targetEmployee, null);
+    const targetPendingAdvances = (advanceRequests || []).filter(req => (
+      req.empId === targetEmployee.id
+      && req.status === 'pending'
+      && (!req.date || `${req.date}`.startsWith(currentMonth))
+    ));
+    const targetPendingAmount = targetPendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
+    const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
+    const targetIsUnlimited = Boolean(targetLimitConfig.isUnlimited);
+    const targetLimitAmount = targetIsUnlimited ? null : roundMoneyValue(targetBaseAmount * (targetPercent / 100));
+    const targetUsedAmount = roundMoneyValue((targetDetails?.totalAdvance || 0) + targetPendingAmount);
+    const targetRemainingAmount = targetIsUnlimited ? null : Math.max(0, roundMoneyValue(targetLimitAmount - targetUsedAmount));
+    return {
+      targetEmployee,
+      targetDetails,
+      targetPercent,
+      targetIsUnlimited,
+      targetBaseAmount,
+      targetLimitAmount,
+      targetUsedAmount,
+      targetRemainingAmount
+    };
+  }, [advanceRequestTargetEmployeeId, currentCompany, currentEmployeeId, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth, advanceRequests]);
+
   const openFinancialModal = (emp, type) => {
     if (type === 'employee_purchase') {
       if (!canManageEmployeePurchases) return;
@@ -70100,8 +70330,35 @@ function SalaryView({
     return editingFinancialRecord ? 'Sửa tiền phạt' : 'Trừ tiền phạt';
   };
 
-  const openAdvanceRequestModal = () => {
-    if (!canCreateOwnSalaryAdvanceRequest || (!salaryAdvanceIsUnlimited && salaryAdvanceRemainingAmount <= 0)) return;
+  const openAdvanceRequestModal = (targetEmployeeId = currentEmployeeId) => {
+    const targetId = targetEmployeeId || currentEmployeeId;
+    const isOwnRequest = targetId === currentEmployeeId;
+    if (!isOwnRequest && !canCreateSalaryAdvanceForOthers) return;
+    if (isOwnRequest && !canCreateOwnSalaryAdvanceRequest) return;
+    const targetSummary = targetId === advanceRequestTargetEmployeeId
+      ? advanceRequestTargetSummary
+      : (() => {
+          const targetEmployee = (employees || []).find(emp => emp.id === targetId);
+          if (!targetEmployee?.id) return null;
+          const targetDetails = buildSalaryDetails(targetEmployee.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth);
+          const targetLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, targetEmployee, null);
+          const targetPercent = targetLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, targetEmployee, null);
+          const targetPendingAmount = (advanceRequests || [])
+            .filter(req => req.empId === targetEmployee.id && req.status === 'pending' && (!req.date || `${req.date}`.startsWith(currentMonth)))
+            .reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
+          const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
+          const targetIsUnlimited = Boolean(targetLimitConfig.isUnlimited);
+          const targetLimitAmount = targetIsUnlimited ? null : roundMoneyValue(targetBaseAmount * (targetPercent / 100));
+          const targetUsedAmount = roundMoneyValue((targetDetails?.totalAdvance || 0) + targetPendingAmount);
+          return {
+            targetEmployee,
+            targetIsUnlimited,
+            targetRemainingAmount: targetIsUnlimited ? null : Math.max(0, roundMoneyValue(targetLimitAmount - targetUsedAmount))
+          };
+        })();
+    if (!targetSummary?.targetEmployee) return;
+    if (!targetSummary.targetIsUnlimited && targetSummary.targetRemainingAmount <= 0) return;
+    setAdvanceRequestTargetEmployeeId(targetId);
     setAdvanceRequestAmount('');
     setAdvanceRequestReason('');
     setAdvanceRequestStatus('');
@@ -70110,27 +70367,44 @@ function SalaryView({
 
   const handleAdvanceRequestSubmit = async (event) => {
     event.preventDefault();
-    if (!onAddAdvanceRequest || !currentEmployeeId) return;
+    const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
+    const isOwnRequest = targetId === currentEmployeeId;
+    if (!onAddAdvanceRequest || !targetId) return;
+    if (!isOwnRequest && !canCreateSalaryAdvanceForOthers) {
+      setAdvanceRequestStatus('Tài khoản hiện tại chưa có quyền tạo lệnh ứng hộ.');
+      return;
+    }
+    if (isOwnRequest && !canCreateOwnSalaryAdvanceRequest) {
+      setAdvanceRequestStatus('Tài khoản hiện tại chưa có quyền tạo lệnh ứng lương.');
+      return;
+    }
+    const targetSummary = advanceRequestTargetSummary;
+    if (!targetSummary?.targetEmployee) {
+      setAdvanceRequestStatus('Chưa chọn nhân sự nhận ứng.');
+      return;
+    }
     const requestedAmount = parseInputCurrency(advanceRequestAmount);
     if (!requestedAmount || requestedAmount <= 0) {
       setAdvanceRequestStatus('Vui lòng nhập số tiền ứng hợp lệ.');
       return;
     }
-    if (!salaryAdvanceIsUnlimited && requestedAmount > salaryAdvanceRemainingAmount) {
-      setAdvanceRequestStatus(`Số tiền ứng không được vượt ${formatCurrency(salaryAdvanceRemainingAmount)} đ.`);
+    if (!targetSummary.targetIsUnlimited && requestedAmount > targetSummary.targetRemainingAmount) {
+      setAdvanceRequestStatus(`Số tiền ứng không được vượt ${formatCurrency(targetSummary.targetRemainingAmount)} đ.`);
       return;
     }
 
     setIsSubmittingAdvanceRequest(true);
     setAdvanceRequestStatus('');
     try {
-      const result = await onAddAdvanceRequest(currentEmployeeId, requestedAmount, advanceRequestReason || 'Ứng lương', {
+      const result = await onAddAdvanceRequest(targetId, requestedAmount, advanceRequestReason || (isOwnRequest ? 'Ứng lương' : 'Ứng hộ'), {
         salaryMonth: currentMonth,
-        salaryAdvancePercent: salaryAdvanceIsUnlimited ? null : salaryAdvancePercent,
-        salaryAdvanceLimitMode: salaryAdvanceIsUnlimited ? 'unlimited' : 'percent',
-        salaryAdvanceBaseAmount,
-        salaryAdvanceLimitAmount,
-        salaryAdvanceRemainingBeforeRequest: salaryAdvanceIsUnlimited ? null : salaryAdvanceRemainingAmount
+        salaryAdvancePercent: targetSummary.targetIsUnlimited ? null : targetSummary.targetPercent,
+        salaryAdvanceLimitMode: targetSummary.targetIsUnlimited ? 'unlimited' : 'percent',
+        salaryAdvanceBaseAmount: targetSummary.targetBaseAmount,
+        salaryAdvanceLimitAmount: targetSummary.targetLimitAmount,
+        salaryAdvanceRemainingBeforeRequest: targetSummary.targetIsUnlimited ? null : targetSummary.targetRemainingAmount,
+        createdOnBehalf: !isOwnRequest,
+        createdByEmployeeId: currentEmployeeId || null
       });
       if (result?.success === false) throw new Error(result.message || 'Không tạo được lệnh ứng lương.');
       setShowAdvanceRequestModal(false);
@@ -70366,6 +70640,15 @@ function SalaryView({
           >
             {currentMonthLabel}
           </button>
+          {canCreateSalaryAdvanceForOthers && advanceTargetEmployees.length > 0 && (
+            <button
+              type="button"
+              onClick={() => openAdvanceRequestModal(advanceTargetEmployees[0].id)}
+              className="shrink-0 rounded-full border border-orange-200/40 bg-orange-400/90 px-3 py-2 text-center text-xs font-black text-white transition-colors hover:bg-orange-400"
+            >
+              Tạo lệnh ứng hộ
+            </button>
+          )}
           <input
             ref={salaryMonthInputRef}
             type="month"
@@ -70414,7 +70697,10 @@ function SalaryView({
           const employeeAdvanceLimitAmount = employeeAdvanceIsUnlimited ? null : roundMoneyValue(employeeAdvanceBaseAmount * (employeeSalaryAdvancePercent / 100));
           const employeeAdvanceUsedAmount = roundMoneyValue((details?.totalAdvance || 0) + employeePendingAdvanceAmount);
           const employeeAdvanceRemainingAmount = employeeAdvanceIsUnlimited ? null : Math.max(0, roundMoneyValue(employeeAdvanceLimitAmount - employeeAdvanceUsedAmount));
-          const canCreateThisAdvanceRequest = canCreateOwnSalaryAdvanceRequest && emp.id === currentEmployeeId;
+          const canCreateThisAdvanceRequest = (
+            (canCreateOwnSalaryAdvanceRequest && emp.id === currentEmployeeId)
+            || (canCreateSalaryAdvanceForOthers && emp.id !== currentEmployeeId)
+          );
 
           return (
             <div key={emp.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all">
@@ -70449,7 +70735,7 @@ function SalaryView({
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            openAdvanceRequestModal();
+                            openAdvanceRequestModal(emp.id);
                           }}
                           disabled={!employeeAdvanceIsUnlimited && employeeAdvanceRemainingAmount <= 0}
                           className="shrink-0 rounded-xl bg-orange-500 px-2.5 py-1.5 text-[10px] font-black leading-tight text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
@@ -70861,9 +71147,9 @@ function SalaryView({
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-orange-600">Ứng lương</p>
                 <h3 className="mt-1 text-xl font-black text-slate-900">Tạo lệnh ứng</h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  {salaryAdvanceIsUnlimited
+                  {advanceRequestTargetSummary?.targetIsUnlimited
                     ? 'Không giới hạn số tiền ứng, lệnh sẽ chờ chủ doanh nghiệp duyệt.'
-                    : `Còn được ứng tối đa ${formatCurrency(salaryAdvanceRemainingAmount)} đ.`}
+                    : `Còn được ứng tối đa ${formatCurrency(advanceRequestTargetSummary?.targetRemainingAmount || 0)} đ.`}
                 </p>
               </div>
               <button
@@ -70875,6 +71161,22 @@ function SalaryView({
               </button>
             </div>
             <form onSubmit={handleAdvanceRequestSubmit} className="space-y-3">
+              {canCreateSalaryAdvanceForOthers && (
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-600">Nhân sự nhận ứng</label>
+                  <select
+                    required
+                    value={advanceRequestTargetEmployeeId}
+                    onChange={(event) => setAdvanceRequestTargetEmployeeId(event.target.value)}
+                    className="w-full rounded-2xl border border-orange-100 bg-orange-50/40 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-orange-300"
+                  >
+                    <option value="">Chọn nhân sự</option>
+                    {advanceTargetSelectEmployees.map(emp => (
+                      <option key={emp.id} value={emp.id}>{emp.name || emp.phone || 'Nhân sự'}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-600">Số tiền ứng</label>
                 <input
@@ -71035,7 +71337,7 @@ function DebtManagementViewLegacy({ isAccounting, isDriver, employee, customers,
   );
 }
 
-function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
+function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentTargetOrderId, setPaymentTargetOrderId] = useState('');
@@ -71066,6 +71368,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   const showFilterPanel = externalShowFilterPanel ?? localShowFilterPanel;
   const setShowFilterPanel = setExternalShowFilterPanel ?? setLocalShowFilterPanel;
   const canViewAllDebtRecords = Boolean(canViewAllDebt);
+  const canViewAssignedDebtRecords = Boolean(canViewAssignedDebt);
   const canRecordCustomerPayment = Boolean(canRecordPayment);
   const canDeleteDebtRecord = Boolean(canDeleteDebt);
   const safeDebtWarehouseImports = useMemo(
@@ -71111,9 +71414,10 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   const accessibleCustomers = useMemo(() => customerLedgers.filter(customer => {
     if (customer.isArchived) return false;
     if (canViewAllDebtRecords) return true;
+    if (!canViewAssignedDebtRecords) return false;
     if (isDriver) return (customer.allowedDriverIds || []).includes(employee?.id);
     return customer.empId === employee?.id;
-  }), [customerLedgers, canViewAllDebtRecords, isDriver, employee?.id]);
+  }), [customerLedgers, canViewAllDebtRecords, canViewAssignedDebtRecords, isDriver, employee?.id]);
 
   const selectedCustomerLive = useMemo(
     () => accessibleCustomers.find(customer => customer.id === selectedCustomerId) || null,
