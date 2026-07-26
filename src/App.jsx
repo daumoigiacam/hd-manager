@@ -18141,6 +18141,35 @@ const ModuleDependencyService = {
   }
 };
 
+const APP_NAV_ITEM_MAP = {
+  home: { id: 'home', label: 'Trang chủ', icon: <Store /> },
+  executive_dashboard: { id: 'executive_dashboard', label: 'Điều hành', icon: <PieChart /> },
+  order_requests: { id: 'order_requests', label: 'Đơn đặt', icon: <Receipt /> },
+  orders: { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList /> },
+  warehouse_dispatch: { id: 'warehouse_dispatch', label: 'Xuất kho', icon: <ClipboardList /> },
+  delivery_reports: { id: 'delivery_reports', label: 'Báo cáo', icon: <Camera /> },
+  warehouse_import: { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package /> },
+  customers: { id: 'customers', label: 'Khách hàng', icon: <Users /> },
+  debt: { id: 'debt', label: 'Công nợ', icon: <BookText /> },
+  finance: { id: 'finance', label: 'Thu chi', icon: <ArrowRightLeft /> },
+  bank_payments: { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard /> },
+  messages: { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle /> },
+  pricing: { id: 'pricing', label: 'Giá cả', icon: <TrendingUp /> },
+  maps: { id: 'maps', label: 'Bản đồ', icon: <MapPin /> },
+  company_attendance: { id: 'company_attendance', label: 'Chấm công', icon: <Clock /> },
+  employee_reviews: { id: 'employee_reviews', label: 'Đánh giá', icon: <Star /> },
+  asset_management: { id: 'asset_management', label: 'Tài sản', icon: <Building /> },
+  payroll: { id: 'payroll', label: 'Bảng lương', icon: <Wallet /> },
+  employees: { id: 'employees', label: 'Nhân sự', icon: <Users /> },
+  products: { id: 'products', label: 'Sản phẩm', icon: <Package /> },
+  price_quotes: { id: 'price_quotes', label: 'Báo giá', icon: <Receipt /> },
+  report: { id: 'report', label: 'Báo cáo', icon: <FileText /> },
+  settings: { id: 'settings', label: 'Cài đặt', icon: <Settings /> },
+  role_permissions: { id: 'role_permissions', label: 'Vai trò', icon: <ShieldAlert /> },
+  billing: { id: 'billing', label: 'Gói dịch vụ', icon: <CreditCard /> },
+  more: { id: 'more', label: 'Thêm', icon: <MoreHorizontal /> }
+};
+
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
@@ -19855,34 +19884,7 @@ function MainAppView({
   };
 
   const footerNavItems = useMemo(() => {
-    const itemMap = {
-      home: { id: 'home', label: 'Trang chủ', icon: <Store /> },
-      executive_dashboard: { id: 'executive_dashboard', label: 'Điều hành', icon: <PieChart /> },
-      order_requests: { id: 'order_requests', label: 'Đơn đặt', icon: <Receipt /> },
-      orders: { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList /> },
-      warehouse_dispatch: { id: 'warehouse_dispatch', label: 'Xuất kho', icon: <ClipboardList /> },
-      delivery_reports: { id: 'delivery_reports', label: 'Báo cáo', icon: <Camera /> },
-      warehouse_import: { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package /> },
-      customers: { id: 'customers', label: 'Khách hàng', icon: <Users /> },
-      debt: { id: 'debt', label: 'Công nợ', icon: <BookText /> },
-      finance: { id: 'finance', label: 'Thu chi', icon: <ArrowRightLeft /> },
-      bank_payments: { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard /> },
-      messages: { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle /> },
-      pricing: { id: 'pricing', label: 'Giá cả', icon: <TrendingUp /> },
-      maps: { id: 'maps', label: 'Bản đồ', icon: <MapPin /> },
-      company_attendance: { id: 'company_attendance', label: 'Chấm công', icon: <Clock /> },
-      employee_reviews: { id: 'employee_reviews', label: 'Đánh giá', icon: <Star /> },
-      asset_management: { id: 'asset_management', label: 'Tài sản', icon: <Building /> },
-      payroll: { id: 'payroll', label: 'Bảng lương', icon: <Wallet /> },
-      employees: { id: 'employees', label: 'Nhân sự', icon: <Users /> },
-      products: { id: 'products', label: 'Sản phẩm', icon: <Package /> },
-      price_quotes: { id: 'price_quotes', label: 'Báo giá', icon: <Receipt /> },
-      report: { id: 'report', label: 'Báo cáo', icon: <FileText /> },
-      settings: { id: 'settings', label: 'Cài đặt', icon: <Settings /> },
-      role_permissions: { id: 'role_permissions', label: 'Vai trò', icon: <ShieldAlert /> },
-      billing: { id: 'billing', label: 'Gói dịch vụ', icon: <CreditCard /> },
-      more: { id: 'more', label: 'Thêm', icon: <MoreHorizontal /> }
-    };
+    const itemMap = APP_NAV_ITEM_MAP;
     const rolePriorityIds = isWarehouseScale
         ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'warehouse_import', 'more']
         : isDriver
@@ -19905,6 +19907,61 @@ function MainAppView({
       .slice(0, 4)
       .map(id => itemMap[id]);
     return [...allowedItems, itemMap.more];
+  }, [
+    footerUsage,
+    isAccounting,
+    isDriver,
+    isOwnerAccount,
+    isSales,
+    isWarehouseScale,
+    tabPermissions.company_attendance,
+    tabPermissions.customers,
+    tabPermissions.debt,
+    tabPermissions.delivery_reports,
+    tabPermissions.employee_reviews,
+    tabPermissions.executive_dashboard,
+    tabPermissions.finance,
+    tabPermissions.bank_payments,
+    tabPermissions.home,
+    tabPermissions.messages,
+    tabPermissions.maps,
+    tabPermissions.order_requests,
+    tabPermissions.orders,
+    tabPermissions.pricing,
+    tabPermissions.warehouse_dispatch,
+    tabPermissions.warehouse_import,
+    tabPermissions.asset_management,
+    tabPermissions.payroll,
+    tabPermissions.employees,
+    tabPermissions.products,
+    tabPermissions.price_quotes,
+    tabPermissions.report,
+    tabPermissions.settings,
+    tabPermissions.role_permissions,
+    tabPermissions.billing
+  ]);
+  const desktopSidebarItems = useMemo(() => {
+    const rolePriorityIds = isWarehouseScale
+      ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'warehouse_import']
+      : isDriver
+        ? ['home', 'delivery_reports', 'customers', 'maps']
+        : isSales
+          ? ['home', 'order_requests', 'debt', 'customers', 'pricing']
+          : (!isOwnerAccount && isAccounting)
+            ? ['home', 'orders', 'order_requests', 'customers', 'debt']
+            : ['home', 'orders', 'warehouse_dispatch', 'order_requests', 'customers'];
+    const rolePriorityIndex = new Map(rolePriorityIds.map((id, index) => [id, index]));
+
+    return Object.keys(APP_NAV_ITEM_MAP)
+      .filter(id => id !== 'more' && tabPermissions[id])
+      .sort((leftId, rightId) => {
+        if (leftId === 'home') return -1;
+        if (rightId === 'home') return 1;
+        const usageDifference = Number(footerUsage[rightId] || 0) - Number(footerUsage[leftId] || 0);
+        if (usageDifference !== 0) return usageDifference;
+        return (rolePriorityIndex.get(leftId) ?? 999) - (rolePriorityIndex.get(rightId) ?? 999);
+      })
+      .map(id => APP_NAV_ITEM_MAP[id]);
   }, [
     footerUsage,
     isAccounting,
@@ -20321,7 +20378,7 @@ function MainAppView({
       )}
 
       <nav className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <div className="flex justify-around items-center px-1 py-1.5">
+        <div className="mobile-footer-nav flex justify-around items-center px-1 py-1.5">
           {footerNavItems.map((item) => (
             <NavButton
               key={item.id}
@@ -20331,6 +20388,23 @@ function MainAppView({
               onClick={() => setActiveTab(item.id)}
             />
           ))}
+        </div>
+        <div className="desktop-sidebar-nav" aria-label="Điều hướng chức năng">
+          {desktopSidebarItems.map((item) => (
+            <NavButton
+              key={item.id}
+              icon={item.icon}
+              label={item.label}
+              active={activeTab === item.id}
+              onClick={() => setActiveTab(item.id)}
+            />
+          ))}
+          <NavButton
+            icon={APP_NAV_ITEM_MAP.more.icon}
+            label={APP_NAV_ITEM_MAP.more.label}
+            active={isMoreTabActive}
+            onClick={() => setActiveTab('more')}
+          />
         </div>
       </nav>
     </div>
