@@ -55,4 +55,13 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            /home/hdmanager/deploy.sh
+            set -euo pipefail
+            cd /home/hdmanager/hd-manager
+            git config --global --add safe.directory /home/hdmanager/hd-manager
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            npm ci
+            npm run build
+            rsync -av --delete dist/ /var/www/hd-manager/
+            systemctl reload nginx
