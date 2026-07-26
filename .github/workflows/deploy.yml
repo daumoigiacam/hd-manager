@@ -47,21 +47,36 @@ jobs:
           test -f dist/index.html
           echo "Build successful"
 
+      - name: Package build artifact
+        if: github.event_name == 'push'
+        run: tar -czf hd-manager-dist.tgz -C dist .
+
       - name: Deploy to VPS
         if: github.event_name == 'push'
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            cd /home/hdmanager/hd-manager
-            git config --global --add safe.directory /home/hdmanager/hd-manager
-            git fetch origin main
-            git checkout main
-            git pull --ff-only origin main
-            npm ci
-            npm run build
-            rsync -av --delete dist/ /var/www/hd-manager/
-            systemctl reload nginx
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          RELEASE_ID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/hdmanager_vps
+          chmod 600 ~/.ssh/hdmanager_vps
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+          REMOTE_TGZ="/tmp/hd-manager-dist-${RELEASE_ID}.tgz"
+          REMOTE_DIR="/tmp/hd-manager-dist-${RELEASE_ID}"
+
+          scp -i ~/.ssh/hdmanager_vps hd-manager-dist.tgz "${VPS_USER}@${VPS_HOST}:${REMOTE_TGZ}"
+          ssh -i ~/.ssh/hdmanager_vps "${VPS_USER}@${VPS_HOST}" "set -euo pipefail
+            rm -rf '${REMOTE_DIR}'
+            mkdir -p '${REMOTE_DIR}'
+            tar -xzf '${REMOTE_TGZ}' -C '${REMOTE_DIR}'
+            docker run --rm \
+              -v '${REMOTE_DIR}:/src:ro' \
+              -v '/var/www/hd-manager:/target' \
+              hdconnect-nginx:latest \
+              sh -c 'rm -rf /target/* && cp -a /src/. /target/'
+            rm -rf '${REMOTE_DIR}' '${REMOTE_TGZ}'
+          "
