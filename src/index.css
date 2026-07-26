@@ -654,6 +654,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 @media (min-width: 1100px) {
   :root {
     --hd-app-max-width: 92rem;
+    --hd-desktop-sidebar-width: 17.5rem;
     --hd-page-x: 2rem;
     --hd-card-pad: 1.25rem;
     --hd-footer-height: 0px;
@@ -780,6 +781,25 @@ html.hd-low-power-ui .hd-soft-red-outline {
     max-width: 78rem;
     margin-left: auto;
     margin-right: auto;
+  }
+
+  /* Modals rendered from the content pane must not be centered under the sidebar. */
+  .mobile-app-shell > main .fixed.inset-0 {
+    left: var(--hd-desktop-sidebar-width) !important;
+    right: 0 !important;
+    width: auto !important;
+  }
+
+  .mobile-app-shell .hd-order-request-modal-layer {
+    left: var(--hd-desktop-sidebar-width) !important;
+    right: 0 !important;
+    width: auto !important;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .mobile-app-shell .hd-order-request-modal-panel {
+    max-width: min(64rem, 100%) !important;
   }
 
   .mobile-app-shell :where(.grid-cols-2) {

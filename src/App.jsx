@@ -10,7 +10,7 @@ import {
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
-  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck
+  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff
 } from 'lucide-react';
 
 // --- FIREBASE CLOUD SETUP ---
@@ -4375,6 +4375,98 @@ const normalizeEmployeeLoginPhone = (value = '') => {
   if (!digits.startsWith('0') && digits.length === 9) return `0${digits}`;
   return digits;
 };
+
+const ACCOUNT_PASSWORD_HASH_SCHEME = 'pbkdf2-sha256-v1';
+const ACCOUNT_PASSWORD_HASH_ITERATIONS = 120000;
+
+const getPasswordCrypto = () => {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  if (!cryptoApi?.subtle || !cryptoApi?.getRandomValues) {
+    throw new Error('Thiết bị không hỗ trợ mã hóa mật khẩu an toàn.');
+  }
+  return cryptoApi;
+};
+
+const bytesToHex = (bytes) => Array.from(bytes)
+  .map(byte => byte.toString(16).padStart(2, '0'))
+  .join('');
+
+const hexToBytes = (hex) => {
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+};
+
+const constantTimeEqual = (left = '', right = '') => {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+};
+
+const deriveAccountPasswordDigest = async (password, salt, iterations = ACCOUNT_PASSWORD_HASH_ITERATIONS) => {
+  const cryptoApi = getPasswordCrypto();
+  const encoder = new TextEncoder();
+  const key = await cryptoApi.subtle.importKey(
+    'raw',
+    encoder.encode(`${password ?? ''}`),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  return cryptoApi.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    key,
+    256
+  );
+};
+
+const hashAccountPassword = async (password) => {
+  const cryptoApi = getPasswordCrypto();
+  const salt = new Uint8Array(16);
+  cryptoApi.getRandomValues(salt);
+  const digest = await deriveAccountPasswordDigest(password, salt);
+  return `${ACCOUNT_PASSWORD_HASH_SCHEME}$${ACCOUNT_PASSWORD_HASH_ITERATIONS}$${bytesToHex(salt)}$${bytesToHex(new Uint8Array(digest))}`;
+};
+
+const verifyAccountPassword = async (password, storedHash) => {
+  const value = `${storedHash || ''}`;
+  if (!value) return { configured: false, valid: false };
+  const [scheme, iterationsText, saltHex, expectedDigest] = value.split('$');
+  const iterations = Number(iterationsText);
+  const salt = hexToBytes(saltHex);
+  if (
+    scheme !== ACCOUNT_PASSWORD_HASH_SCHEME
+    || !Number.isInteger(iterations)
+    || iterations < 100000
+    || !salt
+    || !expectedDigest
+  ) {
+    return { configured: true, valid: false };
+  }
+  const digest = await deriveAccountPasswordDigest(password, salt, iterations);
+  const actualDigest = bytesToHex(new Uint8Array(digest));
+  return { configured: true, valid: constantTimeEqual(actualDigest, expectedDigest) };
+};
+
+const validateAccountPasswordInput = (password, confirmation) => {
+  const value = `${password ?? ''}`;
+  if (!value) return 'Vui lòng nhập mật khẩu.';
+  if (value.length < 8) return 'Mật khẩu cần ít nhất 8 ký tự.';
+  if (!/[A-Za-zÀ-ỹ]/u.test(value) || !/\d/.test(value)) {
+    return 'Mật khẩu cần có ít nhất 1 chữ cái và 1 chữ số.';
+  }
+  if (confirmation !== undefined && value !== `${confirmation ?? ''}`) {
+    return 'Mật khẩu xác nhận không khớp.';
+  }
+  return '';
+};
+
 const buildPhoneLookupVariants = (value = '') => {
   const digits = normalizeCustomerPhone(value);
   const canonical = normalizeEmployeeLoginPhone(value);
@@ -12267,12 +12359,66 @@ export default function App() {
     return agg;
   }, [performanceRecords, orders, employees, customers]);
 
-  const handleRegisterCompany = async (companyName, phone) => {
+  const verifyAndMaybeSetLoginPassword = async (collectionName, record, password) => {
+    const passwordError = validateAccountPasswordInput(password);
+    if (passwordError) return { success: false, message: passwordError };
+
+    const storedHash = record?.password_hash || record?.passwordHash || '';
+    try {
+      if (storedHash) {
+        const verification = await verifyAccountPassword(password, storedHash);
+        if (!verification.valid) return { success: false, message: 'Mật khẩu không đúng.' };
+        return { success: true, passwordHash: storedHash };
+      }
+
+      const passwordHash = await hashAccountPassword(password);
+      const passwordPatch = {
+        companyId: record?.companyId || record?.company_id || '',
+        password_hash: passwordHash,
+        passwordUpdatedAt: new Date().toISOString()
+      };
+      await saveDataDocument(
+        collectionName,
+        record.id,
+        passwordPatch,
+        { merge: true },
+        8000,
+        'Không thể lưu mật khẩu. Vui lòng kiểm tra mạng rồi thử lại.'
+      );
+      const setRecords = collectionName === 'employees' ? setRawEmployees : setRawCustomerAccounts;
+      setRecords(prev => {
+        const currentList = Array.isArray(prev) ? prev : [];
+        const exists = currentList.some(item => item.id === record.id);
+        return exists
+          ? currentList.map(item => item.id === record.id ? { ...item, ...passwordPatch } : item)
+          : [{ ...record, ...passwordPatch }, ...currentList];
+      });
+      return { success: true, passwordHash, bootstrapped: true };
+    } catch (error) {
+      console.error(`Không thể xác thực mật khẩu trong ${collectionName}:`, error);
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không thể bảo mật tài khoản lúc này. Vui lòng thử lại.')
+      };
+    }
+  };
+
+  const handleRegisterCompany = async (companyName, phone, password) => {
     if (!firebaseUser) return { success: false, message: "Lỗi kết nối máy chủ." };
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: "Vui lòng nhập số điện thoại hợp lệ." };
+    const passwordError = validateAccountPasswordInput(password, password);
+    if (passwordError) return { success: false, message: passwordError };
     const exist = rawEmployees.find(e => isSameLoginPhone(e.phone, normalizedPhone));
     if (exist) return { success: false, message: "Số điện thoại này đã được đăng ký!" };
+
+    let passwordHash;
+    try {
+      passwordHash = await hashAccountPassword(password);
+    } catch (error) {
+      console.error('Không thể tạo mật khẩu cho công ty:', error);
+      return { success: false, message: 'Thiết bị không hỗ trợ mã hóa mật khẩu an toàn.' };
+    }
 
     const newCompanyId = `comp_${Date.now()}`;
     const newEmpId = `emp_${Date.now()}`;
@@ -12301,7 +12447,9 @@ export default function App() {
     const adminData = {
       id: newEmpId, companyId: newCompanyId, phone: normalizedPhone, name: 'Chủ doanh nghiệp', position: 'Chủ doanh nghiệp', role: 'super_admin', 
       startDate: getTodayString(), probationDuration: 0, probationUnit: 'days', probationRate: 100,
-      basicSalary: 0, supportSalary: 0, responsibilitySalary: 0, experienceSalary: 0, experienceSalaryPeriod: 'months', commissionRate: 0, targetRevenue: 0, overtimeRate: 0, latePenaltyRate: 0
+      basicSalary: 0, supportSalary: 0, responsibilitySalary: 0, experienceSalary: 0, experienceSalaryPeriod: 'months', commissionRate: 0, targetRevenue: 0, overtimeRate: 0, latePenaltyRate: 0,
+      password_hash: passwordHash,
+      passwordUpdatedAt: new Date().toISOString()
     };
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', newEmpId), adminData);
 
@@ -12406,9 +12554,11 @@ export default function App() {
     };
   };
 
-  const handleLogin = async (phone) => {
+  const handleLogin = async (phone, password) => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+    const passwordError = validateAccountPasswordInput(password);
+    if (passwordError) return { success: false, message: passwordError };
     logLoginStep('Staff login start', {
       phone: normalizedPhone,
       appId,
@@ -12485,6 +12635,8 @@ export default function App() {
     }
 
     if (emp) { 
+      const passwordResult = await verifyAndMaybeSetLoginPassword('employees', emp, password);
+      if (!passwordResult.success) return passwordResult;
       const comp = companySource.find(c => c.id === emp.companyId) || rawCompanies.find(c => c.id === emp.companyId) || { id: emp.companyId, name: 'Công ty' };
       logLoginStep('Staff login success', {
         employeeId: emp.id,
@@ -12526,9 +12678,11 @@ export default function App() {
     return { success: false, message: 'Số điện thoại không đúng hoặc công ty chưa đăng ký.' };
   };
 
-  const handleCustomerLogin = async (phone) => {
+  const handleCustomerLogin = async (phone, password) => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+    const passwordError = validateAccountPasswordInput(password);
+    if (passwordError) return { success: false, message: passwordError };
     logLoginStep('Customer login start', {
       phone: normalizedPhone,
       appId,
@@ -12637,6 +12791,12 @@ export default function App() {
     const comp = companySource.find(c => c.id === customerCompanyId) || rawCompanies.find(c => c.id === customerCompanyId) || currentCompany || { id: customerCompanyId, name: 'Công ty' };
     const accountId = account?.id || `ca_${customer.id}`;
     const now = new Date().toISOString();
+    const passwordResult = await verifyAndMaybeSetLoginPassword(
+      'customer_accounts',
+      { ...(account || {}), id: accountId, companyId: customerCompanyId },
+      password
+    );
+    if (!passwordResult.success) return passwordResult;
     const normalizedCustomer = {
       ...customer,
       companyId: customerCompanyId,
@@ -12655,7 +12815,7 @@ export default function App() {
       customer_id: customer.id,
       customerId: customer.id,
       phone: normalizedCustomer.phone,
-      password_hash: account?.password_hash || '',
+      password_hash: passwordResult.passwordHash || account?.password_hash || account?.passwordHash || '',
       status: account?.status || 'active',
       created_at: account?.created_at || now,
       last_login: now,
@@ -30633,6 +30793,7 @@ function MapManagementView({
   const [navigationRoadRoute, setNavigationRoadRoute] = useState(null);
   const [navigationRouteLoading, setNavigationRouteLoading] = useState(false);
   const selectedDeliveryOrderSnapshotRef = useRef(null);
+  const lastNavigationPositionRef = useRef(null);
 
   useEffect(() => {
     setProviderId(getPreferredMapProvider(currentCompany));
@@ -30855,6 +31016,99 @@ function MapManagementView({
       .filter(point => !onlyDebt || point.debt > 0);
   }, [routeMissions, findCustomerForMapMission, geocodedDeliveryPoints, keyword, onlyDebt, optimisticDeliveredSet]);
 
+  const warehouseLocation = currentCompany?.warehouseLocation
+    || currentCompany?.defaultWarehouseLocation
+    || currentCompany?.mainWarehouseLocation
+    || null;
+
+  const deliveryCustomerPoints = useMemo(() => {
+    const groups = new Map();
+    (deliveryOrderPoints || []).forEach(point => {
+      const customerId = `${point.customerId || ''}`.trim();
+      const phone = `${point.phone || ''}`.replace(/\D/g, '');
+      const name = normalizeLookupText(point.customerName || '');
+      const groupKey = customerId || phone || name || `dispatch:${point.id || point.dispatchId || groups.size}`;
+      const existing = groups.get(groupKey);
+      const pointId = point.id || point.dispatchId || '';
+      const pointWeight = Number(point.weight) || 0;
+      const pointQuantity = Number(point.quantity) || 0;
+      const pointAmount = Number(point.amount) || 0;
+      const hasCoordinates = isValidLatLng(Number(point.latitude), Number(point.longitude));
+
+      if (!existing) {
+        groups.set(groupKey, {
+          ...point,
+          id: `customer:${groupKey}`,
+          primaryDispatchId: point.dispatchId || point.id || '',
+          dispatchIds: pointId ? [pointId] : [],
+          orderPoints: [point],
+          dispatchCount: 1,
+          totalWeight: pointWeight,
+          totalQuantity: pointQuantity,
+          totalAmount: pointAmount,
+          itemSummaries: point.itemSummary ? [point.itemSummary] : [],
+          isDelivered: Boolean(point.isDelivered),
+          allDelivered: Boolean(point.isDelivered),
+        });
+        return;
+      }
+
+      existing.dispatchCount += 1;
+      if (pointId && !existing.dispatchIds.includes(pointId)) existing.dispatchIds.push(pointId);
+      existing.orderPoints.push(point);
+      existing.totalWeight += pointWeight;
+      existing.totalQuantity += pointQuantity;
+      existing.totalAmount += pointAmount;
+      if (point.itemSummary && !existing.itemSummaries.includes(point.itemSummary)) {
+        existing.itemSummaries.push(point.itemSummary);
+      }
+      existing.isDelivered = existing.isDelivered && Boolean(point.isDelivered);
+      existing.allDelivered = existing.allDelivered && Boolean(point.isDelivered);
+      if (!isValidLatLng(Number(existing.latitude), Number(existing.longitude)) && hasCoordinates) {
+        existing.latitude = Number(point.latitude);
+        existing.longitude = Number(point.longitude);
+        existing.gpsSource = point.gpsSource || existing.gpsSource;
+      }
+    });
+
+    const origin = currentMapPosition || (
+      warehouseLocation
+      && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))
+        ? warehouseLocation
+        : null
+    );
+
+    return Array.from(groups.values())
+      .map(group => {
+        const hasCoordinates = isValidLatLng(Number(group.latitude), Number(group.longitude));
+        const distanceKm = origin && hasCoordinates
+          ? distanceBetweenMapPointsKm(origin, group)
+          : Infinity;
+        return {
+          ...group,
+          itemSummary: group.itemSummaries.join(' • '),
+          amount: group.totalAmount,
+          weight: group.totalWeight,
+          quantity: group.totalQuantity,
+          distanceKm,
+          distanceSource: Number.isFinite(distanceKm)
+            ? currentMapPosition ? 'current_location' : 'warehouse'
+            : '',
+          distanceLabel: Number.isFinite(distanceKm)
+            ? `${formatDistanceKm(distanceKm)}${currentMapPosition ? '' : ' • từ kho'}`
+            : hasCoordinates ? 'Đang lấy vị trí' : 'Chưa có GPS',
+          status: group.allDelivered ? 'delivered' : group.status,
+        };
+      })
+      .sort((left, right) => {
+        const leftHasDistance = Number.isFinite(left.distanceKm);
+        const rightHasDistance = Number.isFinite(right.distanceKm);
+        if (leftHasDistance !== rightHasDistance) return leftHasDistance ? -1 : 1;
+        if (leftHasDistance && left.distanceKm !== right.distanceKm) return left.distanceKm - right.distanceKm;
+        return `${left.customerName || ''}`.localeCompare(`${right.customerName || ''}`, 'vi');
+      });
+  }, [currentMapPosition, deliveryOrderPoints, warehouseLocation]);
+
   useEffect(() => {
     let cancelled = false;
     const missingPoints = (deliveryOrderPoints || [])
@@ -30891,11 +31145,6 @@ function MapManagementView({
       cancelled = true;
     };
   }, [deliveryOrderPoints, geocodedDeliveryPoints, mapService, currentCompany, saveGeocodeCache]);
-
-  const warehouseLocation = currentCompany?.warehouseLocation
-    || currentCompany?.defaultWarehouseLocation
-    || currentCompany?.mainWarehouseLocation
-    || null;
 
   const routePoints = useMemo(
     () => mapService.buildRoutePolyline(routeMissions, warehouseLocation),
@@ -30990,14 +31239,32 @@ function MapManagementView({
       (selectedDeliveryOrderSnapshotRef.current.id || selectedDeliveryOrderSnapshotRef.current.dispatchId) === selectedDeliveryOrderId
     ) ? selectedDeliveryOrderSnapshotRef.current : null);
 
+  const selectedDeliveryCustomer = useMemo(() => {
+    if (!selectedDeliveryOrder) return null;
+    return deliveryCustomerPoints.find(customer => (
+      customer.primaryDispatchId === selectedDeliveryOrderId
+      || customer.dispatchIds?.includes(selectedDeliveryOrderId)
+    )) || selectedDeliveryOrder;
+  }, [deliveryCustomerPoints, selectedDeliveryOrder, selectedDeliveryOrderId]);
+
   const navigationTarget = useMemo(() => (
     suggestedDeliveryOrderPoints.find(point => (point.id || point.dispatchId) === navigationTargetId) || null
   ), [navigationTargetId, suggestedDeliveryOrderPoints]);
 
+  const navigationOrigin = useMemo(() => {
+    if (currentMapPosition && isValidLatLng(Number(currentMapPosition.latitude), Number(currentMapPosition.longitude))) {
+      return { ...currentMapPosition, source: 'gps' };
+    }
+    if (warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))) {
+      return { ...warehouseLocation, source: 'warehouse' };
+    }
+    return null;
+  }, [currentMapPosition, warehouseLocation]);
+
   const navigationRouteRequestKey = useMemo(() => {
-    if (!navigationTarget || !currentMapPosition) return '';
-    const originLat = Number(currentMapPosition.latitude);
-    const originLng = Number(currentMapPosition.longitude);
+    if (!navigationTarget || !navigationOrigin) return '';
+    const originLat = Number(navigationOrigin.latitude);
+    const originLng = Number(navigationOrigin.longitude);
     const destinationLat = Number(navigationTarget.latitude);
     const destinationLng = Number(navigationTarget.longitude);
     if (!isValidLatLng(originLat, originLng) || !isValidLatLng(destinationLat, destinationLng)) return '';
@@ -31008,45 +31275,43 @@ function MapManagementView({
       destinationLat.toFixed(5),
       destinationLng.toFixed(5),
     ].join('|');
-  }, [currentMapPosition, navigationTarget, navigationTargetId]);
+  }, [navigationOrigin, navigationTarget, navigationTargetId]);
 
   const navigationRoutePoints = useMemo(() => {
     if (!navigationTarget) return optimizedMapRoutePoints;
     if (navigationRoadRoute?.targetId === navigationTargetId && navigationRoadRoute?.points?.length) {
       return navigationRoadRoute.points;
     }
-    const startPoint = currentMapPosition || (
-      warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))
-        ? warehouseLocation
-        : null
-    );
+    const startPoint = navigationOrigin;
     return startPoint ? [startPoint, navigationTarget] : [navigationTarget];
-  }, [currentMapPosition, navigationRoadRoute, navigationTarget, navigationTargetId, optimizedMapRoutePoints, warehouseLocation]);
+  }, [navigationOrigin, navigationRoadRoute, navigationTarget, navigationTargetId, optimizedMapRoutePoints]);
 
   const navigationMetrics = useMemo(() => {
-    if (!navigationTarget || !currentMapPosition) {
-      return { distanceKm: null, etaMinutes: null, arrivalLabel: '--:--', speedKmh: null };
+    if (!navigationTarget || !navigationOrigin) {
+      return { distanceKm: null, etaMinutes: null, arrivalLabel: '--:--', speedKmh: null, originSource: null };
     }
     const distanceKm = Number(navigationRoadRoute?.distanceKm) > 0
       ? Number(navigationRoadRoute.distanceKm)
-      : distanceBetweenMapPointsKm(currentMapPosition, navigationTarget);
+      : distanceBetweenMapPointsKm(navigationOrigin, navigationTarget);
     const averageSpeedKmh = 38;
     const etaMinutes = Number(navigationRoadRoute?.etaMinutes) > 0
       ? Number(navigationRoadRoute.etaMinutes)
       : Number.isFinite(distanceKm) ? Math.max(1, Math.round((distanceKm / averageSpeedKmh) * 60)) : null;
     const arrivalLabel = etaMinutes ? formatTime(new Date(Date.now() + etaMinutes * 60 * 1000)) : '--:--';
-    const speedKmh = Number(currentMapPosition.speedKmh || 0) > 0 ? Math.round(Number(currentMapPosition.speedKmh)) : null;
-    return { distanceKm, etaMinutes, arrivalLabel, speedKmh };
-  }, [currentMapPosition, navigationRoadRoute, navigationTarget]);
+    const speedKmh = navigationOrigin.source === 'gps' && Number(navigationOrigin.speedKmh || 0) > 0
+      ? Math.round(Number(navigationOrigin.speedKmh))
+      : null;
+    return { distanceKm, etaMinutes, arrivalLabel, speedKmh, originSource: navigationOrigin.source };
+  }, [navigationOrigin, navigationRoadRoute, navigationTarget]);
 
   useEffect(() => {
-    if (!navigationRouteRequestKey || !navigationTarget || !currentMapPosition) {
+    if (!navigationRouteRequestKey || !navigationTarget || !navigationOrigin) {
       setNavigationRoadRoute(null);
       return undefined;
     }
 
-    const originLat = Number(currentMapPosition.latitude);
-    const originLng = Number(currentMapPosition.longitude);
+    const originLat = Number(navigationOrigin.latitude);
+    const originLng = Number(navigationOrigin.longitude);
     const destinationLat = Number(navigationTarget.latitude);
     const destinationLng = Number(navigationTarget.longitude);
     const targetId = navigationTarget.id || navigationTarget.dispatchId || navigationTargetId;
@@ -31098,7 +31363,7 @@ function MapManagementView({
       cancelled = true;
       controller.abort();
     };
-  }, [currentMapPosition, navigationRouteRequestKey, navigationTarget, navigationTargetId]);
+  }, [navigationOrigin, navigationRouteRequestKey, navigationTarget, navigationTargetId]);
 
   useEffect(() => {
     if (
@@ -31145,6 +31410,26 @@ function MapManagementView({
     };
   }, []);
 
+  const enrichNavigationPosition = useCallback((position) => {
+    if (!position) return null;
+    const previous = lastNavigationPositionRef.current;
+    const explicitSpeedKmh = Number(position.speedKmh);
+    let speedKmh = Number.isFinite(explicitSpeedKmh) && explicitSpeedKmh > 0 ? explicitSpeedKmh : null;
+    if (!speedKmh && previous) {
+      const previousTime = Date.parse(previous.updatedAt || '');
+      const currentTime = Date.parse(position.updatedAt || '');
+      const elapsedSeconds = (currentTime - previousTime) / 1000;
+      const distanceKm = distanceBetweenMapPointsKm(previous, position);
+      const derivedSpeedKmh = elapsedSeconds > 1 && elapsedSeconds <= 300
+        ? (distanceKm * 3600) / elapsedSeconds
+        : 0;
+      if (derivedSpeedKmh > 0 && derivedSpeedKmh <= 160) speedKmh = derivedSpeedKmh;
+    }
+    const enriched = { ...position, speedKmh };
+    lastNavigationPositionRef.current = enriched;
+    return enriched;
+  }, []);
+
   const getCurrentMapPosition = async () => {
     try {
       const result = await Geolocation.getCurrentPosition({
@@ -31152,7 +31437,7 @@ function MapManagementView({
         timeout: 8000,
         maximumAge: 60000,
       });
-      const normalized = normalizeMapPosition(result?.coords || {});
+      const normalized = enrichNavigationPosition(normalizeMapPosition(result?.coords || {}));
       if (normalized) return normalized;
     } catch (error) {
       // Fall back to browser geolocation below when Capacitor permission is not available.
@@ -31162,7 +31447,7 @@ function MapManagementView({
     return new Promise(resolve => {
       navigator.geolocation.getCurrentPosition(
         position => {
-          resolve(normalizeMapPosition(position?.coords || {}));
+          resolve(enrichNavigationPosition(normalizeMapPosition(position?.coords || {})));
         },
         () => resolve(null),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
@@ -31180,7 +31465,7 @@ function MapManagementView({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enrichNavigationPosition]);
 
   useEffect(() => {
     if (!navigationTargetId) return undefined;
@@ -31189,7 +31474,7 @@ function MapManagementView({
     let fallbackTimer = null;
 
     const applyPosition = coords => {
-      const nextPosition = normalizeMapPosition(coords || {});
+      const nextPosition = enrichNavigationPosition(normalizeMapPosition(coords || {}));
       if (!cancelled && nextPosition) {
         setCurrentMapPosition(nextPosition);
         setNavigationLocationError('');
@@ -31229,7 +31514,7 @@ function MapManagementView({
       }
       if (fallbackTimer) window.clearInterval(fallbackTimer);
     };
-  }, [navigationTargetId, normalizeMapPosition]);
+  }, [enrichNavigationPosition, navigationTargetId, normalizeMapPosition]);
 
   const buildGoogleDirectionsUrl = (destination = {}, origin = null) => {
     const destinationLat = Number(destination.latitude);
@@ -31293,6 +31578,9 @@ function MapManagementView({
     const currentPosition = await getCurrentMapPosition();
     if (currentPosition) {
       setCurrentMapPosition(currentPosition);
+      setStatusText('');
+    } else if (warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))) {
+      setNavigationLocationError('Chưa có GPS hiện tại. App đang tính tuyến từ kho; bật định vị để cập nhật khoảng cách và tốc độ thực tế.');
       setStatusText('');
     } else {
       setNavigationLocationError('Chưa lấy được vị trí hiện tại. Hãy bật GPS rồi bấm Chỉ đường lại.');
@@ -31550,7 +31838,7 @@ function MapManagementView({
             </div>
           </div>
         )}
-        {(selectedDeliveryOrder || showDeliveryListSheet) && (
+        {(selectedDeliveryOrder || showDeliveryListSheet) && !navigationTargetId && (
         <div className="absolute bottom-3 left-3 right-3 z-20 rounded-[1.8rem] border border-white/80 bg-white/95 p-3 shadow-2xl backdrop-blur md:left-auto md:w-[28rem]">
           <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-slate-200 md:hidden" />
 
@@ -31558,62 +31846,16 @@ function MapManagementView({
             <div className="space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600">
-                    Khách số {selectedDeliveryOrder.suggestedOrder || selectedDeliveryOrder.count || suggestedDeliveryOrderPoints.findIndex(point => (point.id || point.dispatchId) === selectedDeliveryOrderId) + 1}
-                  </p>
-                  <h3 className="mt-1 truncate text-lg font-black text-slate-900">{selectedDeliveryOrder.customerName || 'Khách hàng'}</h3>
+                  <h3 className="truncate text-lg font-black text-slate-900">{selectedDeliveryCustomer?.customerName || 'Khách hàng'}</h3>
                   <p className="mt-1 truncate text-xs font-bold text-slate-500">
-                    {selectedDeliveryOrder.itemSummary || 'Phiếu xuất kho'}
-                    {selectedDeliveryOrder.weight ? ` • ${formatNumber(selectedDeliveryOrder.weight)}kg` : ''}
-                    {selectedDeliveryOrder.quantity ? ` • ${formatNumber(selectedDeliveryOrder.quantity)}` : ''}
+                    {selectedDeliveryCustomer?.itemSummary || 'Phiếu xuất kho'}
+                    {selectedDeliveryCustomer?.weight ? ` • ${formatNumber(selectedDeliveryCustomer.weight)}kg` : ''}
                   </p>
                 </div>
                 <button type="button" onClick={() => { setSelectedDeliveryOrderId(''); setShowDeliveryListSheet(false); }} className="rounded-full bg-slate-100 p-2 text-slate-500">
                   <X className="h-4 w-4" />
                 </button>
               </div>
-
-              <div className="flex flex-wrap gap-2 text-xs font-bold text-slate-500">
-                <span className="rounded-full bg-slate-100 px-3 py-1">{selectedDeliveryOrder.phone || 'Chưa có SĐT'}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1">{selectedDeliveryOrder.driverName || 'Chưa chọn tài xế'}</span>
-                {(selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered') && (
-                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">Đã giao</span>
-                )}
-              </div>
-              {selectedDeliveryOrder.address && <p className="line-clamp-2 text-xs font-semibold text-slate-400">{selectedDeliveryOrder.address}</p>}
-
-              {navigationTargetId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) && (
-                <div className="rounded-[1.4rem] border border-blue-100 bg-blue-50 p-3 text-blue-900">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-blue-500">Đang dẫn đường</p>
-                      <p className="mt-1 text-2xl font-black text-blue-800">
-                        {navigationMetrics.etaMinutes ? `${navigationMetrics.etaMinutes} phút` : 'Đang tính'}
-                      </p>
-                    </div>
-                    <div className="text-right text-xs font-bold text-blue-700">
-                      <p>Đến lúc {navigationMetrics.arrivalLabel}</p>
-                      <p>{navigationMetrics.distanceKm !== null ? formatDistanceKm(navigationMetrics.distanceKm) : '-- km'}{navigationMetrics.speedKmh ? ` • ${navigationMetrics.speedKmh} km/h` : ''}</p>
-                    </div>
-                  </div>
-                  {(navigationRouteLoading || navigationRoadRoute?.nextInstruction) && (
-                    <p className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-xs font-bold text-blue-700">
-                      {navigationRouteLoading ? 'Đang cập nhật tuyến đường...' : navigationRoadRoute?.nextInstruction}
-                    </p>
-                  )}
-                  {navigationLocationError && (
-                    <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">{navigationLocationError}</p>
-                  )}
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button type="button" onClick={stopInAppNavigation} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-slate-700">
-                      Dừng
-                    </button>
-                    <button type="button" onClick={() => openExternalMap(selectedDeliveryOrder)} className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white">
-                      Mở Maps ngoài
-                    </button>
-                  </div>
-                </div>
-              )}
 
               <div className="grid grid-cols-3 gap-2">
                 <button type="button" disabled={!selectedDeliveryOrder.phone} onClick={() => { if (selectedDeliveryOrder.phone) window.location.href = `tel:${selectedDeliveryOrder.phone}`; }} className="rounded-2xl bg-slate-100 px-3 py-3 text-sm font-black text-slate-700 disabled:opacity-40">
@@ -31624,9 +31866,9 @@ function MapManagementView({
                   <MapPin className="mx-auto mb-1 h-4 w-4" />
                   {navigationTargetId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) ? 'Đang dẫn' : 'Chỉ đường'}
                 </button>
-                <button type="button" disabled={markingDeliveredId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) || selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered'} onClick={() => handleMarkDeliveryDone(selectedDeliveryOrder)} className="rounded-2xl bg-emerald-600 px-3 py-3 text-sm font-black text-white disabled:bg-emerald-100 disabled:text-emerald-700">
+                <button type="button" disabled={markingDeliveredId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) || selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered'} onClick={() => handleMarkDeliveryDone(selectedDeliveryOrder)} className={`rounded-2xl px-3 py-3 text-sm font-black ${selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                   {markingDeliveredId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) ? <Loader2 className="mx-auto mb-1 h-4 w-4 animate-spin" /> : <CheckCircle className="mx-auto mb-1 h-4 w-4" />}
-                  Đã giao
+                  {selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered' ? 'Đã giao' : 'Chưa giao'}
                 </button>
               </div>
             </div>
@@ -31634,36 +31876,68 @@ function MapManagementView({
             <div>
               <div className="flex items-center justify-between gap-2 px-1">
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Danh sách trên bản đồ</p>
-                  <h3 className="text-base font-black text-slate-900">{deliveryOrderPoints.length} phiếu giao</h3>
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Danh sách khách hàng</p>
+                  <h3 className="text-base font-black text-slate-900">{deliveryCustomerPoints.length} khách • {deliveryOrderPoints.length} phiếu</h3>
                 </div>
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-500">{formatDateLabel(mapDate)}</span>
               </div>
               <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-                {suggestedDeliveryOrderPoints.slice(0, 20).map((mission, index) => (
+                {deliveryCustomerPoints.slice(0, 100).map((mission, index) => (
                   <button
                     key={mission.id || `${mission.customerId}-${index}`}
                     type="button"
-                    onClick={() => setSelectedDeliveryOrderId(mission.id || mission.dispatchId || '')}
+                    onClick={() => setSelectedDeliveryOrderId(mission.primaryDispatchId || mission.id || mission.dispatchId || '')}
                     className="flex w-full items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-emerald-50"
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-black text-white shadow-md">{mission.suggestedOrder || mission.count || index + 1}</span>
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-black text-white shadow-md">{index + 1}</span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-black text-slate-900">{mission.customerName || 'Khách hàng'}</span>
                       <span className="block truncate text-xs font-semibold text-slate-500">
-                        {mission.itemSummary || 'Phiếu xuất kho'}{mission.weight ? ` • ${formatNumber(mission.weight)}kg` : ''}{mission.quantity ? ` • ${formatNumber(mission.quantity)}` : ''}
+                        {mission.dispatchCount || 1} phiếu{mission.itemSummary ? ` • ${mission.itemSummary}` : ''}
+                        {mission.totalWeight ? ` • ${formatNumber(mission.totalWeight)}kg` : ''}
+                        {mission.totalQuantity ? ` • ${formatNumber(mission.totalQuantity)}` : ''}
                       </span>
+                    </span>
+                    <span className={`shrink-0 text-right text-[10px] font-black ${Number.isFinite(mission.distanceKm) ? 'text-blue-700' : 'text-slate-400'}`}>
+                      {mission.distanceLabel}
                     </span>
                     <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
                   </button>
                 ))}
-                {!suggestedDeliveryOrderPoints.length && (
-                  <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm font-semibold text-slate-400">Chưa có phiếu xuất kho có GPS để hiển thị.</p>
+                {!deliveryCustomerPoints.length && (
+                  <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm font-semibold text-slate-400">Chưa có khách hàng được phân công giao trong ngày này.</p>
                 )}
               </div>
             </div>
           )}
         </div>
+        )}
+
+        {navigationTargetId && navigationTarget && (
+          <div className="pointer-events-none absolute bottom-3 left-3 right-3 z-30 md:left-auto md:w-[30rem]">
+            <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-white/80 bg-white/95 px-3 py-2.5 shadow-2xl backdrop-blur">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-black text-blue-700">
+                  Đang dẫn đường • {navigationTarget.customerName || 'Khách hàng'}
+                </p>
+                <p className="mt-0.5 truncate text-[11px] font-bold text-slate-600">
+                  {navigationRouteLoading
+                    ? 'Đang tính tuyến đường...'
+                    : navigationMetrics.distanceKm !== null
+                      ? `${formatDistanceKm(navigationMetrics.distanceKm)} • ETA ${navigationMetrics.arrivalLabel} • ${navigationMetrics.speedKmh ? `${navigationMetrics.speedKmh} km/h` : navigationMetrics.originSource === 'warehouse' ? 'GPS đang chờ' : 'Đang đo tốc độ'}`
+                      : 'Chưa đủ dữ liệu vị trí để tính tuyến.'}
+                </p>
+                {navigationLocationError && (
+                  <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={navigationLocationError}>
+                    {navigationLocationError}
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={stopInAppNavigation} className="shrink-0 rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-200">
+                Dừng
+              </button>
+            </div>
+          </div>
         )}
 
       {statusText && (
@@ -57034,8 +57308,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         </div>
 
       {showForm && (
-        <div className="fixed inset-0 z-[120] bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
-          <div className="w-full max-w-5xl max-h-[calc(100dvh-1rem)] bg-white rounded-[28px] shadow-2xl overflow-hidden">
+        <div className="hd-order-request-modal-layer fixed inset-0 z-[120] bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
+          <div className="hd-order-request-modal-panel w-full max-w-5xl max-h-[calc(100dvh-1rem)] bg-white rounded-[28px] shadow-2xl overflow-hidden">
             <div className={`border-b border-gray-100 flex items-start justify-between gap-4 ${isCompactManualDetailStage ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
               <div>
                 <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-emerald-600">{isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên Đơn Đặt'}</p>
@@ -60577,7 +60851,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               : (selectedOrder.zaloSendStatus === 'failed' || selectedOrder.zaloSendStatus === 'cancelled' ? 'Gửi lại Zalo' : 'Duyệt gửi Zalo')));
 
         return (
-          <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-right">
+          <div className="hd-order-detail-layer fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-right">
             <header className="hd-safe-header-compact bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
               <div className="flex items-center gap-3">
                 <button type="button" onClick={closeOrderDetail} className="p-2 rounded-full hover:bg-gray-100 text-gray-500">
@@ -75428,12 +75702,26 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
   const [loginMode, setLoginMode] = useState(getInitialLoginMode);
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [regCompanyName, setRegCompanyName] = useState('');
   const [regPhone, setRegPhone] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regPasswordConfirm, setRegPasswordConfirm] = useState('');
+  const [showRegPassword, setShowRegPassword] = useState(false);
+  const [showRegPasswordConfirm, setShowRegPasswordConfirm] = useState(false);
   const [regError, setRegError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
+
+  const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
+  const registrationPasswordsMatch = hasRegistrationPasswordConfirmation && regPassword === regPasswordConfirm;
+  const registrationPasswordStatusClass = !hasRegistrationPasswordConfirmation
+    ? 'border-gray-100 focus:border-orange-500'
+    : registrationPasswordsMatch
+      ? 'border-emerald-400 focus:border-emerald-500'
+      : 'border-red-400 focus:border-red-500';
 
   const chooseLoginMode = (mode) => {
     const nextMode = mode === 'customer' ? 'customer' : 'staff';
@@ -75445,11 +75733,13 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     if (!loginPhone.trim()) { setLoginError('Vui lòng nhập số điện thoại'); return; }
+    const passwordError = validateAccountPasswordInput(loginPassword);
+    if (passwordError) { setLoginError(passwordError); return; }
     setIsLoggingIn(true);
     setLoginError('');
     try {
       const loginHandler = loginMode === 'customer' && onCustomerLogin ? onCustomerLogin : onLogin;
-      const result = await loginHandler(loginPhone);
+      const result = await loginHandler(loginPhone, loginPassword);
       const isSuccess = result === true || result?.success === true;
       if (!isSuccess) {
         setLoginError(result?.message || (loginMode === 'customer'
@@ -75467,9 +75757,11 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     if (!regCompanyName.trim() || !regPhone.trim()) { setRegError('Vui lòng điền đủ thông tin'); return; }
+    const passwordError = validateAccountPasswordInput(regPassword, regPasswordConfirm);
+    if (passwordError) { setRegError(passwordError); return; }
     if (!isLoginReady) { setRegError('App đang kết nối dữ liệu Cloud, vui lòng chờ vài giây rồi thử lại.'); return; }
     setIsRegistering(true);
-    const result = await onRegister(toTitleCase(regCompanyName), regPhone);
+    const result = await onRegister(toTitleCase(regCompanyName), regPhone, regPassword);
     if (!result.success) setRegError(result.message);
     setIsRegistering(false);
   };
@@ -75524,6 +75816,27 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
             {loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder={loginMode === 'customer' ? 'Nhập SĐT khách hàng...' : 'Nhập số điện thoại...'} />
+              <div className="relative">
+                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type={showLoginPassword ? 'text' : 'password'}
+                  value={loginPassword}
+                  onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
+                  className="w-full border-2 border-gray-100 rounded-2xl py-4 pl-11 pr-12 outline-none focus:border-emerald-500 text-sm font-medium transition-colors"
+                  placeholder="Mật khẩu"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(value => !value)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
+                  aria-label={showLoginPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  aria-pressed={showLoginPassword}
+                >
+                  {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <p className="-mt-2 px-1 text-[11px] leading-relaxed text-gray-400">Mật khẩu tối thiểu 8 ký tự, gồm chữ và số. Tài khoản cũ sẽ được cài mật khẩu ở lần đăng nhập đầu tiên.</p>
               <button type="submit" disabled={isLoggingIn} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] ${isLoggingIn ? 'bg-emerald-300 cursor-not-allowed shadow-emerald-200/30' : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/30'}`}>
                 {isLoggingIn ? 'Đang đăng nhập...' : 'Vào Ứng Dụng'}
               </button>
@@ -75537,6 +75850,53 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
             <form onSubmit={handleRegisterSubmit} className="space-y-4">
               <input type="text" value={regCompanyName} onChange={(e) => { setRegCompanyName(toTitleCase(e.target.value)); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="Tên Doanh Nghiệp (VD: Cty HD)" />
               <input type="tel" value={regPhone} onChange={(e) => { setRegPhone(e.target.value); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="SĐT Chủ Doanh Nghiệp" />
+              <div className="relative">
+                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type={showRegPassword ? 'text' : 'password'}
+                  value={regPassword}
+                  onChange={(e) => { setRegPassword(e.target.value); setRegError(''); }}
+                  className={`w-full border-2 rounded-2xl py-4 pl-11 pr-12 outline-none text-sm font-medium transition-colors ${registrationPasswordStatusClass}`}
+                  placeholder="Tạo mật khẩu"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowRegPassword(value => !value)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-orange-600"
+                  aria-label={showRegPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  aria-pressed={showRegPassword}
+                >
+                  {showRegPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <div className="relative">
+                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type={showRegPasswordConfirm ? 'text' : 'password'}
+                  value={regPasswordConfirm}
+                  onChange={(e) => { setRegPasswordConfirm(e.target.value); setRegError(''); }}
+                  className={`w-full border-2 rounded-2xl py-4 pl-11 pr-12 outline-none text-sm font-medium transition-colors ${registrationPasswordStatusClass}`}
+                  placeholder="Nhập lại mật khẩu"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowRegPasswordConfirm(value => !value)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-orange-600"
+                  aria-label={showRegPasswordConfirm ? 'Ẩn mật khẩu xác nhận' : 'Hiện mật khẩu xác nhận'}
+                  aria-pressed={showRegPasswordConfirm}
+                >
+                  {showRegPasswordConfirm ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              {hasRegistrationPasswordConfirmation && (
+                <div className={`-mt-2 flex items-center gap-1.5 px-1 text-xs font-bold ${registrationPasswordsMatch ? 'text-emerald-600' : 'text-red-600'}`} role="status" aria-live="polite">
+                  {registrationPasswordsMatch ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
+                  <span>{registrationPasswordsMatch ? 'Mật khẩu khớp.' : 'Mật khẩu không khớp.'}</span>
+                </div>
+              )}
+              <p className="-mt-2 px-1 text-[11px] leading-relaxed text-gray-400">Mật khẩu tối thiểu 8 ký tự, gồm chữ và số.</p>
               <button type="submit" disabled={isRegistering || !isLoginReady} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] mt-2 ${(isRegistering || !isLoginReady) ? 'bg-orange-300 cursor-not-allowed shadow-orange-200/30' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/30'}`}>
                 {!isLoginReady ? 'Đang nạp dữ liệu...' : isRegistering ? 'Đang khởi tạo Cloud...' : 'Bắt Đầu Miễn Phí'}
               </button>
