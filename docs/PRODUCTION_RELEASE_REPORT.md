@@ -33,6 +33,7 @@ Generated `dist/`, `test-results/`, APK/AAB/EXE outputs, dependency folders and 
 - Removed local scratch artifacts from the release scope.
 - Added CI syntax checking for `functions/index.js`.
 - Added the functional suite to CI before performance gates.
+- Fixed a CI portability bug where `test:all` called Windows-only `npm.cmd`; the script now uses cross-platform `npm run` commands.
 - No merge conflict was present.
 - No TODO/FIXME was found in tracked application source/workflow files within the audited scope.
 - ESLint and TypeScript are not configured in this repository; no `lint` or `typecheck` script exists and no TypeScript source is present. Therefore these checks are reported as not configured, not as falsely passing.
@@ -78,7 +79,7 @@ Updated `.github/workflows/deploy.yml` to run:
 6. Artifact upload via `actions/upload-artifact@v4`.
 7. Existing VPS deployment path on pushes to `main`.
 
-Status: pending remote run until the release commits are pushed. A real GitHub Actions PASS cannot be claimed from local execution alone.
+The first remote run for `f6caf0a` failed at the functional suite because of the Windows-only `npm.cmd` script. This was fixed in the follow-up release commit; the new run must pass before this section can be marked PASS.
 
 ## 7. Production Website
 
@@ -99,4 +100,3 @@ No APK path is reported until a release build actually succeeds. This avoids pre
 - Local Functions validation used Node 25 with an engine warning; production Functions should run on Node 22 as declared.
 - SePay webhook delivery and reconciliation require a live transaction test after deployment; they cannot be proven by the local frontend build alone.
 - The production deploy requires valid GitHub secrets `VPS_HOST`, `VPS_USER` and `VPS_SSH_KEY`, plus the configured `hdconnect-nginx:latest` image on the VPS.
-
