@@ -84,16 +84,21 @@ jobs:
 
           REMOTE_TGZ="/tmp/hd-manager-dist-${RELEASE_ID}.tgz"
           REMOTE_DIR="/tmp/hd-manager-dist-${RELEASE_ID}"
+          APP_DIR="/var/www/hd-manager"
+          RELEASE_DIR="${APP_DIR}/releases/${RELEASE_ID}"
 
           scp -i ~/.ssh/hdmanager_vps hd-manager-dist.tgz "${VPS_USER}@${VPS_HOST}:${REMOTE_TGZ}"
           ssh -i ~/.ssh/hdmanager_vps "${VPS_USER}@${VPS_HOST}" "set -euo pipefail
             rm -rf '${REMOTE_DIR}'
             mkdir -p '${REMOTE_DIR}'
+            mkdir -p '${RELEASE_DIR}'
             tar -xzf '${REMOTE_TGZ}' -C '${REMOTE_DIR}'
             docker run --rm \
               -v '${REMOTE_DIR}:/src:ro' \
-              -v '/var/www/hd-manager:/target' \
+              -v '${RELEASE_DIR}:/target' \
               hdconnect-nginx:latest \
               sh -c 'rm -rf /target/* && cp -a /src/. /target/'
+            ln -sfn '${RELEASE_DIR}' '${APP_DIR}/current'
+            test -f '${APP_DIR}/current/index.html'
             rm -rf '${REMOTE_DIR}' '${REMOTE_TGZ}'
           "
