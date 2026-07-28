@@ -1,102 +1,105 @@
 # HD Manager Production Release Report
 
 Date: 2026-07-29
-Release source commit: `77dd322`
+Source deployment commit: `8ca9ddd` (the documentation commit that follows is a report-only update)
 Branch: `main`
 
 ## Executive Status
 
-The application source build, JavaScript syntax check, functional test suite and KPI gate passed locally. This release is **not certified as fully PASS for every requested production condition** because the real-device KPI log is absent and the synthetic large-scale performance suite still reports bottlenecks.
+The repository is clean, the production build and local test gates pass, and the latest GitHub Actions deployment run passed. The website deployment was verified in CI by comparing the deployed `index.html` SHA-256 with the build produced from the pushed commit.
 
-## 1. Files Changed
+This is **not a full certification of every requested condition**: no physical-device benchmark was supplied, the synthetic large-scale performance test still reports bottlenecks, the APK is unsigned because no release keystore was configured, and live SePay money-transfer verification was not performed in this session.
 
-- `.github/workflows/deploy.yml`: added Functions syntax validation, functional test execution and web artifact upload.
-- `.gitignore`: ignored generated test results, local scratch files, logs and the nested `hd-connect-platform` repository.
-- `functions/index.js`: added QR input fingerprinting so QR reuse/invalidation follows payment-affecting fields only; successful QR creation replaces the previous cache without clearing it first.
-- `src/App.jsx`: includes the current Sprint application changes, including share warmup/cache flow, payment QR alignment and existing authentication, delivery, map, payroll and responsive behavior changes.
-- `src/index.css`: includes the current responsive, login, desktop layout and shared UI styling changes.
-- `docs/SHARE_PERFORMANCE.md`: documents the non-blocking share/QR performance flow and measurements.
+## 1. Files Changed In Release Preparation
+
+- `.github/workflows/deploy.yml`: Functions syntax check, functional/performance/KPI gates, artifact upload, VPS release symlink deployment and deployed-index hash verification.
+- `.gitignore`: generated test results, local scratch files, logs and the nested `hd-connect-platform` repository are ignored.
+- `functions/index.js`: QR fingerprinting based only on payment-affecting fields; successful QR creation overwrites the cache without clearing the previous valid value first.
+- `src/App.jsx`: current Sprint application changes, including share warmup/cache flow, payment QR alignment, authentication, delivery, map, payroll, notification and responsive behavior already present in the working tree.
+- `src/index.css`: current responsive, login, desktop layout and shared UI styling.
+- `docs/SHARE_PERFORMANCE.md`: non-blocking QR/share flow and measurements.
+- `docs/PRODUCTION_RELEASE_REPORT.md`: this release report.
 - Removed tracked scratch/log files: `.codex_tmp_warehouse_tail.txt`, `.codex_tmp_warehouse_view.txt`, `.static-server.err`, `_order_block_excerpt.txt`.
 
-Generated `dist/`, `test-results/`, APK/AAB/EXE outputs, dependency folders and the nested `hd-connect-platform/` repository were not committed.
+Generated `dist/`, `test-results/`, Android build outputs, dependency folders and the nested `hd-connect-platform/` repository were not committed. No Firestore data or production business records were deleted or migrated.
 
-## 2. Functionality Included
+## 2. Functionality And Business-Safety Review
 
-- Login and account routing, including password-enabled login/create flows already present in the source.
-- Customer, product, order, warehouse, delivery report, debt, payroll, attendance, personnel, driver, map and notification modules.
-- SePay QR generation, QR reuse, share warmup and payment-affecting cache invalidation.
-- SePay webhook and reconciliation code was not structurally changed by this release preparation; payment data contracts and Firestore structure were preserved.
-- Desktop navigation and responsive mobile layout changes already present in the Sprint working tree.
+- Login, account routing and password-enabled login/create flows remain in source.
+- Customer, product, order, warehouse, delivery report, debt, payroll, attendance, personnel, driver, map and notification modules remain present.
+- SePay QR generation, QR reuse, share warmup and payment-field-only cache invalidation remain present.
+- SePay webhook and reconciliation contracts were not structurally changed by release preparation.
+- Firestore structure, authentication configuration, roles and application data were not changed.
+- Desktop navigation and responsive mobile layout changes remain in the release source.
+- This session verified build/tests/HTTP production serving; it did not perform a live interactive login, order creation, QR scan or bank transfer.
 
-## 3. Bugs and Stability Checks
+## 3. Bugs And Repository Checks
 
-- Removed local scratch artifacts from the release scope.
-- Added CI syntax checking for `functions/index.js`.
-- Added the functional suite to CI before performance gates.
-- Fixed a CI portability bug where `test:all` called Windows-only `npm.cmd`; the script now uses cross-platform `npm run` commands.
-- No merge conflict was present.
-- No TODO/FIXME was found in tracked application source/workflow files within the audited scope.
-- ESLint and TypeScript are not configured in this repository; no `lint` or `typecheck` script exists and no TypeScript source is present. Therefore these checks are reported as not configured, not as falsely passing.
+- Fixed CI portability: `test:all` no longer calls Windows-only `npm.cmd` on Ubuntu runners.
+- Fixed deployment target: releases are written under `/var/www/hd-manager/releases/<commit>` and activated through `/var/www/hd-manager/current`, matching the Nginx root.
+- Added a CI guard that compares the deployed production `index.html` hash with the build from the pushed commit.
+- No merge conflict markers found.
+- No temporary project files found in the audited scope.
+- No TODO/FIXME found in tracked application source/workflow files; matches in Git sample hooks and this report are outside application scope.
+- ESLint and TypeScript are not configured: no `lint` or `typecheck` script exists and no TypeScript source is present. These checks are reported as NOT CONFIGURED, not falsely marked PASS.
 
-## 4. Performance Results
+## 4. Local Test And Performance Results
 
 | Check | Result | Observed |
 |---|---|---:|
-| Functional suite | PASS | 11,309 stress operations |
-| API normal KPI | PASS | 85 ms, target <= 500 ms |
-| Screen open KPI | PASS | 10.66 ms, target <= 2,000 ms |
+| `npm install --no-audit --no-fund` | PASS | Dependencies current |
+| Functions install | PASS with warning | Local Node 25; Functions declares Node 22 |
+| `node --check functions/index.js` | PASS | No syntax error |
+| `npm run test:all` | PASS | 11,309 stress operations |
+| `npm run test:performance` | PASS with warning | 4 bottlenecks; 7/8 synthetic scale points flagged |
+| `npm run test:stress:big` | PASS with warning | Peak RSS 227 MB; estimated FPS 9.9; crash NO |
+| `npm run test:kpi` | PASS with warning | Physical-device KPI log absent and optional |
+| `npm run build` | PASS with warning | Vite build 44.64 s; CSS minifier warning remains |
 | Memory leak simulation | PASS | 0 |
 | Crash local simulation | PASS | 0 |
 | Event-loop freeze KPI | PASS | 23.17 ms, target <= 50 ms |
+| API normal KPI | PASS | 85 ms, target <= 500 ms |
+| Screen-open KPI | PASS | 10.66 ms, target <= 2,000 ms |
 | Cold-start architecture KPI | PASS | 350 ms, target <= 2,500 ms |
-| Physical-device KPI log | WARNING | Not supplied; optional by current gate |
-| Large-scale performance suite | WARNING | 4 bottlenecks; 7/8 synthetic scale points flagged |
-| Big stress estimated FPS | WARNING | 9.9 FPS; synthetic Node-side estimate, not a device measurement |
-| Big stress peak RSS | INFO | 227 MB |
-| Big stress crash | PASS | NO |
 
-## 5. Build Results
+Vite warning: `Expected identifier but found "-"` at generated CSS input (`-: •|,;`). It does not fail the build, but should be removed in a separate UI-safe cleanup before claiming a zero-warning release.
 
-- `npm install --no-audit --no-fund`: PASS.
-- `npm --prefix functions install --no-audit --no-fund`: PASS with environment warning because the local machine runs Node 25 while Functions declares Node 22.
-- `node --check functions/index.js`: PASS.
-- `npm run test:all`: PASS.
-- `npm run test:performance`: exit 0, with bottleneck warnings listed above.
-- `npm run test:stress:big`: PASS, with the synthetic FPS warning listed above.
-- `npm run test:kpi`: PASS; physical-device log warning only.
-- `npm run build`: PASS.
-- Vite emitted one pre-existing CSS minifier warning (`Expected identifier but found "-"`) without failing the build. It should be cleaned in a separate UI-safe change.
+## 5. GitHub Actions
 
-## 6. CI / GitHub Actions
+Latest verified run: [30395300625](https://github.com/daumoigiacam/hd-manager/actions/runs/30395300625)
+Conclusion: **PASS**
 
-Updated `.github/workflows/deploy.yml` to run:
+The run passed checkout, Node.js 22 setup, `npm ci`, Functions syntax, functional tests, performance/stress/KPI gates, production build, artifact upload, VPS deployment and production hash verification.
 
-1. Node.js 22 setup and `npm ci`.
-2. `node --check functions/index.js`.
-3. `npm run test:all`.
-4. Performance, big-stress and KPI checks.
-5. Production build and `dist/index.html` verification.
-6. Artifact upload via `actions/upload-artifact@v4`.
-7. Existing VPS deployment path on pushes to `main`.
+## 6. Production Website
 
-The first remote run for `f6caf0a` failed at the functional suite because of the Windows-only `npm.cmd` script. This was fixed in the follow-up release commit; the new run must pass before this section can be marked PASS.
+Target: [https://app.hdconnect.net](https://app.hdconnect.net)
+HTTP check: **PASS** (`200`, title `HD Manager`)
+Deployment identity: **PASS** in GitHub Actions; deployed `index.html` hash matched the CI build from commit `8ca9ddd`.
 
-## 7. Production Website
+The public check confirms serving and release identity. It does not replace a live authenticated smoke test of every business workflow.
 
-Target: `https://app.hdconnect.net`
+## 7. Android Release APK
 
-Status: pending push and remote deployment verification. Local build success does not prove that the VPS has received the same commit.
+Build: **PASS** using Vite build, Capacitor sync and Gradle `assembleRelease`.
+Gradle workaround: the wrapper was invoked from `android` with a relative classpath because the Windows workspace path contains Unicode characters.
+Unsigned artifact:
 
-## 8. Android Release
+`D:\quản lý bán hàng 1\release\HD-Manager-release-8ca9ddd-20260729-unsigned.apk`
 
-Release APK status: pending the Android toolchain/signing check after the source commit.
+Size: `5,117,571` bytes
+SHA-256: `D8BB1BE758F56BB798DF024E684082FEAA8353A70529FD576F8815187ACAEB0D`
+Signing check: **FAIL / NOT SIGNED** (`jar is unsigned`).
 
-No APK path is reported until a release build actually succeeds. This avoids presenting an old or unsigned artifact as the current release.
+The APK is not ready for a production store release until the existing production keystore and signing variables are supplied. A new keystore was intentionally not generated because it could break update compatibility with installed releases.
 
-## 9. Remaining Risks
+## 8. Remaining Risks And Required Follow-up
 
-- A physical Android device benchmark is still required for real FPS, ANR, RAM and crash validation.
-- The synthetic performance suite remains below the requested 60 FPS target and reports bottlenecks; this release preparation does not claim those bottlenecks are fixed.
-- Local Functions validation used Node 25 with an engine warning; production Functions should run on Node 22 as declared.
-- SePay webhook delivery and reconciliation require a live transaction test after deployment; they cannot be proven by the local frontend build alone.
-- The production deploy requires valid GitHub secrets `VPS_HOST`, `VPS_USER` and `VPS_SSH_KEY`, plus the configured `hdconnect-nginx:latest` image on the VPS.
+- Configure the existing Android release keystore (`HD_RELEASE_STORE_FILE`, `HD_RELEASE_STORE_PASSWORD`, `HD_RELEASE_KEY_ALIAS`, `HD_RELEASE_KEY_PASSWORD`) and rebuild/sign the APK.
+- Run Android 10-16 tests on representative physical devices; validate ANR, crash, RAM, FPS and WebView stability.
+- Resolve the CSS minifier warning without changing UI behavior.
+- Address the synthetic performance bottlenecks before claiming the requested 60 FPS at large scale.
+- Perform a live SePay transfer and verify QR scan, webhook receipt, reconciliation, notification and debt update end-to-end.
+- Configure/run ESLint and TypeScript checks if those quality gates are required by the release policy.
+
+Because the items above are still open, the release is **not reported as fully PASS** for the entire user-requested checklist.
