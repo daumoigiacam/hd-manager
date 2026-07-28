@@ -3302,9 +3302,6 @@ const buildLocalPaymentQrDataUrl = async (value = '', options = {}) => {
     localPaymentQrDataUrlCache.set(cacheKey, cachedEntry);
     return cachedEntry.dataUrl;
   }
-  if (cachedEntry) {
-    localPaymentQrDataUrlCache.delete(cacheKey);
-  }
   try {
     const QRCode = await getQRCodeModule();
     const dataUrl = await QRCode.toDataURL(payload, {
@@ -3501,6 +3498,106 @@ const buildOrderLocalPaymentQrPayload = (order = {}, company = null, options = {
     amount: getOrderPaymentQrAmount(order),
     description
   });
+};
+
+const buildOrderPaymentQrFingerprint = (order = {}, company = null, amountOverride = undefined) => {
+  const transferProfile = getInvoiceTransferProfile(company);
+  const preferredAccountNumber = order?.receivingBankIsVirtualAccount
+    ? (order?.receivingBankVirtualAccountNumber || order?.receivingBankAccountNumber)
+    : (order?.receivingBankAccountNumber || order?.receivingBankVirtualAccountNumber);
+  const profileAccountNumber = transferProfile.sepayUseVirtualAccount
+    ? (transferProfile.sepayReceivingAccountNumber || transferProfile.sepayVirtualAccountNumber)
+    : transferProfile.accountNumber;
+  const accountNumber = normalizePaymentAccountNumber(
+    profileAccountNumber
+      || preferredAccountNumber
+      || order?.companyBankAccountNumber
+      || order?.bankAccountNumber
+      || ''
+  );
+  const bankReference = transferProfile.bankId
+    || transferProfile.bankName
+    || order?.receivingBankCode
+    || order?.receivingBankName
+    || '';
+  const bankCode = normalizePaymentBankBin(bankReference) || normalizeTransferMemoToken(bankReference);
+  const paymentCode = normalizeTransferMemoToken(
+    order?.sepayPaymentCode
+      || order?.paymentCode
+      || buildOrderTransferMemo(order)
+  );
+  const accountName = `${order?.receivingBankAccountName || transferProfile.accountName || ''}`
+    .trim()
+    .toUpperCase();
+  const amount = Math.max(0, Math.round(parseLooseMoneyValue(
+    amountOverride === undefined ? getOrderPaymentQrAmount(order) : amountOverride
+  )));
+  const isVirtualAccount = Boolean(
+    order?.receivingBankIsVirtualAccount ?? transferProfile.sepayUseVirtualAccount
+  );
+  return JSON.stringify({
+    amount,
+    paymentCode,
+    bankCode,
+    accountNumber,
+    accountName,
+    isVirtualAccount
+  });
+};
+
+const isOrderPaymentQrFingerprintAligned = (order = {}, company = null, amountOverride = undefined) => {
+  const expected = buildOrderPaymentQrFingerprint(order, company, amountOverride);
+  const stored = `${order?.paymentQrFingerprint || ''}`.trim();
+  if (stored) return stored === expected;
+
+  // Older orders may not have a fingerprint. Their memo is enough as a safe
+  // fallback because amount and receiving profile are checked separately.
+  const expectedCode = JSON.parse(expected).paymentCode;
+  const storedCode = normalizeTransferMemoToken(
+    order?.sepayPaymentCode || order?.paymentCode || ''
+  );
+  return Boolean(expectedCode && storedCode && expectedCode === storedCode);
+};
+
+const getOrderSharePaymentDueAmount = (order = {}, customers = [], orders = [], payments = []) => {
+  if (!order?.id) return 0;
+  const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
+  const ledger = customer?.id ? buildCustomerLedger(customer, orders, payments) : null;
+  const ledgerOrder = ledger?.orders?.find(item => item?.id === order.id) || null;
+  const orderAmount = parseLooseMoneyValue(
+    ledgerOrder?.amount
+      ?? order.amount
+      ?? order.totalAmount
+      ?? order.finalAmount
+      ?? order.grandTotal
+      ?? 0
+  );
+  const paidAmount = Math.max(
+    parseLooseMoneyValue(ledgerOrder?.appliedAmount),
+    parseLooseMoneyValue(order.appliedAmount),
+    parseLooseMoneyValue(order.paidAmount),
+    parseLooseMoneyValue(order.collectedAmount)
+  );
+  const outstandingAmount = Math.max(
+    0,
+    parseLooseMoneyValue(
+      ledgerOrder?.outstandingAmount
+        ?? order.outstandingAmount
+        ?? (orderAmount - paidAmount)
+    )
+  );
+  const currentDebt = ledger ? Math.max(0, parseLooseMoneyValue(ledger.currentDebt)) : outstandingAmount;
+  const oldDebt = Math.max(0, currentDebt - outstandingAmount);
+  return Math.max(0, Math.round(outstandingAmount + oldDebt));
+};
+
+const isOrderSharePaymentAmountAligned = (order = {}, amount = 0) => {
+  const expected = Math.max(0, Math.round(parseLooseMoneyValue(amount)));
+  // A fully settled order has no payable QR amount. Keep its existing asset
+  // usable and never call SePay with a zero-value payment request.
+  if (expected <= 0) return true;
+  const stored = Math.max(0, Math.round(parseLooseMoneyValue(order.paymentAmount || 0)));
+  return stored > 0 && Math.abs(stored - expected) <= 1;
 };
 
 const isOrderPaymentSourceAlignedWithTransferProfile = (order = {}, company = null) => {
@@ -5180,43 +5277,57 @@ const drawSalesInvoiceShareImage = async ({
 
   let qrImage = null;
   let qrImageIsLocal = false;
-  const localQrDataUrl = await buildLocalPaymentQrDataUrl(paymentSourceForQr, { width: 520 });
-  if (localQrDataUrl) {
-    try {
-      qrImage = await loadImageElement(localQrDataUrl, { timeoutMs: PAYMENT_QR_IMAGE_FAST_DECODE_TIMEOUT_MS });
-      qrImageIsLocal = Boolean(qrImage);
-    } catch (error) {
-      qrImage = null;
-      qrImageIsLocal = false;
+  const localQrSpan = createPerformanceSpan('share_invoice.qr_local', { orderId: order.id });
+  try {
+    const localQrDataUrl = await buildLocalPaymentQrDataUrl(paymentSourceForQr, { width: 520 });
+    if (localQrDataUrl) {
+      try {
+        qrImage = await loadImageElement(localQrDataUrl, { timeoutMs: PAYMENT_QR_IMAGE_FAST_DECODE_TIMEOUT_MS });
+        qrImageIsLocal = Boolean(qrImage);
+      } catch (error) {
+        qrImage = null;
+        qrImageIsLocal = false;
+      }
     }
+    localQrSpan.end({ status: qrImage ? 'ok' : 'empty' });
+  } catch (error) {
+    localQrSpan.fail(error);
   }
 
+  const remoteQrSpan = createPerformanceSpan('share_invoice.qr_remote', { orderId: order.id });
   if (!qrImage && qrUrl) {
-    const qrCandidates = Array.from(new Set([codeOnlyQrUrl, qrUrl].filter(Boolean)));
-    for (const qrCandidate of qrCandidates) {
-      const useFastTimeout = qrCandidate === codeOnlyQrUrl;
-      try {
-        const qrDataUrl = await getCachedPaymentQrImageDataUrl(qrCandidate, {
-          timeoutMs: useFastTimeout ? PAYMENT_QR_IMAGE_FAST_FETCH_TIMEOUT_MS : PAYMENT_QR_IMAGE_FETCH_TIMEOUT_MS
-        });
-        qrImage = await loadImageElement(qrDataUrl, {
-          timeoutMs: useFastTimeout ? PAYMENT_QR_IMAGE_FAST_DECODE_TIMEOUT_MS : PAYMENT_QR_IMAGE_DECODE_TIMEOUT_MS
-        });
-        qrImageIsLocal = false;
-        if (qrImage) break;
-      } catch (fallbackError) {
+    try {
+      const qrCandidates = Array.from(new Set([codeOnlyQrUrl, qrUrl].filter(Boolean)));
+      for (const qrCandidate of qrCandidates) {
+        const useFastTimeout = qrCandidate === codeOnlyQrUrl;
         try {
-          qrImage = await loadImageElement(qrCandidate, {
+          const qrDataUrl = await getCachedPaymentQrImageDataUrl(qrCandidate, {
+            timeoutMs: useFastTimeout ? PAYMENT_QR_IMAGE_FAST_FETCH_TIMEOUT_MS : PAYMENT_QR_IMAGE_FETCH_TIMEOUT_MS
+          });
+          qrImage = await loadImageElement(qrDataUrl, {
             timeoutMs: useFastTimeout ? PAYMENT_QR_IMAGE_FAST_DECODE_TIMEOUT_MS : PAYMENT_QR_IMAGE_DECODE_TIMEOUT_MS
           });
           qrImageIsLocal = false;
           if (qrImage) break;
-        } catch (directError) {
-          qrImage = null;
-          qrImageIsLocal = false;
+        } catch (fallbackError) {
+          try {
+            qrImage = await loadImageElement(qrCandidate, {
+              timeoutMs: useFastTimeout ? PAYMENT_QR_IMAGE_FAST_DECODE_TIMEOUT_MS : PAYMENT_QR_IMAGE_DECODE_TIMEOUT_MS
+            });
+            qrImageIsLocal = false;
+            if (qrImage) break;
+          } catch (directError) {
+            qrImage = null;
+            qrImageIsLocal = false;
+          }
         }
       }
+      remoteQrSpan.end({ status: qrImage ? 'ok' : 'empty' });
+    } catch (error) {
+      remoteQrSpan.fail(error);
     }
+  } else {
+    remoteQrSpan.end({ status: 'skipped', reason: qrImage ? 'local_qr_ready' : 'no_remote_source' });
   }
 
   if (!qrImage) {
@@ -5499,7 +5610,251 @@ const drawSalesInvoiceShareImage = async ({
   drawCentered(buildCompanyMonogram(company?.name || 'HD'), footerStartX, thanksY - 3, footerLogoSize, 18, 900, '#059669');
   drawText(footerText, footerStartX + footerLogoSize + 16, thanksY, 25, 900, '#111827');
 
-  return canvasToBlob(canvas, 'image/png');
+  const renderSpan = createPerformanceSpan('share_invoice.render', { orderId: order.id });
+  try {
+    const blob = await canvasToBlob(canvas, 'image/png');
+    renderSpan.end({ status: 'ok', bytes: blob?.size || 0 });
+    return blob;
+  } catch (error) {
+    renderSpan.fail(error);
+    throw error;
+  }
+};
+
+const ORDER_SHARE_ASSET_CACHE_LIMIT = 32;
+const ORDER_SHARE_ASSET_CACHE_TTL_MS = 10 * 60 * 1000;
+const orderShareAssetCache = new Map();
+const orderShareAssetPendingCache = new Map();
+const orderShareRelatedOrdersFingerprintCache = new WeakMap();
+const orderShareRelatedPaymentsFingerprintCache = new WeakMap();
+
+const serializeOrderShareFingerprintValue = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value?.toDate === 'function') {
+    try {
+      return value.toDate().toISOString();
+    } catch {
+      return String(value);
+    }
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+};
+
+const buildRelatedOrderShareCollectionFingerprint = (collection, customerId, fields, cache) => {
+  if (!Array.isArray(collection) || !customerId) return '';
+  let byCustomer = cache.get(collection);
+  if (!byCustomer) {
+    byCustomer = new Map();
+    cache.set(collection, byCustomer);
+  }
+  if (byCustomer.has(customerId)) return byCustomer.get(customerId);
+  const signature = collection
+    .filter(item => item?.customerId === customerId && !item.isArchived)
+    .map(item => fields
+      .map(field => serializeOrderShareFingerprintValue(item?.[field]))
+      .join(':'))
+    .sort()
+    .join(';');
+  byCustomer.set(customerId, signature);
+  return signature;
+};
+
+const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) => {
+  const customers = Array.isArray(context.customers) ? context.customers : [];
+  const orders = Array.isArray(context.orders) ? context.orders : [];
+  const payments = Array.isArray(context.payments) ? context.payments : [];
+  const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
+  const customerId = customer.id || order.customerId || '';
+  const customerSignature = [
+    customerId,
+    customer.updatedAt,
+    customer.name,
+    customer.customerName,
+    customer.customerHonorific,
+    customer.honorific,
+    customer.phone,
+    customer.phoneNumber,
+    customer.address,
+    customer.shippingAddress
+  ].map(serializeOrderShareFingerprintValue).join('~');
+  const relatedOrderSignature = buildRelatedOrderShareCollectionFingerprint(
+    orders,
+    customerId,
+    [
+      'id',
+      'updatedAt',
+      'createdAt',
+      'date',
+      'amount',
+      'appliedAmount',
+      'paidAmount',
+      'collectedAmount',
+      'outstandingAmount',
+      'paymentAmount',
+      'paymentLookupSyncedAt'
+    ],
+    orderShareRelatedOrdersFingerprintCache
+  );
+  const relatedPaymentSignature = buildRelatedOrderShareCollectionFingerprint(
+    payments,
+    customerId,
+    [
+      'id',
+      'updatedAt',
+      'createdAt',
+      'date',
+      'paidAt',
+      'amount',
+      'matchedOrderId',
+      'allocationMode',
+      'allocateOldestFirst',
+      'status',
+      'approvalStatus',
+      'paymentStatus'
+    ],
+    orderShareRelatedPaymentsFingerprintCache
+  );
+
+  return [
+    order.id || '',
+    order.updatedAt || order.createdAt || order.date || '',
+    order.paymentLookupSyncedAt || order.sepayCreatedAt || '',
+    order.paymentAmount || '',
+    order.appliedAmount || order.paidAmount || order.collectedAmount || '',
+    order.outstandingAmount || '',
+    getOrderPayosPaymentSource(order) || '',
+    buildOrderPaymentQrFingerprint(
+      order,
+      company,
+      getOrderSharePaymentDueAmount(order, customers, orders, payments)
+    ),
+    company.id || company.sepayReceivingAccountNumber || company.bankAccountNumber || '',
+    customerSignature,
+    relatedOrderSignature,
+    relatedPaymentSignature
+  ].map(serializeOrderShareFingerprintValue).join('|');
+};
+
+const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context = {}) => {
+  if (!order?.id || !asset?.blob) return null;
+  const key = buildOrderShareAssetCacheKey(order, company, context);
+  const entry = {
+    key,
+    orderId: order.id,
+    order,
+    blob: asset.blob,
+    createdAt: Date.now()
+  };
+  orderShareAssetCache.delete(key);
+  orderShareAssetCache.set(key, entry);
+  // Publish the complete replacement before pruning older entries. A failed
+  // render therefore never leaves the order without a usable cached asset.
+  for (const [cacheKey, cached] of orderShareAssetCache.entries()) {
+    if (cached.orderId === order.id && cacheKey !== key) orderShareAssetCache.delete(cacheKey);
+  }
+  while (orderShareAssetCache.size > ORDER_SHARE_ASSET_CACHE_LIMIT) {
+    const oldestKey = orderShareAssetCache.keys().next().value;
+    orderShareAssetCache.delete(oldestKey);
+  }
+  return entry;
+};
+
+const getCachedOrderShareAsset = (order = {}, company = {}, context = {}) => {
+  const key = buildOrderShareAssetCacheKey(order, company, context);
+  const cached = orderShareAssetCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.createdAt > ORDER_SHARE_ASSET_CACHE_TTL_MS) {
+    orderShareAssetCache.delete(key);
+    return null;
+  }
+  orderShareAssetCache.delete(key);
+  orderShareAssetCache.set(key, cached);
+  return cached;
+};
+
+const warmOrderShareAssetCache = async ({
+  order,
+  company,
+  customers = [],
+  orders = [],
+  payments = [],
+  ensurePayment = null,
+  reason = 'background'
+} = {}) => {
+  if (!order?.id) return null;
+  const cacheContext = { customers, orders, payments };
+  const cached = getCachedOrderShareAsset(order, company, cacheContext);
+  if (cached) {
+    recordPerformanceEvent('share_invoice.cache_lookup', { orderId: order.id, hit: true, reason });
+    return cached;
+  }
+  const pending = orderShareAssetPendingCache.get(order.id);
+  if (pending) return pending;
+
+  recordPerformanceEvent('share_invoice.cache_lookup', { orderId: order.id, hit: false, reason });
+  const prepareSpan = createPerformanceSpan('share_invoice.prepare', { orderId: order.id, reason });
+  const promise = (async () => {
+    let orderForShare = order;
+    const paymentSource = getOrderPayosPaymentSource(orderForShare);
+    const paymentDueAmount = getOrderSharePaymentDueAmount(orderForShare, customers, orders, payments);
+    const paymentQrFingerprintAligned = isOrderPaymentQrFingerprintAligned(
+      orderForShare,
+      company,
+      paymentDueAmount
+    );
+    if (paymentDueAmount > 0 && (!paymentSource
+      || !isOrderPaymentSourceAlignedWithTransferProfile(orderForShare, company)
+      || !isOrderSharePaymentAmountAligned(orderForShare, paymentDueAmount)
+      || !paymentQrFingerprintAligned)) {
+      if (typeof ensurePayment !== 'function') {
+        throw new Error('Hóa đơn chưa có mã QR SePay để chuẩn bị chia sẻ.');
+      }
+      const ensureResult = await ensurePayment(orderForShare.id, orderForShare);
+      if (!ensureResult?.success) {
+        throw new Error(ensureResult?.message || 'Chưa tạo được mã QR SePay cho hóa đơn này.');
+      }
+      orderForShare = ensureResult.order || orderForShare;
+    }
+    const blob = await drawSalesInvoiceShareImage({
+      order: orderForShare,
+      company,
+      customers,
+      orders,
+      payments
+    });
+    const entry = rememberOrderShareAsset(orderForShare, company, { blob }, cacheContext);
+    prepareSpan.end({ status: 'ok', bytes: blob?.size || 0 });
+    return entry;
+  })().catch((error) => {
+    prepareSpan.fail(error);
+    recordPerformanceEvent('share_invoice.cache_error', {
+      orderId: order.id,
+      reason,
+      error: error?.message || String(error)
+    }, 'warn');
+    return null;
+  }).finally(() => {
+    orderShareAssetPendingCache.delete(order.id);
+  });
+  orderShareAssetPendingCache.set(order.id, promise);
+  return promise;
+};
+
+const scheduleOrderShareWarmup = (options = {}) => {
+  const run = () => warmOrderShareAssetCache(options).catch(() => null);
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    setTimeout(run, 0);
+  }
 };
 
 const normalizeWarehouseMeasureUnit = (unit = '') => {
@@ -5723,6 +6078,13 @@ const getCustomerDisplayName = (customer = {}) => {
   if (honorific === 'anh') return `Anh ${plainName}`;
   if (honorific === 'chi') return `Chị ${plainName}`;
   return plainName;
+};
+
+const formatPaymentNotificationMessage = ({ customer = {}, customerName = '', amount = 0 } = {}) => {
+  const plainName = getCustomerPlainName({ ...customer, name: customer?.name || customerName });
+  const honorific = getCustomerHonorific({ ...customer, name: customer?.name || customerName });
+  const honorificLabel = honorific === 'anh' ? 'Anh' : honorific === 'chi' ? 'Chị' : 'Khách hàng';
+  return `${honorificLabel} - ${plainName || customerName || 'Khách hàng'} - đã thanh toán - ${formatCurrency(amount)} đ`;
 };
 
 const buildCustomerNameAliases = (customer = {}) => {
@@ -12559,7 +12921,7 @@ export default function App() {
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
     const passwordError = validateAccountPasswordInput(password);
     if (passwordError) return { success: false, message: passwordError };
-    logLoginStep('Staff login start', {
+    logLoginStep('Auto login start', {
       phone: normalizedPhone,
       appId,
       localEmployees: rawEmployees.length,
@@ -12572,14 +12934,36 @@ export default function App() {
     let companySource = rawCompanies;
     let customerSource = rawCustomers;
     let customerAccountSource = rawCustomerAccounts;
+    const findCustomerMatch = (customers, customerAccounts) => {
+      const account = customerAccounts.find(item => !item.isArchived && item.status !== 'blocked' && isSameLoginPhone(item.phone, normalizedPhone));
+      const customer = account
+        ? customers.find(item => item.id === (account.customer_id || account.customerId) && !item.isArchived)
+        : customers.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
+      return { account, customer };
+    };
+    let customerMatch = findCustomerMatch(customerSource, customerAccountSource);
     let emp = employeeSource.find(e => !e.isArchived && isSameLoginPhone(e.phone, normalizedPhone));
     logLoginStep('Query employee local', {
       phone: normalizedPhone,
       found: Boolean(emp),
       count: employeeSource.length
     });
+    logLoginStep('Query customer local', {
+      phone: normalizedPhone,
+      accountFound: Boolean(customerMatch.account),
+      customerFound: Boolean(customerMatch.customer),
+      count: customerSource.length
+    });
 
-    if (!emp || companySource.length === 0) {
+    if (customerMatch.customer) {
+      logLoginStep('Auto login routed to customer', {
+        phone: normalizedPhone,
+        customerId: customerMatch.customer.id
+      });
+      return handleCustomerLogin(phone, password);
+    }
+
+    if (!emp || companySource.length === 0 || (customerSource.length === 0 && customerAccountSource.length === 0)) {
       try {
         const { employeesFromCloud, companiesFromCloud, customersFromCloud, customerAccountsFromCloud } = await readLoginCollectionsFromCloud();
         if (employeesFromCloud.length) employeeSource = employeesFromCloud;
@@ -12623,6 +13007,7 @@ export default function App() {
             return Array.from(merged.values());
           });
         }
+        customerMatch = findCustomerMatch(customerSource, customerAccountSource);
       } catch (error) {
         console.error('Không thể kiểm tra tài khoản đăng nhập từ Firebase:', error);
         if (!emp) {
@@ -12632,6 +13017,20 @@ export default function App() {
           };
         }
       }
+    }
+
+    if (customerMatch.customer) {
+      logLoginStep('Auto login routed to customer after Cloud query', {
+        phone: normalizedPhone,
+        customerId: customerMatch.customer.id,
+        accountFound: Boolean(customerMatch.account)
+      });
+      return handleCustomerLogin(phone, password, {
+        employees: employeeSource,
+        companies: companySource,
+        customers: customerSource,
+        customerAccounts: customerAccountSource
+      });
     }
 
     if (emp) { 
@@ -12657,17 +13056,7 @@ export default function App() {
       saveAppSession({ currentUser: nextUser, currentCompany: comp, activeTab: 'home' });
       return { success: true }; 
     }
-    const matchedCustomerAccount = customerAccountSource.find(item => !item.isArchived && item.status !== 'blocked' && isSameLoginPhone(item.phone, normalizedPhone));
-    const matchedCustomer = customerSource.find(item => !item.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
-    if (matchedCustomerAccount || matchedCustomer) {
-      logLoginStep('Staff login matched customer account', {
-        phone: normalizedPhone,
-        matchedCustomerAccount: Boolean(matchedCustomerAccount),
-        matchedCustomer: Boolean(matchedCustomer)
-      }, 'warn');
-      return { success: false, message: 'Số này là tài khoản khách hàng. Vui lòng chọn "Khách hàng" rồi đăng nhập.' };
-    }
-    logLoginStep('Staff login no match', {
+    logLoginStep('Auto login no match', {
       phone: normalizedPhone,
       employeeCount: employeeSource.length,
       companyCount: companySource.length,
@@ -12678,7 +13067,7 @@ export default function App() {
     return { success: false, message: 'Số điện thoại không đúng hoặc công ty chưa đăng ký.' };
   };
 
-  const handleCustomerLogin = async (phone, password) => {
+  const handleCustomerLogin = async (phone, password, preloadedSources = null) => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
     const passwordError = validateAccountPasswordInput(password);
@@ -12692,10 +13081,10 @@ export default function App() {
       localEmployees: rawEmployees.length
     });
 
-    let customerSource = rawCustomers;
-    let accountSource = rawCustomerAccounts;
-    let companySource = rawCompanies;
-    let employeeSource = rawEmployees;
+    let customerSource = preloadedSources?.customers || rawCustomers;
+    let accountSource = preloadedSources?.customerAccounts || rawCustomerAccounts;
+    let companySource = preloadedSources?.companies || rawCompanies;
+    let employeeSource = preloadedSources?.employees || rawEmployees;
     let account = accountSource.find(item => !item.isArchived && item.status !== 'blocked' && isSameLoginPhone(item.phone, normalizedPhone));
     let customer = account
       ? customerSource.find(item => item.id === (account.customer_id || account.customerId) && !item.isArchived)
@@ -12708,7 +13097,7 @@ export default function App() {
       accountCount: accountSource.length
     });
 
-    if (!customer || companySource.length === 0) {
+    if (!preloadedSources && (!customer || companySource.length === 0)) {
       try {
         const { customersFromCloud, customerAccountsFromCloud, companiesFromCloud, employeesFromCloud } = await readLoginCollectionsFromCloud();
         if (customersFromCloud.length) customerSource = customersFromCloud;
@@ -12774,7 +13163,7 @@ export default function App() {
           phone: normalizedPhone,
           matchedEmployee: true
         }, 'warn');
-        return { success: false, message: 'Số này là tài khoản nhân sự. Vui lòng chọn "Nhân sự" rồi đăng nhập.' };
+        return { success: false, message: 'Số điện thoại không đúng hoặc công ty chưa đăng ký.' };
       }
       logLoginStep('Customer login no match', {
         phone: normalizedPhone,
@@ -12865,6 +13254,74 @@ export default function App() {
     savePreferredLoginMode('customer');
     saveAppSession({ currentUser: nextUser, currentCompany: comp, activeTab: 'customer_home' });
     return { success: true };
+  };
+
+  const handleForgotPassword = async ({ phone = '' } = {}) => {
+    const normalizedPhone = normalizeEmployeeLoginPhone(phone);
+    const genericMessage = 'Nếu số điện thoại đã đăng ký, yêu cầu khôi phục đã được ghi nhận. Chủ doanh nghiệp hoặc kế toán sẽ xác minh và liên hệ để cấp lại mật khẩu.';
+    if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+
+    const matchedAccount = rawCustomerAccounts.find(item => !item?.isArchived && item.status !== 'blocked' && isSameLoginPhone(item.phone, normalizedPhone));
+    const matchedCustomer = matchedAccount
+      ? rawCustomers.find(item => !item?.isArchived && item.id === (matchedAccount.customer_id || matchedAccount.customerId))
+      : rawCustomers.find(item => !item?.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
+    const matchedEmployee = rawEmployees.find(item => !item?.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
+    const isCustomerRequest = Boolean(matchedCustomer);
+    const companyId = matchedEmployee?.companyId
+      || matchedAccount?.companyId
+      || matchedAccount?.company_id
+      || matchedCustomer?.companyId
+      || rawCompanies.find(item => isSameLoginPhone(item.ownerPhone, normalizedPhone))?.id
+      || '';
+
+    // Do not reveal whether a phone number exists. More importantly, never reset a
+    // password from a phone number alone; the owner/accounting team must verify it.
+    if (!companyId || !firebaseUser) return { success: true, message: genericMessage };
+
+    const targetName = (isCustomerRequest ? matchedCustomer?.name : matchedEmployee?.name) || '';
+    const recipients = rawEmployees.filter(item => {
+      if (item?.companyId !== companyId || item?.isArchived) return false;
+      const role = `${item.role || ''}`.toLowerCase();
+      return role === 'super_admin'
+        || role === 'owner'
+        || isAccountingPosition(item.position)
+        || ['accounting', 'accountant', 'admin'].includes(role);
+    });
+    const recipientEmployeeIds = recipients.map(item => item.id).filter(Boolean);
+    const requestId = `password_reset_${companyId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const maskedPhone = normalizedPhone.length > 4
+      ? `${normalizedPhone.slice(0, 3)}****${normalizedPhone.slice(-3)}`
+      : '****';
+    const requestNotice = {
+      id: requestId,
+      companyId,
+      type: 'password_reset_request',
+      title: 'Yêu cầu khôi phục mật khẩu',
+      message: `${isCustomerRequest ? 'Khách hàng' : 'Nhân sự'}${targetName ? ` ${targetName}` : ''} yêu cầu khôi phục mật khẩu cho số ${maskedPhone}. Vui lòng xác minh trực tiếp trước khi cấp lại.`,
+      accountType: isCustomerRequest ? 'customer' : 'staff',
+      targetPhone: normalizedPhone,
+      targetName,
+      targetEmployeeIds: recipientEmployeeIds,
+      recipientType: 'employee',
+      status: 'unread',
+      createdAt: now,
+      updatedAt: now,
+      isArchived: false
+    };
+
+    try {
+      await withTimeout(
+        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', requestId), requestNotice, { merge: false }),
+        10000,
+        'Không thể gửi yêu cầu khôi phục lúc này. Vui lòng kiểm tra mạng rồi thử lại.'
+      );
+      setRawNotifications(prev => [requestNotice, ...(Array.isArray(prev) ? prev : [])]);
+      return { success: true, message: genericMessage };
+    } catch (error) {
+      console.error('Không thể tạo yêu cầu khôi phục mật khẩu:', error);
+      return { success: false, message: getFriendlyFirebaseErrorMessage(error, 'Không thể gửi yêu cầu khôi phục. Vui lòng thử lại.') };
+    }
   };
 
   const handleLogout = () => {
@@ -14897,10 +15354,21 @@ export default function App() {
     rememberRecentLocalWrite('orders', id, newOrderDocument);
 
     saveDataDocument('orders', id, newOrderDocument, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu đơn hàng.')
-      .then(() => syncCustomerLoyaltyPoints(newOrderDocument.customerId, {
-        extraOrders: [newOrderDocument],
-        reason: 'order_created'
-      }))
+      .then(() => {
+        scheduleOrderShareWarmup({
+          order: newOrderDocument,
+          company: currentCompany,
+          customers,
+          orders: [newOrderDocument, ...(orders || []).filter(order => order?.id !== id)],
+          payments,
+          ensurePayment: handleEnsureOrderPayosPayment,
+          reason: 'order_created'
+        });
+        return syncCustomerLoyaltyPoints(newOrderDocument.customerId, {
+          extraOrders: [newOrderDocument],
+          reason: 'order_created'
+        });
+      })
       .catch((error) => {
         setRawOrders(prev => (Array.isArray(prev) ? prev.filter(order => order?.id !== id) : prev));
         setRealtimeStatus({
@@ -16325,6 +16793,16 @@ export default function App() {
       }
     }
 
+    scheduleOrderShareWarmup({
+      order: updatedOrderForSync,
+      company: currentCompany,
+      customers,
+      orders: [updatedOrderForSync, ...(orders || []).filter(order => order?.id !== orderId)],
+      payments,
+      ensurePayment: handleEnsureOrderPayosPayment,
+      reason: 'order_updated'
+    });
+
     return { success: true };
   };
 
@@ -16362,21 +16840,30 @@ export default function App() {
     });
   };
 
-  const handleEnsureOrderPayosPayment = async (orderId) => {
+  const handleEnsureOrderPayosPayment = async (orderId, orderOverride = null) => {
     if (!firebaseUser || !myCompanyId) {
       return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     }
-    const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
+    const existingOrder = orderOverride?.id === orderId && orderOverride?.companyId === myCompanyId
+      ? orderOverride
+      : rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
     if (!existingOrder) {
       return { success: false, message: 'Không tìm thấy hóa đơn để tạo mã QR SePay.' };
     }
 
     const paymentDueAmount = getOrderCurrentPaymentDueAmount(existingOrder);
+    if (paymentDueAmount <= 0) {
+      return {
+        success: true,
+        order: existingOrder,
+        paymentSource: ''
+      };
+    }
     const existingPaymentSource = getOrderPayosPaymentSource(existingOrder);
     const canReuseExistingPaymentSource = Boolean(existingPaymentSource)
       && isOrderPaymentSourceAlignedWithTransferProfile(existingOrder, currentCompany)
       && isOrderPaymentAmountAligned(existingOrder, paymentDueAmount)
-      && Boolean(existingOrder.paymentLookupSyncedAt || existingOrder.sepayCreatedAt);
+      && isOrderPaymentQrFingerprintAligned(existingOrder, currentCompany, paymentDueAmount);
     if (canReuseExistingPaymentSource) {
       warmLocalPaymentQrDataUrlCache(existingPaymentSource, { width: 520 });
       const localPaymentPayload = buildOrderLocalPaymentQrPayload(existingOrder, currentCompany);
@@ -16391,6 +16878,10 @@ export default function App() {
     }
 
     let payosPayment = null;
+    const sepayApiSpan = createPerformanceSpan('share_invoice.sepay_api', {
+      orderId,
+      amount: paymentDueAmount
+    });
     try {
       payosPayment = await requestPayosPaymentLink({
         firebaseUser,
@@ -16399,7 +16890,9 @@ export default function App() {
         receivingProfile: buildSepayReceivingProfilePayload(currentCompany),
         amount: paymentDueAmount
       });
+      sepayApiSpan.end({ status: 'ok' });
     } catch (error) {
+      sepayApiSpan.fail(error);
       return {
         success: false,
         message: getFriendlyFirebaseErrorMessage(error, 'Chưa tạo được mã QR SePay cho hóa đơn này.')
@@ -16456,19 +16949,31 @@ export default function App() {
       updatedAt: now
     };
 
-    const nextOrder = { ...existingOrder, ...patch };
+    const paymentQrFingerprint = buildOrderPaymentQrFingerprint(
+      { ...existingOrder, ...patch },
+      currentCompany,
+      resolvedPaymentAmount
+    );
+    const patchWithFingerprint = { ...patch, paymentQrFingerprint };
+
+    const nextOrder = { ...existingOrder, ...patchWithFingerprint };
     const nextLocalPaymentPayload = buildOrderLocalPaymentQrPayload(nextOrder, currentCompany);
     if (nextLocalPaymentPayload) {
       warmLocalPaymentQrDataUrlCache(nextLocalPaymentPayload, { width: 520 });
     }
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId), patch, { merge: true });
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId), patchWithFingerprint, { merge: true });
     } catch (error) {
       if (!isFirestoreInternalAssertionError(error)) throw error;
       console.warn('Firestore realtime dang tu phuc hoi khi luu QR SePay, tiep tuc chia se bang du lieu QR vua tao:', error);
       requestFirestoreNetworkEnable('ensure-order-sepay-payment');
       scheduleCollectionRefresh('orders', [0, 1200, 3500, 9000]);
     }
+
+    setRawOrders(prev => (Array.isArray(prev)
+      ? prev.map(order => (order?.id === orderId ? { ...order, ...patchWithFingerprint } : order))
+      : prev));
+    rememberRecentLocalWrite('orders', orderId, { ...existingOrder, ...patchWithFingerprint });
 
     return {
       success: true,
@@ -16637,15 +17142,14 @@ export default function App() {
     const approver = employees.find(emp => emp.id === currentUser?.id) || employeeInfo || {};
     const orderCode = formatOrderCode(orderId);
     const paymentDueAmount = getOrderCurrentPaymentDueAmount(existingOrder);
-    let payosPayment = null;
+    let paymentOrder = existingOrder;
+    let ensuredPayment = null;
     try {
-      payosPayment = await requestPayosPaymentLink({
-        firebaseUser,
-        appId,
-        orderId,
-        receivingProfile: buildSepayReceivingProfilePayload(currentCompany),
-        amount: paymentDueAmount
-      });
+      ensuredPayment = await handleEnsureOrderPayosPayment(orderId, existingOrder);
+      if (!ensuredPayment?.success) {
+        throw new Error(ensuredPayment?.message || 'Không tạo được thanh toán SePay.');
+      }
+      paymentOrder = ensuredPayment.order || existingOrder;
     } catch (error) {
       const payosErrorMessage = getFriendlyFirebaseErrorMessage(error, 'Không tạo được thanh toán SePay.');
       console.warn('SePay payment request creation failed.', error);
@@ -16655,19 +17159,34 @@ export default function App() {
       };
     }
 
-    const checkoutUrl = `${payosPayment?.checkoutUrl || ''}`.trim();
-    const paymentLinkId = `${payosPayment?.paymentLinkId || ''}`.trim();
-    const sepayPaymentCode = `${payosPayment?.paymentCode || payosPayment?.sepayPaymentCode || ''}`.trim();
-    const payosOrderCode = payosPayment?.orderCode || '';
-    const paymentQrPayload = `${payosPayment?.paymentQrPayload || payosPayment?.qrPayload || payosPayment?.qrCode || payosPayment?.sepayQrPayload || payosPayment?.sepayQrCode || ''}`.trim();
-    const payosQrCode = `${payosPayment?.qrImageUrl || payosPayment?.paymentQrImageUrl || payosPayment?.paymentQrUrl || ''}`.trim();
+    const checkoutUrl = `${paymentOrder?.checkoutUrl || paymentOrder?.paymentCheckoutUrl || ''}`.trim();
+    const paymentLinkId = `${paymentOrder?.paymentLinkId || ''}`.trim();
+    const sepayPaymentCode = `${paymentOrder?.paymentCode || paymentOrder?.sepayPaymentCode || ''}`.trim();
+    const payosOrderCode = paymentOrder?.payosOrderCode || paymentOrder?.paymentOrderCode || '';
+    const paymentQrPayload = `${paymentOrder?.paymentQrPayload || paymentOrder?.sepayQrPayload || paymentOrder?.qrCode || paymentOrder?.sepayQrCode || paymentOrder?.payosQrCode || ensuredPayment?.paymentSource || ''}`.trim();
+    const payosQrCode = `${paymentOrder?.paymentQrImageUrl || paymentOrder?.paymentQrUrl || paymentOrder?.sepayQrCode || paymentOrder?.payosQrCode || ''}`.trim();
     const paymentProvider = 'sepay';
     const rawPaymentQrCode = paymentQrPayload || payosQrCode || checkoutUrl || paymentLinkId;
     const payosPaymentQrImageUrl = buildPayosPaymentQrImageSource(rawPaymentQrCode);
     const paymentQrUrl = payosPaymentQrImageUrl || checkoutUrl || rawPaymentQrCode;
     const finalPaymentQrImageUrl = payosPaymentQrImageUrl || paymentQrUrl;
-    const nextPaymentStatus = payosPayment?.paymentStatus || existingOrder.paymentStatus || 'pending';
-    const resolvedPaymentAmount = Math.max(0, Math.round(parseLooseMoneyValue(payosPayment?.amount ?? paymentDueAmount)));
+    const nextPaymentStatus = paymentOrder?.paymentStatus || paymentOrder?.sepayPaymentStatus || existingOrder.paymentStatus || 'pending';
+    const resolvedPaymentAmount = Math.max(0, Math.round(parseLooseMoneyValue(paymentOrder?.paymentAmount ?? paymentDueAmount)));
+    const paymentQrFingerprint = paymentOrder?.paymentQrFingerprint
+      || buildOrderPaymentQrFingerprint(paymentOrder, currentCompany, resolvedPaymentAmount);
+    const payosPayment = {
+      ...paymentOrder,
+      checkoutUrl,
+      paymentLinkId,
+      paymentCode: sepayPaymentCode || orderCode,
+      orderCode: payosOrderCode || orderCode,
+      paymentQrPayload,
+      qrCode: rawPaymentQrCode,
+      qrImageUrl: payosQrCode,
+      paymentQrUrl,
+      amount: resolvedPaymentAmount,
+      paymentStatus: nextPaymentStatus
+    };
     const messageText = appendPayosPaymentLines(`${previewMessage || ''}`.trim(), { ...payosPayment, paymentQrUrl }, orderCode);
 
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'zalo_send_queue', queueId), {
@@ -16687,6 +17206,7 @@ export default function App() {
       paymentLinkId,
       paymentProvider,
       paymentAmount: resolvedPaymentAmount,
+      paymentQrFingerprint,
       paymentStatus: nextPaymentStatus,
       paymentCode: sepayPaymentCode || orderCode,
       sepayPaymentCode: sepayPaymentCode || orderCode,
@@ -16755,6 +17275,7 @@ export default function App() {
       zaloApprovedByEmpId: currentUser?.id || '',
       paymentProvider,
       paymentAmount: resolvedPaymentAmount,
+      paymentQrFingerprint,
       paymentCode: sepayPaymentCode || orderCode,
       sepayPaymentCode: sepayPaymentCode || orderCode,
       paymentOrderCode: payosOrderCode || existingOrder.paymentOrderCode || '',
@@ -17906,7 +18427,7 @@ export default function App() {
       <>
         <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
-        <LoginRegisterView onLogin={handleLogin} onCustomerLogin={handleCustomerLogin} onRegister={handleRegisterCompany} isLoginReady={isLoginDataLoaded} />
+        <LoginRegisterView onLogin={handleLogin} onRegister={handleRegisterCompany} onForgotPassword={handleForgotPassword} isLoginReady={isLoginDataLoaded} />
       </>
     );
   }
@@ -17996,7 +18517,7 @@ export default function App() {
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         employees={employees} employeeReviews={employeeReviews} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
-        customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
+        customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
@@ -18330,9 +18851,144 @@ const APP_NAV_ITEM_MAP = {
   more: { id: 'more', label: 'Thêm', icon: <MoreHorizontal /> }
 };
 
+const NOTIFICATION_CONTEXT_ALIASES = {
+  order: 'orders',
+  invoice: 'orders',
+  order_request: 'order_requests',
+  order_requests: 'order_requests',
+  warehouse: 'warehouse_dispatch',
+  warehouse_imports: 'warehouse_import',
+  warehouse_dispatches: 'warehouse_dispatch',
+  delivery: 'delivery_reports',
+  delivery_report: 'delivery_reports',
+  debt_book: 'debt',
+  cashflow: 'finance',
+  payments: 'bank_payments',
+  payment: 'bank_payments',
+  attendance: 'company_attendance',
+  review: 'employee_reviews',
+  salary: 'payroll'
+};
+
+const normalizeNotificationContextKey = (value = '') => {
+  const key = normalizeLookupText(value).replace(/\s+/g, '_');
+  return NOTIFICATION_CONTEXT_ALIASES[key] || key;
+};
+
+const getNotificationContextKeys = (item = {}) => {
+  const sourceNotification = item.sourceNotification || {};
+  const sourcePayment = item.sourcePayment || {};
+  const explicitTabs = [
+    item.tab,
+    item.actionTab,
+    item.targetTab,
+    item.module,
+    sourceNotification.tab,
+    sourceNotification.actionTab,
+    sourceNotification.targetTab,
+    sourceNotification.module
+  ]
+    .map(normalizeNotificationContextKey)
+    .filter(Boolean);
+  const keys = new Set(explicitTabs);
+  const lookupText = normalizeLookupText([
+    item.title,
+    item.message,
+    item.type,
+    item.category,
+    sourceNotification.type,
+    sourceNotification.category,
+    sourceNotification.paymentProvider,
+    sourceNotification.sourceType,
+    sourcePayment.type,
+    sourcePayment.provider,
+    sourcePayment.paymentProvider
+  ].filter(Boolean).join(' '));
+
+  if (sourcePayment.id || /(payos|sepay|thanh toan|payment|giao dich thanh toan)/.test(lookupText)) {
+    keys.add('finance');
+    keys.add('bank_payments');
+    keys.add('debt');
+  }
+  if (/(don dat|order request|customer order|len don|mat hang can xu ly)/.test(lookupText)) {
+    keys.add('order_requests');
+    keys.add('orders');
+  }
+  if (/(phieu xuat|xuat kho|dong hang|warehouse|dispatch|giao hang)/.test(lookupText)) {
+    keys.add('warehouse_dispatch');
+    keys.add('delivery_reports');
+    keys.add('maps');
+  }
+  if (/(cong no|han muc cong no|no cu|thu no|debt)/.test(lookupText)) {
+    keys.add('debt');
+    keys.add('customers');
+  }
+  if (/(cham cong|attendance|thieu cham)/.test(lookupText)) {
+    keys.add('company_attendance');
+    keys.add('employees');
+  }
+  if (/(tam ung|ung luong|advance|bang luong|payroll)/.test(lookupText)) {
+    keys.add('payroll');
+  }
+  if (keys.has('order_requests')) keys.add('orders');
+  if (keys.has('warehouse_dispatch')) {
+    keys.add('delivery_reports');
+    keys.add('maps');
+  }
+  if (keys.has('debt')) keys.add('customers');
+  if (keys.size === 0) keys.add('messages');
+  return keys;
+};
+
+const getNotificationContextsForActiveTab = (activeTab = '') => {
+  switch (activeTab) {
+    case 'home':
+    case 'executive_dashboard':
+    case 'more':
+    case 'profile':
+    case 'settings':
+    case 'role_permissions':
+    case 'billing':
+      return null;
+    case 'orders':
+    case 'order_requests':
+      return new Set(['orders', 'order_requests']);
+    case 'warehouse_dispatch':
+    case 'delivery_reports':
+    case 'maps':
+      return new Set(['warehouse_dispatch', 'delivery_reports', 'maps']);
+    case 'debt':
+      return new Set(['debt']);
+    case 'finance':
+      return new Set(['finance']);
+    case 'bank_payments':
+      return new Set(['bank_payments', 'finance']);
+    case 'customers':
+      return new Set(['customers']);
+    case 'employees':
+    case 'company_attendance':
+      return new Set(['employees', 'company_attendance']);
+    case 'payroll':
+      return new Set(['payroll']);
+    case 'messages':
+      return new Set(['messages']);
+    default:
+      return new Set([normalizeNotificationContextKey(activeTab)]);
+  }
+};
+
+const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
+  const allowedContexts = getNotificationContextsForActiveTab(activeTab);
+  if (!allowedContexts) return items;
+  return items.filter((item) => {
+    const itemContexts = getNotificationContextKeys(item);
+    return [...itemContexts].some((context) => allowedContexts.has(context));
+  });
+};
+
 // --- MAIN LAYOUT ---
 function MainAppView({ 
-  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
+  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
@@ -18829,15 +19485,16 @@ function MainAppView({
         if (isPayosPaymentNotice && notice.paymentId) persistentPayosPaymentIds.add(notice.paymentId);
         const payosBankLabel = isPayosPaymentNotice ? (getPaymentReceivingBankLabel(notice) || 'ngân hàng') : '';
         const payosCustomerName = notice.customerName || notice.customerNameSnapshot || 'Khách hàng';
+        const payosCustomer = customers.find((item) => item.id === notice.customerId) || {};
         const payosAmount = parseInputCurrency(notice.amount || notice.paidAmount || 0);
-        const payosAppliedAmount = parseInputCurrency(notice.appliedAmount || 0);
-        const payosRemainingDebt = parseInputCurrency(notice.remainingDebt || notice.outstandingAmount || 0);
         const payosTitle = `${payosCustomerName} thanh toán qua ${payosBankLabel}`;
-        const payosMessage = `${payosCustomerName} thanh toán ${formatCurrency(payosAmount)} đ. Đã trừ nợ ${formatCurrency(payosAppliedAmount)} đ${payosRemainingDebt > 0 ? `, còn nợ ${formatCurrency(payosRemainingDebt)} đ.` : ', công nợ đơn này đã tất toán.'}`;
+        const payosMessage = isPayosPaymentNotice
+          ? formatPaymentNotificationMessage({ customer: payosCustomer, customerName: payosCustomerName, amount: payosAmount })
+          : (notice.message || notice.body || notice.note || notice.description || 'Bạn có thông báo mới cần xử lý.');
         items.push({
           id: `persistent-${notice.id || orderRequestId || getEntityTimestamp(notice) || items.length}`,
           title: isPayosPaymentNotice ? payosTitle : (notice.title || notice.typeLabel || 'Thông báo'),
-          message: isPayosPaymentNotice ? payosMessage : (notice.message || notice.body || notice.note || notice.description || 'Bạn có thông báo mới cần xử lý.'),
+          message: payosMessage,
           createdAt: getEntityTimestamp(notice) || (safePersistentFallbackAt - (items.length * 60000)),
           tab: notice.tab || notice.actionTab || notice.targetTab || 'messages',
           tone: isPayosPaymentNotice ? 'emerald' : (notice.tone || notice.level || (notice.type === 'customer_order_request_submitted' ? 'orange' : 'sky')),
@@ -18875,13 +19532,12 @@ function MainAppView({
           || customer?.name
           || 'Khách hàng';
         const paidAmount = parseInputCurrency(payment.amount || payment.paidAmount || 0);
-        const appliedAmount = parseInputCurrency(payment.appliedAmount || payment.amount || 0);
-        const remainingDebt = parseInputCurrency(payment.remainingDebt ?? payment.outstandingAmount ?? matchedOrder?.outstandingAmount ?? 0);
         const bankLabel = getPaymentReceivingBankLabel(payment) || 'ngân hàng';
+        const paymentCustomer = customer || { name: customerName, customerHonorific: payment.customerHonorific || payment.honorific };
         items.push({
           id: `payos-payment-${payment.id}`,
           title: `${customerName} thanh toán qua ${bankLabel}`,
-          message: `${customerName} thanh toán ${formatCurrency(paidAmount)} đ. Đã trừ nợ ${formatCurrency(appliedAmount)} đ${remainingDebt > 0 ? `, còn nợ ${formatCurrency(remainingDebt)} đ.` : ', công nợ đơn này đã tất toán.'}`,
+          message: formatPaymentNotificationMessage({ customer: paymentCustomer, customerName, amount: paidAmount }),
           createdAt: getPaymentTimestamp(payment) || getEntityTimestamp(payment) || (getPaymentDateKey(payment) ? new Date(`${getPaymentDateKey(payment)}T12:00:00`).getTime() : Date.now()),
           tab: 'finance',
           tone: 'emerald',
@@ -19018,7 +19674,11 @@ function MainAppView({
 
     return items.sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
   }, [advanceRequests, attendanceAlerts, canViewWarehouseDispatchNotifications, canViewWarehouseShortageNotifications, currentAttendanceAlert, currentUser?.employeeId, currentUser?.id, customerCareAlerts, customers, debtLimitAlerts, employee?.id, employees, isAccounting, isOwnerAccount, isSales, notificationDateKey, notifications, orderRequests, orders, payments, pendingAdvanceNotifications, products, salesNotificationEmployeeIdSet, warehouseDispatchCoverage, warehouseDispatches]);
-  const unreadNotificationCount = notificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length;
+  const visibleNotificationItems = useMemo(
+    () => filterNotificationsForActiveTab(notificationItems, activeTab),
+    [activeTab, notificationItems]
+  );
+  const unreadNotificationCount = visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length;
   const employeeMessageUnreadCount = useMemo(() => {
     const currentEmployeeId = `${employee?.id || currentUser?.employeeId || currentUser?.id || ''}`.trim();
     const currentEmployeePhone = `${employee?.phone || currentUser?.phone || ''}`.trim();
@@ -19916,7 +20576,7 @@ function MainAppView({
         />
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
-      case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
+      case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
       case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (!hasWorkflowProductData && (isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'))) {
@@ -20055,7 +20715,7 @@ function MainAppView({
               ? ['home', 'orders', 'order_requests', 'customers', 'debt', 'more']
               : ['home', 'orders', 'warehouse_dispatch', 'order_requests', 'customers', 'more'];
     const rolePriorityIndex = new Map(rolePriorityIds.map((id, index) => [id, index]));
-    const allowedItems = Object.keys(itemMap)
+    const sortedAllowedItems = Object.keys(itemMap)
       .filter(id => id !== 'more' && tabPermissions[id])
       .sort((leftId, rightId) => {
         if (leftId === 'home') return -1;
@@ -20063,11 +20723,28 @@ function MainAppView({
         const usageDifference = Number(footerUsage[rightId] || 0) - Number(footerUsage[leftId] || 0);
         if (usageDifference !== 0) return usageDifference;
         return (rolePriorityIndex.get(leftId) ?? 999) - (rolePriorityIndex.get(rightId) ?? 999);
-      })
+      });
+
+    // Keep only the shell modules stable. All other visible slots follow the
+    // account's actual usage so the footer learns each user's workflow.
+    const pinnedIds = new Set(['home']);
+    if (
+      activeTab !== 'more'
+      && activeTab !== 'home'
+      && itemMap[activeTab]
+      && tabPermissions[activeTab]
+    ) {
+      pinnedIds.add(activeTab);
+    }
+
+    const pinnedItems = sortedAllowedItems.filter(id => pinnedIds.has(id));
+    const remainingItems = sortedAllowedItems.filter(id => !pinnedIds.has(id));
+    const allowedItems = [...pinnedItems, ...remainingItems]
       .slice(0, 4)
       .map(id => itemMap[id]);
     return [...allowedItems, itemMap.more];
   }, [
+    activeTab,
     footerUsage,
     isAccounting,
     isDriver,
@@ -20475,7 +21152,7 @@ function MainAppView({
               </button>
             </div>
             <div className="max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
-              {notificationItems.length > 0 ? notificationItems.map((item) => {
+              {visibleNotificationItems.length > 0 ? visibleNotificationItems.map((item) => {
                 const toneClass = item.tone === 'amber'
                   ? 'border-amber-200 bg-amber-50 text-amber-700'
                   : item.tone === 'orange'
@@ -37198,7 +37875,6 @@ function ExecutiveDashboardView({
         <div className="absolute left-6 top-24 h-24 w-24 rounded-full bg-emerald-300/20 blur-2xl" />
         <div className="relative flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.28em] text-emerald-100">Trung Tâm Điều Hành</p>
             <button
               type="button"
               onClick={() => setActiveTab?.('profile')}
@@ -37215,25 +37891,15 @@ function ExecutiveDashboardView({
           <button
             type="button"
             onClick={() => setActiveTab?.('messages')}
-            className="rounded-3xl bg-white/15 px-3 py-2 text-right backdrop-blur transition hover:bg-white/25 active:scale-95"
+            className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-white backdrop-blur transition hover:bg-white/25 active:scale-95"
             aria-label="Mở hộp thư tin nhắn"
           >
-            <span className="flex items-center justify-end gap-2">
-              <span className="relative flex h-9 w-9 items-center justify-center rounded-2xl bg-white/20 text-white">
-                <MessageCircle size={19} />
-                {executiveUnreadInboxCount > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black text-white ring-2 ring-emerald-900">
-                    {executiveUnreadInboxCount > 9 ? '9+' : executiveUnreadInboxCount}
-                  </span>
-                )}
+            <MessageCircle size={19} />
+            {executiveUnreadInboxCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black text-white ring-2 ring-emerald-900">
+                {executiveUnreadInboxCount > 9 ? '9+' : executiveUnreadInboxCount}
               </span>
-              <span>
-                <span className="block text-[10px] font-bold uppercase tracking-widest text-emerald-50/80">Tin nhắn</span>
-                <span className="mt-1 block max-w-[130px] truncate text-sm font-black">
-                  {executiveUnreadInboxCount > 0 ? `${executiveUnreadInboxCount} chưa đọc` : 'Mở hộp thư'}
-                </span>
-              </span>
-            </span>
+            )}
           </button>
         </div>
       </section>
@@ -42619,14 +43285,35 @@ function MessageCenterView({
       .sort((a, b) => getMessageActivityAt(a) - getMessageActivityAt(b));
     return conversationMessages[conversationMessages.length - 1] || {};
   };
-  const getConversationPreview = (conversation = {}) => {
+  const getConversationPreview = (conversation = {}, displayName = '') => {
     const latestMessage = getConversationLatestMessage(conversation);
     const messageText = cleanChatDisplayText(latestMessage.text || latestMessage.attachmentText || conversation.lastMessage || conversation.subtitle || '');
-    const cleanMessageText = messageText.replace(/\s+/g, ' ').trim();
+    let cleanMessageText = messageText.replace(/\s+/g, ' ').trim();
     const senderName = cleanChatDisplayText(latestMessage.senderName || '').trim();
     const titleText = cleanChatDisplayText(conversation.title || '').trim();
+    const identityCandidates = [
+      displayName,
+      conversation.customerName,
+      conversation.sourceItem?.customerName,
+      conversation.sourceItem?.sourceNotification?.customerName,
+      senderName
+    ]
+      .map((value) => cleanChatDisplayText(value).replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    const normalizedMessage = normalizeKeyword(cleanMessageText);
+    const duplicatePrefix = identityCandidates.find((identity) => {
+      const normalizedIdentity = normalizeKeyword(identity);
+      return normalizedIdentity
+        && normalizedMessage.startsWith(normalizedIdentity)
+        && (normalizedMessage === normalizedIdentity || /[\s:,-]/.test(normalizedMessage[normalizedIdentity.length] || ''));
+    });
+    if (duplicatePrefix) {
+      cleanMessageText = cleanMessageText.slice(duplicatePrefix.length).replace(/^\s*[-:•|,]?\s*/, '').trim();
+    }
     const shouldPrefixSender = senderName
       && normalizeKeyword(senderName) !== normalizeKeyword(titleText)
+      && normalizeKeyword(senderName) !== normalizeKeyword(displayName)
       && normalizeKeyword(senderName) !== 'ban';
     if (shouldPrefixSender && cleanMessageText) return `${senderName}: ${cleanMessageText}`;
     return cleanMessageText || cleanChatDisplayText(conversation.subtitle || '').trim();
@@ -43462,28 +44149,48 @@ function MessageCenterView({
     return (
       <div className="h-full bg-slate-100 flex flex-col">
         <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageAttachmentChange} />
-        <div className="bg-gradient-to-r from-blue-600 via-cyan-500 to-teal-400 text-white px-4 pt-5 pb-4 shadow-lg">
-          <div className="flex items-center gap-3">
-            <button type="button" onClick={() => setSelectedConversationId('')} className="p-2 -ml-2 rounded-full hover:bg-white/15">
-              <ChevronLeft size={28} />
+        <div className="bg-gradient-to-r from-blue-600 via-cyan-500 to-teal-400 px-3 py-2 text-white shadow-md">
+          <div className="flex min-h-10 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setSelectedConversationId('')}
+              className="rounded-full p-1.5 hover:bg-white/15"
+              aria-label="Quay lại danh sách tin nhắn"
+            >
+              <ChevronLeft size={22} />
             </button>
-            {renderAvatar(selectedConversation, true)}
-            <div className="min-w-0 flex-1">
-              <h2 className="font-black text-lg leading-tight truncate">{selectedConversation.title}</h2>
-              <p className="text-xs text-white/90 truncate">{selectedConversation.phone || selectedConversation.subtitle}</p>
-            </div>
-            <button data-search-zone="true" type="button" onClick={() => setShowChatSearch((value) => !value)} className="p-2 rounded-full hover:bg-white/15">
-              <Search size={24} />
+            <div className="flex-1" />
+            <button
+              data-search-zone="true"
+              type="button"
+              onClick={() => setShowChatSearch((value) => !value)}
+              className="rounded-full p-1.5 hover:bg-white/15"
+              aria-label="Tìm trong hội thoại"
+            >
+              <Search size={21} />
             </button>
-            <button type="button" onClick={handleCall} disabled={!canCallFromMessage} className="p-2 rounded-full hover:bg-white/15 disabled:opacity-40">
-              <Phone size={24} />
+            <button
+              type="button"
+              onClick={handleCall}
+              disabled={!canCallFromMessage}
+              className="rounded-full p-1.5 hover:bg-white/15 disabled:opacity-40"
+              aria-label="Gọi"
+            >
+              <Phone size={21} />
             </button>
-            <button data-search-zone="true" type="button" onClick={() => setShowAttachMenu((value) => !value)} disabled={!canSendInSelectedConversation || attachActions.length === 0} className="p-2 rounded-full hover:bg-white/15 disabled:opacity-40">
-              <MoreVertical size={24} />
+            <button
+              data-search-zone="true"
+              type="button"
+              onClick={() => setShowAttachMenu((value) => !value)}
+              disabled={!canSendInSelectedConversation || attachActions.length === 0}
+              className="rounded-full p-1.5 hover:bg-white/15 disabled:opacity-40"
+              aria-label="Thao tác khác"
+            >
+              <MoreVertical size={21} />
             </button>
           </div>
           {showChatSearch && (
-            <div data-search-zone="true" className="mt-3 bg-white/95 rounded-2xl px-3 py-2 flex items-center gap-2 text-gray-800 shadow-sm">
+            <div data-search-zone="true" className="mt-2 flex items-center gap-2 rounded-2xl bg-white/95 px-3 py-2 text-gray-800 shadow-sm">
               <Search size={18} className="text-gray-400" />
               <input
                 autoFocus
@@ -43644,14 +44351,14 @@ function MessageCenterView({
 
   return (
     <div className="h-full bg-white flex flex-col">
-      <div className="relative bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 px-3 pt-3 pb-3 text-white shadow-lg shadow-sky-100">
+      <div className="relative bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 px-3 pt-1 pb-1 text-white shadow-lg shadow-sky-100">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onGoBack} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/95 transition hover:bg-white/15">
-            <ChevronLeft size={21} />
+          <button type="button" onClick={onGoBack} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/95 transition hover:bg-white/15">
+            <ChevronLeft size={18} />
           </button>
           {safeActiveType !== 'zalo_ai' ? (
-            <div data-search-zone="true" className="min-w-0 flex-1 rounded-xl bg-white/15 px-3 py-1.5 ring-1 ring-white/20 backdrop-blur flex items-center gap-2">
-              <Search size={18} className="shrink-0 text-white/90" />
+            <div data-search-zone="true" className="min-w-0 flex-1 rounded-xl bg-white/15 px-2 py-0.5 ring-1 ring-white/20 backdrop-blur flex items-center gap-1.5">
+              <Search size={16} className="shrink-0 text-white/90" />
               <input
                 value={searchKeyword}
                 onChange={(event) => setSearchKeyword(event.target.value)}
@@ -43660,15 +44367,15 @@ function MessageCenterView({
               />
             </div>
           ) : (
-            <h1 className="min-w-0 flex-1 truncate text-xl font-black">Hộp thư</h1>
+            <h1 className="min-w-0 flex-1 truncate text-lg font-black">Hộp thư</h1>
           )}
           <button
             type="button"
             onClick={openHeaderCodeScanner}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white/95 transition hover:bg-white/15"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-white/95 transition hover:bg-white/15"
             aria-label="Quét mã"
           >
-            <Scan size={20} />
+            <Scan size={18} />
           </button>
           {canUseCreateConversation && (
             <button
@@ -43678,15 +44385,15 @@ function MessageCenterView({
                 setShowMessageFilterMenu(false);
                 setShowCreateConversationPanel((prev) => !prev);
               }}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white transition hover:bg-white/15"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-white transition hover:bg-white/15"
               aria-label="Thêm bạn hoặc tạo nhóm"
             >
-              <Plus size={26} strokeWidth={1.9} />
+              <Plus size={21} strokeWidth={1.9} />
             </button>
           )}
           {!canUseCreateConversation && (
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15">
-              {companyLogo ? <img src={companyLogo} alt="" className="h-7 w-7 rounded-full object-cover" /> : <span className="text-xs font-black text-white">{companyInitials}</span>}
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15">
+              {companyLogo ? <img src={companyLogo} alt="" className="h-5 w-5 rounded-full object-cover" /> : <span className="text-[11px] font-black text-white">{companyInitials}</span>}
             </div>
           )}
         </div>
@@ -43723,7 +44430,7 @@ function MessageCenterView({
       </div>
 
       {safeActiveType !== 'zalo_ai' && (
-        <div className="relative border-b border-slate-100 bg-white px-3 py-2">
+        <div className="relative border-b border-slate-100 bg-white px-3 py-1.5">
           <div className="flex items-center gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
               {messageFilterOptions.filter((item) => ['all', 'unread', 'customer'].includes(item.id) || item.id === messageFilter).map((item) => {
@@ -43733,7 +44440,7 @@ function MessageCenterView({
                     key={item.id}
                     type="button"
                     onClick={() => setMessageFilter(item.id)}
-                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-black transition ${active ? 'bg-sky-600 text-white shadow-sm shadow-sky-100' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
+                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-black transition ${active ? 'bg-sky-600 text-white shadow-sm shadow-sky-100' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
                   >
                     {item.shortLabel}
                   </button>
@@ -43744,7 +44451,7 @@ function MessageCenterView({
               <button
                 type="button"
                 onClick={handleMarkFilteredUnreadAsRead}
-                className="shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600 transition hover:bg-red-100"
+                className="shrink-0 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-600 transition hover:bg-red-100"
               >
                 Đọc hết {unreadFilteredConversations.length}
               </button>
@@ -43756,7 +44463,7 @@ function MessageCenterView({
                 setShowCreateConversationPanel(false);
                 setShowMessageFilterMenu((prev) => !prev);
               }}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${messageFilter === 'all' ? 'bg-slate-50 text-slate-600' : 'bg-sky-50 text-sky-700'}`}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition ${messageFilter === 'all' ? 'bg-slate-50 text-slate-600' : 'bg-sky-50 text-sky-700'}`}
               aria-label="Lọc tin nhắn"
             >
               <Filter size={20} />
@@ -44049,45 +44756,35 @@ function MessageCenterView({
         {filteredConversations.map((conversation) => {
           const unreadCount = getConversationUnreadCount(conversation);
           const isUnread = unreadCount > 0;
-          const previewText = getConversationPreview(conversation);
-          const listTime = formatConversationListTime(getConversationActivityAt(conversation));
-          const displayName = getConversationDisplayName(conversation);
-          const typeLabel = getConversationTypeLabel(conversation, displayName);
-          return (
-            <button
-              key={conversation.id}
-              type="button"
-              onClick={() => handleSelectConversation(conversation)}
-              className={`mb-2 w-full flex items-center gap-3 rounded-3xl px-3 py-3 text-left transition ${isUnread ? 'border border-red-100 bg-red-50/80 shadow-sm shadow-red-50' : 'border border-transparent bg-white hover:bg-gray-50'}`}
-            >
-              {renderAvatar(conversation)}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex flex-1 items-center gap-2">
-                    <h3 className={`min-w-0 truncate text-base font-black ${isUnread ? 'text-red-600' : 'text-gray-900'}`}>{displayName}</h3>
-                    {typeLabel && (
-                      <span className={`max-w-[118px] shrink-0 truncate rounded-full px-2 py-0.5 text-[10px] font-black ${isUnread ? 'bg-red-100 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
-                        {typeLabel}
-                      </span>
-                    )}
-                  </div>
-                  {listTime && (
-                    <span className={`shrink-0 text-[11px] ${isUnread ? 'font-black text-red-500' : 'text-gray-400'}`}>{listTime}</span>
-                  )}
-                </div>
-                {previewText && (
-                  <p className={`mt-1 truncate text-sm ${isUnread ? 'font-semibold text-red-600' : 'text-gray-500'}`}>
-                    {previewText}
-                  </p>
-                )}
-              </div>
-              {isUnread && (
-                <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-black text-white">
-                  {unreadCount > 9 ? '9+' : unreadCount}
-                </span>
-              )}
-              <ChevronRight size={18} className={isUnread ? 'text-red-400' : 'text-gray-300'} />
-            </button>
+           const displayName = getConversationDisplayName(conversation);
+           const previewText = getConversationPreview(conversation, displayName);
+           const listTime = formatConversationListTime(getConversationActivityAt(conversation));
+           const typeLabel = getConversationTypeLabel(conversation, displayName);
+           const previewLine = previewText || typeLabel || 'Tin nhắn mới';
+           return (
+             <button
+               key={conversation.id}
+               type="button"
+               onClick={() => handleSelectConversation(conversation)}
+               className={`mb-1.5 flex w-full items-center gap-2 rounded-2xl border px-2.5 py-2 text-left transition ${isUnread ? 'border-emerald-100 bg-white shadow-sm shadow-emerald-50' : 'border-transparent bg-white hover:bg-gray-50'}`}
+             >
+               {renderAvatar(conversation)}
+               <div className="min-w-0 flex-1">
+                 <p className={`truncate text-sm leading-5 text-gray-900 ${isUnread ? 'font-semibold' : 'font-normal'}`}>
+                   <span className={isUnread ? 'font-black' : 'font-bold'}>{displayName}</span>
+                   <span className="mx-1 text-gray-300">-</span>
+                   <span className={isUnread ? 'font-semibold' : 'font-normal'}>{previewLine}</span>
+                 </p>
+                 <p className={`mt-0.5 truncate text-[11px] leading-4 ${isUnread ? 'font-semibold text-gray-500' : 'font-normal text-gray-400'}`}>
+                   {listTime || 'Mới cập nhật'}
+                 </p>
+               </div>
+               {isUnread && (
+                 <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-black text-white">
+                   {unreadCount > 9 ? '9+' : unreadCount}
+                 </span>
+               )}
+             </button>
           );
         })}
         {filteredConversations.length === 0 && (
@@ -44878,8 +45575,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         </div>
       )}
 
-      <div className="bg-gradient-to-br from-slate-900 to-slate-700 text-white rounded-2xl p-5 shadow-md">
-        <div className="mb-1 flex flex-wrap items-center gap-2">
+      <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 text-white rounded-2xl p-5 shadow-md">
+        <div className="mb-1 flex flex-wrap items-center justify-center gap-2 text-center">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-200">Tổng kết ngày</p>
           <label className="relative inline-flex cursor-pointer items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-black text-white shadow-inner transition hover:bg-white/15">
             {formatCompactDateLabel(filterDate)}
@@ -44895,14 +45592,14 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
             />
           </label>
         </div>
-        <h3 className={`text-3xl font-black ${balance < 0 ? 'text-red-300' : 'text-white'}`}>{formatCurrency(balance)} đ</h3>
-        <p className="text-slate-300 text-xs mt-1">Chênh lệch thu chi trong ngày</p>
+        <h3 className={`text-center text-3xl font-black ${balance < 0 ? 'text-red-300' : 'text-white'}`}>{formatCurrency(balance)} đ</h3>
+        <p className="mt-1 text-center text-xs text-emerald-100">Chênh lệch thu chi trong ngày</p>
         <div className="grid grid-cols-2 gap-3 mt-4">
-          <div className="bg-orange-500/10 border border-orange-300/20 rounded-xl p-3">
+          <div className="rounded-xl border border-orange-200/30 bg-orange-400/15 p-3 text-center">
             <p className="text-[10px] uppercase font-bold text-orange-200 mb-1">Tổng chi</p>
             <p className="text-lg font-black text-orange-100">{formatCurrency(totalExpense)} đ</p>
           </div>
-          <div className="bg-emerald-500/10 border border-emerald-300/20 rounded-xl p-3">
+          <div className="rounded-xl border border-emerald-200/30 bg-emerald-400/15 p-3 text-center">
             <p className="text-[10px] uppercase font-bold text-emerald-200 mb-1">Tổng thu</p>
             <p className="text-lg font-black text-emerald-100">{formatCurrency(totalIncome)} đ</p>
           </div>
@@ -47171,46 +47868,48 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
             </div>
           )}
           {selectedCustomer && (
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-3 gap-1.5">
               <a
                 href={selectedCustomerPhoneHref || undefined}
+                title={selectedCustomerPhone ? `Gọi ${selectedCustomerPhone}` : 'Chưa có số điện thoại'}
+                aria-label={selectedCustomerPhone ? `Gọi ${selectedCustomerPhone}` : 'Chưa có số điện thoại'}
                 onClick={(event) => {
                   if (!selectedCustomerPhoneHref) event.preventDefault();
                 }}
-                className={`flex min-h-[58px] min-w-0 flex-col items-center justify-center rounded-2xl border px-1.5 py-2 text-center shadow-sm ${
+                className={`flex min-h-[48px] min-w-0 items-center justify-center rounded-2xl border px-2 py-1.5 text-center shadow-sm ${
                   selectedCustomerPhoneHref
                     ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
                     : 'border-slate-100 bg-slate-50 text-slate-400'
                 }`}
               >
-                <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wide">
-                  <Phone size={12} /> Số ĐT
+                <span className="flex min-w-0 items-center gap-1 text-[11px] font-normal leading-4">
+                  <Phone size={16} className="shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 truncate">{selectedCustomerPhone || 'Chưa có'}</span>
                 </span>
-                <span className="mt-1 w-full truncate text-xs font-extrabold">{selectedCustomerPhone || 'Chưa có'}</span>
               </a>
               <a
                 href={selectedCustomerLocationUrl || undefined}
                 target="_blank"
                 rel="noopener noreferrer"
+                title={selectedCustomerLocationLabel || 'Chưa có vị trí'}
+                aria-label={selectedCustomerLocationLabel ? `Mở vị trí ${selectedCustomerLocationLabel}` : 'Chưa có vị trí'}
                 onClick={(event) => {
                   if (!selectedCustomerLocationUrl) event.preventDefault();
                 }}
-                className={`flex min-h-[58px] min-w-0 flex-col items-center justify-center rounded-2xl border px-1.5 py-2 text-center shadow-sm ${
+                className={`flex min-h-[48px] min-w-0 items-center justify-center rounded-2xl border px-2 py-1.5 text-center shadow-sm ${
                   selectedCustomerLocationUrl
                     ? 'border-sky-100 bg-sky-50 text-sky-700'
                     : 'border-slate-100 bg-slate-50 text-slate-400'
                 }`}
               >
-                <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wide">
-                  <MapPin size={12} /> Vị trí
+                <span className="flex min-w-0 items-center gap-1 text-[11px] font-normal leading-4">
+                  <MapPin size={16} className="shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 truncate">{selectedCustomerLocationLabel || 'Chưa có'}</span>
                 </span>
-                <span className="mt-1 w-full truncate text-xs font-extrabold">{selectedCustomerLocationLabel || 'Chưa có'}</span>
               </a>
-              <div className="flex min-h-[58px] min-w-0 flex-col items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 px-1.5 py-2 text-center text-rose-700 shadow-sm">
-                <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wide">
-                  <CreditCard size={12} /> Công nợ cũ
-                </span>
-                <span className="mt-1 w-full truncate text-xs font-extrabold">
+              <div className="flex min-h-[48px] min-w-0 flex-col items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 px-1.5 py-1.5 text-center text-rose-700 shadow-sm">
+                <span className="text-[11px] font-normal uppercase tracking-wide">Nợ cũ</span>
+                <span className="mt-0.5 w-full truncate text-[11px] font-normal leading-4">
                   {selectedCustomerDebtInfo.debt > 0
                     ? `${formatCurrency(selectedCustomerDebtInfo.debt)} đ`
                     : selectedCustomerDebtInfo.credit > 0
@@ -47232,10 +47931,16 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 ))}
               </datalist>
               <div className="space-y-2">
+                <div className="grid grid-cols-[1.18fr_0.9fr_0.9fr_0.8fr] gap-1 rounded-2xl border border-slate-100 bg-slate-50 px-1 py-2 text-center text-xs font-black uppercase tracking-wide text-slate-500">
+                  <span>Loại</span>
+                  <span>Kg</span>
+                  <span>Con</span>
+                  <span>Bọc</span>
+                </div>
                 {actualRows.map((row) => {
                   const isManualRow = !row.dispatchId;
                   return (
-                    <div key={row.rowKey} className="grid grid-cols-[0.9fr_1.18fr_0.9fr_0.8fr_0.82fr] gap-1">
+                    <div key={row.rowKey} className="grid grid-cols-[1.18fr_0.9fr_0.9fr_0.8fr] items-center gap-1 text-center text-xs font-semibold">
                       <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-2 text-center">
                         {isManualRow ? (
                           <input
@@ -47245,13 +47950,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                             onKeyDown={handleDeliveryEnterNext}
                             data-delivery-enter="true"
                             placeholder="Loại hàng"
-                            className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
+                            className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                           />
                         ) : (
-                          <span className="truncate text-sm font-semibold leading-tight text-slate-800">{row.productNameInput}</span>
+                          <span className="truncate text-xs font-semibold leading-tight text-slate-800">{row.productNameInput}</span>
                         )}
                       </label>
-                      <label className="flex h-11 min-w-0 items-center justify-center gap-0.5 rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
+                      <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
                         <input
                           type="tel"
                           value={row.actualWeight}
@@ -47259,21 +47964,19 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                           onKeyDown={handleDeliveryEnterNext}
                           data-delivery-enter="true"
                           placeholder="Kg"
-                          className="h-full min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-right text-[13px] font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-center placeholder:text-slate-300 focus:ring-0"
+                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                         />
-                        {row.actualWeight && <span className="pointer-events-none shrink-0 text-[9px] font-black text-slate-400">kg</span>}
                       </label>
-                      <label className="flex h-11 min-w-0 items-center justify-center gap-0.5 rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
+                      <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
                         <input
                           type="tel"
                           value={row.actualQuantity}
                           onChange={(event) => updateActualRow(row.rowKey, { actualQuantity: event.target.value.replace(',', '.') })}
                           onKeyDown={handleDeliveryEnterNext}
                           data-delivery-enter="true"
-                          placeholder={row.actualQuantityUnit || 'Con'}
-                          className="h-full min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-right text-[13px] font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-center placeholder:text-slate-300 focus:ring-0"
+                          placeholder="Con"
+                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                         />
-                        {row.actualQuantity && <span className="pointer-events-none shrink-0 truncate text-[9px] font-black text-slate-400">{row.actualQuantityUnit || 'Con'}</span>}
                       </label>
                       <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1.5 text-center">
                         <input
@@ -47282,21 +47985,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                           onChange={(event) => updateActualRow(row.rowKey, { actualPackageCount: event.target.value.replace(',', '.') })}
                           onKeyDown={handleDeliveryEnterNext}
                           data-delivery-enter="true"
-                          placeholder="SL"
+                          placeholder="Bọc"
                           aria-label="Số lượng bao bọc túi"
-                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
+                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                         />
-                      </label>
-                      <label className="relative flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1.5 text-center">
-                        <select
-                          value={row.actualPackageUnit || 'Bọc'}
-                          onChange={(event) => updateActualRow(row.rowKey, { actualPackageUnit: event.target.value })}
-                          aria-label="Loại bao bọc túi"
-                          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                        >
-                          {deliveryQuantityUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
-                        </select>
-                        <p className="pointer-events-none truncate text-sm font-semibold leading-tight text-slate-800">{row.actualPackageUnit || 'Bọc'}</p>
                       </label>
                     </div>
                   );
@@ -47373,7 +48065,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                   <p className="text-[11px] font-black uppercase tracking-[0.18em] text-orange-700">Chi chuyến</p>
                   <p className="truncate text-[10px] font-bold text-slate-400">Xăng dầu, mua đá, sửa xe, bốc xếp...</p>
                 </div>
-                {standaloneExpensePhotoUrl && <span className="rounded-full bg-orange-50 px-2 py-1 text-[10px] font-black text-orange-700">Có ảnh</span>}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <label className="flex h-11 items-center justify-center rounded-2xl border border-orange-100 bg-white px-3 text-center">
@@ -47423,50 +48114,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                   className="h-full w-full appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                 />
               </label>
-              {canUploadDeliveryPhoto && (
-                <div className="grid grid-cols-[1fr_1.2fr] gap-2">
-                  <input
-                    ref={standaloneExpensePhotoInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => handleStandaloneExpensePhotoChange(event.target.files?.[0])}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => standaloneExpensePhotoInputRef.current?.click()}
-                    disabled={isReadingStandaloneExpensePhoto}
-                    className="flex items-center justify-center gap-2 rounded-xl bg-orange-50 px-3 py-2.5 text-xs font-black text-orange-700 disabled:opacity-60"
-                  >
-                    {isReadingStandaloneExpensePhoto ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
-                    Ảnh
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveStandaloneDeliveryExpense}
-                    disabled={isSaving || parseInputCurrency(standaloneExpenseAmount) <= 0}
-                    className="rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-3 py-2.5 text-xs font-black text-white shadow-lg shadow-orange-500/20 disabled:opacity-60"
-                  >
-                    Lưu chi chuyến
-                  </button>
-                </div>
-              )}
-              {!canUploadDeliveryPhoto && (
-                <button
-                  type="button"
-                  onClick={handleSaveStandaloneDeliveryExpense}
-                  disabled={isSaving || parseInputCurrency(standaloneExpenseAmount) <= 0}
-                  className="w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-3 py-2.5 text-xs font-black text-white shadow-lg shadow-orange-500/20 disabled:opacity-60"
-                >
-                  Lưu chi chuyến
-                </button>
-              )}
-              {standaloneExpensePhotoUrl && (
-                <div className="overflow-hidden rounded-2xl border border-orange-100 bg-white">
-                  <img src={standaloneExpensePhotoUrl} alt="Ảnh chi chuyến" className="h-32 w-full object-cover" />
-                  <button type="button" onClick={() => setStandaloneExpensePhotoUrl('')} className="w-full bg-white py-2 text-xs font-bold text-slate-500">Bỏ ảnh này</button>
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -47503,32 +48150,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 <p className="pointer-events-none truncate text-sm font-semibold leading-tight text-slate-800">{returnQuantityUnit}</p>
               </label>
             </div>
-            {canUploadDeliveryPhoto && (
-              <div>
-                <input
-                  ref={returnPhotoInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => handleReturnPhotoChange(event.target.files?.[0])}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => returnPhotoInputRef.current?.click()}
-                  disabled={isReadingReturnPhoto}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-3 py-2.5 text-xs font-black text-white shadow-lg shadow-orange-500/20 disabled:opacity-60"
-                >
-                  {isReadingReturnPhoto ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
-                  Ảnh trả hàng
-                </button>
-              </div>
-            )}
-            {returnPhotoUrl && (
-              <div className="overflow-hidden rounded-2xl border border-orange-100 bg-white">
-                <img src={returnPhotoUrl} alt="Ảnh trả hàng" className="h-36 w-full object-cover" />
-                <button type="button" onClick={() => setReturnPhotoUrl('')} className="w-full bg-white py-2 text-xs font-bold text-slate-500">Bỏ ảnh này</button>
-              </div>
-            )}
           </div>
         )}
 
@@ -47616,11 +48237,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-center">
-          <div className="rounded-2xl bg-cyan-50 px-2 py-3">
-            <p className="text-[10px] font-black uppercase tracking-wide text-cyan-700">Đơn hàng giao</p>
-            <p className="mt-1 text-lg font-black text-slate-900">{reportCustomerGroups.length}</p>
-          </div>
+        <div className="grid grid-cols-2 gap-2 text-center">
           <div className="rounded-2xl bg-emerald-50 px-2 py-3">
             <p className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Thu</p>
             <p className="mt-1 text-sm font-black text-emerald-700">{formatCurrency(groupedDeliveryCollectedTotal)} đ</p>
@@ -50650,6 +51267,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const dispatchQuantityUnitOptions = ['Con', 'Cái', 'Bộ', 'Bọc', 'Bao', 'Thùng', 'Can', 'Túi', 'Kg'];
   const createEmptyDispatchDraft = (assignedDriverId = '') => ({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', weightEntries: [], assignedDriverId, note: '', transcript: '' });
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
+  const [dispatchDriverSelectionTouched, setDispatchDriverSelectionTouched] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState('');
   const [dispatchError, setDispatchError] = useState('');
   const [isSavingDispatch, setIsSavingDispatch] = useState(false);
@@ -50753,6 +51371,33 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const driverOptions = useMemo(() => (employees || [])
     .filter(emp => !emp?.isArchived && isEmployeeDeliveryParticipant(emp))
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi')), [employees]);
+  const preferredDispatchDriverIdsByCustomer = useMemo(() => {
+    const driverIdSet = new Set(driverOptions.map(driver => driver.id));
+    const customerDriverScores = new Map();
+
+    (warehouseDispatches || []).forEach((dispatch) => {
+      if (!dispatch || dispatch.isArchived || !dispatch.customerId) return;
+      const assignmentIds = getDeliveryAssignmentIds(dispatch).filter(driverId => driverIdSet.has(driverId));
+      if (!assignmentIds.length) return;
+
+      const driverScores = customerDriverScores.get(dispatch.customerId) || new Map();
+      assignmentIds.forEach((driverId, index) => {
+        const previous = driverScores.get(driverId) || { count: 0, latest: 0 };
+        driverScores.set(driverId, {
+          count: previous.count + (index === 0 ? 1 : 0.5),
+          latest: Math.max(previous.latest, getEntityTimestamp(dispatch) || 0)
+        });
+      });
+      customerDriverScores.set(dispatch.customerId, driverScores);
+    });
+
+    return new Map(Array.from(customerDriverScores.entries()).map(([customerId, driverScores]) => [
+      customerId,
+      Array.from(driverScores.entries())
+        .sort((a, b) => b[1].count - a[1].count || b[1].latest - a[1].latest)
+        .map(([driverId]) => driverId)
+    ]));
+  }, [driverOptions, warehouseDispatches]);
   const getDispatchDriverId = (source = {}) => getPrimaryDeliveryAssignmentId(source);
   const getDispatchDriverName = (source = {}) => {
     const driverId = getDispatchDriverId(source);
@@ -51047,6 +51692,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   };
   const selectedDispatchCustomer = customerLookup.get(dispatchDraft.customerId) || null;
   const selectedDispatchProduct = productLookup.get(dispatchDraft.productId) || null;
+  const preferredDispatchDriverId = selectedDispatchCustomer?.id
+    ? (preferredDispatchDriverIdsByCustomer.get(selectedDispatchCustomer.id) || [])[0] || ''
+    : '';
+  const suggestedDispatchDriver = preferredDispatchDriverId ? employeeLookup.get(preferredDispatchDriverId) : null;
+  const effectiveDispatchDriverId = dispatchDriverSelectionTouched
+    ? `${dispatchDraft.assignedDriverId || ''}`.trim()
+    : `${dispatchDraft.assignedDriverId || preferredDispatchDriverId || ''}`.trim();
   const dispatchCustomerSearchKeyword = normalizeLookupText(dispatchDraft.customerSearch || '');
   const dispatchProductSearchKeyword = normalizeLookupText(dispatchDraft.productSearch || '');
   const dispatchCustomerOrderRows = useMemo(() => {
@@ -51853,6 +52505,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     setDispatchPickerOpen('');
     setShowWeightEntriesModal(false);
     setWeightEntriesDraft(['']);
+    setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => createEmptyDispatchDraft(prev.assignedDriverId || ''));
     setDispatchError('');
     setDispatchStatus('');
@@ -52864,10 +53517,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const product = { name: orderDefaults.productSearch || '' };
     const pieceCount = parseLooseQuantityValue(orderDefaults.pieceCount);
     const weightKg = 0;
+    setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => ({
       ...prev,
       customerId,
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
+      assignedDriverId: prev.customerId === customerId ? prev.assignedDriverId : '',
       productId: orderDefaults.productId,
       productSearch: orderDefaults.productSearch,
       pieceCount: orderDefaults.pieceCount,
@@ -53091,7 +53746,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const orderRequestUnitPrice = getDispatchOrderRowUnitPrice(matchedOrderRow) || parseLooseMoneyValue(dispatchDraft.unitPrice ?? dispatchDraft.price);
     const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
-    const assignedDriverId = `${dispatchDraft.assignedDriverId || ''}`.trim();
+    const assignedDriverId = effectiveDispatchDriverId;
     const assignedDriver = assignedDriverId ? employeeLookup.get(assignedDriverId) : null;
     const assignedDriverName = assignedDriver?.name || '';
     if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
@@ -53147,6 +53802,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     );
     setDispatchError('');
     setDispatchPickerOpen('');
+    setDispatchDriverSelectionTouched(false);
     setDispatchDraft(createEmptyDispatchDraft(assignedDriverId));
     } catch (error) {
       setDispatchError(error?.message || 'Không thể lưu phiếu xuất kho. Vui lòng thử lại.');
@@ -53561,23 +54217,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       {canCreate && (
         <div className="order-1 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <form onSubmit={handleSubmitDispatch} className="space-y-3">
-            {canAssignDriver && (
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-sky-100 bg-sky-50/70 p-2">
-                <select
-                  value={dispatchDraft.assignedDriverId || ''}
-                  onChange={(e) => setDispatchDraft(prev => ({ ...prev, assignedDriverId: e.target.value }))}
-                  className="min-w-0 rounded-xl border border-white bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-sky-300"
-                  aria-label="Chọn nhân sự giao hàng"
-                >
-                  <option value="">Không chọn nhân sự</option>
-                  {driverOptions.map(driver => (
-                    <option key={driver.id} value={driver.id}>{driver.name}</option>
-                  ))}
-                </select>
-                <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-sky-700">Giao hàng</span>
-              </div>
-            )}
-
             <div className="grid grid-cols-2 gap-3">
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
@@ -53590,11 +54229,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                     window.setTimeout(() => event.target.select(), 0);
                   }}
                   onClick={() => setDispatchPickerOpen('customer')}
-                  onChange={(e) => setDispatchDraft(prev => ({
-                    ...prev,
-                    customerId: '',
-                    customerSearch: capitalizeFirstPreservingSpacing(e.target.value)
-                  }))}
+                  onChange={(e) => {
+                    setDispatchDriverSelectionTouched(false);
+                    setDispatchDraft(prev => ({
+                      ...prev,
+                      customerId: '',
+                      assignedDriverId: '',
+                      customerSearch: capitalizeFirstPreservingSpacing(e.target.value)
+                    }));
+                  }}
                   className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-10 pr-9 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500"
                   placeholder="Tên KH"
                   aria-label="Tìm tên khách hàng"
@@ -53716,6 +54359,33 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
               </button>
             </div>
 
+            {canAssignDriver && (
+              <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-2">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                  <select
+                    value={effectiveDispatchDriverId}
+                    onChange={(e) => {
+                      setDispatchDriverSelectionTouched(true);
+                      setDispatchDraft(prev => ({ ...prev, assignedDriverId: e.target.value }));
+                    }}
+                    className="min-w-0 rounded-xl border border-white bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-sky-300"
+                    aria-label="Chọn nhân sự giao hàng"
+                  >
+                    <option value="">Không chọn nhân sự</option>
+                    {driverOptions.map(driver => (
+                      <option key={driver.id} value={driver.id}>{driver.name}</option>
+                    ))}
+                  </select>
+                  <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-sky-700">Giao hàng</span>
+                </div>
+                {suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId && (
+                  <p className="mt-1 px-1 text-[11px] font-semibold text-sky-700">
+                    Gợi ý theo khách: {suggestedDispatchDriver.name}
+                  </p>
+                )}
+              </div>
+            )}
+
             {dispatchError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchError}</div>}
 
             <div className="flex gap-3">
@@ -53806,26 +54476,25 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
 
       {todayDispatchRows.length > 0 ? (
         <div ref={dispatchListRef} className="order-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-600">Xuất kho trong ngày</p>
-                <label className="relative inline-flex shrink-0 items-center rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700 shadow-sm">
-                  {formatCompactDateLabel(workingDate)}
-                  <input
-                    type="date"
-                    value={workingDate}
-                    onChange={(event) => setWorkingDate(event.target.value || getTodayString())}
-                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                    aria-label="Chọn ngày xuất kho"
-                  />
-                </label>
-              </div>
-              <p className="mt-2 text-xs font-bold text-slate-500">
-                Tổng {dispatchSummary.totalCustomers} khách • {dispatchSummary.totalLines} đơn • {formatNumber(dispatchSummary.totalWeight)} kg
-              </p>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-600">DS xuất kho - Ngày</p>
+              <label className="relative inline-flex shrink-0 items-center rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700 shadow-sm">
+                {formatCompactDateLabel(workingDate)}
+                <input
+                  type="date"
+                  value={workingDate}
+                  onChange={(event) => setWorkingDate(event.target.value || getTodayString())}
+                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  aria-label="Chọn ngày xuất kho"
+                />
+              </label>
             </div>
-            <div className="shrink-0 flex flex-wrap items-center justify-end gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <p className="min-w-0 flex-1 text-xs font-bold text-slate-500">
+                Tổng {dispatchSummary.totalCustomers} khách • {dispatchSummary.totalLines} đơn
+              </p>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               {(isDispatchListSearchOpen || dispatchListSearch) ? (
                 <div className="flex min-w-[180px] max-w-[58vw] items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm">
                   <Search size={15} className="shrink-0 text-emerald-600" />
@@ -53858,15 +54527,16 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                   aria-label="Mở tìm kiếm phiếu xuất kho"
                 >
                   <Search size={14} />
-                  Tìm
+                  Tìm kiếm
                 </button>
               )}
               {canShare && (
                 <button type="button" onClick={() => handleShareDispatchSheet()} disabled={isDispatchExporting} className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60">
                   <Send size={14} />
-                  {isDispatchExporting ? 'Dang chuan bi...' : 'Chia se'}
+                  {isDispatchExporting ? 'Dang chuan bi...' : 'Chia sẻ'}
                 </button>
               )}
+              </div>
             </div>
           </div>
 
@@ -57309,8 +57979,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
       {showForm && (
         <div className="hd-order-request-modal-layer fixed inset-0 z-[120] bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
-          <div className="hd-order-request-modal-panel w-full max-w-5xl max-h-[calc(100dvh-1rem)] bg-white rounded-[28px] shadow-2xl overflow-hidden">
-            <div className={`border-b border-gray-100 flex items-start justify-between gap-4 ${isCompactManualDetailStage ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
+          <div className="hd-order-request-modal-panel flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden">
+            <div className={`shrink-0 border-b border-gray-100 flex items-start justify-between gap-4 ${isCompactManualDetailStage ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
               <div>
                 <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-emerald-600">{isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên Đơn Đặt'}</p>
                 {(isEditingRequest || isModeSelectionStage || isManualSetupStage || orderEntryMode === 'voice') && (
@@ -57330,9 +58000,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               </button>
             </div>
 
-            <form onSubmit={handleSubmitOrderRequests} className={`flex flex-col ${isCompactManualDetailStage ? 'max-h-[calc(100dvh-4rem)] min-h-[min(62dvh,560px)]' : 'max-h-[calc(100dvh-5.75rem)] min-h-[min(70dvh,620px)]'}`}>
+            <form onSubmit={handleSubmitOrderRequests} className="flex min-h-0 flex-1 flex-col overflow-hidden">
               {isModeSelectionStage && (
-                <div className="flex-1 overflow-y-auto p-5 bg-slate-50">
+                <div className="min-h-0 flex-1 overflow-y-auto p-5 bg-slate-50">
                   {(availableCustomers.length === 0 || activeProducts.length === 0) && (
                     <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
                       {availableCustomers.length === 0
@@ -57364,7 +58034,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {isManualSetupStage && primaryDraft && primaryDraftItem && (
-                <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-slate-50">
+                <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-slate-50">
                   <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm space-y-4">
                     <div className="space-y-2 relative">
                       <label className="block text-[11px] font-bold uppercase text-gray-500">Họ tên khách hàng</label>
@@ -57539,7 +58209,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               {isOrderDetailStage && (
                 <>
               <div
-                className={`flex-1 overflow-y-auto bg-slate-50 ${isCompactManualDetailStage ? 'space-y-2 px-2 pt-1.5 pb-28' : 'space-y-4 p-5'}`}
+                className={`min-h-0 flex-1 overflow-y-auto bg-slate-50 ${isCompactManualDetailStage ? 'space-y-2 px-2 pt-1.5 pb-28' : 'space-y-4 p-5'}`}
                 style={isCompactManualDetailStage ? { paddingBottom: `${compactOrderFormBodyBottomPadding}px` } : undefined}
               >
                 {orderVoiceStatus && (
@@ -58010,7 +58680,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               </div>
 
               <div
-                className={`border-t border-slate-200 bg-white space-y-3 ${
+                className={`shrink-0 border-t border-slate-200 bg-white space-y-3 ${
                   isCompactManualDetailStage
                     ? 'sticky z-[130] rounded-t-3xl px-3 py-2 pb-[calc(env(safe-area-inset-bottom)+10px)] shadow-[0_-18px_36px_rgba(15,23,42,0.16)]'
                     : 'p-4 pb-[calc(env(safe-area-inset-bottom)+28px)]'
@@ -58059,7 +58729,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {!isOrderDetailStage && (
-                <div className="border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
+                <div className="shrink-0 border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
                   <div className="flex gap-3">
                     <button type="button" onClick={closeOrderRequestForm} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700">Hủy</button>
                     {isManualSetupStage && (
@@ -59616,40 +60286,73 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     }
     if (!selectedOrder) return;
     const title = `${formatOrderCode(selectedOrder.id)} - ${selectedOrder.customer?.name || 'Hóa đơn'}`;
-    setOrderShareStatus('Đang tạo ảnh hóa đơn...');
+    const shareSpan = createPerformanceSpan('share_invoice.total', {
+      orderId: selectedOrder.id,
+      channel
+    });
+    const readSpan = createPerformanceSpan('share_invoice.read_data', {
+      orderId: selectedOrder.id,
+      source: 'in_memory_cache'
+    });
+    let readSpanClosed = false;
     try {
-      let orderForShare = selectedOrder;
-      if (!getOrderPayosPaymentSource(orderForShare) || !isOrderPaymentSourceAlignedWithTransferProfile(orderForShare, currentCompany)) {
-        if (typeof onEnsureOrderPayosPayment !== 'function') {
-          throw new Error('Chưa có chức năng tạo mã QR SePay cho hóa đơn này.');
-        }
-        setOrderShareStatus('Đang tạo mã QR SePay theo tài khoản nhận mới...');
-        const ensureResult = await onEnsureOrderPayosPayment(selectedOrder.id);
-        if (!ensureResult?.success) {
-          throw new Error(ensureResult?.message || 'Chưa tạo được mã QR SePay cho hóa đơn này.');
-        }
-        orderForShare = ensureResult.order || selectedOrder;
-      }
-      const blob = await drawSalesInvoiceShareImage({
-        order: orderForShare,
-        company: currentCompany,
+      const cachedAsset = getCachedOrderShareAsset(selectedOrder, currentCompany, {
         customers,
         orders,
         payments
       });
-      const result = await shareBlobFile({
-        filename: `${sanitizeShareFileName(formatOrderCode(selectedOrder.id))}-hoa-don-ban-hang.png`,
-        blob,
-        title,
-        text: `Hóa đơn ${formatOrderCode(selectedOrder.id)}`,
-        dialogTitle: channel === 'native' ? 'Chia sẻ hóa đơn' : `Chia sẻ qua ${getShareChannelLabel(channel)}`
+      readSpan.end({ status: cachedAsset ? 'cache_hit' : 'cache_miss' });
+      readSpanClosed = true;
+      let asset = cachedAsset;
+      if (!asset) {
+        setOrderShareStatus('Đang chuẩn bị ảnh hóa đơn lần đầu...');
+        asset = await warmOrderShareAssetCache({
+          order: selectedOrder,
+          company: currentCompany,
+          customers,
+          orders,
+          payments,
+          ensurePayment: onEnsureOrderPayosPayment,
+          reason: 'share_click_cache_miss'
+        });
+      } else {
+        recordPerformanceEvent('share_invoice.cache_ready', {
+          orderId: selectedOrder.id,
+          reason: 'share_click_cache_hit'
+        });
+      }
+      if (!asset?.blob) {
+        throw new Error('Chưa chuẩn bị được ảnh hóa đơn. Vui lòng thử lại sau vài giây.');
+      }
+      const shareApiSpan = createPerformanceSpan('share_invoice.native_share', {
+        orderId: selectedOrder.id,
+        channel,
+        cacheHit: Boolean(cachedAsset)
       });
+      let result;
+      try {
+        result = await shareBlobFile({
+          filename: `${sanitizeShareFileName(formatOrderCode(selectedOrder.id))}-hoa-don-ban-hang.png`,
+          blob: asset.blob,
+          title,
+          text: `Hóa đơn ${formatOrderCode(selectedOrder.id)}`,
+          dialogTitle: channel === 'native' ? 'Chia sẻ hóa đơn' : `Chia sẻ qua ${getShareChannelLabel(channel)}`
+        });
+        shareApiSpan.end({ status: result?.status || 'unknown' });
+      } catch (error) {
+        shareApiSpan.fail(error);
+        throw error;
+      }
       if (result.status === 'downloaded' || result.status === 'saved') {
         setOrderShareStatus('Đã tạo ảnh hóa đơn. Nếu máy không mở bảng chia sẻ, file đã được lưu/tải xuống.');
+        shareSpan.end({ status: result.status, cacheHit: Boolean(cachedAsset) });
         return;
       }
       setOrderShareStatus(resolveShareStatusMessage(result, channel));
+      shareSpan.end({ status: result?.status || 'unknown', cacheHit: Boolean(cachedAsset) });
     } catch (error) {
+      if (!readSpanClosed) readSpan.fail(error);
+      shareSpan.fail(error);
       setOrderShareStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tạo ảnh hóa đơn.'));
     }
   };
@@ -60624,29 +61327,31 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         </div>
       )}
 
-      <div className="overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-4 text-white shadow-sm">
+      <div className="overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-3 text-white shadow-sm">
         <div>
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] font-black uppercase tracking-[0.28em] text-white/75">Doanh thu ngày</p>
-            <input
-              type="date"
-              aria-label="Chọn ngày xem doanh thu đơn hàng"
-              value={selectedRevenueDate}
-              onChange={(event) => setOrderDateFilter(event.target.value || getTodayString())}
-              className="w-[132px] rounded-xl bg-white/15 px-2.5 py-2 text-xs font-black text-white outline-none backdrop-blur [color-scheme:dark] sm:w-[160px]"
-            />
+            <div className="relative w-[132px] rounded-xl border border-white/25 bg-white/10 sm:w-[160px]">
+              <span className="pointer-events-none block px-2.5 py-1.5 text-right text-xs font-normal text-white">
+                {formatCompactDateLabel(selectedRevenueDate)}
+              </span>
+              <input
+                type="date"
+                aria-label="Chọn ngày xem doanh thu đơn hàng"
+                value={selectedRevenueDate}
+                onChange={(event) => setOrderDateFilter(event.target.value || getTodayString())}
+                className="order-revenue-date-input absolute inset-0 h-full w-full cursor-pointer opacity-0 outline-none"
+              />
+            </div>
           </div>
-          <h2 className="mt-2 text-3xl font-black tracking-tight">{formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ</h2>
-          <p className="mt-1 text-sm font-semibold text-white/85">
-            {formatDateLabel(selectedRevenueDate)} • {dailyOrderRevenueSummary.count} đơn hàng
-          </p>
+          <h2 className="mt-1 text-center text-[14px] font-black tracking-tight">{formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ</h2>
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2 text-center">
-          <div className="rounded-2xl bg-white/14 px-3 py-2 backdrop-blur">
+        <div className="mt-1 grid grid-cols-2 gap-2 text-center">
+          <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Đã thu</p>
             <p className="mt-1 text-sm font-black">{formatCurrency(dailyOrderRevenueSummary.paidRevenue)} đ</p>
           </div>
-          <div className="rounded-2xl bg-white/14 px-3 py-2 backdrop-blur">
+          <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Còn nợ</p>
             <p className="mt-1 text-sm font-black">{formatCurrency(dailyOrderRevenueSummary.outstandingRevenue)} đ</p>
           </div>
@@ -62149,7 +62854,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   <div className="flex justify-between items-center mb-2"><span className="text-sm text-gray-600">Tổng tiền hàng:</span><span className="font-semibold">{formatCurrency(subTotal)} đ</span></div>
                   <div className="flex justify-between items-center mb-3 pb-3 border-b border-gray-100">
                     <span className="text-sm text-gray-600">Giảm giá / C.Khấu:</span>
-                    <input type="tel" value={formatInputCurrency(newOrder.discount)} onChange={e=>setNewOrder({...newOrder, discount: parseInputCurrency(e.target.value)})} className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm text-right outline-none focus:ring-2 focus:ring-blue-500" placeholder="0 â‚«" />
+                    <input type="tel" value={formatInputCurrency(newOrder.discount)} onChange={e=>setNewOrder({...newOrder, discount: parseInputCurrency(e.target.value)})} className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm text-right outline-none focus:ring-2 focus:ring-blue-500" placeholder="0 ₫" />
                   </div>
 
                   <div className="mb-4 bg-gray-50 p-3 rounded-xl border border-gray-200">
@@ -62940,11 +63645,11 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 <div className="grid grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1">Giá vốn</label>
-                    <input type="tel" value={formatInputCurrency(prodData.costPrice)} onChange={e=>setProdData({...prodData, costPrice: parseInputCurrency(e.target.value)})} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" placeholder="0 â‚«"/>
+                    <input type="tel" value={formatInputCurrency(prodData.costPrice)} onChange={e=>setProdData({...prodData, costPrice: parseInputCurrency(e.target.value)})} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" placeholder="0 ₫"/>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1">Giá bán</label>
-                    <input required type="tel" value={formatInputCurrency(prodData.sellingPrice)} onChange={e=>setProdData({...prodData, sellingPrice: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white" placeholder="0 â‚«"/>
+                    <input required type="tel" value={formatInputCurrency(prodData.sellingPrice)} onChange={e=>setProdData({...prodData, sellingPrice: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white" placeholder="0 ₫"/>
                   </div>
                 </div>
                 
@@ -63171,7 +63876,7 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
   );
 }
 
-function CustomerCRMView({ employee, currentCompany, customers, orders, payments, customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
+function CustomerCRMView({ employee, currentCompany, customers, orders, payments, paymentReconciliations = [], customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
   const [showCustomerQuickActions, setShowCustomerQuickActions] = useState(false);
@@ -63406,6 +64111,8 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       openingPayableDate: ledger.openingPayableDate,
       openingPayableNote: ledger.openingPayableNote,
       purchaseImportAmount: ledger.purchaseImportAmount,
+      purchaseImports: ledger.purchaseImports,
+      companyOwesBeforeReconcile: ledger.companyOwesBeforeReconcile,
       reconciliationOffset: ledger.reconciliationOffset,
       reconciliationStatus: ledger.reconciliationStatus,
       reconciliationNetAmount: ledger.reconciliationNetAmount,
@@ -63674,6 +64381,137 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
     () => summarizeOrderReturnGoods({ returnGoods: selectedCustomerPendingReturnGoods }),
     [selectedCustomerPendingReturnGoods]
   );
+  const selectedCustomerReconciliationRows = useMemo(() => {
+    if (!selectedCustomer?.hasPurchaseReconciliation) return [];
+
+    const rows = [];
+    const customerId = `${selectedCustomer.id || ''}`.trim();
+    const customerPhone = normalizeCustomerPhone(selectedCustomer.phone || selectedCustomer.phoneNumber || '');
+    const customerNameKeys = [
+      selectedCustomer.displayName,
+      selectedCustomer.plainName,
+      selectedCustomer.name,
+      getCustomerDisplayName(selectedCustomer)
+    ].map(value => normalizeLookupText(value || '')).filter(value => value.length >= 3);
+    const customerOrderIds = new Set((selectedCustomer.orders || []).map(order => `${order?.id || ''}`.trim()).filter(Boolean));
+    const customerOrderRefs = new Set((selectedCustomer.orders || []).flatMap(order => [
+      order?.id,
+      order?.code,
+      order?.orderCode,
+      order?.invoiceCode,
+      formatOrderCode(order?.id)
+    ]).map(value => normalizeLookupText(value || '')).filter(Boolean));
+    const getRawDate = (record = {}) => record.date
+      || record.paymentDate
+      || record.transactionDate
+      || record.transactionDateTime
+      || record.paidAt
+      || record.transactionAt
+      || record.createdAt
+      || record.updatedAt
+      || '';
+    const getRowTime = (record = {}) => getPaymentTimestamp(record) || getEntityTimestamp(record) || parseEntityTimestampValue(getRawDate(record)) || 0;
+    const getRowDateLabel = (record = {}) => {
+      const dateKey = record.type === 'payment'
+        ? getPaymentDateKey(record)
+        : getDateKeyFromAnyValue(getRawDate(record));
+      return formatDateLabel(dateKey || getRawDate(record) || getTodayString());
+    };
+    const addRow = (row) => {
+      if (!row || row.amount <= 0) return;
+      rows.push({
+        ...row,
+        dateLabel: row.dateLabel || getRowDateLabel(row.source || {}),
+        time: row.time || getRowTime(row.source || {})
+      });
+    };
+
+    const openingPayableAmount = getCustomerOpeningPayableAmount(selectedCustomer);
+    if (openingPayableAmount > 0) {
+      addRow({
+        id: `opening_payable_${customerId}`,
+        title: 'Nợ cũ công ty với khách',
+        detail: selectedCustomer.openingPayableNote || 'Số dư công ty nợ khách từ trước khi dùng app.',
+        reference: 'Nợ cũ',
+        amount: openingPayableAmount,
+        amountLabel: 'Cty nợ/mua',
+        tone: 'indigo',
+        dateLabel: formatDateLabel(selectedCustomer.openingPayableDate || getTodayString()),
+        time: parseEntityTimestampValue(selectedCustomer.openingPayableDate) || 0,
+        source: selectedCustomer
+      });
+    }
+
+    (Array.isArray(selectedCustomer.purchaseImports) ? selectedCustomer.purchaseImports : []).forEach(item => {
+      const amount = parseLooseMoneyValue(item.amount ?? item.totalAmount ?? item.value ?? item.total);
+      addRow({
+        id: `purchase_${item.id || item.code || getEntityTimestamp(item) || rows.length}`,
+        title: 'Công ty mua hàng từ khách',
+        detail: item.note || item.description || item.productName || item.supplierName || 'Phiếu nhập hàng',
+        reference: item.code || item.invoiceCode || item.referenceCode || item.id || '',
+        amount,
+        amountLabel: 'Cty nợ/mua',
+        tone: 'indigo',
+        source: item
+      });
+    });
+
+    (Array.isArray(selectedCustomer.payments) ? selectedCustomer.payments : []).forEach(payment => {
+      const amount = parseLooseMoneyValue(payment.amount);
+      const appliedAmount = parseLooseMoneyValue(payment.appliedAmount);
+      addRow({
+        id: `payment_${payment.id || getPaymentTimestamp(payment) || rows.length}`,
+        title: appliedAmount > 0 ? 'Khách thanh toán và cấn trừ' : 'Khách thanh toán',
+        detail: payment.note || getPaymentSourceLabel(payment) || 'Khoản thu từ khách hàng',
+        reference: payment.orderCode || payment.invoiceCode || payment.orderId || payment.referenceCode || '',
+        amount,
+        amountLabel: appliedAmount > 0 ? `Đã cấn trừ ${formatCurrency(appliedAmount)} đ` : 'Đã thu',
+        tone: 'emerald',
+        source: payment
+      });
+    });
+
+    const pendingStatuses = new Set(['need_reconciliation', 'pending', 'unmatched', 'manual', 'awaiting_review', 'pending_review']);
+    (Array.isArray(paymentReconciliations) ? paymentReconciliations : []).forEach(item => {
+      const status = normalizeLookupText(item.status || item.reconciliationStatus || '').replace(/\s+/g, '_');
+      if (status && !pendingStatuses.has(status)) return;
+      const raw = item.webhookData && typeof item.webhookData === 'object' ? item.webhookData : {};
+      const candidateIds = [
+        item.customerId, item.linkedCustomerId, item.supplierCustomerId, item.customer?.id,
+        raw.customerId, raw.linkedCustomerId, raw.supplierCustomerId, raw.customer?.id
+      ].map(value => `${value || ''}`.trim()).filter(Boolean);
+      const candidateOrderIds = [item.orderId, item.invoiceId, raw.orderId, raw.invoiceId]
+        .map(value => `${value || ''}`.trim()).filter(Boolean);
+      const candidateRefs = [
+        item.orderCode, item.invoiceCode, item.payosOrderCode, item.sepayReferenceCode,
+        item.sepayCode, item.transactionId, item.bankTransactionId, item.referenceCode,
+        raw.orderCode, raw.invoiceCode, raw.referenceCode, raw.transactionId
+      ].map(value => normalizeLookupText(value || '')).filter(Boolean);
+      const candidatePhones = [item.phone, item.customerPhone, raw.phone, raw.customerPhone]
+        .map(value => normalizeCustomerPhone(value || '')).filter(Boolean);
+      const candidateTexts = [item.customerName, item.customerNameSnapshot, item.supplierName, item.description, item.note, raw.customerName, raw.description]
+        .map(value => normalizeLookupText(value || '')).filter(Boolean);
+      const isLinked = candidateIds.includes(customerId)
+        || candidateOrderIds.some(value => customerOrderIds.has(value))
+        || candidateRefs.some(value => customerOrderRefs.has(value) || [...customerOrderRefs].some(ref => value.includes(ref) || ref.includes(value)))
+        || candidatePhones.includes(customerPhone)
+        || candidateTexts.some(value => customerNameKeys.some(nameKey => value.includes(nameKey)));
+      if (!isLinked) return;
+      const amount = parseLooseMoneyValue(item.amount ?? item.transferAmount ?? item.offsetAmount ?? raw.amount ?? raw.transferAmount);
+      addRow({
+        id: `pending_${item.id || item.transactionId || item.sepayReferenceCode || rows.length}`,
+        title: 'Giao dịch chờ đối soát',
+        detail: item.reason || item.description || 'Cần ghép thủ công trước khi cấn trừ công nợ.',
+        reference: item.sepayReferenceCode || item.transactionId || item.referenceCode || '',
+        amount,
+        amountLabel: 'Chờ xử lý',
+        tone: 'amber',
+        source: item
+      });
+    });
+
+    return rows.sort((left, right) => (right.time || 0) - (left.time || 0));
+  }, [paymentReconciliations, selectedCustomer]);
   const customerEditPhoneDuplicate = useMemo(() => {
     const phoneKey = buildCustomerPhoneDuplicateKey(customerEditForm.phone);
     if (!phoneKey || !selectedCustomer) return null;
@@ -66048,6 +66886,71 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
             {customerOpeningDebtStatus && (
               <p className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{customerOpeningDebtStatus}</p>
             )}
+          </>
+          )}
+        </div>
+        )}
+
+        {canSeeCustomerDebt && selectedCustomer?.hasPurchaseReconciliation && (
+        <div className="bg-white rounded-2xl border border-cyan-100 p-4 shadow-sm space-y-3">
+          <button type="button" onClick={() => toggleCustomerDetailSection('reconciliation')} className="flex w-full items-start justify-between gap-3 text-left">
+            <div className="min-w-0">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2"><Wallet size={16} className="text-cyan-600" /> Lịch sử đối soát</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Các lần công ty mua hàng từ khách và cấn trừ với hóa đơn bán cho khách.</p>
+            </div>
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="rounded-full border border-cyan-100 bg-cyan-50 px-2.5 py-1 text-[11px] font-black text-cyan-700">
+                {selectedCustomerReconciliationRows.length} lần
+              </span>
+              {isCustomerDetailSectionOpen('reconciliation') ? <ChevronUp size={17} className="text-cyan-600" /> : <ChevronDown size={17} className="text-cyan-600" />}
+            </span>
+          </button>
+          {!isCustomerDetailSectionOpen('reconciliation') && (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl bg-indigo-50 px-2 py-2"><p className="text-[10px] font-bold uppercase text-indigo-500">Cty nợ/mua</p><p className="mt-1 text-xs font-black text-indigo-700">{formatCurrency(selectedCustomer.companyOwesBeforeReconcile ?? selectedCustomer.purchaseDebt ?? 0)} đ</p></div>
+              <div className="rounded-xl bg-emerald-50 px-2 py-2"><p className="text-[10px] font-bold uppercase text-emerald-500">Đã cấn trừ</p><p className="mt-1 text-xs font-black text-emerald-700">{formatCurrency(selectedCustomer.reconciliationOffset || 0)} đ</p></div>
+              <div className="rounded-xl bg-rose-50 px-2 py-2"><p className="text-[10px] font-bold uppercase text-rose-500">Khách còn nợ</p><p className="mt-1 text-xs font-black text-rose-700">{formatCurrency(selectedCustomer.currentDebt || 0)} đ</p></div>
+            </div>
+          )}
+          {isCustomerDetailSectionOpen('reconciliation') && (
+          <>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2"><p className="text-[10px] font-bold uppercase text-indigo-500">Cty nợ/mua</p><p className="mt-1 text-sm font-black text-indigo-700">{formatCurrency(selectedCustomer.companyOwesBeforeReconcile ?? selectedCustomer.purchaseDebt ?? 0)} đ</p></div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 px-3 py-2"><p className="text-[10px] font-bold uppercase text-emerald-500">Đã cấn trừ</p><p className="mt-1 text-sm font-black text-emerald-700">{formatCurrency(selectedCustomer.reconciliationOffset || 0)} đ</p></div>
+              <div className="rounded-xl border border-rose-100 bg-rose-50/60 px-3 py-2"><p className="text-[10px] font-bold uppercase text-rose-500">Số dư còn lại</p><p className="mt-1 text-sm font-black text-rose-700">{formatCurrency(selectedCustomer.currentDebt || 0)} đ</p></div>
+            </div>
+            <p className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2 text-xs leading-5 text-cyan-800">Các dòng dưới đây là nguồn dữ liệu dùng để đối soát. Giao dịch chờ xử lý chưa được tính là đã cấn trừ.</p>
+            <div className="space-y-2">
+              {selectedCustomerReconciliationRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">Chưa có lần đối soát nào được ghi nhận.</div>
+              ) : selectedCustomerReconciliationRows.map(row => {
+                const toneClass = row.tone === 'emerald'
+                  ? 'border-emerald-100 bg-emerald-50/40'
+                  : row.tone === 'amber'
+                    ? 'border-amber-100 bg-amber-50/50'
+                    : 'border-indigo-100 bg-indigo-50/40';
+                const amountClass = row.tone === 'emerald'
+                  ? 'text-emerald-700'
+                  : row.tone === 'amber'
+                    ? 'text-amber-700'
+                    : 'text-indigo-700';
+                return (
+                  <div key={row.id} className={`rounded-xl border px-3 py-2.5 ${toneClass}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-800">{row.title}</p>
+                        <p className="mt-0.5 truncate text-xs text-slate-600">{row.detail}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{row.dateLabel}{row.reference ? ` • ${row.reference}` : ''}</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className={`text-sm font-black ${amountClass}`}>{formatCurrency(row.amount)} đ</p>
+                        <p className={`mt-0.5 text-[10px] font-bold ${amountClass}`}>{row.amountLabel}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </>
           )}
         </div>
@@ -71935,7 +72838,12 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     `${debouncedDebtSearchKeyword}|${debtViewFilter}|${debtTransactionSort}|${debtSalesEmpId}|${debtDateRange?.start || ''}|${debtDateRange?.end || ''}`
   );
 
-  const debtOverviewSummary = useMemo(() => accessibleCustomers.reduce((acc, customer) => {
+  const debtOverviewCustomers = useMemo(
+    () => accessibleCustomers.filter(customer => debtSalesEmpId === 'all' || customer.empId === debtSalesEmpId),
+    [accessibleCustomers, debtSalesEmpId]
+  );
+
+  const debtOverviewSummary = useMemo(() => debtOverviewCustomers.reduce((acc, customer) => {
     const currentDebt = Math.max(0, roundMoneyValue(customer.ledger?.currentDebt || 0));
     const creditBalance = Math.max(0, roundMoneyValue(customer.ledger?.creditBalance || 0));
     acc.totalDebt += currentDebt;
@@ -71943,7 +72851,11 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     if (currentDebt > 0) acc.debtCustomerCount += 1;
     if (creditBalance > 0) acc.creditCustomerCount += 1;
     return acc;
-  }, { totalDebt: 0, totalCredit: 0, debtCustomerCount: 0, creditCustomerCount: 0 }), [accessibleCustomers]);
+  }, { totalDebt: 0, totalCredit: 0, debtCustomerCount: 0, creditCustomerCount: 0 }), [debtOverviewCustomers]);
+
+  const debtOverviewEmployeeLabel = debtSalesEmpId === 'all'
+    ? ''
+    : (debtManagerOptions.find(emp => emp.id === debtSalesEmpId)?.name || 'NVKD đã chọn');
 
   const debtOverviewScopeLabel = canViewAllDebtRecords
     ? 'Tổng công nợ toàn bộ khách'
@@ -72457,12 +73369,12 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
           <div className="bg-gradient-to-r from-red-500 to-orange-500 p-5 rounded-[26px] shadow-md text-white border border-white/10 min-h-[120px] flex flex-col items-center justify-center text-center">
             <p className="text-red-100 text-[10px] font-bold uppercase tracking-[0.18em]">Khách nợ</p>
             <h3 className="text-[26px] font-black mt-2 leading-none">{formatCurrency(debtOverviewSummary.totalDebt)} đ</h3>
-            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.debtCustomerCount} khách • {debtOverviewScopeLabel}</p>
+            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.debtCustomerCount} khách • {debtOverviewEmployeeLabel || debtOverviewScopeLabel}</p>
           </div>
           <div className="bg-gradient-to-r from-blue-500 to-cyan-500 p-5 rounded-[26px] shadow-md text-white border border-white/10 min-h-[120px] flex flex-col items-center justify-center text-center">
             <p className="text-blue-100 text-[10px] font-bold uppercase tracking-[0.18em]">Nợ khách</p>
             <h3 className="text-[26px] font-black mt-2 leading-none">{formatCurrency(debtOverviewSummary.totalCredit)} đ</h3>
-            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.creditCustomerCount} khách • Tiền dư cần theo dõi</p>
+            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.creditCustomerCount} khách • {debtOverviewEmployeeLabel || 'Tiền dư cần theo dõi'}</p>
           </div>
         </div>
       )}
@@ -75698,13 +76610,17 @@ function CustomerEmptyState({ text }) {
   return <div className="bg-white rounded-3xl p-6 text-center text-sm text-gray-400 border border-gray-100">{text}</div>;
 }
 
-function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady = true }) {
-  const [loginMode, setLoginMode] = useState(getInitialLoginMode);
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady = true }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotError, setForgotError] = useState('');
+  const [forgotMessage, setForgotMessage] = useState('');
+  const [isRequestingRecovery, setIsRequestingRecovery] = useState(false);
   const [regCompanyName, setRegCompanyName] = useState('');
   const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -75723,11 +76639,35 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
       ? 'border-emerald-400 focus:border-emerald-500'
       : 'border-red-400 focus:border-red-500';
 
-  const chooseLoginMode = (mode) => {
-    const nextMode = mode === 'customer' ? 'customer' : 'staff';
-    setLoginMode(nextMode);
-    setLoginError('');
-    savePreferredLoginMode(nextMode);
+  const openForgotPassword = () => {
+    setForgotPhone(loginPhone);
+    setForgotError('');
+    setForgotMessage('');
+    setShowForgotPassword(true);
+  };
+
+  const handleForgotPasswordSubmit = async (e) => {
+    e.preventDefault();
+    if (!forgotPhone.trim()) {
+      setForgotError('Vui lòng nhập số điện thoại cần khôi phục.');
+      return;
+    }
+    setIsRequestingRecovery(true);
+    setForgotError('');
+    setForgotMessage('');
+    try {
+      const result = await onForgotPassword?.({ phone: forgotPhone });
+      if (result?.success) {
+        setForgotMessage(result.message || 'Yêu cầu đã được ghi nhận.');
+      } else {
+        setForgotError(result?.message || 'Không thể gửi yêu cầu khôi phục.');
+      }
+    } catch (error) {
+      console.error('Khôi phục mật khẩu lỗi:', error);
+      setForgotError('Không thể gửi yêu cầu khôi phục. Vui lòng thử lại.');
+    } finally {
+      setIsRequestingRecovery(false);
+    }
   };
 
   const handleLoginSubmit = async (e) => {
@@ -75738,13 +76678,10 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
     setIsLoggingIn(true);
     setLoginError('');
     try {
-      const loginHandler = loginMode === 'customer' && onCustomerLogin ? onCustomerLogin : onLogin;
-      const result = await loginHandler(loginPhone, loginPassword);
+      const result = await onLogin(loginPhone, loginPassword);
       const isSuccess = result === true || result?.success === true;
       if (!isSuccess) {
-        setLoginError(result?.message || (loginMode === 'customer'
-          ? 'Số điện thoại khách hàng chưa được kích hoạt.'
-          : 'Số điện thoại không đúng hoặc công ty chưa đăng ký.'));
+        setLoginError(result?.message || 'Số điện thoại không đúng hoặc công ty chưa đăng ký.');
       }
     } catch (error) {
       console.error('Đăng nhập lỗi:', error);
@@ -75768,11 +76705,11 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
 
   return (
     <div className="ios-web-login-shell flex flex-col bg-[#f4f6f8] max-w-md mx-auto relative items-center justify-center font-sans">
-      <div className="ios-web-login-card bg-white w-full p-6 sm:p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
+      <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
         
         {/* --- KHU VUC LOGO & THUONG HIEU --- */}
-        <div className="flex flex-col items-center justify-center mb-8 space-y-3">
-          <div className="w-24 h-24 bg-white rounded-2xl flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden border border-gray-50 p-2">
+        <div className="flex flex-col items-center justify-center mb-6 space-y-2.5">
+          <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden border border-gray-50 p-2">
             <img 
               src="https://api.dicebear.com/7.x/shapes/svg?seed=HDManager&backgroundColor=10b981" 
               alt="App Logo" 
@@ -75785,62 +76722,58 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
           <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em]">NỀN TẢNG QUẢN LÝ SỐ</p>
         </div>
         
-        <div className="flex bg-gray-50 p-1.5 rounded-xl mb-8">
-          <button onClick={() => {setIsLogin(true); setRegError(''); setLoginError('');}} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all duration-200 ${isLogin ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>Đăng nhập</button>
-          <button onClick={() => {setIsLogin(false); setRegError(''); setLoginError('');}} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all duration-200 ${!isLogin ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>Tạo Công ty</button>
-        </div>
-
         {isLogin ? (
           <div>
-            <h2 className="text-xl font-bold text-center text-gray-800 mb-2">Đăng Nhập</h2>
-            <div className="mb-4 rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-sky-50 p-2 shadow-sm">
-              <div className="mb-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400 text-center">Chọn loại tài khoản</div>
-              <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => chooseLoginMode('staff')}
-                className={`rounded-2xl py-3 text-xs font-black transition-all ${loginMode === 'staff' ? 'bg-white text-emerald-700 shadow-md' : 'text-slate-500'}`}
-              >
-                Nhân sự
-              </button>
-              <button
-                type="button"
-                onClick={() => chooseLoginMode('customer')}
-                className={`rounded-2xl py-3 text-xs font-black transition-all ${loginMode === 'customer' ? 'bg-gradient-to-r from-sky-500 to-emerald-500 text-white shadow-lg shadow-emerald-200' : 'text-slate-500'}`}
-              >
-                Khách hàng
-              </button>
-              </div>
-            </div>
             {!isLoginReady && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold">Đang nạp dữ liệu tài khoản từ Cloud. Nếu cần, bạn vẫn có thể bấm đăng nhập, app sẽ kiểm tra trực tiếp trên Cloud.</div>}
             {loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
             <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder={loginMode === 'customer' ? 'Nhập SĐT khách hàng...' : 'Nhập số điện thoại...'} />
-              <div className="relative">
-                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+              <div className="hd-login-3d-field">
+                <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Nhập số điện thoại..." autoComplete="tel" inputMode="tel" />
+              </div>
+              <div className="hd-login-3d-field relative">
+                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
                 <input
                   type={showLoginPassword ? 'text' : 'password'}
                   value={loginPassword}
                   onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
-                  className="w-full border-2 border-gray-100 rounded-2xl py-4 pl-11 pr-12 outline-none focus:border-emerald-500 text-sm font-medium transition-colors"
+                  className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl py-4 pl-11 pr-12 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors"
                   placeholder="Mật khẩu"
                   autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowLoginPassword(value => !value)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
+                  className="absolute right-3 top-1/2 z-[2] -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
                   aria-label={showLoginPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
                   aria-pressed={showLoginPassword}
                 >
                   {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
-              <p className="-mt-2 px-1 text-[11px] leading-relaxed text-gray-400">Mật khẩu tối thiểu 8 ký tự, gồm chữ và số. Tài khoản cũ sẽ được cài mật khẩu ở lần đăng nhập đầu tiên.</p>
+              <div className="-mt-2 flex items-center justify-between gap-3 px-1">
+                <p className="text-[11px] leading-relaxed text-gray-400">Tối thiểu 8 ký tự, gồm chữ và số.</p>
+                <button type="button" onClick={openForgotPassword} className="shrink-0 text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
+              </div>
+              {showForgotPassword && (
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
+                  <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
+                  <p className="mb-3 text-[11px] leading-relaxed text-gray-500">Nhập số điện thoại. Yêu cầu sẽ gửi tới chủ doanh nghiệp/kế toán để xác minh an toàn.</p>
+                  <div className="space-y-2.5">
+                    <input type="tel" value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Số điện thoại" autoComplete="tel" />
+                    {forgotError && <p className="text-[11px] font-semibold text-red-600" role="alert">{forgotError}</p>}
+                    {forgotMessage && <p className="text-[11px] font-semibold leading-relaxed text-emerald-700" role="status">{forgotMessage}</p>}
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Đóng</button>
+                      <button type="button" onClick={handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang gửi...' : 'Gửi yêu cầu'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
               <button type="submit" disabled={isLoggingIn} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] ${isLoggingIn ? 'bg-emerald-300 cursor-not-allowed shadow-emerald-200/30' : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/30'}`}>
                 {isLoggingIn ? 'Đang đăng nhập...' : 'Vào Ứng Dụng'}
               </button>
             </form>
+            <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>
           </div>
         ) : (
           <div>
@@ -75902,6 +76835,7 @@ function LoginRegisterView({ onLogin, onCustomerLogin, onRegister, isLoginReady 
               </button>
             </form>
             <p className="mt-4 text-[11px] text-gray-500 leading-relaxed text-center">Sau khi tạo công ty, chủ doanh nghiệp đăng nhập rồi vào mục <strong>Nhân sự</strong> để tạo các tài khoản <strong>Kế toán & nhân sự</strong>, <strong>Tài xế</strong>, <strong>Sản xuất</strong>, <strong>Kinh doanh</strong>.</p>
+            <p className="mt-4 text-center text-xs text-gray-500">Đã có tài khoản? <button type="button" onClick={() => { setIsLogin(true); setRegError(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Đăng nhập</button></p>
           </div>
         )}
       </div>

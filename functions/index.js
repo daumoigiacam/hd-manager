@@ -2000,6 +2000,19 @@ const verifySepayWebhookRequest = (req) => {
   return true;
 };
 
+const buildSepayPaymentQrFingerprint = ({ amount = 0, paymentCode = '', receivingProfile = {} } = {}) => JSON.stringify({
+  amount: Math.max(0, Math.round(parseMoney(amount))),
+  paymentCode: normalizeTransferCode(paymentCode),
+  bankCode: resolveVietQrBankBin(
+    receivingProfile.bankQrCode || receivingProfile.bankCode || receivingProfile.bankName
+  ) || normalizeTransferCode(
+    receivingProfile.bankQrCode || receivingProfile.bankCode || receivingProfile.bankName
+  ),
+  accountNumber: cleanBankAccountNumber(receivingProfile.accountNumber || ''),
+  accountName: `${receivingProfile.accountName || ''}`.trim().toUpperCase(),
+  isVirtualAccount: Boolean(receivingProfile.isVirtualAccount)
+});
+
 const mapSepayPaymentRequest = ({ order, amount, paymentCode, qrCode, qrPayload = '', receivingProfile }) => ({
   orderId: order.id,
   orderCode: getOrderInvoiceCode(order),
@@ -2020,7 +2033,8 @@ const mapSepayPaymentRequest = ({ order, amount, paymentCode, qrCode, qrPayload 
   receivingBankAccountName: receivingProfile.accountName,
   receivingBankMainAccountNumber: receivingProfile.mainAccountNumber || '',
   receivingBankVirtualAccountNumber: receivingProfile.virtualAccountNumber || '',
-  receivingBankIsVirtualAccount: Boolean(receivingProfile.isVirtualAccount)
+  receivingBankIsVirtualAccount: Boolean(receivingProfile.isVirtualAccount),
+  paymentQrFingerprint: buildSepayPaymentQrFingerprint({ amount, paymentCode, receivingProfile })
 });
 
 exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) => {
@@ -2108,12 +2122,25 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
       );
     const existingQrAmount = parseMoney(order.paymentAmount);
     const isExistingQrAmountAligned = existingQrAmount > 0 && Math.abs(existingQrAmount - amount) <= 1;
+    const expectedPaymentQrFingerprint = buildSepayPaymentQrFingerprint({
+      amount,
+      paymentCode,
+      receivingProfile
+    });
+    const storedPaymentQrFingerprint = `${order.paymentQrFingerprint || ''}`.trim();
+    const storedPaymentCode = order.sepayPaymentCode || order.paymentCode || '';
+    const isExistingQrPaymentCodeAligned = Boolean(storedPaymentCode && paymentCode)
+      && normalizeTransferCode(storedPaymentCode) === normalizeTransferCode(paymentCode);
+    const isExistingQrFingerprintAligned = storedPaymentQrFingerprint
+      ? storedPaymentQrFingerprint === expectedPaymentQrFingerprint
+      : isExistingQrPaymentCodeAligned;
     const now = new Date().toISOString();
     const canReuseExistingQr = Boolean(existingQr)
       && `${order.paymentProvider || ''}`.toLowerCase() === 'sepay'
       && isExistingQrAligned
       && isExistingQrBankAligned
-      && isExistingQrAmountAligned;
+      && isExistingQrAmountAligned
+      && isExistingQrFingerprintAligned;
     if (canReuseExistingQr) {
       await writePaymentLookupDocs({
         appId,
@@ -2133,6 +2160,7 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
       });
       await orderRef.set({
         paymentAmount: amount,
+        paymentQrFingerprint: expectedPaymentQrFingerprint,
         paymentLookupSyncedAt: now,
         updatedAt: now
       }, { merge: true });
@@ -2183,6 +2211,7 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
         receivingBankMainAccountNumber: receivingProfile.mainAccountNumber || '',
         receivingBankVirtualAccountNumber: receivingProfile.virtualAccountNumber || '',
         receivingBankIsVirtualAccount: Boolean(receivingProfile.isVirtualAccount),
+        paymentQrFingerprint: payment.paymentQrFingerprint,
         paymentLookupSyncedAt: now,
         sepayCreatedAt: now,
         updatedAt: now
