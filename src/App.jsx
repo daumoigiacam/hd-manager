@@ -5810,28 +5810,76 @@ const warmOrderShareAssetCache = async ({
       company,
       paymentDueAmount
     );
-    if (paymentDueAmount > 0 && (!paymentSource
+    // Orders created before the QR fingerprint was introduced do not have
+    // enough metadata to pass the new fingerprint check. If their stored QR
+    // still matches the payable amount and receiving profile, it is safe to
+    // reuse it without calling SePay again.
+    const legacyStoredQrCanBeReused = paymentDueAmount > 0
+      && Boolean(paymentSource)
+      && !`${orderForShare.paymentQrFingerprint || ''}`.trim()
+      && isOrderPaymentSourceAlignedWithTransferProfile(orderForShare, company)
+      && isOrderSharePaymentAmountAligned(orderForShare, paymentDueAmount);
+    if (legacyStoredQrCanBeReused) {
+      recordPerformanceEvent('share_invoice.legacy_qr_reused', {
+        orderId: order.id,
+        reason,
+        amount: paymentDueAmount
+      });
+    }
+    let paymentPreparationError = null;
+    if (paymentDueAmount > 0 && !legacyStoredQrCanBeReused && (!paymentSource
       || !isOrderPaymentSourceAlignedWithTransferProfile(orderForShare, company)
       || !isOrderSharePaymentAmountAligned(orderForShare, paymentDueAmount)
       || !paymentQrFingerprintAligned)) {
       if (typeof ensurePayment !== 'function') {
-        throw new Error('Hóa đơn chưa có mã QR SePay để chuẩn bị chia sẻ.');
+        paymentPreparationError = new Error('Hóa đơn chưa có mã QR SePay để chuẩn bị chia sẻ.');
+      } else {
+        try {
+          const ensureResult = await ensurePayment(orderForShare.id, orderForShare);
+          if (!ensureResult?.success) {
+            throw new Error(ensureResult?.message || 'Chưa tạo được mã QR SePay cho hóa đơn này.');
+          }
+          orderForShare = ensureResult.order || orderForShare;
+        } catch (error) {
+          // A historical invoice may still contain a usable stored QR or a
+          // locally rebuildable payload. Do not discard the whole invoice
+          // image just because refreshing its payment metadata failed.
+          paymentPreparationError = error;
+          recordPerformanceEvent('share_invoice.sepay_prepare_failed', {
+            orderId: order.id,
+            reason,
+            error: error?.message || String(error)
+          }, 'warn');
+        }
       }
-      const ensureResult = await ensurePayment(orderForShare.id, orderForShare);
-      if (!ensureResult?.success) {
-        throw new Error(ensureResult?.message || 'Chưa tạo được mã QR SePay cho hóa đơn này.');
-      }
-      orderForShare = ensureResult.order || orderForShare;
     }
-    const blob = await drawSalesInvoiceShareImage({
-      order: orderForShare,
-      company,
-      customers,
-      orders,
-      payments
-    });
+    let blob;
+    try {
+      blob = await drawSalesInvoiceShareImage({
+        order: orderForShare,
+        company,
+        customers,
+        orders,
+        payments
+      });
+    } catch (error) {
+      if (paymentPreparationError) {
+        recordPerformanceEvent('share_invoice.fallback_render_failed', {
+          orderId: order.id,
+          reason,
+          prepareError: paymentPreparationError?.message || String(paymentPreparationError),
+          renderError: error?.message || String(error)
+        }, 'warn');
+      }
+      throw error;
+    }
     const entry = rememberOrderShareAsset(orderForShare, company, { blob }, cacheContext);
-    prepareSpan.end({ status: 'ok', bytes: blob?.size || 0 });
+    prepareSpan.end({
+      status: 'ok',
+      bytes: blob?.size || 0,
+      legacyQrReused: legacyStoredQrCanBeReused,
+      paymentPreparationFallback: Boolean(paymentPreparationError)
+    });
     return entry;
   })().catch((error) => {
     prepareSpan.fail(error);
