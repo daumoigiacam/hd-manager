@@ -102,3 +102,14 @@ jobs:
             test -f '${APP_DIR}/current/index.html'
             rm -rf '${REMOTE_DIR}' '${REMOTE_TGZ}'
           "
+
+      - name: Verify production serves this release
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          LOCAL_INDEX_SHA="$(sha256sum dist/index.html | cut -d' ' -f1)"
+          PRODUCTION_INDEX_SHA="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            "https://app.hdconnect.net/index.html?release=${GITHUB_SHA}" | sha256sum | cut -d' ' -f1)"
+          echo "Local index:      ${LOCAL_INDEX_SHA}"
+          echo "Production index: ${PRODUCTION_INDEX_SHA}"
+          test "${LOCAL_INDEX_SHA}" = "${PRODUCTION_INDEX_SHA}"
