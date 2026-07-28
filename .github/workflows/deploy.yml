@@ -77,6 +77,7 @@ jobs:
           RELEASE_ID: ${{ github.sha }}
         run: |
           set -euo pipefail
+          LOCAL_INDEX_SHA="$(sha256sum dist/index.html | cut -d' ' -f1)"
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/hdmanager_vps
           chmod 600 ~/.ssh/hdmanager_vps
@@ -100,6 +101,44 @@ jobs:
               sh -c 'rm -rf /target/* && cp -a /src/. /target/'
             ln -sfn '${RELEASE_DIR}' '${APP_DIR}/current'
             test -f '${APP_DIR}/current/index.html'
+
+            # Nginx may use a document root that differs from the setup
+            # default. Resolve the active HD Manager root before declaring
+            # the deploy successful, then sync that root when it is a real
+            # directory rather than the managed current symlink.
+            NGINX_ROOTS="\$(nginx -T 2>/dev/null | awk '\$1 == \"root\" {gsub(/;/, \"\", \$2); print \$2}' | sort -u || true)"
+            if [ -z "\${NGINX_ROOTS}" ]; then
+              NGINX_ROOTS='${APP_DIR}/current'
+            fi
+
+            MATCHED_ROOT=''
+            for ACTIVE_ROOT in \${NGINX_ROOTS}; do
+              [ -f "\${ACTIVE_ROOT}/index.html" ] || continue
+              grep -qi 'HD Manager' "\${ACTIVE_ROOT}/index.html" || continue
+              MATCHED_ROOT="\${ACTIVE_ROOT}"
+              if [ "\${ACTIVE_ROOT}" = '${APP_DIR}/current' ]; then
+                ln -sfn '${RELEASE_DIR}' '${APP_DIR}/current'
+              else
+                STAGING_ROOT="\${ACTIVE_ROOT}.staging-${RELEASE_ID}"
+                rm -rf "\${STAGING_ROOT}"
+                mkdir -p "\${STAGING_ROOT}"
+                cp -a "\${REMOTE_DIR}/." "\${STAGING_ROOT}/"
+                if [ "\${ACTIVE_ROOT}" = '${APP_DIR}' ] && [ -d '${APP_DIR}/releases' ]; then
+                  find "\${ACTIVE_ROOT}" -mindepth 1 -maxdepth 1 \
+                    ! -name releases ! -name current -exec rm -rf {} +
+                  cp -a "\${STAGING_ROOT}/." "\${ACTIVE_ROOT}/"
+                  rm -rf "\${STAGING_ROOT}"
+                else
+                  rm -rf "\${ACTIVE_ROOT}"/*
+                  cp -a "\${STAGING_ROOT}/." "\${ACTIVE_ROOT}/"
+                  rm -rf "\${STAGING_ROOT}"
+                fi
+              fi
+              break
+            done
+
+            test -n "\${MATCHED_ROOT}"
+            test "\$(sha256sum "\${MATCHED_ROOT}/index.html" | cut -d' ' -f1)" = '${LOCAL_INDEX_SHA}'
             rm -rf '${REMOTE_DIR}' '${REMOTE_TGZ}'
           "
 
