@@ -89,58 +89,65 @@ jobs:
           RELEASE_DIR="${APP_DIR}/releases/${RELEASE_ID}"
 
           scp -i ~/.ssh/hdmanager_vps hd-manager-dist.tgz "${VPS_USER}@${VPS_HOST}:${REMOTE_TGZ}"
-          ssh -i ~/.ssh/hdmanager_vps "${VPS_USER}@${VPS_HOST}" "set -euo pipefail
-            rm -rf '${REMOTE_DIR}'
-            mkdir -p '${REMOTE_DIR}'
-            mkdir -p '${RELEASE_DIR}'
-            tar -xzf '${REMOTE_TGZ}' -C '${REMOTE_DIR}'
-            docker run --rm \
-              -v '${REMOTE_DIR}:/src:ro' \
-              -v '${RELEASE_DIR}:/target' \
-              hdconnect-nginx:latest \
-              sh -c 'rm -rf /target/* && cp -a /src/. /target/'
-            ln -sfn '${RELEASE_DIR}' '${APP_DIR}/current'
-            test -f '${APP_DIR}/current/index.html'
+          ssh -i ~/.ssh/hdmanager_vps "${VPS_USER}@${VPS_HOST}" bash -s -- \
+            "${REMOTE_TGZ}" "${REMOTE_DIR}" "${APP_DIR}" "${RELEASE_DIR}" "${LOCAL_INDEX_SHA}" "${RELEASE_ID}" <<'REMOTE_DEPLOY'
+          set -euo pipefail
+          REMOTE_TGZ="$1"
+          REMOTE_DIR="$2"
+          APP_DIR="$3"
+          RELEASE_DIR="$4"
+          EXPECTED_INDEX_SHA="$5"
+          RELEASE_ID="$6"
 
-            # Nginx may use a document root that differs from the setup
-            # default. Resolve the active HD Manager root before declaring
-            # the deploy successful, then sync that root when it is a real
-            # directory rather than the managed current symlink.
-            NGINX_ROOTS="\$(nginx -T 2>/dev/null | awk '\$1 == \"root\" {gsub(/;/, \"\", \$2); print \$2}' | sort -u || true)"
-            if [ -z "\${NGINX_ROOTS}" ]; then
-              NGINX_ROOTS='${APP_DIR}/current'
-            fi
+          rm -rf "$REMOTE_DIR"
+          mkdir -p "$REMOTE_DIR" "$RELEASE_DIR"
+          tar -xzf "$REMOTE_TGZ" -C "$REMOTE_DIR"
+          docker run --rm \
+            -v "$REMOTE_DIR:/src:ro" \
+            -v "$RELEASE_DIR:/target" \
+            hdconnect-nginx:latest \
+            sh -c 'rm -rf /target/* && cp -a /src/. /target/'
+          ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
+          test -f "$APP_DIR/current/index.html"
 
-            MATCHED_ROOT=''
-            for ACTIVE_ROOT in \${NGINX_ROOTS}; do
-              [ -f "\${ACTIVE_ROOT}/index.html" ] || continue
-              grep -qi 'HD Manager' "\${ACTIVE_ROOT}/index.html" || continue
-              MATCHED_ROOT="\${ACTIVE_ROOT}"
-              if [ "\${ACTIVE_ROOT}" = '${APP_DIR}/current' ]; then
-                ln -sfn '${RELEASE_DIR}' '${APP_DIR}/current'
+          # Nginx may use a document root that differs from the setup
+          # default. Resolve the active HD Manager root before declaring
+          # the deploy successful, then sync that root when it is a real
+          # directory rather than the managed current symlink.
+          NGINX_ROOTS="$(nginx -T 2>/dev/null | awk '$1 == "root" {gsub(/;/, "", $2); print $2}' | sort -u || true)"
+          if [ -z "$NGINX_ROOTS" ]; then
+            NGINX_ROOTS="$APP_DIR/current"
+          fi
+
+          MATCHED_ROOT=''
+          for ACTIVE_ROOT in $NGINX_ROOTS; do
+            [ -f "$ACTIVE_ROOT/index.html" ] || continue
+            grep -qi 'HD Manager' "$ACTIVE_ROOT/index.html" || continue
+            MATCHED_ROOT="$ACTIVE_ROOT"
+            if [ "$ACTIVE_ROOT" = "$APP_DIR/current" ]; then
+              ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
+            else
+              STAGING_ROOT="${ACTIVE_ROOT}.staging-${RELEASE_ID}"
+              rm -rf "$STAGING_ROOT"
+              mkdir -p "$STAGING_ROOT"
+              cp -a "$REMOTE_DIR/." "$STAGING_ROOT/"
+              if [ "$ACTIVE_ROOT" = "$APP_DIR" ] && [ -d "$APP_DIR/releases" ]; then
+                find "$ACTIVE_ROOT" -mindepth 1 -maxdepth 1 \
+                  ! -name releases ! -name current -exec rm -rf {} +
+                cp -a "$STAGING_ROOT/." "$ACTIVE_ROOT/"
               else
-                STAGING_ROOT="\${ACTIVE_ROOT}.staging-${RELEASE_ID}"
-                rm -rf "\${STAGING_ROOT}"
-                mkdir -p "\${STAGING_ROOT}"
-                cp -a "\${REMOTE_DIR}/." "\${STAGING_ROOT}/"
-                if [ "\${ACTIVE_ROOT}" = '${APP_DIR}' ] && [ -d '${APP_DIR}/releases' ]; then
-                  find "\${ACTIVE_ROOT}" -mindepth 1 -maxdepth 1 \
-                    ! -name releases ! -name current -exec rm -rf {} +
-                  cp -a "\${STAGING_ROOT}/." "\${ACTIVE_ROOT}/"
-                  rm -rf "\${STAGING_ROOT}"
-                else
-                  rm -rf "\${ACTIVE_ROOT}"/*
-                  cp -a "\${STAGING_ROOT}/." "\${ACTIVE_ROOT}/"
-                  rm -rf "\${STAGING_ROOT}"
-                fi
+                rm -rf "$ACTIVE_ROOT"/*
+                cp -a "$STAGING_ROOT/." "$ACTIVE_ROOT/"
               fi
-              break
-            done
+              rm -rf "$STAGING_ROOT"
+            fi
+            break
+          done
 
-            test -n "\${MATCHED_ROOT}"
-            test "\$(sha256sum "\${MATCHED_ROOT}/index.html" | cut -d' ' -f1)" = '${LOCAL_INDEX_SHA}'
-            rm -rf '${REMOTE_DIR}' '${REMOTE_TGZ}'
-          "
+          test -n "$MATCHED_ROOT"
+          test "$(sha256sum "$MATCHED_ROOT/index.html" | cut -d' ' -f1)" = "$EXPECTED_INDEX_SHA"
+          rm -rf "$REMOTE_DIR" "$REMOTE_TGZ"
+          REMOTE_DEPLOY
 
       - name: Verify production serves this release
         if: github.event_name == 'push'
