@@ -38312,6 +38312,36 @@ function ExecutivePeriodSummaryCard({
   );
 }
 
+const PREMIUM_STATUS_TONES = {
+  pending: { label: 'Chờ xử lý', className: 'premium-status--pending' },
+  processing: { label: 'Đang xử lý', className: 'premium-status--processing' },
+  completed: { label: 'Hoàn thành', className: 'premium-status--completed' },
+  paid: { label: 'Đã thanh toán', className: 'premium-status--paid' },
+  overdue: { label: 'Quá hạn', className: 'premium-status--overdue' },
+  cancelled: { label: 'Đã hủy', className: 'premium-status--cancelled' },
+  neutral: { label: '', className: 'premium-status--neutral' }
+};
+
+function getPremiumStatusTone(status = '') {
+  const normalized = normalizeLookupText(status);
+  if (/huy|cancel/.test(normalized)) return PREMIUM_STATUS_TONES.cancelled;
+  if (/qua han|overdue/.test(normalized)) return PREMIUM_STATUS_TONES.overdue;
+  if (/thanh toan|paid|da thu/.test(normalized)) return PREMIUM_STATUS_TONES.paid;
+  if (/hoan thanh|completed|da giao|da xuat/.test(normalized)) return PREMIUM_STATUS_TONES.completed;
+  if (/dang|processing|giao hang/.test(normalized)) return PREMIUM_STATUS_TONES.processing;
+  if (/cho|pending|con no/.test(normalized)) return PREMIUM_STATUS_TONES.pending;
+  return PREMIUM_STATUS_TONES.neutral;
+}
+
+function PremiumStatusBadge({ status = '', label = '' }) {
+  const tone = getPremiumStatusTone(status || label);
+  return (
+    <span className={`premium-status-badge ${tone.className}`}>
+      {label || tone.label || status || 'Trạng thái'}
+    </span>
+  );
+}
+
 function ExecutiveKpiCard({ title, value, tone = 'neutral', yesterday, month }) {
   return (
     <div className="hd-dashboard-kpi" data-tone={tone}>
@@ -50419,8 +50449,8 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   };
 
   return (
-    <div className="space-y-4 pb-6">
-      <div className="grid grid-cols-4 gap-2 rounded-[26px] border border-emerald-100 bg-white p-2 shadow-sm">
+    <div className="premium-data-module premium-inventory-module space-y-4 pb-6">
+      <div className="premium-data-toolbar grid grid-cols-4 gap-2 rounded-[26px] border border-emerald-100 bg-white p-2 shadow-sm">
         {[
           { key: 'import', label: 'Nhập', count: dayImports.length },
           { key: 'export', label: 'Xuất', count: dayExportRows.length },
@@ -54215,7 +54245,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-inventory-module premium-dispatch-module space-y-4 animate-in fade-in pb-16">
       {dispatchStatus && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{dispatchStatus}</div>}
       {dispatchListWeightEditor && (() => {
         const nextTotalWeight = getWeightEntryTotal(dispatchListWeightEditor.entries || []);
@@ -57856,7 +57886,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-orders-module premium-order-request-module space-y-4 animate-in fade-in pb-16">
       {requestStatus && (
         <div role="status" className="flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           <span className="min-w-0 flex-1">{requestStatus}</span>
@@ -61503,9 +61533,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   }, [quickActionIntent?.id, quickActionIntent?.requestedAt, quickActionIntent?.type]);
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16">
       {showFilterPanel && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <button type="button" onClick={() => setTab('all')} className={`rounded-xl border px-3 py-3 text-sm font-bold transition-colors ${tab === 'all' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}>Tất cả đơn</button>
@@ -61579,7 +61609,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         </div>
       )}
 
-      <div className="overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-3 text-white shadow-sm">
+      <div className="premium-data-summary overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-3 text-white shadow-sm">
         <div>
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] font-black uppercase tracking-[0.28em] text-white/75">Doanh thu ngày</p>
@@ -61622,9 +61652,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         </div>
       )}
       
-      <div className="space-y-3">
+      <div className="premium-data-list space-y-3">
         {displayOrders.length === 0 && (
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center text-sm text-gray-400">
+          <div className="premium-empty-state bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center text-sm text-gray-400">
             Chưa có đơn hàng nào phù hợp với bộ lọc hiện tại.
           </div>
         )}
@@ -61684,7 +61714,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                     <p className="text-xs text-gray-500 mt-1">{formatDateTimeLabel(order.date)} • {formatOrderCode(order.id)}</p>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${statusMeta.chipClasses}`}>{statusMeta.label}</span>
+                    <PremiumStatusBadge status={statusMeta.label} label={statusMeta.label} />
                     <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${reviewMeta.chipClasses}`}>{reviewMeta.label}</span>
                     {order.zaloSendStatus && order.zaloSendStatus !== 'not_queued' && (
                       <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${zaloMeta.chipClasses}`}>{zaloMeta.label}</span>
@@ -66310,7 +66340,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
 
   if (selectedCustomer) {
     return (
-      <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="premium-data-module premium-customer-module premium-customer-detail space-y-4 animate-in fade-in pb-16">
         <div className="relative bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
           {canDeleteCustomer && (
             <button
@@ -67924,7 +67954,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-customer-module space-y-4 animate-in fade-in pb-16">
       {(canSeeCustomerStats || canSeeCustomerDebt) && (
       <div className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-2xl p-4 shadow-md">
         <div className={`grid gap-2 ${canSeeCustomerStats && canSeeCustomerDebt ? 'grid-cols-3' : canSeeCustomerStats ? 'grid-cols-2' : 'grid-cols-1'}`}>
@@ -67951,7 +67981,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       )}
 
       {((!searchInHeader && (showSearchBox || customerSearch)) || showFilterPanel) && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           {!searchInHeader && (showSearchBox || customerSearch) && (
             <div className="bg-gray-50 border border-gray-100 rounded-2xl px-3 py-2 flex items-center gap-2">
               <Search size={16} className="text-gray-400 shrink-0" />
@@ -73373,7 +73403,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       : null;
 
     return (
-      <div className="space-y-4 animate-in fade-in pb-16">
+      <div className="premium-data-module premium-debt-module premium-debt-detail space-y-4 animate-in fade-in pb-16">
         <button onClick={() => setSelectedCustomerId(null)} className="text-gray-500 flex items-center text-sm font-semibold mb-2"><ChevronLeft size={18} className="mr-1" /> Trở về danh sách</button>
 
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
@@ -73618,7 +73648,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16">
       {(canViewAllDebtRecords || accessibleCustomers.length > 0) && (
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-gradient-to-r from-red-500 to-orange-500 p-5 rounded-[26px] shadow-md text-white border border-white/10 min-h-[120px] flex flex-col items-center justify-center text-center">
@@ -73635,7 +73665,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       )}
 
       {showFilterPanel && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">
             <div className="grid grid-cols-3 gap-2">
               <button type="button" onClick={() => setDebtViewFilter('all')} className={`rounded-xl border px-3 py-3 text-xs font-bold transition-colors ${debtViewFilter === 'all' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}>Tất cả</button>

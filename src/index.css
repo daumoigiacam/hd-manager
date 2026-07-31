@@ -2025,3 +2025,128 @@ html.hd-low-power-ui .hd-soft-red-outline {
     animation-duration: 0ms !important;
   }
 }
+
+/* Premium Phase 2.3: shared data-surface language for operational modules. */
+.premium-data-module {
+  --premium-data-border: #e2e8f0;
+  --premium-data-muted: #64748b;
+  display: grid;
+  gap: 1rem;
+  min-inline-size: 0;
+}
+
+.premium-data-module > * {
+  min-inline-size: 0;
+}
+
+.premium-data-toolbar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 15;
+  border-color: var(--premium-data-border) !important;
+  box-shadow: 0 0.5rem 1.5rem rgb(15 23 42 / 0.06);
+}
+
+.premium-data-summary {
+  min-inline-size: 0;
+}
+
+.premium-data-list {
+  min-inline-size: 0;
+}
+
+.premium-data-list > * {
+  min-inline-size: 0;
+}
+
+.premium-empty-state {
+  display: grid;
+  min-block-size: 7rem;
+  place-items: center;
+  border: 1px dashed #cbd5e1;
+  border-radius: 1.25rem;
+  color: var(--premium-data-muted);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  text-align: center;
+}
+
+.premium-status-badge {
+  display: inline-flex;
+  min-block-size: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 850;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.premium-status--pending {
+  color: #a16207;
+  border-color: #fde68a;
+  background: #fef9c3;
+}
+
+.premium-status--processing {
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.premium-status--completed {
+  color: #047857;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.premium-status--paid {
+  color: #0f766e;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
+.premium-status--overdue {
+  color: #be123c;
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+
+.premium-status--cancelled,
+.premium-status--neutral {
+  color: #475569;
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.premium-data-module .overflow-x-auto {
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 720px) {
+  .premium-data-module {
+    gap: 0.75rem;
+  }
+
+  .premium-data-toolbar {
+    margin-inline: -0.25rem;
+    border-radius: 1rem;
+    backdrop-filter: blur(14px);
+  }
+
+  .premium-data-module table {
+    font-size: 0.75rem;
+  }
+
+  .premium-data-summary {
+    border-radius: 1.25rem;
+  }
+}
+
+@media (min-width: 1100px) {
+  .premium-data-module {
+    gap: 1.25rem;
+  }
+}
