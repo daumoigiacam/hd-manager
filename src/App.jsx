@@ -71,6 +71,7 @@ import {
   HDNavigationRail,
   HDSidebar,
 } from './layout/index.js';
+import { HDButton, HDBadge } from './design-system/index.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -29281,9 +29282,9 @@ function AccessDeniedView({ onGoHome }) {
       <h2>Chưa được cấp quyền</h2>
       <p>Tài khoản này chưa được chủ doanh nghiệp bật quyền cho chức năng đang mở.</p>
       {onGoHome && (
-        <button type="button" onClick={onGoHome} className="hd-ds-button hd-ds-button--primary mt-2">
+        <HDButton type="button" onClick={onGoHome} className="mt-2">
           Quay về mục được phép
-        </button>
+        </HDButton>
       )}
     </div>
   );
@@ -38335,11 +38336,18 @@ function getPremiumStatusTone(status = '') {
 
 function PremiumStatusBadge({ status = '', label = '' }) {
   const tone = getPremiumStatusTone(status || label);
-  return (
-    <span className={`premium-status-badge ${tone.className}`}>
-      {label || tone.label || status || 'Trạng thái'}
-    </span>
-  );
+  const badgeTone = tone.className.includes('pending')
+    ? 'pending'
+    : tone.className.includes('processing')
+      ? 'info'
+      : tone.className.includes('completed')
+        ? 'success'
+        : tone.className.includes('paid')
+          ? 'paid'
+          : tone.className.includes('overdue')
+            ? 'debt'
+            : 'neutral';
+  return <HDBadge tone={badgeTone} className={`premium-status-badge ${tone.className}`}>{label || tone.label || status || 'Trạng thái'}</HDBadge>;
 }
 
 function ExecutiveKpiCard({ title, value, tone = 'neutral', yesterday, month }) {

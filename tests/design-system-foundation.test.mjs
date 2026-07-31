@@ -45,4 +45,38 @@ for (const component of ['HDCard', 'HDButton', 'HDField', 'HDDialog', 'HDStatusS
   assert(components.includes(`function ${component}`), `Missing shared primitive: ${component}`);
 }
 
+for (const component of [
+  'HDIconButton',
+  'HDInput',
+  'HDNumberInput',
+  'HDCurrencyInput',
+  'HDDateInput',
+  'HDPasswordInput',
+  'HDSearchInput',
+  'HDSelect',
+  'HDBadge',
+  'HDTable',
+  'HDToast',
+  'HDSkeleton',
+  'HDProgress',
+  'HDKpiCard',
+  'HDSummaryCard',
+  'HDStatisticCard',
+  'HDCustomerCard',
+  'HDProductCard',
+]) {
+  assert(components.includes(component), `Missing Phase 2.4 component: ${component}`);
+}
+
+for (const selector of [
+  '.hd-ds-badge',
+  '.hd-ds-table',
+  '.hd-ds-toast',
+  '.hd-ds-skeleton',
+  '.hd-ds-progress',
+  '.hd-ds-button__spinner',
+]) {
+  assert(foundation.includes(selector), `Missing Phase 2.4 foundation rule: ${selector}`);
+}
+
 console.log('PASS Design System foundation: AppShell, tokens, fonts, themes, safe area, motion and primitives.');
