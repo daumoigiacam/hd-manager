@@ -430,6 +430,13 @@ body {
   box-shadow: -10px -10px 28px rgb(255 255 255 / 0.72), 16px 18px 38px rgb(15 23 42 / 0.10);
 }
 
+/* Long records stay in the DOM while off-screen paint and layout work is skipped. */
+.hd-render-contained {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-block-size: auto 7rem;
+}
+
 @keyframes hd-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes hd-dialog-enter { from { opacity: 0; transform: translateY(0.75rem) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes hd-soft-pulse { 0%, 100% { transform: scale(1); opacity: 0.82; } 50% { transform: scale(1.035); opacity: 1; } }

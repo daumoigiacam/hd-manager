@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useCallback } from 'react';
+import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
 import { 
@@ -19729,7 +19729,16 @@ function MainAppView({
     () => filterNotificationsForActiveTab(notificationItems, activeTab),
     [activeTab, notificationItems]
   );
-  const unreadNotificationCount = visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length;
+  const visibleNotificationItemsForDialog = useChunkedList(
+    visibleNotificationItems,
+    60,
+    80,
+    `${activeTab}|${showNotificationCenter ? 'open' : 'closed'}`
+  );
+  const unreadNotificationCount = useMemo(
+    () => visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length,
+    [lastNotificationSeenAt, visibleNotificationItems]
+  );
   const employeeMessageUnreadCount = useMemo(() => {
     const currentEmployeeId = `${employee?.id || currentUser?.employeeId || currentUser?.id || ''}`.trim();
     const currentEmployeePhone = `${employee?.phone || currentUser?.phone || ''}`.trim();
@@ -21203,7 +21212,7 @@ function MainAppView({
               </button>
             </div>
             <div className="hd-dialog-body max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
-              {visibleNotificationItems.length > 0 ? visibleNotificationItems.map((item) => {
+              {visibleNotificationItems.length > 0 ? visibleNotificationItemsForDialog.map((item) => {
                 const toneClass = item.tone === 'amber'
                   ? 'border-amber-200 bg-amber-50 text-amber-700'
                   : item.tone === 'orange'
@@ -21220,7 +21229,7 @@ function MainAppView({
                     key={item.id}
                     type="button"
                     onClick={() => handleNotificationClick(item)}
-                    className={`w-full rounded-2xl border px-4 py-3 text-left transition hover:shadow-sm ${toneClass}`}
+                    className={`hd-render-contained w-full rounded-2xl border px-4 py-3 text-left transition hover:shadow-sm ${toneClass}`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -42729,9 +42738,11 @@ function MessageCenterView({
   const [activeType, setActiveType] = useState('internal');
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const deferredSearchKeyword = useDeferredValue(searchKeyword);
   const [messageFilter, setMessageFilter] = useState('all');
   const [showMessageFilterMenu, setShowMessageFilterMenu] = useState(false);
   const [chatSearchKeyword, setChatSearchKeyword] = useState('');
+  const deferredChatSearchKeyword = useDeferredValue(chatSearchKeyword);
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [draft, setDraft] = useState('');
@@ -43235,7 +43246,7 @@ function MessageCenterView({
     : selectedConversation?.type === 'internal'
       ? canSendInternalMessages
       : false;
-  const listKeyword = normalizeKeyword(searchKeyword);
+  const listKeyword = normalizeKeyword(deferredSearchKeyword);
   const messageFilterOptions = [
     { id: 'all', label: 'Tất cả', shortLabel: 'Tất cả' },
     { id: 'unread', label: 'Tin chưa đọc', shortLabel: 'Chưa đọc' },
@@ -43310,6 +43321,12 @@ function MessageCenterView({
     if (!listKeyword) return true;
     return normalizeKeyword(getConversationSearchText(item)).includes(listKeyword);
   }).sort(sortConversationsByPriority);
+  const visibleFilteredConversations = useChunkedList(
+    filteredConversations,
+    60,
+    80,
+    `${safeActiveType}|${messageFilter}|${listKeyword}`
+  );
   const unreadFilteredConversations = filteredConversations.filter((conversation) => getConversationUnreadCount(conversation) > 0);
   const canMarkFilteredUnreadAsRead = messageFilter === 'unread' && unreadFilteredConversations.length > 0;
   const handleMarkFilteredUnreadAsRead = () => {
@@ -43326,7 +43343,7 @@ function MessageCenterView({
   };
   const baseMessages = selectedConversation?.messages || [];
   const sentMessages = selectedConversation ? (localReplies[selectedConversation.id] || []) : [];
-  const chatKeyword = normalizeKeyword(chatSearchKeyword);
+  const chatKeyword = normalizeKeyword(deferredChatSearchKeyword);
   const visibleMessages = [...baseMessages, ...sentMessages].filter((message) => {
     if (!chatKeyword) return true;
     return normalizeKeyword([message.text, message.attachmentLabel, message.attachmentText].filter(Boolean).join(' ')).includes(chatKeyword);
@@ -44289,7 +44306,7 @@ function MessageCenterView({
                 <div className={`max-w-[78%] rounded-3xl px-4 py-3 shadow-sm ${isMine ? 'bg-emerald-500 text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md'}`}>
                   {message.text && <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</p>}
                   {message.attachmentImage && (
-                    <img src={message.attachmentImage} alt={message.attachmentLabel || 'Hình ảnh'} className="mt-2 max-h-64 w-full rounded-2xl object-cover border border-white/30" />
+                    <img loading="lazy" decoding="async" src={message.attachmentImage} alt={message.attachmentLabel || 'Hình ảnh'} className="mt-2 max-h-64 w-full rounded-2xl object-cover border border-white/30" />
                   )}
                   {(message.attachmentLabel || message.attachmentText) && (
                     <div className={`mt-2 rounded-2xl border px-3 py-2 text-left ${isMine ? 'border-white/25 bg-white/15' : 'border-gray-100 bg-gray-50'}`}>
@@ -44821,7 +44838,7 @@ function MessageCenterView({
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto px-4 py-3 pb-24">
-        {filteredConversations.map((conversation) => {
+        {visibleFilteredConversations.map((conversation) => {
           const unreadCount = getConversationUnreadCount(conversation);
           const isUnread = unreadCount > 0;
            const displayName = getConversationDisplayName(conversation);
@@ -44834,7 +44851,7 @@ function MessageCenterView({
                key={conversation.id}
                type="button"
                onClick={() => handleSelectConversation(conversation)}
-               className={`mb-1.5 flex w-full items-center gap-2 rounded-2xl border px-2.5 py-2 text-left transition ${isUnread ? 'border-emerald-100 bg-white shadow-sm shadow-emerald-50' : 'border-transparent bg-white hover:bg-gray-50'}`}
+               className={`hd-render-contained mb-1.5 flex w-full items-center gap-2 rounded-2xl border px-2.5 py-2 text-left transition ${isUnread ? 'border-emerald-100 bg-white shadow-sm shadow-emerald-50' : 'border-transparent bg-white hover:bg-gray-50'}`}
              >
                {renderAvatar(conversation)}
                <div className="min-w-0 flex-1">
@@ -67880,7 +67897,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
             canSeeCustomerLocation ? cus.address : ''
           ].filter(Boolean).join(' • ');
           return (
-            <div key={cus.id} onClick={() => handleOpenCustomer(cus.id)} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:bg-gray-50 transition">
+            <div key={cus.id} onClick={() => handleOpenCustomer(cus.id)} className="hd-render-contained bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:bg-gray-50 transition">
               <div className="flex items-start gap-3">
                 <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0">
                   {initials}
@@ -73555,7 +73572,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
       <div className="space-y-3">
         {visibleDebtCustomers.map(customer => (
-          <div key={customer.id} onClick={() => openDebtCustomerDetail(customer)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition">
+          <div key={customer.id} onClick={() => openDebtCustomerDetail(customer)} className="hd-render-contained bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition">
             <div>
               <h3 className="font-bold text-gray-800 text-sm">{customer.name}</h3>
               <span className="text-[10px] text-gray-500 flex items-center mt-1"><MapPin size={10} className="mr-1"/> {customer.address || 'Chưa có địa chỉ'}</span>
