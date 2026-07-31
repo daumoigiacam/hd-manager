@@ -11,7 +11,6 @@ export const AppShell = React.forwardRef(function AppShell({ children, className
 export function HDHeader({ children, className = '', ...props }) {
   return <header className={`hd-enterprise-header ${className}`.trim()} {...props}>{children}</header>;
 }
-
 export function HDNavigation({ children, className = '', ...props }) {
   return <nav className={`hd-enterprise-navigation ${className}`.trim()} {...props}>{children}</nav>;
 }
@@ -27,4 +26,3 @@ export function HDNavigationRail({ children, className = '', ...props }) {
 export function HDSidebar({ children, className = '', ...props }) {
   return <div className={`hd-enterprise-sidebar ${className}`.trim()} {...props}>{children}</div>;
 }
-

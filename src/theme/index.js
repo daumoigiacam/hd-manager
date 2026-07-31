@@ -5,4 +5,3 @@ export const HD_THEME_NAMES = Object.freeze({
 });
 
 export const HD_DEFAULT_THEME = HD_THEME_NAMES.light;
-

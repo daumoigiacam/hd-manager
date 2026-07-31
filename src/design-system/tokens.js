@@ -10,7 +10,6 @@ export const hdColors = Object.freeze({
   warning: '#d97706',
   info: '#2563eb'
 });
-
 export const hdSpacing = Object.freeze({
   xs: '0.25rem',
   sm: '0.5rem',
@@ -84,4 +83,3 @@ export const hdDesignTokens = Object.freeze({
   density: hdDensity,
   safeArea: hdSafeArea
 });
-

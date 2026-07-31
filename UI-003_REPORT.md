@@ -1,6 +1,6 @@
 # UI-003 - Enterprise AppShell & Design System
 
-Date: 2026-07-31  
+Date: 2026-07-31
 Scope: UI architecture only. Business logic, Firebase, Firestore, Authentication, permissions, API, SePay, QR, webhook, calculations and persisted data were not changed.
 
 ## 1. AppShell Architecture
@@ -103,4 +103,3 @@ Static responsive rules were added for 320, 360, 375, 390, 412, 430, 600, 768, 8
 ## 10. Exceptions and Acceptance Status
 
 The UI-003 architecture baseline is implemented and the production build plus existing regression suites pass. The sprint should not be marked as a 100% final acceptance until the two environment-dependent items above are completed: physical-device validation and introduction of a project-approved lint configuration. This report intentionally does not claim those checks were run.
-
