@@ -21052,7 +21052,7 @@ function MainAppView({
   ]);
 
   return (
-    <AppShell ref={appShellRef} className="mobile-app-shell hd-app-shell flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
+    <AppShell ref={appShellRef} className="mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden">
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -21064,7 +21064,7 @@ function MainAppView({
       />
       {renderHeader()}
       
-      <main className="hd-app-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
+      <main className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         <AppSectionErrorBoundary
           name={`staff_${activeTab}`}
           resetKey={activeTab}
@@ -29075,14 +29075,14 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
 
 function AccessDeniedView({ onGoHome }) {
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center rounded-3xl border border-gray-100 bg-white p-6 text-center shadow-sm">
-      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 text-gray-500">
+    <div className="hd-ds-card hd-ds-state hd-ds-state--warning min-h-[60vh]">
+      <div className="hd-ds-state__visual flex items-center justify-center text-amber-700">
         <Lock size={24} />
       </div>
-      <h2 className="text-lg font-black text-gray-900">Chưa được cấp quyền</h2>
-      <p className="mt-2 text-sm leading-6 text-gray-500">Tài khoản này chưa được chủ doanh nghiệp bật quyền cho chức năng đang mở.</p>
+      <h2>Chưa được cấp quyền</h2>
+      <p>Tài khoản này chưa được chủ doanh nghiệp bật quyền cho chức năng đang mở.</p>
       {onGoHome && (
-        <button type="button" onClick={onGoHome} className="mt-5 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">
+        <button type="button" onClick={onGoHome} className="hd-ds-button hd-ds-button--primary mt-2">
           Quay về mục được phép
         </button>
       )}
@@ -76576,7 +76576,7 @@ function CustomerPortalView({
   };
 
   return (
-    <AppShell className="customer-portal-shell min-h-screen bg-[#f4f6f8] max-w-md mx-auto font-sans relative">
+    <AppShell className="customer-portal-shell hd-shell--customer min-h-screen">
       {renderPaymentSheet()}
       {renderCustomerOrderDetailSheet()}
       {renderPointWithdrawSheet()}
@@ -76631,7 +76631,7 @@ function CustomerPortalView({
           <span>{submitMessage}</span><button onClick={() => setSubmitMessage('')}><X size={16} /></button>
         </div>
       )}
-      <main className="customer-portal-main p-4">
+      <main className="customer-portal-main hd-shell-content p-4">
         <AppSectionErrorBoundary
           name={`customer_${activeTab}`}
           resetKey={activeTab}
@@ -76678,7 +76678,7 @@ function CustomerStatCard({ label, value, icon: Icon, tone = 'emerald' }) {
 }
 
 function CustomerEmptyState({ text }) {
-  return <div className="bg-white rounded-3xl p-6 text-center text-sm text-gray-400 border border-gray-100">{text}</div>;
+  return <div className="hd-ds-card hd-ds-state py-6"><p>{text}</p></div>;
 }
 
 function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady = true }) {
@@ -76775,7 +76775,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
   };
 
   return (
-    <AppShell className="ios-web-login-shell flex flex-col bg-[#f4f6f8] max-w-md mx-auto relative items-center justify-center font-sans">
+    <AppShell className="ios-web-login-shell hd-shell--auth flex flex-col items-center justify-center">
       <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
         
         {/* --- KHU VUC LOGO & THUONG HIEU --- */}

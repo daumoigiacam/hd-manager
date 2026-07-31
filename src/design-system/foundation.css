@@ -157,10 +157,58 @@ body {
   isolation: isolate;
 }
 
+.hd-shell--staff,
+.hd-shell--customer,
+.hd-shell--auth {
+  position: relative;
+  background: var(--hd-color-canvas);
+  color: var(--hd-color-ink);
+}
+
+.hd-shell--staff,
+.hd-shell--customer {
+  box-shadow: var(--hd-shadow-lg);
+}
+
+.hd-shell--auth {
+  width: 100%;
+  min-height: var(--hd-viewport-height, 100dvh);
+  padding: max(var(--hd-space-5), env(safe-area-inset-top, 0px)) max(var(--hd-space-4), env(safe-area-inset-right, 0px)) max(var(--hd-space-5), env(safe-area-inset-bottom, 0px)) max(var(--hd-space-4), env(safe-area-inset-left, 0px));
+  background:
+    radial-gradient(circle at 15% 8%, color-mix(in srgb, var(--hd-primary-200) 42%, transparent), transparent 32rem),
+    radial-gradient(circle at 92% 88%, color-mix(in srgb, var(--hd-secondary-100) 38%, transparent), transparent 28rem),
+    var(--hd-color-canvas);
+}
+
+.hd-shell--auth .ios-web-login-card {
+  width: min(100%, 28rem);
+  border-color: var(--hd-color-border);
+  border-radius: var(--hd-radius-xl);
+  background: color-mix(in srgb, var(--hd-color-surface) 96%, transparent);
+  box-shadow: var(--hd-shadow-lg);
+}
+
+.hd-shell-content {
+  color: var(--hd-color-ink);
+  background: var(--hd-color-canvas);
+  scrollbar-gutter: stable;
+}
+
 .hd-enterprise-header {
   background-color: var(--hd-primary-600);
   color: var(--hd-color-on-primary);
   box-shadow: var(--hd-shadow-sm);
+}
+
+.hd-enterprise-header.hd-app-header {
+  border-color: color-mix(in srgb, var(--hd-primary-900) 16%, transparent);
+  background: linear-gradient(120deg, var(--hd-primary-700), var(--hd-primary-600) 58%, color-mix(in srgb, var(--hd-primary-500) 76%, var(--hd-secondary-500)));
+  box-shadow: var(--hd-shadow-sm);
+}
+
+.hd-enterprise-header :where(h1, h2, h3) {
+  letter-spacing: -0.015em;
+  text-wrap: balance;
 }
 
 .hd-enterprise-navigation,
@@ -169,6 +217,59 @@ body {
 .hd-enterprise-sidebar {
   background: color-mix(in srgb, var(--hd-color-surface) 96%, transparent);
   color: var(--hd-color-ink-soft);
+  border-color: var(--hd-color-border);
+  box-shadow: var(--hd-shadow-xs);
+  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+.hd-enterprise-bottom-navigation :where(button, a),
+.hd-navigation-rail :where(button, a),
+.hd-enterprise-sidebar :where(button, a) {
+  min-width: var(--hd-touch-target);
+  min-height: var(--hd-touch-target);
+  transition: color var(--hd-motion-standard) var(--hd-motion-ease), background-color var(--hd-motion-standard) var(--hd-motion-ease), transform var(--hd-motion-fast) var(--hd-motion-ease);
+}
+
+.hd-enterprise-bottom-navigation :where(button, a):active,
+.hd-navigation-rail :where(button, a):active,
+.hd-enterprise-sidebar :where(button, a):active {
+  transform: scale(0.98);
+}
+
+.hd-shell-content :where(input, select, textarea):not(.hd-login-3d-field__control) {
+  border-color: var(--hd-color-border-strong);
+  background-color: var(--hd-color-surface);
+  color: var(--hd-color-ink);
+  transition: border-color var(--hd-motion-standard) var(--hd-motion-ease), box-shadow var(--hd-motion-standard) var(--hd-motion-ease), background-color var(--hd-motion-standard) var(--hd-motion-ease);
+}
+
+.hd-shell-content :where(input, select, textarea):not(.hd-login-3d-field__control):focus {
+  border-color: var(--hd-primary-600);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hd-primary-500) 14%, transparent);
+  outline: 0;
+}
+
+.hd-shell-content :where(table) {
+  border-color: var(--hd-color-border);
+  background: var(--hd-color-surface);
+  color: var(--hd-color-ink);
+}
+
+.hd-shell-content :where(th) {
+  color: var(--hd-color-ink-soft);
+  background: var(--hd-color-surface-muted);
+  font-size: var(--hd-type-label);
+  font-weight: var(--hd-font-weight-semibold);
+}
+
+.hd-shell-content :where(td, th) {
+  border-color: var(--hd-color-border);
+}
+
+.hd-shell-content :where(.bg-white.rounded-xl, .bg-white.rounded-2xl, .bg-white.rounded-3xl):not(button):not(a):not(input) {
+  border-color: var(--hd-color-border);
+  background-color: var(--hd-color-surface);
+  box-shadow: var(--hd-shadow-xs);
 }
 
 .hd-ds-card {
