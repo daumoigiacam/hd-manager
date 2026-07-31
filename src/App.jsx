@@ -12468,6 +12468,30 @@ export default function App() {
       || (userPhone && isSameLoginPhone(emp.phone || emp.phoneNumber, userPhone))
     )) || currentUser;
   }, [currentUser, employees]);
+  useEffect(() => {
+    if (!currentUser || (currentUser.role !== 'customer' && !currentUser.isCustomerAccount)) return;
+    const sessionPhone = `${currentUser.phone || currentUser.phoneNumber || ''}`.trim();
+    if (!sessionPhone) return;
+    const matchingEmployee = employees.find(emp => (
+      !emp.isArchived && isSameLoginPhone(emp.phone || emp.phoneNumber, sessionPhone)
+    ));
+    if (!matchingEmployee) return;
+
+    const matchingCompany = rawCompanies.find(company => company.id === matchingEmployee.companyId)
+      || currentCompany
+      || { id: matchingEmployee.companyId, name: 'Công ty' };
+    const restoredEmployeeSession = {
+      role: matchingEmployee.role || 'employee',
+      id: matchingEmployee.id,
+      companyId: matchingEmployee.companyId,
+      name: matchingEmployee.name || '',
+      phone: matchingEmployee.phone || sessionPhone
+    };
+    setCurrentUser(restoredEmployeeSession);
+    setCurrentCompany(matchingCompany);
+    setActiveTab('home');
+    savePreferredLoginMode('staff');
+  }, [currentUser?.id, currentUser?.isCustomerAccount, currentUser?.phone, currentUser?.phoneNumber, currentUser?.role, currentCompany, employees, rawCompanies]);
   const employeeReviews = useMemo(() => rawEmployeeReviews.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawEmployeeReviews, myCompanyId]);
   const customers = useMemo(() => rawCustomers.filter(c => c.companyId === myCompanyId && !c.isArchived), [rawCustomers, myCompanyId]);
   const customerAccounts = useMemo(() => rawCustomerAccounts.filter(account => account.companyId === myCompanyId && !account.isArchived), [rawCustomerAccounts, myCompanyId]);
@@ -13012,14 +13036,6 @@ export default function App() {
       count: customerSource.length
     });
 
-    if (customerMatch.customer) {
-      logLoginStep('Auto login routed to customer', {
-        phone: normalizedPhone,
-        customerId: customerMatch.customer.id
-      });
-      return handleCustomerLogin(phone, password);
-    }
-
     if (!emp || companySource.length === 0 || (customerSource.length === 0 && customerAccountSource.length === 0)) {
       try {
         const { employeesFromCloud, companiesFromCloud, customersFromCloud, customerAccountsFromCloud } = await readLoginCollectionsFromCloud();
@@ -13076,20 +13092,9 @@ export default function App() {
       }
     }
 
-    if (customerMatch.customer) {
-      logLoginStep('Auto login routed to customer after Cloud query', {
-        phone: normalizedPhone,
-        customerId: customerMatch.customer.id,
-        accountFound: Boolean(customerMatch.account)
-      });
-      return handleCustomerLogin(phone, password, {
-        employees: employeeSource,
-        companies: companySource,
-        customers: customerSource,
-        customerAccounts: customerAccountSource
-      });
-    }
-
+    // A staff account owns the phone number when it overlaps with a customer
+    // profile. This prevents an accidental customer login from hiding the
+    // employee account and its assigned customers.
     if (emp) { 
       const passwordResult = await verifyAndMaybeSetLoginPassword('employees', emp, password);
       if (!passwordResult.success) return passwordResult;
@@ -13112,6 +13117,19 @@ export default function App() {
       savePreferredLoginMode('staff');
       saveAppSession({ currentUser: nextUser, currentCompany: comp, activeTab: 'home' });
       return { success: true }; 
+    }
+    if (customerMatch.customer) {
+      logLoginStep('Auto login routed to customer', {
+        phone: normalizedPhone,
+        customerId: customerMatch.customer.id,
+        accountFound: Boolean(customerMatch.account)
+      });
+      return handleCustomerLogin(phone, password, {
+        employees: employeeSource,
+        companies: companySource,
+        customers: customerSource,
+        customerAccounts: customerAccountSource
+      });
     }
     logLoginStep('Auto login no match', {
       phone: normalizedPhone,
@@ -13323,7 +13341,7 @@ export default function App() {
       ? rawCustomers.find(item => !item?.isArchived && item.id === (matchedAccount.customer_id || matchedAccount.customerId))
       : rawCustomers.find(item => !item?.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
     const matchedEmployee = rawEmployees.find(item => !item?.isArchived && isSameLoginPhone(item.phone, normalizedPhone));
-    const isCustomerRequest = Boolean(matchedCustomer);
+    const isCustomerRequest = !matchedEmployee && Boolean(matchedCustomer);
     const companyId = matchedEmployee?.companyId
       || matchedAccount?.companyId
       || matchedAccount?.company_id
@@ -38080,7 +38098,7 @@ function ExecutiveDashboardView({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-black text-slate-950">{index + 1}. {row.name}</p>
                     <p className="text-[11px] font-semibold text-slate-500">
-                      Tổng lãi {formatCurrency(row.profit)} đ • {formatNumber(row.activeDays)} ngày có bán
+                      Doanh thu {formatCurrency(row.revenue)} đ • Giá vốn {formatCurrency(row.cost)} đ • Tổng lãi {formatCurrency(row.profit)} đ • {formatNumber(row.activeDays)} ngày có bán
                     </p>
                   </div>
                   <p className="shrink-0 text-right text-sm font-black text-emerald-700">{formatCurrency(row.averageDailyProfit)} đ/ngày</p>
@@ -45865,10 +45883,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         </div>
       )}
 
-      <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 text-white rounded-2xl p-5 shadow-md">
-        <div className="mb-1 flex flex-wrap items-center justify-center gap-2 text-center">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-200">Tổng kết ngày</p>
-          <label className="relative inline-flex cursor-pointer items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-black text-white shadow-inner transition hover:bg-white/15">
+      <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 text-white rounded-2xl p-3 shadow-md">
+        <div className="mb-0.5 flex flex-wrap items-center justify-center gap-1.5 text-center leading-tight">
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-200">Tổng kết ngày</p>
+          <label className="relative inline-flex cursor-pointer items-center rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[11px] font-black text-white shadow-inner transition hover:bg-white/15">
             {formatCompactDateLabel(filterDate)}
             <input
               type="date"
@@ -45882,20 +45900,20 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
             />
           </label>
         </div>
-        <h3 className={`text-center text-3xl font-black ${balance < 0 ? 'text-red-300' : 'text-white'}`}>{formatCurrency(balance)} đ</h3>
-        <p className="mt-1 text-center text-xs text-emerald-100">Chênh lệch thu chi trong ngày</p>
-        <div className="grid grid-cols-2 gap-3 mt-4">
-          <div className="rounded-xl border border-orange-200/30 bg-orange-400/15 p-3 text-center">
-            <p className="text-[10px] uppercase font-bold text-orange-200 mb-1">Tổng chi</p>
-            <p className="text-lg font-black text-orange-100">{formatCurrency(totalExpense)} đ</p>
+        <h3 className={`text-center text-2xl font-black leading-tight ${balance < 0 ? 'text-red-300' : 'text-white'}`}>{formatCurrency(balance)} đ</h3>
+        <p className="mt-0.5 text-center text-[11px] leading-tight text-emerald-100">Chênh lệch thu chi trong ngày</p>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div className="rounded-xl border border-orange-200/30 bg-orange-400/15 p-2 text-center">
+            <p className="mb-0 text-[10px] uppercase font-bold leading-tight text-orange-200">Tổng chi</p>
+            <p className="text-base font-black leading-tight text-orange-100">{formatCurrency(totalExpense)} đ</p>
           </div>
-          <div className="rounded-xl border border-emerald-200/30 bg-emerald-400/15 p-3 text-center">
-            <p className="text-[10px] uppercase font-bold text-emerald-200 mb-1">Tổng thu</p>
-            <p className="text-lg font-black text-emerald-100">{formatCurrency(totalIncome)} đ</p>
+          <div className="rounded-xl border border-emerald-200/30 bg-emerald-400/15 p-2 text-center">
+            <p className="mb-0 text-[10px] uppercase font-bold leading-tight text-emerald-200">Tổng thu</p>
+            <p className="text-base font-black leading-tight text-emerald-100">{formatCurrency(totalIncome)} đ</p>
           </div>
         </div>
         {(pendingIncome > 0 || pendingExpense > 0) && (
-          <div className="mt-3 rounded-2xl border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-100">
+          <div className="mt-2 rounded-2xl border border-amber-300/30 bg-amber-400/10 px-2 py-1.5 text-[11px] font-bold leading-tight text-amber-100">
             Chờ xác nhận: thu {formatCurrency(pendingIncome)} đ • chi {formatCurrency(pendingExpense)} đ. Các khoản này chưa trừ nợ và chưa vào chi phí chính thức.
           </div>
         )}
@@ -50458,12 +50476,11 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
 
   return (
     <div className="premium-data-module premium-inventory-module space-y-4 pb-6">
-      <div className="premium-data-toolbar grid grid-cols-4 gap-2 rounded-[26px] border border-emerald-100 bg-white p-2 shadow-sm">
+      <div className="premium-data-toolbar grid grid-cols-3 gap-2 rounded-[26px] border border-emerald-100 bg-white p-2 shadow-sm">
         {[
           { key: 'import', label: 'Nhập', count: dayImports.length },
           { key: 'export', label: 'Xuất', count: dayExportRows.length },
-          { key: 'stock', label: 'Tồn', count: warehouseStockSummary.warningCount },
-          { key: 'report', label: 'Báo cáo', count: warehouseMovementTableRows.length }
+          { key: 'stock', label: 'Tồn', count: warehouseStockSummary.warningCount }
         ].map(tab => {
           const isActive = warehouseInventoryTab === tab.key;
           return (
@@ -54341,7 +54358,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       })()}
 
       {shouldShowDispatchShortage && (
-        <div className={`order-2 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+        <div className={`order-1 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
           <div className="flex min-w-0 items-center gap-2 rounded-2xl bg-white/80 px-3 py-2 shadow-sm">
               <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${dispatchShortageSummary.issueLines.length > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
                 {dispatchShortageSummary.issueLines.length > 0 ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
@@ -54505,7 +54522,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       )}
 
       {canCreate && (
-        <div className="order-1 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+        <div className="order-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <form onSubmit={handleSubmitDispatch} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div data-search-zone="true" className="relative">
@@ -57856,7 +57873,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
 
-        setRequestStatus('Đã cập nhật đơn đặt hàng.');
+        setRequestStatus('');
         closeOrderRequestForm();
         return;
       }
@@ -57865,7 +57882,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         await onAddOrderRequest(employee?.id || 'admin', requestPayload);
       }
 
-      setRequestStatus(`Đã lưu ${normalizedRequests.length} đơn đặt hàng.`);
+      setRequestStatus('');
       closeOrderRequestForm();
     } catch (error) {
       const message = getFriendlyFirebaseErrorMessage(error, 'Không thể lưu đơn đặt hàng. Vui lòng thử lại.');
@@ -58268,8 +58285,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         </div>
 
       {showForm && (
-        <div className="hd-order-request-modal-layer fixed inset-0 z-[120] bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
-          <div className="hd-order-request-modal-panel flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden">
+        <div className="hd-order-request-modal-layer fixed inset-0 z-[120] isolate bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
+          <div className="hd-order-request-modal-panel relative z-[121] flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden">
             <div className={`shrink-0 border-b border-gray-100 flex items-start justify-between gap-4 ${isCompactManualDetailStage ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
               <div>
                 <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-emerald-600">{isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên Đơn Đặt'}</p>
@@ -59019,7 +59036,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {!isOrderDetailStage && (
-                <div className="shrink-0 border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
+                <div className="hd-order-request-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
                   <div className="flex gap-3">
                     <button type="button" onClick={closeOrderRequestForm} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700">Hủy</button>
                     {isManualSetupStage && (
@@ -61850,7 +61867,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
         return (
           <div className="hd-order-detail-layer fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-right">
-            <HDHeader className="hd-safe-header-compact bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
+            <HDHeader className="hd-order-detail-header hd-safe-header-compact relative z-10 bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
               <div className="flex items-center gap-3">
                 <button type="button" onClick={closeOrderDetail} className="p-2 rounded-full hover:bg-gray-100 text-gray-500">
                   <ChevronLeft size={22} />
@@ -61866,7 +61883,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
             </HDHeader>
 
             <div
-              className="flex-1 overflow-y-auto px-4 pt-3 pb-[calc(var(--hd-safe-bottom)+7rem)] space-y-4"
+              className="hd-order-detail-content flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-[calc(var(--hd-safe-bottom)+7rem)] space-y-4"
               style={{ scrollPaddingBottom: 'calc(var(--hd-safe-bottom) + 7rem)' }}
             >
               <div className="rounded-[28px] border border-rose-100 bg-gradient-to-br from-white via-rose-50/40 to-amber-50/40 p-4 shadow-sm hd-soft-red-outline">

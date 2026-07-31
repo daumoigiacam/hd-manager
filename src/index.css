@@ -126,6 +126,27 @@ svg {
   max-height: none !important;
 }
 
+/* The order form lives inside the app shell, so its modal must own a
+ * stacking context above the shell navigation. The picker body can scroll,
+ * while the action row remains reachable on small screens. */
+.hd-order-request-modal-layer {
+  inset: 0 !important;
+  margin: 0 !important;
+  z-index: 120 !important;
+  isolation: isolate;
+}
+
+.hd-order-request-modal-panel {
+  position: relative;
+  z-index: 121;
+}
+
+.hd-order-request-modal-actions {
+  position: relative;
+  z-index: 122;
+  flex-shrink: 0;
+}
+
 .hd-order-request-modal-panel > form {
   min-height: 0;
   flex: 1 1 auto;
@@ -1356,8 +1377,19 @@ html.hd-low-power-ui .hd-soft-red-outline {
 
 /* Full-screen detail views already render their own safe-area header. */
 .mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) {
+  inset: 0 !important;
+  margin: 0 !important;
   padding: 0 !important;
   overflow: hidden;
+}
+
+/* A fullscreen detail opens from inside the scrollable content region. Let it
+   escape that region so its header can cover, rather than sit behind, AppShell. */
+.mobile-app-shell > main:has(.hd-order-detail-layer),
+.mobile-app-shell > main:has(.hd-order-request-modal-layer) {
+  position: relative;
+  z-index: 60;
+  overflow: visible !important;
 }
 
 .mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) > main,
@@ -1367,6 +1399,44 @@ html.hd-low-power-ui .hd-soft-red-outline {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   padding-bottom: calc(var(--hd-footer-height) + var(--hd-space-5));
+}
+
+/* Keep a full-screen view's own header above its scrolling content. This
+ * prevents the first row or header actions from being painted underneath the
+ * title bar on phones with safe areas and on desktop shells. */
+.mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) > :where(header, .hd-enterprise-header) {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+}
+
+.mobile-app-shell .hd-order-detail-layer {
+  min-block-size: var(--hd-viewport-height);
+  max-block-size: var(--hd-viewport-height);
+}
+
+/* Older Android WebViews without :has() keep the detail below AppShell header
+   instead of clipping its title and invoice code. */
+@supports not selector(main:has(.hd-order-detail-layer)) {
+  .mobile-app-shell .hd-order-detail-layer {
+    top: calc(var(--hd-header-height) + var(--hd-safe-top)) !important;
+    min-block-size: calc(var(--hd-viewport-height) - var(--hd-header-height) - var(--hd-safe-top));
+    max-block-size: calc(var(--hd-viewport-height) - var(--hd-header-height) - var(--hd-safe-top));
+  }
+}
+
+.mobile-app-shell .hd-order-detail-header {
+  isolation: isolate;
+}
+
+.mobile-app-shell .hd-order-detail-content {
+  position: relative;
+  z-index: 1;
+  min-block-size: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 @media (max-width: 599px) {

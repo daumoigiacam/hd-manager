@@ -1253,9 +1253,17 @@ export const BusinessAnalysisService = {
             quantity: monthProfitRow.quantity + itemQty
           });
         }
-        if (!productProfitByDay.has(productName)) productProfitByDay.set(productName, new Map());
-        const dayMap = productProfitByDay.get(productName);
-        dayMap.set(orderDay, (dayMap.get(orderDay) || 0) + itemProfit);
+        // The daily ranking must use product-level revenue and cost, not the
+        // aggregate profitability row (which is grouped by inventory cost).
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          if (!productProfitByDay.has(productName)) productProfitByDay.set(productName, new Map());
+          const dayMap = productProfitByDay.get(productName);
+          const currentDay = dayMap.get(orderDay) || { revenue: 0, profit: 0 };
+          dayMap.set(orderDay, {
+            revenue: currentDay.revenue + itemRevenue,
+            profit: currentDay.profit + itemProfit
+          });
+        }
       });
     });
 
@@ -1268,13 +1276,20 @@ export const BusinessAnalysisService = {
 
     const topProductsByAverageDailyProfit = [...productProfitByDay.entries()]
       .map(([name, dayMap]) => {
-        const totalProfit = [...dayMap.values()].reduce((sum, value) => sum + value, 0);
+        const dailyRows = [...dayMap.values()];
+        const totalRevenue = dailyRows.reduce((sum, value) => sum + toNumber(value?.revenue), 0);
+        const totalProfit = dailyRows.reduce((sum, value) => sum + toNumber(value?.profit), 0);
+        const totalCost = totalRevenue - totalProfit;
         const activeDays = Math.max(1, dayMap.size);
         return {
           id: normalizeText(name),
           name,
+          revenue: totalRevenue,
+          cost: totalCost,
           profit: totalProfit,
           activeDays,
+          averageDailyRevenue: totalRevenue / activeDays,
+          averageDailyCost: totalCost / activeDays,
           averageDailyProfit: totalProfit / activeDays,
           value: totalProfit / activeDays
         };
@@ -1305,25 +1320,14 @@ export const BusinessAnalysisService = {
       .sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]))
       .slice(0, 10);
     const topProductsByRevenueFromMonth = topRows(productRevenueMonth, 'revenue', productRevenueMonth.size || 10);
-    const topProductsByProfitFromProfitability = profitabilityTopRows(profitabilityProductRows, 'profit');
     const topProductsByProfitFromMonth = topRows(productProfitMonth, 'profit', productProfitMonth.size || 10);
-    const topProductsByAverageDailyProfitFromProfitability = topProductsByProfitFromProfitability
-      .map(row => ({
-        ...row,
-        activeDays: 1,
-        averageDailyProfit: row.profit,
-        value: row.profit
-      }));
-
     const daysPassed = Math.max(1, source.now.getDate());
     return {
       topCustomersByRevenue: topRows(customerRevenue, 'revenue'),
       topCustomersByProfit: topRows(customerProfit, 'profit'),
       topProductsByRevenue: topProductsByRevenueFromMonth,
       topProductsByProfit: topProductsByProfitFromMonth,
-      topProductsByAverageDailyProfit: topProductsByAverageDailyProfitFromProfitability.length
-        ? topProductsByAverageDailyProfitFromProfitability
-        : topProductsByAverageDailyProfit,
+      topProductsByAverageDailyProfit,
       topEmployeesByRevenue: topRows(employeeRevenue, 'revenue', employeeRevenue.size || 10),
       topEmployeesByProfit: topRows(employeeProfit, 'profit', employeeProfit.size || 10),
       topCustomersByDebt: topRows(customerDebt, 'debt'),
