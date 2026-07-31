@@ -16,8 +16,13 @@
   --hd-type-body: 0.875rem;
   --hd-type-caption: 0.75rem;
   --hd-type-label: 0.75rem;
+  --hd-type-title: clamp(1.125rem, 1rem + 0.35vw, 1.375rem);
+  --hd-type-subtitle: 0.875rem;
+  --hd-type-meta: 0.6875rem;
   --hd-line-tight: 1.2;
+  --hd-line-title: 1.28;
   --hd-line-body: 1.5;
+  --hd-line-meta: 1.35;
 
   --hd-primary-50: #ecfdf5;
   --hd-primary-100: #d1fae5;
@@ -65,6 +70,10 @@
   --hd-color-focus: #2563eb;
   --hd-color-overlay: rgb(15 23 42 / 0.52);
   --hd-color-on-primary: #ffffff;
+  --hd-color-success-surface: #ecfdf5;
+  --hd-color-warning-surface: #fffbeb;
+  --hd-color-danger-surface: #fef2f2;
+  --hd-color-info-surface: #eff6ff;
 
   --hd-space-0: 0;
   --hd-space-1: 0.25rem;
@@ -88,18 +97,28 @@
   --hd-radius-xl: 1.5rem;
   --hd-radius-2xl: 2rem;
   --hd-radius-pill: 999px;
+  --hd-radius-control: var(--hd-radius-md);
+  --hd-radius-surface: var(--hd-radius-lg);
+  --hd-radius-dialog: var(--hd-radius-xl);
 
   --hd-shadow-xs: 0 1px 2px rgb(15 23 42 / 0.05);
   --hd-shadow-sm: 0 2px 8px rgb(15 23 42 / 0.07);
   --hd-shadow-md: 0 10px 28px rgb(15 23 42 / 0.10);
   --hd-shadow-lg: 0 20px 48px rgb(15 23 42 / 0.14);
   --hd-shadow-xl: 0 28px 72px rgb(15 23 42 / 0.18);
+  --hd-elevation-surface: var(--hd-shadow-sm);
+  --hd-elevation-floating: var(--hd-shadow-md);
+  --hd-elevation-dialog: var(--hd-shadow-lg);
 
   --hd-motion-fast: 150ms;
   --hd-motion-standard: 200ms;
   --hd-motion-slow: 250ms;
   --hd-motion-ease: cubic-bezier(0.2, 0, 0, 1);
   --hd-motion-emphasized: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --hd-motion-hover: 160ms;
+  --hd-motion-focus: 180ms;
+  --hd-glass-blur: 10px;
+  --hd-glass-surface: color-mix(in srgb, var(--hd-color-surface) 90%, transparent);
 }
 
 .hd-theme-dark,
@@ -138,6 +157,10 @@ textarea {
 body {
   color: var(--hd-color-ink);
   background: var(--hd-color-canvas);
+  font-size: var(--hd-type-body);
+  font-weight: var(--hd-font-weight-regular);
+  line-height: var(--hd-line-body);
+  letter-spacing: -0.005em;
 }
 
 ::selection {
@@ -155,6 +178,24 @@ body {
   background: var(--hd-color-canvas);
   font-family: var(--hd-font-sans);
   isolation: isolate;
+}
+
+.hd-enterprise-app-shell :where(h1, h2, h3, h4, h5, h6) {
+  color: var(--hd-color-ink);
+  font-weight: var(--hd-font-weight-semibold);
+  line-height: var(--hd-line-title);
+  letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+
+.hd-enterprise-app-shell :where(p, li, label, small) {
+  line-height: var(--hd-line-body);
+}
+
+.hd-enterprise-app-shell :where(.lucide) {
+  flex: 0 0 auto;
+  stroke-width: 1.9;
+  vector-effect: non-scaling-stroke;
 }
 
 .hd-shell--staff,
@@ -215,11 +256,17 @@ body {
 .hd-enterprise-bottom-navigation,
 .hd-navigation-rail,
 .hd-enterprise-sidebar {
-  background: color-mix(in srgb, var(--hd-color-surface) 96%, transparent);
+  background: var(--hd-color-surface);
   color: var(--hd-color-ink-soft);
   border-color: var(--hd-color-border);
   box-shadow: var(--hd-shadow-xs);
-  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+.hd-enterprise-header,
+.hd-enterprise-sidebar {
+  background: var(--hd-glass-surface);
+  -webkit-backdrop-filter: blur(var(--hd-glass-blur)) saturate(1.02);
+  backdrop-filter: blur(var(--hd-glass-blur)) saturate(1.02);
 }
 
 .hd-enterprise-bottom-navigation :where(button, a),
@@ -274,9 +321,9 @@ body {
 
 .hd-ds-card {
   border: 1px solid var(--hd-color-border);
-  border-radius: var(--hd-radius-lg);
+  border-radius: var(--hd-radius-surface);
   background: var(--hd-color-surface);
-  box-shadow: var(--hd-shadow-xs);
+  box-shadow: var(--hd-elevation-surface);
 }
 
 .hd-ds-card--accent {
@@ -292,7 +339,7 @@ body {
   justify-content: center;
   gap: var(--hd-space-2);
   border: 1px solid transparent;
-  border-radius: var(--hd-radius-md);
+  border-radius: var(--hd-radius-control);
   padding-inline: var(--hd-space-4);
   font-size: var(--hd-type-body);
   font-weight: var(--hd-font-weight-semibold);
@@ -345,7 +392,7 @@ body {
   width: 100%;
   min-height: var(--hd-control-height);
   border: 1px solid var(--hd-color-border-strong);
-  border-radius: var(--hd-radius-md);
+  border-radius: var(--hd-radius-control);
   background: var(--hd-color-surface);
   color: var(--hd-color-ink);
   padding: var(--hd-space-3) var(--hd-space-4);
@@ -392,22 +439,22 @@ body {
 .hd-ds-badge--neutral { color: var(--hd-neutral-700); border-color: var(--hd-neutral-200); background: var(--hd-neutral-100); }
 .hd-ds-badge--success,
 .hd-ds-badge--paid,
-.hd-ds-badge--completed { color: var(--hd-success); border-color: var(--hd-primary-200); background: var(--hd-primary-50); }
+.hd-ds-badge--completed { color: var(--hd-success); border-color: var(--hd-primary-200); background: var(--hd-color-success-surface); }
 .hd-ds-badge--warning,
 .hd-ds-badge--pending,
-.hd-ds-badge--priority { color: var(--hd-warning); border-color: #fde68a; background: #fffbeb; }
+.hd-ds-badge--priority { color: var(--hd-warning); border-color: #fde68a; background: var(--hd-color-warning-surface); }
 .hd-ds-badge--danger,
 .hd-ds-badge--debt,
-.hd-ds-badge--overdue { color: var(--hd-danger); border-color: #fecaca; background: #fef2f2; }
+.hd-ds-badge--overdue { color: var(--hd-danger); border-color: #fecaca; background: var(--hd-color-danger-surface); }
 .hd-ds-badge--info,
 .hd-ds-badge--payment,
-.hd-ds-badge--order { color: var(--hd-info); border-color: var(--hd-secondary-100); background: var(--hd-secondary-50); }
+.hd-ds-badge--order { color: var(--hd-info); border-color: var(--hd-secondary-100); background: var(--hd-color-info-surface); }
 
 .hd-ds-table-wrap {
   min-width: 0;
   overflow: auto;
   border: 1px solid var(--hd-color-border);
-  border-radius: var(--hd-radius-lg);
+  border-radius: var(--hd-radius-surface);
   background: var(--hd-color-surface);
   box-shadow: var(--hd-shadow-xs);
 }
@@ -501,9 +548,9 @@ body {
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--hd-color-border);
-  border-radius: var(--hd-radius-xl);
+  border-radius: var(--hd-radius-dialog);
   background: var(--hd-color-surface);
-  box-shadow: var(--hd-shadow-xl);
+  box-shadow: var(--hd-elevation-dialog);
   animation: hd-dialog-enter var(--hd-motion-slow) var(--hd-motion-emphasized) both;
 }
 
@@ -567,7 +614,7 @@ body {
 .hd-soft-3d {
   border: 1px solid color-mix(in srgb, var(--hd-primary-500) 14%, var(--hd-color-border));
   background: linear-gradient(145deg, color-mix(in srgb, var(--hd-color-surface) 94%, #fff), var(--hd-color-canvas-raised));
-  box-shadow: -10px -10px 28px rgb(255 255 255 / 0.72), 16px 18px 38px rgb(15 23 42 / 0.10);
+  box-shadow: var(--hd-elevation-surface);
 }
 
 /* Premium executive dashboard. Data and actions remain owned by the feature layer. */
@@ -590,7 +637,7 @@ body {
   color: var(--hd-color-on-primary);
   background:
     linear-gradient(128deg, color-mix(in srgb, var(--hd-neutral-950) 94%, var(--hd-primary-900)), var(--hd-primary-900) 56%, var(--hd-primary-700));
-  box-shadow: 0 18px 44px rgb(6 78 59 / 0.18);
+  box-shadow: var(--hd-elevation-floating);
 }
 
 .hd-dashboard-masthead::before,
@@ -682,7 +729,8 @@ body {
   color: #fff;
   background: rgb(255 255 255 / 0.10);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 10px 24px rgb(2 6 23 / 0.15);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(var(--hd-glass-blur));
+  backdrop-filter: blur(var(--hd-glass-blur));
   transition: background-color var(--hd-motion-standard) var(--hd-motion-ease), transform var(--hd-motion-fast) var(--hd-motion-ease);
 }
 
@@ -724,8 +772,9 @@ body {
   border: 1px solid color-mix(in srgb, var(--hd-color-border) 72%, transparent);
   border-radius: var(--hd-radius-lg);
   background: color-mix(in srgb, var(--hd-color-surface) 93%, transparent);
-  box-shadow: var(--hd-shadow-md);
-  backdrop-filter: blur(18px) saturate(1.08);
+  box-shadow: var(--hd-elevation-floating);
+  -webkit-backdrop-filter: blur(var(--hd-glass-blur)) saturate(1.02);
+  backdrop-filter: blur(var(--hd-glass-blur)) saturate(1.02);
   scrollbar-width: none;
 }
 
@@ -1077,5 +1126,65 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Phase 2.5: visual polish for shared feature surfaces.
+   Keep data tables and form controls flat; decorative depth is limited to
+   dashboard and surface chrome so dense workflows remain fast to scan. */
+.hd-enterprise-app-shell .hd-shell-content :where(input, select, textarea):not(.hd-login-3d-field__control) {
+  border-radius: var(--hd-radius-control);
+}
+
+.hd-enterprise-app-shell .hd-shell-content :where(table) {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.hd-enterprise-app-shell :where(.premium-data-module) {
+  color: var(--hd-color-ink);
+}
+
+.hd-enterprise-app-shell :where(.premium-data-toolbar, .premium-data-summary) {
+  border-radius: var(--hd-radius-surface) !important;
+  box-shadow: var(--hd-elevation-surface) !important;
+}
+
+.hd-enterprise-app-shell :where(.premium-data-list > *) {
+  border-radius: var(--hd-radius-surface);
+  box-shadow: var(--hd-shadow-xs);
+  transition: border-color var(--hd-motion-hover) var(--hd-motion-ease), box-shadow var(--hd-motion-hover) var(--hd-motion-ease), background-color var(--hd-motion-hover) var(--hd-motion-ease);
+}
+
+.hd-enterprise-app-shell :where(.premium-data-list > *):hover {
+  box-shadow: var(--hd-shadow-sm);
+}
+
+.hd-enterprise-app-shell :where(.premium-status-badge) {
+  border-radius: var(--hd-radius-pill);
+  font-size: var(--hd-type-meta);
+  font-weight: var(--hd-font-weight-medium);
+  letter-spacing: 0.01em;
+}
+
+.hd-enterprise-app-shell :where(.hd-dashboard-section, .hd-dashboard-period-card, .hd-dashboard-chart, .hd-dashboard-top-list) {
+  box-shadow: var(--hd-elevation-surface);
+}
+
+.hd-enterprise-app-shell :where(.hd-dashboard-kpi, .hd-dashboard-period-card, .hd-ds-state__visual, .hd-soft-3d) {
+  box-shadow: var(--hd-elevation-surface);
+}
+
+.hd-enterprise-app-shell :where(.hd-enterprise-header, .hd-enterprise-sidebar) {
+  border-color: color-mix(in srgb, var(--hd-color-border) 82%, transparent);
+}
+
+.hd-enterprise-app-shell :where(button, a, [role="button"]) {
+  transition-duration: var(--hd-motion-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hd-enterprise-app-shell :where(button, a, [role="button"]) {
+    transition-duration: 0.01ms;
   }
 }

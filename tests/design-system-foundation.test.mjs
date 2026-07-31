@@ -32,6 +32,11 @@ for (const selector of [
   'env(safe-area-inset-top',
   '--hd-space-4',
   '--hd-shadow-md',
+  '--hd-type-title',
+  '--hd-color-success-surface',
+  '--hd-radius-control',
+  '--hd-elevation-floating',
+  '--hd-glass-blur',
   '.hd-ds-card',
   '.hd-ds-button',
   '.hd-ds-field',
@@ -79,4 +84,14 @@ for (const selector of [
   assert(foundation.includes(selector), `Missing Phase 2.4 foundation rule: ${selector}`);
 }
 
-console.log('PASS Design System foundation: AppShell, tokens, fonts, themes, safe area, motion and primitives.');
+for (const selector of [
+  '.premium-data-toolbar',
+  '.premium-data-list > *',
+  '.premium-status-badge',
+  '.hd-dashboard-kpi',
+  'prefers-reduced-motion',
+]) {
+  assert(foundation.includes(selector), `Missing Phase 2.5 visual polish rule: ${selector}`);
+}
+
+console.log('PASS Design System foundation: AppShell, tokens, themes, shared primitives and Phase 2.5 visual polish.');
