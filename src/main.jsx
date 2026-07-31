@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client';
 import { Capacitor } from '@capacitor/core';
 import App from './App.jsx';
 import './index.css';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/roboto-flex';
+import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 
 function installResponsiveViewportVars() {

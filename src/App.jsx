@@ -18481,7 +18481,6 @@ export default function App() {
   if (!currentUser) {
     return (
       <>
-        <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
         <LoginRegisterView onLogin={handleLogin} onRegister={handleRegisterCompany} onForgotPassword={handleForgotPassword} isLoginReady={isLoginDataLoaded} />
       </>
@@ -18491,7 +18490,6 @@ export default function App() {
   if (isSessionRecovering) {
     return (
       <>
-        <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
         <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-6 text-center border border-gray-100">
             <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-4">
@@ -18508,7 +18506,6 @@ export default function App() {
   if (isSessionInvalid) {
     return (
       <>
-        <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
         <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-6 text-center border border-amber-100">
             <div className="w-14 h-14 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-4">
@@ -18532,7 +18529,6 @@ export default function App() {
   if (isCustomerSession) {
     return (
       <>
-        <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
         <CustomerPortalView
           currentUser={currentUser}
@@ -18568,7 +18564,6 @@ export default function App() {
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap'); body { font-family: 'Plus Jakarta Sans', sans-serif !important; }`}} />
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
