@@ -1400,3 +1400,171 @@ html.hd-low-power-ui .hd-soft-red-outline {
     max-height: calc(100vh - 2rem);
   }
 }
+
+/* UI-003: shared enterprise shell primitives. Business views stay unchanged. */
+.hd-enterprise-app-shell {
+  --hd-ui-header-height: var(--hd-header-height, 56px);
+  --hd-ui-footer-height: var(--hd-bottom-nav-height, 56px);
+  --hd-ui-rail-width: 5rem;
+  box-sizing: border-box;
+  min-inline-size: 0;
+  min-block-size: 100%;
+  isolation: isolate;
+}
+
+.hd-enterprise-app-shell > :where(main, section, article) {
+  min-inline-size: 0;
+}
+
+.hd-enterprise-header {
+  box-sizing: border-box;
+  min-block-size: var(--hd-ui-header-height);
+  min-inline-size: 0;
+  z-index: 20;
+}
+
+.hd-enterprise-navigation {
+  box-sizing: border-box;
+  min-inline-size: 0;
+}
+
+.hd-enterprise-bottom-navigation {
+  min-block-size: var(--hd-ui-footer-height);
+  box-sizing: border-box;
+}
+
+.hd-navigation-rail {
+  display: none;
+  min-inline-size: 0;
+}
+
+.hd-enterprise-app-shell :where(button, a, input, select, textarea) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hd-enterprise-app-shell :where(button, a) {
+  touch-action: manipulation;
+}
+
+.hd-enterprise-app-shell :where(.hd-dialog-surface) {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: var(--hd-dialog-max-height, 90dvh);
+}
+
+.hd-enterprise-app-shell :where(.hd-dialog-header) {
+  flex: 0 0 auto;
+}
+
+.hd-enterprise-app-shell :where(.hd-dialog-body) {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hd-enterprise-app-shell :where(.hd-dialog-footer) {
+  flex: 0 0 auto;
+}
+
+.hd-theme-dark {
+  color-scheme: dark;
+  --hd-color-surface: #172033;
+  --hd-color-canvas: #0f172a;
+  --hd-color-ink: #f8fafc;
+  --hd-color-muted: #cbd5e1;
+  --hd-color-border: #334155;
+}
+
+.hd-theme-high-contrast {
+  --hd-color-surface: #ffffff;
+  --hd-color-canvas: #ffffff;
+  --hd-color-ink: #000000;
+  --hd-color-muted: #1f2937;
+  --hd-color-border: #000000;
+}
+
+@media (max-width: 359px) {
+  .hd-enterprise-app-shell {
+    --hd-ui-header-height: 52px;
+    --hd-ui-footer-height: 56px;
+  }
+
+  .hd-enterprise-header {
+    min-block-size: 52px;
+  }
+}
+
+@media (min-width: 600px) and (max-width: 1099px) {
+  .mobile-app-shell.hd-enterprise-app-shell {
+    display: grid !important;
+    grid-template-columns: var(--hd-ui-rail-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    inline-size: 100%;
+    max-inline-size: none !important;
+    block-size: var(--hd-viewport-height, 100dvh);
+    margin-inline: 0;
+  }
+
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-header {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .mobile-app-shell.hd-enterprise-app-shell > main {
+    grid-column: 2;
+    grid-row: 2;
+    min-block-size: 0;
+    padding-bottom: var(--hd-space-6, 1.5rem) !important;
+  }
+
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    position: relative !important;
+    inset: auto !important;
+    display: block;
+    min-block-size: 0;
+    border-top: 0;
+    border-right: 1px solid var(--hd-color-border, #e2e8f0);
+    box-shadow: 2px 0 12px rgb(15 23 42 / 0.05);
+    padding-block: max(var(--hd-safe-top, 0px), 0.5rem) max(var(--hd-safe-bottom, 0px), 0.5rem);
+  }
+
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation > .mobile-footer-nav,
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation > .desktop-sidebar-nav {
+    display: none !important;
+  }
+
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation > .tablet-navigation-rail {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: var(--hd-space-2, 0.5rem);
+    block-size: 100%;
+    overflow-y: auto;
+    padding: var(--hd-space-2, 0.5rem);
+  }
+
+  .tablet-navigation-rail .w-16 {
+    inline-size: 100%;
+    min-inline-size: 44px;
+  }
+
+  .tablet-navigation-rail button {
+    min-block-size: 44px;
+    border-radius: var(--hd-radius-md, 0.75rem);
+  }
+
+  .tablet-navigation-rail button > span:not(.sr-only) {
+    display: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation > .tablet-navigation-rail {
+    display: none !important;
+  }
+}

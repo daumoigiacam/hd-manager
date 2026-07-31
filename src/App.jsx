@@ -63,6 +63,14 @@ import {
 import {
   initFirebaseObservability,
 } from './services/firebaseObservability.js';
+import {
+  AppShell,
+  HDHeader,
+  HDNavigation,
+  HDBottomNavigation,
+  HDNavigationRail,
+  HDSidebar,
+} from './layout/index.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -20231,12 +20239,12 @@ function MainAppView({
     if (activeTab === 'home' || activeTab === 'messages' || activeTab === 'executive_dashboard') return null;
     if (activeTab === 'more') {
       return (
-        <header className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
+        <HDHeader className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
           <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-bold">Thêm</h1>
             {renderNotificationBell()}
           </div>
-        </header>
+        </HDHeader>
       );
     }
     const hideHeaderSearchFilter = activeTab === 'price_quotes' || activeTab === 'report' || activeTab === 'order_requests' || activeTab === 'warehouse_dispatch';
@@ -20317,7 +20325,7 @@ function MainAppView({
             : 'Tìm sản phẩm...';
     if (isCompactHeaderAction && headerSearchOpen) {
       return (
-        <header className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
+        <HDHeader className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
           <div className="flex items-center gap-2">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition shrink-0">
               <ChevronLeft size={23} />
@@ -20361,11 +20369,11 @@ function MainAppView({
               <Filter size={17} />
             </button>
           </div>
-        </header>
+        </HDHeader>
       );
     }
     return (
-      <header className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
+      <HDHeader className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
@@ -20441,7 +20449,7 @@ function MainAppView({
             renderNotificationBell()
           )}
         </div>
-      </header>
+      </HDHeader>
     );
   };
 
@@ -21049,7 +21057,7 @@ function MainAppView({
   ]);
 
   return (
-    <div ref={appShellRef} className="mobile-app-shell hd-app-shell flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
+    <AppShell ref={appShellRef} className="mobile-app-shell hd-app-shell flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -21262,8 +21270,8 @@ function MainAppView({
         />
       )}
 
-      <nav className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <div className="hd-bottom-navigation mobile-footer-nav flex justify-around items-center px-1 py-1.5">
+      <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
+        <HDBottomNavigation className="hd-bottom-navigation mobile-footer-nav flex justify-around items-center px-1 py-1.5">
           {footerNavItems.map((item) => (
             <NavButton
               key={item.id}
@@ -21273,8 +21281,8 @@ function MainAppView({
               onClick={() => setActiveTab(item.id)}
             />
           ))}
-        </div>
-        <div className="hd-sidebar-navigation desktop-sidebar-nav" aria-label="Điều hướng chức năng">
+        </HDBottomNavigation>
+        <HDNavigationRail className="tablet-navigation-rail" aria-label="Điều hướng chức năng">
           {desktopSidebarItems.map((item) => (
             <NavButton
               key={item.id}
@@ -21290,9 +21298,26 @@ function MainAppView({
             active={isMoreTabActive}
             onClick={() => setActiveTab('more')}
           />
-        </div>
-      </nav>
-    </div>
+        </HDNavigationRail>
+        <HDSidebar className="hd-sidebar-navigation desktop-sidebar-nav" aria-label="Điều hướng chức năng">
+          {desktopSidebarItems.map((item) => (
+            <NavButton
+              key={item.id}
+              icon={item.icon}
+              label={item.label}
+              active={activeTab === item.id}
+              onClick={() => setActiveTab(item.id)}
+            />
+          ))}
+          <NavButton
+            icon={APP_NAV_ITEM_MAP.more.icon}
+            label={APP_NAV_ITEM_MAP.more.label}
+            active={isMoreTabActive}
+            onClick={() => setActiveTab('more')}
+          />
+        </HDSidebar>
+      </HDNavigation>
+    </AppShell>
   );
 }
 
@@ -61608,7 +61633,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
         return (
           <div className="hd-order-detail-layer fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-right">
-            <header className="hd-safe-header-compact bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
+            <HDHeader className="hd-safe-header-compact bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
               <div className="flex items-center gap-3">
                 <button type="button" onClick={closeOrderDetail} className="p-2 rounded-full hover:bg-gray-100 text-gray-500">
                   <ChevronLeft size={22} />
@@ -61621,7 +61646,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               {canSharePaymentQr && <button type="button" aria-label="Chia sẻ hóa đơn" onClick={() => handleShareOrder()} className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-sm shrink-0 hover:bg-emerald-100">
                 <Send size={18} />
               </button>}
-            </header>
+            </HDHeader>
 
             <div
               className="flex-1 overflow-y-auto px-4 pt-3 pb-[calc(var(--hd-safe-bottom)+7rem)] space-y-4"
@@ -62406,7 +62431,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
       {showAddOrder && (
          <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-bottom">
-            <header className="hd-safe-header bg-blue-600 text-white p-4 flex items-center justify-between shrink-0 shadow-sm">
+            <HDHeader className="hd-safe-header bg-blue-600 text-white p-4 flex items-center justify-between shrink-0 shadow-sm">
                <div>
                  <h2 className="font-bold text-lg">
                    {orderCreationSource === 'warehouse' ? 'Lên đơn từ phiếu xuất kho' : orderCreationSource === 'image' ? 'Lên đơn bằng hình ảnh' : 'Tạo đơn thủ công'}
@@ -62423,7 +62448,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                  </button>
                </div>
                <button onClick={closeAddOrderModal} className="hover:bg-blue-700 p-1 rounded-full"><X size={24}/></button>
-            </header>
+            </HDHeader>
             
             <div className="p-4 flex-1 overflow-y-auto">
                <form id="order-form" onSubmit={handleAddSubmit} className="space-y-4 max-w-lg mx-auto pb-44 sm:pb-6">
@@ -76556,12 +76581,12 @@ function CustomerPortalView({
   };
 
   return (
-    <div className="customer-portal-shell min-h-screen bg-[#f4f6f8] max-w-md mx-auto font-sans relative">
+    <AppShell className="customer-portal-shell min-h-screen bg-[#f4f6f8] max-w-md mx-auto font-sans relative">
       {renderPaymentSheet()}
       {renderCustomerOrderDetailSheet()}
       {renderPointWithdrawSheet()}
       {renderCustomerMessageSheet()}
-      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-4 py-3 flex items-center justify-between">
+      <HDHeader className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-4 py-3 flex items-center justify-between">
         <button
           type="button"
           onClick={openCustomerProfileEditor}
@@ -76605,7 +76630,7 @@ function CustomerPortalView({
           </button>
           <button onClick={() => setActiveTab('more')} className="w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center"><UserCircle size={22} className="text-emerald-600" /></button>
         </div>
-      </div>
+      </HDHeader>
       {submitMessage && (
         <div className="mx-4 mt-4 rounded-2xl bg-emerald-50 border border-emerald-100 p-3 text-sm font-semibold text-emerald-700 flex justify-between gap-3">
           <span>{submitMessage}</span><button onClick={() => setSubmitMessage('')}><X size={16} /></button>
@@ -76620,7 +76645,7 @@ function CustomerPortalView({
           {renderContent()}
         </AppSectionErrorBoundary>
       </main>
-      <nav
+      <HDBottomNavigation
         className="customer-portal-nav fixed left-1/2 z-30 grid -translate-x-1/2 border-t border-gray-100 bg-white"
         style={{ '--customer-nav-count': navItems.length }}
       >
@@ -76634,8 +76659,8 @@ function CustomerPortalView({
             </button>
           );
         })}
-      </nav>
-    </div>
+      </HDBottomNavigation>
+    </AppShell>
   );
 }
 
@@ -76755,7 +76780,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
   };
 
   return (
-    <div className="ios-web-login-shell flex flex-col bg-[#f4f6f8] max-w-md mx-auto relative items-center justify-center font-sans">
+    <AppShell className="ios-web-login-shell flex flex-col bg-[#f4f6f8] max-w-md mx-auto relative items-center justify-center font-sans">
       <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
         
         {/* --- KHU VUC LOGO & THUONG HIEU --- */}
@@ -76891,7 +76916,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
         )}
       </div>
       <p className="text-[10px] text-gray-400 mt-6 text-center px-8 font-medium leading-relaxed">Bằng việc đăng nhập, bạn đồng ý với Chính sách Bảo mật. Dữ liệu được mã hóa trên Cloud.</p>
-    </div>
+    </AppShell>
   );
 }
 
