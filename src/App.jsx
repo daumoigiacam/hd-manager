@@ -19255,6 +19255,11 @@ function MainAppView({
   const appBackHandlerRef = useRef(null);
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
   const [lastNotificationSeenAt, setLastNotificationSeenAt] = useState(0);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [shellSearchOpen, setShellSearchOpen] = useState(false);
+  const [shellSearchKeyword, setShellSearchKeyword] = useState('');
+  const [shellRecentTabs, setShellRecentTabs] = useState([]);
+  const shellSearchInputRef = useRef(null);
   const systemNotificationReadyRef = useRef(false);
   const lastSystemNotificationShownAtRef = useRef(0);
 
@@ -19729,11 +19734,16 @@ function MainAppView({
     () => filterNotificationsForActiveTab(notificationItems, activeTab),
     [activeTab, notificationItems]
   );
+  const [notificationFilter, setNotificationFilter] = useState('all');
+  const notificationDialogItems = useMemo(() => {
+    if (notificationFilter !== 'unread') return visibleNotificationItems;
+    return visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt);
+  }, [lastNotificationSeenAt, notificationFilter, visibleNotificationItems]);
   const visibleNotificationItemsForDialog = useChunkedList(
-    visibleNotificationItems,
+    notificationDialogItems,
     60,
     80,
-    `${activeTab}|${showNotificationCenter ? 'open' : 'closed'}`
+    `${activeTab}|${notificationFilter}|${showNotificationCenter ? 'open' : 'closed'}`
   );
   const unreadNotificationCount = useMemo(
     () => visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length,
@@ -20085,6 +20095,7 @@ function MainAppView({
     requestSystemNotificationPermission({ forcePrompt: true });
     const latestNotificationAt = notificationItems.reduce((latest, item) => Math.max(latest, getEntityTimestamp(item) || 0), 0);
     markNotificationsAsSeen(Math.max(Date.now(), latestNotificationAt));
+    setNotificationFilter('all');
     setShowNotificationCenter(true);
   };
   const handleOpenEmployeeHomeInbox = () => {
@@ -20241,12 +20252,43 @@ function MainAppView({
 
   const renderHeader = () => {
     if (activeTab === 'home' || activeTab === 'messages' || activeTab === 'executive_dashboard') return null;
+    const headerBreadcrumbLabel = APP_NAV_ITEM_MAP[activeTab]?.label || 'Quản lý';
+    const headerPersonName = employee?.name || employee?.fullName || currentUser?.name || currentCompany?.name || 'HD';
+    const headerInitials = headerPersonName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(-2)
+      .map((part) => part[0]?.toUpperCase() || '')
+      .join('') || 'HD';
+    const handleHeaderQuickAction = () => {
+      const item = quickActionItems?.[0];
+      if (!item) return;
+      if (item.intent) setQuickActionIntent({ ...item.intent, id: `${item.id}_${Date.now()}` });
+      if (item.tab) setActiveTab(item.tab);
+    };
+    const renderHeaderIdentityActions = () => (
+      <div className="hidden items-center gap-2 md:flex">
+        {canShowFloatingQuickActionButton && quickActionItems?.length > 0 && (
+          <button type="button" className="hd-header-quick-action" onClick={handleHeaderQuickAction} aria-label="Phím tắt nhanh" title={quickActionItems[0]?.label || 'Phím tắt nhanh'}>
+            <Plus size={17} />
+          </button>
+        )}
+        <span className="hd-header-avatar" title={headerPersonName} aria-label={`Tài khoản ${headerPersonName}`}>{headerInitials}</span>
+      </div>
+    );
     if (activeTab === 'more') {
       return (
         <HDHeader className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
           <div className="flex items-center justify-between gap-3">
-          <h1 className="text-xl font-bold">Thêm</h1>
-            {renderNotificationBell()}
+            <div className="hd-header-context">
+              <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
+              <h1 className="text-xl font-bold">Thêm</h1>
+              <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / Thêm</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {renderNotificationBell()}
+              {renderHeaderIdentityActions()}
+            </div>
           </div>
         </HDHeader>
       );
@@ -20379,8 +20421,9 @@ function MainAppView({
     return (
       <HDHeader className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
         <div className="flex justify-between items-center">
-          <div className="flex items-center gap-3">
+          <div className="hd-header-context flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
+            <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
             <h1 className="text-lg font-bold">
               {activeTab === 'profile' ? 'Cá nhân' : 
                activeTab === 'customers' ? 'Khách hàng' : 
@@ -20404,6 +20447,7 @@ function MainAppView({
                activeTab === 'role_permissions' ? 'Vai trò' : 
                activeTab === 'billing' ? 'Gói cước' : 'Quản lý'}
             </h1>
+            <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / {headerBreadcrumbLabel}</span>
           </div>
           {showHeaderSearchFilterActions ? (
             <div className="flex items-center gap-2">
@@ -20429,6 +20473,7 @@ function MainAppView({
                 <Filter size={isCompactHeaderAction ? 17 : 14} />
                 {!isCompactHeaderAction && 'Bộ lọc'}
               </button>
+              {renderHeaderIdentityActions()}
             </div>
           ) : activeTab === 'order_requests' ? (
             <div className="flex items-center gap-2">
@@ -20442,12 +20487,14 @@ function MainAppView({
               >
                 <Filter size={17} />
               </button>
+              {renderHeaderIdentityActions()}
             </div>
           ) : !hideHeaderSearchFilter ? (
             <div className="flex items-center gap-3">
               {renderNotificationBell()}
               <Search size={20} />
               <Filter size={20} />
+              {renderHeaderIdentityActions()}
             </div>
           ) : (
             renderNotificationBell()
@@ -20892,6 +20939,57 @@ function MainAppView({
     tabPermissions.role_permissions,
     tabPermissions.billing
   ]);
+  const desktopSidebarGroups = useMemo(() => {
+    const groupDefinitions = [
+      { id: 'overview', label: 'Tổng quan', items: ['home', 'executive_dashboard', 'messages'] },
+      { id: 'sales', label: 'Bán hàng', items: ['order_requests', 'orders', 'customers', 'pricing', 'price_quotes'] },
+      { id: 'operations', label: 'Vận hành', items: ['warehouse_dispatch', 'warehouse_import', 'delivery_reports', 'maps', 'asset_management'] },
+      { id: 'finance', label: 'Tài chính', items: ['debt', 'finance', 'bank_payments'] },
+      { id: 'people', label: 'Nhân sự', items: ['company_attendance', 'payroll', 'employees', 'employee_reviews'] },
+      { id: 'system', label: 'Hệ thống', items: ['products', 'report', 'settings', 'role_permissions', 'billing'] },
+    ];
+    const allowedById = new Map(desktopSidebarItems.map((item) => [item.id, item]));
+    const groupedIds = new Set();
+    const groups = groupDefinitions.map((group) => {
+      const items = group.items
+        .map((id) => allowedById.get(id))
+        .filter(Boolean);
+      items.forEach((item) => groupedIds.add(item.id));
+      return { ...group, items };
+    }).filter((group) => group.items.length > 0);
+    const remainingItems = desktopSidebarItems.filter((item) => !groupedIds.has(item.id));
+    if (remainingItems.length > 0) groups.push({ id: 'other', label: 'Khác', items: remainingItems });
+    return groups;
+  }, [desktopSidebarItems]);
+  const shellSearchResults = useMemo(() => {
+    const keyword = collapseLookupText(shellSearchKeyword);
+    const sourceItems = desktopSidebarItems.filter((item) => item.id !== 'more');
+    if (!keyword) {
+      const recentItems = shellRecentTabs
+        .map((id) => sourceItems.find((item) => item.id === id))
+        .filter(Boolean);
+      return (recentItems.length > 0 ? recentItems : sourceItems).slice(0, 6);
+    }
+    return sourceItems
+      .filter((item) => collapseLookupText(`${item.label} ${item.id}`).includes(keyword))
+      .slice(0, 8);
+  }, [desktopSidebarItems, shellRecentTabs, shellSearchKeyword]);
+  useEffect(() => {
+    if (!shellSearchOpen || typeof window === 'undefined') return undefined;
+    const focusTimer = window.setTimeout(() => shellSearchInputRef.current?.focus(), 60);
+    return () => window.clearTimeout(focusTimer);
+  }, [shellSearchOpen]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleShellSearchShortcut = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setShellSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleShellSearchShortcut);
+    return () => window.removeEventListener('keydown', handleShellSearchShortcut);
+  }, []);
   const directFooterTabIds = new Set(footerNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
     && (['more','profile','customers','products','pricing','maps','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','report','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
@@ -21061,7 +21159,7 @@ function MainAppView({
   ]);
 
   return (
-    <AppShell ref={appShellRef} className="mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden">
+    <AppShell ref={appShellRef} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -21205,14 +21303,20 @@ function MainAppView({
             <div className="hd-dialog-header flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
               <div>
                 <p className="text-xs font-bold uppercase mb-1">Thông báo</p>
-            <h3 className="font-bold text-lg mb-4">Trung tâm thông báo</h3>
+                <h3 className="font-bold text-lg">Trung tâm thông báo</h3>
               </div>
-              <button type="button" onClick={handleCloseNotifications} className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200">
-                <X size={16} />
-              </button>
+              <div className="flex items-center gap-2">
+                <div className="hd-notification-filter" role="tablist" aria-label="Bộ lọc thông báo">
+                  <button type="button" role="tab" aria-selected={notificationFilter === 'all'} className={notificationFilter === 'all' ? 'is-active' : ''} onClick={() => setNotificationFilter('all')}>Tất cả</button>
+                  <button type="button" role="tab" aria-selected={notificationFilter === 'unread'} className={notificationFilter === 'unread' ? 'is-active' : ''} onClick={() => setNotificationFilter('unread')}>Chưa đọc</button>
+                </div>
+                <button type="button" onClick={handleCloseNotifications} className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200" aria-label="Đóng thông báo">
+                  <X size={16} />
+                </button>
+              </div>
             </div>
             <div className="hd-dialog-body max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
-              {visibleNotificationItems.length > 0 ? visibleNotificationItemsForDialog.map((item) => {
+              {notificationDialogItems.length > 0 ? visibleNotificationItemsForDialog.map((item) => {
                 const toneClass = item.tone === 'amber'
                   ? 'border-amber-200 bg-amber-50 text-amber-700'
                   : item.tone === 'orange'
@@ -21303,20 +21407,106 @@ function MainAppView({
             onClick={() => setActiveTab('more')}
           />
         </HDNavigationRail>
-        <HDSidebar className="hd-sidebar-navigation desktop-sidebar-nav" aria-label="Điều hướng chức năng">
-          {desktopSidebarItems.map((item) => (
-            <NavButton
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={activeTab === item.id}
-              onClick={() => setActiveTab(item.id)}
-            />
-          ))}
+        <HDSidebar className={`hd-sidebar-navigation desktop-sidebar-nav ${isSidebarCollapsed ? 'hd-sidebar-collapsed' : ''}`} aria-label="Điều hướng chức năng">
+          <div className="hd-sidebar-brand">
+            <div className="hd-sidebar-brand-copy">
+              <span className="hd-sidebar-brand-mark" aria-hidden="true">HD</span>
+              {!isSidebarCollapsed && (
+                <span className="hd-sidebar-brand-text">
+                  <strong>HD MANAGER</strong>
+                  <small>Enterprise workspace</small>
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="hd-sidebar-collapse-button"
+              onClick={() => setIsSidebarCollapsed((previous) => !previous)}
+              aria-label={isSidebarCollapsed ? 'Mở rộng thanh điều hướng' : 'Thu gọn thanh điều hướng'}
+              title={isSidebarCollapsed ? 'Mở rộng' : 'Thu gọn'}
+            >
+              {isSidebarCollapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
+            </button>
+          </div>
+          <div className="hd-shell-search">
+            <button
+              type="button"
+              className="hd-shell-search-trigger"
+              onClick={() => setShellSearchOpen((previous) => !previous)}
+              aria-label="Tìm chức năng"
+              title="Tìm chức năng"
+            >
+              <Search size={17} />
+              {!isSidebarCollapsed && <span>Tìm chức năng</span>}
+              {!isSidebarCollapsed && <kbd>⌘K</kbd>}
+            </button>
+            {shellSearchOpen && (
+              <div className="hd-shell-search-popover" role="dialog" aria-label="Tìm chức năng">
+                <div className="hd-shell-search-input-wrap">
+                  <Search size={15} aria-hidden="true" />
+                  <input
+                    ref={shellSearchInputRef}
+                    type="search"
+                    value={shellSearchKeyword}
+                    onChange={(event) => setShellSearchKeyword(event.target.value)}
+                    placeholder="Tìm module..."
+                    aria-label="Tìm module"
+                  />
+                  {shellSearchKeyword && (
+                    <button type="button" onClick={() => setShellSearchKeyword('')} aria-label="Xóa tìm kiếm">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                <p className="hd-shell-search-caption">{shellSearchKeyword ? 'Kết quả tìm kiếm' : shellRecentTabs.length > 0 ? 'Gần đây' : 'Truy cập nhanh'}</p>
+                <div className="hd-shell-search-results">
+                  {shellSearchResults.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setShellRecentTabs((previous) => [item.id, ...previous.filter((id) => id !== item.id)].slice(0, 5));
+                        setShellSearchOpen(false);
+                        setShellSearchKeyword('');
+                      }}
+                    >
+                      {React.cloneElement(item.icon, { size: 17 })}
+                      <span>{item.label}</span>
+                      {activeTab === item.id && <Check size={15} />}
+                    </button>
+                  ))}
+                  {shellSearchResults.length === 0 && <p className="hd-shell-search-empty">Không tìm thấy chức năng phù hợp.</p>}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="hd-sidebar-groups">
+            {desktopSidebarGroups.map((group) => (
+              <section key={group.id} className="hd-sidebar-group" aria-label={group.label}>
+                {!isSidebarCollapsed && <p className="hd-sidebar-group-label">{group.label}</p>}
+                <div className="hd-sidebar-group-items">
+                  {group.items.map((item) => (
+                    <NavButton
+                      key={item.id}
+                      icon={item.icon}
+                      label={item.label}
+                      active={activeTab === item.id}
+                      badge={item.id === 'messages' ? employeeMessageUnreadCount : 0}
+                      collapsed={isSidebarCollapsed}
+                      onClick={() => setActiveTab(item.id)}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
           <NavButton
             icon={APP_NAV_ITEM_MAP.more.icon}
             label={APP_NAV_ITEM_MAP.more.label}
             active={isMoreTabActive}
+            badge={0}
+            collapsed={isSidebarCollapsed}
             onClick={() => setActiveTab('more')}
           />
         </HDSidebar>
@@ -44855,15 +45045,20 @@ function MessageCenterView({
   );
 }
 
-function NavButton({ icon, label, active, onClick, ariaLabel }) { 
+function NavButton({ icon, label, active, onClick, ariaLabel, badge = 0, collapsed = false, className = '' }) {
   const visibleLabel = `${label || ''}`.trim();
+  const displayLabel = collapsed ? '' : visibleLabel;
+  const iconClassName = `${icon?.props?.className || ''} ${active ? 'stroke-2' : 'stroke-[1.5px]'}`.trim();
   return (
-    <button type="button" aria-label={ariaLabel || visibleLabel || 'Mở mục'} onClick={onClick} className={`flex flex-col items-center justify-center ${visibleLabel ? 'space-y-1' : ''} w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>
-      {React.cloneElement(icon, { size: visibleLabel ? 22 : 25, className: active ? 'stroke-2' : 'stroke-[1.5px]' })}
-      {visibleLabel ? (
-        <span className={`text-[10px] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{visibleLabel}</span>
+    <button type="button" data-nav-collapsed={collapsed ? 'true' : 'false'} aria-label={ariaLabel || visibleLabel || 'Mở mục'} onClick={onClick} className={`hd-nav-button relative flex flex-col items-center justify-center ${displayLabel ? 'space-y-1' : ''} w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'} ${className}`.trim()}>
+      {React.cloneElement(icon, { size: displayLabel ? 22 : 25, className: iconClassName })}
+      {displayLabel ? (
+        <span data-nav-label="true" className={`text-[10px] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{displayLabel}</span>
       ) : (
         <span className="sr-only">{ariaLabel || 'Mở mục'}</span>
+      )}
+      {Number(badge) > 0 && (
+        <span className="hd-nav-badge" aria-label={`${badge} thông báo chưa đọc`}>{Number(badge) > 9 ? '9+' : badge}</span>
       )}
     </button>
   ); 
