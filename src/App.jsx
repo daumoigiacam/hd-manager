@@ -20231,7 +20231,7 @@ function MainAppView({
     if (activeTab === 'home' || activeTab === 'messages' || activeTab === 'executive_dashboard') return null;
     if (activeTab === 'more') {
       return (
-        <header className="hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
+        <header className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
           <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-bold">Thêm</h1>
             {renderNotificationBell()}
@@ -20317,7 +20317,7 @@ function MainAppView({
             : 'Tìm sản phẩm...';
     if (isCompactHeaderAction && headerSearchOpen) {
       return (
-        <header className="hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
+        <header className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
           <div className="flex items-center gap-2">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition shrink-0">
               <ChevronLeft size={23} />
@@ -20365,7 +20365,7 @@ function MainAppView({
       );
     }
     return (
-      <header className="hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
+      <header className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
@@ -21049,7 +21049,7 @@ function MainAppView({
   ]);
 
   return (
-    <div ref={appShellRef} className="mobile-app-shell flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
+    <div ref={appShellRef} className="mobile-app-shell hd-app-shell flex flex-col h-screen bg-[#f4f6f8] w-full max-w-md mx-auto shadow-2xl relative overflow-hidden font-sans">
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -21061,7 +21061,7 @@ function MainAppView({
       />
       {renderHeader()}
       
-      <main className="flex-1 overflow-y-auto pb-24 px-4 pt-4">
+      <main className="hd-app-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         <AppSectionErrorBoundary
           name={`staff_${activeTab}`}
           resetKey={activeTab}
@@ -21073,13 +21073,13 @@ function MainAppView({
 
       {showAuthModal && (
         <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-md animate-in slide-in-from-bottom-10">
-            <div className="flex justify-between items-center mb-6">
+          <div className="hd-dialog-surface bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-md animate-in slide-in-from-bottom-10">
+            <div className="hd-dialog-header flex justify-between items-center mb-6">
               <h3 className="font-bold text-xl text-gray-800">{authType === 'in' ? 'Vào ca' : 'Ra ca'}</h3>
               <button onClick={() => { setShowAuthModal(false); setAuthError(''); setAuthWifiLookup(EMPTY_WIFI_LOOKUP_STATE); setAuthWifiNetworks([]); }}><X/></button>
             </div>
 
-            <div className="space-y-4">
+            <div className="hd-dialog-body space-y-4">
               <div>
                 <p className="text-xs font-bold uppercase mb-1">Phương thức xác minh</p>
                 <div className="grid grid-cols-2 gap-3">
@@ -21166,7 +21166,7 @@ function MainAppView({
 
               {authError && <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm border border-red-100">{authError}</div>}
 
-              <button disabled={isAuthConfirmDisabled} onClick={handleConfirmAuth} className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white py-3.5 rounded-xl font-bold shadow-sm transition-colors">
+              <button disabled={isAuthConfirmDisabled} onClick={handleConfirmAuth} className="hd-dialog-footer w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white py-3.5 rounded-xl font-bold shadow-sm transition-colors">
                 {isAuthSubmitting ? 'Đang xác nhận...' : 'Xác nhận'}
               </button>
             </div>
@@ -21176,12 +21176,12 @@ function MainAppView({
 
       {showAdvanceModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">Yêu Cầu Tạm Ứng</h3><button onClick={() => setShowAdvanceModal(false)} className="text-gray-400"><X /></button></div>
-            <form onSubmit={handleAdvanceSubmit} className="space-y-4">
+          <div className="hd-dialog-surface bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+            <div className="hd-dialog-header flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">Yêu Cầu Tạm Ứng</h3><button onClick={() => setShowAdvanceModal(false)} className="text-gray-400"><X /></button></div>
+            <form onSubmit={handleAdvanceSubmit} className="hd-dialog-body space-y-4">
               <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input type="tel" required value={formatInputCurrency(advanceAmount)} onChange={(e) => setAdvanceAmount(parseInputCurrency(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="VD: 2.000.000" /></div>
               <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input type="text" required value={advanceReason} onChange={(e) => setAdvanceReason(capitalizeFirst(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Lý do cá nhân..." /></div>
-                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
+                <button type="submit" className="hd-dialog-footer flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
             </form>
           </div>
         </div>
@@ -21189,8 +21189,8 @@ function MainAppView({
 
       {showNotificationCenter && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl overflow-hidden animate-in slide-in-from-bottom-10">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <div className="hd-dialog-surface w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl overflow-hidden animate-in slide-in-from-bottom-10">
+            <div className="hd-dialog-header flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
               <div>
                 <p className="text-xs font-bold uppercase mb-1">Thông báo</p>
             <h3 className="font-bold text-lg mb-4">Trung tâm thông báo</h3>
@@ -21199,7 +21199,7 @@ function MainAppView({
                 <X size={16} />
               </button>
             </div>
-            <div className="max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
+            <div className="hd-dialog-body max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
               {visibleNotificationItems.length > 0 ? visibleNotificationItems.map((item) => {
                 const toneClass = item.tone === 'amber'
                   ? 'border-amber-200 bg-amber-50 text-amber-700'
@@ -21262,8 +21262,8 @@ function MainAppView({
         />
       )}
 
-      <nav className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <div className="mobile-footer-nav flex justify-around items-center px-1 py-1.5">
+      <nav className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
+        <div className="hd-bottom-navigation mobile-footer-nav flex justify-around items-center px-1 py-1.5">
           {footerNavItems.map((item) => (
             <NavButton
               key={item.id}
@@ -21274,7 +21274,7 @@ function MainAppView({
             />
           ))}
         </div>
-        <div className="desktop-sidebar-nav" aria-label="Điều hướng chức năng">
+        <div className="hd-sidebar-navigation desktop-sidebar-nav" aria-label="Điều hướng chức năng">
           {desktopSidebarItems.map((item) => (
             <NavButton
               key={item.id}
@@ -43357,7 +43357,7 @@ function MessageCenterView({
         && (normalizedMessage === normalizedIdentity || /[\s:,-]/.test(normalizedMessage[normalizedIdentity.length] || ''));
     });
     if (duplicatePrefix) {
-      cleanMessageText = cleanMessageText.slice(duplicatePrefix.length).replace(/^\s*[-:•|,]?\s*/, '').trim();
+      cleanMessageText = cleanMessageText.slice(duplicatePrefix.length).replace(/^\s*(?:-|:|•|\||,)?\s*/, '').trim();
     }
     const shouldPrefixSender = senderName
       && normalizeKeyword(senderName) !== normalizeKeyword(titleText)
@@ -61425,7 +61425,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           </div>
         )}
 
-        {displayOrders.map(order => {
+        {displayOrders.map((order, orderIndex) => {
           const statusMeta = getOrderStatusMeta(order);
           const reviewMeta = getOrderReviewMeta(order);
           const zaloMeta = getOrderZaloSendMeta(order);
@@ -61447,7 +61447,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           const deliveryReportIssues = order.deliveryReportIssues || [];
 
           return (
-            <div key={`detail_${order.id}`} className="relative">
+            <div
+              key={`detail_${order.id || order._id || order.orderId || 'legacy'}_${orderIndex}`}
+              className="relative"
+            >
               {canDeleteOrder && (
                 <button
                   type="button"

@@ -1049,3 +1049,354 @@ html.hd-low-power-ui .hd-soft-red-outline {
   height: 100%;
   cursor: pointer;
 }
+
+/*
+ * Sprint UI-002: shared responsive design tokens.
+ * Keep business screens on their existing classes while giving the shell a
+ * single set of safe-area, sizing, spacing, motion, and breakpoint rules.
+ */
+:root {
+  --hd-space-1: 0.25rem;
+  --hd-space-2: 0.5rem;
+  --hd-space-3: 0.75rem;
+  --hd-space-4: 1rem;
+  --hd-space-5: 1.25rem;
+  --hd-space-6: 1.5rem;
+  --hd-space-7: 2rem;
+  --hd-radius-sm: 0.5rem;
+  --hd-radius-md: 0.75rem;
+  --hd-radius-lg: 1rem;
+  --hd-radius-xl: 1.5rem;
+  --hd-radius-pill: 999px;
+  --hd-elevation-1: 0 1px 3px rgba(15, 23, 42, 0.1), 0 1px 2px rgba(15, 23, 42, 0.06);
+  --hd-elevation-2: 0 8px 24px rgba(15, 23, 42, 0.12);
+  --hd-elevation-3: 0 20px 48px rgba(15, 23, 42, 0.18);
+  --hd-header-height: 56px;
+  --hd-bottom-nav-height: 56px;
+  --hd-sidebar-width: 18rem;
+  --hd-dialog-max-height: 90dvh;
+  --hd-touch-target: 44px;
+  --hd-motion-fast: 150ms;
+  --hd-motion-standard: 200ms;
+  --hd-motion-slow: 250ms;
+  --hd-breakpoint-tablet: 600px;
+  --hd-breakpoint-desktop: 1100px;
+  --hd-content-max-width: 84rem;
+}
+
+.hd-app-shell {
+  color: #0f172a;
+}
+
+.hd-app-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: calc(var(--hd-header-height) + var(--hd-safe-top));
+  min-height: calc(var(--hd-header-height) + var(--hd-safe-top));
+  padding-top: var(--hd-safe-top) !important;
+  padding-right: var(--hd-page-x) !important;
+  padding-bottom: 0 !important;
+  padding-left: var(--hd-page-x) !important;
+}
+
+.hd-app-header > div {
+  width: 100%;
+  min-height: var(--hd-header-height);
+  align-items: center;
+}
+
+.hd-app-content {
+  min-width: 0;
+  padding-top: var(--hd-space-4) !important;
+  padding-bottom: calc(var(--hd-footer-height) + var(--hd-space-5)) !important;
+}
+
+.hd-app-shell :where(button, [role="button"]) {
+  min-height: var(--hd-touch-target);
+  transition-duration: var(--hd-motion-standard);
+  transition-timing-function: ease-out;
+}
+
+.hd-app-shell :where(input, select, textarea) {
+  border-radius: var(--hd-radius-md);
+}
+
+.hd-app-shell :where(.rounded-xl) {
+  border-radius: var(--hd-radius-lg);
+}
+
+.hd-app-shell :where(.rounded-2xl) {
+  border-radius: var(--hd-radius-xl);
+}
+
+.hd-card {
+  border-radius: var(--hd-radius-xl);
+  box-shadow: var(--hd-elevation-1);
+}
+
+.hd-button {
+  min-width: var(--hd-touch-target);
+  min-height: var(--hd-touch-target);
+  border-radius: var(--hd-radius-md);
+  transition: transform var(--hd-motion-fast) ease-out, box-shadow var(--hd-motion-standard) ease-out, background-color var(--hd-motion-standard) ease-out;
+}
+
+.hd-button:active {
+  transform: translateY(1px);
+}
+
+.hd-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.hd-data-table :where(th, td) {
+  padding: var(--hd-space-3) var(--hd-space-4);
+  vertical-align: middle;
+}
+
+.hd-dialog-surface {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: var(--hd-dialog-max-height);
+  overflow: hidden;
+  box-shadow: var(--hd-elevation-3);
+}
+
+.hd-dialog-header {
+  flex: 0 0 auto;
+  min-height: var(--hd-touch-target);
+}
+
+.hd-dialog-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hd-dialog-footer {
+  flex: 0 0 auto;
+  padding-bottom: max(var(--hd-space-3), var(--hd-safe-bottom));
+}
+
+.hd-app-navigation {
+  box-sizing: border-box;
+  min-height: calc(var(--hd-bottom-nav-height) + var(--hd-safe-bottom));
+  height: calc(var(--hd-bottom-nav-height) + var(--hd-safe-bottom));
+  padding-bottom: var(--hd-safe-bottom) !important;
+}
+
+.hd-bottom-navigation {
+  min-height: var(--hd-bottom-nav-height);
+  height: var(--hd-bottom-nav-height);
+  padding-top: var(--hd-space-1) !important;
+  padding-bottom: var(--hd-space-1) !important;
+}
+
+.hd-bottom-navigation button {
+  min-width: var(--hd-touch-target);
+  min-height: var(--hd-touch-target);
+}
+
+.hd-sidebar-navigation {
+  min-width: 0;
+}
+
+@media (min-width: 600px) and (max-width: 1099px) {
+  :root {
+    --hd-app-max-width: 48rem;
+    --hd-header-height: 60px;
+    --hd-bottom-nav-height: 64px;
+    --hd-page-x: clamp(1rem, 3vw, 1.5rem);
+    --hd-card-pad: clamp(1rem, 3vw, 1.5rem);
+  }
+
+  .mobile-app-shell {
+    width: min(100dvw, var(--hd-app-max-width)) !important;
+    max-width: var(--hd-app-max-width) !important;
+  }
+
+  .hd-app-content {
+    padding-bottom: calc(var(--hd-footer-height) + var(--hd-space-6)) !important;
+  }
+}
+
+@media (min-width: 1100px) {
+  :root {
+    --hd-app-max-width: 120rem;
+    --hd-header-height: 64px;
+    --hd-bottom-nav-height: 64px;
+    --hd-desktop-sidebar-width: var(--hd-sidebar-width);
+    --hd-page-x: 2rem;
+    --hd-card-pad: 1.25rem;
+    --hd-footer-height: 0px;
+    --hd-keyboard-safe-bottom: 1rem;
+  }
+
+  .mobile-app-shell {
+    width: min(100%, var(--hd-app-max-width)) !important;
+    max-width: none !important;
+    grid-template-columns: var(--hd-sidebar-width) minmax(0, 1fr) !important;
+  }
+
+  .mobile-app-shell > main {
+    padding: var(--hd-space-6) var(--hd-space-7) var(--hd-space-7) !important;
+  }
+
+  .mobile-app-shell > nav.hd-app-navigation {
+    width: var(--hd-sidebar-width) !important;
+    min-height: 0;
+    height: auto;
+    padding: var(--hd-space-5) var(--hd-space-3) !important;
+  }
+
+  .mobile-app-shell > nav > .desktop-sidebar-nav {
+    gap: var(--hd-space-2);
+  }
+
+  .mobile-app-shell > nav button {
+    min-height: var(--hd-touch-target);
+  }
+
+  .mobile-app-shell > main > * {
+    max-width: var(--hd-content-max-width);
+  }
+
+  .mobile-app-shell > main .fixed.inset-0 {
+    left: var(--hd-sidebar-width) !important;
+  }
+
+  .mobile-app-shell .hd-order-request-modal-layer {
+    left: var(--hd-sidebar-width) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hd-app-shell :where(button, [role="button"], .hd-button) {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
+
+/*
+ * Sprint UI-001: layout stabilization only.
+ * These rules deliberately stay at the presentation layer. They do not alter
+ * data, navigation state, business calculations, or any service integration.
+ */
+.hd-app-shell,
+.customer-portal-shell {
+  contain: layout style;
+}
+
+.hd-app-shell > main,
+.customer-portal-main {
+  min-height: 0;
+  min-width: 0;
+  scroll-padding-top: calc(var(--hd-safe-top) + var(--hd-header-height) + var(--hd-space-4));
+  scroll-padding-bottom: var(--hd-keyboard-safe-bottom);
+}
+
+.hd-app-shell > nav.hd-app-navigation {
+  z-index: 30;
+  flex-shrink: 0;
+}
+
+.hd-bottom-navigation,
+.customer-portal-nav {
+  overflow: hidden;
+}
+
+.hd-bottom-navigation button,
+.customer-portal-nav button {
+  min-width: var(--hd-touch-target);
+  min-height: var(--hd-touch-target);
+  overflow: hidden;
+}
+
+.hd-bottom-navigation button > span,
+.customer-portal-nav .customer-portal-nav-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A modal backdrop owns the scroll; its panel gets a bounded viewport. */
+.mobile-app-shell :where(.fixed.inset-0),
+.customer-portal-shell :where(.fixed.inset-0) {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-app-shell :where(.fixed.inset-0) > :where(div, form, section, article) {
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: calc(var(--hd-viewport-height) - var(--hd-safe-top) - var(--hd-safe-bottom) - 1rem);
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hd-dialog-surface {
+  width: min(100%, 42rem);
+}
+
+.hd-dialog-surface .hd-dialog-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: inherit;
+}
+
+/* Full-screen detail views already render their own safe-area header. */
+.mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) > main,
+.mobile-app-shell :where(.hd-order-detail-layer, .hd-fullscreen-layer) > section {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(var(--hd-footer-height) + var(--hd-space-5));
+}
+
+@media (max-width: 599px) {
+  .hd-app-header,
+  .hd-app-header-compact {
+    flex-shrink: 0;
+  }
+
+  .mobile-app-shell > main {
+    padding-bottom: calc(var(--hd-footer-height) + var(--hd-space-6)) !important;
+  }
+
+  .mobile-app-shell :where(.fixed.inset-0) > :where(div, form, section, article) {
+    max-height: calc(var(--hd-viewport-height) - var(--hd-safe-top) - var(--hd-safe-bottom) - 0.5rem);
+  }
+}
+
+@media (min-width: 1100px) {
+  .mobile-app-shell > main {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .mobile-app-shell > main .fixed.inset-0 {
+    box-sizing: border-box;
+    padding-left: max(1rem, var(--hd-safe-left));
+    padding-right: max(1rem, var(--hd-safe-right));
+  }
+
+  .mobile-app-shell > main .fixed.inset-0 > :where(div, form, section, article) {
+    max-height: calc(100vh - 2rem);
+  }
+}
