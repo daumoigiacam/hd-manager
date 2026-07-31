@@ -37419,16 +37419,16 @@ function ExecutiveDashboardView({
   const renderSeriesBars = (rows = [], label = '30 ngày') => {
     const max = Math.max(1, ...rows.map(row => Math.max(row.revenue || 0, row.income || 0, row.expense || 0)));
     return (
-      <div className="rounded-3xl bg-slate-50 p-3">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <p className="text-xs font-black uppercase tracking-widest text-slate-500">{label}</p>
-          <p className="text-[11px] font-semibold text-slate-400">Xanh: thu • Đỏ: chi</p>
+      <div className="hd-dashboard-chart">
+        <div className="hd-dashboard-chart__header">
+          <p className="hd-dashboard-chart__title">{label}</p>
+          <p className="hd-dashboard-chart__legend"><span data-tone="income" /> Thu <span data-tone="expense" /> Chi</p>
         </div>
-        <div className="flex h-28 items-end gap-1">
+        <div className="hd-dashboard-chart__plot">
           {rows.map((row, index) => (
-            <div key={row.date || row.month || index} className="flex flex-1 flex-col items-center justify-end gap-0.5">
-              <div className="w-full rounded-t bg-emerald-500/80" style={{ height: `${Math.max(2, ((row.revenue || row.income || 0) / max) * 90)}px` }} />
-              <div className="w-full rounded-b bg-rose-400/80" style={{ height: `${Math.max(2, ((row.expense || 0) / max) * 90)}px` }} />
+            <div key={row.date || row.month || index} className="hd-dashboard-chart__column">
+              <div data-tone="income" style={{ height: `${Math.max(2, ((row.revenue || row.income || 0) / max) * 90)}px` }} />
+              <div data-tone="expense" style={{ height: `${Math.max(2, ((row.expense || 0) / max) * 90)}px` }} />
             </div>
           ))}
         </div>
@@ -37603,7 +37603,7 @@ function ExecutiveDashboardView({
   };
 
   const renderBusinessContent = () => (
-    <div className="space-y-4">
+    <div className="hd-dashboard-business">
       <ExecutiveSectionCard title="Hiệu quả kinh doanh" actionLabel="Mở đơn hàng" onAction={() => setActiveTab?.('orders')}>
         <div className="grid grid-cols-2 gap-2">
           <ExecutiveMetric label="Doanh thu/ngày" value={`${formatCurrency(business.revenuePerDay)} đ`} tone="good" />
@@ -37618,7 +37618,7 @@ function ExecutiveDashboardView({
           onRowClick: () => setActiveTab?.('products')
         })}
       </ExecutiveSectionCard>
-      <section className="rounded-[30px] border border-slate-100 bg-white p-4 shadow-sm">
+      <section className="hd-dashboard-section hd-dashboard-section--wide">
         <ExecutiveTopList
           title="NVKD doanh thu tốt nhất"
           rows={business.topEmployeesByRevenue || []}
@@ -37628,7 +37628,7 @@ function ExecutiveDashboardView({
           onRowClick={() => setActiveTab?.('employees')}
         />
       </section>
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="hd-dashboard-ranking-grid">
         <ExecutiveTopList title="Top khách theo doanh thu" rows={business.topCustomersByRevenue} valueKey="revenue" onRowClick={() => setActiveTab?.('customers')} />
         <ExecutiveTopList title="Top khách theo lợi nhuận" rows={business.topCustomersByProfit} valueKey="profit" onRowClick={() => setActiveTab?.('customers')} />
         <ExecutiveTopList title="Top sản phẩm doanh thu" rows={business.topProductsByRevenue} valueKey="revenue" onRowClick={() => setActiveTab?.('products')} />
@@ -37905,37 +37905,37 @@ function ExecutiveDashboardView({
     }
 
     return (
-      <div className="space-y-4">
+      <div className="hd-dashboard-stack">
         <ExecutiveSectionCard title="Tổng quan tài chính">
-          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-            <div className="grid grid-cols-[0.76fr_1.08fr_1.08fr_1.08fr] border-b border-slate-200 bg-slate-50 text-center text-[clamp(9px,2.45vw,11px)] font-black uppercase tracking-[0.04em] text-slate-600">
-              <div className="min-w-0 border-r border-slate-200 px-1.5 py-3 text-left">Thời gian</div>
+          <div className="hd-dashboard-finance-table">
+            <div className="hd-dashboard-finance-table__header">
+              <div>Thời gian</div>
               <button
                 type="button"
                 onClick={() => setShowDailyFinanceDetails(true)}
-                className="min-w-0 border-r border-slate-200 px-1.5 py-3 text-center text-emerald-700 underline-offset-2 transition hover:underline active:bg-emerald-50"
+                className="hd-dashboard-finance-table__income"
               >
                 Tổng Thu
               </button>
-              <div className="min-w-0 border-r border-slate-200 px-1.5 py-3">Tổng chi</div>
-              <div className="min-w-0 px-1.5 py-3">Lợi nhuận</div>
+              <div>Tổng chi</div>
+              <div>Lợi nhuận</div>
             </div>
             {overviewFinanceTableRows.map((row) => (
               <div
                 key={row.label}
-                className="grid w-full grid-cols-[0.76fr_1.08fr_1.08fr_1.08fr] border-b border-slate-100 text-left last:border-b-0"
+                className="hd-dashboard-finance-table__row"
               >
-                <div className="min-w-0 border-r border-slate-100 px-1.5 py-3 text-[clamp(11px,2.9vw,14px)] font-black leading-tight text-slate-950">{row.label}</div>
+                <div className="hd-dashboard-finance-table__period">{row.label}</div>
                 <button
                   type="button"
                   onClick={() => setShowDailyFinanceDetails(true)}
-                  className="min-w-0 border-r border-slate-100 px-1.5 py-3 text-right text-[clamp(10px,2.55vw,12px)] font-black leading-tight text-emerald-700 tabular-nums transition active:bg-emerald-50"
+                  className="hd-dashboard-finance-table__income"
                   aria-label={`Xem doanh thu chi phí từng ngày từ dòng ${row.label}`}
                 >
                   {formatCurrency(row.revenue)} đ
                 </button>
-                <div className="min-w-0 border-r border-slate-100 px-1.5 py-3 text-right text-[clamp(10px,2.55vw,12px)] font-black leading-tight text-rose-600 tabular-nums">{formatCurrency(row.expense)} đ</div>
-                <div className={`min-w-0 px-1.5 py-3 text-right text-[clamp(10px,2.55vw,12px)] font-black leading-tight tabular-nums ${row.profit >= 0 ? 'text-slate-950' : 'text-rose-600'}`}>{formatCurrency(row.profit)} đ</div>
+                <div className="hd-dashboard-finance-table__expense">{formatCurrency(row.expense)} đ</div>
+                <div className="hd-dashboard-finance-table__profit" data-negative={row.profit < 0}>{formatCurrency(row.profit)} đ</div>
               </div>
             ))}
           </div>
@@ -37946,34 +37946,33 @@ function ExecutiveDashboardView({
   };
 
   return (
-    <div className="min-h-full overflow-y-auto bg-slate-50 pb-28">
-      <section className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-emerald-900 to-teal-700 px-4 pb-7 pt-5 text-white shadow-xl">
-        <div className="absolute -right-16 -top-16 h-44 w-44 rounded-full bg-white/10 blur-2xl" />
-        <div className="absolute left-6 top-24 h-24 w-24 rounded-full bg-emerald-300/20 blur-2xl" />
-        <div className="relative flex items-start justify-between gap-3">
-          <div>
+    <div className="hd-premium-dashboard">
+      <section className="hd-dashboard-masthead">
+        <div className="hd-dashboard-masthead__inner">
+          <div className="hd-dashboard-masthead__identity">
             <button
               type="button"
               onClick={() => setActiveTab?.('profile')}
-              className="mt-2 inline-flex max-w-full items-center gap-2 text-left text-2xl font-black leading-tight text-white transition active:scale-[0.99]"
+              className="hd-dashboard-company"
               aria-label="Mở hồ sơ công ty"
             >
               <span className="truncate">{companyDisplayName.toUpperCase()}</span>
-              <Edit3 size={16} className="shrink-0 text-emerald-100/90" />
+              <Edit3 size={15} aria-hidden="true" />
             </button>
-            <p className="mt-1 text-xs font-semibold text-emerald-50/80">
+            <p className="hd-dashboard-freshness">
+              <span aria-hidden="true" />
               Cập nhật {formatDateLabel(generatedAt)}
             </p>
           </div>
           <button
             type="button"
             onClick={() => setActiveTab?.('messages')}
-            className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-white backdrop-blur transition hover:bg-white/25 active:scale-95"
+            className="hd-dashboard-inbox"
             aria-label="Mở hộp thư tin nhắn"
           >
             <MessageCircle size={19} />
             {executiveUnreadInboxCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black text-white ring-2 ring-emerald-900">
+              <span className="hd-dashboard-inbox__badge">
                 {executiveUnreadInboxCount > 9 ? '9+' : executiveUnreadInboxCount}
               </span>
             )}
@@ -37981,57 +37980,54 @@ function ExecutiveDashboardView({
         </div>
       </section>
 
-      <section className="-mt-4 px-3">
-        <div className="rounded-[28px] border border-white/80 bg-white/95 p-2 shadow-lg shadow-slate-200/70 backdrop-blur">
-          <div className="flex gap-2 overflow-x-auto pb-1">
+      <section className="hd-dashboard-tabs-shell">
+        <div className="hd-dashboard-tabs" role="tablist" aria-label="Nhóm báo cáo điều hành">
             {executiveTabs.map(tab => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveExecutiveTab(tab.id)}
-                className={`shrink-0 rounded-2xl px-3 py-2 text-xs font-black transition ${
-                  activeExecutiveTab === tab.id
-                    ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
-                    : 'bg-slate-100 text-slate-500'
-                }`}
+                className="hd-dashboard-tab"
+                data-active={activeExecutiveTab === tab.id}
+                role="tab"
+                aria-selected={activeExecutiveTab === tab.id}
               >
                 {tab.label}
               </button>
             ))}
-          </div>
         </div>
       </section>
 
-      <section className="mt-4 space-y-4 px-3">
+      <section className="hd-dashboard-content">
         {renderTabContent()}
       </section>
 
       {showDailyFinanceDetails && (
-        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 px-3 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-8">
+        <div className="hd-dashboard-dialog-layer">
           <button
             type="button"
             className="absolute inset-0"
             aria-label="Đóng bảng doanh thu chi phí từng ngày"
             onClick={() => setShowDailyFinanceDetails(false)}
           />
-          <section className="relative w-full max-w-2xl overflow-hidden rounded-[28px] bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-4">
+          <section className="hd-dashboard-dialog" role="dialog" aria-modal="true" aria-labelledby="daily-finance-dialog-title">
+            <div className="hd-dashboard-dialog__header">
               <div className="min-w-0">
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-emerald-600">Chi tiết theo ngày</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">Doanh thu - chi phí từng ngày</h3>
+                <h3 id="daily-finance-dialog-title" className="mt-1 text-lg font-black text-slate-950">Doanh thu - chi phí từng ngày</h3>
                 <p className="mt-1 text-xs font-semibold text-slate-500">Dữ liệu lấy trực tiếp từ đơn hàng và thu chi.</p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowDailyFinanceDetails(false)}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-xl font-black text-slate-500 transition active:scale-95"
+                className="hd-dashboard-dialog__close"
                 aria-label="Đóng"
               >
                 ×
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 px-4 py-3">
+            <div className="hd-dashboard-dialog__summary">
               <div className="rounded-2xl bg-emerald-50 px-2 py-3 text-center">
                 <p className="text-[10px] font-black uppercase tracking-[0.12em] text-emerald-600">Tổng thu</p>
                 <p className="mt-1 text-[clamp(11px,3vw,14px)] font-black text-slate-950 tabular-nums">{formatCurrency(dailyFinanceSummary.revenue)} đ</p>
@@ -38048,7 +38044,7 @@ function ExecutiveDashboardView({
               </div>
             </div>
 
-            <div className="max-h-[58vh] overflow-y-auto px-4 pb-4">
+            <div className="hd-dashboard-dialog__body">
               <div className="overflow-hidden rounded-3xl border border-slate-200">
                 <div className="grid grid-cols-[0.92fr_1fr_1fr_1fr] border-b border-slate-200 bg-slate-50 text-center text-[10px] font-black uppercase tracking-[0.04em] text-slate-500">
                   <div className="border-r border-slate-200 px-2 py-2 text-left">Ngày</div>
@@ -38088,30 +38084,23 @@ function ExecutivePeriodSummaryCard({
   onPeriodChange,
   onOpen
 }) {
-  const toneClass = {
-    good: 'from-emerald-50 to-white border-emerald-100 text-emerald-700',
-    bad: 'from-rose-50 to-white border-rose-100 text-rose-700',
-    neutral: 'from-slate-50 to-white border-slate-100 text-slate-700'
-  }[tone] || 'from-slate-50 to-white border-slate-100 text-slate-700';
   const value = Number(values?.[activePeriod] || 0);
 
   return (
-    <section className={`rounded-[28px] border bg-gradient-to-br p-4 shadow-[0_18px_45px_rgba(15,23,42,0.06)] ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-xl font-black text-slate-900">{title}</h3>
-        </div>
+    <section className="hd-dashboard-period-card" data-tone={tone}>
+      <div className="hd-dashboard-period-card__header">
+        <h3>{title}</h3>
         {onOpen && (
           <button
             type="button"
             onClick={onOpen}
-            className="rounded-full bg-white/80 px-3 py-1.5 text-xs font-black text-slate-600 shadow-sm"
+            className="hd-dashboard-action"
           >
             Chi tiết
           </button>
         )}
       </div>
-      <div className="mt-3 grid grid-cols-4 gap-1 rounded-2xl bg-white/70 p-1">
+      <div className="hd-dashboard-period-card__switcher">
         {periodOptions.map((period) => {
           const isActive = period.id === activePeriod;
           return (
@@ -38119,38 +38108,28 @@ function ExecutivePeriodSummaryCard({
               key={period.id}
               type="button"
               onClick={() => onPeriodChange?.(period.id)}
-              className={`rounded-xl px-1 py-2 text-[11px] font-black transition ${
-                isActive
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-500 hover:bg-white'
-              }`}
+              className="hd-dashboard-period-card__option"
+              data-active={isActive}
             >
               {period.label}
             </button>
           );
         })}
       </div>
-      <p className="mt-4 text-2xl font-black text-slate-950">{formatCurrency(value)} đ</p>
-      <p className="mt-1 min-h-[18px] text-xs font-bold text-slate-500">{hints?.[activePeriod] || 'Dữ liệu đang cập nhật'}</p>
+      <p className="hd-dashboard-period-card__value">{formatCurrency(value)} đ</p>
+      <p className="hd-dashboard-period-card__hint">{hints?.[activePeriod] || 'Dữ liệu đang cập nhật'}</p>
     </section>
   );
 }
 
 function ExecutiveKpiCard({ title, value, tone = 'neutral', yesterday, month }) {
-  const toneClass = tone === 'good'
-    ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
-    : tone === 'bad'
-      ? 'border-rose-100 bg-rose-50 text-rose-700'
-      : tone === 'warn'
-        ? 'border-amber-100 bg-amber-50 text-amber-700'
-        : 'border-slate-100 bg-white text-slate-700';
   return (
-    <div className={`rounded-[26px] border p-3 shadow-sm ${toneClass}`}>
-      <p className="min-h-[32px] text-[11px] font-black uppercase leading-4 tracking-wide opacity-80">{title}</p>
-      <p className="mt-2 break-words text-lg font-black leading-tight text-slate-950">{value}</p>
-      <div className="mt-3 grid grid-cols-2 gap-1 text-[10px] font-bold">
-        <span className="rounded-full bg-white/70 px-2 py-1 text-center">Hôm qua {yesterday}</span>
-        <span className="rounded-full bg-white/70 px-2 py-1 text-center">Tháng {month}</span>
+    <div className="hd-dashboard-kpi" data-tone={tone}>
+      <p className="hd-dashboard-kpi__label">{title}</p>
+      <p className="hd-dashboard-kpi__value">{value}</p>
+      <div className="hd-dashboard-kpi__comparisons">
+        <span>Hôm qua {yesterday}</span>
+        <span>Tháng {month}</span>
       </div>
     </div>
   );
@@ -38158,14 +38137,14 @@ function ExecutiveKpiCard({ title, value, tone = 'neutral', yesterday, month }) 
 
 function ExecutiveSectionCard({ title, actionLabel, onAction, children }) {
   return (
-    <section className="rounded-[30px] border border-slate-100 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-black text-slate-950">{title}</h2>
+    <section className="hd-dashboard-section">
+      <div className="hd-dashboard-section__header">
+        <h2>{title}</h2>
         {actionLabel && (
           <button
             type="button"
             onClick={onAction}
-            className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-600"
+            className="hd-dashboard-action"
           >
             {actionLabel}
           </button>
@@ -38177,17 +38156,10 @@ function ExecutiveSectionCard({ title, actionLabel, onAction, children }) {
 }
 
 function ExecutiveMetric({ label, value, tone = 'neutral' }) {
-  const toneClass = tone === 'good'
-    ? 'text-emerald-700'
-    : tone === 'bad'
-      ? 'text-rose-700'
-      : tone === 'warn'
-        ? 'text-amber-700'
-        : 'text-slate-800';
   return (
-    <div className="rounded-3xl bg-slate-50 px-3 py-3 text-center">
-      <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">{label}</p>
-      <p className={`mt-1 break-words text-sm font-black leading-tight ${toneClass}`}>{value}</p>
+    <div className="hd-dashboard-metric" data-tone={tone}>
+      <p className="hd-dashboard-metric__label">{label}</p>
+      <p className="hd-dashboard-metric__value">{value}</p>
     </div>
   );
 }
@@ -38196,11 +38168,11 @@ function ExecutiveTopList({ title, rows = [], valueKey = 'revenue', emptyText = 
   const [expanded, setExpanded] = useState(false);
   const visibleRows = expanded ? rows : rows.slice(0, limit);
   return (
-    <div className="rounded-3xl bg-slate-50 p-3">
-      <p className="mb-2 text-xs font-black uppercase tracking-widest text-slate-500">{title}</p>
-      <div className="space-y-2">
+    <div className="hd-dashboard-top-list">
+      <p className="hd-dashboard-top-list__title">{title}</p>
+      <div className="hd-dashboard-top-list__rows">
         {rows.length === 0 ? (
-          <p className="rounded-2xl bg-white px-3 py-3 text-xs font-semibold text-slate-400">{emptyText}</p>
+          <p className="hd-dashboard-empty">{emptyText}</p>
         ) : visibleRows.map((row, index) => {
           const rowContent = (
             <>
@@ -38220,13 +38192,13 @@ function ExecutiveTopList({ title, rows = [], valueKey = 'revenue', emptyText = 
               key={row.id || row.name || index}
               type="button"
               onClick={() => onRowClick(row)}
-              className="flex w-full items-center justify-between gap-2 rounded-2xl bg-white px-3 py-2 text-left transition hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              className="hd-dashboard-top-list__row"
               aria-label={`Mở thông tin ${row.name || 'mục tổng hợp'}`}
             >
               {rowContent}
             </button>
           ) : (
-            <div key={row.id || row.name || index} className="flex items-center justify-between gap-2 rounded-2xl bg-white px-3 py-2">
+            <div key={row.id || row.name || index} className="hd-dashboard-top-list__row">
               {rowContent}
             </div>
           );
@@ -38235,7 +38207,7 @@ function ExecutiveTopList({ title, rows = [], valueKey = 'revenue', emptyText = 
           <button
             type="button"
             onClick={() => setExpanded((current) => !current)}
-            className="flex w-full items-center justify-center gap-1 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
+            className="hd-dashboard-more"
           >
             {expanded ? 'Thu gọn' : `Xem thêm ${rows.length - limit}`}
             <ChevronRight size={14} className={expanded ? '-rotate-90' : 'rotate-90'} />
