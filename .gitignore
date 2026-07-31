@@ -41,6 +41,7 @@ pnpm-debug.log*
 
 # Generated test and performance reports
 test-results/
+artifacts/
 
 # Local Codex/debug scratch files
 .codex_tmp*
