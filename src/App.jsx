@@ -12,6 +12,29 @@ import {
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
   MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff
 } from 'lucide-react';
+import {
+  WAREHOUSE_WEIGHT_ENTRY_ROW_SIZE,
+  createWarehouseWeightEntryRow,
+  ensureWarehouseWeightEntryRows,
+  getWarehouseWeightEntryTotal,
+  normalizeWarehouseWeightEntries,
+  updateWarehouseWeightEntryRows
+} from './utils/warehouseWeightEntries.js';
+import {
+  ORDER_REQUEST_SELECTION_LOCK_MS,
+  releaseOrderRequestSelectionLock,
+  tryAcquireOrderRequestSelectionLock
+} from './utils/orderRequestInteraction.js';
+import {
+  DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT,
+  buildPendingDeliveryReconciliationGroups,
+  countPendingDeliveryReconciliationDispatches,
+  getVisibleDeliveryReconciliationGroups
+} from './utils/deliveryReconciliationUx.js';
+import {
+  applyEvaluationBonusToSalaryDetails,
+  projectEvaluationSummaryToPayroll
+} from './utils/payrollEvaluationBonus.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -20750,10 +20773,10 @@ function MainAppView({
         <EmployeeView
           currentEmployee={employee}
           employees={employees}
+          employeeReviews={employeeReviews}
           attendance={attendance}
           orders={orders}
           deliveryReports={deliveryReports}
-          employeeReviews={employeeReviews}
           assets={assets}
           assetCostLogs={assetCostLogs}
           holidays={holidays}
@@ -20870,6 +20893,7 @@ function MainAppView({
           currentUser={currentUser}
           currentEmployee={employee}
           employees={employees}
+          employeeReviews={employeeReviews}
           attendance={attendance}
           financials={financials}
           performance={performance}
@@ -20877,6 +20901,7 @@ function MainAppView({
           orders={orders}
           payments={payments}
           holidays={holidays}
+          deliveryReports={deliveryReports}
           onAddFinancial={onAddFinancial}
           onEditFinancial={onEditFinancial}
           onDeleteFinancial={onDeleteFinancial}
@@ -46456,6 +46481,49 @@ function ShareActionGrid({ title, description, statusMessage, onQuickShare, onSh
   );
 }
 
+const DeliveryReconciliationCard = React.memo(function DeliveryReconciliationCard({ group, isLeaving = false, onOpen }) {
+  const productSummary = group.productWeightLabels.join(' • ');
+  const handleOpen = useCallback(() => onOpen(group.key), [group.key, onOpen]);
+
+  return (
+    <div
+      className={`overflow-hidden transition-[max-height,opacity,transform,margin] duration-200 ease-out ${isLeaving ? 'my-0 max-h-0 -translate-y-1 opacity-0' : 'my-0 max-h-48 translate-y-0 opacity-100'}`}
+      aria-hidden={isLeaving}
+    >
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={isLeaving}
+        aria-label={`Mở đối chiếu ${group.customerName}, ${group.pendingCount} phiếu chưa báo`}
+        className="min-h-[72px] w-full rounded-2xl border border-emerald-100 bg-white p-3 text-left shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 disabled:pointer-events-none"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-extrabold text-slate-900">{group.customerName}</p>
+            <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500" title={productSummary}>
+              {productSummary || 'Chưa có sản phẩm đối chiếu'}
+            </p>
+          </div>
+          <div className="shrink-0 text-right">
+            <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black text-emerald-700">
+              {group.pendingCount} chưa báo
+            </span>
+            {parseLooseMoneyValue(group.paymentSummaryTotal) > 0 && (
+              <p className="mt-2 rounded-full bg-slate-50 px-2.5 py-1 text-[11px] font-black text-slate-700">
+                {formatCurrency(group.paymentSummaryTotal)} đ
+              </p>
+            )}
+          </div>
+        </div>
+      </button>
+    </div>
+  );
+}, (previous, next) => (
+  previous.group.renderSignature === next.group.renderSignature
+  && previous.isLeaving === next.isLeaving
+  && previous.onOpen === next.onOpen
+));
+
 function DeliveryReportView({ employee, customers = [], products = [], orderRequests = [], orders = [], payments = [], warehouseImports = [], warehouseDispatches = [], deliveryReports = [], expenses = [], assets = [], assetCostLogs = [], onAddDeliveryReport, onUpdateDeliveryReport, onEditOrder, onAddPayment, onAddExpense, onAddAssetCostLog, onEditAssetCostLog, canViewDeliveryReports = true, canCreateDeliveryReport = true, canEditDeliveryReport = false, canDeleteDeliveryReport = false, canUploadDeliveryPhoto = true, canDeleteOldDeliveryPhotos = false, canRecordDeliveryIncome = false, canRecordDeliveryExpense = false, canCreateAssetCostLog = false, canEditAssetCostLog = false }) {
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [customerSearch, setCustomerSearch] = useState('');
@@ -46509,6 +46577,17 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const [statusTone, setStatusTone] = useState('emerald');
   const [editingReportId, setEditingReportId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const reconciliationExpandedSessionKey = `hd_delivery_reconciliation_expanded:${employee?.id || 'shared'}`;
+  const [isReconciliationExpanded, setIsReconciliationExpanded] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.sessionStorage.getItem(`hd_delivery_reconciliation_expanded:${employee?.id || 'shared'}`) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [optimisticallyReportedDispatchIds, setOptimisticallyReportedDispatchIds] = useState(() => new Set());
+  const [leavingReconciliationGroups, setLeavingReconciliationGroups] = useState(() => new Map());
   const [isReadingPhoto, setIsReadingPhoto] = useState(false);
   const [isReadingReturnPhoto, setIsReadingReturnPhoto] = useState(false);
   const [isReadingStandaloneExpensePhoto, setIsReadingStandaloneExpensePhoto] = useState(false);
@@ -46516,6 +46595,41 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const returnPhotoInputRef = useRef(null);
   const standaloneExpensePhotoInputRef = useRef(null);
   const deliveryReportFormRef = useRef(null);
+  const openPendingReconciliationGroupRef = useRef(null);
+  const reconciliationExitTimersRef = useRef(new Set());
+  const handleOpenPendingReconciliationGroup = useCallback((groupKey) => {
+    openPendingReconciliationGroupRef.current?.(groupKey);
+  }, []);
+  const toggleReconciliationExpanded = useCallback(() => {
+    setIsReconciliationExpanded((current) => {
+      const next = !current;
+      if (typeof window !== 'undefined') {
+        try {
+          window.sessionStorage.setItem(reconciliationExpandedSessionKey, next ? '1' : '0');
+        } catch {}
+      }
+      return next;
+    });
+  }, [reconciliationExpandedSessionKey]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      setIsReconciliationExpanded(window.sessionStorage.getItem(reconciliationExpandedSessionKey) === '1');
+    } catch {
+      setIsReconciliationExpanded(false);
+    }
+  }, [reconciliationExpandedSessionKey]);
+  useEffect(() => {
+    reconciliationExitTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    reconciliationExitTimersRef.current.clear();
+    setOptimisticallyReportedDispatchIds(new Set());
+    setLeavingReconciliationGroups(new Map());
+  }, [workingDate]);
+  useEffect(() => () => {
+    if (typeof window === 'undefined') return;
+    reconciliationExitTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    reconciliationExitTimersRef.current.clear();
+  }, []);
   const scrollToDeliveryReportForm = () => {
     if (typeof window === 'undefined') return;
     window.setTimeout(() => {
@@ -46676,9 +46790,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     .filter(report => getDeliveryReportWeightStatus(report).isMismatch)
     .length, [dayReports]);
   const reportedDispatchCount = latestReportByDispatch.size;
-  const reportsWithoutDispatch = useMemo(() => dayReports
-    .filter(report => !report.dispatchId)
-    .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [dayReports]);
   const resolveDispatchOrderRequestPrice = useCallback((dispatch = {}, product = null, customer = null, productLabel = '') => {
     const dispatchCustomerId = dispatch.customerId || customer?.id || '';
     const dispatchProductId = dispatch.productId || product?.id || '';
@@ -47011,6 +47122,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         isMismatch: Boolean(report && reportStatus.isMismatch),
         productLabel,
         dispatchWeight,
+        unitPrice: priceInfo?.unitPrice || 0,
+        totalAmount: priceInfo?.unitPrice > 0 && dispatchWeight > 0
+          ? dispatchWeight * priceInfo.unitPrice
+          : 0,
         actualQuantityLabel,
         actualPackageLabel,
         returnLabel
@@ -47063,6 +47178,96 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       return (a.customerName || '').localeCompare(b.customerName || '', 'vi');
     });
   }, [customerLookup, dayDispatches, latestReportByDispatch, productLookup, resolveDispatchOrderRequestPrice]);
+  const basePendingReconciliationGroups = useMemo(() => (
+    buildPendingDeliveryReconciliationGroups(
+      dispatchReconciliationGroups,
+      optimisticallyReportedDispatchIds,
+    ).map((group) => {
+      const productWeightLabels = group.productWeightLines.map((line) => (
+        line.unitPrice > 0 && line.weight > 0
+          ? `${line.productLabel} - ${formatNumber(line.weight)}kg x ${formatCurrency(line.unitPrice)} = ${formatCurrency(line.totalAmount)}`
+          : `${line.productLabel} - ${formatNumber(line.weight)}kg`
+      ));
+      if (group.paymentSummaryTotal > 0 && productWeightLabels.length > 1) {
+        productWeightLabels.push(`Tổng ${formatCurrency(group.paymentSummaryTotal)} đ`);
+      }
+      return { ...group, productWeightLabels };
+    })
+  ), [dispatchReconciliationGroups, optimisticallyReportedDispatchIds]);
+  const pendingReconciliationGroups = useMemo(() => {
+    const mergedGroups = new Map(basePendingReconciliationGroups.map(group => [group.key, group]));
+    leavingReconciliationGroups.forEach((group, key) => {
+      if (!mergedGroups.has(key)) mergedGroups.set(key, group);
+    });
+    return Array.from(mergedGroups.values())
+      .sort((a, b) => (a.reconciliationOrder || 0) - (b.reconciliationOrder || 0));
+  }, [basePendingReconciliationGroups, leavingReconciliationGroups]);
+  const pendingReconciliationDispatchCount = useMemo(() => (
+    countPendingDeliveryReconciliationDispatches(basePendingReconciliationGroups)
+  ), [basePendingReconciliationGroups]);
+  const visiblePendingReconciliationGroups = useMemo(() => (
+    getVisibleDeliveryReconciliationGroups(
+      pendingReconciliationGroups,
+      isReconciliationExpanded,
+      DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT,
+    )
+  ), [isReconciliationExpanded, pendingReconciliationGroups]);
+  const hasMorePendingReconciliationCustomers = basePendingReconciliationGroups.length
+    > DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT;
+  const stageReportedReconciliationRows = useCallback((dispatchIds = []) => {
+    const completedDispatchIds = new Set(dispatchIds.map(value => `${value || ''}`.trim()).filter(Boolean));
+    if (completedDispatchIds.size === 0) return;
+
+    const leavingKeys = new Set();
+    const groupSnapshots = new Map(pendingReconciliationGroups.map(group => [group.key, group]));
+    basePendingReconciliationGroups.forEach((group) => {
+      const allPendingRowsCompleted = group.rows.length > 0 && group.rows.every(row => (
+        completedDispatchIds.has(`${row?.dispatch?.id || ''}`.trim())
+      ));
+      if (allPendingRowsCompleted) leavingKeys.add(group.key);
+    });
+
+    if (leavingKeys.size > 0) {
+      setLeavingReconciliationGroups((current) => {
+        const next = new Map(current);
+        leavingKeys.forEach((key) => {
+          const snapshot = groupSnapshots.get(key);
+          if (snapshot) next.set(key, snapshot);
+        });
+        return next;
+      });
+    }
+    setOptimisticallyReportedDispatchIds((current) => {
+      const next = new Set(current);
+      completedDispatchIds.forEach(dispatchId => next.add(dispatchId));
+      return next;
+    });
+
+    if (leavingKeys.size > 0 && typeof window !== 'undefined') {
+      const timerId = window.setTimeout(() => {
+        setLeavingReconciliationGroups((current) => {
+          const next = new Map(current);
+          leavingKeys.forEach(key => next.delete(key));
+          return next;
+        });
+        reconciliationExitTimersRef.current.delete(timerId);
+      }, 220);
+      reconciliationExitTimersRef.current.add(timerId);
+    }
+  }, [basePendingReconciliationGroups, pendingReconciliationGroups]);
+  useEffect(() => {
+    setOptimisticallyReportedDispatchIds((current) => {
+      let changed = false;
+      const next = new Set(current);
+      current.forEach((dispatchId) => {
+        if (latestReportByDispatch.has(dispatchId)) {
+          next.delete(dispatchId);
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [latestReportByDispatch]);
   const selectedCustomerCollectionHint = useMemo(() => {
     if (!selectedCustomerId) return 0;
     const selectedCustomerName = normalizeLookupText(customerLookup.get(selectedCustomerId)?.name || customerSearch || '');
@@ -47236,6 +47441,14 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     const rows = buildActualRowsForCustomer(customer.id);
     setActualRows(rows);
     setSelectedDispatchId(rows.find(row => row.dispatchId)?.dispatchId || '');
+  };
+  openPendingReconciliationGroupRef.current = (groupKey) => {
+    const group = basePendingReconciliationGroups.find(item => item.key === groupKey);
+    const primaryRow = group?.rows?.[0];
+    if (!primaryRow) return;
+    if (primaryRow.customer) handleSelectCustomer(primaryRow.customer);
+    if (primaryRow.dispatch?.id) setSelectedDispatchId(primaryRow.dispatch.id);
+    scrollToDeliveryReportForm();
   };
 
   const handlePhotoChange = async (file) => {
@@ -48042,6 +48255,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           }
         }
       }
+      if (!wasEditing) {
+        stageReportedReconciliationRows(rowsToSave.map(row => row.dispatchId));
+      }
       setStatusTone(mismatchRows.length > 0 ? 'amber' : 'emerald');
       setStatusMessage(wasEditing
         ? 'Đã cập nhật báo cáo giao hàng.'
@@ -48111,6 +48327,76 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     }
   ].filter(Boolean);
 
+  const deliveryReconciliationSection = (
+    <section
+      aria-labelledby="delivery-reconciliation-title"
+      className="rounded-[28px] border border-emerald-100 bg-gradient-to-br from-emerald-50/90 via-white to-cyan-50/70 p-3 shadow-sm"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 id="delivery-reconciliation-title" className="truncate text-sm font-black uppercase tracking-[0.12em] text-emerald-800">
+              Đối chiếu giao hàng
+            </h2>
+            {pendingReconciliationDispatchCount > 0 && (
+              <span
+                className="inline-flex min-w-7 shrink-0 items-center justify-center rounded-full bg-emerald-600 px-2 py-1 text-[11px] font-black tabular-nums text-white shadow-sm shadow-emerald-600/20"
+                aria-label={`${pendingReconciliationDispatchCount} phiếu chưa báo cáo`}
+              >
+                {pendingReconciliationDispatchCount}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs font-semibold text-slate-500">
+            {pendingReconciliationDispatchCount > 0
+              ? `${basePendingReconciliationGroups.length} khách hàng đang chờ báo cáo`
+              : 'Tất cả phiếu trong ngày đã được báo cáo.'}
+          </p>
+        </div>
+        <label className="relative shrink-0 overflow-hidden rounded-xl border border-emerald-100 bg-white px-2.5 py-2 text-center shadow-sm">
+          <input
+            type="date"
+            value={workingDate}
+            onChange={(event) => setWorkingDate(event.target.value || getTodayString())}
+            aria-label="Chọn ngày đối chiếu giao hàng"
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          />
+          <span className="block min-w-[74px] text-[11px] font-extrabold text-emerald-700">{formatCompactDateLabel(workingDate)}</span>
+        </label>
+      </div>
+
+      {pendingReconciliationDispatchCount === 0 ? (
+        <div className="mt-3 flex min-h-[76px] items-center justify-center gap-2 rounded-2xl border border-emerald-100 bg-white/90 px-4 text-center text-sm font-bold text-emerald-700">
+          <CheckCircle size={20} className="shrink-0" />
+          <span>Không còn phiếu cần đối chiếu</span>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-2" aria-live="polite">
+          {visiblePendingReconciliationGroups.map(group => (
+            <DeliveryReconciliationCard
+              key={group.key}
+              group={group}
+              isLeaving={leavingReconciliationGroups.has(group.key)}
+              onOpen={handleOpenPendingReconciliationGroup}
+            />
+          ))}
+        </div>
+      )}
+
+      {hasMorePendingReconciliationCustomers && (
+        <button
+          type="button"
+          onClick={toggleReconciliationExpanded}
+          aria-expanded={isReconciliationExpanded}
+          className="mt-3 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-2xl border border-emerald-100 bg-white px-3 text-xs font-black text-emerald-700 shadow-sm transition duration-200 hover:border-emerald-200 hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
+        >
+          {isReconciliationExpanded ? 'Thu gọn' : `Xem thêm ${basePendingReconciliationGroups.length - DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT} khách`}
+          {isReconciliationExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+        </button>
+      )}
+    </section>
+  );
+
   if (!canViewDeliveryReports && !canCreateDeliveryReport) {
     return (
       <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center">
@@ -48122,7 +48408,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   }
 
   return (
-    <div className="mx-auto w-[calc(100%-0.75rem)] max-w-[430px] space-y-4 animate-in fade-in pb-16 sm:max-w-[520px]">
+    <div className="mx-auto flex w-[calc(100%-0.75rem)] max-w-[430px] flex-col gap-4 animate-in fade-in pb-16 sm:max-w-[520px]">
       <div className="hidden">
         <div className="flex items-center justify-between gap-3">
           <p className="min-w-0 text-[12px] font-black uppercase tracking-[0.16em] text-cyan-700">Báo cáo công việc</p>
@@ -48152,6 +48438,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           </div>
         </div>
       </div>
+
+      {deliveryReconciliationSection}
 
       {selectedReportCustomerGroup && (
         <div
@@ -48747,144 +49035,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         )}
       </section>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-black uppercase tracking-wide text-slate-700">Danh sách đối chiếu</h3>
-          <span className="text-xs font-bold text-slate-400">{formatCompactDateLabel(workingDate)}</span>
-        </div>
-        {dayDispatches.length === 0 && reportsWithoutDispatch.length === 0 ? (
-          <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center">
-            <ClipboardList size={26} className="mx-auto text-slate-300" />
-            <p className="mt-3 text-sm font-bold text-slate-500">Ngày này chưa có phiếu xuất kho.</p>
-          </div>
-        ) : (
-          <>
-          {dispatchReconciliationGroups.map(group => {
-            const pendingRow = group.rows.find(row => !row.report);
-            const primaryRow = pendingRow || group.rows[0];
-            const hasMismatch = group.mismatchCount > 0;
-            const isCompleted = group.pendingCount <= 0;
-            const statusLabel = group.pendingCount > 0
-              ? `${group.pendingCount} chưa báo`
-              : hasMismatch
-                ? `${group.mismatchCount} lệch`
-                : 'Đã báo';
-            const productSummary = group.productWeightLabels.join(' • ');
-            const groupToneClass = isCompleted
-              ? hasMismatch
-                ? 'border-amber-200 bg-amber-50/80'
-                : 'border-emerald-200 bg-emerald-50/80'
-              : 'border-slate-100 bg-white';
-            return (
-              <div key={group.key} className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!primaryRow) return;
-                    if (primaryRow.customer) handleSelectCustomer(primaryRow.customer);
-                    if (primaryRow.dispatch?.id) setSelectedDispatchId(primaryRow.dispatch.id);
-                    if (primaryRow.report && isCompleted) {
-                      handleStartEditReport(primaryRow.report);
-                      return;
-                    }
-                    scrollToDeliveryReportForm();
-                  }}
-                  className={`w-full rounded-2xl border p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${groupToneClass}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className={`truncate text-sm font-extrabold ${isCompleted ? 'text-emerald-900' : 'text-slate-900'}`}>{group.customerName}</p>
-                      <p className={`mt-1 text-xs font-semibold leading-5 ${isCompleted ? 'text-emerald-700' : 'text-slate-500'}`} title={productSummary}>
-                        {productSummary || 'Chưa có sản phẩm đối chiếu'}
-                      </p>
-                      {group.reportCount > 0 && (
-                        <p className={`mt-1 text-xs font-bold ${hasMismatch ? 'text-amber-700' : 'text-emerald-600'}`}>
-                          Đã báo {group.reportCount}/{group.rows.length}{hasMismatch ? ` • ${group.mismatchCount} lệch` : group.pendingCount > 0 ? '' : ' • khớp'}
-                        </p>
-                      )}
-                      {group.rows.filter(row => row.report?.actualWeightKg > 0 || row.returnLabel).slice(0, 2).map(row => (
-                        <p key={`${row.dispatch.id}-actual`} className={`mt-1 truncate text-xs font-bold ${row.isMismatch ? 'text-amber-700' : row.returnLabel ? 'text-orange-600' : 'text-emerald-600'}`}>
-                          {row.productLabel}: {row.report?.actualWeightKg > 0 ? `Thực tế ${formatNumber(row.report.actualWeightKg)} kg${row.actualQuantityLabel ? ` • ${row.actualQuantityLabel}` : ''}${row.actualPackageLabel ? ` • ${row.actualPackageLabel}` : ''}${row.isMismatch ? ` • lệch ${formatNumber(Math.abs(row.reportStatus.diff))} kg` : ' • khớp'}` : ''}{row.returnLabel ? `${row.report?.actualWeightKg > 0 ? ' • ' : ''}Trả hàng ${row.returnLabel}` : ''}
-                        </p>
-                      ))}
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-black ${group.pendingCount > 0 ? 'bg-slate-100 text-slate-500' : hasMismatch ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                        {statusLabel}
-                      </span>
-                      {parseLooseMoneyValue(group.paymentSummaryTotal) > 0 && (
-                        <p className="mt-2 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
-                          {formatCurrency(group.paymentSummaryTotal)} đ
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </button>
-                {group.rows.filter(row => row.report?.photoUrl).map(row => (
-                  <div key={`${row.report.id}-photo`} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white px-3 py-2 text-xs">
-                    <span className="font-semibold text-slate-500">Ảnh {row.productLabel} đã lưu {getDeliveryPhotoAgeDays(row.report)} ngày</span>
-                    {canDeleteOldDeliveryPhotos && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteReportPhoto(row.report)}
-                        disabled={!canDeleteReportPhoto(row.report)}
-                        className="rounded-full border border-red-100 bg-red-50 px-3 py-1.5 font-black text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        Xóa ảnh
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-          {reportsWithoutDispatch.map(report => (
-            <div
-              key={report.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleStartEditReport(report)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') handleStartEditReport(report);
-              }}
-              className="cursor-pointer rounded-2xl border border-cyan-100 bg-white p-3 text-left shadow-sm transition hover:border-cyan-200 hover:bg-cyan-50/40"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-extrabold text-slate-900">{report.customerNameSnapshot || customerLookup.get(report.customerId)?.name || 'Khách hàng'}</p>
-                  <p className="mt-1 text-xs font-semibold text-cyan-700">Báo trước, chưa gắn phiếu xuất kho</p>
-                  {report.actualWeightKg > 0 && <p className="mt-1 text-xs font-bold text-slate-600">Thực tế {formatNumber(report.actualWeightKg)} kg{report.actualQuantity > 0 ? ` • ${formatNumber(report.actualQuantity)} ${report.actualQuantityUnit || 'đv'}` : ''}{parseLooseQuantityValue(report.actualPackageCount) > 0 ? ` • ${formatNumber(report.actualPackageCount)} ${report.actualPackageUnit || 'Bọc'}` : ''}</p>}
-                  {(parseLooseQuantityValue(report.returnWeightKg) > 0 || parseLooseQuantityValue(report.returnQuantity) > 0) && (
-                    <p className="mt-1 text-xs font-bold text-orange-600">
-                      Trả hàng {[parseLooseQuantityValue(report.returnWeightKg) > 0 ? `${formatNumber(report.returnWeightKg)} kg` : '', parseLooseQuantityValue(report.returnQuantity) > 0 ? `${formatNumber(report.returnQuantity)} ${report.returnQuantityUnit || 'đv'}` : ''].filter(Boolean).join(' • ')}
-                    </p>
-                  )}
-                </div>
-                <span className="shrink-0 rounded-full bg-cyan-50 px-2.5 py-1 text-[10px] font-black text-cyan-700">Báo trước</span>
-              </div>
-              {report?.photoUrl && (
-                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
-                  <span className="font-semibold text-slate-500">Ảnh cân lại đã lưu {getDeliveryPhotoAgeDays(report)} ngày</span>
-                  {canDeleteOldDeliveryPhotos && (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleDeleteReportPhoto(report);
-                      }}
-                      disabled={!canDeleteReportPhoto(report)}
-                      className="rounded-full border border-red-100 bg-red-50 px-3 py-1.5 font-black text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Xóa ảnh
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </>
-        )}
-      </div>
     </div>
   );
 }
@@ -51651,6 +51801,185 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   );
 }
 
+const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesModal({
+  mode = 'create',
+  initialEntries = [],
+  customerName = '',
+  productName = '',
+  previousWeightKg = 0,
+  appendEmptyRowWhenFull = false,
+  isSaving = false,
+  onCancel,
+  onSave
+}) {
+  const [entries, setEntries] = useState(() => ensureWarehouseWeightEntryRows(
+    initialEntries,
+    appendEmptyRowWhenFull
+  ));
+  const inputRefs = useRef([]);
+  const composingInputsRef = useRef(new Set());
+  const focusTaskRef = useRef(null);
+  const totalWeight = useMemo(() => getWarehouseWeightEntryTotal(entries), [entries]);
+  const weightDifference = totalWeight - (previousWeightKg || 0);
+
+  useEffect(() => () => {
+    if (typeof window === 'undefined' || focusTaskRef.current === null) return;
+    const task = focusTaskRef.current;
+    if (task.type === 'frame') window.cancelAnimationFrame?.(task.id);
+    if (task.type === 'timer') window.clearTimeout?.(task.id);
+    focusTaskRef.current = null;
+  }, []);
+
+  const focusInput = useCallback((index) => {
+    if (typeof window === 'undefined' || index < 0) return;
+    const pendingTask = focusTaskRef.current;
+    if (pendingTask?.type === 'frame') window.cancelAnimationFrame?.(pendingTask.id);
+    if (pendingTask?.type === 'timer') window.clearTimeout?.(pendingTask.id);
+    const applyFocus = () => {
+      const input = inputRefs.current[index];
+      input?.focus?.({ preventScroll: true });
+      input?.select?.();
+      focusTaskRef.current = null;
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+      focusTaskRef.current = { type: 'frame', id: window.requestAnimationFrame(applyFocus) };
+      return;
+    }
+    focusTaskRef.current = { type: 'timer', id: window.setTimeout(applyFocus, 0) };
+  }, []);
+
+  const handleEntryChange = useCallback((index, value) => {
+    setEntries(previousEntries => updateWarehouseWeightEntryRows(
+      previousEntries,
+      index,
+      value,
+      appendEmptyRowWhenFull
+    ));
+  }, [appendEmptyRowWhenFull]);
+
+  const handleEntryKeyDown = useCallback((event, index) => {
+    const isComposing = event.isComposing
+      || event.nativeEvent?.isComposing
+      || composingInputsRef.current.has(index);
+    if (event.key !== 'Enter' || isComposing) return;
+    event.preventDefault();
+    const nextIndex = index + 1;
+    setEntries(previousEntries => {
+      const normalizedRows = ensureWarehouseWeightEntryRows(previousEntries);
+      if (nextIndex < normalizedRows.length) return previousEntries;
+      if (!appendEmptyRowWhenFull) return previousEntries;
+      return [...normalizedRows, ...createWarehouseWeightEntryRow()];
+    });
+    if (nextIndex < entries.length || appendEmptyRowWhenFull) focusInput(nextIndex);
+  }, [appendEmptyRowWhenFull, entries.length, focusInput]);
+
+  const handleSave = useCallback(() => {
+    const normalizedEntries = normalizeWarehouseWeightEntries(entries);
+    onSave?.({
+      entries: normalizedEntries,
+      totalWeight: normalizedEntries.reduce((sum, value) => sum + value, 0)
+    });
+  }, [entries, onSave]);
+
+  const inputs = (
+    <div className={`${mode === 'edit' ? 'mt-5' : ''} grid grid-cols-5 gap-2`}>
+      {entries.map((entry, index) => (
+        <input
+          key={`warehouse_weight_entry_${index}`}
+          ref={(element) => { inputRefs.current[index] = element; }}
+          type="text"
+          inputMode="decimal"
+          pattern="[0-9]*[.,]?[0-9]*"
+          enterKeyHint={(index + 1) < entries.length || appendEmptyRowWhenFull ? 'next' : 'done'}
+          value={entry}
+          onChange={(event) => handleEntryChange(index, event.target.value)}
+          onKeyDown={(event) => handleEntryKeyDown(event, index)}
+          onCompositionStart={() => composingInputsRef.current.add(index)}
+          onCompositionEnd={() => composingInputsRef.current.delete(index)}
+          onFocus={mode === 'create' ? (event) => event.target.select() : undefined}
+          className={mode === 'edit'
+            ? 'h-14 min-w-0 rounded-2xl border-2 border-emerald-100 bg-white px-1 text-center text-lg font-semibold text-slate-950 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100'
+            : 'weight-entry-input h-12 min-w-0 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-2 text-center text-lg font-medium tabular-nums tracking-tight text-slate-950 antialiased outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500'}
+          placeholder=""
+          autoFocus={index === 0}
+          autoComplete="off"
+          aria-label={`Lần cân ${index + 1}`}
+        />
+      ))}
+    </div>
+  );
+
+  if (mode === 'edit') {
+    return (
+      <div
+        className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/55 px-4 py-6"
+        onClick={onCancel}
+      >
+        <div className="w-full max-w-sm rounded-[30px] bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.24em] text-emerald-600">Số kg</p>
+              <h3 className="mt-1 text-2xl font-black text-slate-950">Sửa các lần cân</h3>
+              <p className="mt-1 text-sm font-bold text-slate-500">{customerName} • {productName}</p>
+            </div>
+            <button type="button" onClick={onCancel} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="Đóng nhập kg">
+              <X size={20} />
+            </button>
+          </div>
+          {inputs}
+          <div className="mt-5 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-600">
+            <div className="flex items-center justify-between gap-2">
+              <span>Trước đó</span>
+              <span className="font-black text-slate-900">{formatNumber(previousWeightKg)} kg</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span>Chênh lệch</span>
+              <span className={`font-black ${weightDifference < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                {weightDifference > 0 ? '+' : ''}{formatNumber(weightDifference)} kg
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 text-base">
+              <span>Tổng sau sửa</span>
+              <span className="text-xl font-black text-emerald-700">{formatNumber(totalWeight)} kg</span>
+            </div>
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <button type="button" onClick={onCancel} disabled={isSaving} className="rounded-2xl bg-slate-100 px-4 py-3 text-base font-black text-slate-700 hover:bg-slate-200 disabled:opacity-60">Hủy</button>
+            <button type="button" onClick={handleSave} disabled={isSaving} className="rounded-2xl bg-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-200 hover:bg-emerald-600 disabled:opacity-60">
+              {isSaving ? 'Đang lưu...' : 'Cập nhật'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl animate-in zoom-in-95" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Số kg</p>
+            <h3 className="mt-1 text-lg font-black text-slate-900">Nhập các lần cân</h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">Ví dụ: 30, 40, 50 kg. App sẽ tự cộng tổng.</p>
+          </div>
+          <button type="button" onClick={onCancel} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500" aria-label="Đóng nhập kg">
+            <X size={18} />
+          </button>
+        </div>
+        {inputs}
+        <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
+          Tổng: <span className="text-lg font-black text-emerald-700">{formatNumber(totalWeight)} kg</span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button type="button" onClick={onCancel} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700">Hủy</button>
+          <button type="button" onClick={handleSave} className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white">Cập nhật</button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function WarehouseDispatchView({ employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
@@ -51669,7 +51998,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const canDelete = isViewingPastDispatchDate ? canDeleteHistoryDispatch : canDeleteCurrentDispatch;
   const canManageDispatchRows = canEdit || canDelete;
   const dispatchListRef = useRef(null);
-  const weightEntryRowSize = 5;
   const dispatchQuantityUnitOptions = ['Con', 'Cái', 'Bộ', 'Bọc', 'Bao', 'Thùng', 'Can', 'Túi', 'Kg'];
   const createEmptyDispatchDraft = (assignedDriverId = '') => ({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', weightEntries: [], assignedDriverId, note: '', transcript: '' });
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
@@ -51686,8 +52014,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const [dispatchListSearch, setDispatchListSearch] = useState('');
   const [isDispatchListSearchOpen, setIsDispatchListSearchOpen] = useState(false);
   const [showWeightEntriesModal, setShowWeightEntriesModal] = useState(false);
-  const [weightEntriesDraft, setWeightEntriesDraft] = useState(['']);
+  const [weightEntriesEditorSeed, setWeightEntriesEditorSeed] = useState([]);
   const [dispatchListWeightEditor, setDispatchListWeightEditor] = useState(null);
+  const [isSavingDispatchListWeight, setIsSavingDispatchListWeight] = useState(false);
   const [inlineEditingDispatchId, setInlineEditingDispatchId] = useState('');
   const [inlineEditingDispatchDraft, setInlineEditingDispatchDraft] = useState({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', assignedDriverId: '', note: '' });
   const [selectedShortageLine, setSelectedShortageLine] = useState(null);
@@ -51706,9 +52035,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const dispatchCustomerSearchInputRef = useRef(null);
   const dispatchProductSearchInputRef = useRef(null);
   const dispatchListSearchInputRef = useRef(null);
-  const weightEntryInputRefs = useRef([]);
-  const dispatchListWeightInputRefs = useRef([]);
-  const weightEntryAutoAdvanceTimerRef = useRef(null);
+  const dispatchListWeightSaveLockRef = useRef(false);
   useDismissSearchOnOutsideClick(Boolean(dispatchPickerOpen), () => setDispatchPickerOpen(''));
 
   useEffect(() => {
@@ -52137,7 +52464,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       })
       .filter(Boolean)).values());
   }, [dispatchCustomerOrderRows, productLookup]);
-  const rankDispatchPickerOptions = (options = [], keyword = '', getLabels = () => []) => {
+  const rankDispatchPickerOptions = useCallback((options = [], keyword = '', getLabels = () => []) => {
     const normalizedKeyword = normalizeLookupText(keyword || '');
     if (!normalizedKeyword) return options;
     const keywordCandidates = [
@@ -52173,8 +52500,8 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       .filter(row => row.score >= 0.34)
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .map(row => row.item);
-  };
-  const filteredDispatchCustomers = rankDispatchPickerOptions(
+  }, []);
+  const filteredDispatchCustomers = useMemo(() => rankDispatchPickerOptions(
     requestCustomerOptions,
     dispatchCustomerSearchKeyword,
     (customer) => [
@@ -52188,14 +52515,17 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       customer.group,
       customer.customerGroup
     ]
-  );
-  const filteredDispatchProducts = rankDispatchPickerOptions(
+  ), [dispatchCustomerSearchKeyword, rankDispatchPickerOptions, requestCustomerOptions]);
+  const dispatchProductPickerOptions = useMemo(() => (
     selectedDispatchCustomer && dispatchCustomerOrderedProducts.length > 0
       ? dispatchCustomerOrderedProducts
       : Array.from(new Map([
           ...requestProductOptions,
           ...(products || []).filter(product => !product?.isArchived)
-        ].map(product => [product.id, product])).values()),
+        ].map(product => [product.id, product])).values())
+  ), [dispatchCustomerOrderedProducts, products, requestProductOptions, selectedDispatchCustomer]);
+  const filteredDispatchProducts = useMemo(() => rankDispatchPickerOptions(
+    dispatchProductPickerOptions,
     dispatchProductSearchKeyword,
     (product) => [
       product.name,
@@ -52208,7 +52538,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       ...(Array.isArray(product.attributes) ? product.attributes : []),
       ...(Array.isArray(product.productAttributes) ? product.productAttributes : [])
     ]
-  );
+  ), [dispatchProductPickerOptions, dispatchProductSearchKeyword, rankDispatchPickerOptions]);
   const inlineEditingCustomer = customerLookup.get(inlineEditingDispatchDraft.customerId) || null;
   const inlineEditingProduct = productLookup.get(inlineEditingDispatchDraft.productId) || null;
 
@@ -52904,13 +53234,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       }
     }
     cleanupRecordedVoiceResources();
-    if (typeof window !== 'undefined' && weightEntryAutoAdvanceTimerRef.current) {
-      window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
-      weightEntryAutoAdvanceTimerRef.current = null;
-    }
     setDispatchPickerOpen('');
     setShowWeightEntriesModal(false);
-    setWeightEntriesDraft(['']);
+    setWeightEntriesEditorSeed([]);
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => createEmptyDispatchDraft(prev.assignedDriverId || ''));
     setDispatchError('');
@@ -52921,9 +53247,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   };
 
   useEffect(() => () => {
-    if (typeof window !== 'undefined' && weightEntryAutoAdvanceTimerRef.current) {
-      window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
-    }
     stopVoiceCapture();
     cleanupRecordedVoiceResources();
   }, []);
@@ -52939,125 +53262,18 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     return () => window.clearTimeout(focusTimer);
   }, [dispatchPickerOpen]);
 
-  const normalizeWeightEntryValues = (entries = []) => entries
-    .flatMap(entry => {
-      const matches = [...`${entry ?? ''}`.matchAll(/\d+(?:[.,]\d+)?/g)].map(match => match[0]);
-      return matches.length > 0 ? matches : [`${entry ?? ''}`];
-    })
-    .map(entry => parseVoiceNumber(entry))
-    .filter(value => value > 0);
-
-  const formatWeightEntrySum = (entries = []) => formatVoiceNumberValue(
-    normalizeWeightEntryValues(entries).reduce((sum, value) => sum + value, 0)
-  );
-
-  const getWeightEntryTotal = (entries = []) => normalizeWeightEntryValues(entries)
-    .reduce((sum, value) => sum + value, 0);
-
-  const createEmptyWeightEntryRow = () => Array.from({ length: weightEntryRowSize }, () => '');
-
-  const ensureWeightEntryDraftRows = (entries = [], appendEmptyRowWhenFull = false) => {
-    const cleanedEntries = (Array.isArray(entries) ? entries : [])
-      .map(entry => `${entry ?? ''}`);
-    const baseEntries = cleanedEntries.length > 0 ? cleanedEntries : [''];
-    const rowCount = Math.max(1, Math.ceil(baseEntries.length / weightEntryRowSize));
-    const paddedEntries = [
-      ...baseEntries,
-      ...Array.from({ length: (rowCount * weightEntryRowSize) - baseEntries.length }, () => '')
-    ];
-    const lastRow = paddedEntries.slice(-weightEntryRowSize);
-    if (appendEmptyRowWhenFull && lastRow.every(entry => `${entry}`.trim())) {
-      return [...paddedEntries, ...createEmptyWeightEntryRow()];
-    }
-    return paddedEntries;
-  };
-
-  const sanitizeWeightEntryDraftValue = (value = '') => {
-    const rawValue = `${value ?? ''}`.replace(/[^\d.,]/g, '');
-    const separatorMatch = rawValue.match(/[.,]/);
-    if (!separatorMatch) return rawValue;
-    const separator = separatorMatch[0];
-    const separatorIndex = rawValue.indexOf(separator);
-    const integerPart = rawValue.slice(0, separatorIndex);
-    const decimalPart = rawValue.slice(separatorIndex + 1).replace(/[^\d]/g, '').slice(0, 3);
-    return `${integerPart}${separator}${decimalPart}`;
-  };
-
-  const clearWeightEntryAutoAdvanceTimer = () => {
-    if (typeof window === 'undefined' || !weightEntryAutoAdvanceTimerRef.current) return;
-    window.clearTimeout(weightEntryAutoAdvanceTimerRef.current);
-    weightEntryAutoAdvanceTimerRef.current = null;
-  };
-
-  const shouldAutoAdvanceWeightEntry = (value = '') => /^\d+[.,]\d{1,3}$/.test(`${value || ''}`.trim());
-
-  useEffect(() => {
-    if (showWeightEntriesModal) return;
-    clearWeightEntryAutoAdvanceTimer();
-  }, [showWeightEntriesModal]);
-
   const openWeightEntriesEditor = () => {
     const currentEntries = Array.isArray(dispatchDraft.weightEntries) && dispatchDraft.weightEntries.length > 0
       ? dispatchDraft.weightEntries
       : (dispatchDraft.weightKg ? [dispatchDraft.weightKg] : ['']);
-    clearWeightEntryAutoAdvanceTimer();
-    weightEntryInputRefs.current = [];
-    setWeightEntriesDraft(ensureWeightEntryDraftRows(currentEntries.map(entry => `${entry ?? ''}`), true));
+    setWeightEntriesEditorSeed(ensureWarehouseWeightEntryRows(
+      currentEntries.map(entry => `${entry ?? ''}`),
+      true
+    ));
     setShowWeightEntriesModal(true);
   };
 
-  const focusWeightEntryInput = (index) => {
-    if (typeof window === 'undefined') return;
-    window.setTimeout(() => {
-      weightEntryInputRefs.current[index]?.focus?.();
-      weightEntryInputRefs.current[index]?.select?.();
-    }, 40);
-  };
-
-  const handleWeightEntryDraftChange = (index, value) => {
-    const cleanedValue = sanitizeWeightEntryDraftValue(value);
-    clearWeightEntryAutoAdvanceTimer();
-    setWeightEntriesDraft(prev => {
-      const next = ensureWeightEntryDraftRows(prev);
-      next[index] = cleanedValue;
-      const isLastCellInRow = (index + 1) % weightEntryRowSize === 0;
-      const hasNextRow = next.length > index + 1;
-      if (isLastCellInRow && `${cleanedValue}`.trim() && !hasNextRow) {
-        return [...next, ...createEmptyWeightEntryRow()];
-      }
-      return next;
-    });
-
-    if (typeof window === 'undefined' || !shouldAutoAdvanceWeightEntry(cleanedValue)) return;
-    weightEntryAutoAdvanceTimerRef.current = window.setTimeout(() => {
-      const nextIndex = index + 1;
-      setWeightEntriesDraft(prev => {
-        const next = ensureWeightEntryDraftRows(prev);
-        if (nextIndex >= next.length) return [...next, ...createEmptyWeightEntryRow()];
-        return next;
-      });
-      focusWeightEntryInput(nextIndex);
-      weightEntryAutoAdvanceTimerRef.current = null;
-    }, 80);
-  };
-
-  const handleWeightEntryKeyDown = (event, index) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    clearWeightEntryAutoAdvanceTimer();
-    const nextIndex = index + 1;
-    setWeightEntriesDraft(prev => {
-      const next = ensureWeightEntryDraftRows(prev);
-      if (nextIndex >= next.length) return [...next, ...createEmptyWeightEntryRow()];
-      return next;
-    });
-    focusWeightEntryInput(nextIndex);
-  };
-
-  const saveWeightEntries = () => {
-    clearWeightEntryAutoAdvanceTimer();
-    const normalizedEntries = normalizeWeightEntryValues(weightEntriesDraft);
-    const totalWeight = normalizedEntries.reduce((sum, value) => sum + value, 0);
+  const saveWeightEntries = ({ entries: normalizedEntries, totalWeight }) => {
     setDispatchDraft(prev => ({
       ...prev,
       weightEntries: normalizedEntries,
@@ -53074,12 +53290,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       setDispatchError('Không tìm thấy phiếu gốc để cập nhật số kg.');
       return;
     }
-    const sourceWeightEntries = normalizeWeightEntryValues(sourceRow.weightEntries || []);
+    const sourceWeightEntries = normalizeWarehouseWeightEntries(sourceRow.weightEntries || []);
     const sourceBaseWeightKg = getDispatchRowWeight(sourceRow);
     const editableWeightEntries = sourceWeightEntries.length > 0
       ? sourceWeightEntries
       : (sourceBaseWeightKg > 0 ? [sourceBaseWeightKg] : []);
-    dispatchListWeightInputRefs.current = [];
     setDispatchListWeightEditor({
       rowId: sourceRow.id,
       customerName: row.customerName || sourceRow.customerName || sourceRow.customerNameSnapshot || 'Khách hàng',
@@ -53087,66 +53302,40 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       displayBaseWeightKg: sourceBaseWeightKg,
       sourceBaseWeightKg,
       sourceWeightEntries,
-      sourceRow,
-      entries: ensureWeightEntryDraftRows(editableWeightEntries.map(entry => formatVoiceNumberValue(entry)))
+      sourceDate: sourceRow.date || workingDate,
+      initialEntries: ensureWarehouseWeightEntryRows(editableWeightEntries.map(entry => formatVoiceNumberValue(entry)))
     });
+    setIsSavingDispatchListWeight(false);
+    dispatchListWeightSaveLockRef.current = false;
     setDispatchStatus('');
     setDispatchError('');
-    if (typeof window !== 'undefined') {
-      window.setTimeout(() => dispatchListWeightInputRefs.current[0]?.focus?.(), 80);
-    }
   };
 
-  const focusDispatchListWeightInput = (index) => {
-    if (typeof window === 'undefined') return;
-    window.setTimeout(() => {
-      dispatchListWeightInputRefs.current[index]?.focus?.();
-      dispatchListWeightInputRefs.current[index]?.select?.();
-    }, 40);
-  };
-
-  const handleDispatchListWeightEntryChange = (index, value) => {
-    const cleanedValue = sanitizeWeightEntryDraftValue(value);
-    setDispatchListWeightEditor(prev => {
-      if (!prev) return prev;
-      const nextEntries = ensureWeightEntryDraftRows(prev.entries);
-      nextEntries[index] = cleanedValue;
-      return { ...prev, entries: nextEntries };
-    });
-
-    if (!shouldAutoAdvanceWeightEntry(cleanedValue)) return;
-    const currentLength = (dispatchListWeightEditor?.entries || []).length || weightEntryRowSize;
-    const nextIndex = Math.min(index + 1, currentLength - 1);
-    focusDispatchListWeightInput(nextIndex);
-  };
-
-  const handleDispatchListWeightKeyDown = (event, index) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    const currentLength = (dispatchListWeightEditor?.entries || []).length || weightEntryRowSize;
-    const nextIndex = Math.min(index + 1, currentLength - 1);
-    focusDispatchListWeightInput(nextIndex);
-  };
-
-  const saveDispatchListWeightEntries = async () => {
-    if (!dispatchListWeightEditor?.rowId || !canEdit || !employee?.id) return;
-    const normalizedEntries = normalizeWeightEntryValues(dispatchListWeightEditor.entries || []);
+  const saveDispatchListWeightEntries = async ({ entries = [] } = {}) => {
+    if (!dispatchListWeightEditor?.rowId || !canEdit || !employee?.id || dispatchListWeightSaveLockRef.current) return;
+    const normalizedEntries = normalizeWarehouseWeightEntries(entries);
     const nextSourceWeight = normalizedEntries.reduce((sum, value) => sum + value, 0);
     if (nextSourceWeight <= 0) {
       setDispatchError('Vui lòng nhập ít nhất một số cân hợp lệ.');
       return;
     }
-    const nextWeightEntries = normalizedEntries;
-
-    await onEditWarehouseDispatch(dispatchListWeightEditor.rowId, {
-      weightKg: formatVoiceNumberValue(nextSourceWeight),
-      weightEntries: nextWeightEntries,
-      date: dispatchListWeightEditor.sourceRow?.date || workingDate
-    }, employee.id);
-
-    setDispatchStatus(`Đã cập nhật ${formatNumber(nextSourceWeight)} kg cho ${dispatchListWeightEditor.customerName}.`);
-    setDispatchError('');
-    setDispatchListWeightEditor(null);
+    dispatchListWeightSaveLockRef.current = true;
+    setIsSavingDispatchListWeight(true);
+    try {
+      await onEditWarehouseDispatch(dispatchListWeightEditor.rowId, {
+        weightKg: formatVoiceNumberValue(nextSourceWeight),
+        weightEntries: normalizedEntries,
+        date: dispatchListWeightEditor.sourceDate || workingDate
+      }, employee.id);
+      setDispatchStatus(`Đã cập nhật ${formatNumber(nextSourceWeight)} kg cho ${dispatchListWeightEditor.customerName}.`);
+      setDispatchError('');
+      setDispatchListWeightEditor(null);
+    } catch (error) {
+      setDispatchError(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật số kg. Vui lòng thử lại.'));
+    } finally {
+      dispatchListWeightSaveLockRef.current = false;
+      setIsSavingDispatchListWeight(false);
+    }
   };
 
   const normalizeWarehouseVoiceText = (value = '') => normalizeLookupText(value)
@@ -54182,7 +54371,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       assignedDriverNameSnapshot: assignedDriverName,
       driverId: assignedDriverId,
       driverNameSnapshot: assignedDriverName,
-      weightEntries: normalizeWeightEntryValues(dispatchDraft.weightEntries || []),
+      weightEntries: normalizeWarehouseWeightEntries(dispatchDraft.weightEntries || []),
       note: capitalizeFirst(dispatchDraft.note || '').trim(),
       transcript: dispatchDraft.transcript || '',
       sourceOrderRequestDate: matchedOrderRow?.requestDate || selectedOrderRequestDateKey,
@@ -54371,90 +54560,21 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   return (
     <div className="premium-data-module premium-inventory-module premium-dispatch-module space-y-4 animate-in fade-in pb-16">
       {dispatchStatus && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{dispatchStatus}</div>}
-      {dispatchListWeightEditor && (() => {
-        const nextTotalWeight = getWeightEntryTotal(dispatchListWeightEditor.entries || []);
-        const weightDifference = nextTotalWeight - (dispatchListWeightEditor.displayBaseWeightKg || 0);
-        return (
-          <div
-            className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/55 px-4 py-6"
-            onClick={() => setDispatchListWeightEditor(null)}
-          >
-            <div
-              className="w-full max-w-sm rounded-[30px] bg-white p-5 shadow-2xl"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.24em] text-emerald-600">Số kg</p>
-                  <h3 className="mt-1 text-2xl font-black text-slate-950">Sửa các lần cân</h3>
-                  <p className="mt-1 text-sm font-bold text-slate-500">
-                    {dispatchListWeightEditor.customerName} • {dispatchListWeightEditor.productName}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setDispatchListWeightEditor(null)}
-                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  aria-label="Đóng nhập kg"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className="mt-5 grid grid-cols-5 gap-2">
-                {(dispatchListWeightEditor.entries || createEmptyWeightEntryRow()).map((entry, index) => (
-                  <input
-                    key={`dispatch_list_weight_${index}`}
-                    ref={(element) => { dispatchListWeightInputRefs.current[index] = element; }}
-                    type="text"
-                    inputMode="decimal"
-                    value={entry}
-                    onChange={(event) => handleDispatchListWeightEntryChange(index, event.target.value)}
-                    onKeyDown={(event) => handleDispatchListWeightKeyDown(event, index)}
-                    className="h-14 min-w-0 rounded-2xl border-2 border-emerald-100 bg-white px-1 text-center text-lg font-semibold text-slate-950 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
-                    placeholder=""
-                    enterKeyHint={index < weightEntryRowSize - 1 ? 'next' : 'done'}
-                  />
-                ))}
-              </div>
-
-              <div className="mt-5 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-600">
-                <div className="flex items-center justify-between gap-2">
-                  <span>Trước đó</span>
-                  <span className="font-black text-slate-900">{formatNumber(dispatchListWeightEditor.displayBaseWeightKg)} kg</span>
-                </div>
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <span>Chênh lệch</span>
-                  <span className={`font-black ${weightDifference < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                    {weightDifference > 0 ? '+' : ''}{formatNumber(weightDifference)} kg
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 text-base">
-                  <span>Tổng sau sửa</span>
-                  <span className="text-xl font-black text-emerald-700">{formatNumber(nextTotalWeight)} kg</span>
-                </div>
-              </div>
-
-              <div className="mt-5 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setDispatchListWeightEditor(null)}
-                  className="rounded-2xl bg-slate-100 px-4 py-3 text-base font-black text-slate-700 hover:bg-slate-200"
-                >
-                  Hủy
-                </button>
-                <button
-                  type="button"
-                  onClick={saveDispatchListWeightEntries}
-                  className="rounded-2xl bg-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-200 hover:bg-emerald-600"
-                >
-                  Cập nhật
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {dispatchListWeightEditor && (
+        <WarehouseWeightEntriesModal
+          key={`dispatch_weight_${dispatchListWeightEditor.rowId}`}
+          mode="edit"
+          initialEntries={dispatchListWeightEditor.initialEntries}
+          customerName={dispatchListWeightEditor.customerName}
+          productName={dispatchListWeightEditor.productName}
+          previousWeightKg={dispatchListWeightEditor.displayBaseWeightKg}
+          isSaving={isSavingDispatchListWeight}
+          onCancel={() => {
+            if (!isSavingDispatchListWeight) setDispatchListWeightEditor(null);
+          }}
+          onSave={saveDispatchListWeightEntries}
+        />
+      )}
 
       {shouldShowDispatchShortage && (
         <div className={`order-1 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
@@ -54816,68 +54936,14 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       )}
 
       {showWeightEntriesModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl animate-in zoom-in-95">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Số kg</p>
-                <h3 className="mt-1 text-lg font-black text-slate-900">Nhập các lần cân</h3>
-                <p className="mt-1 text-xs font-semibold text-slate-500">Ví dụ: 30, 40, 50 kg. App sẽ tự cộng tổng.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowWeightEntriesModal(false)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500"
-                aria-label="Đóng nhập kg"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-5 gap-2">
-              {weightEntriesDraft.map((entry, index) => (
-                <input
-                  key={`weight_entry_${index}`}
-                  ref={(node) => { weightEntryInputRefs.current[index] = node; }}
-                  type="text"
-                  inputMode="decimal"
-                  pattern="[0-9]*[.,]?[0-9]*"
-                  enterKeyHint={(index + 1) < weightEntriesDraft.length ? 'next' : 'done'}
-                  value={entry}
-                  onChange={(event) => handleWeightEntryDraftChange(index, event.target.value)}
-                  onKeyDown={(event) => handleWeightEntryKeyDown(event, index)}
-                  onFocus={(event) => event.target.select()}
-                  className="weight-entry-input h-12 min-w-0 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-2 text-center text-lg font-medium tabular-nums tracking-tight text-slate-950 antialiased outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500"
-                  placeholder=""
-                  autoFocus={index === 0}
-                  autoComplete="off"
-                  aria-label={`Lần cân ${index + 1}`}
-                />
-              ))}
-            </div>
-
-            <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
-              Tổng: <span className="text-lg font-black text-emerald-700">{formatNumber(getWeightEntryTotal(weightEntriesDraft))} kg</span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setShowWeightEntriesModal(false)}
-                className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700"
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                onClick={saveWeightEntries}
-                className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white"
-              >
-                Cập nhật
-              </button>
-            </div>
-          </div>
-        </div>
+        <WarehouseWeightEntriesModal
+          key="new_dispatch_weight_entries"
+          mode="create"
+          initialEntries={weightEntriesEditorSeed}
+          appendEmptyRowWhenFull
+          onCancel={() => setShowWeightEntriesModal(false)}
+          onSave={saveWeightEntries}
+        />
       )}
 
       {todayDispatchRows.length > 0 ? (
@@ -55394,6 +55460,66 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   );
 }
 
+const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelectableProductCard({
+  selectionKey,
+  productId,
+  title,
+  subtitle,
+  variantConfig = null,
+  isSelected = false,
+  isPending = false,
+  layout = 'grid',
+  onSelect
+}) {
+  const isGrid = layout === 'grid';
+  const handleSelect = useCallback(() => {
+    if (isPending) return;
+    onSelect?.(selectionKey, productId, variantConfig);
+  }, [isPending, onSelect, productId, selectionKey, variantConfig]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleSelect}
+      disabled={isPending}
+      aria-pressed={isSelected}
+      aria-selected={isSelected}
+      aria-busy={isPending}
+      aria-label={`${title || 'Sản phẩm'}${isSelected ? ', đã chọn' : ', chưa chọn'}`}
+      data-order-product-option={selectionKey}
+      data-selected={isSelected ? 'true' : 'false'}
+      className={`group relative w-full min-w-0 touch-manipulation select-none border outline-none transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-out focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-wait ${
+        isGrid ? 'rounded-2xl px-3 py-3 text-center' : 'rounded-xl px-3 py-2 text-left'
+      } ${
+        isSelected
+          ? 'border-emerald-700 bg-emerald-600 text-white shadow-md shadow-emerald-200/80 ring-1 ring-emerald-300 -translate-y-0.5'
+          : 'border-emerald-100 bg-white text-slate-700 shadow-sm hover:border-emerald-300 hover:bg-emerald-50 active:scale-[0.985]'
+      }`}
+    >
+      <span className={`block min-w-0 ${isGrid ? 'px-2' : 'pr-24'}`}>
+        <span className={`block whitespace-normal break-words leading-5 ${isGrid ? 'text-xs' : 'text-sm'} ${isSelected ? 'font-black text-white' : 'font-semibold text-slate-800'}`}>
+          {title}
+        </span>
+        <span className={`mt-1 block text-[10px] font-semibold ${isSelected ? 'text-emerald-50' : 'text-slate-500'}`}>
+          {subtitle}
+        </span>
+      </span>
+
+      {(isSelected || isPending) && (
+        <span
+          aria-hidden="true"
+          className={`absolute flex items-center justify-center rounded-full ${
+            isGrid ? 'right-2 top-2 h-6 w-6' : 'right-3 top-1/2 h-7 -translate-y-1/2 gap-1 px-1.5'
+          } ${isSelected ? 'bg-white text-emerald-700 shadow-sm' : 'bg-emerald-100 text-emerald-700'}`}
+        >
+          {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} strokeWidth={3} />}
+          {!isGrid && isSelected && <span className="text-[9px] font-black uppercase">Đã chọn</span>}
+        </span>
+      )}
+    </button>
+  );
+});
+
 function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
@@ -55455,12 +55581,25 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [isOrderVoiceProcessing, setIsOrderVoiceProcessing] = useState(false);
   const [orderVoiceTarget, setOrderVoiceTarget] = useState({ draftLocalId: '', itemLocalId: '' });
   const [quickProductSearch, setQuickProductSearch] = useState('');
+  const [pendingQuickProductSelectionKeys, setPendingQuickProductSelectionKeys] = useState(() => new Set());
   const [orderFormKeyboardLift, setOrderFormKeyboardLift] = useState(0);
   const orderVoiceRecognitionRef = useRef(null);
   const orderVoiceMediaRecorderRef = useRef(null);
   const orderVoiceMediaStreamRef = useRef(null);
   const orderVoiceChunksRef = useRef([]);
   const requestDateInputRef = useRef(null);
+  const quickProductSelectionLocksRef = useRef(new Set());
+  const quickProductSelectionTimersRef = useRef(new Map());
+  const quickProductSelectActionRef = useRef(null);
+  const handleQuickProductCardSelect = useCallback((selectionKey, productId, variantConfig) => {
+    quickProductSelectActionRef.current?.(productId, variantConfig, selectionKey);
+  }, []);
+  const clearQuickProductSelectionLocks = useCallback(() => {
+    quickProductSelectionTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    quickProductSelectionTimersRef.current.clear();
+    quickProductSelectionLocksRef.current.clear();
+    setPendingQuickProductSelectionKeys(previous => (previous.size > 0 ? new Set() : previous));
+  }, []);
   const keepOrderRequestWorkingNotice = useCallback((message = '') => {
     const normalizedMessage = `${message || ''}`.trim();
     return /^(Đang|Dang|Firebase đang phản hồi chậm|Firebase đang tự phục hồi)/i.test(normalizedMessage);
@@ -55469,6 +55608,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   useAutoDismissMessage(sheetStatus, setSheetStatus, { delay: 5200 });
   useAutoDismissMessage(orderVoiceStatus, setOrderVoiceStatus, { delay: 4500, keepWhile: keepOrderRequestWorkingNotice });
   useAutoDismissMessage(requestError, setRequestError, { delay: 9000 });
+  useEffect(() => () => {
+    quickProductSelectionTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    quickProductSelectionTimersRef.current.clear();
+    quickProductSelectionLocksRef.current.clear();
+  }, []);
   const openRequestDatePicker = () => {
     const input = requestDateInputRef.current;
     if (!input) return;
@@ -56219,8 +56363,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     unit: item.quantityUnit || item.unit,
     price: item.unitPrice
   });
-  const selectedQuickProductIds = new Set((primaryDraft?.items || []).map((item) => item?.productId || '').filter(Boolean));
-  const selectedQuickVariantKeys = new Set((primaryDraft?.items || []).filter(item => item?.productId).map(getDraftItemVariantKey));
+  const selectedQuickProductIds = useMemo(
+    () => new Set((primaryDraft?.items || []).map((item) => item?.productId || '').filter(Boolean)),
+    [primaryDraft?.items]
+  );
+  const selectedQuickVariantKeys = useMemo(
+    () => new Set((primaryDraft?.items || []).filter(item => item?.productId).map(getDraftItemVariantKey)),
+    [primaryDraft?.items]
+  );
   const manualFixedProductOptions = useMemo(() => {
     if (!primarySelectedCustomer) return [];
     const branchProductIds = primaryDraft?.branchId
@@ -56880,15 +57030,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     });
   };
 
-  const handleQuickProductSelect = (productId, variantConfig = null) => {
+  const handleQuickProductSelect = (productId, variantConfig = null, interactionSelectionKey = '') => {
     if (!primaryDraft?.localId) return;
     const selectedProduct = productLookup.get(productId);
     if (!selectedProduct) return;
-    const targetVariantKey = buildOrderRequestVariantKey(productId, variantConfig || {
-      attributeLabel: getCustomerProductAttribute(primarySelectedCustomer, selectedProduct),
-      size: getCustomerProductSize(primarySelectedCustomer, selectedProduct),
-      unit: getCustomerProductDefaultUnit(primaryProductConfigSource, selectedProduct),
-      price: getCustomerProductPrice(primaryProductConfigSource, selectedProduct, getCustomerProductDefaultUnit(primaryProductConfigSource, selectedProduct))
+    // Compare against the normalized draft row, not the raw customer config. The
+    // draft may resolve unit/attribute defaults before it is stored in the order.
+    const normalizedQuickItem = buildQuickProductDraftItem(productId, {}, variantConfig);
+    const targetVariantKey = getDraftItemVariantKey(normalizedQuickItem);
+
+    const selectionKey = interactionSelectionKey || targetVariantKey;
+    if (!tryAcquireOrderRequestSelectionLock(quickProductSelectionLocksRef.current, selectionKey)) return;
+    setPendingQuickProductSelectionKeys(previous => {
+      if (previous.has(selectionKey)) return previous;
+      const next = new Set(previous);
+      next.add(selectionKey);
+      return next;
     });
 
     updateDraft(primaryDraft.localId, (draft) => {
@@ -56921,7 +57078,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
     setRequestError('');
+
+    const previousTimer = quickProductSelectionTimersRef.current.get(selectionKey);
+    if (previousTimer) window.clearTimeout(previousTimer);
+    const timerId = window.setTimeout(() => {
+      releaseOrderRequestSelectionLock(quickProductSelectionLocksRef.current, selectionKey);
+      quickProductSelectionTimersRef.current.delete(selectionKey);
+      setPendingQuickProductSelectionKeys(previous => {
+        if (!previous.has(selectionKey)) return previous;
+        const next = new Set(previous);
+        next.delete(selectionKey);
+        return next;
+      });
+    }, ORDER_REQUEST_SELECTION_LOCK_MS);
+    quickProductSelectionTimersRef.current.set(selectionKey, timerId);
   };
+  quickProductSelectActionRef.current = handleQuickProductSelect;
 
   const getOrderVoiceRecognitionConstructor = () => {
     if (typeof window === 'undefined') return null;
@@ -57314,6 +57486,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const openOrderRequestForm = () => {
     if (!canCreate) return;
+    clearQuickProductSelectionLocks();
     stopOrderVoiceCapture();
     cleanupOrderVoiceResources();
     setOrderVoiceStatus('');
@@ -57332,6 +57505,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const openOrderRequestEditForm = (request) => {
     if (!request || !canEdit) return;
+    clearQuickProductSelectionLocks();
     stopOrderVoiceCapture();
     cleanupOrderVoiceResources();
     setOrderVoiceStatus('');
@@ -57349,6 +57523,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const closeOrderRequestForm = () => {
+    clearQuickProductSelectionLocks();
     stopOrderVoiceCapture();
     cleanupOrderVoiceResources();
     setOrderVoiceStatus('');
@@ -58525,7 +58700,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                   <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm space-y-4">
                     <div className="space-y-2 relative">
                       <label className="block text-[11px] font-bold uppercase text-gray-500">Họ tên khách hàng</label>
-                      <div className="flex w-full items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold focus-within:ring-2 focus-within:ring-emerald-500">
+                      <div className={`flex w-full items-center gap-2 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors duration-200 focus-within:ring-2 focus-within:ring-emerald-500 ${primaryDraft.customerId ? 'border-emerald-300 bg-emerald-50/40' : 'border-gray-200 bg-white'}`}>
                         <Search size={15} className="shrink-0 text-emerald-600" />
                         <input
                           type="text"
@@ -58561,20 +58736,32 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       {isManualCustomerPickerOpen && (
                         <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
                           <div className="max-h-[min(52dvh,430px)] overflow-y-auto p-2 space-y-1">
-                            {manualFilteredCustomers.map(customer => (
-                              <button
-                                key={customer.id}
-                                type="button"
-                                onClick={() => {
-                                  handleCustomerChange(primaryDraft.localId, customer.id);
-                                  setOpenDraftPicker(null);
-                                }}
-                                className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${primaryDraft.customerId === customer.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
-                              >
-                                <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
-                                <p className="text-[11px] text-slate-500 mt-1">{customer.phone || 'Chưa có số điện thoại'}{customer.address ? ` • ${customer.address}` : ''}</p>
-                              </button>
-                            ))}
+                            {manualFilteredCustomers.map(customer => {
+                              const isSelectedCustomer = primaryDraft.customerId === customer.id;
+                              return (
+                                <button
+                                  key={customer.id}
+                                  type="button"
+                                  onClick={() => {
+                                    handleCustomerChange(primaryDraft.localId, customer.id);
+                                    setOpenDraftPicker(null);
+                                  }}
+                                  aria-pressed={isSelectedCustomer}
+                                  aria-selected={isSelectedCustomer}
+                                  className={`flex w-full touch-manipulation items-center gap-3 rounded-xl border px-3 py-2 text-left transition-colors duration-200 ${isSelectedCustomer ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-transparent text-slate-900 hover:bg-slate-50'}`}
+                                >
+                                  <span className="min-w-0 flex-1">
+                                    <span className={`block text-sm ${isSelectedCustomer ? 'font-black' : 'font-semibold'}`}>{customer.name}</span>
+                                    <span className="mt-1 block text-[11px] text-slate-500">{customer.phone || 'Chưa có số điện thoại'}{customer.address ? ` • ${customer.address}` : ''}</span>
+                                  </span>
+                                  {isSelectedCustomer && (
+                                    <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
+                                      <Check size={14} strokeWidth={3} />
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
                             {manualCustomerSearchKeyword && manualFilteredCustomers.length === 0 && (
                               <p className="px-2 py-2 text-[11px] text-amber-600">Không tìm thấy khách phù hợp với từ khóa này.</p>
                             )}
@@ -58588,7 +58775,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         <div className="flex items-center justify-between gap-3">
                           <div>
                             <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm cố định</label>
-                            <p className="mt-1 text-[11px] font-semibold text-slate-400">Ưu tiên sản phẩm đã gắn trong hồ sơ khách.</p>
+                            <p aria-live="polite" className="mt-1 text-[11px] font-semibold text-slate-400">
+                              {pendingQuickProductSelectionKeys.size > 0
+                                ? 'Đang cập nhật sản phẩm đã chọn...'
+                                : `${selectedQuickVariantKeys.size} sản phẩm đã chọn`}
+                            </p>
                           </div>
                           <button
                             type="button"
@@ -58606,26 +58797,24 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         {manualFixedProductVariantOptions.length > 0 ? (
                           <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-slate-100 bg-slate-50 p-2 sm:grid-cols-3">
                             {manualFixedProductVariantOptions.map(({ product, variant, key }) => {
-                              const isActive = selectedQuickVariantKeys.has(key);
+                              const resolvedSelectionKey = getDraftItemVariantKey(buildQuickProductDraftItem(product.id, {}, variant));
+                              const isActive = selectedQuickVariantKeys.has(resolvedSelectionKey);
                               const fixedPrice = parseLooseMoneyValue(variant.price) > 0 ? parseLooseMoneyValue(variant.price) : getCustomerProductPrice(primaryProductConfigSource, product);
                               const fixedSize = `${variant.size || ''}`.trim();
                               const fixedAttribute = `${variant.attributeLabel || ''}`.trim();
                               const variantLabel = [fixedSize ? `Size ${fixedSize}` : '', fixedAttribute].filter(Boolean).join(' • ');
                               return (
-                                <button
+                                <OrderRequestSelectableProductCard
                                   key={key}
-                                  type="button"
-                                  onClick={() => handleQuickProductSelect(product.id, variant)}
-                                  aria-pressed={isActive}
-                                  className={`w-full rounded-2xl border px-3 py-3 text-center transition-colors ${isActive ? 'border-emerald-600 bg-emerald-500 text-white shadow-md shadow-emerald-200 ring-1 ring-emerald-300' : 'border-emerald-100 bg-white text-slate-700 hover:bg-emerald-50'}`}
-                                  style={{ minWidth: 0 }}
-                                >
-                                  <p className="whitespace-normal break-words text-xs font-black leading-5">{product.name}</p>
-                                  <p className={`mt-1 text-[10px] font-semibold ${isActive ? 'text-emerald-50' : 'text-slate-400'}`}>
-                                    {variantLabel || product.category || product.unit || 'Sản phẩm'}
-                                    {fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}
-                                  </p>
-                                </button>
+                                  selectionKey={resolvedSelectionKey}
+                                  productId={product.id}
+                                  title={product.name}
+                                  subtitle={`${variantLabel || product.category || product.unit || 'Sản phẩm'}${fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}`}
+                                  variantConfig={variant}
+                                  isSelected={isActive}
+                                  isPending={pendingQuickProductSelectionKeys.has(resolvedSelectionKey)}
+                                  onSelect={handleQuickProductCardSelect}
+                                />
                               );
                             })}
                           </div>
@@ -58658,16 +58847,19 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                             <div className="max-h-56 overflow-y-auto p-2 space-y-1">
                               {manualExtraProductOptions.map(product => {
                                 const isActive = selectedQuickProductIds.has(product.id);
+                                const selectionKey = `extra:${product.id}`;
                                 return (
-                                  <button
+                                  <OrderRequestSelectableProductCard
                                     key={product.id}
-                                    type="button"
-                                    onClick={() => handleQuickProductSelect(product.id)}
-                                    className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${isActive ? 'bg-red-50 border border-red-100 text-red-700' : 'hover:bg-slate-50 border border-transparent text-slate-700'}`}
-                                  >
-                                    <p className="text-sm font-semibold">{product.name}</p>
-                                    <p className="text-[11px] text-slate-500 mt-1">{product.category || product.unit || 'Sản phẩm'}</p>
-                                  </button>
+                                    layout="list"
+                                    selectionKey={selectionKey}
+                                    productId={product.id}
+                                    title={product.name}
+                                    subtitle={product.category || product.unit || 'Sản phẩm'}
+                                    isSelected={isActive}
+                                    isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
+                                    onSelect={handleQuickProductCardSelect}
+                                  />
                                 );
                               })}
                               {manualExtraProductOptions.length === 0 && (
@@ -59207,9 +59399,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                 )}
 
                 <div className="flex gap-3">
-                  <button type="button" onClick={closeOrderRequestForm} className={`flex-1 rounded-xl bg-gray-100 px-4 font-bold text-gray-700 ${isCompactManualDetailStage ? 'py-2.5' : 'py-3'}`}>Hủy</button>
-                  <button type="submit" disabled={isRequestSubmitting} className={`flex-1 rounded-xl bg-emerald-500 px-4 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'py-2.5' : 'py-3'}`}>
-                    {isCompactManualDetailStage ? 'Lưu đơn' : isEditingRequest ? 'Lưu thay đổi' : `Lưu ${requestPreview.totalCustomers || requestDrafts.length} đơn`}
+                  <button type="button" onClick={closeOrderRequestForm} disabled={isRequestSubmitting} className={`flex-1 rounded-xl bg-gray-100 px-4 font-bold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'py-2.5' : 'py-3'}`}>Hủy</button>
+                  <button type="submit" disabled={isRequestSubmitting} aria-busy={isRequestSubmitting} className={`flex-1 rounded-xl bg-emerald-500 px-4 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'py-2.5' : 'py-3'}`}>
+                    <span className="inline-flex items-center justify-center gap-2">
+                      {isRequestSubmitting && <Loader2 size={16} className="animate-spin" aria-hidden="true" />}
+                      {isRequestSubmitting
+                        ? 'Đang lưu...'
+                        : (isCompactManualDetailStage ? 'Lưu đơn' : isEditingRequest ? 'Lưu thay đổi' : `Lưu ${requestPreview.totalCustomers || requestDrafts.length} đơn`)}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -59219,9 +59416,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               {!isOrderDetailStage && (
                 <div className="hd-order-request-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
                   <div className="flex gap-3">
-                    <button type="button" onClick={closeOrderRequestForm} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700">Hủy</button>
+                    <button type="button" onClick={closeOrderRequestForm} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60">Hủy</button>
                     {isManualSetupStage && (
-                      <button type="button" onClick={continueManualOrderEntry} className="flex-1 rounded-xl bg-emerald-500 px-4 py-3 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600">
+                      <button type="button" onClick={continueManualOrderEntry} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-emerald-500 px-4 py-3 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60">
                         Tiếp tục
                       </button>
                     )}
@@ -71836,11 +72033,86 @@ function SalaryViewLegacy({ employees, attendance, financials, performance, cust
   );
 }
 
+const PayrollEvaluationDetailDialog = React.memo(function PayrollEvaluationDetailDialog({ detail, monthLabel, onClose }) {
+  if (!detail) return null;
+  const result = detail.result || {};
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="payroll-evaluation-detail-title"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm overflow-hidden rounded-3xl bg-white shadow-2xl"
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-amber-100 bg-gradient-to-br from-amber-50 to-orange-50 p-5">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-700">Lương đánh giá</p>
+            <h3 id="payroll-evaluation-detail-title" className="mt-1 truncate text-lg font-black text-slate-900">
+              {detail.employee.name || 'Nhân sự'}
+            </h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">Đánh giá {monthLabel.toLowerCase()}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm"
+            aria-label="Đóng chi tiết lương đánh giá"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="space-y-4 p-5">
+          {result.hasEvaluation ? (
+            <>
+              <div className="flex items-center justify-center gap-1" aria-label={`${result.stars} sao`}>
+                {Array.from({ length: 5 }, (_, index) => (
+                  <Star
+                    key={index}
+                    size={25}
+                    className={index < result.stars ? 'fill-amber-400 text-amber-400' : 'text-slate-200'}
+                  />
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Điểm bình quân</p>
+                  <p className="mt-1 text-xl font-black text-slate-900">
+                    {Number(result.averageScore || 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}/5
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Mức thưởng</p>
+                  <p className="mt-1 text-xl font-black text-amber-800">{formatCurrency(result.bonus)} đ</p>
+                </div>
+              </div>
+              <p className="rounded-2xl bg-emerald-50 px-4 py-3 text-center text-[11px] font-semibold leading-relaxed text-emerald-800">
+                Dữ liệu chỉ đọc trực tiếp từ kết quả tổng hợp của module Đánh giá.
+              </p>
+            </>
+          ) : (
+            <div className="rounded-2xl border border-slate-100 bg-slate-50 p-5 text-center">
+              <Star size={28} className="mx-auto text-slate-300" />
+              <p className="mt-3 font-bold text-slate-700">Chưa có dữ liệu đánh giá</p>
+              <p className="mt-1 text-xs text-slate-500">Lương đánh giá của kỳ này là 0 đ.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function SalaryView({
   currentCompany,
   currentUser,
   currentEmployee,
   employees,
+  employeeReviews = [],
   attendance,
   financials,
   performance,
@@ -71848,6 +72120,7 @@ function SalaryView({
   orders,
   payments,
   holidays,
+  deliveryReports = [],
   onAddFinancial,
   onEditFinancial,
   onDeleteFinancial,
@@ -71896,6 +72169,7 @@ function SalaryView({
   const [reviewingAdvanceId, setReviewingAdvanceId] = useState('');
   const [advancePercentInputs, setAdvancePercentInputs] = useState({});
   const [advancePercentStatus, setAdvancePercentStatus] = useState('');
+  const [evaluationDetailEmployeeId, setEvaluationDetailEmployeeId] = useState('');
   const canManagePayrollByRole =
     isOwnerAccountUser(currentEmployee, currentUser)
     || currentUser?.role === 'super_admin'
@@ -71981,12 +72255,69 @@ function SalaryView({
     }
   };
 
+  const payrollEvaluationContext = useMemo(() => {
+    const reviewsForMonth = (employeeReviews || []).filter(review => (
+      normalizeEmployeeReviewMonthKey(review?.monthKey || review?.date || review?.createdAt) === currentMonth
+    ));
+    const ordersForMonth = (orders || []).filter(order => (
+      normalizeEmployeeReviewMonthKey(order?.date || order?.createdAt || getEntityTimestamp(order)) === currentMonth
+    ));
+    const deliveryReportsForMonth = (deliveryReports || []).filter(report => (
+      normalizeEmployeeReviewMonthKey(report?.date || report?.createdAt || getEntityTimestamp(report)) === currentMonth
+    ));
+    const attendanceForMonth = Object.fromEntries(
+      Object.entries(attendance || {}).filter(([key, record]) => (
+        `${key || ''}`.startsWith(currentMonth)
+        || normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt) === currentMonth
+      ))
+    );
+    return {
+      attendance: attendanceForMonth,
+      orders: ordersForMonth,
+      deliveryReports: deliveryReportsForMonth,
+      reviews: reviewsForMonth,
+      monthKey: currentMonth
+    };
+  }, [attendance, deliveryReports, employeeReviews, orders, currentMonth]);
+
+  const payrollEvaluationResultsByEmployee = useMemo(() => {
+    const results = new Map();
+    (employees || []).forEach(emp => {
+      if (!emp?.id || emp?.isArchived) return;
+      const summary = buildEmployeeReviewSummary(emp, payrollEvaluationContext);
+      results.set(emp.id, projectEvaluationSummaryToPayroll(summary, {
+        employeeId: emp.id,
+        monthKey: currentMonth
+      }));
+    });
+    return results;
+  }, [employees, payrollEvaluationContext, currentMonth]);
+
+  const buildPayrollSalaryDetails = useCallback((employeeId) => {
+    const salaryDetails = buildSalaryDetails(
+      employeeId,
+      employees,
+      attendance,
+      financials,
+      performance,
+      customers,
+      orders,
+      payments,
+      holidays,
+      currentMonth
+    );
+    return applyEvaluationBonusToSalaryDetails(
+      salaryDetails,
+      payrollEvaluationResultsByEmployee.get(employeeId)
+    );
+  }, [attendance, customers, employees, financials, holidays, currentMonth, orders, payments, performance, payrollEvaluationResultsByEmployee]);
+
   const salaryRows = useMemo(() => visibleSalaryEmployees
     .map(emp => ({
       emp,
-      details: buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth)
+      details: buildPayrollSalaryDetails(emp.id)
     }))
-    .filter(row => row.details), [visibleSalaryEmployees, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth]);
+    .filter(row => row.details), [visibleSalaryEmployees, buildPayrollSalaryDetails]);
 
   const aggregateData = useMemo(() => {
     const totals = salaryRows.reduce((acc, row) => {
@@ -71996,6 +72327,7 @@ function SalaryView({
       acc.totalEmployeePurchase += row.details.totalEmployeePurchase || 0;
       acc.totalPenalty += row.details.totalPenalty;
       acc.totalBonus += row.details.totalBonus || 0;
+      acc.totalEvaluationBonus += row.details.evaluationBonus || 0;
       return acc;
     }, {
       totalSalary: 0,
@@ -72003,7 +72335,8 @@ function SalaryView({
       totalAdvance: 0,
       totalEmployeePurchase: 0,
       totalPenalty: 0,
-      totalBonus: 0
+      totalBonus: 0,
+      totalEvaluationBonus: 0
     });
 
     return {
@@ -72014,9 +72347,23 @@ function SalaryView({
 
   const currentSalaryDetails = useMemo(() => (
     currentEmployeeId
-      ? buildSalaryDetails(currentEmployeeId, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth)
+      ? buildPayrollSalaryDetails(currentEmployeeId)
       : null
-  ), [currentEmployeeId, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth]);
+  ), [currentEmployeeId, buildPayrollSalaryDetails]);
+  const selectedEvaluationDetail = useMemo(() => {
+    if (!evaluationDetailEmployeeId) return null;
+    const targetEmployee = (employees || []).find(emp => emp.id === evaluationDetailEmployeeId);
+    if (!targetEmployee) return null;
+    return {
+      employee: targetEmployee,
+      result: payrollEvaluationResultsByEmployee.get(evaluationDetailEmployeeId)
+        || projectEvaluationSummaryToPayroll(null, {
+          employeeId: evaluationDetailEmployeeId,
+          monthKey: currentMonth
+        })
+    };
+  }, [currentMonth, employees, evaluationDetailEmployeeId, payrollEvaluationResultsByEmployee]);
+  const closeEvaluationDetail = useCallback(() => setEvaluationDetailEmployeeId(''), []);
   const pendingAdvances = useMemo(() => (
     advanceRequests
       ? advanceRequests.filter(r => r.empId === currentEmployeeId && r.status === 'pending' && (!r.date || `${r.date}`.startsWith(currentMonth)))
@@ -72056,7 +72403,7 @@ function SalaryView({
     const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
     const targetEmployee = (employees || []).find(emp => emp.id === targetId) || null;
     if (!targetEmployee?.id) return null;
-    const targetDetails = buildSalaryDetails(targetEmployee.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth);
+    const targetDetails = buildPayrollSalaryDetails(targetEmployee.id);
     const targetLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, targetEmployee, null);
     const targetPercent = targetLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, targetEmployee, null);
     const targetPendingAdvances = (advanceRequests || []).filter(req => (
@@ -72080,7 +72427,7 @@ function SalaryView({
       targetUsedAmount,
       targetRemainingAmount
     };
-  }, [advanceRequestTargetEmployeeId, currentCompany, currentEmployeeId, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth, advanceRequests]);
+  }, [advanceRequestTargetEmployeeId, currentCompany, currentEmployeeId, employees, currentMonth, advanceRequests, buildPayrollSalaryDetails]);
 
   const openFinancialModal = (emp, type) => {
     if (type === 'employee_purchase') {
@@ -72096,7 +72443,7 @@ function SalaryView({
     setAmountInput('');
     setReasonInput(type === 'employee_purchase' ? 'Mua hàng công ty' : '');
     if (type === 'performance') {
-      const existingDetails = buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth);
+      const existingDetails = buildPayrollSalaryDetails(emp.id);
       setOvertimeInput(`${existingDetails?.perf?.overtime || 0}`);
     } else {
       setOvertimeInput('');
@@ -72228,7 +72575,7 @@ function SalaryView({
       : (() => {
           const targetEmployee = (employees || []).find(emp => emp.id === targetId);
           if (!targetEmployee?.id) return null;
-          const targetDetails = buildSalaryDetails(targetEmployee.id, employees, attendance, financials, performance, customers, orders, payments, holidays, currentMonth);
+          const targetDetails = buildPayrollSalaryDetails(targetEmployee.id);
           const targetLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, targetEmployee, null);
           const targetPercent = targetLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, targetEmployee, null);
           const targetPendingAmount = (advanceRequests || [])
@@ -72547,12 +72894,13 @@ function SalaryView({
           />
         </div>
         <h3 className="text-center text-3xl font-black mb-4">{formatCurrency(aggregateData.totalSalary)} đ</h3>
-        <div className="grid grid-cols-2 gap-3 border-t border-emerald-400/50 pt-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 border-t border-emerald-400/50 pt-3 sm:grid-cols-4">
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ngày công</p><p className="font-bold text-sm">{aggregateData.totalDays}</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ứng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalAdvance)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Mua hàng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEmployeePurchase)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng phạt</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalPenalty)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng thưởng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalBonus)} đ</p></div>
+          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Lương đánh giá</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEvaluationBonus)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Bình quân/ngày</p><p className="font-bold text-sm">{formatCurrency(aggregateData.avgDaily)} đ</p></div>
         </div>
       </div>
@@ -72678,6 +73026,24 @@ function SalaryView({
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Lương kinh nghiệm</span><strong>{formatCurrency(details.experienceSalary)} đ</strong></div>}
                       {!isSalesCollaborator && details.roleSalary > 0 && <div className="flex justify-between text-sky-600"><span>Lương kiêm nhiệm</span><strong>{formatCurrency(details.roleSalary)} đ</strong></div>}
                       <div className="flex justify-between"><span>Lương hoa hồng</span><strong>{formatCurrency(details.commission)} đ</strong></div>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEvaluationDetailEmployeeId(emp.id);
+                        }}
+                        className="col-span-2 flex min-h-11 items-center justify-between gap-3 rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2 text-left transition-colors hover:bg-amber-100/70 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                      >
+                        <span className="min-w-0">
+                          <span className="block font-bold text-amber-800">Lương đánh giá</span>
+                          <span className="mt-0.5 block text-[10px] font-medium text-amber-700/80">
+                            {details.evaluationResult?.hasEvaluation
+                              ? `${details.evaluationResult.stars} sao • Điểm bình quân ${Number(details.evaluationResult.averageScore || 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}/5`
+                              : 'Chưa có dữ liệu đánh giá'}
+                          </span>
+                        </span>
+                        <strong className="shrink-0 text-amber-800">{formatCurrency(details.evaluationBonus || 0)} đ</strong>
+                      </button>
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Tăng ca</span><strong>{formatCurrency(details.overtimePay)} đ</strong></div>}
                       {!isSalesCollaborator && details.earlyOvertimeHours > 0 && <div className="flex justify-between text-blue-600"><span>Đi sớm tính tăng ca</span><strong>+{details.earlyOvertimeHours} giờ</strong></div>}
                       {!isSalesCollaborator && details.afterShiftOvertimeHours > 0 && <div className="flex justify-between text-blue-600"><span>Ra sau ca tính tăng ca</span><strong>+{details.afterShiftOvertimeHours} giờ</strong></div>}
@@ -73026,6 +73392,12 @@ function SalaryView({
           </div>
         )}
       </div>
+
+      <PayrollEvaluationDetailDialog
+        detail={selectedEvaluationDetail}
+        monthLabel={currentMonthLabel}
+        onClose={closeEvaluationDetail}
+      />
 
       {showAdvanceRequestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
