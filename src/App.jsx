@@ -20298,13 +20298,13 @@ function MainAppView({
     if (activeTab === 'more') {
       return (
         <HDHeader className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
-          <div className="flex items-center justify-between gap-3">
-            <div className="hd-header-context">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="hd-header-context hd-header-title-group">
               <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
-              <h1 className="text-xl font-bold">Thêm</h1>
+              <h1 className="hd-header-title text-xl font-bold">Thêm</h1>
               <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / Thêm</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="hd-header-actions flex items-center gap-2">
               {renderNotificationBell()}
               {renderHeaderIdentityActions()}
             </div>
@@ -20439,11 +20439,11 @@ function MainAppView({
     }
     return (
       <HDHeader className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
-        <div className="flex justify-between items-center">
-          <div className="hd-header-context flex items-center gap-3">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
             <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
-            <h1 className="text-lg font-bold">
+            <h1 className="hd-header-title text-lg font-bold">
               {activeTab === 'profile' ? 'Cá nhân' : 
                activeTab === 'customers' ? 'Khách hàng' : 
                activeTab === 'order_requests' ? 'Đơn đặt hàng' : 
@@ -20469,7 +20469,7 @@ function MainAppView({
             <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / {headerBreadcrumbLabel}</span>
           </div>
           {showHeaderSearchFilterActions ? (
-            <div className="flex items-center gap-2">
+            <div className="hd-header-actions flex items-center gap-2">
               {activeTab !== 'orders' && renderNotificationBell()}
               <button
                 data-search-zone="true"
@@ -20495,7 +20495,7 @@ function MainAppView({
               {renderHeaderIdentityActions()}
             </div>
           ) : activeTab === 'order_requests' ? (
-            <div className="flex items-center gap-2">
+            <div className="hd-header-actions flex items-center gap-2">
               {renderNotificationBell()}
               <button
                 type="button"
@@ -20509,7 +20509,7 @@ function MainAppView({
               {renderHeaderIdentityActions()}
             </div>
           ) : !hideHeaderSearchFilter ? (
-            <div className="flex items-center gap-3">
+            <div className="hd-header-actions flex items-center gap-3">
               {renderNotificationBell()}
               <Search size={20} />
               <Filter size={20} />

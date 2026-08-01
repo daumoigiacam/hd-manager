@@ -1667,8 +1667,10 @@ html.hd-low-power-ui .hd-soft-red-outline {
 .hd-sidebar-brand-copy {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-inline-size: 0;
   gap: var(--hd-space-2, 0.5rem);
+  overflow: hidden;
 }
 
 .hd-sidebar-brand-mark,
@@ -1695,27 +1697,39 @@ html.hd-low-power-ui .hd-soft-red-outline {
 }
 
 .hd-sidebar-brand-text strong {
+  min-inline-size: 0;
+  overflow: hidden;
   color: #166534;
   font-size: 0.76rem;
   font-weight: 950;
   letter-spacing: 0.16em;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .hd-sidebar-brand-text small {
+  min-inline-size: 0;
+  overflow: hidden;
   color: #94a3b8;
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .hd-sidebar-collapse-button {
+  flex: 0 0 2.25rem;
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   inline-size: 2.25rem !important;
+  width: 2.25rem !important;
+  max-width: 2.25rem !important;
   min-block-size: 2.25rem !important;
+  height: 2.25rem !important;
   padding: 0 !important;
   border: 1px solid #e2e8f0;
   border-radius: 0.75rem !important;
@@ -1950,13 +1964,20 @@ html.hd-low-power-ui .hd-soft-red-outline {
   padding-inline: 0;
 }
 
+.hd-navigation-collapsed .hd-sidebar-navigation .hd-sidebar-brand-copy {
+  display: none;
+}
+
 .hd-navigation-collapsed .hd-sidebar-navigation .hd-sidebar-collapse-button {
   position: absolute;
   inset-block-start: 0.25rem;
   inset-inline-end: -0.7rem;
   z-index: 5;
   inline-size: 1.75rem !important;
+  width: 1.75rem !important;
+  max-width: 1.75rem !important;
   min-block-size: 1.75rem !important;
+  height: 1.75rem !important;
   border-radius: 999px !important;
   box-shadow: 0 0.25rem 0.75rem rgb(15 23 42 / 0.12);
 }
@@ -2002,12 +2023,39 @@ html.hd-low-power-ui .hd-soft-red-outline {
   gap: 0.65rem;
 }
 
+.hd-header-title-group {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.hd-header-title {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hd-header-actions {
+  flex: 0 0 auto;
+  min-inline-size: max-content;
+}
+
 .hd-header-breadcrumb {
+  min-inline-size: 0;
+  max-inline-size: min(34vw, 20rem);
+  overflow: hidden;
   color: rgb(255 255 255 / 0.72);
   font-size: 0.7rem;
   font-weight: 750;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1279px) {
+  .hd-header-breadcrumb {
+    display: none !important;
+  }
 }
 
 .hd-header-avatar {
