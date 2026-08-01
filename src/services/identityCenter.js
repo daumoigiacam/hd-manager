@@ -4,7 +4,21 @@ import { NativeBiometric, AccessControl } from '@capgo/capacitor-native-biometri
 const DEVICE_KEY = 'hd-identity-device-v1';
 const WEB_SECRET_PREFIX = 'hd-identity-device-secret-v1:';
 const NATIVE_SECRET_PREFIX = 'hd.identity.device.v1.';
-const DEFAULT_IDENTITY_API_BASE_URL = 'https://hd-manager-c5839.web.app';
+// Identity routes are served by Cloud Functions. Do not fall back to Firebase
+// Hosting: an unknown Hosting path responds with the SPA HTML, which browsers
+// surface as a CORS/network error instead of a useful authentication message.
+const DEFAULT_IDENTITY_API_BASE_URL = 'https://us-central1-hd-manager-c5839.cloudfunctions.net';
+const IDENTITY_FUNCTION_NAMES = {
+  '/api/identity/login': 'identityLogin',
+  '/api/identity/complete-setup': 'identityCompleteSetup',
+  '/api/identity/request-recovery': 'identityRequestRecovery',
+  '/api/identity/complete-recovery': 'identityCompleteRecovery',
+  '/api/identity/verify-pin': 'identityVerifyPin',
+  '/api/identity/devices': 'identityDevices',
+  '/api/identity/revoke-devices': 'identityRevokeDevices',
+  '/api/identity/logout': 'identityLogout',
+  '/api/identity/audit': 'identityAudit',
+};
 
 const getRuntimePlatform = () => {
   try {
@@ -47,9 +61,17 @@ const writeJson = (key, value) => {
 const getIdentityApiBaseUrl = () => {
   const configured = `${import.meta.env.VITE_IDENTITY_API_BASE_URL || import.meta.env.VITE_SEPAY_API_BASE_URL || ''}`.trim();
   if (configured) return configured.replace(/\/$/, '');
-  if (typeof window === 'undefined') return DEFAULT_IDENTITY_API_BASE_URL;
-  if (/^https:/i.test(window.location.origin || '')) return window.location.origin;
   return DEFAULT_IDENTITY_API_BASE_URL;
+};
+
+const getIdentityApiUrl = (path) => {
+  const baseUrl = getIdentityApiBaseUrl();
+  if (/cloudfunctions\.net\/?$/i.test(baseUrl)) {
+    const functionName = IDENTITY_FUNCTION_NAMES[path];
+    if (!functionName) throw new Error('Không xác định được dịch vụ xác thực.');
+    return `${baseUrl}/${functionName}`;
+  }
+  return `${baseUrl}${path}`;
 };
 
 const getNativeSecretKey = (deviceId) => `${NATIVE_SECRET_PREFIX}${deviceId}`;
@@ -147,7 +169,7 @@ export const removeTrustedDeviceSecret = async (deviceId) => {
 };
 
 const requestIdentityApi = async (path, payload = {}, { idToken = '' } = {}) => {
-  const response = await fetch(`${getIdentityApiBaseUrl()}${path}`, {
+  const response = await fetch(getIdentityApiUrl(path), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -31,6 +31,7 @@ assert.equal(verifyLegacyPassword('Abcd1234', legacyHash('Abcd1234')), true);
 assert.equal(verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
 
 const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', import.meta.url), 'utf8'));
+const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
 const identityRewriteSources = firebaseConfig.hosting.rewrites
   .filter(item => `${item.source || ''}`.startsWith('/api/identity/'))
   .map(item => item.source);
@@ -47,5 +48,8 @@ for (const expectedPath of [
 ]) {
   assert.ok(identityRewriteSources.includes(expectedPath), `Missing hosting rewrite: ${expectedPath}`);
 }
+assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.cloudfunctions\.net/);
+assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
+assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
 
 console.log('Identity Center unit checks passed.');

@@ -37,6 +37,7 @@ const getAllowedOrigins = () => {
   const publicUrl = `${getEnv('HD_MANAGER_PUBLIC_URL', 'https://hd-manager-c5839.web.app')}`.trim();
   return new Set([
     publicUrl,
+    'https://app.hdconnect.net',
     'https://hd-manager-c5839.web.app',
     'https://hd-manager-c5839.firebaseapp.com',
     ...parseCsvEnv('HD_MANAGER_ALLOWED_ORIGINS')

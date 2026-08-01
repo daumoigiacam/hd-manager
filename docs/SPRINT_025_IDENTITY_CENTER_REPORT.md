@@ -65,3 +65,7 @@ The local automated checks validate all client contract paths and build artefact
 5. Verify device revocation and sign-out-all invalidate the targeted session(s).
 
 No business records or historical Firestore data are migrated or removed by this sprint.
+
+## Post-release connection correction
+
+The first deployed client attempted to call `/api/identity/*` through a Hosting route that was not deployed on `app.hdconnect.net`; the old Firebase Hosting fallback returned the SPA HTML instead of JSON. This caused browsers to report `Failed to fetch` because of CORS. The client now uses the direct Firebase Gen 2 Functions origin by default, while retaining an explicit environment override for a future reverse proxy. All nine Identity endpoints were deployed and verified to return JSON with an allowed `https://app.hdconnect.net` origin. No authentication records or business data were changed during that verification.
