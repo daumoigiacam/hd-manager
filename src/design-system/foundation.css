@@ -841,6 +841,12 @@ body {
   letter-spacing: -0.025em;
 }
 
+/* Keep the primary dashboard summaries visually balanced without changing their data layout. */
+.hd-dashboard-section--centered .hd-dashboard-section__header h2 { text-align: center; }
+.hd-dashboard-section--centered .hd-dashboard-metric { text-align: center; }
+.hd-dashboard-section--centered .hd-dashboard-finance-table__header > *,
+.hd-dashboard-section--centered .hd-dashboard-finance-table__row > * { text-align: center; }
+
 .hd-dashboard-action,
 .hd-dashboard-more {
   min-height: var(--hd-touch-target);

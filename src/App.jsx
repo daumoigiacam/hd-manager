@@ -37813,7 +37813,7 @@ function ExecutiveDashboardView({
 
   const renderBusinessContent = () => (
     <div className="hd-dashboard-business">
-      <ExecutiveSectionCard title="Hiệu quả kinh doanh" actionLabel="Mở đơn hàng" onAction={() => setActiveTab?.('orders')}>
+      <ExecutiveSectionCard className="hd-dashboard-section--centered" title="Hiệu quả kinh doanh" actionLabel="Mở đơn hàng" onAction={() => setActiveTab?.('orders')}>
         <div className="grid grid-cols-2 gap-2">
           <ExecutiveMetric label="Doanh thu/ngày" value={`${formatCurrency(business.revenuePerDay)} đ`} tone="good" />
           <ExecutiveMetric label="Lợi nhuận/ngày" value={`${formatCurrency(business.profitPerDay)} đ`} tone={business.profitPerDay >= 0 ? 'good' : 'bad'} />
@@ -38115,7 +38115,7 @@ function ExecutiveDashboardView({
 
     return (
       <div className="hd-dashboard-stack">
-        <ExecutiveSectionCard title="Tổng quan tài chính">
+        <ExecutiveSectionCard className="hd-dashboard-section--centered" title="Tổng quan tài chính">
           <div className="hd-dashboard-finance-table">
             <div className="hd-dashboard-finance-table__header">
               <div>Thời gian</div>
@@ -38381,9 +38381,9 @@ function ExecutiveKpiCard({ title, value, tone = 'neutral', yesterday, month }) 
   );
 }
 
-function ExecutiveSectionCard({ title, actionLabel, onAction, children }) {
+function ExecutiveSectionCard({ className = '', title, actionLabel, onAction, children }) {
   return (
-    <section className="hd-dashboard-section">
+    <section className={`hd-dashboard-section ${className}`.trim()}>
       <div className="hd-dashboard-section__header">
         <h2>{title}</h2>
         {actionLabel && (
