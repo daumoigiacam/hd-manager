@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
@@ -35,6 +35,24 @@ import {
   applyEvaluationBonusToSalaryDetails,
   projectEvaluationSummaryToPayroll
 } from './utils/payrollEvaluationBonus.js';
+import {
+  buildPayrollPeriodId,
+  canLockPayrollPeriodAtDate,
+  createPayrollEmployeeSnapshot,
+  createPayrollPeriodRecord,
+  getLockedPayrollPeriod,
+  getPayrollMonthEndDateKey,
+  mapPayrollSnapshotsToRows,
+  normalizePayrollMonthKey
+} from './utils/payrollPeriodLock.js';
+import {
+  applyPayrollOpeningDebtToSalaryDetails,
+  buildPayrollAutoLockPlanId,
+  buildPayrollAutoLockPlanSnapshotId,
+  createPayrollDebtCarryovers,
+  createPayrollPeriodLockJournalEntry,
+  getEmployeePayrollOpeningDebt
+} from './utils/payrollDebtCarryover.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -44,6 +62,7 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc as firebaseGetDoc,
   getDocs as firebaseGetDocs,
   setDoc as firebaseSetDoc,
   deleteDoc as firebaseDeleteDoc,
@@ -51,6 +70,8 @@ import {
   increment,
   enableNetwork as firebaseEnableNetwork,
   onSnapshot as firebaseOnSnapshot,
+  query as firebaseQuery,
+  where as firebaseWhere,
 } from 'firebase/firestore';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -105,6 +126,15 @@ import {
   putUnitPriceIntoMap,
   resolveProductUnitPrice,
 } from './services/productPricingUnits.js';
+import {
+  buildCustomerProductPreferenceCacheKey,
+  buildCustomerProductPreferenceId,
+  buildCustomerProductPreferenceWrite,
+  calculatePricingAmount,
+  normalizeCustomerProductPreference,
+  resolveRememberedInputUnit,
+  shouldOfferDefaultInputUnitUpdate,
+} from './services/smartCustomerOrdering.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -648,6 +678,11 @@ const getDocs = async (queryRef) => recordFirestoreOperation('getDocs', {
   path: getFirestoreTargetPath(queryRef),
 }, () => firebaseGetDocs(queryRef));
 
+const getDoc = async (documentRef) => recordFirestoreOperation('getDoc', {
+  path: getDocumentPathFromDocRef(documentRef),
+  id: documentRef?.id || '',
+}, () => firebaseGetDoc(documentRef));
+
 const enableNetwork = async (database) => recordFirestoreOperation('enableNetwork', {
   appName: database?.app?.name || '',
 }, () => firebaseEnableNetwork(database));
@@ -733,7 +768,7 @@ const dispatchScreenBackRequest = () => {
   window.dispatchEvent(event);
   return isAppBackHandled(event);
 };
-const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
+const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 const OPTIONAL_ZALO_COLLECTION_NAMES = ['zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules'];
 // Only identity data should block startup. Business data continues loading in the background.
@@ -782,7 +817,8 @@ const REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
   'notifications',
   'advances',
   'attendance',
-  'performance'
+  'performance',
+  'payrollPeriods'
 ]);
 const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
   'companies',
@@ -796,7 +832,8 @@ const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
   'notifications',
   'advances',
   'attendance',
-  'performance'
+  'performance',
+  'payrollPeriods'
 ]);
 const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|image|photo|file|document|attachment|preview|raw|blob|html|qr|canvas|screenshot)/i;
 let realtimeCollectionCacheWriteTimer = null;
@@ -6345,15 +6382,16 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const price = parseLooseMoneyValue(variant.price ?? variant.unitPrice ?? variant.sellingPrice);
     const size = `${variant.size ?? variant.sizeLabel ?? variant.weightKg ?? ''}`.trim();
     const attributeLabel = `${variant.attributeLabel ?? variant.productAttribute ?? variant.attribute ?? variant.variant ?? ''}`.trim();
-    const unit = normalizeProductPricingUnit(variant.quantityUnit ?? variant.unit ?? variant.defaultUnit ?? '');
+    const pricingUnit = normalizeProductPricingUnit(variant.pricingUnit ?? variant.defaultUnit ?? variant.quantityUnit ?? variant.unit ?? '');
     const unitPrices = normalizeUnitPriceMap(variant.unitPrices ?? variant.pricesByUnit ?? variant.priceByUnit ?? {});
-    if (price <= 0 && !size && !attributeLabel && !unit && Object.keys(unitPrices).length === 0) return null;
+    if (price <= 0 && !size && !attributeLabel && !pricingUnit && Object.keys(unitPrices).length === 0) return null;
     return {
       id: `${variant.id || variant.localId || `variant_${index + 1}`}`,
       price,
       size,
       attributeLabel,
-      unit,
+      unit: pricingUnit,
+      pricingUnit,
       unitPrices
     };
   };
@@ -6370,8 +6408,8 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const cleanAttributeLabel = typeof config === 'object' && config !== null
       ? `${config.attributeLabel ?? config.productAttribute ?? config.attribute ?? config.variant ?? ''}`.trim()
       : '';
-    const defaultUnit = typeof config === 'object' && config !== null
-      ? normalizeProductPricingUnit(config.defaultUnit ?? config.quantityUnit ?? config.unit ?? '')
+    const pricingUnit = typeof config === 'object' && config !== null
+      ? normalizeProductPricingUnit(config.pricingUnit ?? config.defaultUnit ?? config.quantityUnit ?? config.unit ?? '')
       : '';
     const unitPrices = typeof config === 'object' && config !== null
       ? normalizeUnitPriceMap(config.unitPrices ?? config.pricesByUnit ?? config.priceByUnit ?? {})
@@ -6379,8 +6417,16 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const variants = typeof config === 'object' && config !== null && Array.isArray(config.variants)
       ? config.variants.map(normalizeVariantConfig).filter(Boolean)
       : [];
-    if (cleanProductId && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || defaultUnit || Object.keys(unitPrices).length > 0 || variants.length > 0)) {
-      acc[cleanProductId] = { price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, defaultUnit, unitPrices, variants };
+    if (cleanProductId && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || pricingUnit || Object.keys(unitPrices).length > 0 || variants.length > 0)) {
+      acc[cleanProductId] = {
+        price: cleanPrice,
+        size: cleanSize,
+        attributeLabel: cleanAttributeLabel,
+        pricingUnit,
+        defaultUnit: pricingUnit,
+        unitPrices,
+        variants
+      };
     }
     return acc;
   }, {});
@@ -6469,16 +6515,21 @@ const getCustomerProductConfig = (customer = null, product = null) => {
 const getCustomerProductUnitOptions = (customer = null, product = null, fallback = 'Con') => {
   const productUnits = getProductPricingUnits(product || {}, fallback);
   const config = getCustomerProductConfig(customer, product);
-  const preferredUnit = normalizeProductPricingUnit(config?.defaultUnit || '');
+  const preferredUnit = normalizeProductPricingUnit(config?.pricingUnit || config?.defaultUnit || '');
   if (!preferredUnit) return productUnits;
   const preferredIndex = productUnits.findIndex(unit => normalizeLookupText(unit) === normalizeLookupText(preferredUnit));
   if (preferredIndex <= 0) return productUnits;
   return [productUnits[preferredIndex], ...productUnits.filter((_, index) => index !== preferredIndex)];
 };
 
+const getCustomerProductPricingUnit = (customer = null, product = null, fallback = 'Con') => {
+  const config = getCustomerProductConfig(customer, product);
+  return normalizeProductPricingUnit(config?.pricingUnit || config?.defaultUnit || '')
+    || getProductPrimaryPricingUnit(product || {}, fallback);
+};
+
 const getCustomerProductDefaultUnit = (customer = null, product = null, fallback = 'Con') => {
-  const options = getCustomerProductUnitOptions(customer, product, fallback);
-  return options[0] || getProductPrimaryPricingUnit(product || {}, fallback);
+  return getCustomerProductPricingUnit(customer, product, fallback);
 };
 
 const getCustomerProductPrice = (customer = null, product = null, unit = '') => {
@@ -6486,7 +6537,7 @@ const getCustomerProductPrice = (customer = null, product = null, unit = '') => 
   return resolveProductUnitPrice({
     product: product || {},
     customerConfig: config,
-    unit: unit || getCustomerProductDefaultUnit(customer, product)
+    unit: unit || getCustomerProductPricingUnit(customer, product)
   });
 };
 
@@ -6513,7 +6564,7 @@ const getCustomerProductVariants = (customer = null, product = null) => {
     const price = parseLooseMoneyValue(variant.price ?? variant.unitPrice ?? variant.sellingPrice);
     const size = `${variant.size ?? variant.sizeLabel ?? variant.weightKg ?? ''}`.trim();
     const attributeLabel = normalizeAttribute(variant.attributeLabel ?? variant.productAttribute ?? variant.attribute ?? variant.variant ?? '');
-    const unit = normalizeProductPricingUnit(variant.quantityUnit ?? variant.unit ?? variant.defaultUnit ?? config?.defaultUnit ?? getCustomerProductDefaultUnit(customer, product));
+    const unit = normalizeProductPricingUnit(variant.pricingUnit ?? variant.defaultUnit ?? variant.quantityUnit ?? variant.unit ?? config?.pricingUnit ?? config?.defaultUnit ?? getCustomerProductPricingUnit(customer, product));
     const unitPrices = normalizeUnitPriceMap(variant.unitPrices ?? variant.pricesByUnit ?? variant.priceByUnit ?? {});
     if (price <= 0 && !size && !attributeLabel && !unit && Object.keys(unitPrices).length === 0) return null;
     return {
@@ -6543,7 +6594,7 @@ const getCustomerProductVariants = (customer = null, product = null) => {
     price: getCustomerProductPrice(customer, product),
     size: '',
     attributeLabel: '',
-    unit: getCustomerProductDefaultUnit(customer, product),
+    unit: getCustomerProductPricingUnit(customer, product),
     unitPrices: {}
   }];
 };
@@ -6557,7 +6608,7 @@ const hasCustomerProductPrice = (customer = null, productId = '') => {
 const hasCustomerProductConfig = (customer = null, productId = '') => {
   const customerPrices = normalizeCustomerPriceOverrides(customer || {});
   const config = productId ? customerPrices[productId] : null;
-  return Boolean(config && (config.price > 0 || config.defaultUnit || Object.keys(config.unitPrices || {}).length > 0 || config.size || config.attributeLabel || (Array.isArray(config.variants) && config.variants.length > 0)));
+  return Boolean(config && (config.price > 0 || config.pricingUnit || config.defaultUnit || Object.keys(config.unitPrices || {}).length > 0 || config.size || config.attributeLabel || (Array.isArray(config.variants) && config.variants.length > 0)));
 };
 
 const getQuoteCustomerHonorificLabel = (customer = null) => {
@@ -11143,6 +11194,9 @@ export default function App() {
   const [rawCompanies, setRawCompanies] = useState([]);
   const [rawEmployees, setRawEmployees] = useState([]);
   const [rawEmployeeReviews, setRawEmployeeReviews] = useState([]);
+  const [rawPayrollPeriods, setRawPayrollPeriods] = useState([]);
+  const [rawPayrollDebtCarryovers, setRawPayrollDebtCarryovers] = useState([]);
+  const [rawPayrollAutoLockPlans, setRawPayrollAutoLockPlans] = useState([]);
   const [rawAttendance, setRawAttendance] = useState({});
   const [rawFinancials, setRawFinancials] = useState([]);
   const [rawAdvanceRequests, setRawAdvanceRequests] = useState([]); 
@@ -11188,6 +11242,7 @@ export default function App() {
   const aiInboxProcessingRef = useRef(new Set());
   const orderCreateInFlightRef = useRef(new Set());
   const orderRequestCreateInFlightRef = useRef(new Set());
+  const customerProductPreferenceCacheRef = useRef(new Map());
   const refreshCollectionsInFlightRef = useRef(false);
   const pendingFirebaseWritesRef = useRef(loadPendingFirebaseWrites());
   const recentLocalWritesRef = useRef(new Map());
@@ -11374,6 +11429,9 @@ export default function App() {
       companies: [setRawCompanies],
       employees: [setRawEmployees],
       employeeReviews: [setRawEmployeeReviews],
+      payrollPeriods: [setRawPayrollPeriods],
+      payrollDebtCarryovers: [setRawPayrollDebtCarryovers],
+      payrollAutoLockPlans: [setRawPayrollAutoLockPlans],
       attendance: [setRawAttendance, true],
       financials: [setRawFinancials],
       advances: [setRawAdvanceRequests],
@@ -12103,6 +12161,9 @@ export default function App() {
       ['companies', setRawCompanies],
       ['employees', setRawEmployees],
       ['employeeReviews', setRawEmployeeReviews],
+      ['payrollPeriods', setRawPayrollPeriods],
+      ['payrollDebtCarryovers', setRawPayrollDebtCarryovers],
+      ['payrollAutoLockPlans', setRawPayrollAutoLockPlans],
       ['customers', setRawCustomers],
       ['customer_accounts', setRawCustomerAccounts],
       ['customer_cart', setRawCustomerCart],
@@ -12516,6 +12577,10 @@ export default function App() {
   const myCompanyId = currentUser?.companyId;
 
   useEffect(() => {
+    customerProductPreferenceCacheRef.current.clear();
+  }, [myCompanyId]);
+
+  useEffect(() => {
     setActivityAuditContext({
       companyId: myCompanyId || currentCompany?.id || '',
       companyName: currentCompany?.displayName || currentCompany?.name || '',
@@ -12562,6 +12627,9 @@ export default function App() {
     savePreferredLoginMode('staff');
   }, [currentUser?.id, currentUser?.isCustomerAccount, currentUser?.phone, currentUser?.phoneNumber, currentUser?.role, currentCompany, employees, rawCompanies]);
   const employeeReviews = useMemo(() => rawEmployeeReviews.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawEmployeeReviews, myCompanyId]);
+  const payrollPeriods = useMemo(() => rawPayrollPeriods.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPayrollPeriods, myCompanyId]);
+  const payrollDebtCarryovers = useMemo(() => rawPayrollDebtCarryovers.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPayrollDebtCarryovers, myCompanyId]);
+  const payrollAutoLockPlans = useMemo(() => rawPayrollAutoLockPlans.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPayrollAutoLockPlans, myCompanyId]);
   const customers = useMemo(() => rawCustomers.filter(c => c.companyId === myCompanyId && !c.isArchived), [rawCustomers, myCompanyId]);
   const customerAccounts = useMemo(() => rawCustomerAccounts.filter(account => account.companyId === myCompanyId && !account.isArchived), [rawCustomerAccounts, myCompanyId]);
   const customerCart = useMemo(() => rawCustomerCart.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawCustomerCart, myCompanyId]);
@@ -15061,6 +15129,276 @@ export default function App() {
     }, { merge: true });
   };
 
+  const handleLoadPayrollPeriodSnapshots = async ({ monthKey } = {}) => {
+    const safeMonthKey = normalizePayrollMonthKey(monthKey);
+    const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
+    if (!firebaseUser || !db || !myCompanyId || !periodId) {
+      return { success: false, snapshots: [], message: 'Không thể tải kỳ lương vì phiên làm việc chưa hợp lệ.' };
+    }
+
+    try {
+      const snapshotQuery = firebaseQuery(
+        collection(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots'),
+        firebaseWhere('periodId', '==', periodId)
+      );
+      const snapshotResult = await withTimeout(
+        getDocs(snapshotQuery),
+        12000,
+        'Tải dữ liệu kỳ lương đã khóa quá thời gian chờ.'
+      );
+      const snapshotMap = new Map(
+        snapshotResult.docs
+          .map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }))
+          .filter(snapshot => snapshot.companyId === myCompanyId && snapshot.periodId === periodId)
+          .map(snapshot => [snapshot.id, snapshot])
+      );
+
+      pendingFirebaseWritesRef.current
+        .filter(write => (
+          write?.collectionName === 'payrollSnapshots'
+          && write?.payload?.companyId === myCompanyId
+          && write?.payload?.periodId === periodId
+          && !write?.payload?.isArchived
+        ))
+        .forEach(write => {
+          snapshotMap.set(write.documentId, { id: write.documentId, ...write.payload });
+        });
+
+      return { success: true, snapshots: Array.from(snapshotMap.values()) };
+    } catch (error) {
+      return {
+        success: false,
+        snapshots: [],
+        message: getFriendlyFirebaseErrorMessage(error, 'Không tải được dữ liệu kỳ lương đã khóa.')
+      };
+    }
+  };
+
+  const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
+    const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
+    const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
+    if (!firebaseUser || !db || !myCompanyId || !periodId) {
+      return { success: false, message: 'Không thể khóa kỳ lương vì phiên làm việc chưa hợp lệ.' };
+    }
+    if (!canCurrentUserManagePayrollByRole()) {
+      return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được khóa kỳ lương.' };
+    }
+    if (!canLockPayrollPeriodAtDate(safeMonthKey, getTodayString())) {
+      return { success: false, message: 'Kỳ lương chỉ được khóa từ ngày cuối cùng của tháng.' };
+    }
+    if (getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey)) {
+      return { success: false, message: 'Kỳ lương này đã được khóa trước đó.' };
+    }
+
+    const safeSnapshots = (Array.isArray(snapshots) ? snapshots : []).filter(snapshot => (
+      snapshot?.id
+      && snapshot?.employeeId
+      && snapshot?.companyId === myCompanyId
+      && snapshot?.periodId === periodId
+      && snapshot?.monthKey === safeMonthKey
+    ));
+    if (safeSnapshots.length === 0) {
+      return { success: false, message: 'Chưa có dữ liệu nhân sự để khóa kỳ lương.' };
+    }
+
+    const lockedAt = `${period?.lockedAt || new Date().toISOString()}`;
+    const debtCarryovers = createPayrollDebtCarryovers({
+      companyId: myCompanyId,
+      monthKey: safeMonthKey,
+      snapshots: safeSnapshots,
+      employees: rawEmployees,
+      lockedAt
+    });
+    const totalEndingDebt = debtCarryovers.reduce((sum, row) => sum + (Number(row?.carryover?.amount) || 0), 0);
+    const periodLockJournalEntry = createPayrollPeriodLockJournalEntry({
+      companyId: myCompanyId,
+      periodId,
+      monthKey: safeMonthKey,
+      lockedAt,
+      employeeCount: safeSnapshots.length,
+      totalEndingDebt
+    });
+    const transactionWriteCount = safeSnapshots.length + (debtCarryovers.length * 2) + (periodLockJournalEntry ? 2 : 1);
+    if (transactionWriteCount > 450) {
+      return {
+        success: false,
+        message: 'Kỳ lương có quá nhiều nhân sự để khóa an toàn trong một lần. Dữ liệu chưa thay đổi; vui lòng liên hệ quản trị để xử lý theo lô.'
+      };
+    }
+
+    const safePeriod = {
+      ...(period || {}),
+      id: periodId,
+      companyId: myCompanyId,
+      monthKey: safeMonthKey,
+      status: 'locked',
+      lockedAt,
+      employeeCount: safeSnapshots.length,
+      snapshotIds: safeSnapshots.map(snapshot => snapshot.id),
+      debtRolloverStatus: 'complete',
+      debtRolloverCompletedAt: lockedAt,
+      debtCarryoverIds: debtCarryovers.map(row => row.carryover.id),
+      debtTransferCount: debtCarryovers.length,
+      totalEndingDebt,
+      isArchived: false
+    };
+
+    try {
+      const periodRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', periodId);
+      await runTransaction(db, async (transaction) => {
+        const existingPeriod = await transaction.get(periodRef);
+        if (existingPeriod.exists() && existingPeriod.data()?.status === 'locked') {
+          throw new Error('Kỳ lương này đã được khóa trước đó.');
+        }
+
+        safeSnapshots.forEach(snapshot => {
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots', snapshot.id),
+            snapshot,
+            { merge: false }
+          );
+        });
+        debtCarryovers.forEach(({ carryover, journalEntry }) => {
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'payrollDebtCarryovers', carryover.id),
+            carryover,
+            { merge: false }
+          );
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'activityLogs', journalEntry.id),
+            journalEntry,
+            { merge: false }
+          );
+        });
+        if (periodLockJournalEntry) {
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'activityLogs', periodLockJournalEntry.id),
+            periodLockJournalEntry,
+            { merge: false }
+          );
+        }
+        transaction.set(periodRef, safePeriod, { merge: false });
+      });
+
+      safeSnapshots.forEach(snapshot => applyLocalCollectionWrite('payrollSnapshots', snapshot.id, snapshot, { merge: false }));
+      debtCarryovers.forEach(({ carryover, journalEntry }) => {
+        applyLocalCollectionWrite('payrollDebtCarryovers', carryover.id, carryover, { merge: false });
+        applyLocalCollectionWrite('activityLogs', journalEntry.id, journalEntry, { merge: false });
+      });
+      if (periodLockJournalEntry) {
+        applyLocalCollectionWrite('activityLogs', periodLockJournalEntry.id, periodLockJournalEntry, { merge: false });
+      }
+      applyLocalCollectionWrite('payrollPeriods', periodId, safePeriod, { merge: false });
+      scheduleCollectionRefresh('payrollSnapshots', [300, 1500]);
+      scheduleCollectionRefresh('payrollDebtCarryovers', [300, 1500]);
+      scheduleCollectionRefresh('payrollPeriods', [300, 1500]);
+      return { success: true, period: safePeriod, snapshots: safeSnapshots, debtCarryovers };
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không khóa được kỳ lương. Dữ liệu hiện tại vẫn được giữ nguyên.')
+      };
+    }
+  };
+
+  const handlePreparePayrollAutoLockPlan = async ({ period, snapshots, sourceSignature = '' } = {}) => {
+    const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
+    const planId = buildPayrollAutoLockPlanId(myCompanyId, safeMonthKey);
+    const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
+    if (!firebaseUser || !db || !myCompanyId || !planId || !periodId) {
+      return { success: false, message: 'Không thể chuẩn bị khóa tự động vì phiên làm việc chưa hợp lệ.' };
+    }
+    if (!canCurrentUserManagePayrollByRole()) {
+      return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được chuẩn bị khóa kỳ lương tự động.' };
+    }
+    if (getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey)) {
+      return { success: false, message: 'Kỳ lương này đã được khóa trước đó.' };
+    }
+
+    const safeSnapshots = (Array.isArray(snapshots) ? snapshots : []).filter(snapshot => (
+      snapshot?.id
+      && snapshot?.employeeId
+      && snapshot?.companyId === myCompanyId
+      && snapshot?.periodId === periodId
+      && snapshot?.monthKey === safeMonthKey
+    ));
+    if (safeSnapshots.length === 0) {
+      return { success: false, message: 'Chưa có dữ liệu nhân sự để chuẩn bị khóa tự động.' };
+    }
+    if ((safeSnapshots.length * 3) + 3 > 450) {
+      return {
+        success: false,
+        message: 'Kỳ lương có quá nhiều nhân sự để chuẩn bị khóa tự động an toàn trong một lần. Dữ liệu chưa thay đổi; vui lòng liên hệ quản trị để xử lý theo lô.'
+      };
+    }
+
+    const preparedAt = new Date().toISOString();
+    const stagedSnapshots = safeSnapshots.map(snapshot => ({
+      ...snapshot,
+      id: buildPayrollAutoLockPlanSnapshotId(planId, snapshot.employeeId),
+      snapshotId: snapshot.id,
+      planId,
+      preparedAt,
+      isArchived: false
+    }));
+    if (stagedSnapshots.some(snapshot => !snapshot.id || !snapshot.snapshotId)) {
+      return { success: false, message: 'Không thể chuẩn bị đủ ảnh chụp kỳ lương tự động.' };
+    }
+    const plan = {
+      id: planId,
+      companyId: myCompanyId,
+      monthKey: safeMonthKey,
+      periodId,
+      status: 'ready',
+      autoLockAt: `${getPayrollMonthEndDateKey(safeMonthKey)}T23:59:59+07:00`,
+      preparedAt,
+      preparedByEmployeeId: currentUser?.id || '',
+      preparedByName: currentUser?.name || currentUser?.displayName || '',
+      sourceSignature: `${sourceSignature || ''}`,
+      period: {
+        ...(period || {}),
+        id: periodId,
+        companyId: myCompanyId,
+        monthKey: safeMonthKey,
+        status: 'locked',
+        employeeCount: safeSnapshots.length,
+        snapshotIds: safeSnapshots.map(snapshot => snapshot.id),
+        isArchived: false
+      },
+      stagedSnapshotIds: stagedSnapshots.map(snapshot => snapshot.id),
+      snapshotCount: stagedSnapshots.length,
+      updatedAt: preparedAt,
+      isArchived: false
+    };
+
+    try {
+      const periodRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', periodId);
+      const planRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollAutoLockPlans', planId);
+      await runTransaction(db, async (transaction) => {
+        const existingPeriod = await transaction.get(periodRef);
+        if (existingPeriod.exists() && existingPeriod.data()?.status === 'locked') {
+          throw new Error('Kỳ lương này đã được khóa trước đó.');
+        }
+        stagedSnapshots.forEach(snapshot => {
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'payrollAutoLockPlanSnapshots', snapshot.id),
+            snapshot,
+            { merge: false }
+          );
+        });
+        transaction.set(planRef, plan, { merge: false });
+      });
+      applyLocalCollectionWrite('payrollAutoLockPlans', planId, plan, { merge: false });
+      scheduleCollectionRefresh('payrollAutoLockPlans', [300, 1500]);
+      return { success: true, plan };
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không chuẩn bị được khóa lương tự động. Kỳ lương chưa bị khóa.')
+      };
+    }
+  };
+
   const updatePerformance = async (empId, overtime, monthKey = getTodayString().substring(0, 7)) => {
     if (!firebaseUser) return;
     const safeMonthKey = /^\d{4}-\d{2}$/.test(`${monthKey}`) ? `${monthKey}` : getTodayString().substring(0, 7);
@@ -15571,9 +15909,12 @@ export default function App() {
       const product = products.find(productItem => productItem.id === productId) || null;
       const defaultProductPrice = parseLooseMoneyValue(product?.sellingPrice || product?.price || 0);
       const currentConfig = nextOverrides[productId] || {};
-      const selectedUnit = getCustomerProductUnitOptions(customer, product, item?.quantityUnit || item?.unit || 'Con')
-        .find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizeProductPricingUnit(item?.quantityUnit || item?.unit || '')))
-        || getCustomerProductDefaultUnit(customer, product, item?.quantityUnit || item?.unit || 'Con');
+      const pricingUnit = normalizeProductPricingUnit(
+        item?.pricingUnit
+        || currentConfig.pricingUnit
+        || currentConfig.defaultUnit
+        || getCustomerProductPricingUnit(customer, product, 'Con')
+      );
       const currentUnitPrices = normalizeUnitPriceMap(currentConfig.unitPrices || {});
       const hasExplicitSize = Object.prototype.hasOwnProperty.call(item || {}, 'sizeLabel')
         || Object.prototype.hasOwnProperty.call(item || {}, 'weightKg')
@@ -15589,12 +15930,12 @@ export default function App() {
         : `${currentConfig.attributeLabel || ''}`.trim();
       const nextPrice = unitPrice > 0
         ? unitPrice
-        : (getUnitPriceFromMap(currentUnitPrices, selectedUnit) || parseLooseMoneyValue(currentConfig.price || defaultProductPrice || 0));
+        : (getUnitPriceFromMap(currentUnitPrices, pricingUnit) || parseLooseMoneyValue(currentConfig.price || defaultProductPrice || 0));
       const nextUnitPrices = nextPrice > 0
-        ? putUnitPriceIntoMap(currentUnitPrices, selectedUnit, nextPrice)
+        ? putUnitPriceIntoMap(currentUnitPrices, pricingUnit, nextPrice)
         : currentUnitPrices;
       const shouldSync = fixedProductIds.has(productId)
-        || Boolean(currentConfig.price || currentConfig.defaultUnit || Object.keys(currentUnitPrices).length > 0 || currentConfig.size || currentConfig.attributeLabel)
+        || Boolean(currentConfig.price || currentConfig.pricingUnit || currentConfig.defaultUnit || Object.keys(currentUnitPrices).length > 0 || currentConfig.size || currentConfig.attributeLabel)
         || (unitPrice > 0 && unitPrice !== defaultProductPrice)
         || hasExplicitSize
         || hasExplicitAttribute
@@ -15603,10 +15944,12 @@ export default function App() {
       if (!shouldSync) return;
 
       const nextConfig = {
+        ...currentConfig,
         price: nextPrice,
         size,
         attributeLabel,
-        defaultUnit: selectedUnit,
+        pricingUnit,
+        defaultUnit: pricingUnit,
         unitPrices: nextUnitPrices
       };
 
@@ -15614,7 +15957,7 @@ export default function App() {
         currentConfig.price !== nextConfig.price ||
         `${currentConfig.size || ''}` !== nextConfig.size ||
         `${currentConfig.attributeLabel || ''}` !== nextConfig.attributeLabel ||
-        `${currentConfig.defaultUnit || ''}` !== nextConfig.defaultUnit ||
+        `${currentConfig.pricingUnit || currentConfig.defaultUnit || ''}` !== nextConfig.pricingUnit ||
         JSON.stringify(normalizeUnitPriceMap(currentConfig.unitPrices || {})) !== JSON.stringify(nextConfig.unitPrices) ||
         !fixedProductIds.has(productId)
       ) {
@@ -15654,7 +15997,7 @@ export default function App() {
       const product = products.find(productItem => productItem.id === productId);
       if (!product) return;
 
-      const selectedUnit = normalizeProductPricingUnit(item?.quantityUnit || item?.unit || getProductPrimaryPricingUnit(product));
+      const selectedUnit = normalizeProductPricingUnit(item?.pricingUnit || getProductPrimaryPricingUnit(product));
       const primaryUnit = getProductPrimaryPricingUnit(product);
       const currentPrice = parseLooseMoneyValue(product.sellingPrice ?? product.price);
       const currentUnitPrices = normalizeUnitPriceMap(product.unitPrices || {});
@@ -15707,6 +16050,56 @@ export default function App() {
     }));
 
     return true;
+  };
+
+  const handleGetCustomerProductPreference = async ({ customerId = '', productId = '' } = {}) => {
+    const companyId = myCompanyId || currentCompany?.id || '';
+    if (!firebaseUser || !companyId || !customerId || !productId) return null;
+    const identity = { companyId, customerId, productId };
+    const cacheKey = buildCustomerProductPreferenceCacheKey(identity);
+    if (customerProductPreferenceCacheRef.current.has(cacheKey)) {
+      return customerProductPreferenceCacheRef.current.get(cacheKey);
+    }
+
+    const preferenceId = buildCustomerProductPreferenceId(identity);
+    const preferenceRef = doc(db, 'artifacts', appId, 'public', 'data', 'customerProductPreferences', preferenceId);
+    const snapshot = await getDoc(preferenceRef);
+    const preference = snapshot.exists()
+      ? normalizeCustomerProductPreference({ id: snapshot.id, ...snapshot.data() })
+      : null;
+    customerProductPreferenceCacheRef.current.set(cacheKey, preference);
+    return preference;
+  };
+
+  const handleSaveCustomerProductPreference = async ({
+    customerId = '',
+    productId = '',
+    inputUnit = '',
+    updateDefault = false,
+    existingPreference = undefined,
+    updatedByEmpId = '',
+  } = {}) => {
+    const companyId = myCompanyId || currentCompany?.id || '';
+    if (!firebaseUser || !companyId || !customerId || !productId || !inputUnit) return null;
+    const identity = { companyId, customerId, productId };
+    const currentPreference = existingPreference === undefined
+      ? await handleGetCustomerProductPreference(identity)
+      : existingPreference;
+    const preference = buildCustomerProductPreferenceWrite({
+      identity,
+      existingPreference: currentPreference,
+      inputUnit,
+      updateDefault,
+      updatedAt: new Date().toISOString(),
+      updatedByEmpId: updatedByEmpId || currentUser?.id || '',
+    });
+    const preferenceRef = doc(db, 'artifacts', appId, 'public', 'data', 'customerProductPreferences', preference.id);
+    await setDoc(preferenceRef, {
+      ...preference,
+      ...(currentPreference ? {} : { createdAt: preference.updatedAt }),
+    }, { merge: true });
+    customerProductPreferenceCacheRef.current.set(buildCustomerProductPreferenceCacheKey(identity), preference);
+    return preference;
   };
 
   const handleAddOrderRequest = async (empId, requestData = {}) => {
@@ -18694,12 +19087,13 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
-        employees={employees} employeeReviews={employeeReviews} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
+        employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
+        onGetCustomerProductPreference={handleGetCustomerProductPreference} onSaveCustomerProductPreference={handleSaveCustomerProductPreference}
         onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
@@ -18710,6 +19104,7 @@ export default function App() {
         onAddAdvanceRequest={handleAddAdvanceRequest} onEditAttendance={handleEditAttendance}
         onAddFinancial={addFinancialRecord} onEditFinancial={handleEditFinancialRecord} onDeleteFinancial={handleDeleteFinancialRecord} onUpdatePerformance={updatePerformance}
         onApproveAdvance={handleApproveAdvance} onRejectAdvance={handleRejectAdvance} onDeleteAdvance={handleDeleteAdvance}
+        onLockPayrollPeriod={handleLockPayrollPeriod} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
         onAddEmployee={handleAddEmployee} onEditEmployee={handleEditEmployee} onDeleteEmployee={handleDeleteEmployee} onAddEmployeeReview={handleAddEmployeeReview}
         onOverrideCheckIn={handleCheckIn} onOverrideCheckOut={handleCheckOut}
         onAddProduct={handleAddProduct} onEditProduct={handleEditProduct} onDeleteProduct={handleDeleteProduct}
@@ -19166,10 +19561,10 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
-  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
+  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
-  onUpdateCompanySettings, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
+  onCheckIn, onCheckOut, onLeave, onLogout, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onUpdateCompanySettings, onLockPayrollPeriod, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
   onUpdateZaloOrderRequest, onConvertZaloOrderRequest,
@@ -20749,8 +21144,11 @@ function MainAppView({
           orders={orders}
           deliveryReports={deliveryReports}
           employeeReviews={employeeReviews}
+          payrollPeriods={payrollPeriods}
           onAddEmployeeReview={onAddEmployeeReview}
           onUpdateCompanySettings={onUpdateCompanySettings}
+          onLockPayrollPeriod={onLockPayrollPeriod}
+          onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots}
           isSuperAdmin={isSuperAdmin}
           canViewEmployeeReviews={
             canRoleAction('employee_reviews', 'view_employee_reviews') ||
@@ -20806,7 +21204,7 @@ function MainAppView({
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
-      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (!hasWorkflowProductData && (isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'))) {
           return renderWorkflowGuide({
@@ -20894,6 +21292,9 @@ function MainAppView({
           currentEmployee={employee}
           employees={employees}
           employeeReviews={employeeReviews}
+          payrollPeriods={payrollPeriods}
+          payrollDebtCarryovers={payrollDebtCarryovers}
+          payrollAutoLockPlans={payrollAutoLockPlans}
           attendance={attendance}
           financials={financials}
           performance={performance}
@@ -20912,6 +21313,9 @@ function MainAppView({
           onRejectAdvance={onRejectAdvance}
           onDeleteAdvance={onDeleteAdvance}
           onUpdateCompanySettings={onUpdateCompanySettings}
+          onLockPayrollPeriod={onLockPayrollPeriod}
+          onPreparePayrollAutoLockPlan={onPreparePayrollAutoLockPlan}
+          onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots}
           canViewSalaryAdvance={canRoleAction('payroll', 'view_salary_advance') || canRoleAction('payroll', 'view_salary_detail_records')}
           canViewAllPayroll={canRoleAction('payroll', 'view_all_payroll')}
           canCreateSalaryAdvanceRequest={canRoleAction('payroll', 'create_salary_advance_request')}
@@ -46825,7 +47229,21 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       ?? dispatch.orderedUnitPrice
       ?? dispatch.customerOrderUnitPrice
     );
-    const fallbackUnitPrice = directSourceUnitPrice || parseLooseMoneyValue(
+    const fallbackConfigSource = getCustomerBranchProductConfigSource(customer, dispatchBranchId, products);
+    const fallbackPricingUnit = normalizeProductPricingUnit(
+      dispatch.sourceOrderRequestPricingUnit
+      || dispatch.orderRequestPricingUnit
+      || dispatch.requestPricingUnit
+      || dispatch.pricingUnit
+      || getCustomerProductPricingUnit(
+        fallbackConfigSource,
+        product,
+        dispatch.quantityUnit || dispatch.unit || product?.unit || 'Con'
+      )
+    );
+    const fallbackUnitPrice = directSourceUnitPrice
+      || getCustomerProductPrice(fallbackConfigSource, product, fallbackPricingUnit)
+      || parseLooseMoneyValue(
       dispatch.unitPrice
       ?? dispatch.price
       ?? dispatch.sellingPrice
@@ -46902,9 +47320,21 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         const itemWeightKg = getOrderLineWeightKgValue(item);
         const itemSizeKey = normalizeLookupText(getOrderLineSizeLabel(item));
         const itemUnitKey = normalizeLookupText(item?.quantityUnit || item?.unit || product?.unit || '');
+        const requestConfigSource = getCustomerBranchProductConfigSource(requestCustomer, itemBranchId, products);
+        const pricingUnit = normalizeProductPricingUnit(
+          item?.pricingUnit
+          || item?.defaultUnit
+          || getCustomerProductPricingUnit(
+            requestConfigSource,
+            requestProduct || product,
+            item?.quantityUnit || item?.unit || product?.unit || 'Con'
+          )
+        );
         candidates.push({
           unitPrice,
-          unitLabel: normalizeLeadingLabel(item?.quantityUnit || item?.unit || dispatch.quantityUnit || dispatch.unit || product?.unit || ''),
+          unitLabel: pricingUnit,
+          pricingUnit,
+          inputUnit: normalizeProductPricingUnit(item?.quantityUnit || item?.unit || dispatch.quantityUnit || dispatch.unit || ''),
           requestTimestamp: requestTimestamp || 0,
           exactRequest: isExactRequest ? 1 : 0,
           exactRow: sourceRequestRowKey && [itemRowKey, compositeRowKey, legacyProductRowKey].includes(sourceRequestRowKey) ? 1 : 0,
@@ -46939,7 +47369,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     if (candidates[0]) return candidates[0];
     return fallbackUnitPrice > 0 ? {
       unitPrice: fallbackUnitPrice,
-      unitLabel: normalizeLeadingLabel(dispatch.quantityUnit || dispatch.unit || product?.unit || ''),
+      unitLabel: fallbackPricingUnit,
+      pricingUnit: fallbackPricingUnit,
+      inputUnit: normalizeProductPricingUnit(dispatch.quantityUnit || dispatch.unit || ''),
       requestTimestamp: dispatchTimestamp || 0,
       exactRequest: 0,
       exactRow: 0,
@@ -46953,7 +47385,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       requestDateMs: dispatchDateMs,
       itemIndex: 0
     } : null;
-  }, [customerLookup, orderRequests, productLookup, workingDate]);
+  }, [customerLookup, orderRequests, productLookup, products, workingDate]);
   const reportCustomerGroups = useMemo(() => {
     const grouped = new Map();
     const seenCollectedByCustomer = new Map();
@@ -47100,7 +47532,23 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         || dispatch.productNameSnapshot
         || 'Hàng hóa';
       const dispatchWeight = parseLooseQuantityValue(dispatch.weightKg);
+      const dispatchQuantity = parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount);
+      const dispatchInputUnit = normalizeProductPricingUnit(
+        dispatch.quantityUnit || dispatch.unit || product?.unit || ''
+      );
       const priceInfo = resolveDispatchOrderRequestPrice(dispatch, product, customer, productLabel);
+      const pricingUnit = normalizeProductPricingUnit(
+        priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || dispatchInputUnit || 'Kg'
+      );
+      const pricingResult = calculatePricingAmount({
+        pricingUnit,
+        inputUnit: priceInfo?.inputUnit || dispatchInputUnit,
+        inputQuantity: dispatchQuantity,
+        actualWeightKg: report ? report.actualWeightKg : dispatchWeight,
+        actualQuantity: report ? report.actualQuantity : dispatchQuantity,
+        actualQuantityUnit: report?.actualQuantityUnit || dispatchInputUnit,
+        unitPrice: priceInfo?.unitPrice || 0,
+      });
       const actualQuantityLabel = report?.actualQuantity > 0
         ? `${formatNumber(report.actualQuantity)} ${report.actualQuantityUnit || dispatch.quantityUnit || 'đv'}`
         : '';
@@ -47122,30 +47570,33 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         isMismatch: Boolean(report && reportStatus.isMismatch),
         productLabel,
         dispatchWeight,
+        dispatchQuantity,
+        pricingUnit,
+        pricingQuantity: pricingResult.quantity,
+        pricingPendingActual: pricingResult.isPending,
         unitPrice: priceInfo?.unitPrice || 0,
-        totalAmount: priceInfo?.unitPrice > 0 && dispatchWeight > 0
-          ? dispatchWeight * priceInfo.unitPrice
-          : 0,
+        totalAmount: pricingResult.amount,
         actualQuantityLabel,
         actualPackageLabel,
         returnLabel
       });
       const productWeightKey = priceInfo?.unitPrice > 0
-        ? `${productLabel}__${Math.round(priceInfo.unitPrice)}`
-        : productLabel;
+        ? `${productLabel}__${pricingUnit}__${Math.round(priceInfo.unitPrice)}`
+        : `${productLabel}__${pricingUnit}`;
       if (!group.productWeights.has(productWeightKey)) {
         group.productWeights.set(productWeightKey, {
           productLabel,
           weight: 0,
+          pricingQuantity: 0,
+          pricingUnit,
           unitPrice: priceInfo?.unitPrice || 0,
           totalAmount: 0
         });
       }
       const productWeightLine = group.productWeights.get(productWeightKey);
-      productWeightLine.weight += dispatchWeight;
-      if (productWeightLine.unitPrice > 0 && dispatchWeight > 0) {
-        productWeightLine.totalAmount += dispatchWeight * productWeightLine.unitPrice;
-      }
+      productWeightLine.pricingQuantity += pricingResult.quantity;
+      productWeightLine.weight = productWeightLine.pricingQuantity;
+      productWeightLine.totalAmount += pricingResult.amount;
       if (report) group.reportCount += 1;
       else group.pendingCount += 1;
       if (report && reportStatus.isMismatch) group.mismatchCount += 1;
@@ -47154,9 +47605,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       const productWeightLines = Array.from(group.productWeights.values());
       const paymentSummaryTotal = productWeightLines.reduce((sum, line) => sum + (line.totalAmount || 0), 0);
       const productWeightLabels = productWeightLines.map((line) => (
-        line.unitPrice > 0 && line.weight > 0
-          ? `${line.productLabel} - ${formatNumber(line.weight)}kg x ${formatCurrency(line.unitPrice)} = ${formatCurrency(line.totalAmount)}`
-          : `${line.productLabel} - ${formatNumber(line.weight)}kg`
+        line.unitPrice > 0 && line.pricingQuantity > 0
+          ? `${line.productLabel} - ${formatNumber(line.pricingQuantity)} ${line.pricingUnit} x ${formatCurrency(line.unitPrice)} = ${formatCurrency(line.totalAmount)}`
+          : `${line.productLabel} - ${formatNumber(line.pricingQuantity)} ${line.pricingUnit}`
       ));
       if (paymentSummaryTotal > 0 && productWeightLabels.length > 1) {
         productWeightLabels.push(`Tổng ${formatCurrency(paymentSummaryTotal)} đ`);
@@ -47184,9 +47635,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       optimisticallyReportedDispatchIds,
     ).map((group) => {
       const productWeightLabels = group.productWeightLines.map((line) => (
-        line.unitPrice > 0 && line.weight > 0
-          ? `${line.productLabel} - ${formatNumber(line.weight)}kg x ${formatCurrency(line.unitPrice)} = ${formatCurrency(line.totalAmount)}`
-          : `${line.productLabel} - ${formatNumber(line.weight)}kg`
+        line.unitPrice > 0 && line.pricingQuantity > 0
+          ? `${line.productLabel} - ${formatNumber(line.pricingQuantity)} ${line.pricingUnit} x ${formatCurrency(line.unitPrice)} = ${formatCurrency(line.totalAmount)}`
+          : `${line.productLabel} - ${formatNumber(line.pricingQuantity)} ${line.pricingUnit}`
       ));
       if (group.paymentSummaryTotal > 0 && productWeightLabels.length > 1) {
         productWeightLabels.push(`Tổng ${formatCurrency(group.paymentSummaryTotal)} đ`);
@@ -47318,7 +47769,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     actualQuantity: overrides.actualQuantity !== undefined ? toDeliveryInputValue(overrides.actualQuantity) : '',
     actualPackageCount: overrides.actualPackageCount !== undefined ? toDeliveryInputValue(overrides.actualPackageCount) : '',
     actualQuantityUnit: normalizeLeadingLabel(overrides.actualQuantityUnit || overrides.expectedQuantityUnit || 'Con'),
-    actualPackageUnit: normalizeLeadingLabel(overrides.actualPackageUnit || 'Bọc')
+    actualPackageUnit: normalizeLeadingLabel(overrides.actualPackageUnit || 'Bọc'),
+    pricingUnit: normalizeProductPricingUnit(overrides.pricingUnit || ''),
+    unitPrice: parseLooseMoneyValue(overrides.unitPrice),
+    pricingQuantity: parseLooseQuantityValue(overrides.pricingQuantity),
+    pricingPendingActual: Boolean(overrides.pricingPendingActual),
   });
 
   const buildActualRowFromDispatch = (dispatch = {}) => {
@@ -47328,6 +47783,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     const expectedQty = parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount);
     const expectedUnit = normalizeLeadingLabel(dispatch.quantityUnit || dispatch.unit || product?.unit || (expectedQty > 0 ? 'Con' : ''));
     const productShortLabel = getProductShortName(product) || `${dispatch.productShortName || dispatch.productShortNameSnapshot || dispatch.shortName || ''}`.trim().toUpperCase();
+    const customer = customerLookup.get(dispatch.customerId);
+    const priceInfo = resolveDispatchOrderRequestPrice(
+      dispatch,
+      product,
+      customer,
+      productShortLabel || product?.name || dispatch.productNameSnapshot || ''
+    );
     return createManualActualRow({
       rowKey: dispatch.id,
       existingReportId: report?.id || '',
@@ -47342,7 +47804,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       actualQuantity: report ? report.actualQuantity : expectedQty,
       actualPackageCount: report?.actualPackageCount || '',
       actualQuantityUnit: report?.actualQuantityUnit || expectedUnit || 'Con',
-      actualPackageUnit: report?.actualPackageUnit || 'Bọc'
+      actualPackageUnit: report?.actualPackageUnit || 'Bọc',
+      pricingUnit: priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || expectedUnit,
+      unitPrice: priceInfo?.unitPrice || report?.unitPrice || 0,
+      pricingQuantity: report?.pricingQuantity || dispatch.pricingQuantity || 0,
+      pricingPendingActual: report?.pricingPendingActual,
     });
   };
 
@@ -47370,6 +47836,45 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     }) || null;
   };
 
+  const resolveActualRowPricingMeta = (row = {}, productOverride = null) => {
+    const product = productOverride || findProductForActualRow(row);
+    const dispatch = row.dispatchId
+      ? dayDispatches.find(item => item.id === row.dispatchId)
+      : null;
+    const customer = customerLookup.get(dispatch?.customerId || selectedCustomerId) || selectedCustomer;
+    const configSource = getCustomerBranchProductConfigSource(
+      customer,
+      dispatch?.branchId || dispatch?.customerBranchId || '',
+      products
+    );
+    const productLabel = getProductShortName(product)
+      || row.productNameInput
+      || row.productNameSnapshot
+      || dispatch?.productNameSnapshot
+      || '';
+    const priceInfo = dispatch
+      ? resolveDispatchOrderRequestPrice(dispatch, product, customer, productLabel)
+      : null;
+    const pricingUnit = normalizeProductPricingUnit(
+      priceInfo?.pricingUnit
+      || row.pricingUnit
+      || getCustomerProductPricingUnit(
+        configSource,
+        product,
+        row.actualQuantityUnit || row.expectedQuantityUnit || product?.unit || 'Con'
+      )
+    );
+    const unitPrice = parseLooseMoneyValue(row.unitPrice)
+      || parseLooseMoneyValue(priceInfo?.unitPrice)
+      || getCustomerProductPrice(configSource, product, pricingUnit)
+      || 0;
+    return {
+      pricingUnit,
+      unitPrice,
+      usesWeightPricing: normalizeLookupText(pricingUnit) === normalizeLookupText('Kg'),
+    };
+  };
+
   const normalizeActualRowsForSave = () => actualRows
     .map((row) => {
       const product = findProductForActualRow(row);
@@ -47377,6 +47882,21 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       const actualQuantityValue = row.actualQuantity ? parseLooseQuantityValue(row.actualQuantity) : parseLooseQuantityValue(row.expectedQuantity);
       const actualPackageCountValue = row.actualPackageCount ? parseLooseQuantityValue(row.actualPackageCount) : 0;
       const productNameSnapshot = product?.name || row.productNameSnapshot || row.productNameInput || '';
+      const pricingMeta = resolveActualRowPricingMeta(row, product);
+      const actualQuantityUnit = normalizeLeadingLabel(
+        pricingMeta.usesWeightPricing
+          ? (row.actualQuantityUnit || row.expectedQuantityUnit || product?.unit || 'Con')
+          : pricingMeta.pricingUnit
+      );
+      const pricingResult = calculatePricingAmount({
+        pricingUnit: pricingMeta.pricingUnit,
+        inputUnit: actualQuantityUnit,
+        inputQuantity: actualQuantityValue,
+        actualWeightKg,
+        actualQuantity: actualQuantityValue,
+        actualQuantityUnit,
+        unitPrice: pricingMeta.unitPrice,
+      });
       return {
         ...row,
         productId: product?.id || row.productId || '',
@@ -47384,8 +47904,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         actualWeightKg,
         actualQuantityValue,
         actualPackageCountValue,
-        actualQuantityUnit: normalizeLeadingLabel(row.actualQuantityUnit || row.expectedQuantityUnit || product?.unit || 'Con'),
-        actualPackageUnit: normalizeLeadingLabel(row.actualPackageUnit || 'Bọc')
+        actualQuantityUnit,
+        actualPackageUnit: normalizeLeadingLabel(row.actualPackageUnit || 'Bọc'),
+        pricingUnit: pricingMeta.pricingUnit,
+        pricingQuantity: pricingResult.quantity,
+        pricingPendingActual: pricingResult.isPending,
+        unitPrice: pricingResult.unitPrice,
+        pricingAmount: pricingResult.amount,
       };
     })
     .filter(row => row.dispatchId || row.productNameSnapshot || row.actualWeightKg > 0 || row.actualQuantityValue > 0 || row.actualPackageCountValue > 0);
@@ -48062,6 +48587,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         actualPackageCount: row.actualPackageCountValue,
         actualQuantityUnit: normalizeLeadingLabel(row.actualQuantityUnit || row.expectedQuantityUnit || 'Con'),
         actualPackageUnit: normalizeLeadingLabel(row.actualPackageUnit || 'Bọc'),
+        pricingUnit: normalizeProductPricingUnit(row.pricingUnit || row.actualQuantityUnit || 'Con'),
+        pricingQuantity: parseLooseQuantityValue(row.pricingQuantity),
+        pricingPendingActual: Boolean(row.pricingPendingActual),
+        unitPrice: parseLooseMoneyValue(row.unitPrice),
+        pricingAmount: parseLooseMoneyValue(row.pricingAmount),
         collectedAmount: collectedAmountValue,
         collectedMethod,
         deliveryExpenseAmount: deliveryExpenseAmountValue,
@@ -48631,6 +49161,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 </div>
                 {actualRows.map((row) => {
                   const isManualRow = !row.dispatchId;
+                  const pricingMeta = resolveActualRowPricingMeta(row);
                   return (
                     <div key={row.rowKey} className="grid grid-cols-[1.18fr_0.9fr_0.9fr_0.8fr] items-center gap-1 text-center text-xs font-semibold">
                       <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-2 text-center">
@@ -48649,24 +49180,36 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                         )}
                       </label>
                       <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
-                        <input
-                          type="tel"
-                          value={row.actualWeight}
-                          onChange={(event) => updateActualRow(row.rowKey, { actualWeight: event.target.value.replace(',', '.') })}
-                          onKeyDown={handleDeliveryEnterNext}
-                          data-delivery-enter="true"
-                          placeholder="Kg"
-                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
-                        />
+                        {pricingMeta.usesWeightPricing ? (
+                          <input
+                            type="tel"
+                            value={row.actualWeight}
+                            onChange={(event) => updateActualRow(row.rowKey, { actualWeight: event.target.value.replace(',', '.') })}
+                            onKeyDown={handleDeliveryEnterNext}
+                            data-delivery-enter="true"
+                            placeholder="Kg"
+                            className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
+                          />
+                        ) : (
+                          <span className="text-xs font-semibold text-slate-300" aria-label={`Không áp dụng kg; tính theo ${pricingMeta.pricingUnit}`}>
+                            -
+                          </span>
+                        )}
                       </label>
                       <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1 text-center">
                         <input
                           type="tel"
                           value={row.actualQuantity}
-                          onChange={(event) => updateActualRow(row.rowKey, { actualQuantity: event.target.value.replace(',', '.') })}
+                          onChange={(event) => updateActualRow(row.rowKey, {
+                            actualQuantity: event.target.value.replace(',', '.'),
+                            actualQuantityUnit: pricingMeta.usesWeightPricing
+                              ? row.actualQuantityUnit
+                              : pricingMeta.pricingUnit,
+                          })}
                           onKeyDown={handleDeliveryEnterNext}
                           data-delivery-enter="true"
-                          placeholder="Con"
+                          placeholder={pricingMeta.usesWeightPricing ? 'Con' : pricingMeta.pricingUnit}
+                          aria-label={`Số lượng ${pricingMeta.usesWeightPricing ? (row.actualQuantityUnit || 'Con') : pricingMeta.pricingUnit}`}
                           className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                         />
                       </label>
@@ -55520,7 +56063,7 @@ const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelect
   );
 });
 
-function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -55544,6 +56087,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     weightKg: seed.weightKg ?? seed.sizeLabel ?? '',
     quantity: seed.quantity ?? '',
     quantityUnit: seed.quantityUnit || defaultQuantityUnit,
+    pricingUnit: seed.pricingUnit || seed.defaultUnit || '',
+    inputUnitTouched: Boolean(seed.inputUnitTouched),
+    rememberedDefaultInputUnit: seed.rememberedDefaultInputUnit || '',
     unitPrice: seed.unitPrice ?? ''
   });
   const createDraft = (seed = {}) => ({
@@ -55563,7 +56109,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [requestDrafts, setRequestDrafts] = useState([createDraft()]);
   const [editingRequestId, setEditingRequestId] = useState(null);
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
-  const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', unitPrice: '' });
+  const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
   const [isRequestSubmitting, setIsRequestSubmitting] = useState(false);
@@ -55591,6 +56137,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const quickProductSelectionLocksRef = useRef(new Set());
   const quickProductSelectionTimersRef = useRef(new Map());
   const quickProductSelectActionRef = useRef(null);
+  const smartPreferenceLoadTokensRef = useRef(new Map());
   const handleQuickProductCardSelect = useCallback((selectionKey, productId, variantConfig) => {
     quickProductSelectActionRef.current?.(productId, variantConfig, selectionKey);
   }, []);
@@ -55719,7 +56266,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     [activeProducts]
   );
   const resolveDraftItemQuantityUnit = (configSource = null, product = null, requestedUnit = '') => {
-    const unitOptions = getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit);
+    const unitOptions = Array.from(new Set([
+      ...quantityUnitOptions,
+      ...getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit),
+      normalizeProductPricingUnit(requestedUnit),
+    ].filter(Boolean)));
     const normalizedRequestedUnit = normalizeProductPricingUnit(requestedUnit);
     return unitOptions.find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizedRequestedUnit))
       || getCustomerProductDefaultUnit(configSource, product, defaultQuantityUnit);
@@ -55729,14 +56280,58 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     if (!product) return item.quantityUnit ? [normalizeProductPricingUnit(item.quantityUnit)] : quantityUnitOptions;
     const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
-    return getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit);
+    return Array.from(new Set([
+      ...quantityUnitOptions,
+      ...getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit),
+      normalizeProductPricingUnit(item.quantityUnit),
+    ].filter(Boolean)));
+  };
+
+  const persistSmartOrderingPreferences = async (savedRequests = []) => {
+    if (typeof onGetCustomerProductPreference !== 'function' || typeof onSaveCustomerProductPreference !== 'function') return;
+    const uniquePreferences = new Map();
+    (Array.isArray(savedRequests) ? savedRequests : []).forEach((request) => {
+      (Array.isArray(request?.items) ? request.items : []).forEach((item) => {
+        const customerId = `${request?.customerId || ''}`.trim();
+        const productId = `${item?.productId || ''}`.trim();
+        const inputUnit = normalizeProductPricingUnit(item?.quantityUnit || '');
+        if (!customerId || !productId || !inputUnit) return;
+        uniquePreferences.set(`${customerId}::${productId}`, {
+          customerId,
+          productId,
+          inputUnit,
+          customerName: customerLookup.get(customerId)?.name || 'Khach hang',
+          productName: productLookup.get(productId)?.name || item?.description || 'san pham',
+        });
+      });
+    });
+
+    for (const preferenceInput of uniquePreferences.values()) {
+      try {
+        const existingPreference = await onGetCustomerProductPreference(preferenceInput);
+        let updateDefault = !existingPreference?.defaultInputUnit;
+        if (shouldOfferDefaultInputUnitUpdate({ preference: existingPreference, nextInputUnit: preferenceInput.inputUnit })) {
+          updateDefault = typeof window !== 'undefined' && window.confirm(
+            `${preferenceInput.customerName} thuong dat ${preferenceInput.productName} theo "${existingPreference.defaultInputUnit}". Ban co muon cap nhat "${preferenceInput.inputUnit}" lam don vi nhap mac dinh khong?`
+          );
+        }
+        await onSaveCustomerProductPreference({
+          ...preferenceInput,
+          existingPreference,
+          updateDefault,
+          updatedByEmpId: employee?.id || '',
+        });
+      } catch (error) {
+        console.warn('Khong luu duoc goi y don vi nhap; don hang van duoc giu nguyen.', error);
+      }
+    }
   };
   const handleDraftItemQuantityUnitChange = (localId, itemLocalId, nextUnit) => {
     const draft = requestDrafts.find(item => item.localId === localId);
     const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
     const product = productLookup.get(item?.productId);
     if (!draft || !item || !product) {
-      updateDraftItem(localId, itemLocalId, { quantityUnit: normalizeProductPricingUnit(nextUnit) });
+      updateDraftItem(localId, itemLocalId, { quantityUnit: normalizeProductPricingUnit(nextUnit), inputUnitTouched: true });
       return;
     }
     const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
@@ -55744,7 +56339,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
     updateDraftItem(localId, itemLocalId, {
       quantityUnit,
-      unitPrice: getCustomerProductPrice(configSource, product, quantityUnit) || ''
+      inputUnitTouched: true
     });
   };
   const getOrderRequestBranchRef = (customer = null, source = {}, fallbackSource = {}) => {
@@ -56451,6 +57046,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         weightKg: `${item.sizeLabel ?? item.weightKg ?? ''}`.trim(),
         quantity: item.quantity ?? '',
         quantityUnit: item.quantityUnit || defaultQuantityUnit,
+        pricingUnit: item.pricingUnit || item.defaultUnit || item.quantityUnit || defaultQuantityUnit,
+        inputUnitTouched: true,
         unitPrice: item.unitPrice ?? ''
       }))
     });
@@ -56458,7 +57055,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const calculateRequestAmount = (request = {}) => {
     const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
-    return requestItems.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0);
+    return requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
+      item.lineTotal ?? ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0))
+    ), 0);
   };
   const editableCurrentDayRows = useMemo(() => filteredRequests.flatMap((request) => {
     const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
@@ -56497,6 +57096,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         sizeLabel: `${item.sizeLabel ?? item.weightKg ?? ''}`.trim(),
         quantity: item.quantity ?? '',
         quantityUnit: item.quantityUnit || defaultQuantityUnit,
+        pricingUnit: item.pricingUnit || item.defaultUnit || item.quantityUnit || defaultQuantityUnit,
         unitPrice: item.unitPrice ?? '',
         depositAmount: parseLooseMoneyValue(request.upfrontPayment ?? request.depositAmount ?? request.prepaidAmount ?? 0),
         note: `${request.note || item.note || ''}`.trim(),
@@ -56775,6 +57375,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       sizeLabel: row.sizeLabel || '',
       quantity: row.quantity ?? '',
       quantityUnit: row.quantityUnit || '',
+      pricingUnit: row.pricingUnit || row.quantityUnit || '',
       unitPrice: row.unitPrice ?? ''
     });
     setRequestStatus('');
@@ -56788,13 +57389,20 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     const customer = customerLookup.get(inlineEditingDraft.customerId);
     const product = productLookup.get(inlineEditingDraft.productId);
-    const quantity = parseFloat(inlineEditingDraft.quantity) || 0;
+    const quantity = parseLooseQuantityValue(inlineEditingDraft.quantity);
     const sizeLabel = `${inlineEditingDraft.sizeLabel || ''}`.trim();
     const attributeLabel = `${inlineEditingDraft.attributeLabel || ''}`.trim();
     const branchRef = getOrderRequestBranchRef(customer, request, row);
     const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
     const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, inlineEditingDraft.quantityUnit);
+    const pricingUnit = getCustomerProductPricingUnit(configSource, product, inlineEditingDraft.pricingUnit || 'Con');
     const unitPrice = parseLooseMoneyValue(inlineEditingDraft.unitPrice);
+    const pricingResult = calculatePricingAmount({
+      pricingUnit,
+      inputUnit: quantityUnit,
+      inputQuantity: quantity,
+      unitPrice,
+    });
 
     if (!customer || !product || quantity <= 0 || unitPrice <= 0) {
       setRequestStatus('Vui long chon dung khach hang, hang hoa, so luong va don gia hop le truoc khi luu.');
@@ -56818,7 +57426,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       weightKg: sizeLabel,
       quantity,
       quantityUnit,
-      unitPrice
+      pricingUnit,
+      unitPrice,
+      pricingQuantity: pricingResult.quantity,
+      pricingPendingActual: pricingResult.isPending,
+      lineTotal: pricingResult.amount
     };
 
     const normalizedRequest = {
@@ -56834,7 +57446,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       note: request.note || '',
       items: requestItems,
       totalQuantity: requestItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0),
-      totalAmount: requestItems.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0)
+      totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
+        item.lineTotal ?? ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0))
+      ), 0)
     };
 
     resetInlineEditing();
@@ -56854,10 +57468,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       if (!product) return { ...previous, quantityUnit: normalizeProductPricingUnit(nextUnit) };
       const configSource = getCustomerBranchProductConfigSource(customer, row?.branchId || '', activeProducts);
       const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
+      const pricingUnit = getCustomerProductPricingUnit(configSource, product, previous.pricingUnit || 'Con');
       return {
         ...previous,
         quantityUnit,
-        unitPrice: getCustomerProductPrice(configSource, product, quantityUnit) || ''
+        pricingUnit,
+        unitPrice: previous.unitPrice || getCustomerProductPrice(configSource, product, pricingUnit) || ''
       };
     });
   };
@@ -56892,10 +57508,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       date: request.requestDateKey || request.date || getTodayString(),
       note: request.note || '',
       items: requestItems,
-      totalQuantity: requestItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0),
-      totalAmount: requestItems.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0)
+      totalQuantity: requestItems.reduce((sum, item) => sum + parseLooseQuantityValue(item.quantity), 0),
+      totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
+        item.lineTotal ?? (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
+      ), 0)
     };
-    await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
+      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
+      await persistSmartOrderingPreferences([normalizedRequest]);
     setRequestStatus(`Da xoa mot dong hang cua ${customerName}.`);
     if (inlineEditingRowKey === row.rowKey) resetInlineEditing();
   };
@@ -56922,9 +57541,42 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }));
   };
 
+  const loadRememberedInputUnitForDraftItem = async ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
+    if (!localId || !itemLocalId || !customerId || !productId || typeof onGetCustomerProductPreference !== 'function') return;
+    const tokenKey = `${localId}::${itemLocalId}`;
+    const token = `${customerId}::${productId}::${Date.now()}::${Math.random()}`;
+    smartPreferenceLoadTokensRef.current.set(tokenKey, token);
+    try {
+      const preference = await onGetCustomerProductPreference({ customerId, productId });
+      if (smartPreferenceLoadTokensRef.current.get(tokenKey) !== token) return;
+      const customer = customerLookup.get(customerId);
+      const product = productLookup.get(productId);
+      if (!customer || !product) return;
+      const configSource = getCustomerBranchProductConfigSource(customer, branchId, activeProducts);
+      const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
+      const rememberedUnit = resolveRememberedInputUnit({
+        preference,
+        availableUnits: getCustomerProductUnitOptions(configSource, product, pricingUnit),
+        pricingUnit,
+        product,
+        fallback: pricingUnit,
+      });
+      updateDraftItem(localId, itemLocalId, (item) => {
+        if (item.productId !== productId || item.inputUnitTouched) return {};
+        return {
+          quantityUnit: rememberedUnit,
+          rememberedDefaultInputUnit: preference?.defaultInputUnit || '',
+        };
+      });
+    } catch (error) {
+      console.warn('Không tải được gợi ý đơn vị nhập của khách; app giữ đơn vị tính giá an toàn.', error);
+    }
+  };
+
   const handleCustomerChange = (localId, customerId) => {
     const selectedCustomer = customerLookup.get(customerId);
     const branchRef = getDefaultOrderRequestBranchRef(selectedCustomer);
+    const targetDraft = requestDrafts.find(draft => draft.localId === localId);
     updateDraft(localId, (draft) => ({
       customerId,
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
@@ -56938,16 +57590,29 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customSize = getCustomerProductSize(configSource, product);
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
-        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, item.quantityUnit);
+        const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
+        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, pricingUnit);
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
           weightKg: customSize || item.weightKg,
           quantityUnit,
-          unitPrice: getCustomerProductPrice(configSource, product, quantityUnit)
+          pricingUnit,
+          inputUnitTouched: false,
+          unitPrice: getCustomerProductPrice(configSource, product, pricingUnit)
         };
       })
     }));
+    (targetDraft?.items || []).forEach((item) => {
+      if (!selectedCustomer || !item.productId) return;
+      void loadRememberedInputUnitForDraftItem({
+        localId,
+        itemLocalId: item.localItemId,
+        customerId,
+        productId: item.productId,
+        branchId: branchRef.branchId,
+      });
+    });
     setRequestError('');
   };
 
@@ -56966,16 +57631,29 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customSize = getCustomerProductSize(configSource, product);
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
-        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, item.quantityUnit);
+        const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
+        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, pricingUnit);
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
           weightKg: customSize || item.weightKg,
           quantityUnit,
-          unitPrice: getCustomerProductPrice(configSource, product, quantityUnit)
+          pricingUnit,
+          inputUnitTouched: false,
+          unitPrice: getCustomerProductPrice(configSource, product, pricingUnit)
         };
       })
     }));
+    (targetDraft?.items || []).forEach((item) => {
+      if (!selectedCustomer || !item.productId) return;
+      void loadRememberedInputUnitForDraftItem({
+        localId,
+        itemLocalId: item.localItemId,
+        customerId: selectedCustomer.id,
+        productId: item.productId,
+        branchId: branch?.id || '',
+      });
+    });
     setRequestError('');
   };
 
@@ -56987,8 +57665,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, targetDraft?.branchId || '', activeProducts);
     const configuredAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
     updateDraftItem(localId, itemLocalId, (item) => {
+      const pricingUnit = selectedProduct
+        ? getCustomerProductPricingUnit(configSource, selectedProduct, 'Con')
+        : '';
       const quantityUnit = selectedProduct
-        ? resolveDraftItemQuantityUnit(configSource, selectedProduct, item.quantityUnit)
+        ? resolveDraftItemQuantityUnit(configSource, selectedProduct, pricingUnit)
         : item.quantityUnit || defaultQuantityUnit;
       return {
       productId,
@@ -56998,9 +57679,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         : (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
       weightKg: selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '',
       quantityUnit,
-      unitPrice: selectedProduct ? getCustomerProductPrice(configSource, selectedProduct, quantityUnit) : ''
+      pricingUnit,
+      inputUnitTouched: false,
+      rememberedDefaultInputUnit: '',
+      unitPrice: selectedProduct ? getCustomerProductPrice(configSource, selectedProduct, pricingUnit) : ''
     };
     });
+    if (selectedCustomer && selectedProduct) {
+      void loadRememberedInputUnitForDraftItem({
+        localId,
+        itemLocalId,
+        customerId: selectedCustomer.id,
+        productId: selectedProduct.id,
+        branchId: targetDraft?.branchId || '',
+      });
+    }
     setRequestError('');
   };
 
@@ -57012,10 +57705,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const attributeOptions = getProductAttributes(selectedProduct);
     const configuredAttribute = `${variantConfig?.attributeLabel || getCustomerProductAttribute(configSource, selectedProduct) || ''}`.trim();
     const configuredSize = `${variantConfig?.size || getCustomerProductSize(configSource, selectedProduct) || ''}`.trim();
-    const quantityUnit = resolveDraftItemQuantityUnit(configSource, selectedProduct, variantConfig?.unit || existingItem.quantityUnit);
+    const pricingUnit = normalizeProductPricingUnit(
+      variantConfig?.pricingUnit || variantConfig?.unit || getCustomerProductPricingUnit(configSource, selectedProduct, 'Con')
+    );
+    const quantityUnit = resolveDraftItemQuantityUnit(configSource, selectedProduct, existingItem.quantityUnit || pricingUnit);
     const configuredPrice = parseLooseMoneyValue(variantConfig?.price) > 0
       ? parseLooseMoneyValue(variantConfig.price)
-      : getCustomerProductPrice(configSource, selectedProduct, quantityUnit);
+      : getCustomerProductPrice(configSource, selectedProduct, pricingUnit);
     return createDraftItem({
       ...existingItem,
       localItemId: existingItem.localItemId,
@@ -57026,6 +57722,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         : (attributeOptions.includes(existingItem.attributeLabel) ? existingItem.attributeLabel : ''),
       weightKg: configuredSize || existingItem.weightKg,
       quantityUnit,
+      pricingUnit,
+      inputUnitTouched: Boolean(existingItem.inputUnitTouched),
       unitPrice: configuredPrice > 0 ? configuredPrice : (parseLooseMoneyValue(existingItem.unitPrice) > 0 ? existingItem.unitPrice : '')
     });
   };
@@ -57038,6 +57736,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     // draft may resolve unit/attribute defaults before it is stored in the order.
     const normalizedQuickItem = buildQuickProductDraftItem(productId, {}, variantConfig);
     const targetVariantKey = getDraftItemVariantKey(normalizedQuickItem);
+    const currentItemsBeforeSelection = Array.isArray(primaryDraft.items) ? primaryDraft.items : [];
+    const existingIndexBeforeSelection = currentItemsBeforeSelection.findIndex((item) => getDraftItemVariantKey(item) === targetVariantKey);
+    const blankItemBeforeSelection = currentItemsBeforeSelection.find((item) => (
+      !item.productId
+      && String(item.weightKg || '').trim() === ''
+      && String(item.quantity || '').trim() === ''
+      && String(item.unitPrice || '').trim() === ''
+    ));
+    const selectedItemLocalId = blankItemBeforeSelection?.localItemId || normalizedQuickItem.localItemId;
 
     const selectionKey = interactionSelectionKey || targetVariantKey;
     if (!tryAcquireOrderRequestSelectionLock(quickProductSelectionLocksRef.current, selectionKey)) return;
@@ -57078,6 +57785,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
     setRequestError('');
+    const selectedCustomer = primaryDraft.customerId ? customerLookup.get(primaryDraft.customerId) : null;
+    if (existingIndexBeforeSelection < 0 && selectedCustomer) {
+      void loadRememberedInputUnitForDraftItem({
+        localId: primaryDraft.localId,
+        itemLocalId: selectedItemLocalId,
+        customerId: selectedCustomer.id,
+        productId,
+        branchId: primaryDraft.branchId || '',
+      });
+    }
 
     const previousTimer = quickProductSelectionTimersRef.current.get(selectionKey);
     if (previousTimer) window.clearTimeout(previousTimer);
@@ -57138,7 +57855,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ? getDefaultOrderRequestBranchRef(customerMatch).branchId
       : (targetDraft?.branchId || '');
     const effectiveConfigSource = getCustomerBranchProductConfigSource(effectiveCustomer, effectiveBranchId, activeProducts);
-    const resolvedUnitPrice = unitPrice > 0 ? unitPrice : (productMatch ? getCustomerProductPrice(effectiveConfigSource, productMatch) : 0);
+    const pricingUnit = productMatch
+      ? getCustomerProductPricingUnit(effectiveConfigSource, productMatch, quantityUnit || 'Con')
+      : normalizeProductPricingUnit(quantityUnit);
+    const resolvedUnitPrice = unitPrice > 0
+      ? unitPrice
+      : (productMatch ? getCustomerProductPrice(effectiveConfigSource, productMatch, pricingUnit) : 0);
     const resolvedAttribute = productMatch ? getCustomerProductAttribute(effectiveConfigSource, productMatch) : '';
 
     if (customerMatch) {
@@ -57154,6 +57876,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       weightKg: sizeLabel || (productMatch ? getCustomerProductSize(effectiveConfigSource, productMatch) : '') || item.weightKg,
       quantity: quantityValue > 0 ? quantityValue : item.quantity,
       quantityUnit: quantityUnit || item.quantityUnit || '',
+      pricingUnit: pricingUnit || item.pricingUnit || '',
+      inputUnitTouched: Boolean(quantityUnit),
       unitPrice: resolvedUnitPrice > 0 ? resolvedUnitPrice : item.unitPrice
     }));
 
@@ -57252,21 +57976,35 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       customerSearch: customerMatch?.name || draft.customerSearch || effectiveCustomer?.name || capitalizeFirstPreservingSpacing(payload?.customer_name || '').trim(),
       note: noteValue || draft.note,
       items: extractedItems.length > 0
-        ? extractedItems.map((item) => createDraftItem({
-          productId: item.productMatch?.id || '',
-          productSearch: item.productMatch?.name || item.productName || '',
+        ? extractedItems.map((item) => {
+          const pricingUnit = item.productMatch
+            ? getCustomerProductPricingUnit(effectiveConfigSource, item.productMatch, item.quantityUnit || 'Con')
+            : normalizeProductPricingUnit(item.quantityUnit);
+          return createDraftItem({
+            productId: item.productMatch?.id || '',
+            productSearch: item.productMatch?.name || item.productName || '',
             attributeLabel: item.productMatch ? getCustomerProductAttribute(effectiveConfigSource, item.productMatch) : '',
             weightKg: item.sizeLabel || (item.productMatch ? getCustomerProductSize(effectiveConfigSource, item.productMatch) : ''),
             quantity: item.quantityValue > 0 ? item.quantityValue : '',
             quantityUnit: item.quantityUnit || defaultQuantityUnit,
-            unitPrice: item.unitPrice > 0 ? item.unitPrice : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch) : '')
-          }))
+            pricingUnit,
+            inputUnitTouched: Boolean(item.quantityUnit),
+            unitPrice: item.unitPrice > 0
+              ? item.unitPrice
+              : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch, pricingUnit) : '')
+          });
+        })
         : draft.items
     }));
 
     setRequestError('');
     const missingLines = extractedItems.filter((item) => {
-      const resolvedUnitPrice = item.unitPrice > 0 ? item.unitPrice : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch) : 0);
+      const pricingUnit = item.productMatch
+        ? getCustomerProductPricingUnit(effectiveConfigSource, item.productMatch, item.quantityUnit || 'Con')
+        : normalizeProductPricingUnit(item.quantityUnit);
+      const resolvedUnitPrice = item.unitPrice > 0
+        ? item.unitPrice
+        : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch, pricingUnit) : 0);
       return !item.productMatch || !item.sizeLabel || item.quantityValue <= 0 || !item.quantityUnit || resolvedUnitPrice <= 0;
     });
     if (effectiveCustomer && extractedItems.length > 0 && missingLines.length === 0) {
@@ -57443,6 +58181,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         weightKg: item.weightKg,
         quantity: item.quantity,
         quantityUnit: item.quantityUnit,
+        pricingUnit: item.pricingUnit,
         unitPrice: item.unitPrice
       }))
     });
@@ -57470,6 +58209,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       weightKg: targetItem.weightKg,
       quantity: targetItem.quantity,
       quantityUnit: targetItem.quantityUnit,
+      pricingUnit: targetItem.pricingUnit,
       unitPrice: targetItem.unitPrice
     });
   };
@@ -58089,7 +58829,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const product = productLookup.get(item.productId);
         const sizeLabel = `${item.weightKg || ''}`.trim();
         const attributeLabel = `${item.attributeLabel || ''}`.trim();
-        const quantity = parseFloat(item.quantity) || 0;
+        const quantity = parseLooseQuantityValue(item.quantity);
         const unitPrice = parseLooseMoneyValue(item.unitPrice);
 
         if (!product || quantity <= 0 || unitPrice <= 0) {
@@ -58097,11 +58837,19 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           return;
         }
 
+        const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
         const quantityUnit = resolveDraftItemQuantityUnit(
-          getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts),
+          configSource,
           product,
           item.quantityUnit
         );
+        const pricingUnit = getCustomerProductPricingUnit(configSource, product, item.pricingUnit || 'Con');
+        const pricingResult = calculatePricingAmount({
+          pricingUnit,
+          inputUnit: quantityUnit,
+          inputQuantity: quantity,
+          unitPrice,
+        });
         normalizedItems.push({
           productId: product.id,
           description: product.name || 'Hàng hóa',
@@ -58117,9 +58865,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           weightKg: sizeLabel,
           quantity,
           quantityUnit,
-          pricingUnit: quantityUnit,
+          pricingUnit,
           unitPrice,
-          lineTotal: Math.round(quantity * unitPrice)
+          pricingQuantity: pricingResult.quantity,
+          pricingPendingActual: pricingResult.isPending,
+          lineTotal: pricingResult.amount
         });
       });
 
@@ -58133,7 +58883,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       }
 
       const totalQuantity = normalizedItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0);
-      const totalAmount = normalizedItems.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0);
+      const totalAmount = normalizedItems.reduce((sum, item) => sum + parseLooseMoneyValue(item.lineTotal), 0);
 
       const requestSalesEmpId = isSales
         ? (employee?.id || customer.empId || '')
@@ -58212,6 +58962,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         }
 
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
+        await persistSmartOrderingPreferences(normalizedRequests);
 
         setRequestStatus('');
         closeOrderRequestForm();
@@ -58221,6 +58972,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       for (const requestPayload of normalizedRequests) {
         await onAddOrderRequest(employee?.id || 'admin', requestPayload);
       }
+      await persistSmartOrderingPreferences(normalizedRequests);
 
       setRequestStatus('');
       closeOrderRequestForm();
@@ -66466,7 +67218,9 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         ? parseInputCurrency(value)
         : field === 'attributeLabel'
           ? `${value || ''}`.trim()
-          : capitalizeFirstPreservingSpacing(value);
+          : field === 'pricingUnit'
+            ? normalizeProductPricingUnit(value)
+            : capitalizeFirstPreservingSpacing(value);
       const updated = {
         ...current,
         [field]: nextValue
@@ -66474,9 +67228,18 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const cleanPrice = parseLooseMoneyValue(updated.price);
       const cleanSize = `${updated.size || ''}`.trim();
       const cleanAttributeLabel = `${updated.attributeLabel || ''}`.trim();
+      const pricingUnit = normalizeProductPricingUnit(updated.pricingUnit || updated.defaultUnit || '');
       const cleanVariants = Array.isArray(updated.variants) ? updated.variants : [];
-      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && cleanVariants.length === 0) delete next[productId];
-      else next[productId] = { price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, variants: cleanVariants };
+      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && !pricingUnit && cleanVariants.length === 0) delete next[productId];
+      else next[productId] = {
+        ...current,
+        price: cleanPrice,
+        size: cleanSize,
+        attributeLabel: cleanAttributeLabel,
+        pricingUnit,
+        defaultUnit: pricingUnit,
+        variants: cleanVariants
+      };
       return next;
     });
     setCustomerPriceDirty(true);
@@ -66557,14 +67320,14 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         ? `${config.size || ''}`.trim()
         : '';
       const product = activeProductForPricingLookup.get(productId);
-      const defaultUnit = typeof config === 'object' && config !== null
-        ? normalizeProductPricingUnit(config.defaultUnit || getProductPrimaryPricingUnit(product || {}, 'Con'))
+      const pricingUnit = typeof config === 'object' && config !== null
+        ? normalizeProductPricingUnit(config.pricingUnit || config.defaultUnit || getProductPrimaryPricingUnit(product || {}, 'Con'))
         : getProductPrimaryPricingUnit(product || {}, 'Con');
       const savedUnitPrices = typeof config === 'object' && config !== null
         ? normalizeUnitPriceMap(config.unitPrices || config.pricesByUnit || config.priceByUnit || {})
         : {};
       const unitPrices = cleanPrice > 0
-        ? putUnitPriceIntoMap(savedUnitPrices, defaultUnit, cleanPrice)
+        ? putUnitPriceIntoMap(savedUnitPrices, pricingUnit, cleanPrice)
         : savedUnitPrices;
       const productAttributes = getProductAttributes(product);
       const rawAttributeLabel = typeof config === 'object' && config !== null
@@ -66577,7 +67340,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           const variantSize = `${variant.size || ''}`.trim();
           const rawVariantAttribute = `${variant.attributeLabel || variant.productAttribute || variant.attribute || ''}`.trim();
           const variantAttributeLabel = productAttributes.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(rawVariantAttribute)) || '';
-          const variantUnit = normalizeProductPricingUnit(variant.defaultUnit || variant.quantityUnit || variant.unit || defaultUnit);
+          const variantUnit = normalizeProductPricingUnit(variant.pricingUnit || variant.defaultUnit || variant.quantityUnit || variant.unit || pricingUnit);
           const variantUnitPrices = normalizeUnitPriceMap(variant.unitPrices || variant.pricesByUnit || variant.priceByUnit || {});
           if (variantPrice <= 0 && !variantSize && !variantAttributeLabel && !variantUnit && Object.keys(variantUnitPrices).length === 0) return null;
           return {
@@ -66585,17 +67348,18 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
             price: variantPrice,
             size: variantSize,
             attributeLabel: variantAttributeLabel,
-            ...(variantUnit ? { defaultUnit: variantUnit } : {}),
+            ...(variantUnit ? { pricingUnit: variantUnit, defaultUnit: variantUnit } : {}),
             ...(Object.keys(variantUnitPrices).length > 0 ? { unitPrices: variantUnitPrices } : {})
           };
         }).filter(Boolean)
         : [];
-      if (validProductIds.has(productId) && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || defaultUnit || Object.keys(unitPrices).length > 0 || cleanVariants.length > 0)) {
+      if (validProductIds.has(productId) && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || pricingUnit || Object.keys(unitPrices).length > 0 || cleanVariants.length > 0)) {
         acc[productId] = {
           price: cleanPrice,
           size: cleanSize,
           attributeLabel: cleanAttributeLabel,
-          defaultUnit,
+          pricingUnit,
+          defaultUnit: pricingUnit,
           unitPrices,
           variants: cleanVariants
         };
@@ -67308,6 +68072,12 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                   : { price: parseLooseMoneyValue(rawCustomConfig), size: '', attributeLabel: '', variants: [] };
                 const customPrice = customConfig.price || '';
                 const customSize = customConfig.size || '';
+                const customPricingUnit = normalizeProductPricingUnit(
+                  customConfig.pricingUnit || customConfig.defaultUnit || getProductPrimaryPricingUnit(product, 'Con')
+                );
+                const pricingUnitOptions = PRODUCT_PRICING_UNIT_OPTIONS.includes(customPricingUnit)
+                  ? PRODUCT_PRICING_UNIT_OPTIONS
+                  : [customPricingUnit, ...PRODUCT_PRICING_UNIT_OPTIONS].filter(Boolean);
                 const productAttributeOptions = getProductAttributes(product);
                 const customAttributeLabel = productAttributeOptions.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(customConfig.attributeLabel || '')) || '';
                 const customVariants = (Array.isArray(customConfig.variants) ? customConfig.variants : []).map((variant, index) => ({
@@ -67317,7 +68087,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                   price: variant.price || ''
                 }));
                 const hasProductAttributes = productAttributeOptions.length > 0;
-                const hasCustomConfig = parseLooseMoneyValue(customPrice) > 0 || `${customSize || ''}`.trim() !== '' || customAttributeLabel || customVariants.length > 0;
+                const hasCustomConfig = parseLooseMoneyValue(customPrice) > 0 || `${customSize || ''}`.trim() !== '' || customAttributeLabel || customPricingUnit || customVariants.length > 0;
                 const usageStats = customerProductUsageStats.get(product.id);
                 return (
                   <div key={product.id} className={`rounded-2xl border p-3 ${hasCustomConfig ? 'border-emerald-100 bg-emerald-50/60' : 'border-gray-100 bg-gray-50'}`}>
@@ -67336,7 +68106,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                         </button>
                       )}
                     </div>
-                    <div className={`mt-3 grid items-end gap-2 ${hasProductAttributes ? 'grid-cols-[minmax(0,0.9fr)_minmax(84px,0.85fr)_minmax(0,1fr)]' : 'grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]'}`}>
+                    <div className={`mt-3 grid grid-cols-2 items-end gap-2 ${hasProductAttributes ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
                       <label className="min-w-0 space-y-1">
                         <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Size</span>
                         <input
@@ -67362,6 +68132,18 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                           </select>
                         </label>
                       )}
+                      <label className="min-w-0 space-y-1">
+                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị tính giá</span>
+                        <select
+                          value={customPricingUnit}
+                          onChange={(e) => updateCustomerPriceDraft(product.id, 'pricingUnit', e.target.value)}
+                          className="w-full rounded-xl border border-emerald-100 bg-white px-2 py-2.5 text-sm font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        >
+                          {pricingUnitOptions.map(unit => (
+                            <option key={unit} value={unit}>{unit}</option>
+                          ))}
+                        </select>
+                      </label>
                       <div className="flex items-center gap-2">
                         <label className="min-w-0 flex-1 space-y-1">
                           <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Giá</span>
@@ -67373,7 +68155,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                             placeholder="Giá"
                           />
                         </label>
-                        <span className="text-xs font-bold text-gray-400">đ</span>
+                        <span className="text-xs font-bold text-gray-400">đ/{customPricingUnit || 'đv'}</span>
                       </div>
                     </div>
                     <div className="mt-3 rounded-2xl border border-white/70 bg-white/75 p-2">
@@ -69584,9 +70366,9 @@ function EmployeeReviewRadarChart({
   onSaveLabel = null,
   onCancelLabelEdit = null
 }) {
-  const size = 340;
+  const size = 360;
   const center = size / 2;
-  const maxRadius = 108;
+  const maxRadius = 112;
   const criteria = criteriaList.length ? criteriaList : EMPLOYEE_PEER_REVIEW_CRITERIA;
   const isInteractive = Boolean(interactiveScores && typeof onScoreChange === 'function');
   const angleFor = index => ((Math.PI * 2 * index) / criteria.length) - (Math.PI / 2);
@@ -69612,10 +70394,11 @@ function EmployeeReviewRadarChart({
         ))}
         {criteria.map((criteriaItem, index) => {
           const edge = pointFor(index, 5);
-          const label = pointFor(index, 5.75);
+          // Keep criterion names clear of the score touch targets on each axis.
+          const label = pointFor(index, 6.3);
           const isEditingLabel = editingCriteriaId === criteriaItem.id;
-          const labelBoxWidth = 104;
-          const labelBoxHeight = 34;
+          const labelBoxWidth = 118;
+          const labelBoxHeight = 38;
           const labelBoxX = Math.min(Math.max(label.x - (labelBoxWidth / 2), 4), size - labelBoxWidth - 4);
           const labelBoxY = Math.min(Math.max(label.y - (labelBoxHeight / 2), 4), size - labelBoxHeight - 4);
           return (
@@ -69933,8 +70716,8 @@ function EmployeeReviewModuleView({
   return (
     <div className="space-y-5 pb-24">
       <section className="rounded-[2rem] bg-white p-3 shadow-sm ring-1 ring-slate-100">
-        <div className="grid grid-cols-[minmax(0,1fr)_8.75rem] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_11rem]">
-          <label className="space-y-1">
+        <div className="grid grid-cols-2 items-end gap-3">
+          <label className="min-w-0 space-y-1 text-center">
             <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Nhân sự</span>
             <select
               value={selectedEmployeeId}
@@ -69943,13 +70726,13 @@ function EmployeeReviewModuleView({
                 setEditingReviewId('');
                 setSaveMessage('');
               }}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-800 outline-none"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-center text-sm font-bold text-slate-800 outline-none"
               disabled={!isSuperAdmin && !canViewAllEmployeeReviews && !canCreateEmployeeReview}
             >
               {visibleEmployees.map(emp => <option key={emp.id} value={emp.id}>{emp.name || emp.phone || 'Nhân sự'}</option>)}
             </select>
           </label>
-          <label className="space-y-1">
+          <label className="min-w-0 space-y-1 text-center">
             <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Tháng</span>
             <input
               type="month"
@@ -69959,7 +70742,7 @@ function EmployeeReviewModuleView({
                 setEditingReviewId('');
                 setSaveMessage('');
               }}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-2 py-2.5 text-sm font-bold text-slate-800 outline-none"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-2 py-2.5 text-center text-sm font-bold text-slate-800 outline-none"
             />
           </label>
         </div>
@@ -69993,6 +70776,49 @@ function EmployeeReviewModuleView({
               }}
             />
           </div>
+          {canManageReviewCriteria && (
+            <div className="mt-4 rounded-3xl border border-emerald-100 bg-emerald-50/60 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">Tên 10 tiêu chí</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCriteria(prev => !prev);
+                    setEditingCriteriaId('');
+                  }}
+                  className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-700 transition-colors hover:bg-emerald-100"
+                >
+                  {editingCriteria ? 'Đóng chỉnh sửa' : 'Sửa tên tiêu chí'}
+                </button>
+              </div>
+              {editingCriteria && (
+                <>
+                  <p className="mt-2 text-xs leading-relaxed text-emerald-800">Đổi tên trực tiếp tại từng ô, sau đó bấm lưu. Tên mới sẽ áp dụng cho toàn bộ màn hình đánh giá.</p>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {criteriaList.map(criteria => (
+                      <label key={criteria.id} className="min-w-0">
+                        <span className="sr-only">Tên tiêu chí {criteria.label}</span>
+                        <input
+                          type="text"
+                          value={criteriaDraft?.[criteria.id] || ''}
+                          onChange={event => setCriteriaDraft(prev => ({ ...prev, [criteria.id]: event.target.value }))}
+                          className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
+                          aria-label={`Đổi tên tiêu chí ${criteria.label}`}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveCriteriaLabels({ closeEditor: true })}
+                    className="mt-3 w-full rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-black text-white transition-colors hover:bg-emerald-700"
+                  >
+                    Lưu tên tiêu chí
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           <textarea
             value={reviewReason}
             onChange={event => setReviewReason(event.target.value)}
@@ -70027,20 +70853,13 @@ function EmployeeReviewModuleView({
 
       <section className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-100">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Bình quân đồng nghiệp</p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">
-              {peerReviews.length
-                ? `${getEmployeeReviewCriteriaAverage(peerScores).toLocaleString('vi-VN', { maximumFractionDigits: 1 })} sao`
-                : 'Chưa có đánh giá đồng nghiệp'}
-            </h3>
-          </div>
+          <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Đánh giá của đồng nghiệp</p>
           <div className="flex flex-wrap justify-end gap-2">
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
-              {peerReviewerCount} nhân viên đã đánh giá
+              {peerReviews.length ? `${peerReviewerCount} nhân viên đã đánh giá` : 'Chưa có đánh giá'}
             </span>
             <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
-              Thưởng theo bình quân {formatCurrency(peerReviewBonus)} đ
+              Tổng thưởng {formatCurrency(peerReviewBonus)} đ
             </span>
           </div>
         </div>
@@ -70050,12 +70869,11 @@ function EmployeeReviewModuleView({
             const criteriaBonus = getEmployeeReviewCriterionBonus(score);
             return (
               <div key={criteria.id} className="rounded-2xl bg-slate-50 px-3 py-3 text-center ring-1 ring-slate-100">
-                <p className="line-clamp-1 text-xs font-black text-slate-700">{criteria.label}</p>
-                <p className="mt-1 text-lg font-black text-amber-600">
-                  {score.toLocaleString('vi-VN', { maximumFractionDigits: 1 })}
+                <p className="flex items-center justify-center gap-1.5 text-xs font-black text-slate-700">
+                  <span className="line-clamp-1">{criteria.label}</span>
+                  <span className="shrink-0 text-amber-700">· {score.toLocaleString('vi-VN', { maximumFractionDigits: 1 })} sao</span>
                 </p>
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">sao</p>
-                <p className="mt-1 text-[11px] font-black text-emerald-600">+{formatCurrency(criteriaBonus)} đ</p>
+                <p className="mt-1 text-[11px] font-black text-emerald-600">{formatCurrency(criteriaBonus)} đ</p>
               </div>
             );
           })}
@@ -72113,6 +72931,9 @@ function SalaryView({
   currentEmployee,
   employees,
   employeeReviews = [],
+  payrollPeriods = [],
+  payrollDebtCarryovers = [],
+  payrollAutoLockPlans = [],
   attendance,
   financials,
   performance,
@@ -72131,6 +72952,9 @@ function SalaryView({
   onRejectAdvance,
   onDeleteAdvance,
   onUpdateCompanySettings,
+  onLockPayrollPeriod,
+  onPreparePayrollAutoLockPlan,
+  onLoadPayrollPeriodSnapshots,
   canViewSalaryAdvance = true,
   canViewAllPayroll = false,
   canCreateSalaryAdvanceRequest = true,
@@ -72170,19 +72994,30 @@ function SalaryView({
   const [advancePercentInputs, setAdvancePercentInputs] = useState({});
   const [advancePercentStatus, setAdvancePercentStatus] = useState('');
   const [evaluationDetailEmployeeId, setEvaluationDetailEmployeeId] = useState('');
+  const [showPayrollLockConfirm, setShowPayrollLockConfirm] = useState(false);
+  const [isLockingPayroll, setIsLockingPayroll] = useState(false);
+  const [payrollLockStatus, setPayrollLockStatus] = useState('');
+  const [lockedSnapshotRows, setLockedSnapshotRows] = useState([]);
+  const [lockedSnapshotLoadState, setLockedSnapshotLoadState] = useState('idle');
+  const [lockedSnapshotLoadError, setLockedSnapshotLoadError] = useState('');
+  const [lockedSnapshotReloadToken, setLockedSnapshotReloadToken] = useState(0);
+  const [payrollAutoLockPlanStatus, setPayrollAutoLockPlanStatus] = useState('');
+  const [payrollAutoLockPlanSyncToken, setPayrollAutoLockPlanSyncToken] = useState(0);
+  const payrollAutoLockPlanSignatureRef = useRef('');
+  const payrollAutoLockPlanSavingRef = useRef(false);
   const canManagePayrollByRole =
     isOwnerAccountUser(currentEmployee, currentUser)
     || currentUser?.role === 'super_admin'
     || currentEmployee?.role === 'super_admin'
     || isAccountingPosition(currentEmployee?.position);
   const canViewCompanyPayroll = Boolean(canViewAllPayroll || canManagePayrollByRole);
-  const canAddSalaryAdjustments = Boolean(canManagePayrollByRole || canAddBonusPenalty);
-  const canEditSalaryAdjustments = Boolean(canManagePayrollByRole || canEditBonusPenalty);
-  const canDeleteSalaryAdjustments = Boolean(canManagePayrollByRole || canDeleteBonusPenalty);
-  const canEditOvertimePerformanceRecords = Boolean(canManagePayrollByRole || canEditOvertimePerformance);
-  const canManageEmployeePurchases = Boolean(canManagePayrollByRole || canRecordEmployeePurchase);
-  const canEditEmployeePurchaseRecords = Boolean(canManagePayrollByRole || canEditEmployeePurchase);
-  const canDeleteEmployeePurchaseRecords = Boolean(canManagePayrollByRole || canDeleteEmployeePurchase);
+  const canAddSalaryAdjustmentsByRole = Boolean(canManagePayrollByRole || canAddBonusPenalty);
+  const canEditSalaryAdjustmentsByRole = Boolean(canManagePayrollByRole || canEditBonusPenalty);
+  const canDeleteSalaryAdjustmentsByRole = Boolean(canManagePayrollByRole || canDeleteBonusPenalty);
+  const canEditOvertimePerformanceRecordsByRole = Boolean(canManagePayrollByRole || canEditOvertimePerformance);
+  const canManageEmployeePurchasesByRole = Boolean(canManagePayrollByRole || canRecordEmployeePurchase);
+  const canEditEmployeePurchaseRecordsByRole = Boolean(canManagePayrollByRole || canEditEmployeePurchase);
+  const canDeleteEmployeePurchaseRecordsByRole = Boolean(canManagePayrollByRole || canDeleteEmployeePurchase);
   const payrollConfigNoticeStorageKey = `hd_payroll_config_notice_hidden_${currentCompany?.id || currentCompany?.companyId || currentCompany?.code || 'default'}`;
   const [payrollConfigNoticeHidden, setPayrollConfigNoticeHidden] = useState(false);
 
@@ -72190,16 +73025,38 @@ function SalaryView({
   const salaryMonthInputRef = useRef(null);
   const currentMonth = salaryMonth || getTodayString().substring(0, 7);
   const currentMonthLabel = `Tháng ${currentMonth.substring(5, 7)}/${currentMonth.substring(0, 4)}`;
+  const payrollCompanyId = currentCompany?.id || currentCompany?.companyId || currentEmployee?.companyId || currentUser?.companyId || '';
+  const lockedPayrollPeriod = useMemo(
+    () => getLockedPayrollPeriod(payrollPeriods, payrollCompanyId, currentMonth),
+    [currentMonth, payrollCompanyId, payrollPeriods]
+  );
+  const isPayrollLocked = Boolean(lockedPayrollPeriod);
+  const activePayrollAutoLockPlan = useMemo(() => (
+    (payrollAutoLockPlans || []).find(plan => (
+      !plan?.isArchived
+      && `${plan?.companyId || ''}` === `${payrollCompanyId || ''}`
+      && normalizePayrollMonthKey(plan?.monthKey) === currentMonth
+    )) || null
+  ), [currentMonth, payrollAutoLockPlans, payrollCompanyId]);
+  const payrollMonthEndDateKey = getPayrollMonthEndDateKey(currentMonth);
+  const isPayrollLockDateEligible = canLockPayrollPeriodAtDate(currentMonth, getTodayString());
+  const canAddSalaryAdjustments = !isPayrollLocked && canAddSalaryAdjustmentsByRole;
+  const canEditSalaryAdjustments = !isPayrollLocked && canEditSalaryAdjustmentsByRole;
+  const canDeleteSalaryAdjustments = !isPayrollLocked && canDeleteSalaryAdjustmentsByRole;
+  const canEditOvertimePerformanceRecords = !isPayrollLocked && canEditOvertimePerformanceRecordsByRole;
+  const canManageEmployeePurchases = !isPayrollLocked && canManageEmployeePurchasesByRole;
+  const canEditEmployeePurchaseRecords = !isPayrollLocked && canEditEmployeePurchaseRecordsByRole;
+  const canDeleteEmployeePurchaseRecords = !isPayrollLocked && canDeleteEmployeePurchaseRecordsByRole;
   const salaryAdvancePercentByDepartment = useMemo(
     () => getCompanySalaryAdvancePercentByDepartment(currentCompany),
     [currentCompany]
   );
   const salaryAdvanceLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, currentEmployee, null);
   const salaryAdvancePercent = salaryAdvanceLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, currentEmployee, null);
-  const canReviewSalaryAdvances = Boolean(canManagePayrollByRole || canViewSalaryAdvanceRequests || canApproveSalaryAdvance || canRejectSalaryAdvance || canDeleteSalaryAdvance);
-  const canApproveAdvanceRequest = Boolean(canManagePayrollByRole || canApproveSalaryAdvance);
-  const canRejectAdvanceRequest = Boolean(canManagePayrollByRole || canRejectSalaryAdvance);
-  const canDeleteAdvanceRequest = Boolean(canManagePayrollByRole || canDeleteSalaryAdvance);
+  const canReviewSalaryAdvances = !isPayrollLocked && Boolean(canManagePayrollByRole || canViewSalaryAdvanceRequests || canApproveSalaryAdvance || canRejectSalaryAdvance || canDeleteSalaryAdvance);
+  const canApproveAdvanceRequest = !isPayrollLocked && Boolean(canManagePayrollByRole || canApproveSalaryAdvance);
+  const canRejectAdvanceRequest = !isPayrollLocked && Boolean(canManagePayrollByRole || canRejectSalaryAdvance);
+  const canDeleteAdvanceRequest = !isPayrollLocked && Boolean(canManagePayrollByRole || canDeleteSalaryAdvance);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -72226,7 +73083,8 @@ function SalaryView({
   };
 
   const currentEmployeeId = currentEmployee?.id || '';
-  const canCreateOwnSalaryAdvanceRequest = Boolean(currentEmployeeId && (canCreateSalaryAdvanceRequest || currentEmployee?.id === currentEmployeeId));
+  const canCreateOwnSalaryAdvanceRequest = !isPayrollLocked && Boolean(currentEmployeeId && (canCreateSalaryAdvanceRequest || currentEmployee?.id === currentEmployeeId));
+  const canCreateSalaryAdvanceForOthersInPeriod = !isPayrollLocked && Boolean(canCreateSalaryAdvanceForOthers);
   const visibleSalaryEmployees = useMemo(() => {
     if (!currentEmployeeId) return [];
     if (canViewCompanyPayroll) {
@@ -72240,6 +73098,61 @@ function SalaryView({
     const ownEmployee = employees.find(emp => emp.id === currentEmployeeId);
     return ownEmployee ? [ownEmployee] : [];
   }, [employees, currentEmployeeId, canViewCompanyPayroll]);
+  const payrollSnapshotLoaderRef = useRef(onLoadPayrollPeriodSnapshots);
+
+  useEffect(() => {
+    payrollSnapshotLoaderRef.current = onLoadPayrollPeriodSnapshots;
+  }, [onLoadPayrollPeriodSnapshots]);
+
+  useEffect(() => {
+    let isActive = true;
+    if (!isPayrollLocked) {
+      setLockedSnapshotRows([]);
+      setLockedSnapshotLoadState('idle');
+      setLockedSnapshotLoadError('');
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const loadSnapshots = async () => {
+      setLockedSnapshotLoadState('loading');
+      setLockedSnapshotLoadError('');
+      const loader = payrollSnapshotLoaderRef.current;
+      if (typeof loader !== 'function') {
+        if (isActive) {
+          setLockedSnapshotRows([]);
+          setLockedSnapshotLoadState('error');
+          setLockedSnapshotLoadError('Không thể tải ảnh chụp kỳ lương trên thiết bị này.');
+        }
+        return;
+      }
+
+      const result = await loader({ monthKey: currentMonth });
+      if (!isActive) return;
+      if (result?.success === false) {
+        setLockedSnapshotRows([]);
+        setLockedSnapshotLoadState('error');
+        setLockedSnapshotLoadError(result.message || 'Không tải được ảnh chụp kỳ lương.');
+        return;
+      }
+
+      const allowedEmployeeIds = canViewCompanyPayroll ? null : new Set([currentEmployeeId].filter(Boolean));
+      setLockedSnapshotRows(mapPayrollSnapshotsToRows(result?.snapshots || [], allowedEmployeeIds));
+      setLockedSnapshotLoadState('loaded');
+    };
+
+    loadSnapshots().catch(error => {
+      if (!isActive) return;
+      setLockedSnapshotRows([]);
+      setLockedSnapshotLoadState('error');
+      setLockedSnapshotLoadError(getFriendlyFirebaseErrorMessage(error, 'Không tải được ảnh chụp kỳ lương.'));
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [canViewCompanyPayroll, currentEmployeeId, currentMonth, isPayrollLocked, lockedPayrollPeriod?.id, lockedSnapshotReloadToken]);
   const missingPayrollConfigEmployees = useMemo(
     () => ModuleDependencyService.getEmployeesMissingPayrollConfig(visibleSalaryEmployees),
     [visibleSalaryEmployees]
@@ -72293,6 +73206,18 @@ function SalaryView({
     return results;
   }, [employees, payrollEvaluationContext, currentMonth]);
 
+  const payrollOpeningDebtByEmployee = useMemo(() => (
+    new Map((visibleSalaryEmployees || []).map(emp => [
+      emp.id,
+      getEmployeePayrollOpeningDebt(
+        payrollDebtCarryovers,
+        payrollCompanyId,
+        currentMonth,
+        emp.id
+      )
+    ]))
+  ), [currentMonth, payrollCompanyId, payrollDebtCarryovers, visibleSalaryEmployees]);
+
   const buildPayrollSalaryDetails = useCallback((employeeId) => {
     const salaryDetails = buildSalaryDetails(
       employeeId,
@@ -72306,18 +73231,24 @@ function SalaryView({
       holidays,
       currentMonth
     );
-    return applyEvaluationBonusToSalaryDetails(
+    const detailsWithEvaluationBonus = applyEvaluationBonusToSalaryDetails(
       salaryDetails,
       payrollEvaluationResultsByEmployee.get(employeeId)
     );
-  }, [attendance, customers, employees, financials, holidays, currentMonth, orders, payments, performance, payrollEvaluationResultsByEmployee]);
+    return applyPayrollOpeningDebtToSalaryDetails(
+      detailsWithEvaluationBonus,
+      payrollOpeningDebtByEmployee.get(employeeId) || 0
+    );
+  }, [attendance, customers, employees, financials, holidays, currentMonth, orders, payments, performance, payrollEvaluationResultsByEmployee, payrollOpeningDebtByEmployee]);
 
-  const salaryRows = useMemo(() => visibleSalaryEmployees
+  const liveSalaryRows = useMemo(() => visibleSalaryEmployees
     .map(emp => ({
       emp,
       details: buildPayrollSalaryDetails(emp.id)
     }))
     .filter(row => row.details), [visibleSalaryEmployees, buildPayrollSalaryDetails]);
+
+  const salaryRows = isPayrollLocked ? lockedSnapshotRows : liveSalaryRows;
 
   const aggregateData = useMemo(() => {
     const totals = salaryRows.reduce((acc, row) => {
@@ -72328,6 +73259,9 @@ function SalaryView({
       acc.totalPenalty += row.details.totalPenalty;
       acc.totalBonus += row.details.totalBonus || 0;
       acc.totalEvaluationBonus += row.details.evaluationBonus || 0;
+      acc.totalOpeningDebt += row.details.openingDebt || 0;
+      acc.totalOpeningDebtApplied += row.details.openingDebtApplied || 0;
+      acc.totalEndingDebt += row.details.endingDebt || 0;
       return acc;
     }, {
       totalSalary: 0,
@@ -72336,34 +73270,194 @@ function SalaryView({
       totalEmployeePurchase: 0,
       totalPenalty: 0,
       totalBonus: 0,
-      totalEvaluationBonus: 0
+      totalEvaluationBonus: 0,
+      totalOpeningDebt: 0,
+      totalOpeningDebtApplied: 0,
+      totalEndingDebt: 0
     });
 
-    return {
+    const calculatedTotals = {
       ...totals,
       avgDaily: totals.totalDays > 0 ? totals.totalSalary / totals.totalDays : 0
     };
-  }, [salaryRows]);
+    if (!isPayrollLocked || !lockedPayrollPeriod?.totals) return calculatedTotals;
+    return {
+      ...calculatedTotals,
+      ...lockedPayrollPeriod.totals
+    };
+  }, [isPayrollLocked, lockedPayrollPeriod?.totals, salaryRows]);
 
   const currentSalaryDetails = useMemo(() => (
     currentEmployeeId
-      ? buildPayrollSalaryDetails(currentEmployeeId)
+      ? (isPayrollLocked
+          ? salaryRows.find(row => row.emp?.id === currentEmployeeId)?.details || null
+          : buildPayrollSalaryDetails(currentEmployeeId))
       : null
-  ), [currentEmployeeId, buildPayrollSalaryDetails]);
+  ), [buildPayrollSalaryDetails, currentEmployeeId, isPayrollLocked, salaryRows]);
   const selectedEvaluationDetail = useMemo(() => {
     if (!evaluationDetailEmployeeId) return null;
-    const targetEmployee = (employees || []).find(emp => emp.id === evaluationDetailEmployeeId);
+    const lockedRow = isPayrollLocked
+      ? salaryRows.find(row => row.emp?.id === evaluationDetailEmployeeId)
+      : null;
+    const targetEmployee = lockedRow?.emp || (employees || []).find(emp => emp.id === evaluationDetailEmployeeId);
     if (!targetEmployee) return null;
     return {
       employee: targetEmployee,
-      result: payrollEvaluationResultsByEmployee.get(evaluationDetailEmployeeId)
+      result: lockedRow?.details?.evaluationResult
+        || payrollEvaluationResultsByEmployee.get(evaluationDetailEmployeeId)
         || projectEvaluationSummaryToPayroll(null, {
           employeeId: evaluationDetailEmployeeId,
           monthKey: currentMonth
         })
     };
-  }, [currentMonth, employees, evaluationDetailEmployeeId, payrollEvaluationResultsByEmployee]);
+  }, [currentMonth, employees, evaluationDetailEmployeeId, isPayrollLocked, payrollEvaluationResultsByEmployee, salaryRows]);
   const closeEvaluationDetail = useCallback(() => setEvaluationDetailEmployeeId(''), []);
+  const payrollMonthEndLabel = payrollMonthEndDateKey
+    ? payrollMonthEndDateKey.split('-').reverse().join('/')
+    : '';
+  const canLockSelectedPayrollPeriod = Boolean(
+    canManagePayrollByRole
+    && canViewCompanyPayroll
+    && !isPayrollLocked
+    && isPayrollLockDateEligible
+    && liveSalaryRows.length > 0
+    && typeof onLockPayrollPeriod === 'function'
+  );
+  const canPreparePayrollAutoLock = Boolean(
+    canManagePayrollByRole
+    && canViewCompanyPayroll
+    && !isPayrollLocked
+    && currentMonth === getTodayString().substring(0, 7)
+    && liveSalaryRows.length > 0
+    && typeof onPreparePayrollAutoLockPlan === 'function'
+  );
+
+  const buildPayrollLockPayload = useCallback((lockedAt = new Date().toISOString()) => {
+    const lockedByEmployeeId = currentEmployeeId || currentUser?.employeeId || currentUser?.id || '';
+    const lockedByName = currentEmployee?.name || currentUser?.name || currentUser?.displayName || 'Người quản lý';
+    const snapshots = liveSalaryRows.map((row, orderIndex) => createPayrollEmployeeSnapshot({
+      companyId: payrollCompanyId,
+      monthKey: currentMonth,
+      employee: row.emp,
+      salaryDetails: row.details,
+      orderIndex,
+      lockedAt,
+      lockedByEmployeeId
+    })).filter(Boolean);
+    const period = createPayrollPeriodRecord({
+      companyId: payrollCompanyId,
+      monthKey: currentMonth,
+      snapshots,
+      totals: aggregateData,
+      lockedAt,
+      lockedByEmployeeId,
+      lockedByName,
+      lockedByRole: currentEmployee?.position || currentUser?.role || ''
+    });
+    return { period, snapshots };
+  }, [aggregateData, currentEmployee, currentEmployeeId, currentMonth, currentUser, liveSalaryRows, payrollCompanyId]);
+
+  const payrollAutoLockPlanSignature = useMemo(() => JSON.stringify({
+    companyId: payrollCompanyId,
+    monthKey: currentMonth,
+    rows: liveSalaryRows.map(({ emp, details }) => ({
+      employeeId: emp?.id || '',
+      employeeName: emp?.name || '',
+      employeePosition: emp?.position || '',
+      salaryDetails: details
+    }))
+  }), [currentMonth, liveSalaryRows, payrollCompanyId]);
+
+  useEffect(() => {
+    setShowPayrollLockConfirm(false);
+    setPayrollLockStatus('');
+  }, [currentMonth]);
+
+  useEffect(() => {
+    if (!canPreparePayrollAutoLock || !payrollAutoLockPlanSignature || typeof window === 'undefined') {
+      payrollAutoLockPlanSignatureRef.current = '';
+      return undefined;
+    }
+    if (
+      activePayrollAutoLockPlan?.status === 'ready'
+      && activePayrollAutoLockPlan?.sourceSignature === payrollAutoLockPlanSignature
+    ) {
+      payrollAutoLockPlanSignatureRef.current = payrollAutoLockPlanSignature;
+      return undefined;
+    }
+    if (
+      payrollAutoLockPlanSavingRef.current
+      || payrollAutoLockPlanSignatureRef.current === payrollAutoLockPlanSignature
+    ) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      const payload = buildPayrollLockPayload();
+      if (!payload?.period || payload.snapshots.length === 0) {
+        setPayrollAutoLockPlanStatus('Chưa đủ dữ liệu để chuẩn bị khóa tự động.');
+        return;
+      }
+      payrollAutoLockPlanSavingRef.current = true;
+      try {
+        const result = await onPreparePayrollAutoLockPlan({
+          ...payload,
+          sourceSignature: payrollAutoLockPlanSignature
+        });
+        if (result?.success === false) {
+          setPayrollAutoLockPlanStatus(result.message || 'Chưa chuẩn bị được khóa tự động.');
+          return;
+        }
+        payrollAutoLockPlanSignatureRef.current = payrollAutoLockPlanSignature;
+        setPayrollAutoLockPlanStatus('Đã chuẩn bị khóa tự động cuối tháng.');
+        setPayrollAutoLockPlanSyncToken(token => token + 1);
+      } catch (error) {
+        setPayrollAutoLockPlanStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa chuẩn bị được khóa tự động.'));
+      } finally {
+        payrollAutoLockPlanSavingRef.current = false;
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    activePayrollAutoLockPlan?.sourceSignature,
+    activePayrollAutoLockPlan?.status,
+    buildPayrollLockPayload,
+    canPreparePayrollAutoLock,
+    onPreparePayrollAutoLockPlan,
+    payrollAutoLockPlanSignature,
+    payrollAutoLockPlanSyncToken
+  ]);
+
+  const handleConfirmPayrollLock = async () => {
+    if (!canLockSelectedPayrollPeriod || isLockingPayroll) return;
+    const { period, snapshots } = buildPayrollLockPayload();
+
+    if (!period || snapshots.length === 0) {
+      setPayrollLockStatus('Chưa có dữ liệu nhân sự hợp lệ để khóa kỳ lương.');
+      return;
+    }
+
+    setIsLockingPayroll(true);
+    setPayrollLockStatus('Đang lưu ảnh chụp và khóa kỳ lương...');
+    try {
+      const result = await onLockPayrollPeriod({ period, snapshots });
+      if (result?.success === false) {
+        setPayrollLockStatus(result.message || 'Không khóa được kỳ lương.');
+        return;
+      }
+      const allowedEmployeeIds = canViewCompanyPayroll ? null : new Set([currentEmployeeId].filter(Boolean));
+      setLockedSnapshotRows(mapPayrollSnapshotsToRows(result?.snapshots || snapshots, allowedEmployeeIds));
+      setLockedSnapshotLoadState('loaded');
+      setLockedSnapshotLoadError('');
+      setShowPayrollLockConfirm(false);
+      setPayrollLockStatus(`Đã khóa ${currentMonthLabel.toLowerCase()}. Dữ liệu kỳ này chuyển sang chế độ chỉ đọc.`);
+    } catch (error) {
+      setPayrollLockStatus(getFriendlyFirebaseErrorMessage(error, 'Không khóa được kỳ lương. Dữ liệu hiện tại vẫn được giữ nguyên.'));
+    } finally {
+      setIsLockingPayroll(false);
+    }
+  };
   const pendingAdvances = useMemo(() => (
     advanceRequests
       ? advanceRequests.filter(r => r.empId === currentEmployeeId && r.status === 'pending' && (!r.date || `${r.date}`.startsWith(currentMonth)))
@@ -72382,22 +73476,22 @@ function SalaryView({
   const salaryAdvanceRemainingAmount = salaryAdvanceIsUnlimited ? null : Math.max(0, roundMoneyValue(salaryAdvanceLimitAmount - salaryAdvanceUsedAmount));
 
   const advanceTargetEmployees = useMemo(() => {
-    if (!canCreateSalaryAdvanceForOthers) return [];
+    if (!canCreateSalaryAdvanceForOthersInPeriod) return [];
     return (employees || []).filter(emp => (
       emp?.id
       && !emp?.isArchived
       && emp.role !== 'super_admin'
       && !isOwnerPosition(emp.position)
     ));
-  }, [canCreateSalaryAdvanceForOthers, employees]);
+  }, [canCreateSalaryAdvanceForOthersInPeriod, employees]);
   const advanceTargetSelectEmployees = useMemo(() => {
-    if (!canCreateSalaryAdvanceForOthers) return [];
+    if (!canCreateSalaryAdvanceForOthersInPeriod) return [];
     const targets = [...advanceTargetEmployees];
     if (currentEmployee?.id && canCreateOwnSalaryAdvanceRequest && !targets.some(emp => emp.id === currentEmployee.id)) {
       targets.unshift(currentEmployee);
     }
     return targets;
-  }, [advanceTargetEmployees, canCreateSalaryAdvanceForOthers, canCreateOwnSalaryAdvanceRequest, currentEmployee]);
+  }, [advanceTargetEmployees, canCreateSalaryAdvanceForOthersInPeriod, canCreateOwnSalaryAdvanceRequest, currentEmployee]);
 
   const advanceRequestTargetSummary = useMemo(() => {
     const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
@@ -72568,7 +73662,7 @@ function SalaryView({
   const openAdvanceRequestModal = (targetEmployeeId = currentEmployeeId) => {
     const targetId = targetEmployeeId || currentEmployeeId;
     const isOwnRequest = targetId === currentEmployeeId;
-    if (!isOwnRequest && !canCreateSalaryAdvanceForOthers) return;
+    if (!isOwnRequest && !canCreateSalaryAdvanceForOthersInPeriod) return;
     if (isOwnRequest && !canCreateOwnSalaryAdvanceRequest) return;
     const targetSummary = targetId === advanceRequestTargetEmployeeId
       ? advanceRequestTargetSummary
@@ -72605,7 +73699,7 @@ function SalaryView({
     const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
     const isOwnRequest = targetId === currentEmployeeId;
     if (!onAddAdvanceRequest || !targetId) return;
-    if (!isOwnRequest && !canCreateSalaryAdvanceForOthers) {
+    if (!isOwnRequest && !canCreateSalaryAdvanceForOthersInPeriod) {
       setAdvanceRequestStatus('Tài khoản hiện tại chưa có quyền tạo lệnh ứng hộ.');
       return;
     }
@@ -72864,7 +73958,7 @@ function SalaryView({
       <div className="relative overflow-hidden rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-emerald-900 to-teal-600 p-5 text-white shadow-xl shadow-emerald-900/20">
         <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-20 left-8 h-44 w-44 rounded-full bg-cyan-300/20 blur-3xl" />
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider">
             {canViewCompanyPayroll ? 'Tổng lương toàn bộ nhân viên' : 'Lương thực tế của bạn'}
           </p>
@@ -72875,7 +73969,24 @@ function SalaryView({
           >
             {currentMonthLabel}
           </button>
-          {canCreateSalaryAdvanceForOthers && advanceTargetEmployees.length > 0 && (
+          {canManagePayrollByRole && canViewCompanyPayroll && (
+            isPayrollLocked ? (
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200/40 bg-emerald-300/20 px-3 py-2 text-xs font-black text-emerald-50">
+                <Lock size={14} /> Đã khóa
+              </span>
+            ) : (
+              <button
+                type="button"
+                disabled={!canLockSelectedPayrollPeriod}
+                onClick={() => setShowPayrollLockConfirm(true)}
+                title={isPayrollLockDateEligible ? 'Khóa và lưu ảnh chụp kỳ lương' : `Có thể khóa từ ${payrollMonthEndLabel}`}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-black text-white transition-colors hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                <Lock size={14} /> {isPayrollLockDateEligible ? 'Khóa kỳ lương' : `Khóa từ ${payrollMonthEndLabel}`}
+              </button>
+            )
+          )}
+          {canCreateSalaryAdvanceForOthersInPeriod && advanceTargetEmployees.length > 0 && (
             <button
               type="button"
               onClick={() => openAdvanceRequestModal(advanceTargetEmployees[0].id)}
@@ -72901,9 +74012,69 @@ function SalaryView({
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng phạt</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalPenalty)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng thưởng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalBonus)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Lương đánh giá</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEvaluationBonus)} đ</p></div>
+          {aggregateData.totalEndingDebt > 0 && <div className="rounded-xl bg-rose-500/20 p-3 text-center"><p className="text-rose-100 text-[10px] uppercase mb-1">Nợ chuyển kỳ</p><p className="font-bold text-sm text-rose-50">{formatCurrency(aggregateData.totalEndingDebt)} đ</p></div>}
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Bình quân/ngày</p><p className="font-bold text-sm">{formatCurrency(aggregateData.avgDaily)} đ</p></div>
         </div>
       </div>
+
+      {payrollLockStatus && (
+        <div className={`rounded-2xl border px-4 py-3 text-sm font-bold ${payrollLockStatus.startsWith('Đã khóa') ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+          {payrollLockStatus}
+        </div>
+      )}
+
+      {isPayrollLocked && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-emerald-900 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white"><Lock size={17} /></span>
+            <div className="min-w-0">
+              <p className="text-sm font-black">{currentMonthLabel} đã khóa và chuyển sang chỉ đọc</p>
+              <p className="mt-1 text-xs leading-relaxed text-emerald-700">
+                Khóa bởi {lockedPayrollPeriod?.lockedByName || 'người quản lý'}
+                {lockedPayrollPeriod?.lockedAt ? ` lúc ${formatDateTimeLabel(lockedPayrollPeriod.lockedAt)}` : ''}. Các thay đổi phát sinh sau thời điểm này không làm đổi bảng lương đã chốt.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {canPreparePayrollAutoLock && (
+        <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-sky-900 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white"><Clock size={17} /></span>
+            <div className="min-w-0">
+              <p className="text-sm font-black">Khóa lương tự động cuối tháng</p>
+              <p className="mt-1 text-xs leading-relaxed text-sky-700">
+                Hệ thống sẽ khóa {currentMonthLabel.toLowerCase()} lúc 23:59:59 ngày {payrollMonthEndLabel || 'cuối tháng'} bằng ảnh chụp hiện tại.
+              </p>
+              <p className={`mt-1 text-[11px] font-bold ${payrollAutoLockPlanStatus && !activePayrollAutoLockPlan ? 'text-amber-700' : 'text-sky-700'}`}>
+                {activePayrollAutoLockPlan?.status === 'ready'
+                  ? 'Đã chuẩn bị ảnh chụp để khóa tự động.'
+                  : (payrollAutoLockPlanStatus || 'Đang chuẩn bị ảnh chụp khóa tự động...')}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPayrollLocked && lockedSnapshotLoadState === 'loading' && salaryRows.length === 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-center text-sm font-semibold text-slate-500 shadow-sm">
+          Đang tải ảnh chụp kỳ lương...
+        </div>
+      )}
+
+      {isPayrollLocked && lockedSnapshotLoadState === 'error' && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
+          <p className="font-bold">{lockedSnapshotLoadError || 'Không tải được ảnh chụp kỳ lương.'}</p>
+          <button
+            type="button"
+            onClick={() => setLockedSnapshotReloadToken(token => token + 1)}
+            className="mt-3 rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-700"
+          >
+            Tải lại dữ liệu đã khóa
+          </button>
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
         <h3 className="font-bold text-gray-800">{canViewCompanyPayroll ? 'Danh sách lương nhân viên' : 'Lương cá nhân'}</h3>
@@ -72919,6 +74090,8 @@ function SalaryView({
           const isExpanded = expandedEmp === emp.id;
           const isSales = isEmployeeSalesPosition(emp);
           const isSalesCollaborator = isSalesCollaboratorPosition(emp.position);
+          const endingPayrollDebt = Math.max(0, Number(details?.endingDebt || 0));
+          const hasEndingPayrollDebt = endingPayrollDebt > 0;
           const isAdvanceExpanded = expandedAdvanceEmp === emp.id;
           const isAttendanceExpanded = expandedAttendanceEmp === emp.id;
           const canSeeEmployeeAdvanceQueue = canReviewSalaryAdvances || emp.id === currentEmployeeId;
@@ -72935,7 +74108,7 @@ function SalaryView({
           const employeeAdvanceRemainingAmount = employeeAdvanceIsUnlimited ? null : Math.max(0, roundMoneyValue(employeeAdvanceLimitAmount - employeeAdvanceUsedAmount));
           const canCreateThisAdvanceRequest = (
             (canCreateOwnSalaryAdvanceRequest && emp.id === currentEmployeeId)
-            || (canCreateSalaryAdvanceForOthers && emp.id !== currentEmployeeId)
+            || (canCreateSalaryAdvanceForOthersInPeriod && emp.id !== currentEmployeeId)
           );
 
           return (
@@ -72948,8 +74121,8 @@ function SalaryView({
                   </div>
                   <div className="text-right flex items-center gap-2">
                     <div>
-                      <p className="text-[10px] uppercase text-gray-400">Lương còn lại</p>
-                      <p className={`font-black ${details.netSalary < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(details.netSalary)} đ</p>
+                      <p className="text-[10px] uppercase text-gray-400">{hasEndingPayrollDebt ? 'Còn nợ chuyển kỳ' : 'Lương còn lại'}</p>
+                      <p className={`font-black ${hasEndingPayrollDebt || details.netSalary < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(hasEndingPayrollDebt ? endingPayrollDebt : details.netSalary)} đ</p>
                     </div>
                     {isExpanded ? <ChevronUp size={16} className="text-gray-400"/> : <ChevronDown size={16} className="text-gray-400"/>}
                   </div>
@@ -73095,6 +74268,14 @@ function SalaryView({
                       </div>
                       {details.latePenaltyTotal > 0 && <div className="flex justify-between text-red-600"><span>Phạt đi muộn tự động</span><strong>-{formatCurrency(details.latePenaltyTotal)} đ</strong></div>}
                       <div className="flex justify-between text-red-600"><span>Công nợ khách hàng</span><strong>-{formatCurrency(details.badDebt)} đ</strong></div>
+                      {(details.openingDebt || 0) > 0 && (
+                        <>
+                          <div className="flex justify-between text-rose-600"><span>Dư nợ đầu kỳ</span><strong>{formatCurrency(details.openingDebt)} đ</strong></div>
+                          {(details.openingDebtApplied || 0) > 0 && (
+                            <div className="flex justify-between text-rose-600"><span>Đã khấu trừ nợ đầu kỳ</span><strong>-{formatCurrency(details.openingDebtApplied)} đ</strong></div>
+                          )}
+                        </>
+                      )}
                       <div className="flex justify-between"><span>Tổng cộng trước trừ</span><strong>{formatCurrency(details.grossSalary)} đ</strong></div>
                       {!isSalesCollaborator && (details.roleSalaryRows || []).some(row => row.calculatedAmount > 0) && (
                         <div className="col-span-2 rounded-xl bg-sky-50 border border-sky-100 p-2 text-[11px] text-sky-700">
@@ -73116,9 +74297,15 @@ function SalaryView({
                       </div>
                       <div className="bg-emerald-50 rounded-xl p-3 border border-emerald-100">
                         <p className="text-[10px] uppercase font-bold text-emerald-600 mb-1">Lương còn lại</p>
-                        <p className={`text-sm font-black ${details.netSalary < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCurrency(details.netSalary)} đ</p>
+                        <p className="text-sm font-black text-emerald-700">{formatCurrency(details.netSalary)} đ</p>
                       </div>
                     </div>
+                    {hasEndingPayrollDebt && (
+                      <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                        <span>Còn nợ chuyển kỳ sau</span>
+                        <strong className="float-right">{formatCurrency(endingPayrollDebt)} đ</strong>
+                      </div>
+                    )}
                     {details.workDaysProbation > 0 && (
                       <p className="text-[11px] text-gray-500 mt-3">Có {details.workDaysProbation} ngày thử việc và {details.workDaysOfficial} ngày chính thức trong kỳ này.</p>
                     )}
@@ -73386,7 +74573,7 @@ function SalaryView({
           );
         })}
 
-        {salaryRows.length === 0 && (
+        {salaryRows.length === 0 && (!isPayrollLocked || lockedSnapshotLoadState === 'loaded') && (
           <div className="bg-white rounded-2xl border border-gray-100 p-6 text-center text-sm text-gray-400">
             {canViewCompanyPayroll ? 'Chưa có nhân viên nào để tính lương trong kỳ hiện tại.' : 'Chưa có dữ liệu lương của tài khoản này trong kỳ hiện tại.'}
           </div>
@@ -73398,6 +74585,81 @@ function SalaryView({
         monthLabel={currentMonthLabel}
         onClose={closeEvaluationDetail}
       />
+
+      {showPayrollLockConfirm && !isPayrollLocked && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payroll-lock-title"
+            className="w-full max-w-md overflow-hidden rounded-3xl border border-emerald-100 bg-white shadow-2xl"
+          >
+            <div className="border-b border-slate-100 px-5 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+                    <Lock size={19} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600">Chốt dữ liệu tháng</p>
+                    <h3 id="payroll-lock-title" className="mt-1 text-lg font-black text-slate-900">Khóa kỳ lương {currentMonthLabel.toLowerCase()}</h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isLockingPayroll}
+                  onClick={() => setShowPayrollLockConfirm(false)}
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200 disabled:opacity-50"
+                  aria-label="Đóng xác nhận khóa kỳ lương"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4">
+              <p className="text-sm leading-relaxed text-slate-600">
+                App sẽ lưu một ảnh chụp cố định của bảng lương. Sau khi khóa, kỳ này chuyển sang chỉ đọc và các thay đổi phát sinh về sau không làm đổi số lương đã chốt.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-slate-50 p-3 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Nhân viên</p>
+                  <p className="mt-1 text-base font-black text-slate-900">{liveSalaryRows.length}</p>
+                </div>
+                <div className="rounded-2xl bg-emerald-50 p-3 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Tổng thực nhận</p>
+                  <p className="mt-1 text-base font-black text-emerald-800">{formatCurrency(aggregateData.totalSalary)} đ</p>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
+                Hãy kiểm tra chấm công, ứng lương, thưởng, phạt và các khoản cộng trừ trước khi xác nhận khóa.
+              </div>
+              {payrollLockStatus && !payrollLockStatus.startsWith('Đang lưu') && (
+                <p className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{payrollLockStatus}</p>
+              )}
+            </div>
+
+            <div className="sticky bottom-0 grid grid-cols-2 gap-3 border-t border-slate-100 bg-white px-5 py-4">
+              <button
+                type="button"
+                disabled={isLockingPayroll}
+                onClick={() => setShowPayrollLockConfirm(false)}
+                className="min-h-11 rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                disabled={isLockingPayroll || !canLockSelectedPayrollPeriod}
+                onClick={handleConfirmPayrollLock}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              >
+                <Lock size={16} /> {isLockingPayroll ? 'Đang khóa...' : 'Xác nhận khóa'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAdvanceRequestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -73421,7 +74683,7 @@ function SalaryView({
               </button>
             </div>
             <form onSubmit={handleAdvanceRequestSubmit} className="space-y-3">
-              {canCreateSalaryAdvanceForOthers && (
+              {canCreateSalaryAdvanceForOthersInPeriod && (
                 <div>
                   <label className="mb-1 block text-xs font-bold text-slate-600">Nhân sự nhận ứng</label>
                   <select

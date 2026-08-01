@@ -266,6 +266,10 @@ export async function getDocs(ref) {
   return createSnapshot(ref.name);
 }
 
+export async function getDoc(ref) {
+  return createDocumentSnapshot(ref);
+}
+
 export function increment(amount) {
   return new MockIncrementSentinel(amount);
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  PRODUCT_PRICING_UNIT_OPTIONS,
   getProductPricingUnits,
   getProductPrimaryPricingUnit,
   getUnitPriceFromMap,
@@ -18,7 +19,9 @@ assert.deepEqual(putUnitPriceIntoMap({ Kg: 50000 }, 'Con', 100000), { Kg: 50000,
 assert.equal(resolveProductUnitPrice({ product, unit: 'Kg' }), 50000);
 assert.equal(resolveProductUnitPrice({ product, unit: 'Con' }), 90000);
 assert.equal(resolveProductUnitPrice({ product, customerConfig: { defaultUnit: 'Con', unitPrices: { Con: 100000 } }, unit: 'Con' }), 100000);
+assert.equal(resolveProductUnitPrice({ product, customerConfig: { pricingUnit: 'Con', unitPrices: { Con: 110000 } } }), 110000);
 assert.equal(resolveProductUnitPrice({ product, customerConfig: { price: 55000 }, unit: 'Kg' }), 55000);
 assert.equal(resolveProductUnitPrice({ product: { unit: 'Kg, Con', sellingPrice: 50000 }, unit: 'Con' }), 0);
+assert.equal(PRODUCT_PRICING_UNIT_OPTIONS.length, 11);
 
 console.log('PASS product pricing units: multi-unit parsing, customer memory, catalog fallback and legacy compatibility.');

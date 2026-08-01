@@ -23,20 +23,25 @@ export function buildPendingDeliveryReconciliationGroups(groups = [], optimistic
     pendingRows.forEach((row) => {
       const productLabel = row?.productLabel || 'Hàng hóa';
       const unitPrice = toFiniteNumber(row?.unitPrice);
-      const dispatchWeight = toFiniteNumber(row?.dispatchWeight);
-      const lineKey = unitPrice > 0 ? `${productLabel}__${Math.round(unitPrice)}` : productLabel;
+      const pricingUnit = `${row?.pricingUnit || 'Kg'}`.trim() || 'Kg';
+      const pricingQuantity = toFiniteNumber(row?.pricingQuantity ?? row?.dispatchWeight);
+      const lineKey = `${productLabel}__${pricingUnit}__${unitPrice > 0 ? Math.round(unitPrice) : 0}`;
       if (!productLines.has(lineKey)) {
         productLines.set(lineKey, {
           productLabel,
           weight: 0,
+          pricingQuantity: 0,
+          pricingUnit,
           unitPrice,
           totalAmount: 0,
         });
       }
       const line = productLines.get(lineKey);
-      line.weight += dispatchWeight;
+      line.pricingQuantity += pricingQuantity;
+      // Keep the legacy alias so existing report UI/tests can migrate without breaking.
+      line.weight = line.pricingQuantity;
       line.totalAmount += toFiniteNumber(row?.totalAmount)
-        || (unitPrice > 0 && dispatchWeight > 0 ? unitPrice * dispatchWeight : 0);
+        || (unitPrice > 0 && pricingQuantity > 0 ? unitPrice * pricingQuantity : 0);
     });
 
     const productWeightLines = Array.from(productLines.values());
@@ -58,7 +63,7 @@ export function buildPendingDeliveryReconciliationGroups(groups = [], optimistic
         group?.customerName || '',
         dispatchIds.join(','),
         productWeightLines.map((line) => (
-          `${line.productLabel}:${line.weight}:${line.unitPrice}:${line.totalAmount}`
+          `${line.productLabel}:${line.pricingUnit}:${line.pricingQuantity}:${line.unitPrice}:${line.totalAmount}`
         )).join('|'),
       ].join('::'),
     });

@@ -1,8 +1,16 @@
 const functions = require('firebase-functions');
 const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
+const {
+  createDebtRolloverArtifacts,
+  createFinalPayrollSnapshot,
+  getPayrollMonthEndDateKey,
+  getVietnamClock,
+  isPayrollAutoLockDue
+} = require('./payrollAutoLock');
 
 admin.initializeApp();
 
@@ -981,6 +989,226 @@ const isPayosPaymentMatchedToOrder = ({ order = {}, data = {}, description = '',
 };
 
 const collectionPath = (appId, name) => `artifacts/${normalizeAppId(appId)}/public/data/${name}`;
+
+const PAYROLL_AUTO_LOCK_MAX_TRANSACTION_WRITES = 450;
+
+const getPayrollAutoLockAppIds = () => [...new Set([
+  DEFAULT_APP_ID,
+  getEnv('HD_MANAGER_APP_ID'),
+  ...parseCsvEnv('HD_MANAGER_PAYROLL_APP_IDS')
+].map(normalizeAppId).filter(Boolean))];
+
+const waitForPayrollPeriodCloseSecond = async (monthKey = '') => {
+  const clock = getVietnamClock();
+  const monthEndDateKey = getPayrollMonthEndDateKey(monthKey);
+  if (
+    clock.dateKey !== monthEndDateKey
+    || clock.hour !== 23
+    || clock.minute !== 59
+    || clock.second >= 59
+  ) {
+    return;
+  }
+
+  await new Promise(resolve => setTimeout(resolve, (59 - clock.second) * 1000));
+};
+
+const createPayrollPeriodLockJournalEntry = ({
+  companyId = '',
+  periodId = '',
+  monthKey = '',
+  lockedAt = '',
+  employeeCount = 0,
+  totalEndingDebt = 0
+} = {}) => {
+  const safeDebt = Math.max(0, Math.round(Number(totalEndingDebt) || 0));
+  return {
+    id: `payroll_period_lock_${periodId}`,
+    companyId,
+    type: 'payroll_period_lock',
+    action: 'payroll_period_locked',
+    monthKey,
+    amount: safeDebt,
+    employeeCount: Math.max(0, Number(employeeCount) || 0),
+    actorType: 'system',
+    actorName: 'Hệ thống',
+    message: safeDebt > 0
+      ? `Đã khóa kỳ lương ${monthKey} và chuyển tổng dư nợ ${safeDebt} sang kỳ sau.`
+      : `Đã khóa kỳ lương ${monthKey}; không có dư nợ cần chuyển sang kỳ sau.`,
+    date: `${lockedAt || ''}`.slice(0, 10),
+    createdAt: lockedAt,
+    isArchived: false
+  };
+};
+
+const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
+  const normalizedAppId = normalizeAppId(appId);
+  const plansRef = db.collection(collectionPath(normalizedAppId, 'payrollAutoLockPlans'));
+  const stagedSnapshotsRef = db.collection(collectionPath(normalizedAppId, 'payrollAutoLockPlanSnapshots'));
+  const payrollSnapshotsRef = db.collection(collectionPath(normalizedAppId, 'payrollSnapshots'));
+  const carryoversRef = db.collection(collectionPath(normalizedAppId, 'payrollDebtCarryovers'));
+  const activityLogsRef = db.collection(collectionPath(normalizedAppId, 'activityLogs'));
+  const payrollPeriodsRef = db.collection(collectionPath(normalizedAppId, 'payrollPeriods'));
+  const planRef = plansRef.doc(planId);
+
+  return db.runTransaction(async (transaction) => {
+    const planSnapshot = await transaction.get(planRef);
+    if (!planSnapshot.exists) return { state: 'missing_plan' };
+
+    const plan = planSnapshot.data() || {};
+    if (plan.isArchived || plan.status !== 'ready') return { state: 'skipped' };
+
+    const companyId = `${plan.companyId || ''}`.trim();
+    const monthKey = `${plan.monthKey || ''}`.trim();
+    const periodId = `${plan.periodId || ''}`.trim();
+    const stagedSnapshotIds = [...new Set((Array.isArray(plan.stagedSnapshotIds) ? plan.stagedSnapshotIds : [])
+      .map(id => `${id || ''}`.trim())
+      .filter(Boolean))];
+    if (!companyId || !monthKey || !periodId || stagedSnapshotIds.length === 0) {
+      throw new Error(`Kế hoạch khóa lương ${planId} thiếu dữ liệu snapshot.`);
+    }
+    if (Number(plan.snapshotCount || 0) !== stagedSnapshotIds.length) {
+      throw new Error(`Kế hoạch khóa lương ${planId} không khớp số lượng snapshot.`);
+    }
+
+    const periodRef = payrollPeriodsRef.doc(periodId);
+    const periodSnapshot = await transaction.get(periodRef);
+    if (periodSnapshot.exists && periodSnapshot.data()?.status === 'locked') {
+      transaction.set(planRef, {
+        status: 'locked',
+        lockedAt: periodSnapshot.data()?.lockedAt || new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        completionReason: 'period_already_locked'
+      }, { merge: true });
+      return { state: 'already_locked' };
+    }
+
+    const stagedSnapshots = await Promise.all(stagedSnapshotIds.map(async (stagedSnapshotId) => {
+      const stagedSnapshot = await transaction.get(stagedSnapshotsRef.doc(stagedSnapshotId));
+      if (!stagedSnapshot.exists) {
+        throw new Error(`Thiếu snapshot đã chuẩn bị: ${stagedSnapshotId}.`);
+      }
+      const data = stagedSnapshot.data() || {};
+      if (`${data.planId || ''}` !== planId) {
+        throw new Error(`Snapshot ${stagedSnapshotId} không thuộc kế hoạch khóa lương này.`);
+      }
+      const finalizedSnapshot = createFinalPayrollSnapshot(data, new Date().toISOString());
+      if (!finalizedSnapshot || finalizedSnapshot.companyId !== companyId || finalizedSnapshot.periodId !== periodId || finalizedSnapshot.monthKey !== monthKey) {
+        throw new Error(`Snapshot ${stagedSnapshotId} không hợp lệ để khóa kỳ lương.`);
+      }
+      return finalizedSnapshot;
+    }));
+
+    const lockedAt = new Date().toISOString();
+    const finalSnapshots = stagedSnapshots.map(snapshot => ({ ...snapshot, lockedAt }));
+    const debtArtifacts = finalSnapshots
+      .map(snapshot => createDebtRolloverArtifacts({
+        companyId,
+        monthKey,
+        snapshot,
+        lockedAt
+      }))
+      .filter(Boolean);
+    const totalEndingDebt = debtArtifacts.reduce((total, artifact) => total + (Number(artifact?.carryover?.amount) || 0), 0);
+    const lockJournal = createPayrollPeriodLockJournalEntry({
+      companyId,
+      periodId,
+      monthKey,
+      lockedAt,
+      employeeCount: finalSnapshots.length,
+      totalEndingDebt
+    });
+    const transactionWriteCount = finalSnapshots.length + (debtArtifacts.length * 2) + 3;
+    if (transactionWriteCount > PAYROLL_AUTO_LOCK_MAX_TRANSACTION_WRITES) {
+      throw new Error(`Kỳ lương ${monthKey} vượt giới hạn ghi transaction an toàn.`);
+    }
+
+    const lockedPeriod = {
+      ...(plan.period || {}),
+      id: periodId,
+      companyId,
+      monthKey,
+      status: 'locked',
+      lockedAt,
+      employeeCount: finalSnapshots.length,
+      snapshotIds: finalSnapshots.map(snapshot => snapshot.id),
+      debtRolloverStatus: 'complete',
+      debtRolloverCompletedAt: lockedAt,
+      debtCarryoverIds: debtArtifacts.map(artifact => artifact.carryover.id),
+      debtTransferCount: debtArtifacts.length,
+      totalEndingDebt,
+      isArchived: false
+    };
+
+    finalSnapshots.forEach(snapshot => {
+      transaction.set(payrollSnapshotsRef.doc(snapshot.id), snapshot, { merge: false });
+    });
+    debtArtifacts.forEach(({ carryover, journalEntry }) => {
+      transaction.set(carryoversRef.doc(carryover.id), carryover, { merge: false });
+      transaction.set(activityLogsRef.doc(journalEntry.id), journalEntry, { merge: false });
+    });
+    transaction.set(activityLogsRef.doc(lockJournal.id), lockJournal, { merge: false });
+    transaction.set(periodRef, lockedPeriod, { merge: false });
+    transaction.set(planRef, {
+      status: 'locked',
+      lockedAt,
+      completedAt: lockedAt,
+      debtRolloverStatus: 'complete',
+      debtTransferCount: debtArtifacts.length,
+      totalEndingDebt
+    }, { merge: true });
+
+    return {
+      state: 'locked',
+      companyId,
+      monthKey,
+      employeeCount: finalSnapshots.length,
+      totalEndingDebt
+    };
+  });
+};
+
+exports.autoLockPayrollPeriods = onSchedule({
+  schedule: 'every 1 minutes',
+  timeZone: 'Asia/Ho_Chi_Minh',
+  region: 'asia-southeast1',
+  timeoutSeconds: 120
+}, async () => {
+  const initialClock = getVietnamClock();
+  const outcomes = [];
+
+  for (const appId of getPayrollAutoLockAppIds()) {
+    const plansSnapshot = await db.collection(collectionPath(appId, 'payrollAutoLockPlans'))
+      .where('status', '==', 'ready')
+      .limit(100)
+      .get();
+
+    for (const planSnapshot of plansSnapshot.docs) {
+      const plan = planSnapshot.data() || {};
+      if (plan.isArchived || !isPayrollAutoLockDue(plan.monthKey, initialClock)) continue;
+
+      try {
+        await waitForPayrollPeriodCloseSecond(plan.monthKey);
+        const latestClock = getVietnamClock();
+        if (!isPayrollAutoLockDue(plan.monthKey, latestClock)) continue;
+        const outcome = await finalizePayrollAutoLockPlan({ appId, planId: planSnapshot.id });
+        outcomes.push({ appId, planId: planSnapshot.id, ...outcome });
+      } catch (error) {
+        console.error('autoLockPayrollPeriods failed', {
+          appId,
+          planId: planSnapshot.id,
+          message: error?.message || String(error)
+        });
+        outcomes.push({ appId, planId: planSnapshot.id, state: 'failed' });
+      }
+    }
+  }
+
+  if (outcomes.length) {
+    console.info('autoLockPayrollPeriods completed', { outcomes });
+  }
+  return null;
+});
 
 const getPaymentLookupTokens = (...values) => {
   const tokens = values

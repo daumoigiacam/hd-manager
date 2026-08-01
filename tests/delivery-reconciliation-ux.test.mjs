@@ -58,6 +58,34 @@ test('optimistic completion removes a saved dispatch before realtime sync return
   assert.equal(countPendingDeliveryReconciliationDispatches(pending), 1);
 });
 
+test('groups and totals quantity-priced products without treating them as Kg', () => {
+  const groups = [createGroup(1, [
+    createRow('dispatch-box-1', {
+      productLabel: 'Vịt nguyên con',
+      dispatchWeight: 12.5,
+      pricingUnit: 'Con',
+      pricingQuantity: 5,
+      unitPrice: 100_000,
+      totalAmount: 500_000,
+    }),
+    createRow('dispatch-box-2', {
+      productLabel: 'Vịt nguyên con',
+      dispatchWeight: 7.5,
+      pricingUnit: 'Con',
+      pricingQuantity: 3,
+      unitPrice: 100_000,
+      totalAmount: 300_000,
+    }),
+  ])];
+
+  const pending = buildPendingDeliveryReconciliationGroups(groups);
+  const line = pending[0].productWeightLines[0];
+  assert.equal(line.pricingUnit, 'Con');
+  assert.equal(line.pricingQuantity, 8);
+  assert.equal(line.weight, 8);
+  assert.equal(pending[0].paymentSummaryTotal, 800_000);
+});
+
 test('shows five customers by default and all customers when expanded', () => {
   const groups = Array.from({ length: 8 }, (_, index) => (
     createGroup(index + 1, [createRow(`dispatch-${index + 1}`)])
@@ -94,4 +122,4 @@ test('delivery report screen uses the memoized pending-only reconciliation secti
   assert.doesNotMatch(appSource, />Danh sách đối chiếu<\/h3>/);
 });
 
-console.log('\n5 delivery reconciliation UX tests passed.');
+console.log('\n6 delivery reconciliation UX tests passed.');

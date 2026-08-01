@@ -1,5 +1,14 @@
-// Unit helpers are intentionally data-only so order totals remain quantity x unit price.
-export const PRODUCT_PRICING_UNIT_OPTIONS = ['Kg', 'Cái', 'Con', 'Thùng', 'Can', 'Bọc', 'Bao', 'Chai', 'Hộp', 'Túi'];
+// Pricing units shown in customer-product configuration. Legacy values remain readable below.
+export const PRODUCT_PRICING_UNIT_OPTIONS = ['Kg', 'Con', 'Cái', 'Bộ', 'Thùng', 'Bao', 'Khay', 'Lốc', 'Gói', 'Chai', 'Khác'];
+
+const LEGACY_PRODUCT_UNIT_OPTIONS = ['Can', 'Bọc', 'Hộp', 'Túi'];
+
+const PRODUCT_UNIT_ALIASES = {
+  kilogram: 'Kg',
+  kilograms: 'Kg',
+  kilo: 'Kg',
+  kgs: 'Kg',
+};
 
 const normalizeText = (value = '') => `${value || ''}`
   .normalize('NFD')
@@ -20,13 +29,10 @@ export const normalizeProductPricingUnit = (value = '') => {
   const raw = `${value || ''}`.trim();
   if (!raw) return '';
   const normalized = normalizeText(raw);
-  const exact = PRODUCT_PRICING_UNIT_OPTIONS.find(option => normalizeText(option) === normalized);
+  const knownOptions = [...PRODUCT_PRICING_UNIT_OPTIONS, ...LEGACY_PRODUCT_UNIT_OPTIONS];
+  const exact = knownOptions.find(option => normalizeText(option) === normalized);
   if (exact) return exact;
-  const alias = PRODUCT_PRICING_UNIT_OPTIONS.find((option) => {
-    const optionKey = normalizeText(option);
-    return optionKey && (optionKey.includes(normalized) || normalized.includes(optionKey));
-  });
-  return alias || raw;
+  return PRODUCT_UNIT_ALIASES[normalized] || raw;
 };
 
 export const getProductPricingUnits = (productOrUnit = {}, fallback = '') => {
@@ -83,7 +89,7 @@ export const putUnitPriceIntoMap = (source = {}, unit = '', price = 0) => {
 
 export const resolveProductUnitPrice = ({ product = {}, customerConfig = null, unit = '' } = {}) => {
   const primaryUnit = getProductPrimaryPricingUnit(product, 'Con');
-  const requestedUnit = normalizeProductPricingUnit(unit || customerConfig?.defaultUnit || primaryUnit);
+  const requestedUnit = normalizeProductPricingUnit(unit || customerConfig?.pricingUnit || customerConfig?.defaultUnit || primaryUnit);
   const customerUnitPrice = getUnitPriceFromMap(customerConfig?.unitPrices, requestedUnit);
   if (customerUnitPrice > 0) return customerUnitPrice;
 
@@ -91,7 +97,7 @@ export const resolveProductUnitPrice = ({ product = {}, customerConfig = null, u
   if (productUnitPrice > 0) return productUnitPrice;
 
   const legacyCustomerPrice = parseMoney(customerConfig?.price ?? customerConfig?.unitPrice ?? customerConfig?.sellingPrice);
-  const configuredUnit = normalizeProductPricingUnit(customerConfig?.defaultUnit || primaryUnit);
+  const configuredUnit = normalizeProductPricingUnit(customerConfig?.pricingUnit || customerConfig?.defaultUnit || primaryUnit);
   if (legacyCustomerPrice > 0 && normalizeText(configuredUnit) === normalizeText(requestedUnit)) return legacyCustomerPrice;
 
   const legacyProductPrice = parseMoney(product?.sellingPrice ?? product?.price);
