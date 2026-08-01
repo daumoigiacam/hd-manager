@@ -15054,19 +15054,31 @@ export default function App() {
   };
 
   const handleDeleteEmployee = async (empId) => {
-    if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    const targetEmployee = rawEmployees.find(emp => emp.id === empId && emp.companyId === myCompanyId);
+    const activeCompanyId = myCompanyId || currentCompany?.id || '';
+    if (!firebaseUser || !activeCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const targetEmployee = rawEmployees.find(emp => emp.id === empId && emp.companyId === activeCompanyId);
     if (!targetEmployee) return { success: false, message: 'Không tìm thấy nhân sự cần xóa.' };
     if (targetEmployee.role === 'super_admin' || isOwnerPosition(targetEmployee.position)) {
       return { success: false, message: 'Không thể xóa tài khoản chủ doanh nghiệp.' };
     }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), {
+    const archivedAt = new Date().toISOString();
+    const writeResult = await saveDataDocument('employees', empId, {
       isArchived: true,
-      archivedAt: new Date().toISOString(),
-      archivedByEmpId: currentUser?.id || ''
-    }, { merge: true });
-    setRawEmployees(prev => prev.filter(emp => emp.id !== empId));
-    return { success: true, message: `Đã xóa nhân sự ${targetEmployee.name || ''}.` };
+      archivedAt,
+      archivedByEmpId: currentUser?.id || employee?.id || ''
+    }, { merge: true }, 8000, 'Firebase phản hồi chậm khi xóa nhân sự');
+    setRawEmployees(prev => prev.map(emp => (
+      emp.id === empId
+        ? { ...emp, isArchived: true, archivedAt, archivedByEmpId: currentUser?.id || employee?.id || '' }
+        : emp
+    )));
+    return {
+      success: true,
+      queued: Boolean(writeResult?.queued),
+      message: writeResult?.queued
+        ? `Đã ghi nhận xóa nhân sự ${targetEmployee.name || ''}; Firebase sẽ đồng bộ nền.`
+        : `Đã xóa nhân sự ${targetEmployee.name || ''}.`
+    };
   };
 
   const handleAddEmployeeReview = async (reviewData = {}) => {
@@ -20687,7 +20699,7 @@ function MainAppView({
           canViewEmployees={canRoleAction('employees', 'view_employees')}
           canCreateEmployee={canRoleAction('employees', 'create_employee')}
           canEditEmployee={canRoleAction('employees', 'edit_employee')}
-          canDeleteEmployee={canRoleAction('employees', 'delete_employee')}
+          canDeleteEmployee={isOwnerAccount || isSuperAdmin || canRoleAction('employees', 'delete_employee')}
           canEditEmployeeSalaryPolicy={canRoleAction('employees', 'edit_employee_salary_policy')}
           canEditEmployeeShiftPolicy={canRoleAction('employees', 'edit_employee_shift_policy')}
           canManageEmployeeDocuments={canRoleAction('employees', 'manage_employee_documents')}
@@ -49885,6 +49897,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
             groupName: groupLabel,
             unit: targetIsKg ? 'Kg' : 'Con',
             imported: 0,
+            hasImport: false,
             exported: 0,
             expected: 0,
             actual: null,
@@ -49907,6 +49920,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       dayImportsForDate.forEach((item) => {
         const row = ensureMovementGroupRow(item.groupName || item.productGroup || 'Nhóm hàng');
         if (!row) return;
+        row.hasImport = true;
         row.imported += getSelectedImportQuantity(item);
       });
       dayDispatchesForDate.forEach((item) => {
@@ -49939,7 +49953,8 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
             status: !hasActual ? 'uncounted' : Math.abs(diff) < 0.0001 ? 'ok' : diff < 0 ? 'loss' : 'surplus'
           };
         })
-        .filter(row => row.imported || row.exported)
+        // Only show export/stock details for a group that was actually imported on this date.
+        .filter(row => row.hasImport)
         .sort((a, b) => (a.groupName || '').localeCompare(b.groupName || '', 'vi'))
         .map((row, index) => ({
           ...row,
