@@ -72,6 +72,16 @@ import {
   HDSidebar,
 } from './layout/index.js';
 import { HDButton, HDBadge } from './design-system/index.js';
+import {
+  PRODUCT_PRICING_UNIT_OPTIONS,
+  getProductPricingUnits,
+  getProductPrimaryPricingUnit,
+  normalizeProductPricingUnit,
+  normalizeUnitPriceMap,
+  getUnitPriceFromMap,
+  putUnitPriceIntoMap,
+  resolveProductUnitPrice,
+} from './services/productPricingUnits.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -1282,7 +1292,7 @@ const LEGACY_POSITION_MAP = {
 const WAREHOUSE_EXPORT_POSITION = 'Xuất kho';
 const SALES_COLLABORATOR_POSITION = 'Cộng tác viên kinh doanh';
 const DEPARTMENT_ACCOUNT_OPTIONS = ['Kế toán & nhân sự', 'Tài xế', 'Sản xuất', 'Kinh doanh', SALES_COLLABORATOR_POSITION, WAREHOUSE_EXPORT_POSITION];
-const ORDER_REQUEST_QUANTITY_UNIT_OPTIONS = ['Kg', 'Cái', 'Con', 'Thùng', 'Can', 'Bọc', 'Bao', 'Chai', 'Hộp', 'Túi'];
+const ORDER_REQUEST_QUANTITY_UNIT_OPTIONS = PRODUCT_PRICING_UNIT_OPTIONS;
 const normalizeEmployeePosition = (position = '') => {
   const rawPosition = `${position || ''}`.trim();
   const normalizedLookup = normalizeLookupText(rawPosition);
@@ -6312,12 +6322,16 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const price = parseLooseMoneyValue(variant.price ?? variant.unitPrice ?? variant.sellingPrice);
     const size = `${variant.size ?? variant.sizeLabel ?? variant.weightKg ?? ''}`.trim();
     const attributeLabel = `${variant.attributeLabel ?? variant.productAttribute ?? variant.attribute ?? variant.variant ?? ''}`.trim();
-    if (price <= 0 && !size && !attributeLabel) return null;
+    const unit = normalizeProductPricingUnit(variant.quantityUnit ?? variant.unit ?? variant.defaultUnit ?? '');
+    const unitPrices = normalizeUnitPriceMap(variant.unitPrices ?? variant.pricesByUnit ?? variant.priceByUnit ?? {});
+    if (price <= 0 && !size && !attributeLabel && !unit && Object.keys(unitPrices).length === 0) return null;
     return {
       id: `${variant.id || variant.localId || `variant_${index + 1}`}`,
       price,
       size,
-      attributeLabel
+      attributeLabel,
+      unit,
+      unitPrices
     };
   };
 
@@ -6333,11 +6347,17 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const cleanAttributeLabel = typeof config === 'object' && config !== null
       ? `${config.attributeLabel ?? config.productAttribute ?? config.attribute ?? config.variant ?? ''}`.trim()
       : '';
+    const defaultUnit = typeof config === 'object' && config !== null
+      ? normalizeProductPricingUnit(config.defaultUnit ?? config.quantityUnit ?? config.unit ?? '')
+      : '';
+    const unitPrices = typeof config === 'object' && config !== null
+      ? normalizeUnitPriceMap(config.unitPrices ?? config.pricesByUnit ?? config.priceByUnit ?? {})
+      : {};
     const variants = typeof config === 'object' && config !== null && Array.isArray(config.variants)
       ? config.variants.map(normalizeVariantConfig).filter(Boolean)
       : [];
-    if (cleanProductId && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || variants.length > 0)) {
-      acc[cleanProductId] = { price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, variants };
+    if (cleanProductId && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || defaultUnit || Object.keys(unitPrices).length > 0 || variants.length > 0)) {
+      acc[cleanProductId] = { price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, defaultUnit, unitPrices, variants };
     }
     return acc;
   }, {});
@@ -6423,9 +6443,28 @@ const getCustomerProductConfig = (customer = null, product = null) => {
   return productId ? customerPrices[productId] || null : null;
 };
 
-const getCustomerProductPrice = (customer = null, product = null) => {
-  const customPrice = getCustomerProductConfig(customer, product)?.price || 0;
-  return customPrice > 0 ? customPrice : parseLooseMoneyValue(product?.sellingPrice || 0);
+const getCustomerProductUnitOptions = (customer = null, product = null, fallback = 'Con') => {
+  const productUnits = getProductPricingUnits(product || {}, fallback);
+  const config = getCustomerProductConfig(customer, product);
+  const preferredUnit = normalizeProductPricingUnit(config?.defaultUnit || '');
+  if (!preferredUnit) return productUnits;
+  const preferredIndex = productUnits.findIndex(unit => normalizeLookupText(unit) === normalizeLookupText(preferredUnit));
+  if (preferredIndex <= 0) return productUnits;
+  return [productUnits[preferredIndex], ...productUnits.filter((_, index) => index !== preferredIndex)];
+};
+
+const getCustomerProductDefaultUnit = (customer = null, product = null, fallback = 'Con') => {
+  const options = getCustomerProductUnitOptions(customer, product, fallback);
+  return options[0] || getProductPrimaryPricingUnit(product || {}, fallback);
+};
+
+const getCustomerProductPrice = (customer = null, product = null, unit = '') => {
+  const config = getCustomerProductConfig(customer, product);
+  return resolveProductUnitPrice({
+    product: product || {},
+    customerConfig: config,
+    unit: unit || getCustomerProductDefaultUnit(customer, product)
+  });
 };
 
 const getCustomerProductSize = (customer = null, product = null) => getCustomerProductConfig(customer, product)?.size || '';
@@ -6451,12 +6490,16 @@ const getCustomerProductVariants = (customer = null, product = null) => {
     const price = parseLooseMoneyValue(variant.price ?? variant.unitPrice ?? variant.sellingPrice);
     const size = `${variant.size ?? variant.sizeLabel ?? variant.weightKg ?? ''}`.trim();
     const attributeLabel = normalizeAttribute(variant.attributeLabel ?? variant.productAttribute ?? variant.attribute ?? variant.variant ?? '');
-    if (price <= 0 && !size && !attributeLabel) return null;
+    const unit = normalizeProductPricingUnit(variant.quantityUnit ?? variant.unit ?? variant.defaultUnit ?? config?.defaultUnit ?? getCustomerProductDefaultUnit(customer, product));
+    const unitPrices = normalizeUnitPriceMap(variant.unitPrices ?? variant.pricesByUnit ?? variant.priceByUnit ?? {});
+    if (price <= 0 && !size && !attributeLabel && !unit && Object.keys(unitPrices).length === 0) return null;
     return {
       id: `${variant.id || variant.localId || `${product?.id || 'product'}_variant_${index}`}`,
       price,
       size,
-      attributeLabel
+      attributeLabel,
+      unit,
+      unitPrices
     };
   };
   const variants = [];
@@ -6468,7 +6511,7 @@ const getCustomerProductVariants = (customer = null, product = null) => {
   });
   const unique = new Map();
   variants.forEach((variant) => {
-    const key = `${normalizeLookupText(variant.size)}__${normalizeLookupText(variant.attributeLabel)}__${roundMoneyValue(variant.price)}`;
+    const key = `${normalizeLookupText(variant.size)}__${normalizeLookupText(variant.attributeLabel)}__${normalizeLookupText(variant.unit)}__${roundMoneyValue(variant.price)}`;
     if (!unique.has(key)) unique.set(key, variant);
   });
   if (unique.size > 0) return Array.from(unique.values());
@@ -6476,19 +6519,22 @@ const getCustomerProductVariants = (customer = null, product = null) => {
     id: `${product?.id || 'product'}_default`,
     price: getCustomerProductPrice(customer, product),
     size: '',
-    attributeLabel: ''
+    attributeLabel: '',
+    unit: getCustomerProductDefaultUnit(customer, product),
+    unitPrices: {}
   }];
 };
 
 const hasCustomerProductPrice = (customer = null, productId = '') => {
   const customerPrices = normalizeCustomerPriceOverrides(customer || {});
-  return Boolean(productId && customerPrices[productId]?.price > 0);
+  const config = productId ? customerPrices[productId] : null;
+  return Boolean(config && (config.price > 0 || Object.keys(config.unitPrices || {}).length > 0));
 };
 
 const hasCustomerProductConfig = (customer = null, productId = '') => {
   const customerPrices = normalizeCustomerPriceOverrides(customer || {});
   const config = productId ? customerPrices[productId] : null;
-  return Boolean(config && (config.price > 0 || config.size || config.attributeLabel || (Array.isArray(config.variants) && config.variants.length > 0)));
+  return Boolean(config && (config.price > 0 || config.defaultUnit || Object.keys(config.unitPrices || {}).length > 0 || config.size || config.attributeLabel || (Array.isArray(config.variants) && config.variants.length > 0)));
 };
 
 const getQuoteCustomerHonorificLabel = (customer = null) => {
@@ -15496,6 +15542,10 @@ export default function App() {
       const product = products.find(productItem => productItem.id === productId) || null;
       const defaultProductPrice = parseLooseMoneyValue(product?.sellingPrice || product?.price || 0);
       const currentConfig = nextOverrides[productId] || {};
+      const selectedUnit = getCustomerProductUnitOptions(customer, product, item?.quantityUnit || item?.unit || 'Con')
+        .find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizeProductPricingUnit(item?.quantityUnit || item?.unit || '')))
+        || getCustomerProductDefaultUnit(customer, product, item?.quantityUnit || item?.unit || 'Con');
+      const currentUnitPrices = normalizeUnitPriceMap(currentConfig.unitPrices || {});
       const hasExplicitSize = Object.prototype.hasOwnProperty.call(item || {}, 'sizeLabel')
         || Object.prototype.hasOwnProperty.call(item || {}, 'weightKg')
         || Object.prototype.hasOwnProperty.call(item || {}, 'size');
@@ -15510,9 +15560,12 @@ export default function App() {
         : `${currentConfig.attributeLabel || ''}`.trim();
       const nextPrice = unitPrice > 0
         ? unitPrice
-        : parseLooseMoneyValue(currentConfig.price || defaultProductPrice || 0);
+        : (getUnitPriceFromMap(currentUnitPrices, selectedUnit) || parseLooseMoneyValue(currentConfig.price || defaultProductPrice || 0));
+      const nextUnitPrices = nextPrice > 0
+        ? putUnitPriceIntoMap(currentUnitPrices, selectedUnit, nextPrice)
+        : currentUnitPrices;
       const shouldSync = fixedProductIds.has(productId)
-        || Boolean(currentConfig.price || currentConfig.size || currentConfig.attributeLabel)
+        || Boolean(currentConfig.price || currentConfig.defaultUnit || Object.keys(currentUnitPrices).length > 0 || currentConfig.size || currentConfig.attributeLabel)
         || (unitPrice > 0 && unitPrice !== defaultProductPrice)
         || hasExplicitSize
         || hasExplicitAttribute
@@ -15523,13 +15576,17 @@ export default function App() {
       const nextConfig = {
         price: nextPrice,
         size,
-        attributeLabel
+        attributeLabel,
+        defaultUnit: selectedUnit,
+        unitPrices: nextUnitPrices
       };
 
       if (
         currentConfig.price !== nextConfig.price ||
         `${currentConfig.size || ''}` !== nextConfig.size ||
         `${currentConfig.attributeLabel || ''}` !== nextConfig.attributeLabel ||
+        `${currentConfig.defaultUnit || ''}` !== nextConfig.defaultUnit ||
+        JSON.stringify(normalizeUnitPriceMap(currentConfig.unitPrices || {})) !== JSON.stringify(nextConfig.unitPrices) ||
         !fixedProductIds.has(productId)
       ) {
         changed = true;
@@ -15568,12 +15625,22 @@ export default function App() {
       const product = products.find(productItem => productItem.id === productId);
       if (!product) return;
 
+      const selectedUnit = normalizeProductPricingUnit(item?.quantityUnit || item?.unit || getProductPrimaryPricingUnit(product));
+      const primaryUnit = getProductPrimaryPricingUnit(product);
       const currentPrice = parseLooseMoneyValue(product.sellingPrice ?? product.price);
-      if (currentPrice === unitPrice) return;
+      const currentUnitPrices = normalizeUnitPriceMap(product.unitPrices || {});
+      const nextUnitPrices = putUnitPriceIntoMap(currentUnitPrices, selectedUnit, unitPrice);
+      const shouldUpdateDefaultPrice = normalizeLookupText(selectedUnit) === normalizeLookupText(primaryUnit);
+      const isUnitMapChanged = JSON.stringify(currentUnitPrices) !== JSON.stringify(nextUnitPrices);
+      if ((!shouldUpdateDefaultPrice || currentPrice === unitPrice) && !isUnitMapChanged) return;
 
       productPriceUpdates.set(productId, {
         product,
-        unitPrice
+        unitPrice,
+        selectedUnit,
+        primaryUnit,
+        nextUnitPrices,
+        shouldUpdateDefaultPrice
       });
     });
 
@@ -15589,8 +15656,8 @@ export default function App() {
         if (!update) return product;
         return {
           ...product,
-          sellingPrice: update.unitPrice,
-          price: update.unitPrice,
+          ...(update.shouldUpdateDefaultPrice ? { sellingPrice: update.unitPrice, price: update.unitPrice } : {}),
+          unitPrices: update.nextUnitPrices,
           lastOrderRequestPriceAt: updatedAt,
           lastOrderRequestPriceByEmpId: updaterEmpId,
           updatedAt
@@ -15598,10 +15665,10 @@ export default function App() {
       })
       : prev));
 
-    await Promise.all(updateEntries.map(async ([productId, { unitPrice }]) => {
+    await Promise.all(updateEntries.map(async ([productId, { unitPrice, nextUnitPrices, shouldUpdateDefaultPrice }]) => {
       const patch = {
-        sellingPrice: unitPrice,
-        price: unitPrice,
+        ...(shouldUpdateDefaultPrice ? { sellingPrice: unitPrice, price: unitPrice } : {}),
+        unitPrices: nextUnitPrices,
         lastOrderRequestPriceAt: updatedAt,
         lastOrderRequestPriceByEmpId: updaterEmpId,
         updatedAt
@@ -55485,6 +55552,35 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     () => new Map(activeProducts.map(product => [product.id, product])),
     [activeProducts]
   );
+  const resolveDraftItemQuantityUnit = (configSource = null, product = null, requestedUnit = '') => {
+    const unitOptions = getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit);
+    const normalizedRequestedUnit = normalizeProductPricingUnit(requestedUnit);
+    return unitOptions.find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizedRequestedUnit))
+      || getCustomerProductDefaultUnit(configSource, product, defaultQuantityUnit);
+  };
+  const getDraftItemUnitOptions = (draft = {}, item = {}) => {
+    const product = productLookup.get(item.productId);
+    if (!product) return item.quantityUnit ? [normalizeProductPricingUnit(item.quantityUnit)] : quantityUnitOptions;
+    const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
+    const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
+    return getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit);
+  };
+  const handleDraftItemQuantityUnitChange = (localId, itemLocalId, nextUnit) => {
+    const draft = requestDrafts.find(item => item.localId === localId);
+    const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
+    const product = productLookup.get(item?.productId);
+    if (!draft || !item || !product) {
+      updateDraftItem(localId, itemLocalId, { quantityUnit: normalizeProductPricingUnit(nextUnit) });
+      return;
+    }
+    const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
+    const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
+    const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
+    updateDraftItem(localId, itemLocalId, {
+      quantityUnit,
+      unitPrice: getCustomerProductPrice(configSource, product, quantityUnit) || ''
+    });
+  };
   const getOrderRequestBranchRef = (customer = null, source = {}, fallbackSource = {}) => {
     if (!customer) return { branchId: '', branchName: '', branchAddress: '' };
     const rawBranchId = `${source.branchId || source.customerBranchId || fallbackSource.branchId || fallbackSource.customerBranchId || ''}`.trim();
@@ -56092,11 +56188,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     `${productId || ''}`,
     normalizeLookupText(variant.attributeLabel || variant.productAttribute || variant.attribute || ''),
     normalizeLookupText(variant.size || variant.sizeLabel || variant.weightKg || ''),
+    normalizeLookupText(variant.unit || variant.quantityUnit || variant.defaultUnit || ''),
     roundMoneyValue(parseLooseMoneyValue(variant.price ?? variant.unitPrice ?? 0))
   ].join('__');
   const getDraftItemVariantKey = (item = {}) => buildOrderRequestVariantKey(item.productId, {
     attributeLabel: item.attributeLabel,
     size: item.weightKg || item.sizeLabel,
+    unit: item.quantityUnit || item.unit,
     price: item.unitPrice
   });
   const selectedQuickProductIds = new Set((primaryDraft?.items || []).map((item) => item?.productId || '').filter(Boolean));
@@ -56519,10 +56617,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const customer = customerLookup.get(inlineEditingDraft.customerId);
     const product = productLookup.get(inlineEditingDraft.productId);
     const quantity = parseFloat(inlineEditingDraft.quantity) || 0;
-    const unitPrice = parseLooseMoneyValue(inlineEditingDraft.unitPrice);
     const sizeLabel = `${inlineEditingDraft.sizeLabel || ''}`.trim();
     const attributeLabel = `${inlineEditingDraft.attributeLabel || ''}`.trim();
     const branchRef = getOrderRequestBranchRef(customer, request, row);
+    const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
+    const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, inlineEditingDraft.quantityUnit);
+    const unitPrice = parseLooseMoneyValue(inlineEditingDraft.unitPrice);
 
     if (!customer || !product || quantity <= 0 || unitPrice <= 0) {
       setRequestStatus('Vui long chon dung khach hang, hang hoa, so luong va don gia hop le truoc khi luu.');
@@ -56545,7 +56645,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       sizeLabel,
       weightKg: sizeLabel,
       quantity,
-      quantityUnit: inlineEditingDraft.quantityUnit || defaultQuantityUnit,
+      quantityUnit,
       unitPrice
     };
 
@@ -56573,6 +56673,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     }
+  };
+
+  const handleInlineEditingUnitChange = (row, nextUnit) => {
+    setInlineEditingDraft((previous) => {
+      const product = productLookup.get(previous.productId);
+      const customer = customerLookup.get(previous.customerId);
+      if (!product) return { ...previous, quantityUnit: normalizeProductPricingUnit(nextUnit) };
+      const configSource = getCustomerBranchProductConfigSource(customer, row?.branchId || '', activeProducts);
+      const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
+      return {
+        ...previous,
+        quantityUnit,
+        unitPrice: getCustomerProductPrice(configSource, product, quantityUnit) || ''
+      };
+    });
   };
 
   const deleteInlineEditRow = async (row) => {
@@ -56651,11 +56766,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customSize = getCustomerProductSize(configSource, product);
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
+        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, item.quantityUnit);
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
           weightKg: customSize || item.weightKg,
-          unitPrice: getCustomerProductPrice(configSource, product)
+          quantityUnit,
+          unitPrice: getCustomerProductPrice(configSource, product, quantityUnit)
         };
       })
     }));
@@ -56677,11 +56794,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customSize = getCustomerProductSize(configSource, product);
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
+        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, item.quantityUnit);
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
           weightKg: customSize || item.weightKg,
-          unitPrice: getCustomerProductPrice(configSource, product)
+          quantityUnit,
+          unitPrice: getCustomerProductPrice(configSource, product, quantityUnit)
         };
       })
     }));
@@ -56695,16 +56814,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const selectedCustomer = targetDraft?.customerId ? customerLookup.get(targetDraft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, targetDraft?.branchId || '', activeProducts);
     const configuredAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
-    updateDraftItem(localId, itemLocalId, (item) => ({
+    updateDraftItem(localId, itemLocalId, (item) => {
+      const quantityUnit = selectedProduct
+        ? resolveDraftItemQuantityUnit(configSource, selectedProduct, item.quantityUnit)
+        : item.quantityUnit || defaultQuantityUnit;
+      return {
       productId,
       productSearch: selectedProduct?.name || '',
       attributeLabel: attributeOptions.includes(configuredAttribute)
         ? configuredAttribute
         : (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
       weightKg: selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '',
-      quantityUnit: item.quantityUnit || defaultQuantityUnit,
-      unitPrice: selectedProduct ? getCustomerProductPrice(configSource, selectedProduct) : ''
-    }));
+      quantityUnit,
+      unitPrice: selectedProduct ? getCustomerProductPrice(configSource, selectedProduct, quantityUnit) : ''
+    };
+    });
     setRequestError('');
   };
 
@@ -56716,9 +56840,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const attributeOptions = getProductAttributes(selectedProduct);
     const configuredAttribute = `${variantConfig?.attributeLabel || getCustomerProductAttribute(configSource, selectedProduct) || ''}`.trim();
     const configuredSize = `${variantConfig?.size || getCustomerProductSize(configSource, selectedProduct) || ''}`.trim();
+    const quantityUnit = resolveDraftItemQuantityUnit(configSource, selectedProduct, variantConfig?.unit || existingItem.quantityUnit);
     const configuredPrice = parseLooseMoneyValue(variantConfig?.price) > 0
       ? parseLooseMoneyValue(variantConfig.price)
-      : getCustomerProductPrice(configSource, selectedProduct);
+      : getCustomerProductPrice(configSource, selectedProduct, quantityUnit);
     return createDraftItem({
       ...existingItem,
       localItemId: existingItem.localItemId,
@@ -56728,7 +56853,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         ? configuredAttribute
         : (attributeOptions.includes(existingItem.attributeLabel) ? existingItem.attributeLabel : ''),
       weightKg: configuredSize || existingItem.weightKg,
-      quantityUnit: existingItem.quantityUnit || defaultQuantityUnit,
+      quantityUnit,
       unitPrice: configuredPrice > 0 ? configuredPrice : (parseLooseMoneyValue(existingItem.unitPrice) > 0 ? existingItem.unitPrice : '')
     });
   };
@@ -56740,7 +56865,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const targetVariantKey = buildOrderRequestVariantKey(productId, variantConfig || {
       attributeLabel: getCustomerProductAttribute(primarySelectedCustomer, selectedProduct),
       size: getCustomerProductSize(primarySelectedCustomer, selectedProduct),
-      price: getCustomerProductPrice(primarySelectedCustomer, selectedProduct)
+      unit: getCustomerProductDefaultUnit(primaryProductConfigSource, selectedProduct),
+      price: getCustomerProductPrice(primaryProductConfigSource, selectedProduct, getCustomerProductDefaultUnit(primaryProductConfigSource, selectedProduct))
     });
 
     updateDraft(primaryDraft.localId, (draft) => {
@@ -57774,6 +57900,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           return;
         }
 
+        const quantityUnit = resolveDraftItemQuantityUnit(
+          getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts),
+          product,
+          item.quantityUnit
+        );
         normalizedItems.push({
           productId: product.id,
           description: product.name || 'Hàng hóa',
@@ -57788,8 +57919,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           sizeLabel,
           weightKg: sizeLabel,
           quantity,
-          quantityUnit: item.quantityUnit || defaultQuantityUnit,
-          unitPrice
+          quantityUnit,
+          pricingUnit: quantityUnit,
+          unitPrice,
+          lineTotal: Math.round(quantity * unitPrice)
         });
       });
 
@@ -58125,15 +58258,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           <select value={inlineEditingDraft.customerId} onChange={(e) => {
                             const selectedCustomer = customerLookup.get(e.target.value);
                             const selectedProduct = productLookup.get(inlineEditingDraft.productId);
-                            const customSize = selectedCustomer && selectedProduct ? getCustomerProductSize(selectedCustomer, selectedProduct) : '';
-                            const customAttribute = selectedCustomer && selectedProduct ? getCustomerProductAttribute(selectedCustomer, selectedProduct) : '';
+                            const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
+                            const customSize = selectedCustomer && selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
+                            const customAttribute = selectedCustomer && selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
                             const attributeOptions = getProductAttributes(selectedProduct);
                             setInlineEditingDraft(prev => ({
                               ...prev,
                               customerId: e.target.value,
                               attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : prev.attributeLabel,
                               sizeLabel: customSize || prev.sizeLabel,
-                              unitPrice: selectedCustomer && selectedProduct ? getCustomerProductPrice(selectedCustomer, selectedProduct) : prev.unitPrice
+                              quantityUnit: selectedCustomer && selectedProduct
+                                ? resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit)
+                                : prev.quantityUnit,
+                              unitPrice: selectedCustomer && selectedProduct
+                                ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit))
+                                : prev.unitPrice
                             }));
                           }} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                             <option value="">-- Chọn khách --</option>
@@ -58156,16 +58295,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           <select value={inlineEditingDraft.productId} onChange={(e) => {
                             const selectedProduct = productLookup.get(e.target.value);
                             const selectedCustomer = customerLookup.get(inlineEditingDraft.customerId);
-                            const customSize = selectedProduct ? getCustomerProductSize(selectedCustomer, selectedProduct) : '';
-                            const customAttribute = selectedProduct ? getCustomerProductAttribute(selectedCustomer, selectedProduct) : '';
+                            const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
+                            const customSize = selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
+                            const customAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
                             const attributeOptions = getProductAttributes(selectedProduct);
                             setInlineEditingDraft(prev => ({
                               ...prev,
                               productId: e.target.value,
                               attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : (attributeOptions.includes(prev.attributeLabel) ? prev.attributeLabel : ''),
                               sizeLabel: customSize || prev.sizeLabel,
-                              quantityUnit: prev.quantityUnit || defaultQuantityUnit,
-                              unitPrice: selectedProduct ? getCustomerProductPrice(selectedCustomer, selectedProduct) : prev.unitPrice
+                              quantityUnit: selectedProduct
+                                ? resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit)
+                                : prev.quantityUnit || defaultQuantityUnit,
+                              unitPrice: selectedProduct
+                                ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit))
+                                : prev.unitPrice
                             }));
                           }} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                             <option value="">-- Chọn hàng --</option>
@@ -58239,11 +58383,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                             <input type="number" min="0" step="0.01" value={inlineEditingDraft.quantity} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, quantity: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Số lượng" />
                             <select
                               value={inlineEditingDraft.quantityUnit || ''}
-                              onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, quantityUnit: e.target.value }))}
+                              onChange={(e) => handleInlineEditingUnitChange(row, e.target.value)}
                               className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500"
                             >
                               <option value="">Chọn đơn vị</option>
-                              {quantityUnitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                              {getCustomerProductUnitOptions(
+                                getCustomerBranchProductConfigSource(customerLookup.get(inlineEditingDraft.customerId), row.branchId || '', activeProducts),
+                                productLookup.get(inlineEditingDraft.productId),
+                                defaultQuantityUnit
+                              ).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                             </select>
                           </div>
                         ) : formatSheetQuantity(row.quantity, row.quantityUnit)}
@@ -58859,11 +59007,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   <div className={isCompactManualDetailStage ? 'p-1' : 'border-r border-slate-200 p-2'}>
                                     <select
                                       value={item.quantityUnit || ''}
-                                      onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { quantityUnit: e.target.value })}
+                                      onChange={(e) => handleDraftItemQuantityUnitChange(draft.localId, item.localItemId, e.target.value)}
                                       className={`w-full rounded-xl border border-gray-200 bg-white text-center outline-none focus:ring-2 focus:ring-emerald-500 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-3 text-sm'}`}
                                     >
                                       <option value="">Loại</option>
-                                      {quantityUnitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                                      {getDraftItemUnitOptions(draft, item).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                                     </select>
                                   </div>
 
@@ -63943,6 +64091,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                   <datalist id="unit-list">
                     <option value="Cái" /><option value="Kg" /><option value="Con" /><option value="Lít" /><option value="Hộp" /><option value="Thùng" /><option value="Gói" />
                   </datalist>
+                  <p className="mt-1.5 text-[11px] leading-4 text-slate-500">Nếu có nhiều cách bán, nhập các đơn vị cách nhau bằng dấu phẩy, ví dụ: Kg, Con. Khi lên đơn sẽ chọn đúng đơn vị và ghi nhớ giá theo từng khách.</p>
                 </div>
               </div>
 
@@ -66085,6 +66234,15 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         ? `${config.size || ''}`.trim()
         : '';
       const product = activeProductForPricingLookup.get(productId);
+      const defaultUnit = typeof config === 'object' && config !== null
+        ? normalizeProductPricingUnit(config.defaultUnit || getProductPrimaryPricingUnit(product || {}, 'Con'))
+        : getProductPrimaryPricingUnit(product || {}, 'Con');
+      const savedUnitPrices = typeof config === 'object' && config !== null
+        ? normalizeUnitPriceMap(config.unitPrices || config.pricesByUnit || config.priceByUnit || {})
+        : {};
+      const unitPrices = cleanPrice > 0
+        ? putUnitPriceIntoMap(savedUnitPrices, defaultUnit, cleanPrice)
+        : savedUnitPrices;
       const productAttributes = getProductAttributes(product);
       const rawAttributeLabel = typeof config === 'object' && config !== null
         ? `${config.attributeLabel || config.productAttribute || config.attribute || ''}`.trim()
@@ -66096,17 +66254,28 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           const variantSize = `${variant.size || ''}`.trim();
           const rawVariantAttribute = `${variant.attributeLabel || variant.productAttribute || variant.attribute || ''}`.trim();
           const variantAttributeLabel = productAttributes.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(rawVariantAttribute)) || '';
-          if (variantPrice <= 0 && !variantSize && !variantAttributeLabel) return null;
+          const variantUnit = normalizeProductPricingUnit(variant.defaultUnit || variant.quantityUnit || variant.unit || defaultUnit);
+          const variantUnitPrices = normalizeUnitPriceMap(variant.unitPrices || variant.pricesByUnit || variant.priceByUnit || {});
+          if (variantPrice <= 0 && !variantSize && !variantAttributeLabel && !variantUnit && Object.keys(variantUnitPrices).length === 0) return null;
           return {
             id: `${variant.id || `variant_${index + 1}`}`,
             price: variantPrice,
             size: variantSize,
-            attributeLabel: variantAttributeLabel
+            attributeLabel: variantAttributeLabel,
+            ...(variantUnit ? { defaultUnit: variantUnit } : {}),
+            ...(Object.keys(variantUnitPrices).length > 0 ? { unitPrices: variantUnitPrices } : {})
           };
         }).filter(Boolean)
         : [];
-      if (validProductIds.has(productId) && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || cleanVariants.length > 0)) {
-        acc[productId] = { price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, variants: cleanVariants };
+      if (validProductIds.has(productId) && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || defaultUnit || Object.keys(unitPrices).length > 0 || cleanVariants.length > 0)) {
+        acc[productId] = {
+          price: cleanPrice,
+          size: cleanSize,
+          attributeLabel: cleanAttributeLabel,
+          defaultUnit,
+          unitPrices,
+          variants: cleanVariants
+        };
       }
       return acc;
     }, {});
@@ -74835,24 +75004,38 @@ function CustomerPortalView({
     if (transferProfile.bankId) setSelectedPaymentBankId(prev => prev || transferProfile.bankId);
   }, [transferProfile.bankId]);
 
-  const resolveCustomerUnitPrice = (product) => {
+  const resolveCustomerUnitPrice = (product, unit = '') => {
     const groupKey = `${customerProfile?.group || customerProfile?.customerGroup || customerProfile?.customerType || ''}`.trim();
-    const groupPrice = groupKey && product?.groupPrices ? parseLooseMoneyValue(product.groupPrices[groupKey]) : 0;
-    const fixedPrice = getCustomerProductPrice(customerProfile, product);
-    return fixedPrice > 0 ? fixedPrice : (groupPrice > 0 ? groupPrice : parseLooseMoneyValue(product?.sellingPrice || product?.price || 0));
+    const quantityUnit = normalizeCustomerCartUnit(product, unit);
+    const customerConfig = getCustomerProductConfig(customerProfile, product);
+    const customerPrice = resolveProductUnitPrice({
+      product: { ...(product || {}), sellingPrice: 0, price: 0, unitPrices: {} },
+      customerConfig,
+      unit: quantityUnit
+    });
+    if (customerPrice > 0) return customerPrice;
+    const primaryUnit = getProductPrimaryPricingUnit(product || {}, 'Kg');
+    const groupPrice = groupKey && product?.groupPrices && normalizeLookupText(quantityUnit) === normalizeLookupText(primaryUnit)
+      ? parseLooseMoneyValue(product.groupPrices[groupKey])
+      : 0;
+    return groupPrice > 0 ? groupPrice : getCustomerProductPrice(customerProfile, product, quantityUnit);
   };
 
-  const normalizeCustomerCartUnit = (value = '') => {
-    const rawUnit = `${value || ''}`.trim();
-    const normalizedUnit = normalizeLookupText(rawUnit);
-    const matched = ORDER_REQUEST_QUANTITY_UNIT_OPTIONS.find(option => normalizeLookupText(option) === normalizedUnit);
-    return matched || rawUnit || 'Kg';
+  const normalizeCustomerCartUnit = (productOrValue = {}, requestedValue = '') => {
+    const product = typeof productOrValue === 'object' && productOrValue !== null ? productOrValue : null;
+    const rawUnit = product ? requestedValue : productOrValue;
+    const options = product
+      ? getCustomerProductUnitOptions(customerProfile, product, 'Kg')
+      : ORDER_REQUEST_QUANTITY_UNIT_OPTIONS;
+    const requestedUnit = normalizeProductPricingUnit(rawUnit);
+    return options.find(option => normalizeLookupText(option) === normalizeLookupText(requestedUnit))
+      || (product ? getCustomerProductDefaultUnit(customerProfile, product, 'Kg') : requestedUnit || 'Kg');
   };
 
   const addToCart = (product) => {
     if (!product?.id) return;
-    const unitPrice = resolveCustomerUnitPrice(product);
-    const quantityUnit = normalizeCustomerCartUnit(product.defaultUnit || product.unit || 'Kg');
+    const quantityUnit = normalizeCustomerCartUnit(product, product.defaultUnit || product.unit || 'Kg');
+    const unitPrice = resolveCustomerUnitPrice(product, quantityUnit);
     const branchId = selectedCustomerBranch?.id || '';
     const branchName = selectedCustomerBranch ? getCustomerBranchDisplayName(selectedCustomerBranch) : '';
     setCart(prev => {
@@ -75479,7 +75662,7 @@ function CustomerPortalView({
       : (request.primaryItem ? [request.primaryItem] : []);
     const nextCart = requestItems.map((item, index) => {
       const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
-      const quantityUnit = normalizeCustomerCartUnit(item.quantityUnit || item.unit || product?.unit || 'Kg');
+      const quantityUnit = normalizeCustomerCartUnit(product || {}, item.quantityUnit || item.unit || product?.unit || 'Kg');
       const branchId = item.branchId || item.customerBranchId || '';
       const branch = getCustomerBranchById(customerProfile || {}, branchId, safeProducts);
       return {
@@ -75516,7 +75699,8 @@ function CustomerPortalView({
         .map(item => {
           const quantity = parseFloat(item.quantity) || 0;
           const unitPrice = parseLooseMoneyValue(item.unitPrice);
-          const quantityUnit = normalizeCustomerCartUnit(item.quantityUnit || item.unit || 'Kg');
+          const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
+          const quantityUnit = normalizeCustomerCartUnit(product || {}, item.quantityUnit || item.unit || 'Kg');
           const branch = getCustomerBranchById(customerProfile || {}, item.branchId, safeProducts);
           const branchId = item.branchId || branch?.id || '';
           const branchName = item.branchName || (branch ? getCustomerBranchDisplayName(branch) : '');
@@ -75974,6 +76158,10 @@ function CustomerPortalView({
           <div className="space-y-2 mt-3">
             {cart.map((item, index) => {
               const lineId = item.lineId || `${item.productId || 'item'}_${item.branchId || 'main'}_${index}`;
+              const cartProduct = item.productId ? safeProducts.find(product => product.id === item.productId) : null;
+              const cartUnitOptions = cartProduct
+                ? getCustomerProductUnitOptions(customerProfile, cartProduct, item.quantityUnit || item.unit || 'Kg')
+                : [normalizeProductPricingUnit(item.quantityUnit || item.unit || 'Kg')];
               return (
               <div key={lineId} className="rounded-2xl bg-gray-50 p-2">
                 <div className="grid grid-cols-[1fr_64px_78px_32px] gap-2 items-center">
@@ -75986,12 +76174,16 @@ function CustomerPortalView({
                 <select
                   value={item.quantityUnit || item.unit || 'Kg'}
                   onChange={e => {
-                    const quantityUnit = normalizeCustomerCartUnit(e.target.value);
-                    updateCartItem(lineId, { quantityUnit, unit: quantityUnit });
+                    const quantityUnit = normalizeCustomerCartUnit(cartProduct || {}, e.target.value);
+                    updateCartItem(lineId, {
+                      quantityUnit,
+                      unit: quantityUnit,
+                      unitPrice: cartProduct ? resolveCustomerUnitPrice(cartProduct, quantityUnit) : item.unitPrice
+                    });
                   }}
                   className="w-full rounded-xl border border-gray-200 bg-white p-2 text-center text-xs font-bold outline-none"
                 >
-                  {Array.from(new Set([item.quantityUnit || item.unit || 'Kg', ...ORDER_REQUEST_QUANTITY_UNIT_OPTIONS])).filter(Boolean).map(unit => (
+                  {cartUnitOptions.map(unit => (
                     <option key={unit} value={unit}>{unit}</option>
                   ))}
                 </select>

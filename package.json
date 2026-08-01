@@ -16,6 +16,7 @@
     "test:performance": "node --expose-gc tests/hd-manager-performance-suite.mjs",
     "test:kpi": "node tests/hd-manager-kpi-gate.mjs",
     "test:design-system": "node tests/design-system-foundation.test.mjs",
+    "test:product-pricing-units": "node tests/product-pricing-units.test.mjs",
     "test:all": "npm run test:ai-zalo && npm run test:ai-zalo-order && npm run test:stress",
     "preview": "vite preview --host 127.0.0.1",
     "serve:dist": "node serve-dist.mjs",
