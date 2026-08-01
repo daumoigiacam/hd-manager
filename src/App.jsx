@@ -20283,7 +20283,6 @@ function MainAppView({
 
   const renderHeader = () => {
     if (activeTab === 'home' || activeTab === 'messages' || activeTab === 'executive_dashboard') return null;
-    const headerBreadcrumbLabel = APP_NAV_ITEM_MAP[activeTab]?.label || 'Quản lý';
     const headerPersonName = employee?.name || employee?.fullName || currentUser?.name || currentCompany?.name || 'HD';
     const headerInitials = headerPersonName
       .split(/\s+/)
@@ -20312,9 +20311,7 @@ function MainAppView({
         <HDHeader className="hd-app-header hd-safe-header bg-emerald-500 text-white p-4 shadow-sm shrink-0">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="hd-header-context hd-header-title-group">
-              <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
               <h1 className="hd-header-title text-xl font-bold">Thêm</h1>
-              <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / Thêm</span>
             </div>
             <div className="hd-header-actions flex items-center gap-2">
               {renderNotificationBell()}
@@ -20454,7 +20451,6 @@ function MainAppView({
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
-            <span className="hd-header-brand-mark hidden md:inline-flex" aria-hidden="true">HD</span>
             <h1 className="hd-header-title text-lg font-bold">
               {activeTab === 'profile' ? 'Cá nhân' : 
                activeTab === 'customers' ? 'Khách hàng' : 
@@ -20478,7 +20474,6 @@ function MainAppView({
                activeTab === 'role_permissions' ? 'Vai trò' : 
                activeTab === 'billing' ? 'Gói cước' : 'Quản lý'}
             </h1>
-            <span className="hd-header-breadcrumb hidden xl:inline">HD Manager / {headerBreadcrumbLabel}</span>
           </div>
           {showHeaderSearchFilterActions ? (
             <div className="hd-header-actions flex items-center gap-2">
