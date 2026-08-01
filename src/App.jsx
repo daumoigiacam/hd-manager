@@ -15402,12 +15402,18 @@ export default function App() {
   const handleAddProduct = async (productData) => {
     if (!firebaseUser) return;
     const id = `prod_${Date.now()}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', id), { ...productData, id, companyId: myCompanyId, isArchived: false });
+    await saveDataDocument('products', id, {
+      ...productData,
+      id,
+      companyId: myCompanyId,
+      isArchived: false
+    }, { merge: false }, 4500, 'Firebase phản hồi chậm khi lưu sản phẩm.');
+    return id;
   };
 
   const handleEditProduct = async (prodId, updatedData) => {
     if (!firebaseUser) return;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', prodId), updatedData, { merge: true });
+    return saveDataDocument('products', prodId, updatedData, { merge: true }, 4500, 'Firebase phản hồi chậm khi cập nhật sản phẩm.');
   };
 
   const handleDeleteProduct = async (prodId) => {
