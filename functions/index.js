@@ -4,6 +4,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
+const { createIdentityCenter } = require('./identityCenter');
 const {
   createDebtRolloverArtifacts,
   createFinalPayrollSnapshot,
@@ -812,6 +813,83 @@ exports.sepayQrImageProxy = functions.https.onRequest(async (req, res) => {
 });
 
 const normalizeAppId = (appId = '') => `${appId || getEnv('HD_MANAGER_APP_ID', DEFAULT_APP_ID)}`.trim() || DEFAULT_APP_ID;
+
+// Identity data lives outside the public app collections. Only Cloud Functions
+// can read password hashes, device secrets, recovery tokens and audit records.
+const identityCenter = createIdentityCenter({
+  db,
+  admin,
+  getAppId: normalizeAppId
+});
+
+const runIdentityRequest = (operation) => async (req, res) => {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+  if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
+  try {
+    const result = await operation(req);
+    return sendJson(res, result?.statusCode || 200, result);
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || 500);
+    if (statusCode >= 500) console.error('identityApi failed', error);
+    return sendJson(res, statusCode, { success: false, message: error?.message || 'Khong the xu ly yeu cau xac thuc.' });
+  }
+};
+
+exports.identityLogin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.login({
+  identifier: req.body?.identifier,
+  password: req.body?.password,
+  device: req.body?.device,
+  appId: req.body?.appId
+})));
+
+exports.identityCompleteSetup = functions.https.onRequest(runIdentityRequest((req) => identityCenter.completeSetup({
+  authorization: req.headers.authorization,
+  device: req.body?.device,
+  password: req.body?.password,
+  username: req.body?.username,
+  pin: req.body?.pin,
+  biometricEnabled: req.body?.biometricEnabled,
+  trustDevice: req.body?.trustDevice
+})));
+
+exports.identityRequestRecovery = functions.https.onRequest(runIdentityRequest((req) => identityCenter.requestRecovery({
+  identifier: req.body?.identifier,
+  device: req.body?.device,
+  deviceSecret: req.body?.deviceSecret,
+  pin: req.body?.pin,
+  biometricProof: Boolean(req.body?.biometricProof)
+})));
+
+exports.identityCompleteRecovery = functions.https.onRequest(runIdentityRequest((req) => identityCenter.completeRecovery({
+  resetToken: req.body?.resetToken,
+  password: req.body?.password,
+  device: req.body?.device
+})));
+
+exports.identityVerifyPin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.verifyPin({
+  authorization: req.headers.authorization,
+  pin: req.body?.pin
+})));
+
+exports.identityDevices = functions.https.onRequest(runIdentityRequest((req) => identityCenter.listDevices({
+  authorization: req.headers.authorization
+})));
+
+exports.identityRevokeDevices = functions.https.onRequest(runIdentityRequest((req) => identityCenter.revokeDevices({
+  authorization: req.headers.authorization,
+  deviceId: req.body?.deviceId,
+  all: Boolean(req.body?.all)
+})));
+
+exports.identityLogout = functions.https.onRequest(runIdentityRequest((req) => identityCenter.logout({
+  authorization: req.headers.authorization,
+  device: req.body?.device
+})));
+
+exports.identityAudit = functions.https.onRequest(runIdentityRequest((req) => identityCenter.listAudit({
+  authorization: req.headers.authorization
+})));
 
 const normalizeTransferCode = (value = '') => `${value ?? ''}`.toUpperCase().replace(/[^A-Z0-9]/g, '');
 

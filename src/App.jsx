@@ -56,7 +56,7 @@ import {
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInWithCustomToken, signInAnonymously, signOut, onAuthStateChanged } from 'firebase/auth';
 import {
   initializeFirestore,
   getFirestore,
@@ -135,6 +135,20 @@ import {
   resolveRememberedInputUnit,
   shouldOfferDefaultInputUnitUpdate,
 } from './services/smartCustomerOrdering.js';
+import {
+  getBiometricAvailability,
+  getIdentityDevice,
+  identityCompleteRecovery,
+  identityCompleteSetup,
+  identityLogin,
+  identityLogout,
+  identityRequestRecovery,
+  identityRevokeDevices,
+  identityListAudit,
+  identityListDevices,
+  identitySetBiometric,
+  identityVerifyPin,
+} from './services/identityCenter.js';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -11264,6 +11278,9 @@ export default function App() {
   const pendingFirebaseFlushInFlightRef = useRef(false);
   const restQuotaBlockedUntilRef = useRef(0);
   const firestoreNetworkEnableRef = useRef({ inFlight: false, lastAt: 0 });
+  const anonymousBootstrapAllowedRef = useRef(false);
+  // Prevent a restored Firebase token from bypassing the mandatory first-login setup flow.
+  const identitySetupPendingRef = useRef(false);
   const [pendingFirebaseWriteCount, setPendingFirebaseWriteCount] = useState(pendingFirebaseWritesRef.current.length);
   const [loadedCollections, setLoadedCollections] = useState({});
   const [realtimeStatus, setRealtimeStatus] = useState({
@@ -11809,7 +11826,7 @@ export default function App() {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
+        } else if (!auth.currentUser) {
           await signInAnonymously(auth);
         }
       } catch (err) {
@@ -11833,11 +11850,46 @@ export default function App() {
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
       authResolved = true;
       window.clearTimeout(authTimeout);
+      if (u?.isAnonymous && !anonymousBootstrapAllowedRef.current && persistedSession.currentUser) {
+        clearAppSession();
+        setCurrentUser(null);
+        setCurrentCompany(null);
+        setActiveTab('home');
+      }
       setFirebaseUser(u);
       setIsFirebaseLoading(false);
+      // Firebase refreshes custom-token sessions itself. Rehydrate only an already-complete
+      // Identity Center session so reopening the application does not show Login again.
+      if (u && !u.isAnonymous && !identitySetupPendingRef.current && !persistedSession.currentUser) {
+        try {
+          const tokenResult = await u.getIdTokenResult();
+          const claims = tokenResult?.claims || {};
+          if (claims.identityId && claims.companyId && claims.accountType) {
+            const restoredUser = {
+              id: claims.appUserId || '',
+              accountId: claims.accountType === 'customer' ? (claims.appUserId || '') : undefined,
+              customerId: claims.customerId || undefined,
+              companyId: claims.companyId,
+              role: claims.role || (claims.accountType === 'customer' ? 'customer' : 'employee'),
+              accountType: claims.accountType,
+              name: claims.name || '',
+              phone: claims.phone || '',
+              username: claims.username || ''
+            };
+            const restoredCompany = { id: claims.companyId, name: claims.companyName || '' };
+            const restoredTab = restoredUser.accountType === 'customer' ? 'customer_home' : 'home';
+            setCurrentUser(restoredUser);
+            setCurrentCompany(restoredCompany);
+            setActiveTab(restoredTab);
+            saveAppSession({ currentUser: restoredUser, currentCompany: restoredCompany, activeTab: restoredTab });
+          }
+        } catch (error) {
+          console.warn('Không thể khôi phục phiên Identity Center:', error);
+        }
+      }
     });
     return () => {
       window.clearTimeout(authTimeout);
@@ -12984,7 +13036,8 @@ export default function App() {
   };
 
   const handleRegisterCompany = async (companyName, phone, password) => {
-    if (!firebaseUser) return { success: false, message: "Lỗi kết nối máy chủ." };
+    const registrationUser = firebaseUser || await getLoginFirebaseUser();
+    if (!registrationUser) return { success: false, message: "Lỗi kết nối máy chủ." };
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: "Vui lòng nhập số điện thoại hợp lệ." };
     const passwordError = validateAccountPasswordInput(password, password);
@@ -13036,10 +13089,7 @@ export default function App() {
     const companyData = { id: newCompanyId, name: companyName, ownerPhone: normalizedPhone, createdAt: getTodayString(), status: 'trial', expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(), ...defaultCompanyPaymentSettings };
     setRawCompanies(prev => [...prev.filter(company => company.id !== newCompanyId), companyData]);
     setRawEmployees(prev => [...prev.filter(emp => emp.id !== newEmpId), adminData]);
-    setCurrentUser({ role: 'super_admin', id: newEmpId, companyId: newCompanyId });
-    setCurrentCompany(companyData);
-    setActiveTab('home');
-    return { success: true };
+    return handleIdentityLogin(normalizedPhone, password);
   };
 
   const getLoginFirebaseUser = async () => {
@@ -13067,6 +13117,7 @@ export default function App() {
       return auth.currentUser;
     }
     try {
+      anonymousBootstrapAllowedRef.current = true;
       const credential = await signInAnonymously(auth);
       setFirebaseUser(credential.user);
       setIsFirebaseLoading(false);
@@ -13132,6 +13183,105 @@ export default function App() {
       customersFromCloud,
       customerAccountsFromCloud
     };
+  };
+
+  const resolveIdentityCompany = async (companyId = '') => {
+    const cached = rawCompanies.find(item => item.id === companyId);
+    if (cached || !companyId || !db) return cached || null;
+    try {
+      const snapshot = await firebaseGetDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', companyId));
+      return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const establishIdentitySession = async (session = {}, { activate = true } = {}) => {
+    if (!session?.customToken || !session?.identity || !auth) {
+      return { success: false, message: 'Không thể tạo phiên đăng nhập an toàn.' };
+    }
+    const credential = await signInWithCustomToken(auth, session.customToken);
+    anonymousBootstrapAllowedRef.current = false;
+    setFirebaseUser(credential.user);
+    setIsFirebaseLoading(false);
+    const identity = session.identity;
+    const company = await resolveIdentityCompany(identity.companyId);
+    const nextUser = {
+      ...identity,
+      role: identity.role || (identity.accountType === 'customer' ? 'customer' : 'employee'),
+    };
+    const nextTab = identity.accountType === 'customer' ? 'customer_home' : 'home';
+    if (activate) {
+      setCurrentUser(nextUser);
+      setCurrentCompany(company || { id: identity.companyId, name: '' });
+      setActiveTab(nextTab);
+      saveAppSession({ currentUser: nextUser, currentCompany: company || { id: identity.companyId, name: '' }, activeTab: nextTab });
+    }
+    return { success: true, ...session, identity: nextUser, company, activeTab: nextTab };
+  };
+
+  const handleIdentityLogin = async (identifier, password) => {
+    const normalizedIdentifier = `${identifier || ''}`.trim();
+    if (!normalizedIdentifier || `${password || ''}`.length < 8) {
+      return { success: false, message: 'Nhập username hoặc số điện thoại và mật khẩu tối thiểu 8 ký tự.' };
+    }
+    try {
+      const session = await identityLogin({ identifier: normalizedIdentifier, password, appId });
+      identitySetupPendingRef.current = Boolean(session.requiresSetup);
+      const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
+      if (!established.success) return established;
+      return {
+        success: true,
+        requiresSetup: Boolean(session.requiresSetup),
+        setup: session.setup || {},
+        identity: established.identity,
+      };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể đăng nhập an toàn. Vui lòng thử lại.' };
+    }
+  };
+
+  const handleIdentitySetup = async ({ password, username, pin, biometricEnabled, trustDevice }) => {
+    try {
+      const idToken = await auth?.currentUser?.getIdToken?.();
+      if (!idToken) return { success: false, message: 'Phiên xác thực đã hết hạn. Vui lòng đăng nhập lại.' };
+      const result = await identityCompleteSetup({ idToken, password, username, pin, biometricEnabled, trustDevice });
+      if (result.customToken) {
+        const credential = await signInWithCustomToken(auth, result.customToken);
+        setFirebaseUser(credential.user);
+      }
+      const identity = { ...(currentUser || {}), ...(result.identity || {}) };
+      const company = await resolveIdentityCompany(identity.companyId);
+      const nextTab = identity.accountType === 'customer' ? 'customer_home' : 'home';
+      setCurrentUser(identity);
+      setCurrentCompany(company || currentCompany || { id: identity.companyId, name: '' });
+      setActiveTab(nextTab);
+      saveAppSession({ currentUser: identity, currentCompany: company || currentCompany || { id: identity.companyId, name: '' }, activeTab: nextTab });
+      identitySetupPendingRef.current = false;
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể hoàn tất bảo mật tài khoản.' };
+    }
+  };
+
+  const handleIdentityRecovery = async ({ identifier, pin }) => {
+    try {
+      return await identityRequestRecovery({ identifier, pin });
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể xác minh thiết bị tin cậy.' };
+    }
+  };
+
+  const handleIdentityCompleteRecovery = async ({ resetToken, password }) => {
+    try {
+      const session = await identityCompleteRecovery({ resetToken, password });
+      identitySetupPendingRef.current = Boolean(session.requiresSetup);
+      const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
+      if (!established.success) return established;
+      return { success: true, requiresSetup: Boolean(session.requiresSetup), setup: session.setup || {}, identity: established.identity };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể đặt lại mật khẩu.' };
+    }
   };
 
   const handleLogin = async (phone, password) => {
@@ -13536,14 +13686,36 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      const idToken = await auth?.currentUser?.getIdToken?.();
+      if (idToken) await identityLogout({ idToken });
+    } catch {
+      // Logout audit must not prevent a user from leaving the device.
+    }
+    try {
+      await signOut(auth);
+    } catch {
+      // Local session clearing remains reliable if Firebase is temporarily offline.
+    }
     clearAppSession();
     setCurrentUser(null);
     setCurrentCompany(null);
     setActiveTab('home');
   };
 
-  const handleSwitchToCustomerLogin = () => {
+  const handleSwitchToCustomerLogin = async () => {
+    try {
+      const idToken = await auth?.currentUser?.getIdToken?.();
+      if (idToken) await identityLogout({ idToken });
+    } catch {
+      // Switching account type still clears the local session if offline.
+    }
+    try {
+      await signOut(auth);
+    } catch {
+      // The login mode can still be reset locally.
+    }
     setPreferredCustomerLoginMode();
     clearAppSession();
     setCurrentUser(null);
@@ -19002,7 +19174,14 @@ export default function App() {
     return (
       <>
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
-        <LoginRegisterView onLogin={handleLogin} onRegister={handleRegisterCompany} onForgotPassword={handleForgotPassword} isLoginReady={isLoginDataLoaded} />
+        <LoginRegisterView
+          onLogin={handleIdentityLogin}
+          onRegister={handleRegisterCompany}
+          onForgotPassword={handleIdentityRecovery}
+          onCompleteRecovery={handleIdentityCompleteRecovery}
+          onCompleteIdentitySetup={handleIdentitySetup}
+          isLoginReady={isLoginDataLoaded}
+        />
       </>
     );
   }
@@ -19089,7 +19268,7 @@ export default function App() {
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
-        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
+        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => auth?.currentUser?.getIdToken?.() || Promise.resolve('')} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
@@ -19563,7 +19742,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -21076,7 +21255,7 @@ function MainAppView({
     switch (activeTab) {
       case 'home': return renderHomeDashboard();
       case 'executive_dashboard': return renderExecutiveDashboard();
-      case 'profile': return <ProfileView employee={employee} currentCompany={currentCompany} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} />;
+      case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
       case 'settings': return <SettingsView isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
@@ -23286,7 +23465,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
   );
 }
 
-function ProfileView({ employee, currentCompany, isAccounting, onEditEmployee, onUpdateCompanySettings }) {
+function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEditEmployee, onUpdateCompanySettings, onGetIdentityToken, onLogout }) {
   const avatarInputRef = useRef(null);
   const logoInputRef = useRef(null);
   const canEditCompanyProfile = Boolean(isAccounting);
@@ -23453,6 +23632,8 @@ function ProfileView({ employee, currentCompany, isAccounting, onEditEmployee, o
           </div>
         </div>
       </div>
+
+      <IdentitySecurityCenter identityUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />
 
       <form onSubmit={handlePersonalSubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
@@ -24255,6 +24436,182 @@ function ZaloDispatcherRuntime({
   ]);
 
   return null;
+}
+
+function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) {
+  const [expanded, setExpanded] = useState(false);
+  const [devices, setDevices] = useState([]);
+  const [auditEntries, setAuditEntries] = useState([]);
+  const [securityStatus, setSecurityStatus] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeEditor, setActiveEditor] = useState('');
+  const [currentPin, setCurrentPin] = useState('');
+  const [username, setUsername] = useState(identityUser?.username || '');
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [newPinConfirm, setNewPinConfirm] = useState('');
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const device = useMemo(() => getIdentityDevice(), []);
+  const identityReady = Boolean(identityUser?.username);
+
+  useEffect(() => {
+    setUsername(identityUser?.username || '');
+  }, [identityUser?.username]);
+
+  const refreshSecurityData = useCallback(async () => {
+    if (!identityReady) return;
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const idToken = await onGetIdentityToken?.();
+      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      const [deviceResult, auditResult] = await Promise.all([
+        identityListDevices({ idToken }),
+        identityListAudit({ idToken })
+      ]);
+      setDevices(deviceResult?.devices || []);
+      setAuditEntries(auditResult?.entries || []);
+      const currentDevice = (deviceResult?.devices || []).find(item => item.deviceId === device.deviceId);
+      setBiometricEnabled(Boolean(currentDevice?.biometricEnabled));
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể tải thông tin bảo mật.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [device.deviceId, identityReady, onGetIdentityToken]);
+
+  useEffect(() => {
+    if (expanded) refreshSecurityData();
+  }, [expanded, refreshSecurityData]);
+
+  const runSensitiveUpdate = async (event) => {
+    event.preventDefault();
+    if (!identityReady) return;
+    if (!/^\d{6}$/.test(currentPin)) {
+      setSecurityStatus('Nhập PIN hiện tại gồm 6 số để xác nhận thay đổi.');
+      return;
+    }
+    if (activeEditor === 'password' && (!newPassword || newPassword !== newPasswordConfirm)) {
+      setSecurityStatus('Mật khẩu mới chưa khớp.');
+      return;
+    }
+    if (activeEditor === 'pin' && (!/^\d{6}$/.test(newPin) || newPin !== newPinConfirm)) {
+      setSecurityStatus('PIN mới phải gồm 6 số và khớp xác nhận.');
+      return;
+    }
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const idToken = await onGetIdentityToken?.();
+      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      await identityVerifyPin({ idToken, pin: currentPin });
+      const result = await identityCompleteSetup({
+        idToken,
+        username: activeEditor === 'username' ? username : undefined,
+        password: activeEditor === 'password' ? newPassword : undefined,
+        pin: activeEditor === 'pin' ? newPin : undefined,
+      });
+      setSecurityStatus(activeEditor === 'username' ? 'Đã cập nhật username.' : activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
+      setActiveEditor('');
+      setCurrentPin('');
+      setNewPassword('');
+      setNewPasswordConfirm('');
+      setNewPin('');
+      setNewPinConfirm('');
+      if (result?.setup) setBiometricEnabled(Boolean(result.setup.biometricEnabled));
+      await refreshSecurityData();
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể cập nhật thông tin bảo mật.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const toggleBiometric = async () => {
+    if (!identityReady) return;
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const idToken = await onGetIdentityToken?.();
+      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      const result = await identitySetBiometric({ idToken, enabled: !biometricEnabled });
+      setBiometricEnabled(Boolean(result?.setup?.biometricEnabled));
+      setSecurityStatus(!biometricEnabled ? 'Đã bật Face ID / vân tay trên thiết bị này.' : 'Đã tắt yêu cầu Face ID / vân tay trên thiết bị này.');
+      await refreshSecurityData();
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể cập nhật Face ID / vân tay.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const revokeDevice = async (deviceId, all = false) => {
+    if (!identityReady || !window.confirm(all ? 'Đăng xuất khỏi tất cả thiết bị tin cậy?' : 'Thu hồi thiết bị này?')) return;
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const idToken = await onGetIdentityToken?.();
+      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      await identityRevokeDevices({ idToken, deviceId, all });
+      if (all || deviceId === device.deviceId) {
+        await onLogout?.();
+        return;
+      }
+      setSecurityStatus('Đã thu hồi thiết bị.');
+      await refreshSecurityData();
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể thu hồi thiết bị.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const formatAuditTime = (value) => {
+    try { return new Date(value).toLocaleString('vi-VN'); } catch { return ''; }
+  };
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <button type="button" onClick={() => setExpanded(value => !value)} className="flex w-full items-center justify-between gap-3 p-4 text-left">
+        <span className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white"><Lock size={18} /></span><span><strong className="block text-sm text-slate-900">Bảo mật tài khoản</strong><span className="mt-0.5 block text-xs text-slate-500">Thiết bị tin cậy, PIN và lịch sử đăng nhập</span></span></span>
+        {expanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+      </button>
+      {expanded && (
+        <div className="border-t border-slate-100 p-4 space-y-4">
+          {!identityReady ? (
+            <div className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">Tài khoản này chưa hoàn tất Identity Center. Hãy đăng xuất và đăng nhập lại để thiết lập username, PIN và thiết bị tin cậy.</div>
+          ) : <>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3 text-xs"><span className="block text-slate-500">Username</span><strong className="mt-1 block text-slate-800">{identityUser.username}</strong></div>
+              <div className="rounded-xl bg-slate-50 p-3 text-xs"><span className="block text-slate-500">Số điện thoại</span><strong className="mt-1 block text-slate-800">{identityUser.phone || 'Chưa cập nhật'}</strong></div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
+              <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>
+              <button type="button" onClick={() => setActiveEditor(activeEditor === 'username' ? '' : 'username')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi username</button>
+              <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>
+            </div>
+            {activeEditor && (
+              <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                {activeEditor === 'username' && <input value={username} onChange={event => setUsername(event.target.value.toLowerCase().replace(/\s+/g, ''))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Username mới" autoComplete="username" />}
+                {activeEditor === 'password' && <><input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" /><input type="password" value={newPasswordConfirm} onChange={event => setNewPasswordConfirm(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" /></>}
+                {activeEditor === 'pin' && <><input type="password" inputMode="numeric" maxLength={6} value={newPin} onChange={event => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN mới" /><input type="password" inputMode="numeric" maxLength={6} value={newPinConfirm} onChange={event => setNewPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="Xác nhận PIN mới" /></>}
+                <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
+                <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang lưu...' : 'Xác nhận thay đổi'}</button>
+              </form>
+            )}
+            <div className="space-y-2"><div className="flex items-center justify-between"><h4 className="text-sm font-bold text-slate-900">Thiết bị tin cậy</h4><button type="button" onClick={refreshSecurityData} disabled={isLoading} className="text-xs font-semibold text-emerald-700">Làm mới</button></div>
+              {(devices || []).map(item => <div key={item.deviceId} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2.5 text-xs"><span className="min-w-0"><strong className="block truncate text-slate-800">{item.name || 'Thiết bị'}</strong><span className="block truncate text-slate-500">{item.platform} · Lần cuối {formatAuditTime(item.lastLoginAt)}</span></span>{item.revokedAt ? <span className="text-slate-400">Đã thu hồi</span> : <button type="button" onClick={() => revokeDevice(item.deviceId)} className="shrink-0 font-semibold text-red-600">Thu hồi</button>}</div>)}
+              <button type="button" onClick={() => revokeDevice('', true)} disabled={isLoading || devices.length === 0} className="w-full rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-700 disabled:opacity-50">Đăng xuất tất cả thiết bị</button>
+            </div>
+            <div className="space-y-2"><h4 className="text-sm font-bold text-slate-900">Lịch sử bảo mật</h4>{auditEntries.length ? auditEntries.slice(0, 8).map(entry => <div key={entry.id} className="flex items-start justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-medium text-slate-700">{`${entry.action || ''}`.replace(/_/g, ' ')}</span><time className="shrink-0 text-slate-400">{formatAuditTime(entry.createdAt)}</time></div>) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}</div>
+          </>}
+          {securityStatus && <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs font-medium text-slate-700" role="status">{securityStatus}</p>}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function ZaloDispatcherPanel({
@@ -78904,7 +79261,82 @@ function CustomerEmptyState({ text }) {
   return <div className="hd-ds-card hd-ds-state py-6"><p>{text}</p></div>;
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady = true }) {
+function IdentitySetupWizard({ context = {}, onComplete }) {
+  const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [username, setUsername] = useState(context?.identity?.username || '');
+  const [pin, setPin] = useState('');
+  const [pinConfirm, setPinConfirm] = useState('');
+  const [biometric, setBiometric] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(null);
+  const [error, setError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const mustChangePassword = Boolean(context?.setup?.passwordChanged === false || context?.requiresPasswordChange);
+  const mustSetUsername = !context?.setup?.usernameSet;
+  const mustSetPin = !context?.setup?.pinSet;
+
+  useEffect(() => {
+    let active = true;
+    getBiometricAvailability().then(result => {
+      if (active) setBiometricAvailable(result);
+    });
+    return () => { active = false; };
+  }, []);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (mustChangePassword) {
+      const passwordError = validateAccountPasswordInput(password, passwordConfirm);
+      if (passwordError) { setError(passwordError); return; }
+    }
+    if (mustSetUsername && !`${username}`.trim()) { setError('Vui lòng đặt Username cho tài khoản.'); return; }
+    if (mustSetPin && (!/^\d{6}$/.test(pin) || pin !== pinConfirm)) { setError('PIN gồm 6 số và cần khớp xác nhận.'); return; }
+    setIsSaving(true);
+    setError('');
+    try {
+      const result = await onComplete({
+        password: mustChangePassword ? password : undefined,
+        username,
+        pin: mustSetPin ? pin : undefined,
+        biometricEnabled: Boolean(biometric && biometricAvailable?.available),
+        trustDevice: true,
+      });
+      if (!result?.success) throw new Error(result?.message || 'Không thể hoàn tất bảo mật tài khoản.');
+    } catch (submitError) {
+      setError(submitError?.message || 'Không thể hoàn tất bảo mật tài khoản. Vui lòng thử lại.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-emerald-100">
+      <div className="mb-5 text-center">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700"><ShieldAlert size={24} /></div>
+        <h1 className="text-xl font-extrabold text-slate-800">Bảo mật tài khoản</h1>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">Thiết lập một lần để đăng nhập nhanh và an toàn trên thiết bị này.</p>
+      </div>
+      <form onSubmit={submit} className="space-y-3.5">
+        {mustChangePassword && <>
+          <div className="hd-login-3d-field"><input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Đặt mật khẩu mới" autoComplete="new-password" /></div>
+          <div className="hd-login-3d-field"><input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" /></div>
+        </>}
+        {mustSetUsername && <div className="hd-login-3d-field"><input type="text" value={username} onChange={(event) => { setUsername(event.target.value.toLowerCase().replace(/\s+/g, '')); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Username (ví dụ: nguyenvana)" autoComplete="username" /></div>}
+        {mustSetPin && <>
+          <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => { setPin(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="PIN 6 số" autoComplete="new-password" /></div>
+          <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pinConfirm} onChange={(event) => { setPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="Xác nhận PIN 6 số" autoComplete="new-password" /></div>
+        </>}
+        {biometricAvailable?.available && <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-xs text-emerald-800"><input type="checkbox" checked={biometric} onChange={(event) => setBiometric(event.target.checked)} className="h-4 w-4 accent-emerald-600" /><span><strong>Bật Face ID / Vân tay</strong><br />Xác thực sinh trắc học khi mở app và khôi phục mật khẩu.</span></label>}
+        <div className="rounded-xl bg-slate-50 px-3 py-2.5 text-[11px] leading-relaxed text-slate-500">Thiết bị này sẽ được đánh dấu tin cậy. Khóa thiết bị được lưu trong Keychain/Keystore, không lưu mật khẩu hoặc PIN.</div>
+        {error && <p className="rounded-xl bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-600" role="alert">{error}</p>}
+        <button type="submit" disabled={isSaving} className="w-full rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition active:scale-[0.98] disabled:bg-emerald-300">{isSaving ? 'Đang hoàn tất...' : 'Hoàn tất và vào trang chủ'}</button>
+      </form>
+    </div>
+  );
+}
+
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup, isLoginReady = true }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -78912,6 +79344,10 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
   const [loginError, setLoginError] = useState('');
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotPin, setForgotPin] = useState('');
+  const [recoveryToken, setRecoveryToken] = useState('');
+  const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState('');
   const [forgotError, setForgotError] = useState('');
   const [forgotMessage, setForgotMessage] = useState('');
   const [isRequestingRecovery, setIsRequestingRecovery] = useState(false);
@@ -78924,6 +79360,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
   const [regError, setRegError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
+  const [identitySetupContext, setIdentitySetupContext] = useState(null);
 
   const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
   const registrationPasswordsMatch = hasRegistrationPasswordConfirmation && regPassword === regPasswordConfirm;
@@ -78935,6 +79372,10 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
 
   const openForgotPassword = () => {
     setForgotPhone(loginPhone);
+    setForgotPin('');
+    setRecoveryToken('');
+    setRecoveryPassword('');
+    setRecoveryPasswordConfirm('');
     setForgotError('');
     setForgotMessage('');
     setShowForgotPassword(true);
@@ -78950,8 +79391,9 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
     setForgotError('');
     setForgotMessage('');
     try {
-      const result = await onForgotPassword?.({ phone: forgotPhone });
+      const result = await onForgotPassword?.({ identifier: forgotPhone, pin: forgotPin });
       if (result?.success) {
+        setRecoveryToken(result.resetToken || '');
         setForgotMessage(result.message || 'Yêu cầu đã được ghi nhận.');
       } else {
         setForgotError(result?.message || 'Không thể gửi yêu cầu khôi phục.');
@@ -78967,8 +79409,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     if (!loginPhone.trim()) { setLoginError('Vui lòng nhập số điện thoại'); return; }
-    const passwordError = validateAccountPasswordInput(loginPassword);
-    if (passwordError) { setLoginError(passwordError); return; }
+    if (`${loginPassword || ''}`.length < 8) { setLoginError('Mật khẩu cần ít nhất 8 ký tự.'); return; }
     setIsLoggingIn(true);
     setLoginError('');
     try {
@@ -78976,12 +79417,39 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
       const isSuccess = result === true || result?.success === true;
       if (!isSuccess) {
         setLoginError(result?.message || 'Số điện thoại không đúng hoặc công ty chưa đăng ký.');
+      } else if (result?.requiresSetup) {
+        setIdentitySetupContext(result);
       }
     } catch (error) {
       console.error('Đăng nhập lỗi:', error);
       setLoginError(getFriendlyFirebaseErrorMessage(error, 'Không thể đăng nhập. Vui lòng kiểm tra mạng rồi thử lại.'));
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleCompleteRecoverySubmit = async () => {
+    if (!recoveryToken) return;
+    if (!recoveryPassword || recoveryPassword !== recoveryPasswordConfirm) {
+      setForgotError('Mật khẩu mới chưa khớp.');
+      return;
+    }
+    setIsRequestingRecovery(true);
+    setForgotError('');
+    try {
+      const result = await onCompleteRecovery?.({ resetToken: recoveryToken, password: recoveryPassword });
+      if (!result?.success) {
+        setForgotError(result?.message || 'Không thể đặt lại mật khẩu.');
+      } else if (result?.requiresSetup) {
+        setShowForgotPassword(false);
+        setIdentitySetupContext(result);
+      } else {
+        setShowForgotPassword(false);
+      }
+    } catch (error) {
+      setForgotError(error?.message || 'Không thể đặt lại mật khẩu.');
+    } finally {
+      setIsRequestingRecovery(false);
     }
   };
 
@@ -78996,6 +79464,10 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
     if (!result.success) setRegError(result.message);
     setIsRegistering(false);
   };
+
+  if (identitySetupContext) {
+    return <IdentitySetupWizard context={identitySetupContext} onComplete={onCompleteIdentitySetup} />;
+  }
 
   return (
     <AppShell className="ios-web-login-shell hd-shell--auth flex flex-col items-center justify-center">
@@ -79022,7 +79494,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
             {loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div className="hd-login-3d-field">
-                <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Nhập số điện thoại..." autoComplete="tel" inputMode="tel" />
+                <input type="text" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Username hoặc số điện thoại" autoComplete="username" inputMode="text" />
               </div>
               <div className="hd-login-3d-field relative">
                 <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
@@ -79051,14 +79523,19 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, isLoginReady
               {showForgotPassword && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
-                  <p className="mb-3 text-[11px] leading-relaxed text-gray-500">Nhập số điện thoại. Yêu cầu sẽ gửi tới chủ doanh nghiệp/kế toán để xác minh an toàn.</p>
+                  <p className="mb-3 text-[11px] leading-relaxed text-gray-500">Dùng thiết bị tin cậy và PIN hoặc sinh trắc học để tự xác minh. Không gửi OTP hoặc mật khẩu tạm.</p>
                   <div className="space-y-2.5">
                     <input type="tel" value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Số điện thoại" autoComplete="tel" />
+                    {!recoveryToken && <input type="password" inputMode="numeric" maxLength={6} value={forgotPin} onChange={(e) => { setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm tracking-[0.35em] outline-none focus:border-emerald-500" placeholder="PIN 6 số (nếu không dùng sinh trắc học)" autoComplete="one-time-code" />}
+                    {recoveryToken && <>
+                      <input type="password" value={recoveryPassword} onChange={(e) => { setRecoveryPassword(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" />
+                      <input type="password" value={recoveryPasswordConfirm} onChange={(e) => { setRecoveryPasswordConfirm(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" />
+                    </>}
                     {forgotError && <p className="text-[11px] font-semibold text-red-600" role="alert">{forgotError}</p>}
                     {forgotMessage && <p className="text-[11px] font-semibold leading-relaxed text-emerald-700" role="status">{forgotMessage}</p>}
                     <div className="flex gap-2">
                       <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Đóng</button>
-                      <button type="button" onClick={handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang gửi...' : 'Gửi yêu cầu'}</button>
+                      <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : 'Xác minh thiết bị'}</button>
                     </div>
                   </div>
                 </div>

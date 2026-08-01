@@ -19,6 +19,42 @@
     ],
     "rewrites": [
       {
+        "source": "/api/identity/login",
+        "function": "identityLogin"
+      },
+      {
+        "source": "/api/identity/complete-setup",
+        "function": "identityCompleteSetup"
+      },
+      {
+        "source": "/api/identity/request-recovery",
+        "function": "identityRequestRecovery"
+      },
+      {
+        "source": "/api/identity/complete-recovery",
+        "function": "identityCompleteRecovery"
+      },
+      {
+        "source": "/api/identity/verify-pin",
+        "function": "identityVerifyPin"
+      },
+      {
+        "source": "/api/identity/devices",
+        "function": "identityDevices"
+      },
+      {
+        "source": "/api/identity/revoke-devices",
+        "function": "identityRevokeDevices"
+      },
+      {
+        "source": "/api/identity/logout",
+        "function": "identityLogout"
+      },
+      {
+        "source": "/api/identity/audit",
+        "function": "identityAudit"
+      },
+      {
         "source": "/api/sepay/create-payment-request",
         "function": "createSepayPaymentRequest"
       },

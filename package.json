@@ -26,7 +26,8 @@
     "test:payroll-lock": "node tests/payroll-period-lock.test.mjs",
     "test:payroll-debt-rollover": "node tests/payroll-debt-carryover.test.mjs",
     "test:payroll-auto-lock": "node tests/payroll-auto-lock.test.cjs",
-    "test:all": "npm run test:ai-zalo && npm run test:ai-zalo-order && npm run test:stress && npm run test:product-pricing-units && npm run test:smart-customer-ordering && npm run test:warehouse-dispatch && npm run test:order-request-ux && npm run test:delivery-reconciliation && npm run test:payroll-evaluation && npm run test:payroll-lock && npm run test:payroll-debt-rollover && npm run test:payroll-auto-lock",
+    "test:identity": "node tests/identity-center.test.mjs",
+    "test:all": "npm run test:ai-zalo && npm run test:ai-zalo-order && npm run test:stress && npm run test:product-pricing-units && npm run test:smart-customer-ordering && npm run test:warehouse-dispatch && npm run test:order-request-ux && npm run test:delivery-reconciliation && npm run test:payroll-evaluation && npm run test:payroll-lock && npm run test:payroll-debt-rollover && npm run test:payroll-auto-lock && npm run test:identity",
     "preview": "vite preview --host 127.0.0.1",
     "serve:dist": "node serve-dist.mjs",
     "desktop:start": "npm run build && electron .",
@@ -76,8 +77,6 @@
     }
   },
   "dependencies": {
-    "@fontsource-variable/inter": "^5.3.0",
-    "@fontsource-variable/roboto-flex": "^5.3.0",
     "@capacitor/android": "^8.3.1",
     "@capacitor/app": "^8.0.1",
     "@capacitor/core": "^8.3.1",
@@ -85,6 +84,9 @@
     "@capacitor/geolocation": "^8.2.0",
     "@capacitor/local-notifications": "^8.0.0",
     "@capacitor/share": "^8.0.1",
+    "@capgo/capacitor-native-biometric": "^8.6.2",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/roboto-flex": "^5.3.0",
     "@zxing/browser": "^0.2.0",
     "firebase": "^12.12.1",
     "html-to-image": "^1.11.13",
