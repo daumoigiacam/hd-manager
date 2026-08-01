@@ -58616,11 +58616,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   key={key}
                                   type="button"
                                   onClick={() => handleQuickProductSelect(product.id, variant)}
-                                  className={`w-full rounded-2xl border px-3 py-3 text-center transition-colors ${isActive ? 'border-red-300 bg-red-50 text-red-700 shadow-sm shadow-red-100' : 'border-emerald-100 bg-white text-slate-700 hover:bg-emerald-50'}`}
+                                  aria-pressed={isActive}
+                                  className={`w-full rounded-2xl border px-3 py-3 text-center transition-colors ${isActive ? 'border-emerald-600 bg-emerald-500 text-white shadow-md shadow-emerald-200 ring-1 ring-emerald-300' : 'border-emerald-100 bg-white text-slate-700 hover:bg-emerald-50'}`}
                                   style={{ minWidth: 0 }}
                                 >
                                   <p className="whitespace-normal break-words text-xs font-black leading-5">{product.name}</p>
-                                  <p className={`mt-1 text-[10px] font-semibold ${isActive ? 'text-red-500' : 'text-slate-400'}`}>
+                                  <p className={`mt-1 text-[10px] font-semibold ${isActive ? 'text-emerald-50' : 'text-slate-400'}`}>
                                     {variantLabel || product.category || product.unit || 'Sản phẩm'}
                                     {fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}
                                   </p>
