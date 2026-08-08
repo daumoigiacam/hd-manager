@@ -1,3 +1,5 @@
+import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
+
 const toNumber = (value, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (value === null || value === undefined) return fallback;
@@ -156,6 +158,10 @@ const getLinePrice = (line = {}) =>
   toNumber(line.unitPrice ?? line.price ?? line.salePrice ?? line.sellingPrice ?? line.pricePerKg, 0);
 
 const getLineTotal = (line = {}) => {
+  const snapshot = resolveTransactionBillingSnapshot({ record: line });
+  if (snapshot.hasFrozenPricing || toNumber(line.billingSnapshotVersion) > 0) {
+    return toNumber(snapshot.amount, 0);
+  }
   const explicit = toNumber(line.total ?? line.totalAmount ?? line.amountMoney ?? line.lineTotal, 0);
   if (explicit > 0) return explicit;
   const price = getLinePrice(line);

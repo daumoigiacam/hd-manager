@@ -1,0 +1,330 @@
+import {
+  getProductPrimaryPricingUnit,
+  getUnitPriceFromMap,
+  normalizeProductPricingUnit,
+  normalizeUnitPriceMap,
+  resolveProductUnitPrice,
+} from './productPricingUnits.js';
+
+const normalizeText = (value = '') => `${value || ''}`
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/đ/g, 'd')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+
+const parsePositiveNumber = (value = 0) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0;
+  const raw = `${value || ''}`.replace(/[^0-9,.-]/g, '');
+  const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+};
+
+const parseMoney = (value = 0) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0;
+  const parsed = Number(`${value || ''}`.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+};
+
+export const isSameBillingUnit = (left = '', right = '') => {
+  const normalizedLeft = normalizeText(normalizeProductPricingUnit(left));
+  const normalizedRight = normalizeText(normalizeProductPricingUnit(right));
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+};
+
+const normalizeConfigurationVariant = (source = {}, fallbackId = '') => ({
+  id: `${source?.id || source?.configurationId || source?.variantId || fallbackId || ''}`.trim(),
+  sizeLabel: `${source?.sizeLabel ?? source?.size ?? source?.weightKg ?? ''}`.trim(),
+  attributeLabel: `${source?.attributeLabel ?? source?.productAttribute ?? source?.attribute ?? source?.variant ?? ''}`.trim(),
+  pricingUnit: normalizeProductPricingUnit(
+    source?.pricingUnit || source?.billingUnit || source?.defaultUnit || source?.quantityUnit || source?.unit || ''
+  ),
+  unitPrice: parseMoney(source?.unitPrice ?? source?.price ?? source?.sellingPrice),
+  unitPrices: normalizeUnitPriceMap(source?.unitPrices ?? source?.pricesByUnit ?? source?.priceByUnit ?? {}),
+});
+
+const configurationVariantMatches = (variant = {}, criteria = {}) => {
+  const requestedId = `${criteria?.configurationId || criteria?.variantId || ''}`.trim();
+  if (requestedId && variant.id === requestedId) return true;
+  const requestedSize = normalizeText(criteria?.sizeLabel || criteria?.size || criteria?.weightKg || '');
+  const requestedAttribute = normalizeText(criteria?.attributeLabel || criteria?.productAttribute || criteria?.attribute || '');
+  if (!requestedSize && !requestedAttribute) return false;
+  return (!requestedSize || normalizeText(variant.sizeLabel) === requestedSize)
+    && (!requestedAttribute || normalizeText(variant.attributeLabel) === requestedAttribute);
+};
+
+const buildConfigurationId = ({ productId = '', variant = {}, pricingUnit = '' } = {}) => {
+  if (variant.id) return variant.id;
+  return [
+    productId || 'product',
+    normalizeText(variant.sizeLabel) || 'default',
+    normalizeText(variant.attributeLabel) || 'default',
+    normalizeText(pricingUnit) || 'unit',
+  ].join('__');
+};
+
+export const resolveCustomerProductConfiguration = ({
+  customerConfig = null,
+  product = null,
+  productId = '',
+  configurationId = '',
+  variantId = '',
+  variant = null,
+  sizeLabel = '',
+  attributeLabel = '',
+  fallbackUnit = '',
+} = {}) => {
+  const resolvedProduct = product || {};
+  const resolvedProductId = `${productId || resolvedProduct.id || ''}`.trim();
+  const hasCustomerConfig = Boolean(customerConfig && typeof customerConfig === 'object');
+  const baseVariant = normalizeConfigurationVariant(customerConfig || {}, `${resolvedProductId || 'product'}_default`);
+  const configuredVariants = (Array.isArray(customerConfig?.variants) ? customerConfig.variants : [])
+    .map((item, index) => normalizeConfigurationVariant(item, `${resolvedProductId || 'product'}_variant_${index + 1}`));
+  const explicitVariant = variant && typeof variant === 'object'
+    ? normalizeConfigurationVariant(variant, `${resolvedProductId || 'product'}_selected`)
+    : null;
+  const matchCriteria = { configurationId, variantId, sizeLabel, attributeLabel };
+  const matchedVariant = explicitVariant
+    || configuredVariants.find(item => configurationVariantMatches(item, matchCriteria))
+    || (configuredVariants.length === 1 && !baseVariant.pricingUnit && baseVariant.unitPrice <= 0 ? configuredVariants[0] : null);
+  const selectedVariant = matchedVariant
+    ? {
+        ...baseVariant,
+        ...matchedVariant,
+        unitPrices: {
+          ...baseVariant.unitPrices,
+          ...matchedVariant.unitPrices,
+        },
+      }
+    : baseVariant;
+
+  const configuredUnitPrices = normalizeUnitPriceMap(selectedVariant.unitPrices);
+  const unitPriceKeys = Object.keys(configuredUnitPrices);
+  const legacyPrimaryUnit = getProductPrimaryPricingUnit(resolvedProduct, fallbackUnit || 'Con');
+  const pricingUnit = normalizeProductPricingUnit(
+    selectedVariant.pricingUnit
+    || (unitPriceKeys.length === 1 ? unitPriceKeys[0] : '')
+    || legacyPrimaryUnit
+  );
+  const mappedPrice = getUnitPriceFromMap(configuredUnitPrices, pricingUnit);
+  const unitPrice = mappedPrice
+    || selectedVariant.unitPrice
+    || resolveProductUnitPrice({
+      product: resolvedProduct,
+      customerConfig: hasCustomerConfig ? customerConfig : null,
+      unit: pricingUnit,
+    });
+  const isAmbiguous = hasCustomerConfig
+    && !matchedVariant
+    && configuredVariants.length > 1
+    && !baseVariant.pricingUnit
+    && baseVariant.unitPrice <= 0;
+  const source = hasCustomerConfig ? 'customer_fixed_product' : 'legacy_product';
+
+  return {
+    productId: resolvedProductId,
+    productName: `${resolvedProduct.name || ''}`.trim(),
+    configurationId: buildConfigurationId({ productId: resolvedProductId, variant: selectedVariant, pricingUnit }),
+    sizeLabel: selectedVariant.sizeLabel,
+    attributeLabel: selectedVariant.attributeLabel,
+    pricingUnit,
+    billingUnit: pricingUnit,
+    unitPrice: parseMoney(unitPrice),
+    allowedUnits: pricingUnit ? [pricingUnit] : [],
+    source,
+    isCustomerConfigured: hasCustomerConfig,
+    isAmbiguous,
+    isValid: Boolean(resolvedProductId && pricingUnit && parseMoney(unitPrice) > 0 && !isAmbiguous),
+    errorCode: isAmbiguous
+      ? 'AMBIGUOUS_CUSTOMER_CONFIGURATION'
+      : (!pricingUnit ? 'MISSING_PRICING_UNIT' : (parseMoney(unitPrice) <= 0 ? 'MISSING_UNIT_PRICE' : '')),
+  };
+};
+
+export const isCustomerProductUnitAllowed = (configuration = null, unit = '') => {
+  if (!configuration || !unit) return false;
+  return (configuration.allowedUnits || [configuration.billingUnit || configuration.pricingUnit])
+    .filter(Boolean)
+    .some(allowedUnit => isSameBillingUnit(allowedUnit, unit));
+};
+
+export const resolveCustomerProductActualUnit = (configuration = null, product = null) => {
+  const billingUnit = normalizeProductPricingUnit(configuration?.billingUnit || configuration?.pricingUnit || '');
+  const productUnit = getProductPrimaryPricingUnit(product || {}, billingUnit || 'Con');
+  if (isSameBillingUnit(billingUnit, 'Kg') && productUnit && !isSameBillingUnit(productUnit, 'Kg')) {
+    return productUnit;
+  }
+  return billingUnit || productUnit;
+};
+
+export const calculateBillableAmount = ({
+  configuration = null,
+  actualQuantity = 0,
+  actualUnit = '',
+  actualWeightKg = 0,
+  billingQuantity = 0,
+  billingUnit = '',
+  unitPrice = 0,
+} = {}) => {
+  const resolvedBillingUnit = normalizeProductPricingUnit(
+    billingUnit || configuration?.billingUnit || configuration?.pricingUnit || ''
+  );
+  const resolvedActualUnit = normalizeProductPricingUnit(actualUnit || resolvedBillingUnit);
+  const resolvedUnitPrice = parseMoney(unitPrice || configuration?.unitPrice);
+  const parsedActualQuantity = parsePositiveNumber(actualQuantity);
+  const parsedActualWeightKg = parsePositiveNumber(actualWeightKg);
+  const explicitBillingQuantity = parsePositiveNumber(billingQuantity);
+  const usesWeightPricing = isSameBillingUnit(resolvedBillingUnit, 'Kg');
+  const unitMismatch = Boolean(
+    !usesWeightPricing
+    && resolvedActualUnit
+    && resolvedBillingUnit
+    && !isSameBillingUnit(resolvedActualUnit, resolvedBillingUnit)
+  );
+  const resolvedBillingQuantity = explicitBillingQuantity > 0
+    ? explicitBillingQuantity
+    : (usesWeightPricing
+      ? (parsedActualWeightKg > 0
+        ? parsedActualWeightKg
+        : (isSameBillingUnit(resolvedActualUnit, resolvedBillingUnit) ? parsedActualQuantity : 0))
+      : (unitMismatch ? 0 : parsedActualQuantity));
+  const errorCode = !resolvedBillingUnit
+    ? 'MISSING_BILLING_UNIT'
+    : (resolvedUnitPrice <= 0
+      ? 'MISSING_UNIT_PRICE'
+      : (unitMismatch
+        ? 'ACTUAL_UNIT_NOT_ALLOWED'
+        : (resolvedBillingQuantity <= 0 ? 'MISSING_BILLING_QUANTITY' : '')));
+
+  return {
+    actualQuantity: parsedActualQuantity,
+    actualUnit: resolvedActualUnit,
+    actualWeightKg: parsedActualWeightKg,
+    billingQuantity: resolvedBillingQuantity,
+    billingUnit: resolvedBillingUnit,
+    unitPrice: resolvedUnitPrice,
+    amount: errorCode ? 0 : Math.round(resolvedBillingQuantity * resolvedUnitPrice),
+    usesWeightPricing,
+    isPending: errorCode === 'MISSING_BILLING_QUANTITY',
+    isValid: !errorCode,
+    errorCode,
+  };
+};
+
+export const buildCustomerProductBillingSnapshot = ({
+  configuration = null,
+  product = null,
+  productId = '',
+  productName = '',
+  sizeLabel = '',
+  attributeLabel = '',
+  ...quantityInput
+} = {}) => {
+  const calculation = calculateBillableAmount({ configuration, ...quantityInput });
+  const resolvedProductId = `${productId || configuration?.productId || product?.id || ''}`.trim();
+  const resolvedProductName = `${productName || configuration?.productName || product?.name || ''}`.trim();
+  const resolvedSize = `${sizeLabel || configuration?.sizeLabel || ''}`.trim();
+  const resolvedAttribute = `${attributeLabel || configuration?.attributeLabel || ''}`.trim();
+
+  return {
+    productId: resolvedProductId,
+    productName: resolvedProductName,
+    productNameSnapshot: resolvedProductName,
+    configurationId: `${configuration?.configurationId || ''}`.trim(),
+    sizeLabel: resolvedSize,
+    attributeLabel: resolvedAttribute,
+    actualQuantity: calculation.actualQuantity,
+    actualUnit: calculation.actualUnit,
+    actualWeightKg: calculation.actualWeightKg,
+    billingQuantity: calculation.billingQuantity,
+    billingUnit: calculation.billingUnit,
+    unitPrice: calculation.unitPrice,
+    amount: calculation.amount,
+    quantity: calculation.actualQuantity,
+    quantityCount: calculation.actualQuantity,
+    quantityUnit: calculation.actualUnit,
+    pricingQuantity: calculation.billingQuantity,
+    pricingUnit: calculation.billingUnit,
+    pricingAmount: calculation.amount,
+    lineTotal: calculation.amount,
+    pricingPendingActual: calculation.isPending,
+    billingSnapshotVersion: 1,
+    billingSnapshotSource: configuration?.source || 'transaction',
+    billingSnapshotValid: calculation.isValid,
+    billingSnapshotError: calculation.errorCode,
+  };
+};
+
+export const resolveTransactionBillingSnapshot = ({
+  record = null,
+  configuration = null,
+  product = null,
+} = {}) => {
+  const source = record || {};
+  const explicitBillingUnit = normalizeProductPricingUnit(source.billingUnit || source.pricingUnit || '');
+  const legacyTransactionUnit = normalizeProductPricingUnit(source.quantityUnit || source.unit || '');
+  const legacyWeight = parsePositiveNumber(source.actualWeightKg ?? source.weightKg ?? source.totalKg ?? source.kg);
+  const legacyAmount = parseMoney(source.amount ?? source.pricingAmount ?? source.lineTotal ?? source.totalAmount);
+  // Older rows stored a single unit for both actual quantity and billing. Preserve
+  // it only when the row is unambiguous; count + weight rows still need the fixed
+  // customer configuration to decide whether billing was by count or by Kg.
+  const savedBillingUnit = explicitBillingUnit || (
+    legacyTransactionUnit
+    && (isSameBillingUnit(legacyTransactionUnit, 'Kg') || legacyWeight <= 0)
+    && legacyAmount > 0
+      ? legacyTransactionUnit
+      : ''
+  );
+  const savedUnitPrice = parseMoney(
+    source.unitPrice ?? source.price ?? source.sellingPrice ?? source.unitPriceVnd ?? source.unit_price_vnd
+  );
+  const savedBillingQuantity = parsePositiveNumber(source.billingQuantity ?? source.pricingQuantity);
+  const hasSnapshotMarker = parsePositiveNumber(source.billingSnapshotVersion) > 0
+    || Boolean(`${source.billingSnapshotSource || ''}`.trim());
+  const hasFrozenPricing = Boolean(savedBillingUnit && savedUnitPrice > 0 && (
+    hasSnapshotMarker
+    || Boolean(source.configurationId)
+    || savedBillingQuantity > 0
+    || legacyAmount > 0
+  ));
+  const effectiveConfiguration = hasFrozenPricing
+    ? {
+        ...(configuration || {}),
+        productId: source.productId || configuration?.productId || product?.id || '',
+        productName: source.productName || source.productNameSnapshot || configuration?.productName || product?.name || '',
+        configurationId: source.configurationId || configuration?.configurationId || '',
+        sizeLabel: source.sizeLabel || source.size || configuration?.sizeLabel || '',
+        attributeLabel: source.attributeLabel || configuration?.attributeLabel || '',
+        billingUnit: savedBillingUnit,
+        pricingUnit: savedBillingUnit,
+        unitPrice: savedUnitPrice,
+        source: 'transaction_snapshot',
+      }
+    : configuration;
+  const snapshot = buildCustomerProductBillingSnapshot({
+    configuration: effectiveConfiguration,
+    product,
+    productId: source.productId,
+    productName: source.productName || source.productNameSnapshot,
+    sizeLabel: source.sizeLabel || source.size,
+    attributeLabel: source.attributeLabel,
+    actualQuantity: source.actualQuantity ?? source.quantity ?? source.pieceCount ?? source.quantityCount,
+    actualUnit: source.actualUnit || source.actualQuantityUnit || source.quantityUnit || source.unit,
+    actualWeightKg: source.actualWeightKg ?? source.weightKg ?? source.totalKg ?? source.kg,
+    billingQuantity: savedBillingQuantity,
+    billingUnit: savedBillingUnit,
+    unitPrice: savedUnitPrice,
+  });
+  const savedAmount = legacyAmount;
+  return {
+    ...snapshot,
+    ...(hasFrozenPricing && savedAmount > 0 ? {
+      amount: savedAmount,
+      pricingAmount: savedAmount,
+      lineTotal: savedAmount,
+    } : {}),
+    hasFrozenPricing,
+  };
+};

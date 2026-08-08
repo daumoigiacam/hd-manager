@@ -128,23 +128,27 @@ import {
 import { HDButton, HDBadge } from './design-system/index.js';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
-  getProductPricingUnits,
   getProductPrimaryPricingUnit,
   normalizeProductPricingUnit,
   normalizeUnitPriceMap,
-  getUnitPriceFromMap,
   putUnitPriceIntoMap,
-  resolveProductUnitPrice,
 } from './services/productPricingUnits.js';
 import {
   buildCustomerProductPreferenceCacheKey,
   buildCustomerProductPreferenceId,
   buildCustomerProductPreferenceWrite,
-  calculatePricingAmount,
   normalizeCustomerProductPreference,
-  resolveRememberedInputUnit,
   shouldOfferDefaultInputUnitUpdate,
 } from './services/smartCustomerOrdering.js';
+import {
+  buildCustomerProductBillingSnapshot,
+  calculateBillableAmount,
+  isCustomerProductUnitAllowed,
+  isSameBillingUnit,
+  resolveCustomerProductActualUnit,
+  resolveCustomerProductConfiguration,
+  resolveTransactionBillingSnapshot,
+} from './services/customerProductBilling.js';
 import {
   getBiometricAvailability,
   getIdentityDevice,
@@ -5221,6 +5225,7 @@ const getOrderLineUnitPriceValue = (item = {}) => parseLooseMoneyValue(
   ?? item?.price
   ?? item?.sellingPrice
   ?? item?.salePrice
+  ?? item?.finalPrice
   ?? item?.unitPriceVnd
   ?? item?.unit_price_vnd
   ?? item?.unit_price
@@ -5242,6 +5247,35 @@ const getOrderLineWeightKgValue = (item = {}) => parseLooseQuantityValue(
   ?? item?.weight
   ?? (['kg', 'ky', 'ki', 'kilo'].includes(normalizeLookupText(item?.quantityUnit || item?.unit || '')) ? item?.quantity : 0)
 );
+
+const getTransactionBillingPresentation = (item = {}) => {
+  const snapshot = resolveTransactionBillingSnapshot({ record: item });
+  const legacyWeightKg = getOrderLineWeightKgValue(item);
+  const actualQuantity = snapshot.actualQuantity || getOrderLineQuantityValue(item) || legacyWeightKg;
+  const actualUnit = snapshot.actualUnit
+    || `${item.quantityUnit || item.unit || (legacyWeightKg > 0 ? 'Kg' : '')}`.trim();
+  const billingQuantity = snapshot.billingQuantity || actualQuantity;
+  const billingUnit = snapshot.billingUnit || actualUnit;
+  const unitPrice = snapshot.unitPrice || getOrderLineUnitPriceValue(item);
+  const storedAmount = parseLooseMoneyValue(
+    item.amount ?? item.pricingAmount ?? item.lineTotal ?? item.totalAmount ?? item.total ?? item.subtotal
+  );
+  const hasFrozenPricing = Boolean(snapshot.hasFrozenPricing || item.billingSnapshotVersion || item.billingSnapshotSource);
+  const amount = hasFrozenPricing
+    ? snapshot.amount
+    : (storedAmount || Math.round(billingQuantity * unitPrice));
+
+  return {
+    actualQuantity,
+    actualUnit,
+    actualWeightKg: snapshot.actualWeightKg || legacyWeightKg,
+    billingQuantity,
+    billingUnit,
+    unitPrice,
+    amount,
+    hasFrozenPricing,
+  };
+};
 
 const getOrderLineSizeLabel = (item = {}) => `${item?.size || item?.sizeLabel || item?.productSize || item?.variantSize || ''}`.trim();
 
@@ -5339,7 +5373,7 @@ const drawSalesInvoiceShareImage = async ({
   const orderCode = formatOrderCode(order.id);
   const items = Array.isArray(order.items) ? order.items : [];
   const itemSubtotal = items.reduce((sum, item) => (
-    sum + (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
+    sum + getTransactionBillingPresentation(item).amount
   ), 0);
   const ledger = customer?.id ? buildCustomerLedger(customer, orders, payments) : null;
   const ledgerOrder = ledger?.orders?.find(item => item.id === order.id) || null;
@@ -5675,9 +5709,10 @@ const drawSalesInvoiceShareImage = async ({
       ctx.lineTo(tableX + contentW, rowY);
       ctx.stroke();
     }
-    const quantity = parseLooseQuantityValue(item.quantity);
-    const unitPrice = parseLooseMoneyValue(item.unitPrice);
-    const lineTotal = quantity * unitPrice;
+    const billing = getTransactionBillingPresentation(item);
+    const quantity = billing.billingQuantity;
+    const unitPrice = billing.unitPrice;
+    const lineTotal = billing.amount;
     const rowTextY = rowY + Math.min(40, rowH - 18);
     drawWrapped(item.description || item.productName || 'Sản phẩm', tableX + 24, rowTextY, colProduct - 48, 21, 800, '#111827', 2, 25);
     drawCentered(formatCurrency(unitPrice), tableX + colProduct, rowTextY, colPrice, 21, 800);
@@ -6573,19 +6608,24 @@ const getCustomerProductConfig = (customer = null, product = null) => {
   return productId ? customerPrices[productId] || null : null;
 };
 
+const resolveCustomerProductBillingConfiguration = (customer = null, product = null, options = {}) => (
+  resolveCustomerProductConfiguration({
+    customerConfig: getCustomerProductConfig(customer, product),
+    product,
+    productId: product?.id || '',
+    ...options,
+  })
+);
+
 const getCustomerProductUnitOptions = (customer = null, product = null, fallback = 'Con') => {
-  const productUnits = getProductPricingUnits(product || {}, fallback);
-  const config = getCustomerProductConfig(customer, product);
-  const preferredUnit = normalizeProductPricingUnit(config?.pricingUnit || config?.defaultUnit || '');
-  if (!preferredUnit) return productUnits;
-  const preferredIndex = productUnits.findIndex(unit => normalizeLookupText(unit) === normalizeLookupText(preferredUnit));
-  if (preferredIndex <= 0) return productUnits;
-  return [productUnits[preferredIndex], ...productUnits.filter((_, index) => index !== preferredIndex)];
+  const configuration = resolveCustomerProductBillingConfiguration(customer, product, { fallbackUnit: fallback });
+  return configuration.allowedUnits.length > 0
+    ? configuration.allowedUnits
+    : [getProductPrimaryPricingUnit(product || {}, fallback)].filter(Boolean);
 };
 
 const getCustomerProductPricingUnit = (customer = null, product = null, fallback = 'Con') => {
-  const config = getCustomerProductConfig(customer, product);
-  return normalizeProductPricingUnit(config?.pricingUnit || config?.defaultUnit || '')
+  return resolveCustomerProductBillingConfiguration(customer, product, { fallbackUnit: fallback }).pricingUnit
     || getProductPrimaryPricingUnit(product || {}, fallback);
 };
 
@@ -6594,12 +6634,11 @@ const getCustomerProductDefaultUnit = (customer = null, product = null, fallback
 };
 
 const getCustomerProductPrice = (customer = null, product = null, unit = '') => {
-  const config = getCustomerProductConfig(customer, product);
-  return resolveProductUnitPrice({
-    product: product || {},
-    customerConfig: config,
-    unit: unit || getCustomerProductPricingUnit(customer, product)
+  const configuration = resolveCustomerProductBillingConfiguration(customer, product, {
+    fallbackUnit: unit || 'Con',
   });
+  if (unit && !isCustomerProductUnitAllowed(configuration, unit)) return 0;
+  return configuration.unitPrice;
 };
 
 const getCustomerProductSize = (customer = null, product = null) => getCustomerProductConfig(customer, product)?.size || '';
@@ -6638,8 +6677,20 @@ const getCustomerProductVariants = (customer = null, product = null) => {
     };
   };
   const variants = [];
+  const hasConfiguredVariants = Array.isArray(config?.variants) && config.variants.length > 0;
   const baseVariant = normalizeVariant(config || {}, 0);
-  if (baseVariant) variants.push({ ...baseVariant, id: `${product?.id || 'product'}_default` });
+  const hasIndependentBaseConfiguration = Boolean(
+    baseVariant
+    && (
+      baseVariant.price > 0
+      || baseVariant.size
+      || baseVariant.attributeLabel
+      || Object.keys(baseVariant.unitPrices || {}).length > 0
+    )
+  );
+  if (baseVariant && (!hasConfiguredVariants || hasIndependentBaseConfiguration)) {
+    variants.push({ ...baseVariant, id: `${product?.id || 'product'}_default` });
+  }
   (Array.isArray(config?.variants) ? config.variants : []).forEach((variant, index) => {
     const normalized = normalizeVariant(variant, index + 1);
     if (normalized) variants.push(normalized);
@@ -16252,172 +16303,6 @@ export default function App() {
     return id;
   };
 
-  const syncCustomerFixedProductPricingFromOrderRequest = async (requestData = {}, empId = '') => {
-    if (!firebaseUser || !requestData?.customerId) return false;
-    const customer = customers.find(c => c.id === requestData.customerId);
-    if (!customer) return false;
-
-    const requestItems = (Array.isArray(requestData.items) && requestData.items.length > 0)
-      ? requestData.items
-      : (requestData.primaryItem ? [requestData.primaryItem] : []);
-    if (requestItems.length === 0) return false;
-
-    const currentOverrides = normalizeCustomerPriceOverrides(customer);
-    const nextOverrides = { ...currentOverrides };
-    const fixedProductIds = new Set(normalizeCustomerProductIds(customer, products));
-    let changed = false;
-
-    requestItems.forEach((item) => {
-      const productId = `${item?.productId || ''}`.trim();
-      if (!productId) return;
-      const unitPrice = parseLooseMoneyValue(item?.unitPrice ?? item?.price ?? item?.unit_price_vnd);
-
-      const product = products.find(productItem => productItem.id === productId) || null;
-      const defaultProductPrice = parseLooseMoneyValue(product?.sellingPrice || product?.price || 0);
-      const currentConfig = nextOverrides[productId] || {};
-      const pricingUnit = normalizeProductPricingUnit(
-        item?.pricingUnit
-        || currentConfig.pricingUnit
-        || currentConfig.defaultUnit
-        || getCustomerProductPricingUnit(customer, product, 'Con')
-      );
-      const currentUnitPrices = normalizeUnitPriceMap(currentConfig.unitPrices || {});
-      const hasExplicitSize = Object.prototype.hasOwnProperty.call(item || {}, 'sizeLabel')
-        || Object.prototype.hasOwnProperty.call(item || {}, 'weightKg')
-        || Object.prototype.hasOwnProperty.call(item || {}, 'size');
-      const hasExplicitAttribute = Object.prototype.hasOwnProperty.call(item || {}, 'attributeLabel')
-        || Object.prototype.hasOwnProperty.call(item || {}, 'productAttribute')
-        || Object.prototype.hasOwnProperty.call(item || {}, 'attribute');
-      const size = hasExplicitSize
-        ? `${item?.sizeLabel ?? item?.weightKg ?? item?.size ?? ''}`.trim()
-        : `${currentConfig.size || ''}`.trim();
-      const attributeLabel = hasExplicitAttribute
-        ? `${item?.attributeLabel ?? item?.productAttribute ?? item?.attribute ?? ''}`.trim()
-        : `${currentConfig.attributeLabel || ''}`.trim();
-      const nextPrice = unitPrice > 0
-        ? unitPrice
-        : (getUnitPriceFromMap(currentUnitPrices, pricingUnit) || parseLooseMoneyValue(currentConfig.price || defaultProductPrice || 0));
-      const nextUnitPrices = nextPrice > 0
-        ? putUnitPriceIntoMap(currentUnitPrices, pricingUnit, nextPrice)
-        : currentUnitPrices;
-      const shouldSync = fixedProductIds.has(productId)
-        || Boolean(currentConfig.price || currentConfig.pricingUnit || currentConfig.defaultUnit || Object.keys(currentUnitPrices).length > 0 || currentConfig.size || currentConfig.attributeLabel)
-        || (unitPrice > 0 && unitPrice !== defaultProductPrice)
-        || hasExplicitSize
-        || hasExplicitAttribute
-        || Boolean(size || attributeLabel);
-
-      if (!shouldSync) return;
-
-      const nextConfig = {
-        ...currentConfig,
-        price: nextPrice,
-        size,
-        attributeLabel,
-        pricingUnit,
-        defaultUnit: pricingUnit,
-        unitPrices: nextUnitPrices
-      };
-
-      if (
-        currentConfig.price !== nextConfig.price ||
-        `${currentConfig.size || ''}` !== nextConfig.size ||
-        `${currentConfig.attributeLabel || ''}` !== nextConfig.attributeLabel ||
-        `${currentConfig.pricingUnit || currentConfig.defaultUnit || ''}` !== nextConfig.pricingUnit ||
-        JSON.stringify(normalizeUnitPriceMap(currentConfig.unitPrices || {})) !== JSON.stringify(nextConfig.unitPrices) ||
-        !fixedProductIds.has(productId)
-      ) {
-        changed = true;
-      }
-
-      nextOverrides[productId] = nextConfig;
-      fixedProductIds.add(productId);
-    });
-
-    if (!changed) return false;
-
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', customer.id), {
-      priceOverrides: nextOverrides,
-      customerProductIds: [...fixedProductIds],
-      updatedAt: new Date().toISOString(),
-      updatedByEmpId: empId || ''
-    }, { merge: true });
-
-    return true;
-  };
-
-  const syncProductCatalogPricingFromOrderRequest = async (requestData = {}, empId = '') => {
-    if (!firebaseUser) return false;
-
-    const requestItems = (Array.isArray(requestData.items) && requestData.items.length > 0)
-      ? requestData.items
-      : (requestData.primaryItem ? [requestData.primaryItem] : []);
-    if (requestItems.length === 0) return false;
-
-    const productPriceUpdates = new Map();
-    requestItems.forEach((item) => {
-      const productId = `${item?.productId || ''}`.trim();
-      const unitPrice = parseLooseMoneyValue(item?.unitPrice ?? item?.price ?? item?.unit_price_vnd);
-      if (!productId || unitPrice <= 0) return;
-
-      const product = products.find(productItem => productItem.id === productId);
-      if (!product) return;
-
-      const selectedUnit = normalizeProductPricingUnit(item?.pricingUnit || getProductPrimaryPricingUnit(product));
-      const primaryUnit = getProductPrimaryPricingUnit(product);
-      const currentPrice = parseLooseMoneyValue(product.sellingPrice ?? product.price);
-      const currentUnitPrices = normalizeUnitPriceMap(product.unitPrices || {});
-      const nextUnitPrices = putUnitPriceIntoMap(currentUnitPrices, selectedUnit, unitPrice);
-      const shouldUpdateDefaultPrice = normalizeLookupText(selectedUnit) === normalizeLookupText(primaryUnit);
-      const isUnitMapChanged = JSON.stringify(currentUnitPrices) !== JSON.stringify(nextUnitPrices);
-      if ((!shouldUpdateDefaultPrice || currentPrice === unitPrice) && !isUnitMapChanged) return;
-
-      productPriceUpdates.set(productId, {
-        product,
-        unitPrice,
-        selectedUnit,
-        primaryUnit,
-        nextUnitPrices,
-        shouldUpdateDefaultPrice
-      });
-    });
-
-    if (productPriceUpdates.size === 0) return false;
-
-    const updatedAt = new Date().toISOString();
-    const updaterEmpId = empId || currentUser?.id || '';
-    const updateEntries = [...productPriceUpdates.entries()];
-
-    setRawProducts(prev => (Array.isArray(prev)
-      ? prev.map(product => {
-        const update = productPriceUpdates.get(product?.id);
-        if (!update) return product;
-        return {
-          ...product,
-          ...(update.shouldUpdateDefaultPrice ? { sellingPrice: update.unitPrice, price: update.unitPrice } : {}),
-          unitPrices: update.nextUnitPrices,
-          lastOrderRequestPriceAt: updatedAt,
-          lastOrderRequestPriceByEmpId: updaterEmpId,
-          updatedAt
-        };
-      })
-      : prev));
-
-    await Promise.all(updateEntries.map(async ([productId, { unitPrice, nextUnitPrices, shouldUpdateDefaultPrice }]) => {
-      const patch = {
-        ...(shouldUpdateDefaultPrice ? { sellingPrice: unitPrice, price: unitPrice } : {}),
-        unitPrices: nextUnitPrices,
-        lastOrderRequestPriceAt: updatedAt,
-        lastOrderRequestPriceByEmpId: updaterEmpId,
-        updatedAt
-      };
-      rememberRecentLocalWrite('products', productId, patch);
-      await saveDataDocument('products', productId, patch, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật giá sản phẩm.');
-    }));
-
-    return true;
-  };
-
   const handleGetCustomerProductPreference = async ({ customerId = '', productId = '' } = {}) => {
     const companyId = myCompanyId || currentCompany?.id || '';
     if (!firebaseUser || !companyId || !customerId || !productId) return null;
@@ -16581,25 +16466,9 @@ export default function App() {
     };
 
     saveDataDocument('orderRequests', id, newRequestDocument, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.')
-      .then(() => Promise.allSettled([
-        Promise.resolve().then(notifyAssignedSalesEmployee),
-        withTimeout(
-          syncCustomerFixedProductPricingFromOrderRequest(requestData, empId),
-          8000,
-          'Quá thời gian cập nhật giá riêng khách hàng.'
-        ),
-        withTimeout(
-          syncProductCatalogPricingFromOrderRequest(requestData, empId),
-          8000,
-          'Quá thời gian cập nhật giá sản phẩm.'
-        )
-      ]).then((results) => {
-        results.forEach((result) => {
-          if (result.status === 'rejected') {
-            console.warn('Không thể đồng bộ giá sau khi lưu đơn đặt:', result.reason);
-          }
-        });
-      }))
+      .then(() => {
+        notifyAssignedSalesEmployee();
+      })
       .catch((error) => {
         setRawOrderRequests(prev => (Array.isArray(prev) ? prev.filter(request => request?.id !== id) : prev));
         setRealtimeStatus({
@@ -16675,24 +16544,6 @@ export default function App() {
       updatedAt,
       updatedByEmpId: empId || ''
     }, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật đơn đặt hàng.');
-    Promise.allSettled([
-      withTimeout(
-        syncCustomerFixedProductPricingFromOrderRequest(normalizedUpdatedData, empId),
-        8000,
-        'Quá thời gian cập nhật giá riêng khách hàng.'
-      ),
-      withTimeout(
-        syncProductCatalogPricingFromOrderRequest(normalizedUpdatedData, empId),
-        8000,
-        'Quá thời gian cập nhật giá sản phẩm.'
-      )
-    ]).then((results) => {
-      results.forEach((result) => {
-        if (result.status === 'rejected') {
-          console.warn('Không thể đồng bộ giá sau khi cập nhật đơn đặt:', result.reason);
-        }
-      });
-    });
   };
 
   const handleDeleteOrderRequest = async (requestId) => {
@@ -35071,17 +34922,7 @@ const getPricingOrderLineQuantity = (line = {}) => {
 };
 
 const getPricingOrderLineRevenue = (line = {}) => {
-  const directTotal = parseLooseMoneyValue(
-    line?.total ||
-    line?.totalAmount ||
-    line?.lineTotal ||
-    line?.amount ||
-    line?.subtotal,
-  );
-  if (directTotal > 0) return directTotal;
-  const quantity = getPricingOrderLineQuantity(line);
-  const unitPrice = parseLooseMoneyValue(line?.unitPrice || line?.price || line?.salePrice || line?.sellingPrice);
-  return quantity * unitPrice;
+  return getTransactionBillingPresentation(line).amount;
 };
 
 const matchesPricingFormulaChild = (line = {}, child = {}, productById = new Map()) => {
@@ -37633,7 +37474,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
           const productId = item?.productId || '';
           if (!productId) return;
           const quantity = parseLooseQuantityValue(item.quantity) || 1;
-          const amount = quantity * parseLooseMoneyValue(item.unitPrice);
+          const amount = getTransactionBillingPresentation(item).amount;
           const current = usageByProductId.get(productId) || { quantity: 0, count: 0, amount: 0, lastTime: 0 };
           usageByProductId.set(productId, {
             quantity: current.quantity + quantity,
@@ -38584,9 +38425,7 @@ function ExecutiveDashboardView({
         ? order.items
         : (Array.isArray(order.lines) && order.lines.length ? order.lines : (Array.isArray(order.products) ? order.products : []));
       return items.reduce((sum, item) => {
-        const itemDirect = parseLooseMoneyValue(item.totalAmount ?? item.lineTotal ?? item.total ?? item.amount ?? item.subtotal);
-        if (itemDirect > 0) return sum + itemDirect;
-        return sum + (parseLooseQuantityValue(item.quantity ?? item.qty ?? item.weight ?? item.weightKg ?? item.kg ?? item.count) * parseLooseMoneyValue(item.unitPrice ?? item.price ?? item.salePrice ?? item.finalPrice));
+        return sum + getTransactionBillingPresentation(item).amount;
       }, 0);
     };
     const getExpenseAmount = (expense = {}) => parseLooseMoneyValue(expense.amount ?? expense.total ?? expense.cost ?? expense.value ?? expense.money);
@@ -41380,9 +41219,7 @@ const isSameInventoryUnit = (left = '', right = '') => normalizeInventoryUnitKey
 const getOrderItemQuantityUnit = (item = {}, product = null) => `${item?.quantityUnit || item?.unit || product?.unit || ''}`.trim();
 const getOrderItemQuantityValue = (item = {}) => parseLooseQuantityValue(item?.quantity ?? item?.quantityValue ?? item?.qty);
 const getOrderItemRevenue = (item = {}) => {
-  const quantity = getOrderItemQuantityValue(item);
-  const unitPrice = parseLooseMoneyValue(item?.unitPrice ?? item?.price ?? item?.unit_price_vnd);
-  return quantity * unitPrice;
+  return getTransactionBillingPresentation(item).amount;
 };
 const getOrderItemCost = (item = {}, product = null) => {
   const quantity = getOrderItemQuantityValue(item);
@@ -42211,8 +42048,9 @@ function ReportView({ currentEmployee, currentCompany, employees, attendance, fi
           };
         }
 
-        const quantity = parseFloat(item.quantity) || 0;
-        const lineRevenue = quantity * (parseFloat(item.unitPrice) || 0);
+        const billing = getTransactionBillingPresentation(item);
+        const quantity = billing.actualQuantity;
+        const lineRevenue = billing.amount;
         grouped[key].revenue += lineRevenue;
         grouped[key].quantity += quantity;
       });
@@ -47750,11 +47588,28 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const resolveDispatchOrderRequestPrice = useCallback((dispatch = {}, product = null, customer = null, productLabel = '') => {
     const dispatchCustomerId = dispatch.customerId || customer?.id || '';
     const dispatchProductId = dispatch.productId || product?.id || '';
+    const frozenDispatchSnapshot = resolveTransactionBillingSnapshot({
+      record: dispatch,
+      product,
+    });
+    if (frozenDispatchSnapshot.hasFrozenPricing) {
+      return {
+        unitPrice: frozenDispatchSnapshot.unitPrice,
+        unitLabel: frozenDispatchSnapshot.billingUnit,
+        pricingUnit: frozenDispatchSnapshot.billingUnit,
+        billingQuantity: frozenDispatchSnapshot.billingQuantity,
+        amount: frozenDispatchSnapshot.amount,
+        inputUnit: frozenDispatchSnapshot.actualUnit,
+        hasFrozenPricing: true,
+        source: 'dispatch_snapshot',
+      };
+    }
     const dispatchDate = resolveEntityDateKey(dispatch, workingDate) || workingDate;
     const dispatchDateValue = parseDateInputValue(dispatchDate || workingDate);
     const dispatchDateMs = dispatchDateValue ? dispatchDateValue.getTime() : 0;
     const dispatchBranchId = `${dispatch.branchId || dispatch.customerBranchId || ''}`.trim();
     const dispatchBranchName = normalizeLookupText(dispatch.branchName || dispatch.customerBranchName || '');
+    const dispatchConfigurationId = `${dispatch.configurationId || ''}`.trim();
     const normalizedCustomerName = normalizeLookupText(dispatch.customerNameSnapshot || customer?.name || '');
     const productNameCandidates = [
       productLabel,
@@ -47783,19 +47638,22 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       ?? dispatch.customerOrderUnitPrice
     );
     const fallbackConfigSource = getCustomerBranchProductConfigSource(customer, dispatchBranchId, products);
+    const fallbackConfiguration = resolveCustomerProductBillingConfiguration(fallbackConfigSource, product, {
+      configurationId: dispatchConfigurationId,
+      sizeLabel: dispatch.sizeLabel || dispatch.size || dispatch.productSize || dispatch.variantSize || '',
+      attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || dispatch.attribute || '',
+    });
     const fallbackPricingUnit = normalizeProductPricingUnit(
       dispatch.sourceOrderRequestPricingUnit
       || dispatch.orderRequestPricingUnit
       || dispatch.requestPricingUnit
       || dispatch.pricingUnit
-      || getCustomerProductPricingUnit(
-        fallbackConfigSource,
-        product,
-        dispatch.quantityUnit || dispatch.unit || product?.unit || 'Con'
-      )
+      || fallbackConfiguration.billingUnit
     );
     const fallbackUnitPrice = directSourceUnitPrice
-      || getCustomerProductPrice(fallbackConfigSource, product, fallbackPricingUnit)
+      || (isCustomerProductUnitAllowed(fallbackConfiguration, fallbackPricingUnit)
+        ? fallbackConfiguration.unitPrice
+        : 0)
       || parseLooseMoneyValue(
       dispatch.unitPrice
       ?? dispatch.price
@@ -47864,7 +47722,14 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         );
         if (!requestProductMatches) return;
 
-        const unitPrice = getOrderLineUnitPriceValue(item);
+        const requestSnapshot = resolveTransactionBillingSnapshot({
+          record: item,
+          product: requestProduct || product,
+        });
+        const itemConfigurationId = `${requestSnapshot.configurationId || item?.configurationId || ''}`.trim();
+        const unitPrice = requestSnapshot.hasFrozenPricing
+          ? requestSnapshot.unitPrice
+          : getOrderLineUnitPriceValue(item);
         if (unitPrice <= 0) return;
         const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || ''}`.trim();
         const legacyProductRowKey = `${request.id || 'request'}_${item?.productId || index}`;
@@ -47874,26 +47739,34 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         const itemSizeKey = normalizeLookupText(getOrderLineSizeLabel(item));
         const itemUnitKey = normalizeLookupText(item?.quantityUnit || item?.unit || product?.unit || '');
         const requestConfigSource = getCustomerBranchProductConfigSource(requestCustomer, itemBranchId, products);
-        const pricingUnit = normalizeProductPricingUnit(
-          item?.pricingUnit
-          || item?.defaultUnit
-          || getCustomerProductPricingUnit(
-            requestConfigSource,
-            requestProduct || product,
-            item?.quantityUnit || item?.unit || product?.unit || 'Con'
-          )
-        );
+        const pricingUnit = requestSnapshot.hasFrozenPricing
+          ? requestSnapshot.billingUnit
+          : normalizeProductPricingUnit(
+            item?.pricingUnit
+            || item?.defaultUnit
+            || getCustomerProductPricingUnit(
+              requestConfigSource,
+              requestProduct || product,
+              item?.quantityUnit || item?.unit || product?.unit || 'Con'
+            )
+          );
         candidates.push({
           unitPrice,
           unitLabel: pricingUnit,
           pricingUnit,
-          inputUnit: normalizeProductPricingUnit(item?.quantityUnit || item?.unit || dispatch.quantityUnit || dispatch.unit || ''),
+          billingQuantity: requestSnapshot.billingQuantity,
+          amount: requestSnapshot.amount,
+          inputUnit: requestSnapshot.actualUnit || normalizeProductPricingUnit(item?.quantityUnit || item?.unit || dispatch.quantityUnit || dispatch.unit || ''),
+          hasFrozenPricing: requestSnapshot.hasFrozenPricing,
+          configurationId: itemConfigurationId,
+          source: requestSnapshot.hasFrozenPricing ? 'order_snapshot' : 'legacy_order',
           requestTimestamp: requestTimestamp || 0,
           exactRequest: isExactRequest ? 1 : 0,
           exactRow: sourceRequestRowKey && [itemRowKey, compositeRowKey, legacyProductRowKey].includes(sourceRequestRowKey) ? 1 : 0,
           sameSourceDate: sourceRequestDate && requestDate === sourceRequestDate ? 1 : 0,
           sameDispatchDate: dispatchDate && requestDate === dispatchDate ? 1 : 0,
           exactProductId: dispatchProductId && item?.productId === dispatchProductId ? 1 : 0,
+          configurationMatch: dispatchConfigurationId && itemConfigurationId === dispatchConfigurationId ? 1 : 0,
           quantityMatch: dispatchQuantityForMatch > 0 && areLooseQuantityValuesClose(dispatchQuantityForMatch, itemQuantity, 0.001) ? 1 : 0,
           weightMatch: dispatchWeightForMatch > 0 && areLooseQuantityValuesClose(dispatchWeightForMatch, itemWeightKg) ? 1 : 0,
           sizeMatch: dispatchSizeKey && itemSizeKey && dispatchSizeKey === itemSizeKey ? 1 : 0,
@@ -47909,6 +47782,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       || b.exactRequest - a.exactRequest
       || b.sameSourceDate - a.sameSourceDate
       || b.sameDispatchDate - a.sameDispatchDate
+      || b.configurationMatch - a.configurationMatch
       || b.quantityMatch - a.quantityMatch
       || b.weightMatch - a.weightMatch
       || b.sizeMatch - a.sizeMatch
@@ -47924,6 +47798,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       unitPrice: fallbackUnitPrice,
       unitLabel: fallbackPricingUnit,
       pricingUnit: fallbackPricingUnit,
+      configurationId: dispatchConfigurationId || fallbackConfiguration.configurationId || '',
       inputUnit: normalizeProductPricingUnit(dispatch.quantityUnit || dispatch.unit || ''),
       requestTimestamp: dispatchTimestamp || 0,
       exactRequest: 0,
@@ -47931,6 +47806,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       sameSourceDate: 0,
       sameDispatchDate: 0,
       exactProductId: 0,
+      configurationMatch: 0,
       quantityMatch: 0,
       weightMatch: 0,
       sizeMatch: 0,
@@ -48093,15 +47969,38 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       const pricingUnit = normalizeProductPricingUnit(
         priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || dispatchInputUnit || 'Kg'
       );
-      const pricingResult = calculatePricingAmount({
-        pricingUnit,
-        inputUnit: priceInfo?.inputUnit || dispatchInputUnit,
-        inputQuantity: dispatchQuantity,
-        actualWeightKg: report ? report.actualWeightKg : dispatchWeight,
+      const frozenReportSnapshot = report
+        ? resolveTransactionBillingSnapshot({ record: report, product })
+        : null;
+      const useFrozenSnapshot = Boolean(
+        frozenReportSnapshot?.hasFrozenPricing
+        || (!report && priceInfo?.hasFrozenPricing)
+      );
+      const calculatedPricing = calculateBillableAmount({
+        configuration: {
+          billingUnit: pricingUnit,
+          pricingUnit,
+          unitPrice: priceInfo?.unitPrice || 0,
+        },
+        actualUnit: report?.actualQuantityUnit || priceInfo?.inputUnit || dispatchInputUnit,
         actualQuantity: report ? report.actualQuantity : dispatchQuantity,
-        actualQuantityUnit: report?.actualQuantityUnit || dispatchInputUnit,
-        unitPrice: priceInfo?.unitPrice || 0,
+        actualWeightKg: report ? report.actualWeightKg : dispatchWeight,
       });
+      const pricingResult = useFrozenSnapshot
+        ? {
+            quantity: frozenReportSnapshot?.hasFrozenPricing
+              ? frozenReportSnapshot.billingQuantity
+              : priceInfo.billingQuantity,
+            amount: frozenReportSnapshot?.hasFrozenPricing
+              ? frozenReportSnapshot.amount
+              : priceInfo.amount,
+            isPending: false,
+          }
+        : {
+            quantity: calculatedPricing.billingQuantity,
+            amount: calculatedPricing.amount,
+            isPending: calculatedPricing.isPending,
+          };
       const actualQuantityLabel = report?.actualQuantity > 0
         ? `${formatNumber(report.actualQuantity)} ${report.actualQuantityUnit || dispatch.quantityUnit || 'đv'}`
         : '';
@@ -48323,9 +48222,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     actualPackageCount: overrides.actualPackageCount !== undefined ? toDeliveryInputValue(overrides.actualPackageCount) : '',
     actualQuantityUnit: normalizeLeadingLabel(overrides.actualQuantityUnit || overrides.expectedQuantityUnit || 'Con'),
     actualPackageUnit: normalizeLeadingLabel(overrides.actualPackageUnit || 'Bọc'),
+    configurationId: `${overrides.configurationId || ''}`.trim(),
     pricingUnit: normalizeProductPricingUnit(overrides.pricingUnit || ''),
+    billingUnit: normalizeProductPricingUnit(overrides.billingUnit || overrides.pricingUnit || ''),
     unitPrice: parseLooseMoneyValue(overrides.unitPrice),
     pricingQuantity: parseLooseQuantityValue(overrides.pricingQuantity),
+    billingQuantity: parseLooseQuantityValue(overrides.billingQuantity ?? overrides.pricingQuantity),
+    amount: parseLooseMoneyValue(overrides.amount ?? overrides.pricingAmount),
+    billingSnapshotVersion: parseLooseQuantityValue(overrides.billingSnapshotVersion),
+    billingSnapshotSource: `${overrides.billingSnapshotSource || ''}`.trim(),
     pricingPendingActual: Boolean(overrides.pricingPendingActual),
   });
 
@@ -48343,6 +48248,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       customer,
       productShortLabel || product?.name || dispatch.productNameSnapshot || ''
     );
+    const reportSnapshot = report ? resolveTransactionBillingSnapshot({ record: report, product }) : null;
+    const dispatchSnapshot = resolveTransactionBillingSnapshot({ record: dispatch, product });
+    const frozenSnapshot = reportSnapshot?.hasFrozenPricing
+      ? reportSnapshot
+      : (dispatchSnapshot.hasFrozenPricing ? dispatchSnapshot : null);
     return createManualActualRow({
       rowKey: dispatch.id,
       existingReportId: report?.id || '',
@@ -48358,9 +48268,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       actualPackageCount: report?.actualPackageCount || '',
       actualQuantityUnit: report?.actualQuantityUnit || expectedUnit || 'Con',
       actualPackageUnit: report?.actualPackageUnit || 'Bọc',
-      pricingUnit: priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || expectedUnit,
-      unitPrice: priceInfo?.unitPrice || report?.unitPrice || 0,
-      pricingQuantity: report?.pricingQuantity || dispatch.pricingQuantity || 0,
+      configurationId: frozenSnapshot?.configurationId || report?.configurationId || dispatch.configurationId || '',
+      pricingUnit: frozenSnapshot?.billingUnit || priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || expectedUnit,
+      billingUnit: frozenSnapshot?.billingUnit || priceInfo?.pricingUnit || report?.pricingUnit || dispatch.pricingUnit || expectedUnit,
+      unitPrice: frozenSnapshot?.unitPrice || priceInfo?.unitPrice || report?.unitPrice || 0,
+      pricingQuantity: frozenSnapshot?.billingQuantity || report?.pricingQuantity || dispatch.pricingQuantity || 0,
+      billingQuantity: frozenSnapshot?.billingQuantity || report?.billingQuantity || dispatch.billingQuantity || 0,
+      amount: frozenSnapshot?.amount || report?.amount || report?.pricingAmount || dispatch.amount || dispatch.pricingAmount || 0,
+      billingSnapshotVersion: frozenSnapshot?.billingSnapshotVersion || report?.billingSnapshotVersion || dispatch.billingSnapshotVersion || 0,
+      billingSnapshotSource: frozenSnapshot?.billingSnapshotSource || report?.billingSnapshotSource || dispatch.billingSnapshotSource || '',
       pricingPendingActual: report?.pricingPendingActual,
     });
   };
@@ -48391,6 +48307,16 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
 
   const resolveActualRowPricingMeta = (row = {}, productOverride = null) => {
     const product = productOverride || findProductForActualRow(row);
+    const frozenRowSnapshot = resolveTransactionBillingSnapshot({ record: row, product });
+    if (frozenRowSnapshot.hasFrozenPricing) {
+      return {
+        configurationId: frozenRowSnapshot.configurationId,
+        pricingUnit: frozenRowSnapshot.billingUnit,
+        unitPrice: frozenRowSnapshot.unitPrice,
+        usesWeightPricing: isSameBillingUnit(frozenRowSnapshot.billingUnit, 'Kg'),
+        source: 'report_snapshot',
+      };
+    }
     const dispatch = row.dispatchId
       ? dayDispatches.find(item => item.id === row.dispatchId)
       : null;
@@ -48422,9 +48348,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       || getCustomerProductPrice(configSource, product, pricingUnit)
       || 0;
     return {
+      configurationId: priceInfo?.configurationId || '',
       pricingUnit,
       unitPrice,
-      usesWeightPricing: normalizeLookupText(pricingUnit) === normalizeLookupText('Kg'),
+      usesWeightPricing: isSameBillingUnit(pricingUnit, 'Kg'),
+      source: priceInfo?.source || 'legacy_fallback',
     };
   };
 
@@ -48441,17 +48369,26 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           ? (row.actualQuantityUnit || row.expectedQuantityUnit || product?.unit || 'Con')
           : pricingMeta.pricingUnit
       );
-      const pricingResult = calculatePricingAmount({
-        pricingUnit: pricingMeta.pricingUnit,
-        inputUnit: actualQuantityUnit,
-        inputQuantity: actualQuantityValue,
-        actualWeightKg,
+      const billingSnapshot = buildCustomerProductBillingSnapshot({
+        configuration: {
+          productId: product?.id || row.productId || '',
+          productName: productNameSnapshot,
+          configurationId: pricingMeta.configurationId || row.configurationId || '',
+          billingUnit: pricingMeta.pricingUnit,
+          pricingUnit: pricingMeta.pricingUnit,
+          unitPrice: pricingMeta.unitPrice,
+          source: pricingMeta.source || 'delivery_report',
+        },
+        product,
+        productId: product?.id || row.productId || '',
+        productName: productNameSnapshot,
+        actualUnit: actualQuantityUnit,
         actualQuantity: actualQuantityValue,
-        actualQuantityUnit,
-        unitPrice: pricingMeta.unitPrice,
+        actualWeightKg,
       });
       return {
         ...row,
+        ...billingSnapshot,
         productId: product?.id || row.productId || '',
         productNameSnapshot,
         actualWeightKg,
@@ -48459,11 +48396,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         actualPackageCountValue,
         actualQuantityUnit,
         actualPackageUnit: normalizeLeadingLabel(row.actualPackageUnit || 'Bọc'),
-        pricingUnit: pricingMeta.pricingUnit,
-        pricingQuantity: pricingResult.quantity,
-        pricingPendingActual: pricingResult.isPending,
-        unitPrice: pricingResult.unitPrice,
-        pricingAmount: pricingResult.amount,
+        pricingUnit: billingSnapshot.billingUnit,
+        pricingQuantity: billingSnapshot.billingQuantity,
+        pricingPendingActual: billingSnapshot.pricingPendingActual,
+        unitPrice: billingSnapshot.unitPrice,
+        pricingAmount: billingSnapshot.amount,
       };
     })
     .filter(row => row.dispatchId || row.productNameSnapshot || row.actualWeightKg > 0 || row.actualQuantityValue > 0 || row.actualPackageCountValue > 0);
@@ -49140,6 +49077,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         actualPackageCount: row.actualPackageCountValue,
         actualQuantityUnit: normalizeLeadingLabel(row.actualQuantityUnit || row.expectedQuantityUnit || 'Con'),
         actualPackageUnit: normalizeLeadingLabel(row.actualPackageUnit || 'Bọc'),
+        actualUnit: normalizeLeadingLabel(row.actualQuantityUnit || row.expectedQuantityUnit || 'Con'),
+        configurationId: `${row.configurationId || ''}`.trim(),
+        billingUnit: normalizeProductPricingUnit(row.billingUnit || row.pricingUnit || row.actualQuantityUnit || 'Con'),
+        billingQuantity: parseLooseQuantityValue(row.billingQuantity ?? row.pricingQuantity),
+        amount: parseLooseMoneyValue(row.amount ?? row.pricingAmount),
+        billingSnapshotVersion: parseLooseQuantityValue(row.billingSnapshotVersion) || 1,
+        billingSnapshotSource: row.billingSnapshotSource || 'delivery_report',
+        billingSnapshotValid: row.billingSnapshotValid !== false,
+        billingSnapshotError: row.billingSnapshotError || '',
         pricingUnit: normalizeProductPricingUnit(row.pricingUnit || row.actualQuantityUnit || 'Con'),
         pricingQuantity: parseLooseQuantityValue(row.pricingQuantity),
         pricingPendingActual: Boolean(row.pricingPendingActual),
@@ -53094,8 +53040,26 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const canDelete = isViewingPastDispatchDate ? canDeleteHistoryDispatch : canDeleteCurrentDispatch;
   const canManageDispatchRows = canEdit || canDelete;
   const dispatchListRef = useRef(null);
-  const dispatchQuantityUnitOptions = ['Con', 'Cái', 'Bộ', 'Bọc', 'Bao', 'Thùng', 'Can', 'Túi', 'Kg'];
-  const createEmptyDispatchDraft = (assignedDriverId = '') => ({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', weightEntries: [], assignedDriverId, note: '', transcript: '' });
+  const createEmptyDispatchDraft = (assignedDriverId = '') => ({
+    customerId: '',
+    customerSearch: '',
+    productId: '',
+    productSearch: '',
+    pieceCount: '',
+    quantityUnit: '',
+    weightKg: '',
+    weightEntries: [],
+    assignedDriverId,
+    note: '',
+    transcript: '',
+    configurationId: '',
+    billingUnit: '',
+    billingQuantity: 0,
+    unitPrice: 0,
+    amount: 0,
+    billingSnapshotVersion: 0,
+    billingSnapshotSource: '',
+  });
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
   const [dispatchDriverSelectionTouched, setDispatchDriverSelectionTouched] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState('');
@@ -53114,7 +53078,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const [dispatchListWeightEditor, setDispatchListWeightEditor] = useState(null);
   const [isSavingDispatchListWeight, setIsSavingDispatchListWeight] = useState(false);
   const [inlineEditingDispatchId, setInlineEditingDispatchId] = useState('');
-  const [inlineEditingDispatchDraft, setInlineEditingDispatchDraft] = useState({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', assignedDriverId: '', note: '' });
+  const [inlineEditingDispatchDraft, setInlineEditingDispatchDraft] = useState(() => createEmptyDispatchDraft());
   const [selectedShortageLine, setSelectedShortageLine] = useState(null);
   const [isClosingShortageLine, setIsClosingShortageLine] = useState(false);
   const [deletingShortageRequestKey, setDeletingShortageRequestKey] = useState('');
@@ -53191,7 +53155,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       });
     });
     const deduped = Array.from(new Map(collected.map(product => [product.id, product])).values());
-    return deduped.length > 0 ? deduped : products.filter(product => !product.isArchived);
+    return deduped;
   }, [todayOrderRequests, products]);
 
   const customerLookup = useMemo(() => new Map(customers.map(customer => [customer.id, customer])), [customers]);
@@ -53321,6 +53285,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         productUnit: matchedProduct?.unit || item?.quantityUnit || '',
         productBarcode: matchedProduct?.barcode || '',
         unitPrice: getOrderLineUnitPriceValue(item),
+        configurationId: item?.configurationId || '',
+        actualQuantity: item?.actualQuantity ?? item?.quantity ?? item?.quantityCount ?? 0,
+        actualUnit: item?.actualUnit || item?.quantityUnit || item?.unit || matchedProduct?.unit || '',
+        actualWeightKg: item?.actualWeightKg ?? item?.weightKg ?? 0,
+        billingQuantity: item?.billingQuantity ?? item?.pricingQuantity ?? 0,
+        billingUnit: item?.billingUnit || item?.pricingUnit || '',
+        amount: item?.amount ?? item?.pricingAmount ?? item?.lineTotal ?? item?.total ?? 0,
+        billingSnapshotVersion: item?.billingSnapshotVersion || 0,
+        billingSnapshotSource: item?.billingSnapshotSource || '',
         quantity: getOrderLineQuantityValue(item),
         quantityUnit: item?.quantityUnit || item?.unit || matchedProduct?.unit || '',
         weightKg: getOrderLineWeightKgValue(item),
@@ -53376,6 +53349,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       productUnit: product?.unit || requestLine.quantityUnit || '',
       productBarcode: product?.barcode || '',
       unitPrice: getOrderLineUnitPriceValue(requestLine),
+      configurationId: requestLine.configurationId || '',
+      actualQuantity: requestLine.actualQuantity ?? requestLine.quantity ?? requestLine.quantityCount ?? 0,
+      actualUnit: requestLine.actualUnit || requestLine.quantityUnit || requestLine.unit || product?.unit || '',
+      actualWeightKg: requestLine.actualWeightKg ?? requestLine.weightKg ?? 0,
+      billingQuantity: requestLine.billingQuantity ?? requestLine.pricingQuantity ?? 0,
+      billingUnit: requestLine.billingUnit || requestLine.pricingUnit || '',
+      amount: requestLine.amount ?? requestLine.pricingAmount ?? requestLine.lineTotal ?? 0,
+      billingSnapshotVersion: requestLine.billingSnapshotVersion || 0,
+      billingSnapshotSource: requestLine.billingSnapshotSource || '',
       quantity: getOrderLineQuantityValue(requestLine),
       quantityUnit: requestLine.quantityUnit || requestLine.unit || product?.unit || '',
       weightKg: getOrderLineWeightKgValue(requestLine),
@@ -53470,9 +53452,82 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         || a.index - b.index
       ))[0]?.row || null;
   };
-  const getDispatchOrderRowUnitPrice = (orderRow = null) => {
-    if (!orderRow) return 0;
-    return getOrderLineUnitPriceValue(orderRow.item || orderRow) || getOrderLineUnitPriceValue(orderRow);
+  const buildDispatchBillingSnapshot = ({
+    customer = null,
+    product = null,
+    matchedOrderRow = null,
+    existingRecord = null,
+    actualQuantity = 0,
+    actualUnit = '',
+    actualWeightKg = 0,
+    branchId = '',
+  } = {}) => {
+    const configSource = getCustomerBranchProductConfigSource(customer, branchId, products);
+    const currentConfiguration = resolveCustomerProductBillingConfiguration(configSource, product, {
+      configurationId: matchedOrderRow?.item?.configurationId
+        || matchedOrderRow?.configurationId
+        || existingRecord?.configurationId
+        || '',
+      sizeLabel: matchedOrderRow?.sizeLabel || matchedOrderRow?.item?.sizeLabel || existingRecord?.sizeLabel || '',
+      attributeLabel: matchedOrderRow?.attributeLabel || matchedOrderRow?.item?.attributeLabel || existingRecord?.attributeLabel || '',
+    });
+    const existingSnapshot = resolveTransactionBillingSnapshot({
+      record: existingRecord,
+      configuration: currentConfiguration,
+      product,
+    });
+    const orderSource = matchedOrderRow
+      ? { ...matchedOrderRow, ...(matchedOrderRow.item || {}) }
+      : null;
+    const orderSnapshot = resolveTransactionBillingSnapshot({
+      record: orderSource,
+      configuration: currentConfiguration,
+      product,
+    });
+    const frozenSource = existingSnapshot.hasFrozenPricing
+      ? existingSnapshot
+      : (orderSnapshot.hasFrozenPricing ? orderSnapshot : null);
+    const billingConfiguration = frozenSource
+      ? {
+          ...currentConfiguration,
+          configurationId: frozenSource.configurationId || currentConfiguration.configurationId,
+          billingUnit: frozenSource.billingUnit,
+          pricingUnit: frozenSource.billingUnit,
+          unitPrice: frozenSource.unitPrice,
+          source: existingSnapshot.hasFrozenPricing ? 'warehouse_snapshot' : 'order_request_snapshot',
+      }
+      : currentConfiguration;
+    const configuredActualUnit = resolveCustomerProductActualUnit(billingConfiguration, product);
+    const orderActualUnit = orderSnapshot.actualUnit;
+    const expectedActualUnit = existingSnapshot.hasFrozenPricing
+      ? existingSnapshot.actualUnit
+      : (orderSnapshot.hasFrozenPricing
+        ? (isSameBillingUnit(orderSnapshot.billingUnit, 'Kg')
+            && isSameBillingUnit(orderActualUnit, 'Kg')
+            && configuredActualUnit
+            && !isSameBillingUnit(configuredActualUnit, 'Kg')
+          ? configuredActualUnit
+          : orderActualUnit)
+        : configuredActualUnit);
+    const snapshot = buildCustomerProductBillingSnapshot({
+      configuration: billingConfiguration,
+      product,
+      productId: product?.id || '',
+      productName: product?.name || '',
+      sizeLabel: matchedOrderRow?.sizeLabel || matchedOrderRow?.item?.sizeLabel || existingRecord?.sizeLabel || '',
+      attributeLabel: matchedOrderRow?.attributeLabel || matchedOrderRow?.item?.attributeLabel || existingRecord?.attributeLabel || '',
+      actualQuantity,
+      actualUnit,
+      actualWeightKg,
+    });
+    if (expectedActualUnit && !isSameBillingUnit(expectedActualUnit, actualUnit)) {
+      return {
+        ...snapshot,
+        billingSnapshotValid: false,
+        billingSnapshotError: 'ACTUAL_UNIT_NOT_ALLOWED',
+      };
+    }
+    return snapshot;
   };
   const getPreferredOrderRowForDispatchCustomer = (customerId = '') => {
     if (!customerId) return null;
@@ -53481,38 +53536,82 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     return warehouseVoiceOrderRows.find(row => row.customerId === customerId && row.productId) || null;
   };
   const buildDispatchDefaultsFromOrderRow = (orderRow = null) => {
-    if (!orderRow) return { productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '' };
+    if (!orderRow) return {
+      productId: '',
+      productSearch: '',
+      pieceCount: '',
+      quantityUnit: '',
+      weightKg: '',
+      configurationId: '',
+      billingUnit: '',
+      billingQuantity: 0,
+      unitPrice: 0,
+      amount: 0,
+      billingSnapshotVersion: 0,
+      billingSnapshotSource: '',
+    };
     const product = (orderRow.productId && productLookup.get(orderRow.productId)) || orderRow.product || null;
     const productName = product?.name || orderRow.productName || orderRow.item?.productName || orderRow.item?.description || '';
+    const customer = customerLookup.get(orderRow.customerId || orderRow.item?.customerId || '') || null;
+    const configSource = getCustomerBranchProductConfigSource(
+      customer,
+      orderRow.branchId || orderRow.customerBranchId || '',
+      products
+    );
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, product, {
+      configurationId: orderRow.item?.configurationId || orderRow.configurationId || '',
+      sizeLabel: orderRow.sizeLabel || orderRow.item?.sizeLabel || '',
+      attributeLabel: orderRow.attributeLabel || orderRow.item?.attributeLabel || '',
+    });
+    const sourceRecord = { ...orderRow, ...(orderRow.item || {}) };
+    const sourceSnapshot = resolveTransactionBillingSnapshot({
+      record: sourceRecord,
+      configuration,
+      product,
+    });
+    const pricingUnit = sourceSnapshot.billingUnit || configuration.billingUnit;
+    const configuredActualUnit = resolveCustomerProductActualUnit(configuration, product);
     const quantityUnit = normalizeDispatchQuantityUnit(
-      orderRow.item?.quantityUnit
-      || orderRow.quantityUnit
-      || orderRow.productUnit
-      || product?.unit
-      || 'Con'
+      sourceSnapshot.actualUnit
+      && (!isSameBillingUnit(pricingUnit, 'Kg') || !isSameBillingUnit(sourceSnapshot.actualUnit, 'Kg'))
+        ? sourceSnapshot.actualUnit
+        : (configuredActualUnit || sourceSnapshot.actualUnit || product?.unit || pricingUnit)
     );
     const orderQuantity = parseLooseQuantityValue(
-      orderRow.item?.quantity
-      ?? orderRow.item?.quantityValue
-      ?? orderRow.item?.quantityCount
-      ?? orderRow.quantity
-      ?? orderRow.quantityCount
+      sourceSnapshot.actualQuantity > 0
+        ? sourceSnapshot.actualQuantity
+        : (orderRow.item?.quantity
+          ?? orderRow.item?.quantityValue
+          ?? orderRow.item?.quantityCount
+          ?? orderRow.quantity
+          ?? orderRow.quantityCount)
     );
     const explicitWeight = parseLooseQuantityValue(
-      orderRow.item?.weightKg
-      ?? orderRow.item?.kg
-      ?? orderRow.item?.weight
-      ?? orderRow.weightKg
+      sourceSnapshot.actualWeightKg > 0
+        ? sourceSnapshot.actualWeightKg
+        : (sourceSnapshot.billingQuantity > 0
+          ? sourceSnapshot.billingQuantity
+          : (orderRow.item?.weightKg
+            ?? orderRow.item?.kg
+            ?? orderRow.item?.weight
+            ?? orderRow.weightKg))
     );
-    const defaultWeight = explicitWeight > 0
+    const defaultWeight = isSameBillingUnit(pricingUnit, 'Kg')
       ? explicitWeight
-      : (orderQuantity > 0 && isKgQuantityUnit(quantityUnit) ? orderQuantity : 0);
+      : 0;
     return {
       productId: product?.id || orderRow.productId || '',
       productSearch: productName,
-      pieceCount: orderQuantity > 0 && !isKgQuantityUnit(quantityUnit) ? formatVoiceNumberValue(orderQuantity) : '',
+      pieceCount: orderQuantity > 0 ? formatVoiceNumberValue(orderQuantity) : '',
       quantityUnit,
-      weightKg: defaultWeight > 0 ? formatVoiceNumberValue(defaultWeight) : ''
+      weightKg: defaultWeight > 0 ? formatVoiceNumberValue(defaultWeight) : '',
+      configurationId: sourceSnapshot.configurationId || configuration.configurationId || '',
+      billingUnit: pricingUnit,
+      billingQuantity: sourceSnapshot.billingQuantity || 0,
+      unitPrice: sourceSnapshot.unitPrice || configuration.unitPrice || 0,
+      amount: sourceSnapshot.amount || 0,
+      billingSnapshotVersion: sourceSnapshot.hasFrozenPricing ? 1 : 0,
+      billingSnapshotSource: sourceSnapshot.hasFrozenPricing ? 'order_request_snapshot' : configuration.source,
     };
   };
   const buildWarehouseDispatchSourceType = (baseType = 'manual', matchedOrderRow = null) => {
@@ -53560,6 +53659,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       })
       .filter(Boolean)).values());
   }, [dispatchCustomerOrderRows, productLookup]);
+  const dispatchCustomerFixedProducts = useMemo(() => {
+    if (!selectedDispatchCustomer) return [];
+    const fixedProductIds = getCustomerFixedProductIds(selectedDispatchCustomer, products);
+    return fixedProductIds
+      .map(productId => productLookup.get(productId))
+      .filter(product => product && !product.isArchived);
+  }, [productLookup, products, selectedDispatchCustomer]);
   const rankDispatchPickerOptions = useCallback((options = [], keyword = '', getLabels = () => []) => {
     const normalizedKeyword = normalizeLookupText(keyword || '');
     if (!normalizedKeyword) return options;
@@ -53612,14 +53718,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       customer.customerGroup
     ]
   ), [dispatchCustomerSearchKeyword, rankDispatchPickerOptions, requestCustomerOptions]);
-  const dispatchProductPickerOptions = useMemo(() => (
-    selectedDispatchCustomer && dispatchCustomerOrderedProducts.length > 0
-      ? dispatchCustomerOrderedProducts
-      : Array.from(new Map([
-          ...requestProductOptions,
-          ...(products || []).filter(product => !product?.isArchived)
-        ].map(product => [product.id, product])).values())
-  ), [dispatchCustomerOrderedProducts, products, requestProductOptions, selectedDispatchCustomer]);
+  const dispatchProductPickerOptions = useMemo(() => {
+    if (!selectedDispatchCustomer) return [];
+    return Array.from(new Map([
+      ...dispatchCustomerOrderedProducts,
+      ...dispatchCustomerFixedProducts,
+    ].map(product => [product.id, product])).values());
+  }, [dispatchCustomerFixedProducts, dispatchCustomerOrderedProducts, selectedDispatchCustomer]);
   const filteredDispatchProducts = useMemo(() => rankDispatchPickerOptions(
     dispatchProductPickerOptions,
     dispatchProductSearchKeyword,
@@ -53637,6 +53742,16 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   ), [dispatchProductPickerOptions, dispatchProductSearchKeyword, rankDispatchPickerOptions]);
   const inlineEditingCustomer = customerLookup.get(inlineEditingDispatchDraft.customerId) || null;
   const inlineEditingProduct = productLookup.get(inlineEditingDispatchDraft.productId) || null;
+  const inlineDispatchProductOptions = useMemo(() => {
+    if (!inlineEditingCustomer) return [];
+    const fixedProductIds = getCustomerFixedProductIds(inlineEditingCustomer, products);
+    const fixedProducts = fixedProductIds.map(productId => productLookup.get(productId)).filter(Boolean);
+    const orderedProducts = warehouseVoiceOrderRows
+      .filter(row => row.customerId === inlineEditingCustomer.id && row.productId)
+      .map(row => productLookup.get(row.productId) || row.product)
+      .filter(Boolean);
+    return Array.from(new Map([...orderedProducts, ...fixedProducts].map(product => [product.id, product])).values());
+  }, [inlineEditingCustomer, productLookup, products, warehouseVoiceOrderRows]);
 
   const todayDispatchRows = useMemo(
     () => (warehouseDispatches || [])
@@ -54191,11 +54306,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         if (nextItems.length === requestItems.length) {
           throw new Error('Chưa xác định được dòng cần xóa trong đơn đặt.');
         }
-        const nextTotalAmount = nextItems.reduce((sum, item) => {
-          const quantity = parseLooseQuantityValue(item.quantity ?? item.quantityValue ?? item.qty);
-          const unitPrice = parseLooseMoneyValue(item.unitPrice ?? item.unit_price_vnd ?? item.price);
-          return sum + (quantity * unitPrice);
-        }, 0);
+        const nextTotalAmount = nextItems.reduce(
+          (sum, item) => sum + getTransactionBillingPresentation(item).amount,
+          0
+        );
         await onEditOrderRequest(row.requestId, {
           ...request,
           items: nextItems,
@@ -54704,16 +54818,36 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     return matched?.[1] ? normalizeDispatchQuantityUnit(matched[1]) : '';
   };
 
-  const resolveVoiceQuantityUnit = (payload = {}, orderRow = null, product = null, transcript = '') => normalizeDispatchQuantityUnit(
-    payload.quantity_unit
-    || payload.quantityUnit
-    || payload.unit
-    || orderRow?.item?.quantityUnit
-    || orderRow?.productUnit
-    || product?.unit
-    || extractSpokenQuantityUnit(transcript)
-    || 'Con'
-  );
+  const resolveVoiceQuantityUnit = (payload = {}, orderRow = null, product = null, transcript = '', customer = null) => {
+    const branchId = orderRow?.branchId || orderRow?.customerBranchId || '';
+    const configSource = getCustomerBranchProductConfigSource(customer, branchId, products);
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, product, {
+      configurationId: orderRow?.configurationId || orderRow?.item?.configurationId || '',
+      sizeLabel: orderRow?.sizeLabel || orderRow?.item?.sizeLabel || '',
+      attributeLabel: orderRow?.attributeLabel || orderRow?.item?.attributeLabel || '',
+    });
+    const orderSnapshot = resolveTransactionBillingSnapshot({
+      record: orderRow ? { ...orderRow, ...(orderRow.item || {}) } : null,
+      configuration,
+      product,
+    });
+    const configuredActualUnit = resolveCustomerProductActualUnit(configuration, product);
+    const frozenActualUnit = orderSnapshot.hasFrozenPricing ? orderSnapshot.actualUnit : '';
+    return normalizeDispatchQuantityUnit(
+      frozenActualUnit
+      || configuredActualUnit
+      || orderRow?.actualUnit
+      || orderRow?.item?.actualUnit
+      || orderRow?.item?.quantityUnit
+      || orderRow?.productUnit
+      || product?.unit
+      || payload.quantity_unit
+      || payload.quantityUnit
+      || payload.unit
+      || extractSpokenQuantityUnit(transcript)
+      || 'Con'
+    );
+  };
 
   const extractSpokenNonWeightNumbers = (transcript = '') => {
     const raw = `${transcript || ''}`;
@@ -54948,6 +55082,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       (item) => [getCustomerPlainName(item), getCustomerDisplayName(item), ...(buildCustomerNameAliases(item) || [])]
     );
     const customerOrderRows = getOrderRowsForVoiceCustomer(customerMatch);
+    const customerAllowedProductIds = new Set(customerOrderRows.map(row => row.productId).filter(Boolean));
+    if (customerMatch) {
+      getCustomerFixedProductIds(customerMatch, products).forEach(productId => customerAllowedProductIds.add(productId));
+      customerOrderRows.forEach((row) => {
+        getCustomerBranchFixedProductIds(customerMatch, row.branchId || row.customerBranchId || '', products)
+          .forEach(productId => customerAllowedProductIds.add(productId));
+      });
+    }
+    const customerVoiceProductOptions = products.filter(product => customerAllowedProductIds.has(product.id));
     let matchedOrderRow = bestOrderRowMatch || (customerOrderRows.length
       ? resolveVoiceProductFromOrderRows(productSearchText, customerOrderRows)
       : null);
@@ -54957,8 +55100,8 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
 
     const fallbackProductMatch = findVoiceEntityMatch(
       productCandidates,
-      requestProductOptions,
-      products,
+      customerVoiceProductOptions.length ? customerVoiceProductOptions : requestProductOptions,
+      [],
       (item) => item?.name || '',
       (item) => [getProductShortName(item), buildLookupInitials(item?.name), item?.barcode, item?.attributes, item?.productAttributes]
     );
@@ -54971,7 +55114,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         || customerOrderRows.find((row) => normalizeWarehouseVoiceText(row.productName) === normalizeWarehouseVoiceText(productMatch.name))
         || null;
     }
-    const quantityUnit = resolveVoiceQuantityUnit(payload, matchedOrderRow, productMatch, transcript);
+    const quantityUnit = resolveVoiceQuantityUnit(payload, matchedOrderRow, productMatch, transcript, customerMatch);
     const weightValue = resolveVoiceWeightValue(payload, transcript);
     const weightEntries = resolveVoiceWeightEntries(payload, transcript);
     const pieceCountValue = resolveVoicePieceCountValue(payload, transcript, matchedOrderRow, quantityUnit);
@@ -55211,14 +55354,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => ({
       ...prev,
+      ...orderDefaults,
       customerId,
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
       assignedDriverId: prev.customerId === customerId ? prev.assignedDriverId : '',
-      productId: orderDefaults.productId,
-      productSearch: orderDefaults.productSearch,
-      pieceCount: orderDefaults.pieceCount,
-      quantityUnit: orderDefaults.quantityUnit || 'Con',
-      weightKg: orderDefaults.weightKg || prev.weightKg || ''
+      weightKg: orderDefaults.weightKg || ''
     }));
     setDispatchStatus(`Đã thêm phiếu xuất cho ${customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} con` : ''} • ${formatNumber(weightKg)} kg.`);
     setDispatchStatus('');
@@ -55231,10 +55371,30 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const matchedOrderRow = dispatchDraft.customerId
       ? findMatchingOrderRequestRowForDispatch(dispatchDraft.customerId, productId, { ...dispatchDraft, productId })
       : null;
-    const orderDefaults = buildDispatchDefaultsFromOrderRow(matchedOrderRow);
-    const fallbackUnit = normalizeDispatchQuantityUnit(selectedProduct?.unit || dispatchDraft.quantityUnit || 'Con');
+    const customer = customerLookup.get(dispatchDraft.customerId) || null;
+    const configSource = getCustomerBranchProductConfigSource(customer, '', products);
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, selectedProduct);
+    const fixedProductDefaults = {
+      configurationId: configuration.configurationId || '',
+      billingUnit: configuration.billingUnit || '',
+      billingQuantity: 0,
+      unitPrice: configuration.unitPrice || 0,
+      amount: 0,
+      billingSnapshotVersion: 0,
+      billingSnapshotSource: configuration.source || '',
+    };
+    const orderDefaults = matchedOrderRow
+      ? buildDispatchDefaultsFromOrderRow(matchedOrderRow)
+      : fixedProductDefaults;
+    const fallbackUnit = normalizeDispatchQuantityUnit(
+      resolveCustomerProductActualUnit(configuration, selectedProduct)
+      || selectedProduct?.unit
+      || dispatchDraft.quantityUnit
+      || 'Con'
+    );
     setDispatchDraft(prev => ({
       ...prev,
+      ...orderDefaults,
       productId,
       productSearch: selectedProduct?.name || orderDefaults.productSearch || '',
       pieceCount: orderDefaults.pieceCount || prev.pieceCount,
@@ -55245,9 +55405,61 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     setDispatchPickerOpen('');
   };
 
+  const handleInlineDispatchCustomerChange = (customerId) => {
+    const customer = customerLookup.get(customerId) || null;
+    const preferredOrderRow = customer ? getPreferredOrderRowForDispatchCustomer(customer.id) : null;
+    const defaults = buildDispatchDefaultsFromOrderRow(preferredOrderRow);
+    setInlineEditingDispatchDraft(prev => ({
+      ...prev,
+      ...defaults,
+      customerId,
+      customerSearch: customer?.name || '',
+      assignedDriverId: prev.assignedDriverId || '',
+      note: prev.note || '',
+    }));
+    setDispatchError('');
+  };
+
+  const handleInlineDispatchProductChange = (productId) => {
+    const customer = customerLookup.get(inlineEditingDispatchDraft.customerId) || null;
+    const product = productLookup.get(productId) || null;
+    const matchedOrderRow = customer && product
+      ? findMatchingOrderRequestRowForDispatch(customer.id, product.id, { ...inlineEditingDispatchDraft, productId })
+      : null;
+    const configuration = resolveCustomerProductBillingConfiguration(
+      getCustomerBranchProductConfigSource(customer, '', products),
+      product
+    );
+    const defaults = matchedOrderRow
+      ? buildDispatchDefaultsFromOrderRow(matchedOrderRow)
+      : {
+          productId,
+          productSearch: product?.name || '',
+          pieceCount: '',
+          quantityUnit: resolveCustomerProductActualUnit(configuration, product),
+          weightKg: '',
+          configurationId: configuration.configurationId || '',
+          billingUnit: configuration.billingUnit || '',
+          billingQuantity: 0,
+          unitPrice: configuration.unitPrice || 0,
+          amount: 0,
+          billingSnapshotVersion: 0,
+          billingSnapshotSource: configuration.source || '',
+        };
+    setInlineEditingDispatchDraft(prev => ({
+      ...prev,
+      ...defaults,
+      productId,
+      productSearch: product?.name || defaults.productSearch || '',
+      assignedDriverId: prev.assignedDriverId || '',
+      note: prev.note || '',
+    }));
+    setDispatchError('');
+  };
+
   const resetInlineDispatchEdit = () => {
     setInlineEditingDispatchId('');
-    setInlineEditingDispatchDraft({ customerId: '', customerSearch: '', productId: '', productSearch: '', pieceCount: '', quantityUnit: 'Con', weightKg: '', assignedDriverId: '', note: '' });
+    setInlineEditingDispatchDraft(createEmptyDispatchDraft());
   };
 
   const startInlineDispatchEdit = (row) => {
@@ -55262,7 +55474,14 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       quantityUnit: row.quantityUnit || 'Con',
       weightKg: row.weightKg ?? '',
       assignedDriverId: row.assignedDriverId || row.driverId || '',
-      note: row.note || ''
+      note: row.note || '',
+      configurationId: row.configurationId || '',
+      billingUnit: row.billingUnit || row.pricingUnit || '',
+      billingQuantity: row.billingQuantity ?? row.pricingQuantity ?? 0,
+      unitPrice: row.unitPrice ?? row.price ?? 0,
+      amount: row.amount ?? row.pricingAmount ?? 0,
+      billingSnapshotVersion: row.billingSnapshotVersion || 0,
+      billingSnapshotSource: row.billingSnapshotSource || ''
     });
     setDispatchStatus('');
     setDispatchError('');
@@ -55294,17 +55513,18 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     };
     const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
     const isOutsideOrderRequest = !matchedOrderRow;
-    const orderRequestUnitPrice = getDispatchOrderRowUnitPrice(matchedOrderRow) || parseLooseMoneyValue(
-      row.sourceOrderRequestUnitPrice
-      ?? row.orderRequestUnitPrice
-      ?? row.requestUnitPrice
-      ?? row.orderedUnitPrice
-      ?? row.customerOrderUnitPrice
-      ?? row.unitPrice
-      ?? row.price
-    );
     const baseSourceType = `${row.sourceType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || row, row);
+    const billingSnapshot = buildDispatchBillingSnapshot({
+      customer,
+      product,
+      matchedOrderRow,
+      existingRecord: row,
+      actualQuantity: pieceCount,
+      actualUnit: quantityUnit,
+      actualWeightKg: weightKg,
+      branchId: branchRef.branchId,
+    });
     const nextDriverId = canAssignDriver ? `${inlineEditingDispatchDraft.assignedDriverId || ''}`.trim() : getDispatchDriverId(row);
     const nextDriver = nextDriverId ? employeeLookup.get(nextDriverId) : null;
     const nextDriverName = nextDriver?.name || (nextDriverId ? getDispatchDriverName(row) : '');
@@ -55312,8 +55532,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
       return;
     }
+    if (!billingSnapshot.billingSnapshotValid) {
+      setDispatchError(billingSnapshot.billingSnapshotError === 'MISSING_BILLING_QUANTITY'
+        ? `Vui lòng nhập số kg thực tế để tính tiền ${product.name}.`
+        : `Đơn vị hoặc đơn giá của ${product.name} chưa đúng cấu hình sản phẩm cố định.`);
+      return;
+    }
 
     await onEditWarehouseDispatch(row.id, {
+      ...billingSnapshot,
       customerId: customer.id,
       customerNameSnapshot: getCustomerDisplayName(customer) || customer.name,
       branchId: branchRef.branchId,
@@ -55326,9 +55553,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       productNameSnapshot: product.name,
       weightKg,
       pieceCount,
-      quantity: pieceCount,
-      quantityCount: pieceCount,
-      quantityUnit: pieceCount > 0 ? quantityUnit : '',
+      quantity: billingSnapshot.actualQuantity,
+      quantityCount: billingSnapshot.actualQuantity,
+      quantityUnit: billingSnapshot.actualUnit,
       assignedDriverId: nextDriverId,
       assignedDriverNameSnapshot: nextDriverName,
       driverId: nextDriverId,
@@ -55339,13 +55566,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       sourceOrderRequestDate: matchedOrderRow?.requestDate || row.sourceOrderRequestDate || selectedOrderRequestDateKey,
       sourceOrderRequestId: matchedOrderRow?.requestId || '',
       sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
-      ...(orderRequestUnitPrice > 0 ? {
-        unitPrice: orderRequestUnitPrice,
-        price: orderRequestUnitPrice,
-        sourceOrderRequestUnitPrice: orderRequestUnitPrice,
-        orderRequestUnitPrice,
-        requestUnitPrice: orderRequestUnitPrice
-      } : {}),
+      price: billingSnapshot.unitPrice,
+      sourceOrderRequestUnitPrice: billingSnapshot.unitPrice,
+      orderRequestUnitPrice: billingSnapshot.unitPrice,
+      requestUnitPrice: billingSnapshot.unitPrice,
       isOutsideOrderRequest,
       createdWithoutOrderRequest: isOutsideOrderRequest,
       sourceOrderRequestMissing: isOutsideOrderRequest,
@@ -55434,9 +55658,17 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     };
     const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
     const isOutsideOrderRequest = !matchedOrderRow;
-    const orderRequestUnitPrice = getDispatchOrderRowUnitPrice(matchedOrderRow) || parseLooseMoneyValue(dispatchDraft.unitPrice ?? dispatchDraft.price);
     const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
+    const billingSnapshot = buildDispatchBillingSnapshot({
+      customer,
+      product,
+      matchedOrderRow,
+      actualQuantity: pieceCount,
+      actualUnit: quantityUnit,
+      actualWeightKg: weightKg,
+      branchId: branchRef.branchId,
+    });
     const assignedDriverId = effectiveDispatchDriverId;
     const assignedDriver = assignedDriverId ? employeeLookup.get(assignedDriverId) : null;
     const assignedDriverName = assignedDriver?.name || '';
@@ -55444,8 +55676,15 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
       return;
     }
+    if (!billingSnapshot.billingSnapshotValid) {
+      setDispatchError(billingSnapshot.billingSnapshotError === 'MISSING_BILLING_QUANTITY'
+        ? `Vui lòng nhập số kg thực tế để tính tiền ${product.name}.`
+        : `Đơn vị hoặc đơn giá của ${product.name} chưa đúng cấu hình sản phẩm cố định.`);
+      return;
+    }
 
     const saveResult = await onAddWarehouseDispatch(employee.id, {
+      ...billingSnapshot,
       clientMutationId: `wd_${employee.id}_${workingDate}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       date: workingDate,
       customerId: customer.id,
@@ -55460,9 +55699,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       productNameSnapshot: product.name,
       weightKg,
       pieceCount,
-      quantity: pieceCount,
-      quantityCount: pieceCount,
-      quantityUnit: pieceCount > 0 ? quantityUnit : '',
+      quantity: billingSnapshot.actualQuantity,
+      quantityCount: billingSnapshot.actualQuantity,
+      quantityUnit: billingSnapshot.actualUnit,
       assignedDriverId,
       assignedDriverNameSnapshot: assignedDriverName,
       driverId: assignedDriverId,
@@ -55473,13 +55712,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       sourceOrderRequestDate: matchedOrderRow?.requestDate || selectedOrderRequestDateKey,
       sourceOrderRequestId: matchedOrderRow?.requestId || '',
       sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
-      ...(orderRequestUnitPrice > 0 ? {
-        unitPrice: orderRequestUnitPrice,
-        price: orderRequestUnitPrice,
-        sourceOrderRequestUnitPrice: orderRequestUnitPrice,
-        orderRequestUnitPrice,
-        requestUnitPrice: orderRequestUnitPrice
-      } : {}),
+      price: billingSnapshot.unitPrice,
+      sourceOrderRequestUnitPrice: billingSnapshot.unitPrice,
+      orderRequestUnitPrice: billingSnapshot.unitPrice,
+      requestUnitPrice: billingSnapshot.unitPrice,
       isOutsideOrderRequest,
       createdWithoutOrderRequest: isOutsideOrderRequest,
       sourceOrderRequestMissing: isOutsideOrderRequest,
@@ -55961,14 +56197,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                 className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
                 placeholder="Số lượng"
               />
-              <select
-                value={dispatchDraft.quantityUnit || 'Con'}
-                onChange={(e) => setDispatchDraft(prev => ({ ...prev, quantityUnit: normalizeDispatchQuantityUnit(e.target.value) }))}
-                className="w-full min-w-0 rounded-xl border border-gray-200 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                aria-label="Đơn vị xuất kho"
+              <div
+                className="flex w-full min-w-0 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700"
+                aria-label={`Đơn vị số lượng thực tế ${dispatchDraft.quantityUnit || 'chưa cấu hình'}`}
               >
-                {dispatchQuantityUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
-              </select>
+                {dispatchDraft.quantityUnit || '--'}
+              </div>
               <button
                 type="button"
                 onClick={openWeightEntriesEditor}
@@ -56189,15 +56423,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                           <select
                             value={inlineEditingDispatchDraft.customerId}
                             onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => {
-                              const selectedCustomer = customerLookup.get(e.target.value);
-                              setInlineEditingDispatchDraft(prev => ({
-                                ...prev,
-                                customerId: e.target.value,
-                                customerSearch: selectedCustomer?.name || prev.customerSearch
-                              }));
-                              setDispatchError('');
-                            }}
+                            onChange={(e) => handleInlineDispatchCustomerChange(e.target.value)}
                             className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
                           >
                             <option value="">Chon khach hang</option>
@@ -56215,19 +56441,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                           <select
                             value={inlineEditingDispatchDraft.productId}
                             onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => {
-                              const selectedProduct = productLookup.get(e.target.value);
-                              setInlineEditingDispatchDraft(prev => ({
-                                ...prev,
-                                productId: e.target.value,
-                                productSearch: selectedProduct?.name || prev.productSearch
-                              }));
-                              setDispatchError('');
-                            }}
+                            onChange={(e) => handleInlineDispatchProductChange(e.target.value)}
                             className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
                           >
                             <option value="">Chon loai hang</option>
-                            {requestProductOptions.map(product => (
+                            {inlineDispatchProductOptions.map(product => (
                               <option key={product.id} value={product.id}>{product.name}</option>
                             ))}
                           </select>
@@ -56254,18 +56472,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                               className="w-full rounded-lg border border-amber-200 bg-white px-1.5 py-1.5 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
                               placeholder="SL"
                             />
-                            <select
-                              value={inlineEditingDispatchDraft.quantityUnit || 'Con'}
+                            <div
                               onClick={(event) => event.stopPropagation()}
-                              onChange={(e) => {
-                                setInlineEditingDispatchDraft(prev => ({ ...prev, quantityUnit: normalizeDispatchQuantityUnit(e.target.value) }));
-                                setDispatchError('');
-                              }}
-                              className="w-full rounded-lg border border-amber-200 bg-white px-1.5 py-1.5 text-center text-[11px] font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                              aria-label="Đơn vị số lượng xuất kho"
+                              className="flex w-full items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50 px-1.5 py-1.5 text-center text-[11px] font-black text-emerald-700"
+                              aria-label={`Đơn vị số lượng xuất kho ${inlineEditingDispatchDraft.quantityUnit || 'chưa cấu hình'}`}
                             >
-                              {dispatchQuantityUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
-                            </select>
+                              {inlineEditingDispatchDraft.quantityUnit || '--'}
+                            </div>
                           </div>
                         ) : (
                           <span className="font-medium text-emerald-700">
@@ -56643,7 +56856,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     pricingUnit: seed.pricingUnit || seed.defaultUnit || '',
     inputUnitTouched: Boolean(seed.inputUnitTouched),
     rememberedDefaultInputUnit: seed.rememberedDefaultInputUnit || '',
-    unitPrice: seed.unitPrice ?? ''
+    unitPrice: seed.unitPrice ?? '',
+    configurationId: seed.configurationId || '',
+    actualQuantity: seed.actualQuantity ?? seed.quantity ?? '',
+    actualUnit: seed.actualUnit || seed.actualQuantityUnit || seed.quantityUnit || '',
+    billingQuantity: seed.billingQuantity ?? seed.pricingQuantity ?? '',
+    billingUnit: seed.billingUnit || seed.pricingUnit || '',
+    amount: seed.amount ?? seed.pricingAmount ?? seed.lineTotal ?? '',
+    billingSnapshotVersion: seed.billingSnapshotVersion || 0,
+    billingSnapshotSource: seed.billingSnapshotSource || ''
   });
   const createDraft = (seed = {}) => ({
     localId: seed.localId || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -56818,26 +57039,32 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     () => new Map(activeProducts.map(product => [product.id, product])),
     [activeProducts]
   );
+  const getOrderRequestFixedProducts = (customer = null, branchId = '') => {
+    if (!customer) return [];
+    const fixedProductIds = branchId
+      ? getCustomerBranchFixedProductIds(customer, branchId, activeProducts)
+      : getCustomerFixedProductIds(customer, activeProducts);
+    return fixedProductIds.map(productId => productLookup.get(productId)).filter(Boolean);
+  };
   const resolveDraftItemQuantityUnit = (configSource = null, product = null, requestedUnit = '') => {
-    const unitOptions = Array.from(new Set([
-      ...quantityUnitOptions,
-      ...getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit),
-      normalizeProductPricingUnit(requestedUnit),
-    ].filter(Boolean)));
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, product);
+    const unitOptions = [resolveCustomerProductActualUnit(configuration, product)].filter(Boolean);
     const normalizedRequestedUnit = normalizeProductPricingUnit(requestedUnit);
     return unitOptions.find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizedRequestedUnit))
+      || unitOptions[0]
       || getCustomerProductDefaultUnit(configSource, product, defaultQuantityUnit);
   };
   const getDraftItemUnitOptions = (draft = {}, item = {}) => {
     const product = productLookup.get(item.productId);
-    if (!product) return item.quantityUnit ? [normalizeProductPricingUnit(item.quantityUnit)] : quantityUnitOptions;
+    if (!product) return [normalizeProductPricingUnit(item.quantityUnit || defaultQuantityUnit)].filter(Boolean);
     const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
-    return Array.from(new Set([
-      ...quantityUnitOptions,
-      ...getCustomerProductUnitOptions(configSource, product, defaultQuantityUnit),
-      normalizeProductPricingUnit(item.quantityUnit),
-    ].filter(Boolean)));
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, product, {
+      configurationId: item.configurationId || '',
+      sizeLabel: item.weightKg || item.sizeLabel || '',
+      attributeLabel: item.attributeLabel || '',
+    });
+    return [resolveCustomerProductActualUnit(configuration, product)].filter(Boolean);
   };
 
   const persistSmartOrderingPreferences = async (savedRequests = []) => {
@@ -56889,6 +57116,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
     const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, product);
+    const allowedActualUnit = resolveCustomerProductActualUnit(configuration, product);
+    if (!isSameBillingUnit(allowedActualUnit, nextUnit)) {
+      setRequestError(`Đơn vị số lượng của ${product.name || 'sản phẩm'} được cố định là ${allowedActualUnit || 'chưa cấu hình'}.`);
+      return;
+    }
     const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
     updateDraftItem(localId, itemLocalId, {
       quantityUnit,
@@ -57212,6 +57445,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       const matchedProduct = item.productId ? productLookup.get(item.productId) || request.primaryProduct : request.primaryProduct;
       const productName = matchedProduct?.name || item.description || 'Hàng hóa';
       const branchRef = getOrderRequestBranchRef(requestCustomer, request, item);
+      const billing = getTransactionBillingPresentation(item);
       return {
         id: `${request.id}_${item.productId || index}`,
         customerId: requestCustomer?.id || request.customer?.id || request.customerId || '',
@@ -57228,9 +57462,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         productGroupName: getOrderRequestMainGroupLabel(matchedProduct, productName),
         attributeLabel: `${item.attributeLabel ?? item.productAttribute ?? item.attribute ?? ''}`.trim(),
         sizeLabel: `${item.sizeLabel ?? item.weightKg ?? ''}`.trim(),
-        quantity: parseLooseQuantityValue(item.quantity ?? item.weightKg ?? item.quantityText),
-        quantityUnit: item.quantityUnit || matchedProduct?.unit || '',
-        unitPrice: parseLooseMoneyValue(item.unitPrice),
+        configurationId: item.configurationId || '',
+        quantity: billing.actualQuantity,
+        quantityUnit: billing.actualUnit || matchedProduct?.unit || '',
+        billingQuantity: billing.billingQuantity,
+        billingUnit: billing.billingUnit,
+        unitPrice: billing.unitPrice,
+        amount: billing.amount,
         note: `${request.note || item.note || ''}`.trim(),
         date: request.requestDateKey || request.date || ''
       };
@@ -57240,8 +57478,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const grouped = new Map();
     requestSheetRows.forEach((row, index) => {
       const branchKey = row.branchId || normalizeLookupText(row.branchName || '') || 'main';
-      const groupKey = `${row.customerId || row.customerName}__${branchKey}__${row.productId || row.productName}__${normalizeLookupText(row.attributeLabel || '')}__${row.sizeLabel || ''}__${normalizeLookupText(row.quantityUnit || '')}__${roundMoneyValue(row.unitPrice || 0)}`;
-      const amount = (row.quantity || 0) * (row.unitPrice || 0);
+      const groupKey = `${row.customerId || row.customerName}__${branchKey}__${row.productId || row.productName}__${row.configurationId || 'default'}__${normalizeLookupText(row.attributeLabel || '')}__${row.sizeLabel || ''}__${normalizeLookupText(row.quantityUnit || '')}__${normalizeLookupText(row.billingUnit || '')}__${roundMoneyValue(row.unitPrice || 0)}`;
+      const amount = parseLooseMoneyValue(row.amount);
       if (!grouped.has(groupKey)) {
         grouped.set(groupKey, {
           ...row,
@@ -57253,8 +57491,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
       const current = grouped.get(groupKey);
       current.quantity += row.quantity || 0;
+      current.billingQuantity += row.billingQuantity || 0;
       current.amountSum += amount;
-      current.unitPrice = current.quantity > 0 ? current.amountSum / current.quantity : current.unitPrice;
       if (!current.quantityUnit && row.quantityUnit) current.quantityUnit = row.quantityUnit;
       if (!current.date && row.date) current.date = row.date;
       if (row.note && !current.note) current.note = row.note;
@@ -57263,7 +57501,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     return Array.from(grouped.values())
       .sort(compareOrderRequestRowsByProduct)
-      .map(({ sortIndex, amountSum, ...row }) => row);
+      .map(({ sortIndex, amountSum, ...row }) => ({ ...row, amount: amountSum }));
   }, [requestSheetRows]);
   const previewSheetRows = useMemo(() => {
     const rows = mergedRequestSheetRows.slice(0, 40);
@@ -57299,6 +57537,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
             const matchedProduct = item.productId ? productLookup.get(item.productId) || request.primaryProduct : request.primaryProduct;
             const productName = matchedProduct?.name || item.description || 'Hàng hóa';
             const branchRef = getOrderRequestBranchRef(requestCustomer, request, item);
+            const billing = getTransactionBillingPresentation(item);
             return {
               id: `${request.id}_${item.productId || index}`,
               customerId: requestCustomer?.id || request.customer?.id || request.customerId || '',
@@ -57315,9 +57554,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               productGroupName: getOrderRequestMainGroupLabel(matchedProduct, productName),
               attributeLabel: `${item.attributeLabel ?? item.productAttribute ?? item.attribute ?? ''}`.trim(),
               sizeLabel: `${item.sizeLabel ?? item.weightKg ?? ''}`.trim(),
-              quantity: parseFloat(item.quantity) || 0,
-              quantityUnit: item.quantityUnit || defaultQuantityUnit,
-              unitPrice: parseFloat(item.unitPrice) || 0,
+              configurationId: item.configurationId || '',
+              quantity: billing.actualQuantity,
+              quantityUnit: billing.actualUnit || defaultQuantityUnit,
+              billingQuantity: billing.billingQuantity,
+              billingUnit: billing.billingUnit,
+              unitPrice: billing.unitPrice,
+              amount: billing.amount,
               note: `${request.note || item.note || ''}`.trim()
             };
           });
@@ -57327,8 +57570,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           const grouped = new Map();
           rows.forEach((row, index) => {
             const branchKey = row.branchId || normalizeLookupText(row.branchName || '') || 'main';
-            const groupKey = `${row.customerId || row.customerName}__${branchKey}__${row.productId || row.productName}__${normalizeLookupText(row.attributeLabel || '')}__${row.sizeLabel || ''}__${normalizeLookupText(row.quantityUnit || '')}__${roundMoneyValue(row.unitPrice || 0)}`;
-            const amount = (row.quantity || 0) * (row.unitPrice || 0);
+            const groupKey = `${row.customerId || row.customerName}__${branchKey}__${row.productId || row.productName}__${row.configurationId || 'default'}__${normalizeLookupText(row.attributeLabel || '')}__${row.sizeLabel || ''}__${normalizeLookupText(row.quantityUnit || '')}__${normalizeLookupText(row.billingUnit || '')}__${roundMoneyValue(row.unitPrice || 0)}`;
+            const amount = parseLooseMoneyValue(row.amount);
             if (!grouped.has(groupKey)) {
               grouped.set(groupKey, { ...row, sortIndex: index, amountSum: amount });
               return;
@@ -57336,8 +57579,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
             const current = grouped.get(groupKey);
             current.quantity += row.quantity || 0;
+            current.billingQuantity += row.billingQuantity || 0;
             current.amountSum += amount;
-            current.unitPrice = current.quantity > 0 ? current.amountSum / current.quantity : current.unitPrice;
             if (!current.quantityUnit && row.quantityUnit) current.quantityUnit = row.quantityUnit;
             if (row.note && !current.note) current.note = row.note;
             else if (row.note && current.note && !current.note.includes(row.note)) current.note = `${current.note}; ${row.note}`;
@@ -57345,7 +57588,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
           return Array.from(grouped.values())
             .sort(compareOrderRequestRowsByProduct)
-            .map(({ sortIndex, amountSum, ...row }) => row);
+            .map(({ sortIndex, amountSum, ...row }) => ({ ...row, amount: amountSum }));
         })();
 
         return {
@@ -57354,7 +57597,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           totalCustomers: new Set(requests.map(request => request.customer?.id || request.customerId).filter(Boolean)).size,
           totalLines: rows.length,
           totalGroupedLines: groupedRows.length,
-          totalAmount: rows.reduce((sum, row) => sum + ((row.quantity || 0) * (row.unitPrice || 0)), 0),
+          totalAmount: rows.reduce((sum, row) => sum + parseLooseMoneyValue(row.amount), 0),
           previewRows: groupedRows.slice(0, 12)
         };
       });
@@ -57363,7 +57606,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     totalOrders: filteredRequests.length,
     totalCustomers: new Set(filteredRequests.map((request) => request.customer?.id || request.customerId).filter(Boolean)).size,
     totalLines: mergedRequestSheetRows.length,
-    totalAmount: requestSheetRows.reduce((sum, row) => sum + ((row.quantity || 0) * (row.unitPrice || 0)), 0)
+    totalAmount: requestSheetRows.reduce((sum, row) => sum + parseLooseMoneyValue(row.amount), 0)
   }), [filteredRequests, mergedRequestSheetRows, requestSheetRows]);
   const currentDayGroupQuantitySummary = useMemo(() => {
     const groupMap = new Map();
@@ -57478,12 +57721,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
 
     nonBlankItems.forEach(item => {
-      const quantity = parseFloat(item.quantity) || 0;
-      const unitPrice = parseLooseMoneyValue(item.unitPrice);
+      const billing = getTransactionBillingPresentation(item);
       acc.totalLines += 1;
       if (String(item.weightKg || '').trim() !== '') acc.totalSizedLines += 1;
-      acc.totalQuantity += quantity;
-      acc.totalAmount += quantity * unitPrice;
+      acc.totalQuantity += billing.actualQuantity;
+      acc.totalAmount += billing.amount;
     });
     return acc;
   }, { totalCustomers: 0, totalLines: 0, totalSizedLines: 0, totalQuantity: 0, totalAmount: 0 }), [requestDrafts]);
@@ -57511,10 +57753,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     unit: item.quantityUnit || item.unit,
     price: item.unitPrice
   });
-  const selectedQuickProductIds = useMemo(
-    () => new Set((primaryDraft?.items || []).map((item) => item?.productId || '').filter(Boolean)),
-    [primaryDraft?.items]
-  );
   const selectedQuickVariantKeys = useMemo(
     () => new Set((primaryDraft?.items || []).filter(item => item?.productId).map(getDraftItemVariantKey)),
     [primaryDraft?.items]
@@ -57531,40 +57769,52 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       .map(productId => productLookup.get(productId))
       .filter(Boolean);
   }, [activeProducts, primaryDraft?.branchId, primarySelectedCustomer, productLookup]);
-  const manualFixedProductIdSet = useMemo(
-    () => new Set(manualFixedProductOptions.map(product => product.id)),
-    [manualFixedProductOptions]
-  );
   const primaryProductConfigSource = useMemo(
     () => getCustomerBranchProductConfigSource(primarySelectedCustomer, primaryDraft?.branchId || '', activeProducts),
     [activeProducts, primaryDraft?.branchId, primarySelectedCustomer]
   );
   const manualFixedProductVariantOptions = useMemo(() => manualFixedProductOptions.flatMap(product => {
     const variants = getCustomerProductVariants(primaryProductConfigSource, product);
-    return variants.map((variant) => ({
-      product,
-      variant,
-      key: buildOrderRequestVariantKey(product.id, variant)
-    }));
+    return variants.map((variant) => {
+      const configuration = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product, {
+        variant,
+        variantId: variant.id || '',
+        sizeLabel: variant.size || '',
+        attributeLabel: variant.attributeLabel || '',
+      });
+      return {
+        product,
+        variant,
+        key: buildOrderRequestVariantKey(product.id, variant),
+        selectionKey: buildOrderRequestVariantKey(product.id, {
+          attributeLabel: configuration.attributeLabel,
+          size: configuration.sizeLabel,
+          unit: resolveCustomerProductActualUnit(configuration, product),
+          price: configuration.unitPrice,
+        }),
+      };
+    });
   }), [manualFixedProductOptions, primaryProductConfigSource]);
   const manualExtraProductPickerKey = primaryDraft ? `manual-extra-products:${primaryDraft.localId}` : '';
   const isManualExtraProductPickerOpen = Boolean(manualExtraProductPickerKey) && openDraftPicker === manualExtraProductPickerKey;
   const quickProductSearchKeyword = normalizeLookupText(quickProductSearch || '');
-  const manualExtraProductOptions = useMemo(() => {
-    const sourceProducts = activeProducts.filter(product => {
+  const manualExtraProductVariantOptions = useMemo(() => {
+    const sourceVariants = manualFixedProductVariantOptions.filter(({ product, variant, selectionKey }) => {
       if (quickProductSearchKeyword) {
-        return productMatchesLookup(product, quickProductSearchKeyword);
+        return productMatchesLookup(product, quickProductSearchKeyword)
+          || [variant.size, variant.attributeLabel, variant.unit]
+            .some(value => normalizeLookupText(value || '').includes(quickProductSearchKeyword));
       }
-      return !manualFixedProductIdSet.has(product.id);
+      return !selectedQuickVariantKeys.has(selectionKey);
     });
-    return sourceProducts
+    return sourceVariants
       .sort((a, b) => {
-        const selectedDiff = Number(selectedQuickProductIds.has(b.id)) - Number(selectedQuickProductIds.has(a.id));
+        const selectedDiff = Number(selectedQuickVariantKeys.has(b.selectionKey)) - Number(selectedQuickVariantKeys.has(a.selectionKey));
         if (selectedDiff !== 0) return selectedDiff;
-        return (a.name || '').localeCompare(b.name || '', 'vi');
+        return (a.product?.name || '').localeCompare(b.product?.name || '', 'vi');
       })
       .slice(0, quickProductSearchKeyword ? 80 : 16);
-  }, [activeProducts, manualFixedProductIdSet, quickProductSearchKeyword, selectedQuickProductIds]);
+  }, [manualFixedProductVariantOptions, quickProductSearchKeyword, selectedQuickVariantKeys]);
   const manualCustomerPickerKey = primaryDraft ? `customer:${primaryDraft.localId}` : '';
   const isManualCustomerPickerOpen = Boolean(manualCustomerPickerKey) && openDraftPicker === manualCustomerPickerKey;
   const manualCustomerSearchKeyword = normalizeLookupText(primaryDraft?.customerSearch || '');
@@ -57601,16 +57851,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         quantityUnit: item.quantityUnit || defaultQuantityUnit,
         pricingUnit: item.pricingUnit || item.defaultUnit || item.quantityUnit || defaultQuantityUnit,
         inputUnitTouched: true,
-        unitPrice: item.unitPrice ?? ''
+        unitPrice: item.unitPrice ?? '',
+        configurationId: item.configurationId || '',
+        actualQuantity: item.actualQuantity ?? item.quantity ?? '',
+        actualUnit: item.actualUnit || item.actualQuantityUnit || item.quantityUnit || '',
+        billingQuantity: item.billingQuantity ?? item.pricingQuantity ?? '',
+        billingUnit: item.billingUnit || item.pricingUnit || '',
+        amount: item.amount ?? item.pricingAmount ?? item.lineTotal ?? '',
+        billingSnapshotVersion: item.billingSnapshotVersion || (item.pricingUnit && item.unitPrice ? 1 : 0),
+        billingSnapshotSource: item.billingSnapshotSource || (item.pricingUnit && item.unitPrice ? 'legacy_order_request' : '')
       }))
     });
   };
 
   const calculateRequestAmount = (request = {}) => {
     const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
-    return requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
-      item.lineTotal ?? ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0))
-    ), 0);
+    return requestItems.reduce((sum, item) => sum + getTransactionBillingPresentation(item).amount, 0);
   };
   const editableCurrentDayRows = useMemo(() => filteredRequests.flatMap((request) => {
     const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
@@ -57627,6 +57883,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       const rowWarehouseStatus = orderRequestWarehouseStatusMaps.byRowKey.get(`${request.id}_${itemIndex}`) || null;
       const requestWarehouseStatus = orderRequestWarehouseStatusMaps.byRequestId.get(request.id) || null;
       const customerPortalApprovalState = getCustomerPortalApprovalState(request);
+      const billing = getTransactionBillingPresentation(item);
       return {
         rowKey: `${request.id}_${itemIndex}`,
         requestId: request.id,
@@ -57647,10 +57904,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         productGroupName,
         attributeLabel,
         sizeLabel: `${item.sizeLabel ?? item.weightKg ?? ''}`.trim(),
-        quantity: item.quantity ?? '',
-        quantityUnit: item.quantityUnit || defaultQuantityUnit,
-        pricingUnit: item.pricingUnit || item.defaultUnit || item.quantityUnit || defaultQuantityUnit,
-        unitPrice: item.unitPrice ?? '',
+        configurationId: item.configurationId || '',
+        quantity: billing.actualQuantity,
+        quantityUnit: billing.actualUnit || defaultQuantityUnit,
+        actualQuantity: billing.actualQuantity,
+        actualUnit: billing.actualUnit || defaultQuantityUnit,
+        billingQuantity: billing.billingQuantity,
+        billingUnit: billing.billingUnit,
+        pricingQuantity: billing.billingQuantity,
+        pricingUnit: billing.billingUnit,
+        unitPrice: billing.unitPrice,
+        amount: billing.amount,
         depositAmount: parseLooseMoneyValue(request.upfrontPayment ?? request.depositAmount ?? request.prepaidAmount ?? 0),
         note: `${request.note || item.note || ''}`.trim(),
         requestDateKey: request.requestDateKey || request.date || '',
@@ -57687,7 +57951,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       current.rows.push(row);
       if (row.requestId) current.requestIds.add(row.requestId);
       if (row.customerId) current.customerIds.add(row.customerId);
-      current.totalAmount += (parseLooseQuantityValue(row.quantity) || 0) * (parseLooseMoneyValue(row.unitPrice) || 0);
+      current.totalAmount += parseLooseMoneyValue(row.amount);
     });
 
     return Array.from(grouped.values())
@@ -57763,9 +58027,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           productGroupName: row.productGroupName || '',
           attributeLabel: row.attributeLabel || '',
           sizeLabel: row.sizeLabel || '',
+          configurationId: row.configurationId || '',
           quantity: parseLooseQuantityValue(row.quantity),
           quantityUnit: row.quantityUnit || '',
+          billingQuantity: parseLooseQuantityValue(row.billingQuantity),
+          billingUnit: row.billingUnit || row.pricingUnit || '',
           unitPrice: parseLooseMoneyValue(row.unitPrice),
+          amount: parseLooseMoneyValue(row.amount),
           note: row.note || '',
           date: row.requestDateKey || '',
           requestSortTime: row.requestSortTime || 0,
@@ -57773,8 +58041,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           shareSortIndex: index
         };
         const branchKey = normalizedRow.branchId || normalizeLookupText(normalizedRow.branchName || '') || 'main';
-        const groupKey = `${normalizedRow.customerId || normalizedRow.customerName}__${branchKey}__${normalizedRow.productId || normalizedRow.productName}__${normalizeLookupText(normalizedRow.attributeLabel || '')}__${normalizedRow.sizeLabel || ''}__${normalizeLookupText(normalizedRow.quantityUnit || '')}__${roundMoneyValue(normalizedRow.unitPrice || 0)}`;
-        const amount = (normalizedRow.quantity || 0) * (normalizedRow.unitPrice || 0);
+        const groupKey = `${normalizedRow.customerId || normalizedRow.customerName}__${branchKey}__${normalizedRow.productId || normalizedRow.productName}__${normalizedRow.configurationId || 'default'}__${normalizeLookupText(normalizedRow.attributeLabel || '')}__${normalizedRow.sizeLabel || ''}__${normalizeLookupText(normalizedRow.quantityUnit || '')}__${normalizeLookupText(normalizedRow.billingUnit || '')}__${roundMoneyValue(normalizedRow.unitPrice || 0)}`;
+        const amount = normalizedRow.amount;
         if (!grouped.has(groupKey)) {
           grouped.set(groupKey, {
             ...normalizedRow,
@@ -57786,8 +58054,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
         const current = grouped.get(groupKey);
         current.quantity += normalizedRow.quantity || 0;
+        current.billingQuantity += normalizedRow.billingQuantity || 0;
         current.amountSum += amount;
-        current.unitPrice = current.quantity > 0 ? current.amountSum / current.quantity : current.unitPrice;
         if (!current.quantityUnit && normalizedRow.quantityUnit) current.quantityUnit = normalizedRow.quantityUnit;
         if (!current.date && normalizedRow.date) current.date = normalizedRow.date;
         if (normalizedRow.note && !current.note) current.note = normalizedRow.note;
@@ -57796,7 +58064,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     return Array.from(grouped.values())
       .sort(compareOrderRequestRowsByProduct)
-      .map(({ sortIndex, amountSum, ...row }) => row);
+      .map(({ sortIndex, amountSum, ...row }) => ({ ...row, amount: amountSum }));
   }, [editableCurrentDayRows]);
 
   const groupedShareableRequestSheetCustomerGroups = useMemo(() => {
@@ -57929,7 +58197,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       quantity: row.quantity ?? '',
       quantityUnit: row.quantityUnit || '',
       pricingUnit: row.pricingUnit || row.quantityUnit || '',
-      unitPrice: row.unitPrice ?? ''
+      unitPrice: row.unitPrice ?? '',
+      configurationId: row.configurationId || row.item?.configurationId || '',
+      actualQuantity: row.actualQuantity ?? row.quantity ?? '',
+      actualUnit: row.actualUnit || row.quantityUnit || '',
+      actualWeightKg: row.actualWeightKg ?? row.weightKg ?? 0,
+      billingQuantity: row.billingQuantity ?? row.pricingQuantity ?? 0,
+      billingUnit: row.billingUnit || row.pricingUnit || '',
+      amount: row.amount ?? row.pricingAmount ?? row.lineTotal ?? 0,
+      billingSnapshotVersion: row.billingSnapshotVersion || 0,
+      billingSnapshotSource: row.billingSnapshotSource || ''
     });
     setRequestStatus('');
     setSheetStatus('');
@@ -57947,17 +58224,43 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const attributeLabel = `${inlineEditingDraft.attributeLabel || ''}`.trim();
     const branchRef = getOrderRequestBranchRef(customer, request, row);
     const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
-    const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, inlineEditingDraft.quantityUnit);
-    const pricingUnit = getCustomerProductPricingUnit(configSource, product, inlineEditingDraft.pricingUnit || 'Con');
-    const unitPrice = parseLooseMoneyValue(inlineEditingDraft.unitPrice);
-    const pricingResult = calculatePricingAmount({
-      pricingUnit,
-      inputUnit: quantityUnit,
-      inputQuantity: quantity,
-      unitPrice,
+    const currentConfiguration = resolveCustomerProductBillingConfiguration(configSource, product, {
+      configurationId: inlineEditingDraft.configurationId,
+      sizeLabel,
+      attributeLabel,
+    });
+    const sourceItem = (request.items || [])[row.itemIndex] || row.item || row;
+    const existingSnapshot = resolveTransactionBillingSnapshot({
+      record: { ...sourceItem, ...inlineEditingDraft },
+      configuration: currentConfiguration,
+      product,
+    });
+    const billingConfiguration = existingSnapshot.hasFrozenPricing
+      ? {
+          ...currentConfiguration,
+          configurationId: existingSnapshot.configurationId || currentConfiguration.configurationId,
+          billingUnit: existingSnapshot.billingUnit,
+          pricingUnit: existingSnapshot.billingUnit,
+          unitPrice: existingSnapshot.unitPrice,
+          source: 'order_request_snapshot',
+        }
+      : currentConfiguration;
+    const actualUnit = existingSnapshot.hasFrozenPricing
+      ? existingSnapshot.actualUnit
+      : resolveCustomerProductActualUnit(billingConfiguration, product);
+    const snapshot = buildCustomerProductBillingSnapshot({
+      configuration: billingConfiguration,
+      product,
+      productId: product?.id || '',
+      productName: product?.name || '',
+      sizeLabel,
+      attributeLabel,
+      actualQuantity: quantity,
+      actualUnit,
+      actualWeightKg: existingSnapshot.actualWeightKg || 0,
     });
 
-    if (!customer || !product || quantity <= 0 || unitPrice <= 0) {
+    if (!customer || !product || quantity <= 0 || billingConfiguration.unitPrice <= 0 || (!snapshot.billingSnapshotValid && !snapshot.pricingPendingActual)) {
       setRequestStatus('Vui long chon dung khach hang, hang hoa, so luong va don gia hop le truoc khi luu.');
       return;
     }
@@ -57976,14 +58279,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       attributeLabel,
       productAttribute: attributeLabel,
       sizeLabel,
-      weightKg: sizeLabel,
-      quantity,
-      quantityUnit,
-      pricingUnit,
-      unitPrice,
-      pricingQuantity: pricingResult.quantity,
-      pricingPendingActual: pricingResult.isPending,
-      lineTotal: pricingResult.amount
+      ...snapshot,
+      unit: snapshot.actualUnit,
+      price: snapshot.unitPrice,
+      total: snapshot.amount,
+      weightKg: snapshot.actualWeightKg,
     };
 
     const normalizedRequest = {
@@ -58000,7 +58300,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       items: requestItems,
       totalQuantity: requestItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0),
       totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
-        item.lineTotal ?? ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0))
+        item.amount ?? item.pricingAmount ?? item.lineTotal ?? ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0))
       ), 0)
     };
 
@@ -58012,23 +58312,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     }
-  };
-
-  const handleInlineEditingUnitChange = (row, nextUnit) => {
-    setInlineEditingDraft((previous) => {
-      const product = productLookup.get(previous.productId);
-      const customer = customerLookup.get(previous.customerId);
-      if (!product) return { ...previous, quantityUnit: normalizeProductPricingUnit(nextUnit) };
-      const configSource = getCustomerBranchProductConfigSource(customer, row?.branchId || '', activeProducts);
-      const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
-      const pricingUnit = getCustomerProductPricingUnit(configSource, product, previous.pricingUnit || 'Con');
-      return {
-        ...previous,
-        quantityUnit,
-        pricingUnit,
-        unitPrice: previous.unitPrice || getCustomerProductPrice(configSource, product, pricingUnit) || ''
-      };
-    });
   };
 
   const deleteInlineEditRow = async (row) => {
@@ -58063,7 +58346,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       items: requestItems,
       totalQuantity: requestItems.reduce((sum, item) => sum + parseLooseQuantityValue(item.quantity), 0),
       totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
-        item.lineTotal ?? (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
+        item.amount ?? item.pricingAmount ?? item.lineTotal ?? (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
       ), 0)
     };
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
@@ -58094,36 +58377,25 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }));
   };
 
-  const loadRememberedInputUnitForDraftItem = async ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
-    if (!localId || !itemLocalId || !customerId || !productId || typeof onGetCustomerProductPreference !== 'function') return;
-    const tokenKey = `${localId}::${itemLocalId}`;
-    const token = `${customerId}::${productId}::${Date.now()}::${Math.random()}`;
-    smartPreferenceLoadTokensRef.current.set(tokenKey, token);
-    try {
-      const preference = await onGetCustomerProductPreference({ customerId, productId });
-      if (smartPreferenceLoadTokensRef.current.get(tokenKey) !== token) return;
-      const customer = customerLookup.get(customerId);
-      const product = productLookup.get(productId);
-      if (!customer || !product) return;
-      const configSource = getCustomerBranchProductConfigSource(customer, branchId, activeProducts);
-      const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
-      const rememberedUnit = resolveRememberedInputUnit({
-        preference,
-        availableUnits: getCustomerProductUnitOptions(configSource, product, pricingUnit),
-        pricingUnit,
-        product,
-        fallback: pricingUnit,
-      });
-      updateDraftItem(localId, itemLocalId, (item) => {
-        if (item.productId !== productId || item.inputUnitTouched) return {};
-        return {
-          quantityUnit: rememberedUnit,
-          rememberedDefaultInputUnit: preference?.defaultInputUnit || '',
-        };
-      });
-    } catch (error) {
-      console.warn('Không tải được gợi ý đơn vị nhập của khách; app giữ đơn vị tính giá an toàn.', error);
-    }
+  const loadRememberedInputUnitForDraftItem = ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
+    if (!localId || !itemLocalId || !customerId || !productId) return;
+    const localCustomer = customerLookup.get(customerId);
+    const localProduct = productLookup.get(productId);
+    if (!localCustomer || !localProduct) return;
+    const localConfigSource = getCustomerBranchProductConfigSource(localCustomer, branchId, activeProducts);
+    const localConfiguration = resolveCustomerProductBillingConfiguration(localConfigSource, localProduct);
+    const fixedActualUnit = resolveCustomerProductActualUnit(localConfiguration, localProduct);
+    updateDraftItem(localId, itemLocalId, (item) => {
+      if (item.productId !== productId || item.inputUnitTouched) return {};
+      return {
+        quantityUnit: fixedActualUnit,
+        actualUnit: fixedActualUnit,
+        pricingUnit: localConfiguration.billingUnit,
+        billingUnit: localConfiguration.billingUnit,
+        configurationId: localConfiguration.configurationId || '',
+        unitPrice: localConfiguration.unitPrice || item.unitPrice || '',
+      };
+    });
   };
 
   const handleCustomerChange = (localId, customerId) => {
@@ -58210,32 +58482,46 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setRequestError('');
   };
 
-  const handleProductChange = (localId, itemLocalId, productId) => {
+  const handleProductChange = (localId, itemLocalId, productId, variantConfig = null) => {
     const selectedProduct = productLookup.get(productId);
     const attributeOptions = getProductAttributes(selectedProduct);
     const targetDraft = requestDrafts.find(draft => draft.localId === localId);
     const selectedCustomer = targetDraft?.customerId ? customerLookup.get(targetDraft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, targetDraft?.branchId || '', activeProducts);
-    const configuredAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
+    const configuration = selectedProduct
+      ? resolveCustomerProductBillingConfiguration(configSource, selectedProduct, {
+          variant: variantConfig,
+          variantId: variantConfig?.id || '',
+          sizeLabel: variantConfig?.size || variantConfig?.sizeLabel || '',
+          attributeLabel: variantConfig?.attributeLabel || '',
+        })
+      : null;
+    const configuredAttribute = `${configuration?.attributeLabel || (selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '') || ''}`.trim();
+    const configuredSize = `${configuration?.sizeLabel || (selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '') || ''}`.trim();
     updateDraftItem(localId, itemLocalId, (item) => {
-      const pricingUnit = selectedProduct
-        ? getCustomerProductPricingUnit(configSource, selectedProduct, 'Con')
-        : '';
+      const pricingUnit = configuration?.billingUnit || '';
       const quantityUnit = selectedProduct
-        ? resolveDraftItemQuantityUnit(configSource, selectedProduct, pricingUnit)
+        ? resolveCustomerProductActualUnit(configuration, selectedProduct)
         : item.quantityUnit || defaultQuantityUnit;
       return {
       productId,
       productSearch: selectedProduct?.name || '',
-      attributeLabel: attributeOptions.includes(configuredAttribute)
-        ? configuredAttribute
-        : (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
-      weightKg: selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '',
+      attributeLabel: configuredAttribute
+        || (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
+      weightKg: configuredSize,
       quantityUnit,
       pricingUnit,
+      configurationId: configuration?.configurationId || '',
       inputUnitTouched: false,
       rememberedDefaultInputUnit: '',
-      unitPrice: selectedProduct ? getCustomerProductPrice(configSource, selectedProduct, pricingUnit) : ''
+      unitPrice: configuration?.unitPrice || '',
+      actualQuantity: '',
+      actualUnit: quantityUnit,
+      billingQuantity: '',
+      billingUnit: pricingUnit,
+      amount: '',
+      billingSnapshotVersion: 0,
+      billingSnapshotSource: ''
     };
     });
     if (selectedCustomer && selectedProduct) {
@@ -58255,29 +58541,38 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     if (!selectedProduct) return createDraftItem(existingItem);
     const selectedCustomer = primaryDraft?.customerId ? customerLookup.get(primaryDraft.customerId) : null;
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, primaryDraft?.branchId || '', activeProducts);
+    const configuration = resolveCustomerProductBillingConfiguration(configSource, selectedProduct, {
+      variant: variantConfig,
+      variantId: variantConfig?.id || '',
+      sizeLabel: variantConfig?.size || variantConfig?.sizeLabel || '',
+      attributeLabel: variantConfig?.attributeLabel || '',
+    });
     const attributeOptions = getProductAttributes(selectedProduct);
-    const configuredAttribute = `${variantConfig?.attributeLabel || getCustomerProductAttribute(configSource, selectedProduct) || ''}`.trim();
-    const configuredSize = `${variantConfig?.size || getCustomerProductSize(configSource, selectedProduct) || ''}`.trim();
-    const pricingUnit = normalizeProductPricingUnit(
-      variantConfig?.pricingUnit || variantConfig?.unit || getCustomerProductPricingUnit(configSource, selectedProduct, 'Con')
-    );
-    const quantityUnit = resolveDraftItemQuantityUnit(configSource, selectedProduct, existingItem.quantityUnit || pricingUnit);
-    const configuredPrice = parseLooseMoneyValue(variantConfig?.price) > 0
-      ? parseLooseMoneyValue(variantConfig.price)
-      : getCustomerProductPrice(configSource, selectedProduct, pricingUnit);
+    const configuredAttribute = `${configuration.attributeLabel || getCustomerProductAttribute(configSource, selectedProduct) || ''}`.trim();
+    const configuredSize = `${configuration.sizeLabel || getCustomerProductSize(configSource, selectedProduct) || ''}`.trim();
+    const pricingUnit = configuration.billingUnit;
+    const quantityUnit = resolveCustomerProductActualUnit(configuration, selectedProduct);
+    const configuredPrice = configuration.unitPrice;
     return createDraftItem({
       ...existingItem,
       localItemId: existingItem.localItemId,
       productId: selectedProduct.id,
       productSearch: selectedProduct.name || existingItem.productSearch || '',
-      attributeLabel: attributeOptions.includes(configuredAttribute)
-        ? configuredAttribute
-        : (attributeOptions.includes(existingItem.attributeLabel) ? existingItem.attributeLabel : ''),
+      attributeLabel: configuredAttribute
+        || (attributeOptions.includes(existingItem.attributeLabel) ? existingItem.attributeLabel : ''),
       weightKg: configuredSize || existingItem.weightKg,
       quantityUnit,
       pricingUnit,
+      configurationId: configuration.configurationId,
       inputUnitTouched: Boolean(existingItem.inputUnitTouched),
-      unitPrice: configuredPrice > 0 ? configuredPrice : (parseLooseMoneyValue(existingItem.unitPrice) > 0 ? existingItem.unitPrice : '')
+      unitPrice: configuredPrice > 0 ? configuredPrice : (parseLooseMoneyValue(existingItem.unitPrice) > 0 ? existingItem.unitPrice : ''),
+      actualQuantity: '',
+      actualUnit: quantityUnit,
+      billingQuantity: '',
+      billingUnit: pricingUnit,
+      amount: '',
+      billingSnapshotVersion: 0,
+      billingSnapshotSource: ''
     });
   };
 
@@ -58392,28 +58687,36 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       (item) => item?.name || '',
       (item) => [item?.phone, item?.address, item?.group, item?.customerGroup]
     );
-    const productMatch = findBestEntityMatch(
+    const candidateProductMatch = findBestEntityMatch(
       [productKeyword, transcript],
       activeProducts,
       (item) => item?.name || '',
       (item) => [item?.category, item?.unit, item?.barcode]
     );
-    const sizeLabel = `${payload?.size_label || payload?.sizeLabel || payload?.weight_label || payload?.weightLabel || ''}`.trim();
+    const requestedSizeLabel = `${payload?.size_label || payload?.sizeLabel || payload?.weight_label || payload?.weightLabel || ''}`.trim();
     const quantityValue = parseLooseQuantityValue(payload?.quantity_value ?? payload?.quantityValue ?? payload?.quantity ?? payload?.qty);
-    const quantityUnit = resolveQuantityUnitOption(payload?.quantity_unit || payload?.quantityUnit || '', productMatch?.unit || '');
-    const unitPrice = parseLooseMoneyValue(payload?.unit_price_vnd ?? payload?.unitPriceVnd ?? payload?.unit_price ?? payload?.unitPrice ?? payload?.price);
     const noteValue = capitalizeFirstPreservingSpacing(payload?.note || '').trim();
     const effectiveCustomer = customerMatch || (targetDraft?.customerId ? customerLookup.get(targetDraft.customerId) : null);
     const effectiveBranchId = customerMatch
       ? getDefaultOrderRequestBranchRef(customerMatch).branchId
       : (targetDraft?.branchId || '');
     const effectiveConfigSource = getCustomerBranchProductConfigSource(effectiveCustomer, effectiveBranchId, activeProducts);
-    const pricingUnit = productMatch
-      ? getCustomerProductPricingUnit(effectiveConfigSource, productMatch, quantityUnit || 'Con')
-      : normalizeProductPricingUnit(quantityUnit);
-    const resolvedUnitPrice = unitPrice > 0
-      ? unitPrice
-      : (productMatch ? getCustomerProductPrice(effectiveConfigSource, productMatch, pricingUnit) : 0);
+    const fixedVoiceProducts = getOrderRequestFixedProducts(effectiveCustomer, effectiveBranchId);
+    const productMatch = candidateProductMatch && fixedVoiceProducts.some(product => product.id === candidateProductMatch.id)
+      ? candidateProductMatch
+      : findBestEntityMatch(
+        [productKeyword, transcript],
+        fixedVoiceProducts,
+        (item) => item?.name || '',
+        (item) => [item?.category, item?.unit, item?.barcode]
+      );
+    const configuration = productMatch
+      ? resolveCustomerProductBillingConfiguration(effectiveConfigSource, productMatch, { sizeLabel: requestedSizeLabel })
+      : null;
+    const quantityUnit = configuration ? resolveCustomerProductActualUnit(configuration, productMatch) : '';
+    const pricingUnit = configuration?.billingUnit || '';
+    const resolvedUnitPrice = configuration?.unitPrice || 0;
+    const sizeLabel = configuration?.sizeLabel || requestedSizeLabel;
     const resolvedAttribute = productMatch ? getCustomerProductAttribute(effectiveConfigSource, productMatch) : '';
 
     if (customerMatch) {
@@ -58430,8 +58733,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       quantity: quantityValue > 0 ? quantityValue : item.quantity,
       quantityUnit: quantityUnit || item.quantityUnit || '',
       pricingUnit: pricingUnit || item.pricingUnit || '',
+      configurationId: configuration?.configurationId || '',
       inputUnitTouched: Boolean(quantityUnit),
-      unitPrice: resolvedUnitPrice > 0 ? resolvedUnitPrice : item.unitPrice
+      unitPrice: resolvedUnitPrice > 0 ? resolvedUnitPrice : item.unitPrice,
+      actualUnit: quantityUnit || item.actualUnit || '',
+      billingUnit: pricingUnit || item.billingUnit || '',
+      billingSnapshotVersion: 0,
+      billingSnapshotSource: ''
     }));
 
     if (noteValue) {
@@ -58461,7 +58769,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setOrderVoiceStatus('AI chua xu ly duoc ghi am nay. Ban vui long kiem tra lai truoc khi luu.');
   };
 
-  const extractOrderVoiceItems = (payload = {}) => {
+  const extractOrderVoiceItems = (payload = {}, availableProductOptions = []) => {
     const transcript = `${payload?.transcript || ''}`.trim();
     const rawItems = Array.isArray(payload?.items) && payload.items.length > 0
       ? payload.items
@@ -58478,7 +58786,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const productKeyword = `${rawItem?.product_name || rawItem?.productName || ''}`.trim() || transcript;
         const productMatch = findBestEntityMatch(
           [productKeyword, transcript],
-          activeProducts,
+          availableProductOptions,
           (item) => item?.name || '',
           (item) => [item?.category, item?.unit, item?.barcode]
         );
@@ -58515,7 +58823,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ? getDefaultOrderRequestBranchRef(customerMatch).branchId
       : (targetDraft?.branchId || '');
     const effectiveConfigSource = getCustomerBranchProductConfigSource(effectiveCustomer, effectiveBranchId, activeProducts);
-    const extractedItems = extractOrderVoiceItems(payload);
+    const fixedVoiceProducts = getOrderRequestFixedProducts(effectiveCustomer, effectiveBranchId);
+    const extractedItems = extractOrderVoiceItems(payload, fixedVoiceProducts);
     const noteValue = capitalizeFirstPreservingSpacing(payload?.note || '').trim();
 
     if (customerMatch) {
@@ -58530,21 +58839,24 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       note: noteValue || draft.note,
       items: extractedItems.length > 0
         ? extractedItems.map((item) => {
-          const pricingUnit = item.productMatch
-            ? getCustomerProductPricingUnit(effectiveConfigSource, item.productMatch, item.quantityUnit || 'Con')
-            : normalizeProductPricingUnit(item.quantityUnit);
+          const configuration = item.productMatch
+            ? resolveCustomerProductBillingConfiguration(effectiveConfigSource, item.productMatch, { sizeLabel: item.sizeLabel })
+            : null;
+          const pricingUnit = configuration?.billingUnit || '';
+          const actualUnit = configuration ? resolveCustomerProductActualUnit(configuration, item.productMatch) : '';
           return createDraftItem({
             productId: item.productMatch?.id || '',
             productSearch: item.productMatch?.name || item.productName || '',
             attributeLabel: item.productMatch ? getCustomerProductAttribute(effectiveConfigSource, item.productMatch) : '',
-            weightKg: item.sizeLabel || (item.productMatch ? getCustomerProductSize(effectiveConfigSource, item.productMatch) : ''),
+            weightKg: configuration?.sizeLabel || item.sizeLabel || '',
             quantity: item.quantityValue > 0 ? item.quantityValue : '',
-            quantityUnit: item.quantityUnit || defaultQuantityUnit,
+            quantityUnit: actualUnit,
             pricingUnit,
-            inputUnitTouched: Boolean(item.quantityUnit),
-            unitPrice: item.unitPrice > 0
-              ? item.unitPrice
-              : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch, pricingUnit) : '')
+            configurationId: configuration?.configurationId || '',
+            inputUnitTouched: false,
+            unitPrice: configuration?.unitPrice || '',
+            actualUnit,
+            billingUnit: pricingUnit
           });
         })
         : draft.items
@@ -58552,13 +58864,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     setRequestError('');
     const missingLines = extractedItems.filter((item) => {
-      const pricingUnit = item.productMatch
-        ? getCustomerProductPricingUnit(effectiveConfigSource, item.productMatch, item.quantityUnit || 'Con')
-        : normalizeProductPricingUnit(item.quantityUnit);
-      const resolvedUnitPrice = item.unitPrice > 0
-        ? item.unitPrice
-        : (item.productMatch ? getCustomerProductPrice(effectiveConfigSource, item.productMatch, pricingUnit) : 0);
-      return !item.productMatch || !item.sizeLabel || item.quantityValue <= 0 || !item.quantityUnit || resolvedUnitPrice <= 0;
+      const configuration = item.productMatch
+        ? resolveCustomerProductBillingConfiguration(effectiveConfigSource, item.productMatch, { sizeLabel: item.sizeLabel })
+        : null;
+      return !item.productMatch || item.quantityValue <= 0 || !configuration?.billingUnit || configuration?.unitPrice <= 0;
     });
     if (effectiveCustomer && extractedItems.length > 0 && missingLines.length === 0) {
       setOrderVoiceStatus(`Đã điền ${effectiveCustomer.name} với ${extractedItems.length} mặt hàng.`);
@@ -59383,29 +59692,71 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const sizeLabel = `${item.weightKg || ''}`.trim();
         const attributeLabel = `${item.attributeLabel || ''}`.trim();
         const quantity = parseLooseQuantityValue(item.quantity);
-        const unitPrice = parseLooseMoneyValue(item.unitPrice);
+        const savedUnitPrice = parseLooseMoneyValue(item.unitPrice);
 
-        if (!product || quantity <= 0 || unitPrice <= 0) {
+        if (!product || quantity <= 0) {
           invalidItemIndexes.push(itemIndex + 1);
           return;
         }
 
         const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
-        const quantityUnit = resolveDraftItemQuantityUnit(
-          configSource,
-          product,
-          item.quantityUnit
+        const fixedProductIds = new Set(
+          branchRef.branchId
+            ? getCustomerBranchFixedProductIds(customer, branchRef.branchId, activeProducts)
+            : getCustomerFixedProductIds(customer, activeProducts)
         );
-        const pricingUnit = getCustomerProductPricingUnit(configSource, product, item.pricingUnit || 'Con');
-        const pricingResult = calculatePricingAmount({
-          pricingUnit,
-          inputUnit: quantityUnit,
-          inputQuantity: quantity,
-          unitPrice,
+        const configuredBilling = resolveCustomerProductBillingConfiguration(configSource, product, {
+          configurationId: item.configurationId || '',
+          sizeLabel,
+          attributeLabel,
         });
+        const hasSavedPricingSnapshot = Boolean(
+          item.billingSnapshotVersion
+          || ((item.billingUnit || item.pricingUnit) && savedUnitPrice > 0)
+        );
+        if ((!fixedProductIds.has(product.id) && !hasSavedPricingSnapshot) || (!configuredBilling.isValid && !hasSavedPricingSnapshot)) {
+          invalidItemIndexes.push(itemIndex + 1);
+          return;
+        }
+        const billingConfiguration = hasSavedPricingSnapshot
+          ? {
+              ...configuredBilling,
+              configurationId: item.configurationId || configuredBilling.configurationId,
+              billingUnit: normalizeProductPricingUnit(item.billingUnit || item.pricingUnit || item.quantityUnit),
+              pricingUnit: normalizeProductPricingUnit(item.billingUnit || item.pricingUnit || item.quantityUnit),
+              unitPrice: savedUnitPrice,
+              source: item.billingSnapshotSource || 'order_request_snapshot',
+            }
+          : configuredBilling;
+        const billingUnit = billingConfiguration.billingUnit;
+        const quantityUnit = hasSavedPricingSnapshot
+          ? normalizeProductPricingUnit(item.actualUnit || item.quantityUnit || billingUnit)
+          : resolveCustomerProductActualUnit(configuredBilling, product);
+        const usesWeightPricing = isSameBillingUnit(billingUnit, 'Kg');
+        if (!billingUnit || !quantityUnit || (!usesWeightPricing && !isSameBillingUnit(quantityUnit, billingUnit))) {
+          invalidItemIndexes.push(itemIndex + 1);
+          return;
+        }
+        const billingSnapshot = buildCustomerProductBillingSnapshot({
+          configuration: billingConfiguration,
+          product,
+          productId: product.id,
+          productName: product.name,
+          sizeLabel,
+          attributeLabel,
+          actualQuantity: quantity,
+          actualUnit: quantityUnit,
+          actualWeightKg: usesWeightPricing && isSameBillingUnit(quantityUnit, billingUnit) ? quantity : 0,
+          billingQuantity: isSameBillingUnit(quantityUnit, billingUnit) ? quantity : 0,
+          billingUnit,
+          unitPrice: billingConfiguration.unitPrice,
+        });
+        if (!billingSnapshot.billingSnapshotValid && !billingSnapshot.pricingPendingActual) {
+          invalidItemIndexes.push(itemIndex + 1);
+          return;
+        }
         normalizedItems.push({
           productId: product.id,
-          description: product.name || 'Hàng hóa',
           branchId: branchRef.branchId,
           branchName: branchRef.branchName,
           branchAddress: branchRef.branchAddress,
@@ -59415,14 +59766,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           attributeLabel,
           productAttribute: attributeLabel,
           sizeLabel,
-          weightKg: sizeLabel,
+          ...billingSnapshot,
+          description: product.name || 'Hàng hóa',
           quantity,
           quantityUnit,
-          pricingUnit,
-          unitPrice,
-          pricingQuantity: pricingResult.quantity,
-          pricingPendingActual: pricingResult.isPending,
-          lineTotal: pricingResult.amount
+          pricingUnit: billingSnapshot.billingUnit,
+          unitPrice: billingSnapshot.unitPrice,
+          pricingQuantity: billingSnapshot.billingQuantity,
+          pricingPendingActual: billingSnapshot.pricingPendingActual,
+          lineTotal: billingSnapshot.amount
         });
       });
 
@@ -59883,18 +60235,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         {isEditingRow ? (
                           <div className="space-y-2">
                             <input type="number" min="0" step="0.01" value={inlineEditingDraft.quantity} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, quantity: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Số lượng" />
-                            <select
-                              value={inlineEditingDraft.quantityUnit || ''}
-                              onChange={(e) => handleInlineEditingUnitChange(row, e.target.value)}
-                              className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500"
-                            >
-                              <option value="">Chọn đơn vị</option>
-                              {getCustomerProductUnitOptions(
-                                getCustomerBranchProductConfigSource(customerLookup.get(inlineEditingDraft.customerId), row.branchId || '', activeProducts),
-                                productLookup.get(inlineEditingDraft.productId),
-                                defaultQuantityUnit
-                              ).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                            </select>
+                            <div className="w-full min-w-0 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-2 text-center text-[11px] font-bold text-emerald-700">
+                              {inlineEditingDraft.actualUnit || inlineEditingDraft.quantityUnit || defaultQuantityUnit}
+                            </div>
                           </div>
                         ) : formatSheetQuantity(row.quantity, row.quantityUnit)}
                       </td>
@@ -59905,7 +60248,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
                         {isEditingRow ? (
-                          <input type="tel" value={formatInputCurrency(inlineEditingDraft.unitPrice)} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, unitPrice: parseInputCurrency(e.target.value) }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="0" />
+                          <div className="w-full min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-center text-[11px] font-bold text-slate-700">
+                            {formatCurrency(inlineEditingDraft.unitPrice)} / {inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || inlineEditingDraft.quantityUnit}
+                          </div>
                         ) : row.unitPrice ? formatCurrency(row.unitPrice) : ''}
                       </td>
                     </tr>
@@ -60101,8 +60446,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
                         {manualFixedProductVariantOptions.length > 0 ? (
                           <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-slate-100 bg-slate-50 p-2 sm:grid-cols-3">
-                            {manualFixedProductVariantOptions.map(({ product, variant, key }) => {
-                              const resolvedSelectionKey = getDraftItemVariantKey(buildQuickProductDraftItem(product.id, {}, variant));
+                            {manualFixedProductVariantOptions.map(({ product, variant, key, selectionKey: resolvedSelectionKey }) => {
                               const isActive = selectedQuickVariantKeys.has(resolvedSelectionKey);
                               const fixedPrice = parseLooseMoneyValue(variant.price) > 0 ? parseLooseMoneyValue(variant.price) : getCustomerProductPrice(primaryProductConfigSource, product);
                               const fixedSize = `${variant.size || ''}`.trim();
@@ -60150,24 +60494,32 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               </div>
                             </div>
                             <div className="max-h-56 overflow-y-auto p-2 space-y-1">
-                              {manualExtraProductOptions.map(product => {
-                                const isActive = selectedQuickProductIds.has(product.id);
-                                const selectionKey = `extra:${product.id}`;
+                              {manualExtraProductVariantOptions.map(({ product, variant, key, selectionKey }) => {
+                                const isActive = selectedQuickVariantKeys.has(selectionKey);
+                                const fixedPrice = parseLooseMoneyValue(variant.price) > 0
+                                  ? parseLooseMoneyValue(variant.price)
+                                  : getCustomerProductPrice(primaryProductConfigSource, product);
+                                const fixedSize = `${variant.size || ''}`.trim();
+                                const fixedAttribute = `${variant.attributeLabel || ''}`.trim();
+                                const variantLabel = [fixedSize ? `Size ${fixedSize}` : '', fixedAttribute]
+                                  .filter(Boolean)
+                                  .join(' • ');
                                 return (
                                   <OrderRequestSelectableProductCard
-                                    key={product.id}
+                                    key={`extra:${key}`}
                                     layout="list"
                                     selectionKey={selectionKey}
                                     productId={product.id}
                                     title={product.name}
-                                    subtitle={product.category || product.unit || 'Sản phẩm'}
+                                    subtitle={`${variantLabel || product.category || product.unit || 'Sản phẩm'}${fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}`}
+                                    variantConfig={variant}
                                     isSelected={isActive}
                                     isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
                                     onSelect={handleQuickProductCardSelect}
                                   />
                                 );
                               })}
-                              {manualExtraProductOptions.length === 0 && (
+                              {manualExtraProductVariantOptions.length === 0 && (
                                 <p className="px-2 py-3 text-center text-[11px] text-amber-600">
                                   {quickProductSearchKeyword ? 'Không tìm thấy sản phẩm phù hợp.' : 'Không còn sản phẩm khác để thêm.'}
                                 </p>
@@ -60408,29 +60760,67 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               <div className="space-y-0">
                           {(draft.items || []).map((item, itemIndex) => {
                             const selectedProduct = productLookup.get(item.productId) || null;
-                            const productAttributeOptions = getProductAttributes(selectedProduct);
-                            const hasProductAttributes = productAttributeOptions.length > 0;
                             const shouldShowCompactPriceInput = isCompactManualDetailStage
                               && selectedProduct
                               && !hasCustomerProductPrice(selectedCustomer, selectedProduct.id);
                             const productPickerKey = `product:${draft.localId}:${item.localItemId}`;
                             const isProductPickerOpen = openDraftPicker === productPickerKey;
                             const productSearchKeyword = normalizeLookupText(item.productSearch || '');
-                            const branchFixedProductIds = selectedCustomer && draft.branchId
-                              ? getCustomerBranchFixedProductIds(selectedCustomer, draft.branchId, activeProducts)
+                            const productConfigSource = getCustomerBranchProductConfigSource(
+                              selectedCustomer,
+                              draft.branchId || '',
+                              activeProducts
+                            );
+                            const branchFixedProductIds = selectedCustomer
+                              ? draft.branchId
+                                ? getCustomerBranchFixedProductIds(selectedCustomer, draft.branchId, activeProducts)
+                                : getCustomerFixedProductIds(selectedCustomer, activeProducts)
                               : [];
-                            const branchScopedProducts = branchFixedProductIds.length > 0
+                            const branchScopedProducts = selectedCustomer
                               ? activeProducts.filter(product => branchFixedProductIds.includes(product.id))
-                              : activeProducts;
-                            const filteredProducts = productSearchKeyword
-                              ? branchScopedProducts.filter(product => productMatchesLookup(product, productSearchKeyword))
-                              : branchScopedProducts;
+                              : [];
+                            const branchScopedProductVariants = branchScopedProducts.flatMap(product => (
+                              getCustomerProductVariants(productConfigSource, product).map(variant => ({
+                                product,
+                                variant,
+                                key: buildOrderRequestVariantKey(product.id, variant),
+                              }))
+                            ));
+                            const filteredProductVariants = productSearchKeyword
+                              ? branchScopedProductVariants.filter(({ product, variant }) => (
+                                  productMatchesLookup(product, productSearchKeyword)
+                                  || [variant.size, variant.attributeLabel, variant.unit]
+                                    .some(value => normalizeLookupText(value || '').includes(productSearchKeyword))
+                                ))
+                              : branchScopedProductVariants;
+                            const selectedConfiguration = selectedProduct
+                              ? resolveCustomerProductBillingConfiguration(productConfigSource, selectedProduct, {
+                                  configurationId: item.configurationId || '',
+                                  sizeLabel: item.weightKg || item.sizeLabel || '',
+                                  attributeLabel: item.attributeLabel || '',
+                                })
+                              : null;
+                            const hasFrozenItemConfiguration = Boolean(item.billingSnapshotVersion || item.billingSnapshotSource);
+                            const fixedAttributeLabel = `${hasFrozenItemConfiguration
+                              ? (item.attributeLabel || '')
+                              : (selectedConfiguration?.attributeLabel || item.attributeLabel || '')}`.trim();
+                            const fixedSizeLabel = `${hasFrozenItemConfiguration
+                              ? (item.sizeLabel || item.weightKg || '')
+                              : (selectedConfiguration?.sizeLabel || item.sizeLabel || item.weightKg || '')}`.trim();
+                            const hasFixedAttribute = Boolean(fixedAttributeLabel);
+                            const itemUnitOptions = item.billingSnapshotVersion
+                              ? [normalizeProductPricingUnit(item.actualUnit || item.quantityUnit)]
+                                  .filter(Boolean)
+                              : getDraftItemUnitOptions(draft, item);
+                            const fixedItemUnit = itemUnitOptions[0]
+                              || normalizeProductPricingUnit(item.quantityUnit)
+                              || '';
 
                             return (
                               <div key={item.localItemId} className="border-t border-slate-300 bg-white">
                                 <div className={`grid ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1.75fr)_minmax(66px,0.6fr)_minmax(68px,0.62fr)]' : 'grid-cols-[minmax(260px,2.25fr)_minmax(120px,1fr)_minmax(120px,1fr)_minmax(140px,1fr)_minmax(160px,1fr)]'}`}>
                                   <div className={isCompactManualDetailStage ? 'relative min-w-0 border-r border-slate-200 p-1' : 'relative border-r border-slate-200 p-2'}>
-                                    <div className={hasProductAttributes ? `grid items-stretch ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1fr)_minmax(62px,0.62fr)] gap-1.5' : 'grid-cols-[minmax(0,1fr)_minmax(118px,0.72fr)] gap-2'}` : ''}>
+                                    <div className={hasFixedAttribute ? `grid items-stretch ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1fr)_minmax(62px,0.62fr)] gap-1.5' : 'grid-cols-[minmax(0,1fr)_minmax(118px,0.72fr)] gap-2'}` : ''}>
                                       <button
                                         type="button"
                                         onClick={() => setOpenDraftPicker(prev => prev === productPickerKey ? null : productPickerKey)}
@@ -60443,19 +60833,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                         </span>
                                         {isProductPickerOpen ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
                                       </button>
-                                    {hasProductAttributes && (
-                                      <select
-                                        value={item.attributeLabel || ''}
-                                        onClick={(event) => event.stopPropagation()}
-                                        onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { attributeLabel: e.target.value })}
-                                        className={`w-full min-w-0 rounded-xl border border-sky-100 bg-sky-50 text-center text-sky-800 outline-none focus:ring-2 focus:ring-sky-500 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-[10px] font-black' : 'h-[52px] px-2 text-xs font-bold'}`}
-                                        title="Thuộc tính sản phẩm"
+                                    {hasFixedAttribute && (
+                                      <div
+                                        className={`flex w-full min-w-0 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-center text-sky-800 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-[10px] font-black' : 'h-[52px] px-2 text-xs font-bold'}`}
+                                        title="Thuộc tính theo cấu hình sản phẩm cố định"
                                       >
-                                        <option value="">Thuộc tính</option>
-                                        {productAttributeOptions.map(attribute => (
-                                          <option key={attribute} value={attribute}>{attribute}</option>
-                                        ))}
-                                      </select>
+                                        <span className="truncate">{fixedAttributeLabel}</span>
+                                      </div>
                                     )}
                                     </div>
                                     {isProductPickerOpen && (
@@ -60473,38 +60857,51 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                           </div>
                                         </div>
                                         <div className="max-h-56 overflow-y-auto p-2 space-y-1">
-                                          {branchFixedProductIds.length > 0 && (
+                                          {selectedCustomer && (
                                             <p className="px-2 py-1 text-[10px] font-bold text-emerald-600">
                                               Đang lọc theo sản phẩm cố định của chi nhánh.
                                             </p>
                                           )}
-                                          {filteredProducts.map(product => {
-                                            const productConfigSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
-                                            const productPrice = getCustomerProductPrice(productConfigSource, product);
-                                            const productSize = getCustomerProductSize(productConfigSource, product);
-                                            const productAttribute = getCustomerProductAttribute(productConfigSource, product);
-                                            const priceLabel = hasCustomerProductConfig(productConfigSource, product.id) ? 'Cài riêng' : 'Mặc định';
+                                          {filteredProductVariants.map(({ product, variant, key }) => {
+                                            const configuredOption = resolveCustomerProductBillingConfiguration(productConfigSource, product, {
+                                              variant,
+                                              variantId: variant.id || '',
+                                              sizeLabel: variant.size || '',
+                                              attributeLabel: variant.attributeLabel || '',
+                                            });
+                                            const variantLabel = [
+                                              configuredOption.sizeLabel ? `Size ${configuredOption.sizeLabel}` : '',
+                                              configuredOption.attributeLabel,
+                                              configuredOption.billingUnit,
+                                            ].filter(Boolean).join(' • ');
+                                            const selectedVariantKey = buildOrderRequestVariantKey(product.id, {
+                                              attributeLabel: configuredOption.attributeLabel,
+                                              size: configuredOption.sizeLabel,
+                                              unit: resolveCustomerProductActualUnit(configuredOption, product),
+                                              price: configuredOption.unitPrice,
+                                            });
+                                            const isSelectedVariant = getDraftItemVariantKey(item) === selectedVariantKey;
                                             return (
                                             <button
-                                              key={product.id}
+                                              key={key}
                                               type="button"
                                               onClick={() => {
-                                                handleProductChange(draft.localId, item.localItemId, product.id);
+                                                handleProductChange(draft.localId, item.localItemId, product.id, variant);
                                                 setOpenDraftPicker(null);
                                               }}
-                                              className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${item.productId === product.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
+                                              className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${isSelectedVariant ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
                                             >
                                               <p className="text-sm font-semibold text-slate-900">
                                                 {getProductShortName(product) ? `${getProductShortName(product)} - ${product.name}` : product.name}
                                               </p>
                                               <p className="text-[11px] text-slate-500 mt-1">
                                                 {product.category || 'Chưa có nhóm'}
-                                                {!isCompactManualDetailStage && ` • ${formatCurrency(productPrice)} đồng${productSize ? ` • Size ${productSize}` : ''} • ${priceLabel}`}
+                                                {!isCompactManualDetailStage && `${variantLabel ? ` • ${variantLabel}` : ''} • ${formatCurrency(configuredOption.unitPrice)} đồng`}
                                               </p>
                                             </button>
                                             );
                                           })}
-                                          {productSearchKeyword && filteredProducts.length === 0 && (
+                                          {productSearchKeyword && filteredProductVariants.length === 0 && (
                                             <p className="px-2 py-2 text-[11px] text-amber-600">Không tìm thấy sản phẩm phù hợp với từ khóa này.</p>
                                           )}
                                         </div>
@@ -60525,14 +60922,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   </div>
 
                                   <div className={isCompactManualDetailStage ? 'p-1' : 'border-r border-slate-200 p-2'}>
-                                    <select
-                                      value={item.quantityUnit || ''}
-                                      onChange={(e) => handleDraftItemQuantityUnitChange(draft.localId, item.localItemId, e.target.value)}
-                                      className={`w-full rounded-xl border border-gray-200 bg-white text-center outline-none focus:ring-2 focus:ring-emerald-500 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-3 text-sm'}`}
+                                    <div
+                                      className={`flex w-full items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 text-center font-black text-emerald-700 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-3 text-sm'}`}
+                                      aria-label={`Đơn vị tính giá ${fixedItemUnit || 'chưa cấu hình'}`}
                                     >
-                                      <option value="">Loại</option>
-                                      {getDraftItemUnitOptions(draft, item).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                                    </select>
+                                      {fixedItemUnit || '--'}
+                                    </div>
                                   </div>
 
                                   {!isCompactManualDetailStage && (
@@ -60540,10 +60935,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                       <div className="border-r border-slate-200 p-2">
                                         <input
                                           type="text"
-                                          value={item.weightKg}
-                                          onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { weightKg: e.target.value })}
-                                          className="h-[52px] w-full rounded-xl border border-gray-200 bg-white px-3 text-center text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                                          placeholder="Ví dụ: 1 - 1.2kg"
+                                          value={fixedSizeLabel}
+                                          readOnly
+                                          className="h-[52px] w-full cursor-default rounded-xl border border-sky-100 bg-sky-50 px-3 text-center text-sm font-semibold text-sky-800 outline-none"
+                                          placeholder="Theo cấu hình"
                                         />
                                       </div>
 
@@ -60551,8 +60946,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                         <input
                                           type="tel"
                                           value={formatInputCurrency(item.unitPrice)}
-                                          onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { unitPrice: parseInputCurrency(e.target.value) })}
-                                          className="h-[52px] w-full rounded-xl border border-gray-200 bg-white px-3 text-center text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
+                                          readOnly
+                                          className="h-[52px] w-full cursor-default rounded-xl border border-emerald-100 bg-emerald-50 px-3 text-center text-sm font-semibold text-emerald-800 outline-none"
                                           placeholder="0 đ"
                                         />
                                       </div>
@@ -60562,19 +60957,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
                                 {shouldShowCompactPriceInput && (
                                   <div className="border-t border-amber-100 bg-amber-50/70 px-2 py-2">
-                                    <div className="flex items-center gap-2">
-                                      <span className="shrink-0 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700">Đơn giá</span>
-                                      <input
-                                        type="tel"
-                                        value={formatInputCurrency(item.unitPrice)}
-                                        onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { unitPrice: parseInputCurrency(e.target.value) })}
-                                        className="h-10 min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 text-right text-sm font-black text-amber-800 outline-none focus:ring-2 focus:ring-amber-500"
-                                        placeholder="Nhập giá"
-                                      />
-                                      <span className="shrink-0 text-[11px] font-bold text-amber-700">đ</span>
-                                    </div>
                                     <p className="mt-1 text-[10px] font-semibold text-amber-700">
-                                      Chưa có giá riêng, lưu đơn sẽ tự cập nhật vào sản phẩm cố định của khách.
+                                      Chưa cấu hình đơn giá. Hãy cập nhật sản phẩm cố định trong hồ sơ khách hàng.
                                     </p>
                                   </div>
                                 )}
@@ -61365,9 +61749,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const directAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? order.grandTotal ?? order.total);
       if (directAmount > 0) return sum + directAmount;
 
-      const itemSubtotal = (order.items || []).reduce((itemSum, item) => (
-        itemSum + (parseLooseQuantityValue(item.quantity ?? item.qty ?? item.weightKg ?? item.weight ?? item.count) * parseLooseMoneyValue(item.unitPrice ?? item.price))
-      ), 0);
+      const itemSubtotal = (order.items || []).reduce(
+        (itemSum, item) => itemSum + getTransactionBillingPresentation(item).amount,
+        0
+      );
       const customerFee = parseLooseMoneyValue(order.customerExtraExpense ?? order.extraExpenseAmount ?? 0);
       const discount = parseLooseMoneyValue(order.discount ?? 0);
       return sum + Math.max(0, itemSubtotal + customerFee - discount);
@@ -61450,7 +61835,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setZaloPreviewSaveStatus('');
   }, [zaloPreviewOrderId]);
   
-  const subTotal = newOrder.items.reduce((sum, item) => sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unitPrice)||0), 0);
+  const subTotal = newOrder.items.reduce(
+    (sum, item) => sum + getTransactionBillingPresentation(item).amount,
+    0
+  );
   const discountAmount = parseFloat(newOrder.discount) || 0;
   const extraExpense = parseFloat(newOrder.extraExpenseAmount) || 0;
   
@@ -61505,7 +61893,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
   const buildEditableOrderPayload = (order, patch = {}) => {
     const items = Array.isArray(patch.items) ? patch.items : (Array.isArray(order?.items) ? order.items : []);
-    const itemSubtotal = items.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0);
+    const itemSubtotal = items.reduce(
+      (sum, item) => sum + getTransactionBillingPresentation(item).amount,
+      0
+    );
     const nextDiscount = Object.prototype.hasOwnProperty.call(patch, 'discount')
       ? parseLooseMoneyValue(patch.discount)
       : parseLooseMoneyValue(order?.discount);
@@ -62049,16 +62440,26 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     return { label: 'Chưa duyệt gửi', chipClasses: 'bg-slate-50 text-slate-600', locked: false };
   };
 
+  const getOrderItemBillingPresentation = (item = {}) => {
+    return getTransactionBillingPresentation(item);
+  };
+
+  const formatOrderItemBillingLine = (item = {}, index = 0) => {
+    const billing = getOrderItemBillingPresentation(item);
+    const actualLabel = `${formatNumber(billing.actualQuantity)}${billing.actualUnit ? ` ${billing.actualUnit}` : ''}`;
+    const billingLabel = `${formatNumber(billing.billingQuantity)}${billing.billingUnit ? ` ${billing.billingUnit}` : ''}`;
+    const quantityLabel = isSameBillingUnit(billing.actualUnit, billing.billingUnit)
+      && billing.actualQuantity === billing.billingQuantity
+      ? billingLabel
+      : `${actualLabel} • tính tiền ${billingLabel}`;
+    return `${index + 1}. ${item.description || item.productName || item.productNameSnapshot || 'Sản phẩm'}: ${quantityLabel} x ${formatCurrency(billing.unitPrice)} đ = ${formatCurrency(billing.amount)} đ`;
+  };
+
   const buildOrderZaloMessageLegacy = (order) => {
     if (!order) return '';
     const customer = order.customer || customers.find(c => c.id === order.customerId) || {};
     const honorific = customer.customerHonorific ? `${customer.customerHonorific} ` : '';
-    const itemLines = (order.items || []).map((item, index) => {
-      const quantity = parseLooseQuantityValue(item.quantity);
-      const unitPrice = parseLooseMoneyValue(item.unitPrice);
-      const lineTotal = quantity * unitPrice;
-      return `${index + 1}. ${item.description || 'Sản phẩm'}: ${formatNumber(quantity)} x ${formatCurrency(unitPrice)} đ = ${formatCurrency(lineTotal)} đ`;
-    });
+    const itemLines = (order.items || []).map(formatOrderItemBillingLine);
     const lines = [
       `Kính gửi: ${honorific}${customer.name || 'quý khách'}`,
       `${currentCompany?.name || 'HD Manager'}`,
@@ -62098,12 +62499,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     const currentCustomerDebt = ledger ? Math.max(0, parseLooseMoneyValue(ledger.currentDebt)) : outstandingAmount;
     const oldDebt = Math.max(0, currentCustomerDebt - outstandingAmount);
     const totalToPay = Math.max(0, outstandingAmount + oldDebt);
-    const itemLines = (order.items || []).map((item, index) => {
-      const quantity = parseLooseQuantityValue(item.quantity);
-      const unitPrice = parseLooseMoneyValue(item.unitPrice);
-      const lineTotal = quantity * unitPrice;
-      return `${index + 1}. ${item.description || 'Sản phẩm'}: ${formatNumber(quantity)} x ${formatCurrency(unitPrice)} đ = ${formatCurrency(lineTotal)} đ`;
-    });
+    const itemLines = (order.items || []).map(formatOrderItemBillingLine);
     const lines = [
       `Kính gửi: ${customer.name || 'Quý khách'}`,
       `Mã đơn hàng: ${orderCode}`,
@@ -62211,10 +62607,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const buildOrderShareText = (order) => {
     if (!order) return '';
 
-    const itemLines = (order.items || []).map((item, index) => {
-      const lineTotal = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
-      return `${index + 1}. ${item.description || 'Sản phẩm'} - ${formatNumber(parseFloat(item.quantity) || 0)} x ${formatCurrency(parseFloat(item.unitPrice) || 0)} đ = ${formatCurrency(lineTotal)} đ`;
-    });
+    const itemLines = (order.items || []).map(formatOrderItemBillingLine);
 
     const textLines = [
       `HÓA ĐƠN ${formatOrderCode(order.id)}`,
@@ -62231,7 +62624,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
     textLines.push(
       '',
-      `Tổng tiền hàng: ${formatCurrency((order.items || []).reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0))} đ`,
+      `Tổng tiền hàng: ${formatCurrency((order.items || []).reduce((sum, item) => sum + getOrderItemBillingPresentation(item).amount, 0))} đ`,
       `Giảm giá: ${formatCurrency(order.discount || 0)} đ`
     );
 
@@ -62478,7 +62871,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       sellerDraftExpense = extraExpenseAmount;
     }
 
-    const orderSubtotal = validItems.reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)), 0);
+    const orderSubtotal = validItems.reduce((sum, item) => sum + getOrderItemBillingPresentation(item).amount, 0);
     const orderTotal = Math.max(0, orderSubtotal - discount + customerDraftExpense);
 
     const orderId = await onAddOrder(empId, {
@@ -62770,26 +63163,99 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const group = groupMap.get(customerKey);
       const product = productLookup.get(dispatch.productId);
       const productName = dispatch.productNameSnapshot || product?.name || 'Hàng hóa';
-      const productKey = dispatch.productId || normalizeLookupText(productName);
       const weightKg = parseLooseQuantityValue(dispatch.weightKg);
       const orderRequestUnitPrice = findOrderRequestUnitPriceForDispatch(dispatch, customer, product, productName, customerName);
+      const dispatchSnapshot = resolveTransactionBillingSnapshot({ record: dispatch, product });
+      const billingUnit = dispatchSnapshot.billingUnit
+        || normalizeProductPricingUnit(dispatch.pricingUnit || (weightKg > 0 ? 'Kg' : dispatch.quantityUnit || product?.unit || 'Con'));
+      const actualUnit = dispatchSnapshot.actualUnit
+        || normalizeProductPricingUnit(dispatch.quantityUnit || dispatch.unit || product?.unit || billingUnit);
+      const unitPrice = dispatchSnapshot.unitPrice
+        || orderRequestUnitPrice
+        || parseLooseMoneyValue(dispatch.unitPrice)
+        || parseLooseMoneyValue(product?.sellingPrice)
+        || 0;
+      const actualQuantity = dispatchSnapshot.actualQuantity
+        || parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount)
+        || (isSameBillingUnit(actualUnit, 'Kg') ? weightKg : 0);
+      const actualWeightKg = dispatchSnapshot.actualWeightKg || weightKg;
+      const billingQuantityCandidate = dispatchSnapshot.billingQuantity
+        || (isSameBillingUnit(billingUnit, 'Kg') ? actualWeightKg : actualQuantity);
+      const calculatedDispatchSnapshot = buildCustomerProductBillingSnapshot({
+        configuration: {
+          productId: product?.id || dispatch.productId || '',
+          productName,
+          configurationId: dispatchSnapshot.configurationId || dispatch.configurationId || '',
+          billingUnit,
+          pricingUnit: billingUnit,
+          unitPrice,
+          source: dispatchSnapshot.hasFrozenPricing ? 'warehouse_dispatch_snapshot' : 'legacy_dispatch_fallback',
+        },
+        product,
+        productId: product?.id || dispatch.productId || '',
+        productName,
+        sizeLabel: dispatch.sizeLabel || dispatch.size || '',
+        attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
+        actualQuantity,
+        actualUnit,
+        actualWeightKg,
+        billingQuantity: billingQuantityCandidate,
+        billingUnit,
+        unitPrice,
+      });
+      const resolvedDispatchBilling = dispatchSnapshot.hasFrozenPricing
+        ? dispatchSnapshot
+        : calculatedDispatchSnapshot;
+      const billingQuantity = resolvedDispatchBilling.billingQuantity;
+      const amount = resolvedDispatchBilling.amount;
+      const productKey = [
+        dispatch.productId || normalizeLookupText(productName),
+        dispatchSnapshot.configurationId || dispatch.configurationId || 'default',
+        normalizeLookupText(actualUnit),
+        normalizeLookupText(billingUnit),
+        unitPrice,
+      ].join('__');
       group.dispatchIds.push(dispatch.id);
 
       if (!group.items.has(productKey)) {
         group.items.set(productKey, {
           productId: product?.id || dispatch.productId || '',
           description: product?.name || productName,
+          productName: product?.name || productName,
+          productNameSnapshot: productName,
+          configurationId: dispatchSnapshot.configurationId || dispatch.configurationId || '',
+          sizeLabel: dispatch.sizeLabel || dispatch.size || '',
+          attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
+          actualQuantity: 0,
+          actualUnit,
+          actualWeightKg: 0,
+          billingQuantity: 0,
+          billingUnit,
+          unitPrice,
+          amount: 0,
           quantity: 0,
-          unitPrice: orderRequestUnitPrice || parseLooseMoneyValue(dispatch.unitPrice) || parseLooseMoneyValue(product?.sellingPrice) || '',
+          quantityUnit: actualUnit,
+          pricingQuantity: 0,
+          pricingUnit: billingUnit,
+          pricingAmount: 0,
+          lineTotal: 0,
+          billingSnapshotVersion: dispatchSnapshot.hasFrozenPricing ? 1 : 0,
+          billingSnapshotSource: dispatchSnapshot.hasFrozenPricing ? 'warehouse_dispatch_snapshot' : 'legacy_dispatch_fallback',
           sourceDispatchIds: []
         });
       }
 
       const item = group.items.get(productKey);
-      item.quantity += weightKg;
-      if (!parseLooseMoneyValue(item.unitPrice) && orderRequestUnitPrice > 0) {
-        item.unitPrice = orderRequestUnitPrice;
-      }
+      item.actualQuantity += actualQuantity;
+      item.actualWeightKg += actualWeightKg;
+      item.billingQuantity += billingQuantity;
+      item.amount += amount;
+      item.quantity = item.actualQuantity;
+      item.quantityCount = item.actualQuantity;
+      item.weightKg = item.actualWeightKg;
+      item.pricingQuantity = item.billingQuantity;
+      item.pricingAmount = item.amount;
+      item.lineTotal = item.amount;
       item.sourceDispatchIds.push(dispatch.id);
       return groupMap;
     }, new Map());
@@ -62814,7 +63280,16 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       sourceDispatchDate: dispatchDate,
       items: Array.from(group.items.values()).map(item => ({
         ...item,
-        quantity: item.quantity > 0 ? Number(item.quantity.toFixed(2)) : '',
+        actualQuantity: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : 0,
+        actualWeightKg: item.actualWeightKg > 0 ? Number(item.actualWeightKg.toFixed(2)) : 0,
+        billingQuantity: item.billingQuantity > 0 ? Number(item.billingQuantity.toFixed(2)) : 0,
+        quantity: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : '',
+        quantityCount: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : 0,
+        weightKg: item.actualWeightKg > 0 ? Number(item.actualWeightKg.toFixed(2)) : 0,
+        pricingQuantity: item.billingQuantity > 0 ? Number(item.billingQuantity.toFixed(2)) : 0,
+        amount: Math.round(item.amount),
+        pricingAmount: Math.round(item.amount),
+        lineTotal: Math.round(item.amount),
         unitPrice: item.unitPrice || ''
       }))
     }));
@@ -63637,21 +64112,19 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                     <p className="p-4 text-center text-sm text-gray-400">Chưa có chi tiết mặt hàng trong đơn này.</p>
                   )}
                   {detailItems.map((item, index) => {
-                    const quantity = parseFloat(item.quantity) || 0;
-                    const unitPrice = parseFloat(item.unitPrice) || 0;
-                    const lineTotal = quantity * unitPrice;
+                    const billing = getOrderItemBillingPresentation(item);
                     return (
                       <div key={`${selectedOrder.id}_quick_${index}`} className="border-b border-slate-100 px-3 py-3 last:border-b-0">
                         <div className="min-w-0">
                           <p className="truncate text-[15px] font-extrabold leading-5 text-slate-900">{item.description || `Sản phẩm ${index + 1}`}</p>
                           <div className="mt-2 grid grid-cols-[0.8fr_1fr_1.25fr] items-center gap-2 text-[12px] font-semibold leading-5 text-slate-500">
                             <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
-                              {formatNumber(quantity)}
+                              {formatNumber(billing.actualQuantity)} {billing.actualUnit}
                             </button>
                             <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
-                              {formatCurrency(unitPrice)} đ
+                              {formatCurrency(billing.unitPrice)} đ/{billing.billingUnit}
                             </button>
-                            <p className="text-right text-[15px] font-extrabold leading-5 text-slate-900">{formatCurrency(lineTotal)} đ</p>
+                            <p className="text-right text-[15px] font-extrabold leading-5 text-slate-900">{formatCurrency(billing.amount)} đ</p>
                           </div>
                         </div>
                       </div>
@@ -64479,7 +64952,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                       </div>
 
                       {bulkOrderDrafts.map((draft, draftIndex) => {
-                        const draftTotal = (draft.items || []).reduce((sum, item) => sum + ((parseFloat(item.quantity) || 0) * (parseLooseMoneyValue(item.unitPrice) || 0)), 0);
+                        const draftTotal = (draft.items || []).reduce((sum, item) => sum + getOrderItemBillingPresentation(item).amount, 0);
                         const matchedCustomer = draft.customerId ? customers.find((customer) => customer.id === draft.customerId) : null;
                         const draftSubtotal = draftTotal;
                         const feeAmount = parseLooseMoneyValue(draft.extraExpenseAmount);
@@ -64527,7 +65000,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                 </div>
 
                                 {(draft.items || []).map((item, itemIndex) => {
-                                  const lineTotal = (parseFloat(item.quantity) || 0) * (parseLooseMoneyValue(item.unitPrice) || 0);
+                                  const lineTotal = getOrderItemBillingPresentation(item).amount;
                                   return (
                                     <div key={`${draft.localId}_${itemIndex}`} className="grid grid-cols-[minmax(0,1.35fr)_minmax(76px,.72fr)_minmax(68px,.66fr)_minmax(84px,.78fr)] border-t border-slate-200 text-[12px]">
                                       <div className="relative min-w-0 border-r border-slate-200 p-1.5">
@@ -64851,7 +65324,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                           <input required type="number" step="0.01" placeholder="Số lượng" value={item.quantity} onChange={e=>handleItemChange(index, 'quantity', e.target.value)} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                           <input required type="tel" placeholder="Giá bán (VNĐ)" value={formatInputCurrency(item.unitPrice)} onChange={e=>handleItemChange(index, 'unitPrice', parseInputCurrency(e.target.value))} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                         </div>
-                        <div className="text-right text-xs text-blue-600 font-semibold mt-3 pt-3 border-t border-dashed border-gray-200">Tạm tính: {formatCurrency((parseFloat(item.quantity)||0) * (parseFloat(item.unitPrice)||0))} đ</div>
+                        <div className="text-right text-xs text-blue-600 font-semibold mt-3 pt-3 border-t border-dashed border-gray-200">Tạm tính: {formatCurrency(getTransactionBillingPresentation(item).amount)} đ</div>
                       </div>
                     ))}
                   </div>
@@ -66449,7 +66922,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           weightKg: result.weightKg + weightKg,
           pieces: result.pieces + (unit.includes('con') ? quantity : 0),
           unitPrices: unitPrice > 0 ? [...result.unitPrices, unitPrice] : result.unitPrices,
-          lineAmount: result.lineAmount + (quantity > 0 && unitPrice > 0 ? quantity * unitPrice : 0)
+          lineAmount: result.lineAmount + getTransactionBillingPresentation(item).amount
         };
       }, { weightKg: 0, pieces: 0, unitPrices: [], lineAmount: 0 });
       const recordUnit = normalizeLookupText(record.quantityUnit || record.unit || '');
@@ -76685,11 +77158,61 @@ function CustomerPortalView({
   const monthKey = getTodayString().slice(0, 7);
   const monthlyOrders = useMemo(() => customerOrders.filter(order => `${order.date || order.createdAt || ''}`.slice(0, 7) === monthKey), [customerOrders, monthKey]);
   const monthlySales = useMemo(() => monthlyOrders.reduce((sum, order) => sum + parseLooseMoneyValue(order.total || order.totalAmount || order.finalTotal || order.amount), 0), [monthlyOrders]);
+  const resolveCustomerPortalProductConfiguration = (product, branchId = '', criteria = {}) => {
+    const configSource = getCustomerBranchProductConfigSource(customerProfile, branchId, safeProducts);
+    return resolveCustomerProductBillingConfiguration(configSource, product, criteria);
+  };
+  const buildCustomerPortalBillingSnapshot = ({
+    item = {},
+    product = null,
+    branchId = '',
+    preserveSavedSnapshot = false,
+    forceCurrentConfiguration = false,
+  } = {}) => {
+    const currentConfiguration = resolveCustomerPortalProductConfiguration(product, branchId, forceCurrentConfiguration
+      ? {}
+      : {
+          configurationId: item.configurationId || '',
+          sizeLabel: item.sizeLabel || item.size || '',
+          attributeLabel: item.attributeLabel || item.productAttribute || '',
+        });
+    const savedSnapshot = resolveTransactionBillingSnapshot({ record: item, configuration: currentConfiguration, product });
+    const shouldUseSavedSnapshot = savedSnapshot.hasFrozenPricing && !forceCurrentConfiguration;
+    const billingConfiguration = shouldUseSavedSnapshot
+      ? {
+          ...currentConfiguration,
+          configurationId: savedSnapshot.configurationId || currentConfiguration.configurationId,
+          billingUnit: savedSnapshot.billingUnit,
+          pricingUnit: savedSnapshot.billingUnit,
+          unitPrice: savedSnapshot.unitPrice,
+          source: 'customer_order_snapshot',
+        }
+      : currentConfiguration;
+    const actualUnit = shouldUseSavedSnapshot
+      ? savedSnapshot.actualUnit
+      : resolveCustomerProductActualUnit(billingConfiguration, product);
+    if (preserveSavedSnapshot && shouldUseSavedSnapshot) return savedSnapshot;
+    return buildCustomerProductBillingSnapshot({
+      configuration: billingConfiguration,
+      product,
+      productId: product?.id || item.productId || '',
+      productName: product?.name || item.productName || item.productNameSnapshot || '',
+      sizeLabel: forceCurrentConfiguration
+        ? (billingConfiguration.sizeLabel || '')
+        : (item.sizeLabel || item.size || billingConfiguration.sizeLabel || ''),
+      attributeLabel: forceCurrentConfiguration
+        ? (billingConfiguration.attributeLabel || '')
+        : (item.attributeLabel || item.productAttribute || billingConfiguration.attributeLabel || ''),
+      actualQuantity: item.actualQuantity ?? item.quantity ?? 0,
+      actualUnit,
+      actualWeightKg: item.actualWeightKg ?? item.weightKg ?? 0,
+    });
+  };
   const availableProducts = useMemo(() => {
     const fixedIds = selectedBranchId
       ? getCustomerBranchFixedProductIds(customerProfile, selectedBranchId, safeProducts)
       : getCustomerFixedProductIds(customerProfile, safeProducts);
-    const source = fixedIds.length > 0 ? safeProducts.filter(product => fixedIds.includes(product.id)) : safeProducts;
+    const source = fixedIds.length > 0 ? safeProducts.filter(product => fixedIds.includes(product.id)) : [];
     const keyword = normalizeLookupText(searchTerm);
     return source
       .filter(product => !keyword || normalizeLookupText(`${product.name || ''} ${product.shortName || ''} ${product.code || ''}`).includes(keyword))
@@ -76897,7 +77420,9 @@ function CustomerPortalView({
     setCustomerMessageLastOpenedAt(Date.now());
     setIsCustomerMessageSheetOpen(true);
   };
-  const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0) * parseLooseMoneyValue(item.unitPrice), 0), [cart]);
+  const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + parseLooseMoneyValue(
+    item.amount ?? item.pricingAmount ?? item.lineTotal ?? item.total ?? 0
+  ), 0), [cart]);
   const cartItemCount = useMemo(() => cart.reduce((sum, item) => sum + Math.max(1, Math.floor(parseFloat(item.quantity) || 0)), 0), [cart]);
   const debtLimit = parseLooseMoneyValue(customerProfile?.debtLimit || customerProfile?.debtLimitAmount || customerProfile?.creditLimit || 0);
   const noDebtAllowed = customerProfile?.debtPolicy === 'no_debt' || customerProfile?.debtLimitMode === 'no_debt' || customerProfile?.allowDebt === false || debtLimit <= 0;
@@ -77064,19 +77589,16 @@ function CustomerPortalView({
       : [item.primaryItem || item].filter(Boolean);
 
     return sourceLines.filter(Boolean).map((line) => {
-      const rawQuantity = line.quantity ?? line.weightKg ?? line.kg ?? line.actualKg ?? item.quantity ?? item.weightKg ?? item.kg ?? 0;
-      const quantity = parseLooseQuantityValue(rawQuantity);
-      const unit = `${line.quantityUnit || line.unit || line.defaultUnit || item.quantityUnit || item.unit || (line.weightKg || line.kg || item.weightKg || item.kg ? 'kg' : '')}`.trim();
-      const unitPrice = parseLooseMoneyValue(line.unitPrice ?? line.price ?? line.sellingPrice ?? line.salePrice ?? item.unitPrice ?? item.price ?? item.sellingPrice ?? 0);
-      const explicitTotal = parseLooseMoneyValue(line.lineTotal ?? line.total ?? line.amount ?? line.totalAmount ?? 0);
-      const lineTotal = explicitTotal > 0 ? explicitTotal : Math.round(quantity * unitPrice);
+      const billing = getTransactionBillingPresentation({ ...item, ...line });
 
       return {
         productName: line.productName || line.name || line.product?.name || item.productName || item.name || 'Sản phẩm',
-        quantity,
-        unit,
-        unitPrice,
-        lineTotal,
+        quantity: billing.actualQuantity,
+        unit: billing.actualUnit,
+        billingQuantity: billing.billingQuantity,
+        billingUnit: billing.billingUnit,
+        unitPrice: billing.unitPrice,
+        lineTotal: billing.amount,
         size: line.size || line.attributeLabel || line.attribute || '',
         branchId: line.branchId || line.customerBranchId || item.branchId || item.customerBranchId || '',
         branchName: line.branchName || line.customerBranchName || item.branchName || item.customerBranchName || '',
@@ -77093,7 +77615,13 @@ function CustomerPortalView({
 
   const formatCustomerQuantityLabel = (line = {}) => {
     if (!line.quantity) return '--';
-    return `${formatNumber(line.quantity)}${line.unit ? ` ${line.unit}` : ''}`;
+    const actualLabel = `${formatNumber(line.quantity)}${line.unit ? ` ${line.unit}` : ''}`;
+    const hasSeparateBilling = line.billingQuantity > 0 && (
+      !isSameBillingUnit(line.unit, line.billingUnit)
+      || parseLooseQuantityValue(line.quantity) !== parseLooseQuantityValue(line.billingQuantity)
+    );
+    if (!hasSeparateBilling) return actualLabel;
+    return `${actualLabel} • tính tiền ${formatNumber(line.billingQuantity)} ${line.billingUnit}`;
   };
 
   const customerOrderTrackingSteps = ['Lên đơn', 'Nhận đơn', 'Đang giao', 'Đã giao'];
@@ -77339,62 +77867,74 @@ function CustomerPortalView({
     if (transferProfile.bankId) setSelectedPaymentBankId(prev => prev || transferProfile.bankId);
   }, [transferProfile.bankId]);
 
-  const resolveCustomerUnitPrice = (product, unit = '') => {
-    const groupKey = `${customerProfile?.group || customerProfile?.customerGroup || customerProfile?.customerType || ''}`.trim();
-    const quantityUnit = normalizeCustomerCartUnit(product, unit);
-    const customerConfig = getCustomerProductConfig(customerProfile, product);
-    const customerPrice = resolveProductUnitPrice({
-      product: { ...(product || {}), sellingPrice: 0, price: 0, unitPrices: {} },
-      customerConfig,
-      unit: quantityUnit
-    });
-    if (customerPrice > 0) return customerPrice;
-    const primaryUnit = getProductPrimaryPricingUnit(product || {}, 'Kg');
-    const groupPrice = groupKey && product?.groupPrices && normalizeLookupText(quantityUnit) === normalizeLookupText(primaryUnit)
-      ? parseLooseMoneyValue(product.groupPrices[groupKey])
-      : 0;
-    return groupPrice > 0 ? groupPrice : getCustomerProductPrice(customerProfile, product, quantityUnit);
-  };
+  const resolveCustomerUnitPrice = (product, branchId = '') => (
+    resolveCustomerPortalProductConfiguration(product, branchId || selectedBranchId).unitPrice || 0
+  );
 
-  const normalizeCustomerCartUnit = (productOrValue = {}, requestedValue = '') => {
-    const product = typeof productOrValue === 'object' && productOrValue !== null ? productOrValue : null;
-    const rawUnit = product ? requestedValue : productOrValue;
-    const options = product
-      ? getCustomerProductUnitOptions(customerProfile, product, 'Kg')
-      : ORDER_REQUEST_QUANTITY_UNIT_OPTIONS;
-    const requestedUnit = normalizeProductPricingUnit(rawUnit);
-    return options.find(option => normalizeLookupText(option) === normalizeLookupText(requestedUnit))
-      || (product ? getCustomerProductDefaultUnit(customerProfile, product, 'Kg') : requestedUnit || 'Kg');
+  const normalizeCustomerCartItem = (item = {}, { forceCurrentConfiguration = false } = {}) => {
+    const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
+    if (!product) return item;
+    const snapshot = buildCustomerPortalBillingSnapshot({
+      item,
+      product,
+      branchId: item.branchId || '',
+      forceCurrentConfiguration,
+    });
+    return {
+      ...item,
+      ...snapshot,
+      unit: snapshot.actualUnit,
+      quantityUnit: snapshot.actualUnit,
+      price: snapshot.unitPrice,
+      total: snapshot.amount,
+      size: snapshot.sizeLabel,
+      attributeLabel: snapshot.attributeLabel,
+    };
   };
 
   const addToCart = (product) => {
     if (!product?.id) return;
-    const quantityUnit = normalizeCustomerCartUnit(product, product.defaultUnit || product.unit || 'Kg');
-    const unitPrice = resolveCustomerUnitPrice(product, quantityUnit);
     const branchId = selectedCustomerBranch?.id || '';
     const branchName = selectedCustomerBranch ? getCustomerBranchDisplayName(selectedCustomerBranch) : '';
+    const configuration = resolveCustomerPortalProductConfiguration(product, branchId);
+    const quantityUnit = resolveCustomerProductActualUnit(configuration, product);
+    const baseItem = {
+      productId: product.id,
+      productName: product.name || product.shortName || 'Sản phẩm',
+      productNameSnapshot: product.name || product.shortName || 'Sản phẩm',
+      shortName: product.shortName || '',
+      branchId,
+      branchName,
+      branchAddress: selectedCustomerBranch?.address || '',
+      quantity: 1,
+      actualQuantity: 1,
+      actualUnit: quantityUnit,
+      size: configuration.sizeLabel || getCustomerProductSize(customerProfile, product),
+      sizeLabel: configuration.sizeLabel || getCustomerProductSize(customerProfile, product),
+      attributeLabel: configuration.attributeLabel || getCustomerProductAttribute(customerProfile, product),
+      configurationId: configuration.configurationId || '',
+    };
     setCart(prev => {
       const exists = prev.find(item => item.productId === product.id && (item.branchId || '') === branchId);
-      if (exists) return prev.map(item => item.lineId === exists.lineId ? { ...item, quantity: (parseFloat(item.quantity) || 0) + 1 } : item);
+      if (exists) return prev.map(item => item.lineId === exists.lineId
+        ? normalizeCustomerCartItem({ ...item, quantity: (parseFloat(item.quantity) || 0) + 1, actualQuantity: (parseFloat(item.quantity) || 0) + 1 })
+        : item);
       return [{
+        ...normalizeCustomerCartItem(baseItem),
         lineId: `${product.id}_${branchId || 'main'}_${Date.now()}`,
-        productId: product.id,
-        productName: product.name || product.shortName || 'Sản phẩm',
-        shortName: product.shortName || '',
-        branchId,
-        branchName,
-        branchAddress: selectedCustomerBranch?.address || '',
-        unit: quantityUnit,
-        quantityUnit,
-        quantity: 1,
-        unitPrice,
-        size: getCustomerProductSize(customerProfile, product),
-        attributeLabel: getCustomerProductAttribute(customerProfile, product)
       }, ...prev];
     });
   };
 
-  const updateCartItem = (lineId, patch) => setCart(prev => prev.map(item => item.lineId === lineId ? { ...item, ...patch } : item));
+  const updateCartItem = (lineId, patch) => setCart(prev => prev.map(item => {
+    if (item.lineId !== lineId) return item;
+    const nextPatch = typeof patch === 'function' ? patch(item) : patch;
+    const nextItem = { ...item, ...nextPatch };
+    if (Object.prototype.hasOwnProperty.call(nextPatch || {}, 'quantity')) nextItem.actualQuantity = nextItem.quantity;
+    const branchChanged = Object.prototype.hasOwnProperty.call(nextPatch || {}, 'branchId')
+      && `${nextItem.branchId || ''}` !== `${item.branchId || ''}`;
+    return normalizeCustomerCartItem(nextItem, { forceCurrentConfiguration: branchChanged });
+  }));
   const removeCartItem = (lineId) => setCart(prev => prev.filter(item => item.lineId !== lineId));
 
   const handleOpenDebtPayment = () => {
@@ -77997,10 +78537,17 @@ function CustomerPortalView({
       : (request.primaryItem ? [request.primaryItem] : []);
     const nextCart = requestItems.map((item, index) => {
       const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
-      const quantityUnit = normalizeCustomerCartUnit(product || {}, item.quantityUnit || item.unit || product?.unit || 'Kg');
       const branchId = item.branchId || item.customerBranchId || '';
       const branch = getCustomerBranchById(customerProfile || {}, branchId, safeProducts);
+      const snapshot = buildCustomerPortalBillingSnapshot({
+        item,
+        product,
+        branchId,
+        preserveSavedSnapshot: true,
+      });
       return {
+        ...item,
+        ...snapshot,
         lineId: item.lineId || `${item.productId || `customer_item_${index}`}_${branchId || 'main'}_${index}`,
         productId: item.productId || `customer_item_${index}`,
         productName: item.productName || item.productNameSnapshot || item.description || product?.name || 'Sản phẩm',
@@ -78008,10 +78555,11 @@ function CustomerPortalView({
         branchId,
         branchName: item.branchName || item.customerBranchName || (branch ? getCustomerBranchDisplayName(branch) : ''),
         branchAddress: item.branchAddress || item.customerBranchAddress || branch?.address || '',
-        unit: quantityUnit,
-        quantityUnit,
-        quantity: item.quantity ?? item.weightKg ?? 1,
-        unitPrice: parseLooseMoneyValue(item.unitPrice ?? item.price ?? product?.sellingPrice ?? product?.price ?? 0),
+        unit: snapshot.actualUnit,
+        quantityUnit: snapshot.actualUnit,
+        quantity: snapshot.actualQuantity || item.quantity || 1,
+        price: snapshot.unitPrice,
+        total: snapshot.amount,
         size: item.size || item.sizeLabel || item.weightKg || '',
         attributeLabel: item.attributeLabel || item.productAttribute || item.attribute || ''
       };
@@ -78032,15 +78580,25 @@ function CustomerPortalView({
       const normalizedItems = cart
         .filter(item => (parseFloat(item.quantity) || 0) > 0)
         .map(item => {
-          const quantity = parseFloat(item.quantity) || 0;
-          const unitPrice = parseLooseMoneyValue(item.unitPrice);
           const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
-          const quantityUnit = normalizeCustomerCartUnit(product || {}, item.quantityUnit || item.unit || 'Kg');
           const branch = getCustomerBranchById(customerProfile || {}, item.branchId, safeProducts);
           const branchId = item.branchId || branch?.id || '';
           const branchName = item.branchName || (branch ? getCustomerBranchDisplayName(branch) : '');
           const branchAddress = item.branchAddress || branch?.address || '';
+          const fixedProductIds = branchId
+            ? getCustomerBranchFixedProductIds(customerProfile, branchId, safeProducts)
+            : getCustomerFixedProductIds(customerProfile, safeProducts);
+          const existingSnapshot = resolveTransactionBillingSnapshot({ record: item, product });
+          if (!product || (!fixedProductIds.includes(product.id) && !existingSnapshot.hasFrozenPricing)) {
+            throw new Error(`Sản phẩm ${item.productName || ''} không còn trong danh sách cố định của khách hàng.`);
+          }
+          const snapshot = buildCustomerPortalBillingSnapshot({ item, product, branchId });
+          if (!snapshot.billingSnapshotValid && !snapshot.pricingPendingActual) {
+            throw new Error(`Cấu hình tính tiền của ${product.name || item.productName || 'sản phẩm'} chưa hợp lệ.`);
+          }
           return {
+            ...item,
+            ...snapshot,
             productId: item.productId,
             productName: item.productName,
             productNameSnapshot: item.productName,
@@ -78051,13 +78609,10 @@ function CustomerPortalView({
             customerBranchId: branchId,
             customerBranchName: branchName,
             customerBranchAddress: branchAddress,
-            quantity,
-            unit: quantityUnit,
-            quantityUnit,
-            unitPrice,
-            price: unitPrice,
-            total: quantity * unitPrice,
-            lineTotal: quantity * unitPrice,
+            unit: snapshot.actualUnit,
+            quantityUnit: snapshot.actualUnit,
+            price: snapshot.unitPrice,
+            total: snapshot.amount,
             size: item.size || '',
             attributeLabel: item.attributeLabel || ''
           };
@@ -78108,7 +78663,7 @@ function CustomerPortalView({
         quantity: primaryItem.quantity,
         unit: primaryItem.unit,
         unitPrice: primaryItem.unitPrice,
-        totalAmount: cartTotal,
+        totalAmount: normalizedItems.reduce((sum, item) => sum + parseLooseMoneyValue(item.amount), 0),
         createdByRole: 'customer',
         createdByCustomerId: customerProfile.id,
         customerOrderRootId: customerOrderRootId || undefined,
@@ -78474,7 +79029,7 @@ function CustomerPortalView({
             >
               <span className="flex items-start justify-between gap-1">
                 <span className="line-clamp-2 min-w-0 text-sm font-extrabold leading-snug text-gray-900">{productTitle}</span>
-                <span className="shrink-0 text-[11px] font-black text-emerald-600">{formatCurrency(resolveCustomerUnitPrice(product))}</span>
+                <span className="shrink-0 text-[11px] font-black text-emerald-600">{formatCurrency(resolveCustomerUnitPrice(product, selectedBranchId))}</span>
               </span>
               <span className="mt-1 block line-clamp-2 min-h-[28px] text-[10px] font-semibold leading-snug text-gray-400">{productMeta}</span>
             </button>
@@ -78493,35 +79048,18 @@ function CustomerPortalView({
           <div className="space-y-2 mt-3">
             {cart.map((item, index) => {
               const lineId = item.lineId || `${item.productId || 'item'}_${item.branchId || 'main'}_${index}`;
-              const cartProduct = item.productId ? safeProducts.find(product => product.id === item.productId) : null;
-              const cartUnitOptions = cartProduct
-                ? getCustomerProductUnitOptions(customerProfile, cartProduct, item.quantityUnit || item.unit || 'Kg')
-                : [normalizeProductPricingUnit(item.quantityUnit || item.unit || 'Kg')];
               return (
               <div key={lineId} className="rounded-2xl bg-gray-50 p-2">
                 <div className="grid grid-cols-[1fr_64px_78px_32px] gap-2 items-center">
                   <div>
                     <p className="font-bold text-sm">{item.shortName || item.productName}</p>
-                    <p className="text-xs text-gray-500">{formatCurrency(item.unitPrice)} / {item.quantityUnit || item.unit}</p>
+                    <p className="text-xs text-gray-500">{formatCurrency(item.unitPrice)} / {item.billingUnit || item.pricingUnit}</p>
                     {item.branchName && <p className="mt-0.5 truncate text-[11px] font-bold text-sky-700">{item.branchName}</p>}
                   </div>
                 <input type="number" value={item.quantity} onChange={e => updateCartItem(lineId, { quantity: e.target.value })} className="w-full rounded-xl border border-gray-200 p-2 text-center outline-none" />
-                <select
-                  value={item.quantityUnit || item.unit || 'Kg'}
-                  onChange={e => {
-                    const quantityUnit = normalizeCustomerCartUnit(cartProduct || {}, e.target.value);
-                    updateCartItem(lineId, {
-                      quantityUnit,
-                      unit: quantityUnit,
-                      unitPrice: cartProduct ? resolveCustomerUnitPrice(cartProduct, quantityUnit) : item.unitPrice
-                    });
-                  }}
-                  className="w-full rounded-xl border border-gray-200 bg-white p-2 text-center text-xs font-bold outline-none"
-                >
-                  {cartUnitOptions.map(unit => (
-                    <option key={unit} value={unit}>{unit}</option>
-                  ))}
-                </select>
+                <div className="w-full rounded-xl border border-emerald-100 bg-emerald-50 p-2 text-center text-xs font-bold text-emerald-700">
+                  {item.actualUnit || item.quantityUnit || item.unit}
+                </div>
                 <button onClick={() => removeCartItem(lineId)} className="text-red-400"><X size={18} /></button>
                 </div>
                 {customerBranches.length > 0 && (

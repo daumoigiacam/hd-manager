@@ -1,3 +1,5 @@
+import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const toNumber = (value, fallback = 0) => {
@@ -135,10 +137,29 @@ const itemCost = (item = {}) => toNumber(
   item.costPrice ?? item.cost ?? item.unitCost ?? item.purchasePrice
 );
 
+const itemBillingSnapshot = (item = {}) => {
+  const snapshot = resolveTransactionBillingSnapshot({ record: item });
+  return snapshot.hasFrozenPricing || toNumber(item.billingSnapshotVersion) > 0
+    ? snapshot
+    : null;
+};
+
 const itemLineTotal = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  if (snapshot) return toNumber(snapshot.amount);
   const direct = toNumber(item.total ?? item.lineTotal ?? item.amount ?? item.subtotal, NaN);
   if (Number.isFinite(direct)) return direct;
   return itemQuantity(item) * itemUnitPrice(item);
+};
+
+const itemBillingQuantity = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  return snapshot ? toNumber(snapshot.billingQuantity) : itemQuantity(item);
+};
+
+const itemBillingUnit = (item = {}, fallback = 'đơn vị') => {
+  const snapshot = itemBillingSnapshot(item);
+  return snapshot?.billingUnit || quantityUnitOf(item, fallback);
 };
 
 const orderTotal = (order = {}) => {
@@ -1719,9 +1740,11 @@ const rangeChangePct = (values = []) => {
 };
 
 const itemPriceOf = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  if (snapshot?.unitPrice > 0) return snapshot.unitPrice;
   const directPrice = itemUnitPrice(item);
   if (directPrice > 0) return directPrice;
-  const quantity = itemQuantity(item);
+  const quantity = itemBillingQuantity(item);
   const total = itemLineTotal(item);
   return quantity > 0 && total > 0 ? total / quantity : 0;
 };
@@ -1790,7 +1813,7 @@ const buildProfitabilityDiagnostics = (source = {}, finance = {}) => {
     const orderDay = dateKey(getDateValue(order));
     if (!orderDay || orderDay >= todayKey || orderDay < dayKeys[0]) return;
     getItems(order).forEach(item => {
-      const quantity = itemQuantity(item);
+      const quantity = itemBillingQuantity(item);
       const price = itemPriceOf(item);
       if (quantity <= 0 || price <= 0) return;
       const key = inventoryCostKeyOf(item, productsById);
@@ -1808,7 +1831,7 @@ const buildProfitabilityDiagnostics = (source = {}, finance = {}) => {
     const customerName = customerNameOf(order, customersById);
     const customerKey = String(order.customerId || normalizeText(customerName));
     getItems(order).forEach(item => {
-      const quantity = itemQuantity(item);
+      const quantity = itemBillingQuantity(item);
       const price = itemPriceOf(item);
       if (quantity <= 0 || price <= 0) return;
       const productKey = inventoryCostKeyOf(item, productsById);
@@ -1824,7 +1847,7 @@ const buildProfitabilityDiagnostics = (source = {}, finance = {}) => {
       const row = impactMap.get(key) || {
         customerName,
         productName,
-        unit: quantityUnitOf(item, 'đv'),
+        unit: itemBillingUnit(item, 'đv'),
         quantity: 0,
         value: 0,
         baselineValue: 0,
