@@ -32,6 +32,7 @@ assert.equal(verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
 
 const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', import.meta.url), 'utf8'));
 const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
+const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const identityRewriteSources = firebaseConfig.hosting.rewrites
   .filter(item => `${item.source || ''}`.startsWith('/api/identity/'))
   .map(item => item.source);
@@ -51,5 +52,22 @@ for (const expectedPath of [
 assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.cloudfunctions\.net/);
 assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
 assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
+assert.match(appSource, /auth\.bootstrap\.not_required/);
+assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
+assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
+
+const anonymousSignInCalls = appSource.match(/signInAnonymously\(auth\)/g) || [];
+assert.equal(anonymousSignInCalls.length, 1, 'Anonymous Auth must remain on-demand only');
+const anonymousLoginStart = appSource.indexOf('const getLoginFirebaseUser = async () =>');
+const anonymousLoginEnd = appSource.indexOf('const readLoginCollectionsFromCloud = async () =>');
+const anonymousLoginSource = appSource.slice(anonymousLoginStart, anonymousLoginEnd);
+assert.match(anonymousLoginSource, /runFirebaseAuthMutation/);
+assert.match(anonymousLoginSource, /if \(auth\.currentUser\)/);
+assert.match(anonymousLoginSource, /signInAnonymously\(auth\)/);
+
+const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
+const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
+const identitySessionSource = appSource.slice(identitySessionStart, identitySessionEnd);
+assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWithCustomToken/);
 
 console.log('Identity Center unit checks passed.');

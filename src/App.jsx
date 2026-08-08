@@ -56,7 +56,16 @@ import {
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, signOut, onAuthStateChanged } from 'firebase/auth';
+import {
+  getAuth,
+  setPersistence,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  signInWithCustomToken,
+  signInAnonymously,
+  signOut,
+  onAuthStateChanged
+} from 'firebase/auth';
 import {
   initializeFirestore,
   getFirestore,
@@ -104,6 +113,7 @@ import {
   recordFirestoreOperation,
   recordPerformanceEvent,
 } from './services/performanceMonitor.js';
+import { recordStartupEvent } from './services/startupTelemetry.js';
 import {
   initFirebaseObservability,
 } from './services/firebaseObservability.js';
@@ -418,14 +428,46 @@ const buildSafeLoginDiagnosticPayload = (payload = {}) => {
 
 const logLoginStep = (step, payload = {}, level = 'info') => {
   if (!isLoginDebugEnabled()) return;
+  const safePayload = buildSafeLoginDiagnosticPayload(payload);
+  if (typeof window !== 'undefined') {
+    const previousEntries = Array.isArray(window.__HD_LOGIN_DEBUG__) ? window.__HD_LOGIN_DEBUG__ : [];
+    window.__HD_LOGIN_DEBUG__ = [
+      ...previousEntries.slice(-59),
+      { step, payload: safePayload, at: new Date().toISOString() },
+    ];
+  }
   const logger = level === 'warn' ? console.warn : level === 'error' ? console.error : console.info;
-  logger(`[HD Login] ${step}`, buildSafeLoginDiagnosticPayload(payload));
+  // Keep diagnostics readable in browser log collectors without exposing
+  // credentials, tokens or unmasked phone numbers.
+  logger(`[HD Login] ${step} ${JSON.stringify(safePayload)}`);
 };
 
 // BAO VE CRASH: Kiem tra va khoi tao Firebase an toan
 let app, auth, db;
 let isFirebaseConfigured = true;
 let activeFirebaseConfig = {};
+let firebaseAuthPersistencePromise = Promise.resolve('unavailable');
+
+const configureFirebaseAuthPersistence = async (firebaseAuth) => {
+  if (!firebaseAuth) return 'unavailable';
+  try {
+    await setPersistence(firebaseAuth, indexedDBLocalPersistence);
+    recordStartupEvent('auth.persistence.ready', { mode: 'indexedDB' });
+    return 'indexedDB';
+  } catch (indexedDbError) {
+    try {
+      await setPersistence(firebaseAuth, browserLocalPersistence);
+      recordStartupEvent('auth.persistence.ready', { mode: 'localStorage', fallback: true });
+      return 'localStorage';
+    } catch (localStorageError) {
+      recordStartupEvent('auth.persistence.fallback_failed', {
+        indexedDbError: indexedDbError?.message || String(indexedDbError),
+        localStorageError: localStorageError?.message || String(localStorageError),
+      }, 'warn');
+      return 'unavailable';
+    }
+  }
+};
 
 try {
   const envFirebaseConfig = {
@@ -455,6 +497,10 @@ try {
     logLoginStep('Firebase initialize missing config', { configured: false }, 'warn');
   } else {
     app = initializeApp(firebaseConfig);
+    recordStartupEvent('firebase.initialized', {
+      projectId: firebaseConfig?.projectId || '',
+      authDomain: firebaseConfig?.authDomain || '',
+    });
     initFirebaseObservability(app, {
       appName: 'HD Manager',
       projectId: firebaseConfig?.projectId || '',
@@ -469,6 +515,7 @@ try {
       console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
       db = getFirestore(app);
     }
+    firebaseAuthPersistencePromise = configureFirebaseAuthPersistence(auth);
   }
 } catch (error) {
   console.error("Lỗi khởi tạo Firebase:", error);
@@ -11195,7 +11242,10 @@ export default function App() {
   useDismissModalOnBackdropClick();
   const persistedSession = useMemo(() => loadAppSession(), []);
   const [firebaseUser, setFirebaseUser] = useState(null);
-  const [isFirebaseLoading, setIsFirebaseLoading] = useState(!persistedSession.currentUser);
+  // Firebase must finish restoring its persisted credential before Login is
+  // considered. The app-session cache only improves restoration context; it
+  // never grants authenticated access on its own.
+  const [isFirebaseLoading, setIsFirebaseLoading] = useState(() => Boolean(isFirebaseConfigured && auth));
   const [sessionRecoveryTimedOut, setSessionRecoveryTimedOut] = useState(false);
 
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
@@ -11279,6 +11329,14 @@ export default function App() {
   const restQuotaBlockedUntilRef = useRef(0);
   const firestoreNetworkEnableRef = useRef({ inFlight: false, lastAt: 0 });
   const anonymousBootstrapAllowedRef = useRef(false);
+  const firebaseAuthMutationQueueRef = useRef(Promise.resolve());
+  const runFirebaseAuthMutation = (operation) => {
+    const task = firebaseAuthMutationQueueRef.current
+      .catch(() => undefined)
+      .then(operation);
+    firebaseAuthMutationQueueRef.current = task.catch(() => undefined);
+    return task;
+  };
   // Prevent a restored Firebase token from bypassing the mandatory first-login setup flow.
   const identitySetupPendingRef = useRef(false);
   const [pendingFirebaseWriteCount, setPendingFirebaseWriteCount] = useState(pendingFirebaseWritesRef.current.length);
@@ -11293,7 +11351,48 @@ export default function App() {
     () => CORE_DATA_COLLECTION_NAMES.every(name => loadedCollections[name]),
     [loadedCollections]
   );
+  const isCoreDataLoaded = isInitialDataLoaded;
   const isLoginDataLoaded = Boolean(loadedCollections.companies && loadedCollections.employees);
+
+  useEffect(() => {
+    recordStartupEvent('app.component.mounted', {
+      hasPersistedSession: Boolean(persistedSession.currentUser),
+      platform: typeof Capacitor !== 'undefined' ? Capacitor.getPlatform?.() : 'web',
+    });
+  }, [persistedSession.currentUser]);
+
+  useEffect(() => {
+    if (!firebaseUser) return;
+    recordStartupEvent('auth.user.restored', {
+      anonymous: Boolean(firebaseUser.isAnonymous),
+    });
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    recordStartupEvent('user.recognized', {
+      accountType: currentUser.accountType || (currentUser.role === 'customer' ? 'customer' : 'employee'),
+      source: persistedSession.currentUser?.id === currentUser.id ? 'persisted-session' : 'auth-claims',
+    });
+    const frameId = window.requestAnimationFrame?.(() => recordStartupEvent('shell.rendered', {
+      activeTab,
+    }));
+    if (!isFirebaseLoading) recordStartupEvent('first.ui.rendered', { activeTab });
+    return () => {
+      if (frameId && window.cancelAnimationFrame) window.cancelAnimationFrame(frameId);
+    };
+  }, [currentUser?.id, activeTab, isFirebaseLoading]);
+
+  useEffect(() => {
+    if (isCoreDataLoaded) {
+      recordStartupEvent('first.meaningful.data.rendered');
+      recordStartupEvent('background.sync.core_ready');
+    }
+  }, [isCoreDataLoaded]);
+
+  useEffect(() => {
+    if (isInitialDataLoaded) recordStartupEvent('background.sync.completed');
+  }, [isInitialDataLoaded]);
 
   const persistPendingFirebaseWrites = (writes = []) => {
     const safeWrites = Array.isArray(writes) ? writes : [];
@@ -11814,84 +11913,155 @@ export default function App() {
   }, [currentUser?.id, isInitialDataLoaded]);
 
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
+    if (!isFirebaseConfigured || !auth) {
+      setIsFirebaseLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    let unsubscribe = () => {};
     let authResolved = false;
+    let unauthenticatedBootstrapStarted = false;
     const authTimeout = window.setTimeout(() => {
-      if (!authResolved) {
-        console.warn('Firebase auth is taking too long. Continuing with cached session.');
-        setIsFirebaseLoading(false);
+      if (cancelled || authResolved) return;
+      recordStartupEvent('auth.restore.slow', { timeoutMs: 10000 });
+      // Do not render a cached private profile as authenticated if Firebase
+      // has not confirmed the persisted credential.
+      if (persistedSession.currentUser) {
+        clearAppSession();
+        setCurrentUser(null);
+        setCurrentCompany(null);
+        setActiveTab('home');
       }
+      setIsFirebaseLoading(false);
     }, 10000);
-    const initAuth = async () => {
+
+    const restoreIdentityFromClaims = async (u) => {
+      if (cancelled || !u || u.isAnonymous || identitySetupPendingRef.current) return;
+      try {
+        const tokenResult = await u.getIdTokenResult();
+        if (cancelled) return;
+        const claims = tokenResult?.claims || {};
+        if (!claims.identityId || !claims.companyId || !claims.accountType) return;
+        const restoredUser = {
+          id: claims.appUserId || '',
+          accountId: claims.accountType === 'customer' ? (claims.appUserId || '') : undefined,
+          customerId: claims.customerId || undefined,
+          companyId: claims.companyId,
+          role: claims.role || (claims.accountType === 'customer' ? 'customer' : 'employee'),
+          accountType: claims.accountType,
+          name: claims.name || '',
+          phone: claims.phone || '',
+          username: claims.username || ''
+        };
+        const restoredCompany = { id: claims.companyId, name: claims.companyName || '' };
+        const restoredTab = restoredUser.accountType === 'customer' ? 'customer_home' : 'home';
+        setCurrentUser(restoredUser);
+        setCurrentCompany(restoredCompany);
+        setActiveTab(restoredTab);
+        saveAppSession({ currentUser: restoredUser, currentCompany: restoredCompany, activeTab: restoredTab });
+      } catch (error) {
+        if (!cancelled) console.warn('Khong the khoi phuc phien Identity Center:', error);
+      }
+    };
+
+    const bootstrapUnauthenticatedAuth = async () => {
+      if (cancelled || unauthenticatedBootstrapStarted) return;
+      unauthenticatedBootstrapStarted = true;
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else if (!auth.currentUser) {
-          await signInAnonymously(auth);
+          logLoginStep('Firebase Auth bootstrap custom token after restore', { reason: 'initial-auth-token' });
+          recordStartupEvent('auth.bootstrap.custom_token');
+          await runFirebaseAuthMutation(() => signInWithCustomToken(auth, __initial_auth_token));
+          return;
         }
-      } catch (err) {
-        console.error("Lỗi xác thực:", err);
-        authResolved = true;
-        window.clearTimeout(authTimeout);
-        setIsFirebaseLoading(false);
-        if (persistedSession.currentUser) {
-          setLoadedCollections(prev => ({
-            ...prev,
-            companies: true,
-            employees: true
-          }));
-        }
+        // Do not create an anonymous credential during app startup. That request can
+        // finish after an Identity Center login and overwrite its persistent token.
+        // Legacy registration/login paths still request anonymous auth on demand.
+        logLoginStep('Firebase Auth no persisted private session', { reason: 'initial-state-empty' });
+        recordStartupEvent('auth.bootstrap.not_required');
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Loi khoi tao Firebase Auth:', error);
+        recordStartupEvent('auth.bootstrap.failed', {
+          code: error?.code || '',
+          message: error?.message || String(error),
+        }, 'error');
         setRealtimeStatus({
           state: 'error',
           collection: 'auth',
           lastAt: new Date().toISOString(),
-          error: getFriendlyFirebaseErrorMessage(err, 'Không thể kết nối Firebase Auth. App đang dùng phiên đã lưu.')
+          error: getFriendlyFirebaseErrorMessage(error, 'Khong the ket noi Firebase Auth. Vui long thu lai khi mang on dinh.')
         });
       }
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+
+    const handleAuthState = async (u) => {
+      if (cancelled) return;
       authResolved = true;
       window.clearTimeout(authTimeout);
-      if (u?.isAnonymous && !anonymousBootstrapAllowedRef.current && persistedSession.currentUser) {
+      recordStartupEvent('auth.state.restored', {
+        signedIn: Boolean(u),
+        anonymous: Boolean(u?.isAnonymous),
+      });
+      logLoginStep('Firebase Auth state restored', {
+        signedIn: Boolean(u),
+        anonymous: Boolean(u?.isAnonymous),
+        hasCachedAppSession: Boolean(persistedSession.currentUser),
+      });
+      if (!u) {
+        setFirebaseUser(null);
+        setIsFirebaseLoading(false);
+        if (persistedSession.currentUser) {
+          clearAppSession();
+          setCurrentUser(null);
+          setCurrentCompany(null);
+          setActiveTab('home');
+        } else {
+          // Firebase has completed persistence hydration. Only an explicitly
+          // supplied initial token may bootstrap here; otherwise Login stays open.
+          void bootstrapUnauthenticatedAuth();
+        }
+        return;
+      }
+      if (u.isAnonymous && !anonymousBootstrapAllowedRef.current && persistedSession.currentUser) {
         clearAppSession();
         setCurrentUser(null);
         setCurrentCompany(null);
         setActiveTab('home');
       }
       setFirebaseUser(u);
-      setIsFirebaseLoading(false);
-      // Firebase refreshes custom-token sessions itself. Rehydrate only an already-complete
-      // Identity Center session so reopening the application does not show Login again.
-      if (u && !u.isAnonymous && !identitySetupPendingRef.current && !persistedSession.currentUser) {
-        try {
-          const tokenResult = await u.getIdTokenResult();
-          const claims = tokenResult?.claims || {};
-          if (claims.identityId && claims.companyId && claims.accountType) {
-            const restoredUser = {
-              id: claims.appUserId || '',
-              accountId: claims.accountType === 'customer' ? (claims.appUserId || '') : undefined,
-              customerId: claims.customerId || undefined,
-              companyId: claims.companyId,
-              role: claims.role || (claims.accountType === 'customer' ? 'customer' : 'employee'),
-              accountType: claims.accountType,
-              name: claims.name || '',
-              phone: claims.phone || '',
-              username: claims.username || ''
-            };
-            const restoredCompany = { id: claims.companyId, name: claims.companyName || '' };
-            const restoredTab = restoredUser.accountType === 'customer' ? 'customer_home' : 'home';
-            setCurrentUser(restoredUser);
-            setCurrentCompany(restoredCompany);
-            setActiveTab(restoredTab);
-            saveAppSession({ currentUser: restoredUser, currentCompany: restoredCompany, activeTab: restoredTab });
-          }
-        } catch (error) {
-          console.warn('Không thể khôi phục phiên Identity Center:', error);
-        }
+      await restoreIdentityFromClaims(u);
+      if (!cancelled) setIsFirebaseLoading(false);
+    };
+
+    const startAuth = async () => {
+      try {
+        const persistenceMode = await firebaseAuthPersistencePromise;
+        if (cancelled) return;
+        recordStartupEvent('auth.persistence.restored', { mode: persistenceMode });
+        logLoginStep('Firebase Auth persistence ready', { mode: persistenceMode });
+        unsubscribe = onAuthStateChanged(auth, handleAuthState);
+        // Wait for the first Auth state notification. Checking
+        // auth.currentUser here races Firebase persistence hydration and can
+        // overwrite a real session with an anonymous account.
+        recordStartupEvent('auth.restore.waiting_for_initial_state');
+        logLoginStep('Firebase Auth waiting for initial state', {});
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Loi xac thuc:', error);
+        setIsFirebaseLoading(false);
+        setRealtimeStatus({
+          state: 'error',
+          collection: 'auth',
+          lastAt: new Date().toISOString(),
+          error: getFriendlyFirebaseErrorMessage(error, 'Khong the ket noi Firebase Auth. Vui long thu lai khi mang on dinh.')
+        });
       }
-    });
+    };
+
+    startAuth();
     return () => {
+      cancelled = true;
       window.clearTimeout(authTimeout);
       unsubscribe();
     };
@@ -11912,6 +12082,10 @@ export default function App() {
     });
     realtimeUnsubscribersRef.current = [];
     setRealtimeStatus({ state: 'connecting', collection: '', lastAt: new Date().toISOString(), error: '' });
+    recordStartupEvent('background.sync.started', {
+      coreCollections: CORE_DATA_COLLECTION_NAMES,
+      cachedCollections: Object.keys(lastStableCollectionDataRef.current || {}).length,
+    });
 
     const normalizeFirestoreSnapshotData = (data = {}) => Object.fromEntries(
       Object.entries(data || {}).map(([key, value]) => [
@@ -12288,10 +12462,11 @@ export default function App() {
       if (refreshCollectionsInFlightRef.current) return;
       refreshCollectionsInFlightRef.current = true;
       try {
-        for (const [colName, setFn, isObject, parser] of collectionBindings) {
-          if (cancelled) return;
-          await readCollection(colName, setFn, isObject, parser);
-        }
+        await Promise.allSettled(
+          collectionBindings.map(([colName, setFn, isObject, parser]) => (
+            cancelled ? Promise.resolve() : readCollection(colName, setFn, isObject, parser)
+          ))
+        );
       } finally {
         refreshCollectionsInFlightRef.current = false;
       }
@@ -12436,7 +12611,8 @@ export default function App() {
 
     collectionBindings.forEach((binding) => {
       const [colName] = binding;
-      const isPriority = initialRealtimePriority.has(colName);
+      const isCoreCollection = CORE_DATA_COLLECTION_NAMES.includes(colName);
+      const isPriority = isCoreCollection || initialRealtimePriority.has(colName);
       if (nativeRealtimeStartup && !isPriority) {
         scheduleNativeReadOnlyCollection(binding);
         return;
@@ -12446,7 +12622,9 @@ export default function App() {
       const deferredBaseMs = nativeRealtimeStartup ? 5200 : 1200;
       const deferredStepMs = nativeRealtimeStartup ? 260 : 110;
       const deferredMaxMs = nativeRealtimeStartup ? 12000 : 5200;
-      const delay = isPriority
+      const delay = isCoreCollection
+        ? 0
+        : isPriority
         ? Math.min(priorityListenerIndex++ * priorityStepMs, priorityMaxMs)
         : deferredBaseMs + Math.min(deferredListenerIndex++ * deferredStepMs, deferredMaxMs);
       const timerId = window.setTimeout(() => {
@@ -13106,10 +13284,8 @@ export default function App() {
       }, 'warn');
       return null;
     }
-    if (firebaseUser) {
-      logLoginStep('Firebase Auth reuse state user', { signedIn: true });
-      return firebaseUser;
-    }
+    const persistenceMode = await firebaseAuthPersistencePromise;
+    logLoginStep('Firebase Auth persistence ready for login', { mode: persistenceMode });
     if (auth.currentUser) {
       setFirebaseUser(auth.currentUser);
       setIsFirebaseLoading(false);
@@ -13117,13 +13293,22 @@ export default function App() {
       return auth.currentUser;
     }
     try {
-      anonymousBootstrapAllowedRef.current = true;
-      const credential = await signInAnonymously(auth);
+      const credential = await runFirebaseAuthMutation(async () => {
+        // Re-check inside the serialized mutation. A private custom-token login
+        // may have completed while this on-demand anonymous request was queued.
+        if (auth.currentUser) return { user: auth.currentUser, reused: true };
+        anonymousBootstrapAllowedRef.current = true;
+        return signInAnonymously(auth);
+      });
       setFirebaseUser(credential.user);
       setIsFirebaseLoading(false);
-      logLoginStep('Firebase Auth anonymous success', { signedIn: true });
+      logLoginStep(
+        credential.reused ? 'Firebase Auth reuse queued user' : 'Firebase Auth anonymous success',
+        { signedIn: true, anonymous: Boolean(credential.user?.isAnonymous) }
+      );
       return credential.user;
     } catch (error) {
+      anonymousBootstrapAllowedRef.current = false;
       console.error('Không thể khôi phục Firebase Auth trước khi đăng nhập:', error);
       logLoginStep('Firebase Auth error', { error }, 'error');
       setRealtimeStatus({
@@ -13200,7 +13385,14 @@ export default function App() {
     if (!session?.customToken || !session?.identity || !auth) {
       return { success: false, message: 'Không thể tạo phiên đăng nhập an toàn.' };
     }
-    const credential = await signInWithCustomToken(auth, session.customToken);
+    const persistenceMode = await firebaseAuthPersistencePromise;
+    recordStartupEvent('auth.identity_login.persistence_ready', { mode: persistenceMode });
+    const credential = await runFirebaseAuthMutation(() => signInWithCustomToken(auth, session.customToken));
+    logLoginStep('Firebase Auth identity credential established', {
+      persistenceMode,
+      signedIn: Boolean(credential.user),
+      anonymous: Boolean(credential.user?.isAnonymous),
+    });
     anonymousBootstrapAllowedRef.current = false;
     setFirebaseUser(credential.user);
     setIsFirebaseLoading(false);
@@ -13247,7 +13439,9 @@ export default function App() {
       if (!idToken) return { success: false, message: 'Phiên xác thực đã hết hạn. Vui lòng đăng nhập lại.' };
       const result = await identityCompleteSetup({ idToken, password, username, pin, biometricEnabled, trustDevice });
       if (result.customToken) {
-        const credential = await signInWithCustomToken(auth, result.customToken);
+        const persistenceMode = await firebaseAuthPersistencePromise;
+        recordStartupEvent('auth.identity_setup.persistence_ready', { mode: persistenceMode });
+        const credential = await runFirebaseAuthMutation(() => signInWithCustomToken(auth, result.customToken));
         setFirebaseUser(credential.user);
       }
       const identity = { ...(currentUser || {}), ...(result.identity || {}) };
@@ -19186,7 +19380,9 @@ export default function App() {
     );
   }
 
-  if (isSessionRecovering) {
+  // Firebase Auth is authoritative; cached session data may render the shell while
+  // core collections revalidate in the background. Only block if Auth itself is loading.
+  if (isSessionRecovering && isFirebaseLoading) {
     return (
       <>
         <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">

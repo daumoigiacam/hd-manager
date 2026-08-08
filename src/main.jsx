@@ -7,6 +7,7 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/roboto-flex';
 import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
+import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
@@ -503,9 +504,16 @@ class AppErrorBoundary extends React.Component {
   }
 }
 
+recordStartupEvent('app.launch', {
+  platform: Capacitor.getPlatform?.() || 'web',
+  userAgent: navigator.userAgent || '',
+});
 initPerformanceMonitor({ appName: 'HD Manager' });
+flushStartupEvents();
+recordStartupEvent('react.ready');
 installResponsiveViewportVars();
 installRuntimePerformanceMode();
+recordStartupEvent('first.ui.render.requested');
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <AppErrorBoundary>
