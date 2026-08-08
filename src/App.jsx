@@ -56,6 +56,7 @@ import {
   createPayrollDebtCarryovers,
   createPayrollPeriodLockJournalEntry,
   getEmployeePayrollOpeningDebt,
+  getPreviousPayrollMonthKey,
   getNextPayrollMonthKey
 } from './utils/payrollDebtCarryover.js';
 import {
@@ -15822,10 +15823,7 @@ export default function App() {
     try {
       const periodRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', periodId);
       await runTransaction(db, async (transaction) => {
-        const [existingPeriod, existingPlan] = await Promise.all([
-          transaction.get(periodRef),
-          transaction.get(planRef)
-        ]);
+        const existingPeriod = await transaction.get(periodRef);
         if (existingPeriod.exists() && isPayrollPeriodLocked(existingPeriod.data())) {
           throw new Error('Kỳ lương này đã được khóa trước đó.');
         }
@@ -53220,6 +53218,146 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   );
 }
 
+const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
+  open = false,
+  eyebrow = '',
+  title = '',
+  context = '',
+  fieldLabel = '',
+  fieldType = 'text',
+  value = '',
+  options = [],
+  suffix = '',
+  placeholder = '',
+  canSave = true,
+  canDelete = false,
+  isBusy = false,
+  onValueChange,
+  onCancel,
+  onSave,
+  onDelete
+}) {
+  useEffect(() => {
+    if (!open || typeof window === 'undefined') return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape' || isBusy) return;
+      event.preventDefault();
+      onCancel?.();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isBusy, onCancel, open]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/55 px-3 py-6 backdrop-blur-[2px]"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !isBusy) onCancel?.();
+      }}
+    >
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={title || `Sửa ${fieldLabel}`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSave && !isBusy) onSave?.();
+        }}
+        className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <div className="min-w-0">
+            {eyebrow && <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600">{eyebrow}</p>}
+            <h3 className="mt-1 text-lg font-black text-slate-950">{title || `Sửa ${fieldLabel}`}</h3>
+            {context && <p className="mt-1 truncate text-xs font-semibold text-slate-500">{context}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isBusy}
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 disabled:opacity-50"
+            aria-label="Đóng bảng sửa"
+          >
+            <X size={19} />
+          </button>
+        </div>
+
+        <div className="px-5 py-5">
+          <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">{fieldLabel}</label>
+          <div className="relative mt-2">
+            {fieldType === 'select' ? (
+              <select
+                autoFocus
+                value={`${value ?? ''}`}
+                onChange={(event) => onValueChange?.(event.target.value)}
+                disabled={!canSave || isBusy}
+                className="h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+              >
+                {options.map(option => (
+                  <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                autoFocus
+                type={fieldType === 'number' ? 'number' : 'text'}
+                inputMode={fieldType === 'currency' ? 'numeric' : fieldType === 'number' ? 'decimal' : undefined}
+                min={fieldType === 'number' ? '0' : undefined}
+                step={fieldType === 'number' ? '0.01' : undefined}
+                value={`${value ?? ''}`}
+                onChange={(event) => onValueChange?.(event.target.value)}
+                disabled={!canSave || isBusy}
+                placeholder={placeholder}
+                className={`h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500 ${suffix ? 'pr-20' : ''}`}
+              />
+            )}
+            {suffix && fieldType !== 'select' && (
+              <span className="pointer-events-none absolute inset-y-0 right-4 inline-flex items-center text-xs font-black text-emerald-700">{suffix}</span>
+            )}
+          </div>
+          <p className="mt-2 text-xs font-medium text-slate-400">
+            {canSave ? 'Chỉ ô này được cập nhật khi bấm Lưu.' : 'Bạn chỉ có quyền xóa dòng này.'}
+          </p>
+        </div>
+
+        <div className={`grid gap-2 border-t border-slate-100 bg-slate-50/80 px-4 py-4 ${canDelete && canSave ? 'grid-cols-3' : 'grid-cols-2'}`}>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isBusy}
+            className="min-h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-600 transition hover:bg-slate-100 disabled:opacity-50"
+          >
+            Hủy
+          </button>
+          {canSave && (
+            <button
+              type="submit"
+              disabled={isBusy}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-3 text-sm font-black text-white shadow-lg shadow-emerald-200 transition hover:bg-emerald-600 disabled:cursor-wait disabled:opacity-60"
+            >
+              {isBusy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} strokeWidth={3} />}
+              {isBusy ? 'Đang lưu' : 'Lưu'}
+            </button>
+          )}
+          {canDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={isBusy}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-red-200 bg-white px-3 text-sm font-black text-red-600 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-50"
+            >
+              <Trash2 size={16} />
+              Xóa
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+});
+
 const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesModal({
   mode = 'create',
   initialEntries = [],
@@ -53454,8 +53592,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const [weightEntriesEditorSeed, setWeightEntriesEditorSeed] = useState([]);
   const [dispatchListWeightEditor, setDispatchListWeightEditor] = useState(null);
   const [isSavingDispatchListWeight, setIsSavingDispatchListWeight] = useState(false);
-  const [inlineEditingDispatchId, setInlineEditingDispatchId] = useState('');
   const [inlineEditingDispatchDraft, setInlineEditingDispatchDraft] = useState(() => createEmptyDispatchDraft());
+  const [dispatchCellEditor, setDispatchCellEditor] = useState(null);
+  const [isSavingDispatchCell, setIsSavingDispatchCell] = useState(false);
   const [selectedShortageLine, setSelectedShortageLine] = useState(null);
   const [isClosingShortageLine, setIsClosingShortageLine] = useState(false);
   const [deletingShortageRequestKey, setDeletingShortageRequestKey] = useState('');
@@ -54213,10 +54352,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       isMergedDispatchRow: row.sourceRows.length > 1
     }));
   }, [editableDispatchRows]);
-  const inlineEditingDispatchRow = useMemo(
-    () => editableDispatchRows.find(row => row.id === inlineEditingDispatchId) || null,
-    [editableDispatchRows, inlineEditingDispatchId]
-  );
   const buildDispatchRowSearchLabels = (row = {}) => {
     const labels = [];
     const pushLabel = (value) => {
@@ -55841,13 +55976,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   };
 
   const resetInlineDispatchEdit = () => {
-    setInlineEditingDispatchId('');
     setInlineEditingDispatchDraft(createEmptyDispatchDraft());
+    setDispatchCellEditor(null);
   };
 
   const startInlineDispatchEdit = (row) => {
-    if (!row || !canEdit) return;
-    setInlineEditingDispatchId(row.id);
+    if (!row || (!canEdit && !canDelete)) return;
     setInlineEditingDispatchDraft({
       customerId: row.customerId || '',
       customerSearch: row.customerName || '',
@@ -55856,6 +55990,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       pieceCount: row.pieceCount ?? '',
       quantityUnit: row.quantityUnit || 'Con',
       weightKg: row.weightKg ?? '',
+      weightEntries: Array.isArray(row.weightEntries) ? row.weightEntries : [],
       assignedDriverId: row.assignedDriverId || row.driverId || '',
       note: row.note || '',
       configurationId: row.configurationId || '',
@@ -55871,7 +56006,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   };
 
   const saveInlineDispatchRow = async (row) => {
-    if (!row?.id || !employee?.id || !canEdit) return;
+    if (!row?.id || !employee?.id || !canEdit) return false;
     const customer = customerLookup.get(inlineEditingDispatchDraft.customerId);
     const product = productLookup.get(inlineEditingDispatchDraft.productId);
     const weightKg = parseFloat(`${inlineEditingDispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
@@ -55880,7 +56015,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
 
     if (!customer || !product || (weightKg <= 0 && pieceCount <= 0)) {
       setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le truoc khi luu.');
-      return;
+      return false;
     }
 
     const dispatchLikeForOrderMatch = {
@@ -55913,13 +56048,13 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const nextDriverName = nextDriver?.name || (nextDriverId ? getDispatchDriverName(row) : '');
     if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
       setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
-      return;
+      return false;
     }
     if (!billingSnapshot.billingSnapshotValid) {
       setDispatchError(billingSnapshot.billingSnapshotError === 'MISSING_BILLING_QUANTITY'
         ? `Vui lòng nhập số kg thực tế để tính tiền ${product.name}.`
         : `Đơn vị hoặc đơn giá của ${product.name} chưa đúng cấu hình sản phẩm cố định.`);
-      return;
+      return false;
     }
 
     await onEditWarehouseDispatch(row.id, {
@@ -55935,6 +56070,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       productId: product.id,
       productNameSnapshot: product.name,
       weightKg,
+      weightEntries: normalizeWarehouseWeightEntries(inlineEditingDispatchDraft.weightEntries || []),
       pieceCount,
       quantity: billingSnapshot.actualQuantity,
       quantityCount: billingSnapshot.actualQuantity,
@@ -55962,16 +56098,130 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     setDispatchStatus(`Da cap nhat dong xuat kho cua ${customer.name}.`);
     setDispatchError('');
     resetInlineDispatchEdit();
+    return true;
   };
 
   const deleteInlineDispatchRow = async (row) => {
-    if (!row?.id || !canDelete) return;
+    if (!row?.id || !canDelete) return false;
     const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
-    if (!window.confirm(`Xoa dong xuat kho cua ${customerName}?`)) return;
+    if (!window.confirm(`Xoa dong xuat kho cua ${customerName}?`)) return false;
     await onDeleteWarehouseDispatch(row.id);
     setDispatchStatus(`Da xoa dong xuat kho cua ${customerName}.`);
     setDispatchError('');
-    if (inlineEditingDispatchId === row.id) resetInlineDispatchEdit();
+    resetInlineDispatchEdit();
+    return true;
+  };
+
+  const canEditDispatchCellField = (field) => {
+    if (!canEdit) return false;
+    if (field === 'assignedDriverId') return canAssignDriver;
+    return ['customerId', 'productId', 'pieceCount', 'weightKg'].includes(field);
+  };
+
+  const openDispatchCellEditor = (displayRow, field, event) => {
+    event?.stopPropagation?.();
+    if (!displayRow || (!canEditDispatchCellField(field) && !canDelete)) return;
+    const sourceRow = displayRow.isMergedDispatchRow && Array.isArray(displayRow.sourceRows) && displayRow.sourceRows.length > 0
+      ? displayRow.sourceRows[0]
+      : displayRow;
+    if (!sourceRow?.id) {
+      setDispatchError('Không tìm thấy phiếu gốc để chỉnh sửa.');
+      return;
+    }
+    startInlineDispatchEdit(sourceRow);
+    setDispatchCellEditor({ row: sourceRow, displayRow, field });
+  };
+
+  const closeDispatchCellEditor = () => {
+    if (isSavingDispatchCell) return;
+    resetInlineDispatchEdit();
+  };
+
+  const handleDispatchCellValueChange = (nextValue) => {
+    if (!dispatchCellEditor?.field) return;
+    const { field } = dispatchCellEditor;
+    if (field === 'customerId') {
+      handleInlineDispatchCustomerChange(nextValue);
+      return;
+    }
+    if (field === 'productId') {
+      handleInlineDispatchProductChange(nextValue);
+      return;
+    }
+    setInlineEditingDispatchDraft(previous => ({
+      ...previous,
+      [field]: nextValue,
+      ...(field === 'weightKg' ? { weightEntries: nextValue === '' ? [] : [nextValue] } : {})
+    }));
+    setDispatchError('');
+  };
+
+  const saveDispatchCellEditor = async () => {
+    if (!dispatchCellEditor?.row || !canEditDispatchCellField(dispatchCellEditor.field) || isSavingDispatchCell) return;
+    setIsSavingDispatchCell(true);
+    try {
+      await saveInlineDispatchRow(dispatchCellEditor.row);
+    } catch (error) {
+      setDispatchError(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật phiếu xuất kho. Vui lòng thử lại.'));
+    } finally {
+      setIsSavingDispatchCell(false);
+    }
+  };
+
+  const deleteDispatchCellEditorRow = async () => {
+    if (!dispatchCellEditor?.row || !canDelete || isSavingDispatchCell) return;
+    setIsSavingDispatchCell(true);
+    try {
+      await deleteInlineDispatchRow(dispatchCellEditor.row);
+    } catch (error) {
+      setDispatchError(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa phiếu xuất kho. Vui lòng thử lại.'));
+    } finally {
+      setIsSavingDispatchCell(false);
+    }
+  };
+
+  const getDispatchCellEditorConfig = () => {
+    if (!dispatchCellEditor?.field) return null;
+    const fieldConfigs = {
+      assignedDriverId: {
+        label: 'Người giao',
+        title: 'Sửa người giao',
+        type: 'select',
+        value: inlineEditingDispatchDraft.assignedDriverId,
+        options: [{ value: '', label: 'Chưa giao' }, ...driverOptions.map(driver => ({ value: driver.id, label: driver.name }))]
+      },
+      customerId: {
+        label: 'Khách hàng',
+        title: 'Sửa khách hàng',
+        type: 'select',
+        value: inlineEditingDispatchDraft.customerId,
+        options: [{ value: '', label: '-- Chọn khách hàng --' }, ...requestCustomerOptions.map(customer => ({ value: customer.id, label: customer.name }))]
+      },
+      productId: {
+        label: 'Loại hàng',
+        title: 'Sửa loại hàng',
+        type: 'select',
+        value: inlineEditingDispatchDraft.productId,
+        options: [{ value: '', label: '-- Chọn loại hàng --' }, ...inlineDispatchProductOptions.map(product => ({ value: product.id, label: product.name }))]
+      },
+      pieceCount: {
+        label: 'Số lượng',
+        title: 'Sửa số lượng',
+        type: 'number',
+        value: inlineEditingDispatchDraft.pieceCount,
+        suffix: inlineEditingDispatchDraft.quantityUnit || 'đơn vị',
+        placeholder: 'Nhập số lượng'
+      },
+      weightKg: {
+        label: 'Số kg',
+        title: 'Sửa số kg',
+        type: 'number',
+        value: inlineEditingDispatchDraft.weightKg,
+        suffix: 'kg',
+        placeholder: 'Nhập tổng số kg'
+      }
+    };
+    return fieldConfigs[dispatchCellEditor.field] || null;
   };
 
   const deleteHistoryDispatchRow = async (row) => {
@@ -56267,6 +56517,8 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       setIsDispatchExporting(false);
     }
   };
+
+  const dispatchCellEditorConfig = getDispatchCellEditorConfig();
 
   if (!canAccess) {
     return <div className="p-4 text-center text-sm text-gray-500">Ban khong co quyen xem phieu xuat kho.</div>;
@@ -56751,217 +57003,121 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                     </td>
                   </tr>
                 ) : groupedEditableDispatchRowsByDriver.flatMap(driverGroup => driverGroup.customerGroups.flatMap((group, driverCustomerIndex) => group.rows.map((row, groupRowIndex) => {
-                  const isEditingRow = inlineEditingDispatchId === row.id;
-                  const canInlineEditRow = canEdit && !row.isMergedDispatchRow;
+                  const isSelectedEditorRow = dispatchCellEditor?.displayRow?.id === row.id || dispatchCellEditor?.row?.id === row.id;
                   const isFirstDriverRow = driverCustomerIndex === 0 && groupRowIndex === 0;
-                  const isEditingDriverGroup = Boolean(inlineEditingDispatchId) && driverGroup.customerGroups.some(customerGroup =>
-                    customerGroup.rows.some(item => item.id === inlineEditingDispatchId)
-                  );
-                  const isEditingCustomerGroup = Boolean(inlineEditingDispatchId) && group.rows.some(item => item.id === inlineEditingDispatchId);
-                  const shouldShowDriverCell = isEditingDriverGroup ? true : isFirstDriverRow;
-                  const shouldShowCustomerCell = isEditingCustomerGroup ? true : groupRowIndex === 0;
-                  const driverCellRowSpan = isEditingDriverGroup ? 1 : driverGroup.rowsCount;
-                  const customerCellRowSpan = isEditingCustomerGroup ? 1 : group.rows.length;
+                  const shouldShowDriverCell = isFirstDriverRow;
+                  const shouldShowCustomerCell = groupRowIndex === 0;
+                  const driverCellRowSpan = driverGroup.rowsCount;
+                  const customerCellRowSpan = group.rows.length;
                   return (
                     <React.Fragment key={row.id}>
                     <tr
-                      onClick={() => {
-                        if (!isEditingRow && canInlineEditRow) startInlineDispatchEdit(row);
-                      }}
-                      className={`min-h-[56px] transition ${isEditingRow ? 'bg-amber-50/70' : canInlineEditRow ? 'cursor-pointer hover:bg-emerald-50/70 active:bg-emerald-100/70' : row.isMergedDispatchRow ? 'bg-sky-50/40' : ''}`}
+                      className={`min-h-[56px] transition ${isSelectedEditorRow ? 'bg-emerald-50/70' : row.isMergedDispatchRow ? 'bg-sky-50/40' : ''}`}
                     >
                       {shouldShowDriverCell && (
                       <td rowSpan={driverCellRowSpan} className="border border-slate-700 bg-sky-50/60 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
-                        <p className="text-[9px] font-medium uppercase tracking-[0.08em] text-sky-600">Giao hàng</p>
-                        {isEditingRow && canAssignDriver ? (
-                          <select
-                            value={inlineEditingDispatchDraft.assignedDriverId || ''}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => {
-                              setInlineEditingDispatchDraft(prev => ({ ...prev, assignedDriverId: e.target.value }));
-                              setDispatchError('');
-                            }}
-                            className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-1.5 py-1.5 text-center text-[11px] font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-sky-400"
-                            aria-label="Nhân sự phụ trách phiếu xuất"
-                          >
-                            <option value="">Chưa giao</option>
-                            {driverOptions.map(driver => (
-                              <option key={driver.id} value={driver.id}>{driver.name}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <p className="mt-1 font-medium text-slate-900">{driverGroup.assignedDriverName || 'Chưa giao'}</p>
-                        )}
-                        {driverGroup.rowsCount > 1 && (
-                          <p className="mt-1 text-[10px] font-medium text-slate-500">{driverGroup.rowsCount} phiếu</p>
-                        )}
-                        {driverGroup.quantitySummary && (
-                          <p className="mt-1 text-[10px] font-medium text-emerald-700">{driverGroup.quantitySummary}</p>
-                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => openDispatchCellEditor(row, 'assignedDriverId', event)}
+                          disabled={!canEditDispatchCellField('assignedDriverId') && !canDelete}
+                          className="w-full rounded-xl px-1 py-1 text-center transition hover:bg-sky-100 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditDispatchCellField('assignedDriverId') || canDelete ? 'Bấm để sửa người giao' : undefined}
+                        >
+                          <span className="block text-[9px] font-medium uppercase tracking-[0.08em] text-sky-600">Giao hàng</span>
+                          <span className="mt-1 block font-medium text-slate-900">{driverGroup.assignedDriverName || 'Chưa giao'}</span>
+                          {driverGroup.rowsCount > 1 && (
+                            <span className="mt-1 block text-[10px] font-medium text-slate-500">{driverGroup.rowsCount} phiếu</span>
+                          )}
+                          {driverGroup.quantitySummary && (
+                            <span className="mt-1 block text-[10px] font-medium text-emerald-700">{driverGroup.quantitySummary}</span>
+                          )}
+                        </button>
                       </td>
                       )}
                       {shouldShowCustomerCell && (
                       <td rowSpan={customerCellRowSpan} className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
-                        {isEditingRow ? (
-                          <select
-                            value={inlineEditingDispatchDraft.customerId}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => handleInlineDispatchCustomerChange(e.target.value)}
-                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                          >
-                            <option value="">Chon khach hang</option>
-                            {requestCustomerOptions.map(customer => (
-                              <option key={customer.id} value={customer.id}>{customer.name}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <p className="font-medium">{group.customerName || row.customerName || ''}</p>
-                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => openDispatchCellEditor(row, 'customerId', event)}
+                          disabled={!canEditDispatchCellField('customerId') && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center font-medium transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditDispatchCellField('customerId') || canDelete ? 'Bấm để sửa khách hàng' : undefined}
+                        >
+                          {group.customerName || row.customerName || ''}
+                        </button>
                       </td>
                       )}
                       <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
-                        {isEditingRow ? (
-                          <select
-                            value={inlineEditingDispatchDraft.productId}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => handleInlineDispatchProductChange(e.target.value)}
-                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                          >
-                            <option value="">Chon loai hang</option>
-                            {inlineDispatchProductOptions.map(product => (
-                              <option key={product.id} value={product.id}>{product.name}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="text-center">
-                            <p className="font-medium tracking-tight">{row.productShortName || getCompactProductName(null, row.productName || '')}</p>
-                            {row.note && <p className="mt-0.5 text-[10px] font-medium leading-tight text-slate-500">{row.note}</p>}
-                          </div>
-                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => openDispatchCellEditor(row, 'productId', event)}
+                          disabled={!canEditDispatchCellField('productId') && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditDispatchCellField('productId') || canDelete ? 'Bấm để sửa loại hàng' : undefined}
+                        >
+                          <span className="block font-medium tracking-tight">{row.productShortName || getCompactProductName(null, row.productName || '')}</span>
+                          {row.note && <span className="mt-0.5 block text-[10px] font-medium leading-tight text-slate-500">{row.note}</span>}
+                        </button>
                       </td>
                       <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
-                        {isEditingRow ? (
-                          <div className="grid grid-cols-1 gap-1 sm:grid-cols-[minmax(0,1fr)_4.75rem]">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={inlineEditingDispatchDraft.pieceCount}
-                              onClick={(event) => event.stopPropagation()}
-                              onChange={(e) => {
-                                setInlineEditingDispatchDraft(prev => ({ ...prev, pieceCount: e.target.value }));
-                                setDispatchError('');
-                              }}
-                              className="w-full rounded-lg border border-amber-200 bg-white px-1.5 py-1.5 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                              placeholder="SL"
-                            />
-                            <div
-                              onClick={(event) => event.stopPropagation()}
-                              className="flex w-full items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50 px-1.5 py-1.5 text-center text-[11px] font-black text-emerald-700"
-                              aria-label={`Đơn vị số lượng xuất kho ${inlineEditingDispatchDraft.quantityUnit || 'chưa cấu hình'}`}
-                            >
-                              {inlineEditingDispatchDraft.quantityUnit || '--'}
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="font-medium text-emerald-700">
-                            {getDispatchRowQuantity(row) > 0 ? `${formatNumber(getDispatchRowQuantity(row))} ${getDispatchRowQuantityUnit(row)}`.trim() : '-'}
-                          </span>
-                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => openDispatchCellEditor(row, 'pieceCount', event)}
+                          disabled={!canEditDispatchCellField('pieceCount') && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditDispatchCellField('pieceCount') || canDelete ? 'Bấm để sửa số lượng' : undefined}
+                        >
+                          {getDispatchRowQuantity(row) > 0 ? `${formatNumber(getDispatchRowQuantity(row))} ${getDispatchRowQuantityUnit(row)}`.trim() : '-'}
+                        </button>
                       </td>
                       <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
-                        {isEditingRow ? (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={inlineEditingDispatchDraft.weightKg}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(e) => {
-                              setInlineEditingDispatchDraft(prev => ({ ...prev, weightKg: e.target.value }));
-                              setDispatchError('');
-                            }}
-                            className="w-full rounded-lg border border-amber-200 bg-white px-2 py-2 text-center text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                            placeholder="Kg"
-                          />
-                        ) : (
-                          canEdit ? (
-                            <button
-                              type="button"
-                              onClick={(event) => openDispatchListWeightEditor(row, event)}
-                              className="mx-auto inline-flex min-h-9 w-full items-center justify-center rounded-xl bg-emerald-50 px-1 text-center text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 active:scale-[0.98]"
-                              title="Bấm để nhập thêm các lần cân"
-                            >
-                              {row.weightKg ? formatNumber(row.weightKg) : 'Nhập'}
-                            </button>
-                          ) : (
-                            <span className="font-medium">{row.weightKg ? formatNumber(row.weightKg) : ''}</span>
-                          )
-                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => openDispatchCellEditor(row, 'weightKg', event)}
+                          disabled={!canEditDispatchCellField('weightKg') && !canDelete}
+                          className="mx-auto inline-flex min-h-9 w-full items-center justify-center rounded-xl px-1 text-center text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-default disabled:text-slate-700 disabled:hover:bg-transparent"
+                          title={canEditDispatchCellField('weightKg') || canDelete ? 'Bấm để sửa số kg' : undefined}
+                        >
+                          {row.weightKg ? formatNumber(row.weightKg) : '--'}
+                        </button>
                       </td>
                     </tr>
-                    {isEditingRow && canManageDispatchRows && (
-                      <tr className="bg-amber-50/80">
-                        <td colSpan={5} className="border border-slate-700 px-2 py-2">
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            {canEdit && (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  saveInlineDispatchRow(inlineEditingDispatchRow || row);
-                                }}
-                                className="inline-flex items-center gap-1 rounded-full bg-emerald-500 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-emerald-600"
-                                aria-label="Lưu phiếu xuất"
-                                title="Lưu"
-                              >
-                                <Check size={14} />
-                                Lưu
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                resetInlineDispatchEdit();
-                              }}
-                              className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
-                              aria-label="Hủy chỉnh sửa"
-                              title="Hủy"
-                            >
-                              <X size={14} />
-                              Hủy
-                            </button>
-                            {canDelete && (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  deleteInlineDispatchRow(inlineEditingDispatchRow || row);
-                                }}
-                                className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"
-                                aria-label="Xóa phiếu xuất"
-                                title="Xóa"
-                              >
-                                <Trash2 size={14} />
-                                Xóa
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                     </React.Fragment>
                   );
                 })))}
               </tbody>
             </table>
           </div>
+          {canManageDispatchRows && (
+            <p className="mt-3 text-[11px] text-slate-400">Bấm đúng ô cần sửa. Nút xóa nằm trong bảng sửa của ô đã chọn.</p>
+          )}
         </div>
       ) : (
         <div className="order-3 bg-white rounded-2xl border border-dashed border-slate-200 shadow-sm p-6 text-center text-sm font-medium text-slate-500">
           Chua co dong xuat kho nao trong ngay.
         </div>
+      )}
+
+      {dispatchCellEditor && dispatchCellEditorConfig && (
+        <HDSingleCellEditDialog
+          open
+          eyebrow="Phiếu xuất kho"
+          title={dispatchCellEditorConfig.title}
+          context={`${dispatchCellEditor.displayRow?.customerName || dispatchCellEditor.row.customerNameSnapshot || 'Khách hàng'} • ${dispatchCellEditor.displayRow?.productShortName || dispatchCellEditor.displayRow?.productName || dispatchCellEditor.row.productNameSnapshot || 'Hàng hóa'}`}
+          fieldLabel={dispatchCellEditorConfig.label}
+          fieldType={dispatchCellEditorConfig.type}
+          value={dispatchCellEditorConfig.value}
+          options={dispatchCellEditorConfig.options || []}
+          suffix={dispatchCellEditorConfig.suffix || ''}
+          placeholder={dispatchCellEditorConfig.placeholder || ''}
+          canSave={canEditDispatchCellField(dispatchCellEditor.field)}
+          canDelete={canDelete}
+          isBusy={isSavingDispatchCell}
+          onValueChange={handleDispatchCellValueChange}
+          onCancel={closeDispatchCellEditor}
+          onSave={saveDispatchCellEditor}
+          onDelete={deleteDispatchCellEditorRow}
+        />
       )}
 
       {historyDispatchGroups.length > 0 && (
@@ -57270,7 +57426,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [editingRequestId, setEditingRequestId] = useState(null);
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
   const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
-  const [deletingRequestId, setDeletingRequestId] = useState('');
+  const [orderCellEditor, setOrderCellEditor] = useState(null);
+  const [isSavingOrderCell, setIsSavingOrderCell] = useState(false);
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
   const [isRequestSubmitting, setIsRequestSubmitting] = useState(false);
@@ -57366,6 +57523,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         markAppBackHandled(event);
         return;
       }
+      if (orderCellEditor && !isSavingOrderCell) {
+        setOrderCellEditor(null);
+        setInlineEditingRowKey('');
+        markAppBackHandled(event);
+        return;
+      }
       if (inlineEditingRowKey) {
         setInlineEditingRowKey('');
         markAppBackHandled(event);
@@ -57394,7 +57557,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     };
     window.addEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
     return () => window.removeEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
-  }, [inlineEditingRowKey, isOrderVoiceListening, isOrderVoiceProcessing, openDraftPicker, showForm, showRequestFilterPanel]);
+  }, [inlineEditingRowKey, isOrderVoiceListening, isOrderVoiceProcessing, isSavingOrderCell, openDraftPicker, orderCellEditor, showForm, showRequestFilterPanel]);
 
   const salesVisibleEmployeeIdSet = useMemo(() => {
     const ids = new Set();
@@ -58492,6 +58655,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const resetInlineEditing = () => {
     setInlineEditingRowKey('');
     setInlineEditingDraft({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', unitPrice: '' });
+    setOrderCellEditor(null);
   };
 
   const getOrderRequestDepositAmount = (request = {}) => (
@@ -58573,7 +58737,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const startInlineEditRow = (row) => {
-    if (!row || !canEdit) return;
+    if (!row || (!canEdit && !canDelete)) return;
     setInlineEditingRowKey(row.rowKey);
     setInlineEditingDraft({
       customerId: row.customerId || '',
@@ -58599,9 +58763,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const saveInlineEditRow = async (row) => {
-    if (!row?.requestId || !canEdit) return;
-    const request = filteredRequests.find(item => item.id === row.requestId);
-    if (!request) return;
+    if (!row?.requestId || !canEdit) return false;
+    const request = filteredRequests.find(item => item.id === row.requestId)
+      || orderRequests.find(item => item.id === row.requestId);
+    if (!request) return false;
 
     const customer = customerLookup.get(inlineEditingDraft.customerId);
     const product = productLookup.get(inlineEditingDraft.productId);
@@ -58648,7 +58813,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     if (!customer || !product || quantity <= 0 || billingConfiguration.unitPrice <= 0 || (!snapshot.billingSnapshotValid && !snapshot.pricingPendingActual)) {
       setRequestStatus('Vui long chon dung khach hang, hang hoa, so luong va don gia hop le truoc khi luu.');
-      return;
+      return false;
     }
 
     const requestItems = (request.items || []).length > 0 ? [...request.items] : (request.primaryItem ? [{ ...request.primaryItem }] : []);
@@ -58690,55 +58855,201 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ), 0)
     };
 
-    resetInlineEditing();
     setRequestStatus(`Đang cập nhật đơn đặt hàng của ${customer.name}...`);
     try {
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
+      resetInlineEditing();
       setRequestStatus(`Đã cập nhật đơn đặt hàng của ${customer.name}.`);
+      return true;
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
+      return false;
     }
   };
 
   const deleteInlineEditRow = async (row) => {
-    if (!row?.requestId || !canDelete) return;
-    const request = filteredRequests.find(item => item.id === row.requestId);
-    if (!request) return;
+    if (!row?.requestId || !canDelete) return false;
+    const request = filteredRequests.find(item => item.id === row.requestId)
+      || orderRequests.find(item => item.id === row.requestId);
+    if (!request) return false;
     const requestItems = (request.items || []).length > 0 ? [...request.items] : (request.primaryItem ? [{ ...request.primaryItem }] : []);
     const customerName = request.customer?.name || customerLookup.get(request.customerId)?.name || 'khach hang nay';
-    if (!window.confirm(`Xoa dong hang cua ${customerName}?`)) return;
+    if (!window.confirm(`Xoa dong hang cua ${customerName}?`)) return false;
 
-    if (requestItems.length <= 1) {
-      await onDeleteOrderRequest(request.id);
-      setRequestStatus(`Da xoa toan bo don hang cua ${customerName}.`);
-      if (inlineEditingRowKey === row.rowKey) resetInlineEditing();
+    try {
+      if (requestItems.length <= 1) {
+        await onDeleteOrderRequest(request.id);
+        setRequestStatus(`Da xoa toan bo don hang cua ${customerName}.`);
+        resetInlineEditing();
+        return true;
+      }
+
+      requestItems.splice(row.itemIndex, 1);
+      const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
+      const branchRef = getOrderRequestBranchRef(requestCustomer, request, requestItems[0] || row);
+      const normalizedRequest = {
+        customerId: request.customerId,
+        branchId: branchRef.branchId,
+        branchName: branchRef.branchName,
+        branchAddress: branchRef.branchAddress,
+        customerBranchId: branchRef.branchId,
+        customerBranchName: branchRef.branchName,
+        customerBranchAddress: branchRef.branchAddress,
+        salesEmpId: request.salesEmpId || request.customer?.empId || employee?.id || '',
+        date: request.requestDateKey || request.date || getTodayString(),
+        note: request.note || '',
+        items: requestItems,
+        totalQuantity: requestItems.reduce((sum, item) => sum + parseLooseQuantityValue(item.quantity), 0),
+        totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
+          item.amount ?? item.pricingAmount ?? item.lineTotal ?? (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
+        ), 0)
+      };
+      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
+      await persistSmartOrderingPreferences([normalizedRequest]);
+      setRequestStatus(`Da xoa mot dong hang cua ${customerName}.`);
+      resetInlineEditing();
+      return true;
+    } catch (error) {
+      setRequestStatus(`Xoa dong hang bi loi: ${getFriendlyFirebaseErrorMessage(error, 'Vui long thu lai.')}`);
+      return false;
+    }
+  };
+
+  const canEditOrderCellField = (field) => {
+    if (field === 'customerId' || field === 'productId') return canEditGeneral;
+    if (field === 'quantity') return canEditQuantity;
+    if (field === 'sizeLabel' || field === 'unitPrice') return canEditSizePrice;
+    return false;
+  };
+
+  const openOrderCellEditor = (row, field, event) => {
+    event?.stopPropagation?.();
+    if (!row || (!canEditOrderCellField(field) && !canDelete)) return;
+    startInlineEditRow(row);
+    setOrderCellEditor({ row, field });
+  };
+
+  const closeOrderCellEditor = () => {
+    if (isSavingOrderCell) return;
+    resetInlineEditing();
+  };
+
+  const handleOrderCellValueChange = (nextValue) => {
+    if (!orderCellEditor?.field) return;
+    const { field, row } = orderCellEditor;
+
+    if (field === 'customerId') {
+      const selectedCustomer = customerLookup.get(nextValue);
+      const selectedProduct = productLookup.get(inlineEditingDraft.productId);
+      const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
+      const customSize = selectedCustomer && selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
+      const customAttribute = selectedCustomer && selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
+      const attributeOptions = getProductAttributes(selectedProduct);
+      setInlineEditingDraft(previous => ({
+        ...previous,
+        customerId: nextValue,
+        attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : previous.attributeLabel,
+        sizeLabel: customSize || previous.sizeLabel,
+        quantityUnit: selectedCustomer && selectedProduct
+          ? resolveDraftItemQuantityUnit(configSource, selectedProduct, previous.quantityUnit)
+          : previous.quantityUnit,
+        unitPrice: selectedCustomer && selectedProduct
+          ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, previous.quantityUnit))
+          : previous.unitPrice
+      }));
       return;
     }
 
-    requestItems.splice(row.itemIndex, 1);
-    const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
-    const branchRef = getOrderRequestBranchRef(requestCustomer, request, requestItems[0] || row);
-    const normalizedRequest = {
-      customerId: request.customerId,
-      branchId: branchRef.branchId,
-      branchName: branchRef.branchName,
-      branchAddress: branchRef.branchAddress,
-      customerBranchId: branchRef.branchId,
-      customerBranchName: branchRef.branchName,
-      customerBranchAddress: branchRef.branchAddress,
-      salesEmpId: request.salesEmpId || request.customer?.empId || employee?.id || '',
-      date: request.requestDateKey || request.date || getTodayString(),
-      note: request.note || '',
-      items: requestItems,
-      totalQuantity: requestItems.reduce((sum, item) => sum + parseLooseQuantityValue(item.quantity), 0),
-      totalAmount: requestItems.reduce((sum, item) => sum + parseLooseMoneyValue(
-        item.amount ?? item.pricingAmount ?? item.lineTotal ?? (parseLooseQuantityValue(item.quantity) * parseLooseMoneyValue(item.unitPrice))
-      ), 0)
+    if (field === 'productId') {
+      const selectedProduct = productLookup.get(nextValue);
+      const selectedCustomer = customerLookup.get(inlineEditingDraft.customerId);
+      const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
+      const customSize = selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
+      const customAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
+      const attributeOptions = getProductAttributes(selectedProduct);
+      setInlineEditingDraft(previous => ({
+        ...previous,
+        productId: nextValue,
+        attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : (attributeOptions.includes(previous.attributeLabel) ? previous.attributeLabel : ''),
+        sizeLabel: customSize || previous.sizeLabel,
+        quantityUnit: selectedProduct
+          ? resolveDraftItemQuantityUnit(configSource, selectedProduct, previous.quantityUnit)
+          : previous.quantityUnit || defaultQuantityUnit,
+        unitPrice: selectedProduct
+          ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, previous.quantityUnit))
+          : previous.unitPrice
+      }));
+      return;
+    }
+
+    setInlineEditingDraft(previous => ({
+      ...previous,
+      [field]: field === 'unitPrice' ? parseInputCurrency(nextValue) : nextValue
+    }));
+  };
+
+  const saveOrderCellEditor = async () => {
+    if (!orderCellEditor?.row || !canEditOrderCellField(orderCellEditor.field) || isSavingOrderCell) return;
+    setIsSavingOrderCell(true);
+    try {
+      await saveInlineEditRow(orderCellEditor.row);
+    } finally {
+      setIsSavingOrderCell(false);
+    }
+  };
+
+  const deleteOrderCellEditorRow = async () => {
+    if (!orderCellEditor?.row || !canDelete || isSavingOrderCell) return;
+    setIsSavingOrderCell(true);
+    try {
+      await deleteInlineEditRow(orderCellEditor.row);
+    } finally {
+      setIsSavingOrderCell(false);
+    }
+  };
+
+  const getOrderCellEditorConfig = () => {
+    if (!orderCellEditor?.field) return null;
+    const fieldConfigs = {
+      customerId: {
+        label: 'Khách hàng',
+        title: 'Sửa khách hàng',
+        type: 'select',
+        value: inlineEditingDraft.customerId,
+        options: [{ value: '', label: '-- Chọn khách hàng --' }, ...availableCustomers.map(customer => ({ value: customer.id, label: customer.name }))]
+      },
+      productId: {
+        label: 'Sản phẩm',
+        title: 'Sửa sản phẩm',
+        type: 'select',
+        value: inlineEditingDraft.productId,
+        options: [{ value: '', label: '-- Chọn sản phẩm --' }, ...activeProducts.map(product => ({ value: product.id, label: product.name }))]
+      },
+      quantity: {
+        label: 'Số lượng',
+        title: 'Sửa số lượng',
+        type: 'number',
+        value: inlineEditingDraft.quantity,
+        suffix: inlineEditingDraft.actualUnit || inlineEditingDraft.quantityUnit || defaultQuantityUnit,
+        placeholder: 'Nhập số lượng'
+      },
+      sizeLabel: {
+        label: 'Size',
+        title: 'Sửa size',
+        type: 'text',
+        value: inlineEditingDraft.sizeLabel,
+        placeholder: 'Nhập size hoặc phân loại'
+      },
+      unitPrice: {
+        label: 'Đơn giá',
+        title: 'Sửa đơn giá',
+        type: 'currency',
+        value: formatInputCurrency(inlineEditingDraft.unitPrice),
+        suffix: `đ/${inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || inlineEditingDraft.quantityUnit || 'đơn vị'}`,
+        placeholder: 'Nhập đơn giá'
+      }
     };
-      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
-      await persistSmartOrderingPreferences([normalizedRequest]);
-    setRequestStatus(`Da xoa mot dong hang cua ${customerName}.`);
-    if (inlineEditingRowKey === row.rowKey) resetInlineEditing();
+    return fieldConfigs[orderCellEditor.field] || null;
   };
 
   const updateDraft = (localId, patch) => {
@@ -59593,27 +59904,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setOrderFormStage('detail');
   };
 
-  const handleDeleteExistingRequest = async (request) => {
-    if (!request?.id || !canDelete || deletingRequestId === request.id) return;
-    const customerName = request.customer?.name || customerLookup.get(request.customerId)?.name || 'don hang nay';
-    if (!window.confirm(`Xoa don dat hang cua ${customerName}?`)) return;
-    setDeletingRequestId(request.id);
-    setRequestStatus(`Dang xoa don dat hang cua ${customerName}...`);
-    try {
-      await onDeleteOrderRequest(request.id);
-      setRequestStatus(`Da xoa don dat hang cua ${customerName}.`);
-      setSheetStatus('');
-      if (editingRequestId === request.id) {
-        closeOrderRequestForm();
-      }
-      if (inlineEditingRowKey.startsWith(`${request.id}_`)) resetInlineEditing();
-    } catch (error) {
-      setRequestStatus(`Xoa don dat hang chua thanh cong: ${getFriendlyFirebaseErrorMessage(error, 'Vui long thu lai.')}`);
-    } finally {
-      setDeletingRequestId('');
-    }
-  };
-
   const formatSheetSize = (sizeValue) => {
     const raw = `${sizeValue || ''}`.trim();
     if (!raw) return '';
@@ -60333,6 +60623,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
   };
 
+  const orderCellEditorConfig = getOrderCellEditorConfig();
+
   if (!canAccess) {
     return <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 text-center text-sm text-gray-500">Bạn không có quyền vào mục đơn đặt hàng.</div>;
   }
@@ -60517,113 +60809,52 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       </tr>
                     )}
                       {salesGroup.customerGroups.map((customerGroup) => {
-                        const hasEditingRowInCustomerGroup = customerGroup.rows.some((groupRow) => inlineEditingRowKey === groupRow.rowKey);
                   return (
                     <React.Fragment key={customerGroup.key}>
                           {customerGroup.rows.map((row, customerRowIndex) => {
-                  const isEditingRow = inlineEditingRowKey === row.rowKey;
-                  const shouldRenderCustomerCell = hasEditingRowInCustomerGroup || customerRowIndex === 0;
-                  const mergedCustomerRowSpan = hasEditingRowInCustomerGroup ? undefined : customerGroup.rows.length;
+                  const isSelectedEditorRow = orderCellEditor?.row?.rowKey === row.rowKey;
+                  const shouldRenderCustomerCell = customerRowIndex === 0;
+                  const mergedCustomerRowSpan = customerGroup.rows.length;
                   const rowWasDispatched = row.warehouseDispatchStatus === 'dispatched';
                   const rowWasPartlyDispatched = row.warehouseDispatchStatus === 'partial';
                   return (
                     <React.Fragment key={row.rowKey}>
                     <tr
-                      onClick={!isEditingRow && canEdit ? () => startInlineEditRow(row) : undefined}
-                      className={`h-12 ${rowWasDispatched ? 'bg-emerald-50/35' : rowWasPartlyDispatched ? 'bg-amber-50/30' : ''} ${!isEditingRow && canEdit ? 'cursor-pointer hover:bg-emerald-50/60 active:bg-emerald-100' : ''} ${isEditingRow ? 'bg-amber-50/50' : ''}`}
-                      title={!isEditingRow && canEdit ? 'Bấm để sửa dòng này' : undefined}
+                      className={`h-12 transition ${rowWasDispatched ? 'bg-emerald-50/35' : rowWasPartlyDispatched ? 'bg-amber-50/30' : ''} ${isSelectedEditorRow ? 'bg-emerald-50/70' : ''}`}
                     >
                       {shouldRenderCustomerCell && (
                         <td
                           {...(mergedCustomerRowSpan && mergedCustomerRowSpan > 1 ? { rowSpan: mergedCustomerRowSpan } : {})}
                           className={`max-w-[170px] border border-slate-700 px-2 py-2 font-semibold break-words whitespace-normal ${mergedCustomerRowSpan && mergedCustomerRowSpan > 1 ? 'align-middle text-center bg-white text-[12px] leading-snug' : 'align-top'}`}
                         >
-                        {isEditingRow && canEditGeneral ? (
-                          <select value={inlineEditingDraft.customerId} onChange={(e) => {
-                            const selectedCustomer = customerLookup.get(e.target.value);
-                            const selectedProduct = productLookup.get(inlineEditingDraft.productId);
-                            const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
-                            const customSize = selectedCustomer && selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
-                            const customAttribute = selectedCustomer && selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
-                            const attributeOptions = getProductAttributes(selectedProduct);
-                            setInlineEditingDraft(prev => ({
-                              ...prev,
-                              customerId: e.target.value,
-                              attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : prev.attributeLabel,
-                              sizeLabel: customSize || prev.sizeLabel,
-                              quantityUnit: selectedCustomer && selectedProduct
-                                ? resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit)
-                                : prev.quantityUnit,
-                              unitPrice: selectedCustomer && selectedProduct
-                                ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit))
-                                : prev.unitPrice
-                            }));
-                          }} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500">
-                            <option value="">-- Chọn khách --</option>
-                            {availableCustomers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
-                          </select>
-                        ) : (
-                          <div className="space-y-1">
-                            <p>{row.customerName}</p>
+                          <button
+                            type="button"
+                            onClick={(event) => openOrderCellEditor(row, 'customerId', event)}
+                            disabled={!canEditGeneral && !canDelete}
+                            className="w-full rounded-xl px-1 py-1 text-center transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                            title={canEditGeneral || canDelete ? 'Bấm để sửa ô khách hàng' : undefined}
+                          >
+                          <span className="block space-y-1">
+                            <span className="block">{row.customerName}</span>
                             {row.branchName && (
-                              <p className="text-[10px] font-black leading-4 text-sky-700">{formatOrderRequestBranchLabel(row)}</p>
+                              <span className="block text-[10px] font-black leading-4 text-sky-700">{formatOrderRequestBranchLabel(row)}</span>
                             )}
-                            <p className="text-[10px] font-bold leading-4 text-slate-400">Đặt lúc {row.requestPlacedAtTimeLabel || '--:--'}</p>
-                          </div>
-                        )}
+                            <span className="block text-[10px] font-bold leading-4 text-slate-400">Đặt lúc {row.requestPlacedAtTimeLabel || '--:--'}</span>
+                          </span>
+                          </button>
                         </td>
                       )}
                       <td className="max-w-[170px] border border-slate-700 px-2 py-2 font-semibold align-top break-words whitespace-normal">
-                        {isEditingRow && canEditGeneral ? (
-                          <div className="space-y-2">
-                          <select value={inlineEditingDraft.productId} onChange={(e) => {
-                            const selectedProduct = productLookup.get(e.target.value);
-                            const selectedCustomer = customerLookup.get(inlineEditingDraft.customerId);
-                            const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
-                            const customSize = selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
-                            const customAttribute = selectedProduct ? getCustomerProductAttribute(configSource, selectedProduct) : '';
-                            const attributeOptions = getProductAttributes(selectedProduct);
-                            setInlineEditingDraft(prev => ({
-                              ...prev,
-                              productId: e.target.value,
-                              attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : (attributeOptions.includes(prev.attributeLabel) ? prev.attributeLabel : ''),
-                              sizeLabel: customSize || prev.sizeLabel,
-                              quantityUnit: selectedProduct
-                                ? resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit)
-                                : prev.quantityUnit || defaultQuantityUnit,
-                              unitPrice: selectedProduct
-                                ? getCustomerProductPrice(configSource, selectedProduct, resolveDraftItemQuantityUnit(configSource, selectedProduct, prev.quantityUnit))
-                                : prev.unitPrice
-                            }));
-                          }} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] bg-white outline-none focus:ring-2 focus:ring-emerald-500">
-                            <option value="">-- Chọn hàng --</option>
-                            {activeProducts.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
-                          </select>
-                          </div>
-                        ) : (
                           <div className="space-y-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <p className="min-w-0 flex-1 font-semibold text-slate-900">{getOrderRequestRowProductLabel(row)}</p>
-                              {canDelete && (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    const requestToDelete = filteredRequests.find(item => item.id === row.requestId)
-                                      || orderRequests.find(item => item.id === row.requestId);
-                                    if (requestToDelete) handleDeleteExistingRequest(requestToDelete);
-                                  }}
-                                  disabled={deletingRequestId === row.requestId}
-                                  aria-label={`Xoa don dat hang cua ${row.customerName}`}
-                                  title="Xoa toan bo don dat hang"
-                                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-red-500 transition hover:border-red-200 hover:bg-red-100 disabled:cursor-wait disabled:opacity-60"
-                                >
-                                  {deletingRequestId === row.requestId
-                                    ? <Loader2 size={14} className="animate-spin" />
-                                    : <Trash2 size={14} />}
-                                </button>
-                              )}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={(event) => openOrderCellEditor(row, 'productId', event)}
+                              disabled={!canEditGeneral && !canDelete}
+                              className="w-full rounded-xl px-1 py-1 text-left font-semibold text-slate-900 transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                              title={canEditGeneral || canDelete ? 'Bấm để sửa ô sản phẩm' : undefined}
+                            >
+                              {getOrderRequestRowProductLabel(row)}
+                            </button>
                             {row.isCustomerPortalRequest && row.itemIndex === 0 && row.customerPortalApprovalLabel && (
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {row.customerPortalApprovalState === 'pending' && row.canApproveCustomerPortal && (
@@ -60680,59 +60911,41 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               <p className="text-[10px] font-medium leading-4 text-slate-500">{getOrderRequestRowNoteText(row)}</p>
                             )}
                           </div>
-                        )}
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow && canEditQuantity ? (
-                          <div className="space-y-2">
-                            <input type="number" min="0" step="0.01" value={inlineEditingDraft.quantity} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, quantity: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Số lượng" />
-                            <div className="w-full min-w-0 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-2 text-center text-[11px] font-bold text-emerald-700">
-                              {inlineEditingDraft.actualUnit || inlineEditingDraft.quantityUnit || defaultQuantityUnit}
-                            </div>
-                          </div>
-                        ) : formatSheetQuantity(row.quantity, row.quantityUnit)}
+                        <button
+                          type="button"
+                          onClick={(event) => openOrderCellEditor(row, 'quantity', event)}
+                          disabled={!canEditQuantity && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditQuantity || canDelete ? 'Bấm để sửa ô số lượng' : undefined}
+                        >
+                          {formatSheetQuantity(row.quantity, row.quantityUnit)}
+                        </button>
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow && canEditSizePrice ? (
-                          <input type="text" value={inlineEditingDraft.sizeLabel} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, sizeLabel: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Size" />
-                        ) : formatOrderRequestSizeCell(row)}
+                        <button
+                          type="button"
+                          onClick={(event) => openOrderCellEditor(row, 'sizeLabel', event)}
+                          disabled={!canEditSizePrice && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditSizePrice || canDelete ? 'Bấm để sửa ô size' : undefined}
+                        >
+                          {formatOrderRequestSizeCell(row) || '--'}
+                        </button>
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow && canEditSizePrice ? (
-                          <div className="space-y-1">
-                            <input
-                              type="tel"
-                              inputMode="numeric"
-                              value={formatInputCurrency(inlineEditingDraft.unitPrice)}
-                              onChange={(event) => setInlineEditingDraft(prev => ({
-                                ...prev,
-                                unitPrice: parseInputCurrency(event.target.value)
-                              }))}
-                              aria-label="Sua don gia"
-                              className="w-full min-w-0 rounded-lg border border-emerald-200 bg-white px-2 py-2 text-center text-[11px] font-black text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500"
-                              placeholder="Don gia"
-                            />
-                            <p className="text-center text-[9px] font-bold text-slate-400">
-                              / {inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || inlineEditingDraft.quantityUnit}
-                            </p>
-                          </div>
-                        ) : row.unitPrice ? formatCurrency(row.unitPrice) : ''}
+                        <button
+                          type="button"
+                          onClick={(event) => openOrderCellEditor(row, 'unitPrice', event)}
+                          disabled={!canEditSizePrice && !canDelete}
+                          className="min-h-9 w-full rounded-xl px-1 text-center font-black text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                          title={canEditSizePrice || canDelete ? 'Bấm để sửa ô đơn giá' : undefined}
+                        >
+                          {row.unitPrice ? formatCurrency(row.unitPrice) : '--'}
+                        </button>
                       </td>
                     </tr>
-                    {isEditingRow && canEdit && (
-                      <tr className="bg-amber-50">
-                        <td colSpan={5} className="border border-slate-700 px-2 py-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-[11px] font-bold text-amber-700">Đang sửa dòng đã chọn</span>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <button type="button" onClick={() => saveInlineEditRow(row)} className="rounded-lg bg-emerald-500 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-600">Lưu</button>
-                              <button type="button" onClick={resetInlineEditing} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50">Hủy</button>
-                              {canDelete && <button type="button" onClick={() => deleteInlineEditRow(row)} className="rounded-lg border border-red-200 bg-white px-3 py-2 text-[11px] font-bold text-red-500 hover:bg-red-50">Xóa</button>}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                     </React.Fragment>
                   );
                           })}
@@ -60744,8 +60957,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               </tbody>
             </table>
           </div>
-          {canEdit && (
-            <p className="text-[11px] text-slate-400 mt-3">Bấm trực tiếp vào một dòng để sửa dòng hàng đó.</p>
+          {canManage && (
+            <p className="mt-3 text-[11px] text-slate-400">Bấm đúng ô cần sửa. Nút xóa nằm trong bảng sửa của ô đã chọn.</p>
           )}
           {filteredRequests.length === 0 && (
             <div className="mt-4 rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
@@ -60753,6 +60966,28 @@ function OrderRequestView({ employee, employees = [], customers, products, order
             </div>
           )}
         </div>
+
+      {orderCellEditor && orderCellEditorConfig && (
+        <HDSingleCellEditDialog
+          open
+          eyebrow="Đơn đặt hàng"
+          title={orderCellEditorConfig.title}
+          context={`${orderCellEditor.row.customerName || 'Khách hàng'} • ${getOrderRequestRowProductLabel(orderCellEditor.row) || 'Sản phẩm'}`}
+          fieldLabel={orderCellEditorConfig.label}
+          fieldType={orderCellEditorConfig.type}
+          value={orderCellEditorConfig.value}
+          options={orderCellEditorConfig.options || []}
+          suffix={orderCellEditorConfig.suffix || ''}
+          placeholder={orderCellEditorConfig.placeholder || ''}
+          canSave={canEditOrderCellField(orderCellEditor.field)}
+          canDelete={canDelete}
+          isBusy={isSavingOrderCell}
+          onValueChange={handleOrderCellValueChange}
+          onCancel={closeOrderCellEditor}
+          onSave={saveOrderCellEditor}
+          onDelete={deleteOrderCellEditorRow}
+        />
+      )}
 
       {showForm && (
         <div className="hd-order-request-modal-layer fixed inset-0 z-[120] isolate bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
@@ -74548,6 +74783,21 @@ function SalaryView({
     [currentMonth, payrollCompanyId, payrollPeriods]
   );
   const isPayrollLocked = Boolean(lockedPayrollPeriod);
+  const previousPayrollMonth = useMemo(
+    () => getPreviousPayrollMonthKey(currentMonth),
+    [currentMonth]
+  );
+  const previousLockedPayrollPeriod = useMemo(
+    () => getLockedPayrollPeriod(payrollPeriods, payrollCompanyId, previousPayrollMonth),
+    [payrollCompanyId, payrollPeriods, previousPayrollMonth]
+  );
+  const shouldReviewPreviousPayrollPeriod = Boolean(
+    canManagePayrollByRole
+    && canViewCompanyPayroll
+    && currentMonth === getTodayString().substring(0, 7)
+    && previousPayrollMonth
+    && !previousLockedPayrollPeriod
+  );
   const payrollPolicyEmployees = useMemo(
     () => isPayrollLocked
       ? []
@@ -75598,7 +75848,15 @@ function SalaryView({
         <h3 className="mb-4 text-center text-3xl font-black text-white drop-shadow-[0_2px_4px_rgba(2,44,34,0.45)]">{formatCurrency(aggregateData.totalSalary)} đ</h3>
         <div className="grid grid-cols-2 gap-3 border-t border-emerald-400/50 pt-3 sm:grid-cols-4">
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ngày công</p><p className="font-bold text-sm">{aggregateData.totalDays}</p></div>
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ứng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalAdvance)} đ</p></div>
+          <div className="rounded-xl bg-white/10 p-3 text-center">
+            <p className="text-emerald-100 text-[10px] uppercase mb-1">Ứng + nợ đầu kỳ</p>
+            <p className="font-bold text-sm">{formatCurrency(aggregateData.totalAdvance + aggregateData.totalOpeningDebt)} đ</p>
+            {aggregateData.totalOpeningDebt > 0 && (
+              <p className="mt-1 text-[9px] font-semibold text-emerald-100/90">
+                Ứng {formatCurrency(aggregateData.totalAdvance)} đ • Nợ chuyển {formatCurrency(aggregateData.totalOpeningDebt)} đ
+              </p>
+            )}
+          </div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Mua hàng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEmployeePurchase)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng phạt</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalPenalty)} đ</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng thưởng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalBonus)} đ</p></div>
@@ -75625,6 +75883,26 @@ function SalaryView({
                 {lockedPayrollPeriod?.lockedAt ? ` lúc ${formatDateTimeLabel(lockedPayrollPeriod.lockedAt)}` : ''}. Các thay đổi phát sinh sau thời điểm này không làm đổi bảng lương đã chốt.
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {shouldReviewPreviousPayrollPeriod && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-amber-950 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-black">Tháng {previousPayrollMonth.substring(5, 7)}/{previousPayrollMonth.substring(0, 4)} chưa được chốt</p>
+              <p className="mt-1 text-xs leading-relaxed text-amber-800">
+                App chưa thể chuyển số âm sang mục Ứng + nợ đầu kỳ vì chưa có snapshot lịch sử đã khóa. Hãy kiểm tra lương, ứng và công nợ khách hàng của kỳ trước; chỉ khi khóa kỳ thành công thì nợ mới tự xuất hiện ở kỳ này và không bị trừ hai lần.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSalaryMonth(previousPayrollMonth)}
+              className="min-h-11 shrink-0 rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-amber-600"
+            >
+              Kiểm tra tháng {previousPayrollMonth.substring(5, 7)}
+            </button>
           </div>
         </div>
       )}
@@ -75748,8 +76026,13 @@ function SalaryView({
                   <div className="bg-orange-50 rounded-xl border border-orange-100 p-3">
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                       <div className="min-w-0">
-                        <p className="text-[10px] uppercase font-bold text-orange-600 mb-1">Tổng ứng</p>
-                        <p className="text-sm font-black text-orange-700">{formatCurrency(details.totalAdvance)} đ</p>
+                        <p className="text-[10px] uppercase font-bold text-orange-600 mb-1">Ứng + nợ đầu kỳ</p>
+                        <p className="text-sm font-black text-orange-700">{formatCurrency((details.totalAdvance || 0) + (details.openingDebt || 0))} đ</p>
+                        {(details.openingDebt || 0) > 0 && (
+                          <p className="mt-1 text-[9px] font-semibold leading-snug text-orange-600">
+                            Ứng {formatCurrency(details.totalAdvance || 0)} đ • Nợ chuyển {formatCurrency(details.openingDebt || 0)} đ
+                          </p>
+                        )}
                       </div>
                       {canCreateThisAdvanceRequest && (
                         <button

@@ -270,6 +270,34 @@ test('company payroll summary exposes a visible month selector with readable tot
   assert.doesNotMatch(source, /ref=\{salaryMonthInputRef\}/);
 });
 
+test('manual payroll lock reads only the period document before creating immutable artifacts', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const handlerStart = source.indexOf('const handleLockPayrollPeriod');
+  const handlerEnd = source.indexOf('const handleAdjustLockedPayroll', handlerStart);
+  const handlerSource = source.slice(handlerStart, handlerEnd);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(handlerSource, /const existingPeriod = await transaction\.get\(periodRef\);/);
+  assert.doesNotMatch(handlerSource, /planRef|existingPlan/);
+});
+
+test('payroll summary shows opening debt beside current-period advances without changing salary math', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /Ứng \+ nợ đầu kỳ/);
+  assert.match(source, /aggregateData\.totalAdvance \+ aggregateData\.totalOpeningDebt/);
+  assert.match(source, /\(details\.totalAdvance \|\| 0\) \+ \(details\.openingDebt \|\| 0\)/);
+  assert.match(source, /<span>Dư nợ đầu kỳ<\/span>/);
+  assert.match(source, /<span>Đã khấu trừ nợ đầu kỳ<\/span>/);
+});
+
+test('current payroll directs owners to review an unlocked previous month instead of inventing history', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /getPreviousPayrollMonthKey\(currentMonth\)/);
+  assert.match(source, /const shouldReviewPreviousPayrollPeriod = Boolean\(/);
+  assert.match(source, /chưa được chốt/);
+  assert.match(source, /App chưa thể chuyển số âm sang mục Ứng \+ nợ đầu kỳ vì chưa có snapshot lịch sử đã khóa/);
+  assert.match(source, /onClick=\{\(\) => setSalaryMonth\(previousPayrollMonth\)\}/);
+});
+
 test('Rules make snapshots and payroll audit records immutable after creation', () => {
   const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
   assert.match(rules, /isImmutablePayrollCollection/);
@@ -278,5 +306,5 @@ test('Rules make snapshots and payroll audit records immutable after creation', 
   assert.match(rules, /!isImmutablePayrollAudit\(collectionId, resource\.data\)/);
 });
 
-assert.equal(passed, 14);
-console.log(`\nPayroll period hardening: ${passed}/14 cases PASS`);
+assert.equal(passed, 17);
+console.log(`\nPayroll period hardening: ${passed}/17 cases PASS`);

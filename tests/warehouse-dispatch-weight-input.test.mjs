@@ -79,6 +79,8 @@ const modalStart = appSource.indexOf('const WarehouseWeightEntriesModal = React.
 const moduleStart = appSource.indexOf('function WarehouseDispatchView');
 assert.ok(modalStart >= 0 && moduleStart > modalStart, 'Không tìm thấy editor kg độc lập');
 const modalSource = appSource.slice(modalStart, moduleStart);
+const moduleEnd = appSource.indexOf('const OrderRequestSelectableProductCard', moduleStart);
+const warehouseModuleSource = appSource.slice(moduleStart, moduleEnd);
 
 test('editor kg dùng state cục bộ và không cập nhật màn hình cha khi gõ', () => {
   assert.match(modalSource, /const \[entries, setEntries\] = useState/);
@@ -98,6 +100,20 @@ test('chỉ lưu dữ liệu sau thao tác xác nhận', () => {
   const changeHandlerSource = modalSource.slice(changeHandlerStart, keyHandlerStart);
   assert.equal((changeHandlerSource.match(/setEntries\(/g) || []).length, 1);
   assert.doesNotMatch(changeHandlerSource, /Firestore|saveDataDocument|onEditWarehouseDispatch|fetch\(/);
+});
+
+test('danh sách phiếu xuất mở đúng editor theo từng ô', () => {
+  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'assignedDriverId', event\)/);
+  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'customerId', event\)/);
+  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'productId', event\)/);
+  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'pieceCount', event\)/);
+  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'weightKg', event\)/);
+  assert.match(warehouseModuleSource, /onDelete=\{deleteDispatchCellEditorRow\}/);
+});
+
+test('sửa ô kg thay thế cả tổng kg và snapshot các lần cân', () => {
+  assert.match(warehouseModuleSource, /field === 'weightKg' \? \{ weightEntries: nextValue === '' \? \[\] : \[nextValue\] \} : \{\}/);
+  assert.match(warehouseModuleSource, /weightEntries: normalizeWarehouseWeightEntries\(inlineEditingDispatchDraft\.weightEntries \|\| \[\]\)/);
 });
 
 console.log('Warehouse dispatch weight input regression suite passed.');

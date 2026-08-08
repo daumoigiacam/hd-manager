@@ -54,12 +54,15 @@ test('order submit keeps both state and ref duplicate guards', () => {
   assert.match(appSource, /requestSubmittingRef\.current = false;/);
 });
 
-test('existing order rows expose editable price and direct delete actions', () => {
+test('existing order rows edit one selected cell and keep delete inside the editor dialog', () => {
   assert.match(appSource, /canEditOrderRequestSizePrice = false/);
-  assert.match(appSource, /aria-label="Sua don gia"/);
-  assert.match(appSource, /unitPrice: parseInputCurrency\(event\.target\.value\)/);
-  assert.match(appSource, /title="Xoa toan bo don dat hang"/);
-  assert.match(appSource, /deletingRequestId === row\.requestId/);
+  assert.match(appSource, /const HDSingleCellEditDialog = React\.memo/);
+  assert.match(appSource, /openOrderCellEditor\(row, 'unitPrice', event\)/);
+  assert.match(appSource, /title: 'Sửa đơn giá'/);
+  assert.match(appSource, /\[field\]: field === 'unitPrice' \? parseInputCurrency\(nextValue\) : nextValue/);
+  assert.match(appSource, /onDelete=\{deleteOrderCellEditorRow\}/);
+  assert.match(appSource, /Nút xóa nằm trong bảng sửa của ô đã chọn/);
+  assert.doesNotMatch(appSource, /title="Xoa toan bo don dat hang"/);
 });
 
 test('shared order sheet keeps matching products next to each other', () => {
