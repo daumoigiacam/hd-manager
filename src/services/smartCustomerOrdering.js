@@ -1,4 +1,6 @@
 import {
+  PRODUCT_PRICING_UNIT_OPTIONS,
+  getProductPricingUnits,
   getProductPrimaryPricingUnit,
   normalizeProductPricingUnit,
 } from './productPricingUnits.js';
@@ -123,6 +125,48 @@ export const resolveRememberedInputUnit = ({
   if (normalizedAvailableUnits.length === 0) return candidates[0] || fallback;
   return candidates.find(candidate => normalizedAvailableUnits.some(unit => sameUnit(unit, candidate)))
     || normalizedAvailableUnits[0];
+};
+
+export const getOrderInputUnitOptions = ({
+  product = null,
+  pricingUnit = '',
+  currentUnit = '',
+  rememberedUnit = '',
+  fallback = 'Con',
+} = {}) => {
+  const normalizedPricingUnit = normalizeProductPricingUnit(pricingUnit);
+  const usesWeightPricing = sameUnit(normalizedPricingUnit, 'Kg');
+  const productUnits = getProductPricingUnits(product || {}, '');
+  const candidates = usesWeightPricing
+    ? [
+        currentUnit,
+        rememberedUnit,
+        ...productUnits,
+        fallback,
+        'Con',
+        'Kg',
+        ...PRODUCT_PRICING_UNIT_OPTIONS,
+      ]
+    : [
+        normalizedPricingUnit,
+        currentUnit,
+        rememberedUnit,
+        ...productUnits,
+        fallback,
+      ];
+  const uniqueUnits = [];
+
+  candidates
+    .map(normalizeProductPricingUnit)
+    .filter(Boolean)
+    .forEach((unit) => {
+      if (!usesWeightPricing && normalizedPricingUnit && !sameUnit(unit, normalizedPricingUnit)) return;
+      if (!uniqueUnits.some(existingUnit => sameUnit(existingUnit, unit))) uniqueUnits.push(unit);
+    });
+
+  return uniqueUnits.length > 0
+    ? uniqueUnits
+    : [normalizedPricingUnit || normalizeProductPricingUnit(fallback)].filter(Boolean);
 };
 
 export const resolvePricingQuantity = ({

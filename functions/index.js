@@ -6,11 +6,17 @@ const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
 const { createIdentityCenter } = require('./identityCenter');
 const {
+  PAYROLL_AUTO_LOCK_PLAN_STATUS,
+  PAYROLL_RULES_VERSION,
   createDebtRolloverArtifacts,
   createFinalPayrollSnapshot,
   getPayrollMonthEndDateKey,
   getVietnamClock,
-  isPayrollAutoLockDue
+  inspectPayrollAutoLockCandidate,
+  isCompleteFinalPayrollSnapshot,
+  isLockedPayrollStatus,
+  isPayrollAutoLockDue,
+  normalizePayrollAutoLockStatus
 } = require('./payrollAutoLock');
 
 admin.initializeApp();
@@ -1071,25 +1077,52 @@ const collectionPath = (appId, name) => `artifacts/${normalizeAppId(appId)}/publ
 
 const PAYROLL_AUTO_LOCK_MAX_TRANSACTION_WRITES = 450;
 
+const getPayrollRulesRuntimeVersion = () => `${getEnv('HD_MANAGER_PAYROLL_RULES_VERSION') || ''}`.trim();
+
+const normalizePayrollEmployeeText = (value = '') => `${value || ''}`
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+
+const isPayrollEmployeeIncluded = (employee = {}) => {
+  if (!employee?.id || employee?.isArchived) return false;
+  const role = normalizePayrollEmployeeText(employee?.role);
+  const position = normalizePayrollEmployeeText(employee?.position);
+  if (role === 'super admin' || role === 'super_admin') return false;
+  return ![
+    'owner',
+    'company owner',
+    'business owner',
+    'chu doanh nghiep'
+  ].includes(position) && ![
+    'owner',
+    'company owner',
+    'business owner'
+  ].includes(role);
+};
+
 const getPayrollAutoLockAppIds = () => [...new Set([
   DEFAULT_APP_ID,
   getEnv('HD_MANAGER_APP_ID'),
   ...parseCsvEnv('HD_MANAGER_PAYROLL_APP_IDS')
 ].map(normalizeAppId).filter(Boolean))];
 
-const waitForPayrollPeriodCloseSecond = async (monthKey = '') => {
+const waitForPayrollPeriodCloseSecond = async (plan = {}) => {
   const clock = getVietnamClock();
-  const monthEndDateKey = getPayrollMonthEndDateKey(monthKey);
+  const monthEndDateKey = getPayrollMonthEndDateKey(plan?.monthKey);
+  const [closeHour, closeMinute, closeSecond] = `${plan?.closingSchedule?.time || ''}`.split(':').map(Number);
   if (
     clock.dateKey !== monthEndDateKey
-    || clock.hour !== 23
-    || clock.minute !== 59
-    || clock.second >= 59
+    || clock.hour !== closeHour
+    || clock.minute !== closeMinute
+    || clock.second >= closeSecond
   ) {
     return;
   }
 
-  await new Promise(resolve => setTimeout(resolve, (59 - clock.second) * 1000));
+  await new Promise(resolve => setTimeout(resolve, (closeSecond - clock.second) * 1000));
 };
 
 const createPayrollPeriodLockJournalEntry = ({
@@ -1106,6 +1139,7 @@ const createPayrollPeriodLockJournalEntry = ({
     companyId,
     type: 'payroll_period_lock',
     action: 'payroll_period_locked',
+    periodId,
     monthKey,
     amount: safeDebt,
     employeeCount: Math.max(0, Number(employeeCount) || 0),
@@ -1120,6 +1154,172 @@ const createPayrollPeriodLockJournalEntry = ({
   };
 };
 
+const evaluatePayrollAutoLockPlanEligibility = async ({ appId, planId }) => {
+  const normalizedAppId = normalizeAppId(appId);
+  const plansRef = db.collection(collectionPath(normalizedAppId, 'payrollAutoLockPlans'));
+  const stagedSnapshotsRef = db.collection(collectionPath(normalizedAppId, 'payrollAutoLockPlanSnapshots'));
+  const payrollPeriodsRef = db.collection(collectionPath(normalizedAppId, 'payrollPeriods'));
+  const employeesRef = db.collection(collectionPath(normalizedAppId, 'employees'));
+  const adjustmentsRef = db.collection(collectionPath(normalizedAppId, 'payrollAdjustments'));
+  const planRef = plansRef.doc(planId);
+
+  return db.runTransaction(async (transaction) => {
+    const planSnapshot = await transaction.get(planRef);
+    if (!planSnapshot.exists) return { state: 'missing_plan' };
+
+    const plan = { id: planId, ...(planSnapshot.data() || {}) };
+    const status = normalizePayrollAutoLockStatus(plan.status);
+    if (plan.isArchived || [
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED
+    ].includes(status)) {
+      return { state: 'skipped', status };
+    }
+
+    const currentClock = getVietnamClock();
+    if (!isPayrollAutoLockDue(plan.monthKey, currentClock, plan.autoLockAt)) {
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, due: false };
+    }
+
+    if (status === PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN) {
+      const closingAt = new Date().toISOString();
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+        closingStartedAt: closingAt,
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+        eligibilityBlockers: [],
+        updatedAt: closingAt
+      }, { merge: true });
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING, due: true };
+    }
+
+    if (![PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING, PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED].includes(status)) {
+      return { state: 'skipped', status };
+    }
+
+    const companyId = `${plan.companyId || ''}`.trim();
+    const periodId = `${plan.periodId || ''}`.trim();
+    const stagedSnapshotIds = [...new Set((Array.isArray(plan.stagedSnapshotIds) ? plan.stagedSnapshotIds : [])
+      .map(id => `${id || ''}`.trim())
+      .filter(Boolean))];
+    const periodRef = payrollPeriodsRef.doc(periodId);
+    const periodSnapshot = await transaction.get(periodRef);
+    if (periodSnapshot.exists && isLockedPayrollStatus(periodSnapshot.data()?.status)) {
+      const reconciledAt = new Date().toISOString();
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED,
+        lockedAt: periodSnapshot.data()?.lockedAt || reconciledAt,
+        completedAt: reconciledAt,
+        completionReason: 'period_already_locked'
+      }, { merge: true });
+      return { state: 'already_locked' };
+    }
+
+    const stagedDocumentSnapshots = stagedSnapshotIds.length > 0
+      ? await transaction.getAll(...stagedSnapshotIds.map(id => stagedSnapshotsRef.doc(id)))
+      : [];
+    const employeeQuerySnapshot = companyId
+      ? await transaction.get(employeesRef.where('companyId', '==', companyId))
+      : null;
+    const adjustmentQuerySnapshot = periodId
+      ? await transaction.get(adjustmentsRef.where('periodId', '==', periodId))
+      : null;
+    const stagedSnapshots = stagedDocumentSnapshots
+      .filter(snapshot => snapshot.exists)
+      .map(snapshot => ({ id: snapshot.id, ...(snapshot.data() || {}) }));
+    const activeEmployeeIds = (employeeQuerySnapshot?.docs || [])
+      .map(snapshot => ({ id: snapshot.id, ...(snapshot.data() || {}) }))
+      .filter(isPayrollEmployeeIncluded)
+      .map(employee => employee.id);
+    const adjustments = (adjustmentQuerySnapshot?.docs || [])
+      .map(snapshot => ({ id: snapshot.id, ...(snapshot.data() || {}) }));
+    const inspection = inspectPayrollAutoLockCandidate({
+      plan,
+      stagedSnapshots,
+      activeEmployeeIds,
+      adjustments,
+      runtimeRulesVersion: getPayrollRulesRuntimeVersion(),
+      clock: currentClock
+    });
+    const checkedAt = new Date().toISOString();
+
+    if (inspection.gateState === 'RULES_PENDING') {
+      transaction.set(planRef, {
+        lastEligibilityCheckAt: checkedAt,
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+        gateState: 'RULES_PENDING',
+        eligibilityBlockers: ['production_rules_not_confirmed']
+      }, { merge: true });
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING, gateState: 'RULES_PENDING' };
+    }
+    if (inspection.state === PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW) {
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        reviewReason: 'auto_lock_eligibility_failed',
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        eligibilityBlockers: inspection.blockers,
+        incompleteSnapshotIds: [...new Set(inspection.snapshotIssues.map(issue => issue.split(':')[0]))],
+        updatedAt: checkedAt
+      }, { merge: true });
+      return {
+        state: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        blockers: inspection.blockers
+      };
+    }
+
+    if (inspection.state === PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED) {
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+        snapshotValidationDigest: inspection.digest,
+        validatedEmployeeIds: [...activeEmployeeIds].sort(),
+        snapshotValidatedAt: checkedAt,
+        lastEligibilityCheckAt: checkedAt,
+        gateState: '',
+        eligibilityBlockers: [],
+        updatedAt: checkedAt
+      }, { merge: true });
+      return {
+        state: PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+        employeeCount: activeEmployeeIds.length,
+        digest: inspection.digest
+      };
+    }
+
+    const validationDigest = `${plan.snapshotValidationDigest || ''}`;
+    if (inspection.state !== PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK
+      || !validationDigest
+      || validationDigest !== inspection.digest) {
+      const blockers = [...inspection.blockers, validationDigest ? 'snapshot_validation.digest_changed' : 'snapshot_validation.digest_missing'];
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        reviewReason: 'snapshot_validation_changed',
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        eligibilityBlockers: [...new Set(blockers)],
+        updatedAt: checkedAt
+      }, { merge: true });
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW, blockers };
+    }
+
+    transaction.set(planRef, {
+      status: PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK,
+      eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK,
+      readyForLockDigest: inspection.digest,
+      readyForLockEmployeeIds: [...activeEmployeeIds].sort(),
+      readyForLockAt: checkedAt,
+      lastEligibilityCheckAt: checkedAt,
+      gateState: '',
+      eligibilityBlockers: [],
+      updatedAt: checkedAt
+    }, { merge: true });
+    return {
+      state: PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK,
+      employeeCount: activeEmployeeIds.length,
+      digest: inspection.digest
+    };
+  });
+};
+
 const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
   const normalizedAppId = normalizeAppId(appId);
   const plansRef = db.collection(collectionPath(normalizedAppId, 'payrollAutoLockPlans'));
@@ -1128,14 +1328,19 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
   const carryoversRef = db.collection(collectionPath(normalizedAppId, 'payrollDebtCarryovers'));
   const activityLogsRef = db.collection(collectionPath(normalizedAppId, 'activityLogs'));
   const payrollPeriodsRef = db.collection(collectionPath(normalizedAppId, 'payrollPeriods'));
+  const employeesRef = db.collection(collectionPath(normalizedAppId, 'employees'));
+  const adjustmentsRef = db.collection(collectionPath(normalizedAppId, 'payrollAdjustments'));
   const planRef = plansRef.doc(planId);
 
   return db.runTransaction(async (transaction) => {
     const planSnapshot = await transaction.get(planRef);
     if (!planSnapshot.exists) return { state: 'missing_plan' };
 
-    const plan = planSnapshot.data() || {};
-    if (plan.isArchived || plan.status !== 'ready') return { state: 'skipped' };
+    const plan = { id: planId, ...(planSnapshot.data() || {}) };
+    const planStatus = normalizePayrollAutoLockStatus(plan.status);
+    if (plan.isArchived || planStatus !== PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK) {
+      return { state: 'skipped', status: planStatus };
+    }
 
     const companyId = `${plan.companyId || ''}`.trim();
     const monthKey = `${plan.monthKey || ''}`.trim();
@@ -1152,9 +1357,9 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
 
     const periodRef = payrollPeriodsRef.doc(periodId);
     const periodSnapshot = await transaction.get(periodRef);
-    if (periodSnapshot.exists && periodSnapshot.data()?.status === 'locked') {
+    if (periodSnapshot.exists && isLockedPayrollStatus(periodSnapshot.data()?.status)) {
       transaction.set(planRef, {
-        status: 'locked',
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED,
         lockedAt: periodSnapshot.data()?.lockedAt || new Date().toISOString(),
         completedAt: new Date().toISOString(),
         completionReason: 'period_already_locked'
@@ -1162,7 +1367,7 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
       return { state: 'already_locked' };
     }
 
-    const stagedSnapshots = await Promise.all(stagedSnapshotIds.map(async (stagedSnapshotId) => {
+    const stagedSnapshotRecords = await Promise.all(stagedSnapshotIds.map(async (stagedSnapshotId) => {
       const stagedSnapshot = await transaction.get(stagedSnapshotsRef.doc(stagedSnapshotId));
       if (!stagedSnapshot.exists) {
         throw new Error(`Thiếu snapshot đã chuẩn bị: ${stagedSnapshotId}.`);
@@ -1171,15 +1376,72 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
       if (`${data.planId || ''}` !== planId) {
         throw new Error(`Snapshot ${stagedSnapshotId} không thuộc kế hoạch khóa lương này.`);
       }
-      const finalizedSnapshot = createFinalPayrollSnapshot(data, new Date().toISOString());
+      const stagedRecord = { id: stagedSnapshotId, ...data };
+      const finalizedSnapshot = createFinalPayrollSnapshot(stagedRecord, 'final-validation');
       if (!finalizedSnapshot || finalizedSnapshot.companyId !== companyId || finalizedSnapshot.periodId !== periodId || finalizedSnapshot.monthKey !== monthKey) {
         throw new Error(`Snapshot ${stagedSnapshotId} không hợp lệ để khóa kỳ lương.`);
       }
-      return finalizedSnapshot;
+      return stagedRecord;
     }));
 
+    const employeeQuerySnapshot = await transaction.get(employeesRef.where('companyId', '==', companyId));
+    const adjustmentQuerySnapshot = await transaction.get(adjustmentsRef.where('periodId', '==', periodId));
+    const activeEmployeeIds = employeeQuerySnapshot.docs
+      .map(snapshot => ({ id: snapshot.id, ...(snapshot.data() || {}) }))
+      .filter(isPayrollEmployeeIncluded)
+      .map(employee => employee.id);
+    const adjustments = adjustmentQuerySnapshot.docs
+      .map(snapshot => ({ id: snapshot.id, ...(snapshot.data() || {}) }));
+    const inspection = inspectPayrollAutoLockCandidate({
+      plan,
+      stagedSnapshots: stagedSnapshotRecords,
+      activeEmployeeIds,
+      adjustments,
+      runtimeRulesVersion: getPayrollRulesRuntimeVersion(),
+      clock: getVietnamClock()
+    });
+    const checkedAt = new Date().toISOString();
+    if (inspection.gateState === 'RULES_PENDING') {
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING, gateState: 'RULES_PENDING' };
+    }
+    if (inspection.state !== PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK
+      || !inspection.digest
+      || inspection.digest !== `${plan.readyForLockDigest || ''}`
+      || inspection.digest !== `${plan.snapshotValidationDigest || ''}`) {
+      const blockers = inspection.digest !== `${plan.readyForLockDigest || ''}`
+        || inspection.digest !== `${plan.snapshotValidationDigest || ''}`
+        ? [...inspection.blockers, 'ready_for_lock.digest_changed']
+        : inspection.blockers;
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        reviewReason: 'auto_lock_final_validation_failed',
+        eligibilityState: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        eligibilityBlockers: [...new Set(blockers)],
+        updatedAt: checkedAt
+      }, { merge: true });
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW, blockers };
+    }
+
     const lockedAt = new Date().toISOString();
-    const finalSnapshots = stagedSnapshots.map(snapshot => ({ ...snapshot, lockedAt }));
+    const finalSnapshots = stagedSnapshotRecords.map(snapshot => createFinalPayrollSnapshot(snapshot, lockedAt));
+    const incompleteSnapshotIds = finalSnapshots
+      .filter(snapshot => !isCompleteFinalPayrollSnapshot(snapshot))
+      .map(snapshot => snapshot?.id || 'invalid_snapshot');
+    if (incompleteSnapshotIds.length > 0) {
+      transaction.set(planRef, {
+        status: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        reviewReason: 'incomplete_snapshot',
+        incompleteSnapshotIds,
+        reviewedAt: null,
+        updatedAt: lockedAt
+      }, { merge: true });
+      return {
+        state: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+        companyId,
+        monthKey,
+        incompleteSnapshotCount: incompleteSnapshotIds.length
+      };
+    }
     const debtArtifacts = finalSnapshots
       .map(snapshot => createDebtRolloverArtifacts({
         companyId,
@@ -1207,7 +1469,11 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
       id: periodId,
       companyId,
       monthKey,
-      status: 'locked',
+      status: 'LOCKED',
+      rulesVersion: PAYROLL_RULES_VERSION,
+      eligibilityDigest: inspection.digest,
+      snapshotValidationDigest: inspection.digest,
+      readyForLockDigest: inspection.digest,
       lockedAt,
       employeeCount: finalSnapshots.length,
       snapshotIds: finalSnapshots.map(snapshot => snapshot.id),
@@ -1229,7 +1495,7 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
     transaction.set(activityLogsRef.doc(lockJournal.id), lockJournal, { merge: false });
     transaction.set(periodRef, lockedPeriod, { merge: false });
     transaction.set(planRef, {
-      status: 'locked',
+      status: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED,
       lockedAt,
       completedAt: lockedAt,
       debtRolloverStatus: 'complete',
@@ -1238,7 +1504,7 @@ const finalizePayrollAutoLockPlan = async ({ appId, planId }) => {
     }, { merge: true });
 
     return {
-      state: 'locked',
+      state: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED,
       companyId,
       monthKey,
       employeeCount: finalSnapshots.length,
@@ -1257,20 +1523,40 @@ exports.autoLockPayrollPeriods = onSchedule({
   const outcomes = [];
 
   for (const appId of getPayrollAutoLockAppIds()) {
-    const plansSnapshot = await db.collection(collectionPath(appId, 'payrollAutoLockPlans'))
-      .where('status', '==', 'ready')
+    const planCollections = await Promise.all([
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN,
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+      PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK,
+      'READY',
+      'ready',
+      'ELIGIBLE',
+      'eligible'
+    ].map(status => db.collection(collectionPath(appId, 'payrollAutoLockPlans'))
+      .where('status', '==', status)
       .limit(100)
-      .get();
+      .get()));
+    const plansById = new Map(
+      planCollections.flatMap(snapshot => snapshot.docs).map(snapshot => [snapshot.id, snapshot])
+    );
 
-    for (const planSnapshot of plansSnapshot.docs) {
+    for (const planSnapshot of plansById.values()) {
       const plan = planSnapshot.data() || {};
-      if (plan.isArchived || !isPayrollAutoLockDue(plan.monthKey, initialClock)) continue;
+      const monthEndDateKey = getPayrollMonthEndDateKey(plan.monthKey);
+      const [closeHour, closeMinute] = `${plan?.closingSchedule?.time || ''}`.split(':').map(Number);
+      const isClosingMinute = initialClock.dateKey === monthEndDateKey
+        && initialClock.hour === closeHour
+        && initialClock.minute === closeMinute;
+      if (plan.isArchived || (!isClosingMinute && !isPayrollAutoLockDue(plan.monthKey, initialClock, plan.autoLockAt))) continue;
 
       try {
-        await waitForPayrollPeriodCloseSecond(plan.monthKey);
+        await waitForPayrollPeriodCloseSecond(plan);
         const latestClock = getVietnamClock();
-        if (!isPayrollAutoLockDue(plan.monthKey, latestClock)) continue;
-        const outcome = await finalizePayrollAutoLockPlan({ appId, planId: planSnapshot.id });
+        if (!isPayrollAutoLockDue(plan.monthKey, latestClock, plan.autoLockAt)) continue;
+        const status = normalizePayrollAutoLockStatus(plan.status);
+        const outcome = status === PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK
+          ? await finalizePayrollAutoLockPlan({ appId, planId: planSnapshot.id })
+          : await evaluatePayrollAutoLockPlanEligibility({ appId, planId: planSnapshot.id });
         outcomes.push({ appId, planId: planSnapshot.id, ...outcome });
       } catch (error) {
         console.error('autoLockPayrollPeriods failed', {

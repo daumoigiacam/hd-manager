@@ -18,20 +18,498 @@ service cloud.firestore {
       return !hasCompanyClaim() || hasNoCompanyField(data) || data.companyId == request.auth.token.companyId;
     }
 
-    // HD Manager currently scopes company data in the app layer under:
-    // artifacts/{appId}/public/data/{collection}/{docId}
-    //
-    // These rules intentionally block unauthenticated public access first.
-    // Before public App Store / Google Play launch, migrate app login to
-    // Firebase Auth users with companyId/role custom claims so rules can
-    // enforce strict company-level isolation server-side.
+    function employeePath(appId, employeeId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/employees/$(employeeId);
+    }
+
+    function payrollPeriodPath(appId, periodId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/payrollPeriods/$(periodId);
+    }
+
+    function payrollSnapshotPath(appId, snapshotId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/payrollSnapshots/$(snapshotId);
+    }
+
+    function payrollAdjustmentPath(appId, adjustmentId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/payrollAdjustments/$(adjustmentId);
+    }
+
+    function payrollCarryoverPath(appId, carryoverId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/payrollDebtCarryovers/$(carryoverId);
+    }
+
+    function payrollAutoLockPlanPath(appId, planId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/payrollAutoLockPlans/$(planId);
+    }
+
+    function isPayrollManager(appId) {
+      return signedIn()
+        && (
+          (
+            'role' in request.auth.token
+            && request.auth.token.role in [
+              'super_admin',
+              'owner',
+              'company_owner',
+              'business_owner',
+              'accounting',
+              'accountant',
+              'admin'
+            ]
+          )
+          || (
+            'appUserId' in request.auth.token
+            && request.auth.token.appUserId is string
+            && exists(employeePath(appId, request.auth.token.appUserId))
+            && get(employeePath(appId, request.auth.token.appUserId)).data.companyId == request.auth.token.companyId
+            && get(employeePath(appId, request.auth.token.appUserId)).data.position in [
+              'Chủ doanh nghiệp',
+              'Kế toán & nhân sự'
+            ]
+          )
+        );
+    }
+
+    function isLockedPayrollStatus(status) {
+      return status in ['LOCKED', 'ADJUSTED', 'AUTO_LOCKED', 'CLOSED', 'locked', 'adjusted', 'auto_locked', 'closed'];
+    }
+
+    function isImmutablePayrollCollection(collectionId) {
+      return collectionId == 'payrollSnapshots' || collectionId == 'payrollAdjustments';
+    }
+
+    function isProtectedPayrollCollection(collectionId) {
+      return collectionId in [
+        'payrollPeriods',
+        'payrollSnapshots',
+        'payrollAdjustments',
+        'payrollDebtCarryovers',
+        'payrollAutoLockPlans',
+        'payrollAutoLockPlanSnapshots'
+      ];
+    }
+
+    function isImmutablePayrollAudit(collectionId, data) {
+      return collectionId == 'activityLogs'
+        && data.type in ['payroll_adjustment', 'payroll_period_lock', 'payroll_debt_rollover'];
+    }
+
+    function isProtectedPayrollDocument(collectionId, data) {
+      return isProtectedPayrollCollection(collectionId) || isImmutablePayrollAudit(collectionId, data);
+    }
+
+    function canReadPayrollDocument(collectionId, data) {
+      return !isProtectedPayrollDocument(collectionId, data)
+        || (
+          hasCompanyClaim()
+          && data.companyId is string
+          && data.companyId == request.auth.token.companyId
+        );
+    }
+
+    function hasCompletePayrollSnapshot(data) {
+      return data.schemaVersion is int
+        && data.schemaVersion >= 2
+        && data.companyId is string
+        && data.periodId is string
+        && data.monthKey is string
+        && data.employeeId is string
+        && data.lockedAt is string
+        && data.formulaVersion is string
+        && data.formulaVersion.size() > 0
+        && data.policyVersion is string
+        && data.policyVersion.size() > 0
+        && data.employee is map
+        && data.salaryDetails is map
+        && data.salaryDetails.netSalary is number
+        && data.salaryDetails.endingDebt is number
+        && data.policySnapshot is map
+        && data.policySnapshot.values is map
+        && data.policySnapshot.values.size() > 0
+        && data.policySnapshot.version == data.policyVersion
+        && data.policySnapshot.formulaVersion == data.formulaVersion
+        && data.calculationSnapshot is map
+        && data.calculationSnapshot.inputs is map
+        && data.calculationSnapshot.additions is map
+        && data.calculationSnapshot.deductions is map
+        && data.calculationSnapshot.results is map
+        && data.calculationSnapshot.results.grossSalary is number
+        && data.calculationSnapshot.results.netSalary is number
+        && data.calculationSnapshot.results.endingDebt is number;
+    }
+
+    function isValidLockedPayrollPeriodCreate(appId, docId) {
+      return isPayrollManager(appId)
+        && request.resource.data.id == docId
+        && request.resource.data.status == 'LOCKED'
+        && request.resource.data.companyId == request.auth.token.companyId
+        && request.resource.data.monthKey is string
+        && request.resource.data.lockedAt is string
+        && request.resource.data.snapshotIds is list
+        && request.resource.data.snapshotIds.size() > 0
+        && request.resource.data.employeeCount == request.resource.data.snapshotIds.size()
+        && request.resource.data.debtCarryoverIds is list;
+    }
+
+    function isValidPayrollSnapshotCreate(appId, docId) {
+      let data = request.resource.data;
+      let period = getAfter(payrollPeriodPath(appId, data.periodId)).data;
+      return isPayrollManager(appId)
+        && data.id == docId
+        && data.companyId == request.auth.token.companyId
+        && hasCompletePayrollSnapshot(data)
+        && existsAfter(payrollPeriodPath(appId, data.periodId))
+        && period.companyId == data.companyId
+        && period.monthKey == data.monthKey
+        && isLockedPayrollStatus(period.status)
+        && period.snapshotIds is list
+        && docId in period.snapshotIds;
+    }
+
+    function isValidPayrollCarryoverCreate(appId, docId) {
+      let data = request.resource.data;
+      let period = getAfter(payrollPeriodPath(appId, data.sourcePeriodId)).data;
+      let snapshot = getAfter(payrollSnapshotPath(appId, data.sourceSnapshotId)).data;
+      let adjustmentId = 'adjustedByPayrollAdjustmentId' in data
+        ? data.adjustedByPayrollAdjustmentId
+        : '';
+      return isPayrollManager(appId)
+        && data.id == docId
+        && data.companyId == request.auth.token.companyId
+        && data.employeeId is string
+        && data.amount is number
+        && data.amount >= 0
+        && existsAfter(payrollPeriodPath(appId, data.sourcePeriodId))
+        && existsAfter(payrollSnapshotPath(appId, data.sourceSnapshotId))
+        && period.companyId == data.companyId
+        && isLockedPayrollStatus(period.status)
+        && period.debtCarryoverIds is list
+        && docId in period.debtCarryoverIds
+        && snapshot.companyId == data.companyId
+        && snapshot.periodId == data.sourcePeriodId
+        && snapshot.employeeId == data.employeeId
+        && (
+          (
+            adjustmentId == ''
+            && data.amount > 0
+            && data.amount == snapshot.salaryDetails.endingDebt
+          )
+          || (
+            adjustmentId is string
+            && adjustmentId.size() > 0
+            && existsAfter(payrollAdjustmentPath(appId, adjustmentId))
+            && getAfter(payrollAdjustmentPath(appId, adjustmentId)).data.companyId == data.companyId
+            && getAfter(payrollAdjustmentPath(appId, adjustmentId)).data.periodId == data.sourcePeriodId
+            && getAfter(payrollAdjustmentPath(appId, adjustmentId)).data.snapshotId == data.sourceSnapshotId
+            && getAfter(payrollAdjustmentPath(appId, adjustmentId)).data.employeeId == data.employeeId
+            && getAfter(payrollAdjustmentPath(appId, adjustmentId)).data.afterSalaryDetails.endingDebt == data.amount
+            && period.lastAdjustmentId == adjustmentId
+          )
+        );
+    }
+
+    function isValidPayrollAdjustmentCreate(appId, docId) {
+      let data = request.resource.data;
+      let period = getAfter(payrollPeriodPath(appId, data.periodId)).data;
+      let priorPeriod = get(payrollPeriodPath(appId, data.periodId)).data;
+      let snapshot = get(payrollSnapshotPath(appId, data.snapshotId)).data;
+      let previousAdjustmentId = data.previousAdjustmentId;
+      return isPayrollManager(appId)
+        && data.id == docId
+        && data.companyId == request.auth.token.companyId
+        && data.status == 'ADJUSTED'
+        && data.reason is string
+        && data.reason.size() > 0
+        && data.beforeSalaryDetails is map
+        && data.afterSalaryDetails is map
+        && data.beforeSalaryDetails.netSalary is number
+        && data.beforeSalaryDetails.endingDebt is number
+        && data.afterSalaryDetails.netSalary is number
+        && data.afterSalaryDetails.netSalary >= 0
+        && data.afterSalaryDetails.endingDebt is number
+        && data.afterSalaryDetails.endingDebt >= 0
+        && data.differences is map
+        && data.differences.netSalary == data.afterSalaryDetails.netSalary - data.beforeSalaryDetails.netSalary
+        && data.differences.endingDebt == data.afterSalaryDetails.endingDebt - data.beforeSalaryDetails.endingDebt
+        && data.sequence is int
+        && data.sequence >= 1
+        && previousAdjustmentId is string
+        && exists(payrollSnapshotPath(appId, data.snapshotId))
+        && existsAfter(payrollPeriodPath(appId, data.periodId))
+        && snapshot.companyId == data.companyId
+        && snapshot.periodId == data.periodId
+        && snapshot.employeeId == data.employeeId
+        && snapshot.monthKey == data.monthKey
+        && period.status == 'ADJUSTED'
+        && period.lastAdjustmentId == docId
+        && period.latestAdjustmentBySnapshot is map
+        && period.latestAdjustmentBySnapshot[data.snapshotId] == docId
+        && (
+          (
+            previousAdjustmentId == ''
+            && data.sequence == 1
+            && data.beforeSalaryDetails == snapshot.salaryDetails
+            && (
+              !('latestAdjustmentBySnapshot' in priorPeriod)
+              || !(data.snapshotId in priorPeriod.latestAdjustmentBySnapshot)
+            )
+          )
+          || (
+            previousAdjustmentId.size() > 0
+            && exists(payrollAdjustmentPath(appId, previousAdjustmentId))
+            && get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.companyId == data.companyId
+            && get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.periodId == data.periodId
+            && get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.snapshotId == data.snapshotId
+            && get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.employeeId == data.employeeId
+            && get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.afterSalaryDetails == data.beforeSalaryDetails
+            && data.sequence == get(payrollAdjustmentPath(appId, previousAdjustmentId)).data.sequence + 1
+            && priorPeriod.latestAdjustmentBySnapshot[data.snapshotId] == previousAdjustmentId
+          )
+        );
+    }
+
+    function hasValidPayrollAutoLockPlanPayload(docId, data) {
+      return data.id == docId
+        && data.companyId == request.auth.token.companyId
+        && data.status in ['OPEN', 'READY']
+        && data.rulesVersion == 'PAYROLL_FREEZE_RULES_V2'
+        && data.periodId is string
+        && data.monthKey is string
+        && data.autoLockAt is string
+        && data.closingSchedule is map
+        && data.closingSchedule.mode == 'MONTH_END'
+        && data.closingSchedule.timeZone == 'Asia/Ho_Chi_Minh'
+        && data.closingSchedule.time == '23:59:59'
+        && data.stagedSnapshotIds is list
+        && data.stagedSnapshotIds.size() > 0
+        && data.expectedEmployeeIds is list
+        && data.expectedEmployeeIds.size() == data.stagedSnapshotIds.size()
+        && data.snapshotCount == data.stagedSnapshotIds.size()
+        && (
+          data.status == 'READY'
+          || (
+            data.period is map
+            && data.period.status == 'OPEN'
+            && !('lockedAt' in data.period)
+          )
+        );
+    }
+
+    function isValidPayrollAutoLockPlanCreate(appId, docId) {
+      return isPayrollManager(appId)
+        && hasValidPayrollAutoLockPlanPayload(docId, request.resource.data);
+    }
+
+    function isValidPayrollAutoLockPlanUpdate(appId, docId) {
+      return isPayrollManager(appId)
+        && resource.data.status in ['OPEN', 'READY']
+        && resource.data.rulesVersion == 'PAYROLL_FREEZE_RULES_V2'
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.periodId == resource.data.periodId
+        && request.resource.data.monthKey == resource.data.monthKey
+        && hasValidPayrollAutoLockPlanPayload(docId, request.resource.data);
+    }
+
+    function isValidPayrollAutoLockSnapshotWrite(appId, docId) {
+      let data = request.resource.data;
+      let plan = getAfter(payrollAutoLockPlanPath(appId, data.planId)).data;
+      return isPayrollManager(appId)
+        && data.id == docId
+        && data.companyId == request.auth.token.companyId
+        && data.snapshotId is string
+        && data.employeeId is string
+        && data.periodId is string
+        && data.monthKey is string
+        && existsAfter(payrollAutoLockPlanPath(appId, data.planId))
+        && plan.companyId == data.companyId
+        && plan.periodId == data.periodId
+        && plan.monthKey == data.monthKey
+        && plan.status in ['OPEN', 'READY']
+        && plan.rulesVersion == 'PAYROLL_FREEZE_RULES_V2'
+        && plan.stagedSnapshotIds is list
+        && docId in plan.stagedSnapshotIds
+        && (
+          (
+            plan.status == 'OPEN'
+            && data.status == 'STAGED'
+            && !('lockedAt' in data)
+            && !('lockedByEmployeeId' in data)
+          )
+          || (
+            plan.status == 'READY'
+            && hasCompletePayrollSnapshot(data)
+          )
+        );
+    }
+
+    function isValidPayrollAuditCreate(appId) {
+      let data = request.resource.data;
+      return isPayrollManager(appId)
+        && (
+          (
+            data.type == 'payroll_period_lock'
+            && data.periodId is string
+            && existsAfter(payrollPeriodPath(appId, data.periodId))
+            && isLockedPayrollStatus(getAfter(payrollPeriodPath(appId, data.periodId)).data.status)
+          )
+          || (
+            data.type == 'payroll_debt_rollover'
+            && data.carryoverId is string
+            && existsAfter(payrollCarryoverPath(appId, data.carryoverId))
+          )
+          || (
+            data.type == 'payroll_adjustment'
+            && data.adjustmentId is string
+            && existsAfter(payrollAdjustmentPath(appId, data.adjustmentId))
+          )
+        );
+    }
+
+    function isAllowedLockedPayrollPeriodAdjustment(appId, docId) {
+      let adjustmentId = request.resource.data.lastAdjustmentId;
+      let adjustment = getAfter(payrollAdjustmentPath(appId, adjustmentId)).data;
+      let priorAdjustmentCount = 'adjustmentCount' in resource.data
+        ? resource.data.adjustmentCount
+        : 0;
+      return isPayrollManager(appId)
+        && isLockedPayrollStatus(resource.data.status)
+        && request.resource.data.status == 'ADJUSTED'
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.monthKey == resource.data.monthKey
+        && request.resource.data.lockedAt == resource.data.lockedAt
+        && request.resource.data.snapshotIds == resource.data.snapshotIds
+        && adjustmentId is string
+        && adjustmentId.size() > 0
+        && existsAfter(payrollAdjustmentPath(appId, adjustmentId))
+        && adjustment.companyId == resource.data.companyId
+        && adjustment.periodId == docId
+        && request.resource.data.latestAdjustmentBySnapshot is map
+        && request.resource.data.latestAdjustmentBySnapshot[adjustment.snapshotId] == adjustmentId
+        && request.resource.data.adjustmentCount == priorAdjustmentCount + 1
+        && request.resource.data.debtTransferCount == request.resource.data.debtCarryoverIds.size()
+        && request.resource.data.totals.totalSalary == resource.data.totals.totalSalary + adjustment.differences.netSalary
+        && request.resource.data.totals.totalEndingDebt == resource.data.totals.totalEndingDebt + adjustment.differences.endingDebt
+        && request.resource.data.totalEndingDebt == request.resource.data.totals.totalEndingDebt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'totals',
+          'totalEndingDebt',
+          'debtCarryoverIds',
+          'debtTransferCount',
+          'adjustmentCount',
+          'latestAdjustmentBySnapshot',
+          'lastAdjustmentId',
+          'lastAdjustedAt',
+          'lastAdjustedByEmployeeId',
+          'updatedAt'
+        ]);
+    }
+
+    function isAllowedPayrollDebtCarryoverAdjustment(appId, docId) {
+      let adjustmentId = request.resource.data.adjustedByPayrollAdjustmentId;
+      let adjustment = getAfter(payrollAdjustmentPath(appId, adjustmentId)).data;
+      let period = getAfter(payrollPeriodPath(appId, resource.data.sourcePeriodId)).data;
+      return isPayrollManager(appId)
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.employeeId == resource.data.employeeId
+        && request.resource.data.sourcePeriodId == resource.data.sourcePeriodId
+        && request.resource.data.sourceSnapshotId == resource.data.sourceSnapshotId
+        && request.resource.data.sourceMonthKey == resource.data.sourceMonthKey
+        && request.resource.data.targetMonthKey == resource.data.targetMonthKey
+        && adjustmentId is string
+        && adjustmentId.size() > 0
+        && existsAfter(payrollAdjustmentPath(appId, adjustmentId))
+        && existsAfter(payrollPeriodPath(appId, resource.data.sourcePeriodId))
+        && adjustment.companyId == resource.data.companyId
+        && adjustment.periodId == resource.data.sourcePeriodId
+        && adjustment.snapshotId == resource.data.sourceSnapshotId
+        && adjustment.employeeId == resource.data.employeeId
+        && request.resource.data.amount == adjustment.afterSalaryDetails.endingDebt
+        && (
+          (
+            request.resource.data.amount == 0
+            && request.resource.data.status == 'cleared_by_adjustment'
+            && request.resource.data.isArchived == true
+          )
+          || (
+            request.resource.data.amount > 0
+            && request.resource.data.status == 'adjusted_carry_over'
+            && request.resource.data.isArchived == false
+          )
+        )
+        && period.lastAdjustmentId == adjustmentId
+        && period.debtCarryoverIds is list
+        && docId in period.debtCarryoverIds
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'amount',
+          'status',
+          'isArchived',
+          'adjustedByPayrollAdjustmentId',
+          'updatedAt'
+        ]);
+    }
+
     match /artifacts/{appId}/public/data/{collectionId}/{docId} {
-      allow read: if signedIn() && belongsToSignedInCompany(resource.data);
-      allow create: if signedIn() && belongsToSignedInCompany(request.resource.data);
+      allow get: if signedIn()
+        && (
+          resource == null
+            ? (!isProtectedPayrollCollection(collectionId) || isPayrollManager(appId))
+            : (
+              belongsToSignedInCompany(resource.data)
+              && canReadPayrollDocument(collectionId, resource.data)
+            )
+        );
+
+      allow list: if signedIn()
+        && belongsToSignedInCompany(resource.data)
+        && canReadPayrollDocument(collectionId, resource.data);
+
+      allow create: if signedIn()
+        && belongsToSignedInCompany(request.resource.data)
+        && (
+          (collectionId == 'payrollPeriods' && isValidLockedPayrollPeriodCreate(appId, docId))
+          || (collectionId == 'payrollSnapshots' && isValidPayrollSnapshotCreate(appId, docId))
+          || (collectionId == 'payrollAdjustments' && isValidPayrollAdjustmentCreate(appId, docId))
+          || (collectionId == 'payrollDebtCarryovers' && isValidPayrollCarryoverCreate(appId, docId))
+          || (collectionId == 'payrollAutoLockPlans' && isValidPayrollAutoLockPlanCreate(appId, docId))
+          || (collectionId == 'payrollAutoLockPlanSnapshots' && isValidPayrollAutoLockSnapshotWrite(appId, docId))
+          || (collectionId == 'activityLogs' && isImmutablePayrollAudit(collectionId, request.resource.data) && isValidPayrollAuditCreate(appId))
+          || (!isProtectedPayrollCollection(collectionId) && !isImmutablePayrollAudit(collectionId, request.resource.data))
+        );
+
       allow update: if signedIn()
         && belongsToSignedInCompany(resource.data)
-        && belongsToSignedInCompany(request.resource.data);
-      allow delete: if signedIn() && belongsToSignedInCompany(resource.data);
+        && belongsToSignedInCompany(request.resource.data)
+        && !isImmutablePayrollCollection(collectionId)
+        && !isImmutablePayrollAudit(collectionId, resource.data)
+        && (
+          !isProtectedPayrollCollection(collectionId)
+          || (
+            collectionId == 'payrollPeriods'
+            && isLockedPayrollStatus(resource.data.status)
+            && isAllowedLockedPayrollPeriodAdjustment(appId, docId)
+          )
+          || (
+            collectionId == 'payrollDebtCarryovers'
+            && isAllowedPayrollDebtCarryoverAdjustment(appId, docId)
+          )
+          || (
+            collectionId == 'payrollAutoLockPlans'
+            && isValidPayrollAutoLockPlanUpdate(appId, docId)
+          )
+          || (
+            collectionId == 'payrollAutoLockPlanSnapshots'
+            && isValidPayrollAutoLockSnapshotWrite(appId, docId)
+          )
+        );
+
+      allow delete: if signedIn()
+        && belongsToSignedInCompany(resource.data)
+        && !isImmutablePayrollCollection(collectionId)
+        && !isImmutablePayrollAudit(collectionId, resource.data)
+        && (
+          !isProtectedPayrollCollection(collectionId)
+        );
     }
 
     match /{document=**} {

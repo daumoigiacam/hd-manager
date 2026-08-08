@@ -295,6 +295,21 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       username: identity.username || ''
     };
     const firebaseUid = `identity_${safeIdPart(identityId)}`;
+
+    // Persist the same tenant claims used by the custom token. This keeps
+    // refreshed Firebase ID tokens company-scoped instead of reverting to a
+    // claim-less session after the original custom token expires.
+    try {
+      await admin.auth().setCustomUserClaims(firebaseUid, claims);
+    } catch (error) {
+      if (error?.code !== 'auth/user-not-found') throw error;
+      try {
+        await admin.auth().createUser({ uid: firebaseUid });
+      } catch (createError) {
+        if (createError?.code !== 'auth/uid-already-exists') throw createError;
+      }
+      await admin.auth().setCustomUserClaims(firebaseUid, claims);
+    }
     const customToken = await admin.auth().createCustomToken(firebaseUid, claims);
     await deviceRef.set({
       ...cleanDevice,

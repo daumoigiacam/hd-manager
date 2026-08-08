@@ -25,10 +25,16 @@
     "test:delivery-reconciliation": "node tests/delivery-reconciliation-ux.test.mjs",
     "test:payroll-evaluation": "node tests/payroll-evaluation-integration.test.mjs",
     "test:payroll-lock": "node tests/payroll-period-lock.test.mjs",
+    "test:payroll-freeze": "node tests/payroll-period-freeze.test.mjs",
+    "test:payroll-hardening": "node tests/payroll-period-hardening.test.mjs",
+    "test:firestore-payroll-rules": "firebase emulators:exec --only firestore \"node tests/firestore-payroll-rules.test.mjs\"",
     "test:payroll-debt-rollover": "node tests/payroll-debt-carryover.test.mjs",
     "test:payroll-auto-lock": "node tests/payroll-auto-lock.test.cjs",
     "test:identity": "node tests/identity-center.test.mjs",
-    "test:all": "npm run test:ai-zalo && npm run test:ai-zalo-order && npm run test:stress && npm run test:product-pricing-units && npm run test:smart-customer-ordering && npm run test:customer-product-billing && npm run test:warehouse-dispatch && npm run test:order-request-ux && npm run test:delivery-reconciliation && npm run test:payroll-evaluation && npm run test:payroll-lock && npm run test:payroll-debt-rollover && npm run test:payroll-auto-lock && npm run test:identity",
+    "test:functions": "node --check functions/index.js && node --check functions/payrollAutoLock.js",
+    "test:all": "npm run test:ai-zalo && npm run test:ai-zalo-order && npm run test:stress && npm run test:product-pricing-units && npm run test:smart-customer-ordering && npm run test:customer-product-billing && npm run test:warehouse-dispatch && npm run test:order-request-ux && npm run test:delivery-reconciliation && npm run test:payroll-evaluation && npm run test:payroll-lock && npm run test:payroll-freeze && npm run test:payroll-hardening && npm run test:payroll-debt-rollover && npm run test:payroll-auto-lock && npm run test:identity",
+    "lint": "eslint src/App.jsx src/utils/payroll*.js functions/index.js functions/payrollAutoLock.js tests/payroll*.test.mjs tests/payroll*.test.cjs",
+    "typecheck": "tsc -p tsconfig.payroll.json",
     "preview": "vite preview --host 127.0.0.1",
     "serve:dist": "node serve-dist.mjs",
     "desktop:start": "npm run build && electron .",
@@ -101,14 +107,23 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.3.1",
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "@types/node": "^26.2.0",
     "@vitejs/plugin-react": "^5.1.0",
     "autoprefixer": "^10.4.20",
     "eas-cli": "^19.1.0",
-    "electron": "^38.7.3",
+    "electron": "^39.8.9",
     "electron-builder": "^26.0.12",
+    "eslint": "^10.8.1",
+    "firebase-tools": "^15.15.0",
     "playwright-core": "^1.59.1",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.22",
     "tailwindcss": "^3.4.17",
+    "typescript": "^7.0.2",
     "vite": "^7.1.10"
+  },
+  "overrides": {
+    "dompurify": "3.4.13",
+    "tar": "7.5.22"
   }
 }

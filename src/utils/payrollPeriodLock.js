@@ -1,4 +1,28 @@
+import {
+  resolveStoredEmployeePayrollPolicy
+} from './payrollPolicyHistory.js';
+import { inspectPayrollSnapshot } from './payrollSnapshotIntegrity.js';
+
 const MONTH_KEY_PATTERN = /^(\d{4})-(\d{2})$/;
+
+export const PAYROLL_PERIOD_STATUS = Object.freeze({
+  DRAFT: 'DRAFT',
+  REVIEW: 'REVIEW',
+  LOCKED: 'LOCKED',
+  ADJUSTED: 'ADJUSTED'
+});
+
+export const PAYROLL_SNAPSHOT_SCHEMA_VERSION = 2;
+export const PAYROLL_RULES_VERSION = 'PAYROLL_FREEZE_RULES_V2';
+
+export const PAYROLL_AUTO_LOCK_PLAN_STATUS = Object.freeze({
+  OPEN: 'OPEN',
+  CLOSING: 'CLOSING',
+  SNAPSHOT_VALIDATED: 'SNAPSHOT_VALIDATED',
+  READY_FOR_LOCK: 'READY_FOR_LOCK',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+  LOCKED: 'LOCKED'
+});
 
 const normalizeDateKey = (value = '') => {
   const raw = `${value || ''}`.trim();
@@ -45,8 +69,74 @@ const pickEmployeeSnapshot = (employee = {}) => ({
   startDate: employee?.startDate || '',
   basicSalary: employee?.basicSalary ?? 0,
   supportSalary: employee?.supportSalary ?? 0,
-  responsibilitySalary: employee?.responsibilitySalary ?? 0
+  responsibilitySalary: employee?.responsibilitySalary ?? 0,
+  experienceSalary: employee?.experienceSalary ?? 0,
+  experienceSalaryPeriod: employee?.experienceSalaryPeriod || 'months',
+  salaryMonthDays: employee?.salaryMonthDays ?? '',
+  targetRevenue: employee?.targetRevenue ?? 0,
+  commissionBaseMode: employee?.commissionBaseMode || 'above_target'
 });
+
+const buildCalculationSnapshot = (salaryDetails = {}) => ({
+  inputs: {
+    monthKey: salaryDetails?.monthKey || '',
+    workDays: salaryDetails?.workDays ?? 0,
+    workDaysProbation: salaryDetails?.workDaysProbation ?? 0,
+    workDaysOfficial: salaryDetails?.workDaysOfficial ?? 0,
+    attendanceEntries: salaryDetails?.attendanceEntries || [],
+    performance: salaryDetails?.perf || {},
+    salesRevenue: salaryDetails?.salesRevenue ?? 0,
+    bonusRecords: salaryDetails?.bonusRecords || [],
+    penaltyRecords: salaryDetails?.penaltyRecords || [],
+    advanceRecords: salaryDetails?.advanceRecords || [],
+    employeePurchaseRecords: salaryDetails?.employeePurchaseRecords || [],
+    openingDebt: salaryDetails?.openingDebt ?? 0,
+    evaluationResult: salaryDetails?.evaluationResult || null
+  },
+  additions: {
+    baseSalary: salaryDetails?.baseSalaryCalc ?? 0,
+    supportSalary: salaryDetails?.supportSalary ?? 0,
+    responsibilitySalary: salaryDetails?.responsibilitySalary ?? 0,
+    roleSalary: salaryDetails?.roleSalary ?? 0,
+    experienceSalary: salaryDetails?.experienceSalary ?? 0,
+    commission: salaryDetails?.commission ?? 0,
+    overtimePay: salaryDetails?.overtimePay ?? 0,
+    totalBonus: salaryDetails?.totalBonus ?? 0,
+    evaluationBonus: salaryDetails?.evaluationBonus ?? 0
+  },
+  deductions: {
+    totalPenalty: salaryDetails?.totalPenalty ?? 0,
+    totalAdvance: salaryDetails?.totalAdvance ?? 0,
+    totalEmployeePurchase: salaryDetails?.totalEmployeePurchase ?? 0,
+    badDebt: salaryDetails?.badDebt ?? 0,
+    openingDebtApplied: salaryDetails?.openingDebtApplied ?? 0,
+    deductionTotal: salaryDetails?.deductionTotal ?? 0
+  },
+  results: {
+    grossSalary: salaryDetails?.grossSalary ?? 0,
+    netSalaryBeforeOpeningDebt: salaryDetails?.netSalaryBeforeOpeningDebt ?? salaryDetails?.netSalary ?? 0,
+    netSalary: salaryDetails?.netSalary ?? 0,
+    endingDebt: salaryDetails?.endingDebt ?? 0
+  }
+});
+
+export const normalizePayrollPeriodStatus = (status = '') => {
+  const normalized = `${status || ''}`.trim().toUpperCase();
+  const knownStatuses = /** @type {string[]} */ (Object.values(PAYROLL_PERIOD_STATUS));
+  if (knownStatuses.includes(normalized)) return normalized;
+  return ['CLOSED', 'AUTO_LOCKED'].includes(normalized)
+    ? PAYROLL_PERIOD_STATUS.LOCKED
+    : PAYROLL_PERIOD_STATUS.DRAFT;
+};
+
+export const isPayrollPeriodLocked = (periodOrStatus = '') => {
+  const safePeriodOrStatus = /** @type {any} */ (periodOrStatus);
+  const status = safePeriodOrStatus && typeof safePeriodOrStatus === 'object'
+    ? safePeriodOrStatus.status
+    : safePeriodOrStatus;
+  const normalized = normalizePayrollPeriodStatus(status || '');
+  return normalized === PAYROLL_PERIOD_STATUS.LOCKED || normalized === PAYROLL_PERIOD_STATUS.ADJUSTED;
+};
 
 export const normalizePayrollMonthKey = (value = '') => {
   const raw = `${value || ''}`.trim();
@@ -85,8 +175,8 @@ export const buildPayrollSnapshotId = (companyId = '', monthKey = '', employeeId
 export const createPayrollEmployeeSnapshot = ({
   companyId = '',
   monthKey = '',
-  employee = {},
-  salaryDetails = {},
+  employee = /** @type {Record<string, any>} */ ({}),
+  salaryDetails = /** @type {Record<string, any>} */ ({}),
   orderIndex = 0,
   lockedAt = '',
   lockedByEmployeeId = ''
@@ -95,19 +185,41 @@ export const createPayrollEmployeeSnapshot = ({
   const employeeId = `${employee?.id || ''}`;
   const id = buildPayrollSnapshotId(companyId, normalizedMonthKey, employeeId);
   if (!id || !employeeId) return null;
+  const resolvedPolicy = resolveStoredEmployeePayrollPolicy(employee, normalizedMonthKey);
+  const policySnapshot = resolvedPolicy
+    ? {
+        ...resolvedPolicy,
+        values: resolvedPolicy.values || {}
+      }
+    : null;
 
-  return {
+  const snapshot = {
     id,
     companyId: `${companyId || ''}`,
     periodId: buildPayrollPeriodId(companyId, normalizedMonthKey),
     monthKey: normalizedMonthKey,
     employeeId,
     orderIndex: Math.max(0, Number(orderIndex) || 0),
+    status: policySnapshot ? PAYROLL_PERIOD_STATUS.LOCKED : PAYROLL_PERIOD_STATUS.REVIEW,
+    schemaVersion: PAYROLL_SNAPSHOT_SCHEMA_VERSION,
+    formulaVersion: policySnapshot?.formulaVersion || '',
+    policyVersion: policySnapshot?.version || '',
+    policyEffectiveFrom: policySnapshot?.effectiveFrom || '',
+    policyEffectiveTo: policySnapshot?.effectiveTo || '',
+    policySnapshot: toSnapshotValue(policySnapshot),
     employee: toSnapshotValue(pickEmployeeSnapshot(employee)),
     salaryDetails: toSnapshotValue({ ...salaryDetails, monthKey: normalizedMonthKey }),
+    calculationSnapshot: toSnapshotValue(buildCalculationSnapshot({ ...salaryDetails, monthKey: normalizedMonthKey })),
     lockedAt: `${lockedAt || ''}`,
     lockedByEmployeeId: `${lockedByEmployeeId || ''}`,
     isArchived: false
+  };
+  const integrity = inspectPayrollSnapshot(snapshot);
+  return {
+    ...snapshot,
+    integrityStatus: integrity.status,
+    needsReview: integrity.needsReview,
+    missingSnapshotFields: integrity.missingFields
   };
 };
 
@@ -124,13 +236,20 @@ export const createPayrollPeriodRecord = ({
   const normalizedMonthKey = normalizePayrollMonthKey(monthKey);
   const id = buildPayrollPeriodId(companyId, normalizedMonthKey);
   const validSnapshots = (Array.isArray(snapshots) ? snapshots : []).filter(Boolean);
-  if (!id) return null;
+  if (!id || validSnapshots.length === 0 || validSnapshots.some(snapshot => !inspectPayrollSnapshot(snapshot).isComplete)) {
+    return null;
+  }
+  const formulaVersions = [...new Set(validSnapshots.map(snapshot => snapshot.formulaVersion))];
 
   return {
     id,
     companyId: `${companyId || ''}`,
     monthKey: normalizedMonthKey,
-    status: 'locked',
+    status: PAYROLL_PERIOD_STATUS.LOCKED,
+    schemaVersion: PAYROLL_SNAPSHOT_SCHEMA_VERSION,
+    formulaVersion: formulaVersions.length === 1 ? formulaVersions[0] : 'MIXED',
+    formulaVersions,
+    policyVersions: [...new Set(validSnapshots.map(snapshot => snapshot.policyVersion))],
     employeeCount: validSnapshots.length,
     snapshotIds: validSnapshots.map(snapshot => snapshot.id),
     totals: toSnapshotValue(totals || {}),
@@ -149,7 +268,7 @@ export const getLockedPayrollPeriod = (periods = [], companyId = '', monthKey = 
   return (Array.isArray(periods) ? periods : []).find(period => (
     period?.companyId === companyId
     && normalizePayrollMonthKey(period?.monthKey) === normalizedMonthKey
-    && period?.status === 'locked'
+    && isPayrollPeriodLocked(period)
     && !period?.isArchived
   )) || null;
 };
@@ -161,13 +280,23 @@ export const mapPayrollSnapshotsToRows = (snapshots = [], allowedEmployeeIds = n
       snapshot?.employeeId
       && snapshot?.employee
       && snapshot?.salaryDetails
+      && inspectPayrollSnapshot(snapshot).hasFrozenDisplayResult
       && !snapshot?.isArchived
       && (!allowedIds || allowedIds.has(snapshot.employeeId))
     ))
     .sort((left, right) => (Number(left?.orderIndex) || 0) - (Number(right?.orderIndex) || 0))
-    .map(snapshot => ({
-      emp: toSnapshotValue(snapshot.employee),
-      details: toSnapshotValue(snapshot.salaryDetails),
-      snapshotId: snapshot.id
-    }));
+    .map(snapshot => {
+      const integrity = inspectPayrollSnapshot(snapshot);
+      return {
+        emp: toSnapshotValue(snapshot.employee),
+        details: toSnapshotValue(snapshot.effectiveSalaryDetails || snapshot.salaryDetails),
+        snapshotId: snapshot.id,
+        snapshot: toSnapshotValue(snapshot),
+        policySnapshot: toSnapshotValue(snapshot.policySnapshot || null),
+        latestAdjustment: toSnapshotValue(snapshot.latestAdjustment || null),
+        snapshotIntegrity: integrity.status,
+        snapshotNeedsReview: integrity.needsReview,
+        snapshotMissingFields: integrity.missingFields
+      };
+    });
 };

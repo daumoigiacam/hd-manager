@@ -36,23 +36,42 @@ import {
   projectEvaluationSummaryToPayroll
 } from './utils/payrollEvaluationBonus.js';
 import {
+  PAYROLL_AUTO_LOCK_PLAN_STATUS,
+  PAYROLL_RULES_VERSION,
   buildPayrollPeriodId,
   canLockPayrollPeriodAtDate,
   createPayrollEmployeeSnapshot,
   createPayrollPeriodRecord,
   getLockedPayrollPeriod,
   getPayrollMonthEndDateKey,
+  isPayrollPeriodLocked,
   mapPayrollSnapshotsToRows,
   normalizePayrollMonthKey
 } from './utils/payrollPeriodLock.js';
 import {
   applyPayrollOpeningDebtToSalaryDetails,
+  buildPayrollDebtCarryoverId,
   buildPayrollAutoLockPlanId,
   buildPayrollAutoLockPlanSnapshotId,
   createPayrollDebtCarryovers,
   createPayrollPeriodLockJournalEntry,
-  getEmployeePayrollOpeningDebt
+  getEmployeePayrollOpeningDebt,
+  getNextPayrollMonthKey
 } from './utils/payrollDebtCarryover.js';
+import {
+  applyEmployeePayrollPolicyForMonth,
+  buildEmployeePayrollPolicyUpdate
+} from './utils/payrollPolicyHistory.js';
+import {
+  applyPayrollAdjustmentsToSnapshots,
+  buildAdjustedDebtCarryoverPatch,
+  createPayrollAdjustment,
+  createPayrollAdjustmentAuditLog
+} from './utils/payrollAdjustment.js';
+import {
+  auditPayrollHistoricalData,
+  isCompletePayrollSnapshot
+} from './utils/payrollSnapshotIntegrity.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -137,7 +156,9 @@ import {
   buildCustomerProductPreferenceCacheKey,
   buildCustomerProductPreferenceId,
   buildCustomerProductPreferenceWrite,
+  getOrderInputUnitOptions,
   normalizeCustomerProductPreference,
+  resolveRememberedInputUnit,
   shouldOfferDefaultInputUnitUpdate,
 } from './services/smartCustomerOrdering.js';
 import {
@@ -833,7 +854,7 @@ const dispatchScreenBackRequest = () => {
   window.dispatchEvent(event);
   return isAppBackHandled(event);
 };
-const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
+const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 const OPTIONAL_ZALO_COLLECTION_NAMES = ['zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules'];
 // Only identity data should block startup. Business data continues loading in the background.
@@ -4334,6 +4355,16 @@ const isFirebaseQuotaError = (error) => {
     || normalized.includes('too many requests');
 };
 
+const isFirebasePermissionError = (error) => {
+  const normalized = getErrorText(error).toLowerCase();
+  return normalized.includes('permission-denied')
+    || normalized.includes('permission_denied')
+    || normalized.includes('missing or insufficient permissions')
+    || normalized.includes('403')
+    || normalized.includes('unauthenticated')
+    || normalized.includes('401');
+};
+
 const getFriendlyFirebaseErrorMessage = (error, fallback = 'Thao tác chưa hoàn tất, vui lòng thử lại.') => {
   const rawMessage = `${error?.message || error || ''}`.trim();
   if (isFirestoreInternalAssertionError(error)) {
@@ -4341,6 +4372,9 @@ const getFriendlyFirebaseErrorMessage = (error, fallback = 'Thao tác chưa hoà
   }
   if (isFirebaseQuotaError(error)) {
     return 'Firebase đang quá tải/hết hạn mức tạm thời. App đã giữ lệnh lại và sẽ tự đồng bộ khi hệ thống ổn định.';
+  }
+  if (isFirebasePermissionError(error)) {
+    return 'Phiên kết nối dữ liệu chưa được Firebase xác nhận. Vui lòng tải lại app rồi thử thu lại; nếu vẫn còn lỗi, hãy đăng xuất và đăng nhập lại một lần.';
   }
   if (isTimeoutLikeError(error)) {
     return 'Kết nối Firebase phản hồi chậm. App đã ghi nhận thao tác và sẽ tự đồng bộ lại.';
@@ -11817,44 +11851,77 @@ export default function App() {
       scheduleCollectionRefresh(collectionName);
       return result;
     } catch (error) {
-      if (isFirebaseQuotaError(error)) {
+      let writeError = error;
+      if (isFirebasePermissionError(writeError) && firebaseUser?.getIdToken) {
+        try {
+          recordStartupEvent('firestore.write.sdk_token_refresh', {
+            collection: collectionName
+          }, 'warn');
+          await firebaseUser.getIdToken(true);
+          const retryResult = await withTimeout(
+            setDoc(documentRef, scopedPayload, options),
+            timeoutMs,
+            `${timeoutMessage} sau khi làm mới phiên đăng nhập`
+          );
+          scheduleCollectionRefresh(collectionName);
+          return retryResult;
+        } catch (retryError) {
+          writeError = retryError;
+          if (isFirebasePermissionError(writeError)) throw writeError;
+        }
+      }
+      if (isFirebaseQuotaError(writeError)) {
         restQuotaBlockedUntilRef.current = Date.now() + 60 * 1000;
-        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error });
+        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [5000, 15000]);
         return queuedResult;
       }
-      if (isFirestoreInternalAssertionError(error) && !firebaseUser?.getIdToken) {
-        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error });
+      if (isFirestoreInternalAssertionError(writeError) && !firebaseUser?.getIdToken) {
+        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [800, 3000, 9000]);
         return queuedResult;
       }
-      if (!isTimeoutLikeError(error)) throw error;
-      if (!firebaseUser?.getIdToken) throw error;
+      if (!isTimeoutLikeError(writeError)) throw writeError;
+      if (!firebaseUser?.getIdToken) throw writeError;
       if (Date.now() < restQuotaBlockedUntilRef.current) {
-        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error });
+        const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [5000, 15000]);
         return queuedResult;
       }
 
       try {
-        const token = await firebaseUser.getIdToken();
         const merge = Boolean(options?.merge);
         const fieldPaths = merge ? Object.keys(scopedPayload || {}) : [];
         const url = buildFirestoreRestDocumentUrl(collectionName, documentId, { merge, fieldPaths });
-        if (!url) throw error;
+        if (!url) throw writeError;
 
-        const response = await fetch(url, {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ fields: toFirestoreRestFields(scopedPayload) })
-        });
+        const writeViaRest = async (forceRefreshToken = false) => {
+          const token = await firebaseUser.getIdToken(forceRefreshToken);
+          return fetch(url, {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ fields: toFirestoreRestFields(scopedPayload) })
+          });
+        };
+
+        let response = await writeViaRest(false);
+        if (response.status === 401 || response.status === 403) {
+          recordStartupEvent('firestore.write.token_refresh', {
+            collection: collectionName,
+            status: response.status
+          }, 'warn');
+          response = await writeViaRest(true);
+        }
 
         if (!response.ok) {
           const errorText = await response.text().catch(() => '');
           const restError = new Error(`Không thể lưu dữ liệu lên Firebase (${response.status}). ${errorText}`.trim());
+          restError.code = response.status === 401
+            ? 'auth/unauthenticated'
+            : (response.status === 403 ? 'firestore/permission-denied' : 'firestore/rest-write-failed');
           if (isFirebaseQuotaError(restError)) {
             restQuotaBlockedUntilRef.current = Date.now() + 60 * 1000;
             const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: restError });
@@ -15554,34 +15621,74 @@ export default function App() {
     }
 
     try {
+      const lockedPeriod = getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey);
+      const lockedSnapshotIds = new Set(
+        (Array.isArray(lockedPeriod?.snapshotIds) ? lockedPeriod.snapshotIds : [])
+          .map(id => `${id || ''}`.trim())
+          .filter(Boolean)
+      );
+      const belongsToLockedPeriod = (record = {}) => (
+        record.companyId === myCompanyId
+        && record.periodId === periodId
+        && (lockedSnapshotIds.size === 0 || lockedSnapshotIds.has(record.snapshotId || record.id))
+      );
       const snapshotQuery = firebaseQuery(
         collection(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots'),
+        firebaseWhere('companyId', '==', myCompanyId),
         firebaseWhere('periodId', '==', periodId)
       );
-      const snapshotResult = await withTimeout(
-        getDocs(snapshotQuery),
+      const adjustmentQuery = firebaseQuery(
+        collection(db, 'artifacts', appId, 'public', 'data', 'payrollAdjustments'),
+        firebaseWhere('companyId', '==', myCompanyId),
+        firebaseWhere('periodId', '==', periodId)
+      );
+      const [snapshotResult, adjustmentResult] = await withTimeout(
+        Promise.all([getDocs(snapshotQuery), getDocs(adjustmentQuery)]),
         12000,
         'Tải dữ liệu kỳ lương đã khóa quá thời gian chờ.'
       );
       const snapshotMap = new Map(
         snapshotResult.docs
           .map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }))
-          .filter(snapshot => snapshot.companyId === myCompanyId && snapshot.periodId === periodId)
+          .filter(belongsToLockedPeriod)
           .map(snapshot => [snapshot.id, snapshot])
       );
 
       pendingFirebaseWritesRef.current
         .filter(write => (
           write?.collectionName === 'payrollSnapshots'
-          && write?.payload?.companyId === myCompanyId
-          && write?.payload?.periodId === periodId
+          && belongsToLockedPeriod({ id: write.documentId, ...write.payload })
           && !write?.payload?.isArchived
         ))
         .forEach(write => {
           snapshotMap.set(write.documentId, { id: write.documentId, ...write.payload });
         });
 
-      return { success: true, snapshots: Array.from(snapshotMap.values()) };
+      const adjustmentMap = new Map(
+        adjustmentResult.docs
+          .map(adjustmentDoc => ({ id: adjustmentDoc.id, ...adjustmentDoc.data() }))
+          .filter(adjustment => belongsToLockedPeriod(adjustment) && !adjustment.isArchived)
+          .map(adjustment => [adjustment.id, adjustment])
+      );
+      pendingFirebaseWritesRef.current
+        .filter(write => (
+          write?.collectionName === 'payrollAdjustments'
+          && belongsToLockedPeriod({ id: write.documentId, ...write.payload })
+          && !write?.payload?.isArchived
+        ))
+        .forEach(write => {
+          adjustmentMap.set(write.documentId, { id: write.documentId, ...write.payload });
+        });
+
+      const rawSnapshots = Array.from(snapshotMap.values());
+      const adjustments = Array.from(adjustmentMap.values());
+      const snapshots = applyPayrollAdjustmentsToSnapshots(rawSnapshots, adjustments);
+      const integrityReport = auditPayrollHistoricalData({
+        periods: lockedPeriod ? [lockedPeriod] : [],
+        snapshots: rawSnapshots
+      });
+
+      return { success: true, snapshots, adjustments, integrityReport };
     } catch (error) {
       return {
         success: false,
@@ -15617,6 +15724,12 @@ export default function App() {
     if (safeSnapshots.length === 0) {
       return { success: false, message: 'Chưa có dữ liệu nhân sự để khóa kỳ lương.' };
     }
+    if (safeSnapshots.some(snapshot => !isCompletePayrollSnapshot(snapshot))) {
+      return {
+        success: false,
+        message: 'Không thể khóa kỳ lương vì có snapshot thiếu chính sách hoặc dữ liệu tính. Hệ thống không tự suy đoán dữ liệu lịch sử.'
+      };
+    }
 
     const lockedAt = `${period?.lockedAt || new Date().toISOString()}`;
     const debtCarryovers = createPayrollDebtCarryovers({
@@ -15648,7 +15761,7 @@ export default function App() {
       id: periodId,
       companyId: myCompanyId,
       monthKey: safeMonthKey,
-      status: 'locked',
+      status: 'LOCKED',
       lockedAt,
       employeeCount: safeSnapshots.length,
       snapshotIds: safeSnapshots.map(snapshot => snapshot.id),
@@ -15659,25 +15772,43 @@ export default function App() {
       totalEndingDebt,
       isArchived: false
     };
+    const snapshotRefsById = new Map(safeSnapshots.map(snapshot => [
+      snapshot.id,
+      doc(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots', snapshot.id)
+    ]));
+    const carryoverRefsById = new Map(debtCarryovers.map(({ carryover }) => [
+      carryover.id,
+      doc(db, 'artifacts', appId, 'public', 'data', 'payrollDebtCarryovers', carryover.id)
+    ]));
 
     try {
       const periodRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', periodId);
       await runTransaction(db, async (transaction) => {
-        const existingPeriod = await transaction.get(periodRef);
-        if (existingPeriod.exists() && existingPeriod.data()?.status === 'locked') {
+        const [existingPeriod, existingPlan] = await Promise.all([
+          transaction.get(periodRef),
+          transaction.get(planRef)
+        ]);
+        if (existingPeriod.exists() && isPayrollPeriodLocked(existingPeriod.data())) {
           throw new Error('Kỳ lương này đã được khóa trước đó.');
+        }
+        const existingArtifacts = await Promise.all([
+          ...Array.from(snapshotRefsById.values()).map(ref => transaction.get(ref)),
+          ...Array.from(carryoverRefsById.values()).map(ref => transaction.get(ref))
+        ]);
+        if (existingArtifacts.some(snapshot => snapshot.exists())) {
+          throw new Error('Đã tồn tại snapshot hoặc dư nợ chuyển kỳ cho lần khóa này. Dữ liệu không được ghi đè.');
         }
 
         safeSnapshots.forEach(snapshot => {
           transaction.set(
-            doc(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots', snapshot.id),
+            snapshotRefsById.get(snapshot.id),
             snapshot,
             { merge: false }
           );
         });
         debtCarryovers.forEach(({ carryover, journalEntry }) => {
           transaction.set(
-            doc(db, 'artifacts', appId, 'public', 'data', 'payrollDebtCarryovers', carryover.id),
+            carryoverRefsById.get(carryover.id),
             carryover,
             { merge: false }
           );
@@ -15718,6 +15849,162 @@ export default function App() {
     }
   };
 
+  const handleAdjustLockedPayroll = async ({
+    monthKey = '',
+    snapshotId = '',
+    nextNetSalary = 0,
+    nextEndingDebt = 0,
+    reason = ''
+  } = {}) => {
+    const safeMonthKey = normalizePayrollMonthKey(monthKey);
+    const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
+    const normalizedReason = `${reason || ''}`.trim();
+    if (!firebaseUser || !db || !myCompanyId || !periodId || !snapshotId) {
+      return { success: false, message: 'Không thể điều chỉnh vì phiên làm việc hoặc dữ liệu kỳ lương chưa hợp lệ.' };
+    }
+    if (!canCurrentUserManagePayrollByRole()) {
+      return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được điều chỉnh kỳ lương đã chốt.' };
+    }
+    if (!normalizedReason) {
+      return { success: false, message: 'Vui lòng nhập lý do điều chỉnh để lưu nhật ký kiểm toán.' };
+    }
+
+    const adjustedAt = new Date().toISOString();
+    const periodRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', periodId);
+    const snapshotRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollSnapshots', snapshotId);
+    const nextMonthKey = getNextPayrollMonthKey(safeMonthKey);
+    const nextPeriodId = buildPayrollPeriodId(myCompanyId, nextMonthKey);
+    const nextPeriodRef = nextPeriodId
+      ? doc(db, 'artifacts', appId, 'public', 'data', 'payrollPeriods', nextPeriodId)
+      : null;
+    let committedAdjustment = null;
+    let committedAuditLog = null;
+    let committedCarryover = null;
+    let committedPeriod = null;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const periodSnapshot = await transaction.get(periodRef);
+        if (!periodSnapshot.exists() || !isPayrollPeriodLocked(periodSnapshot.data())) {
+          throw new Error('Chỉ có thể điều chỉnh kỳ lương đã khóa.');
+        }
+        const snapshotDocument = await transaction.get(snapshotRef);
+        if (!snapshotDocument.exists()) throw new Error('Không tìm thấy snapshot lương cần điều chỉnh.');
+        const currentPeriod = periodSnapshot.data() || {};
+        const payrollSnapshot = { id: snapshotDocument.id, ...snapshotDocument.data() };
+        if (payrollSnapshot.companyId !== myCompanyId || payrollSnapshot.periodId !== periodId) {
+          throw new Error('Snapshot lương không thuộc kỳ đang điều chỉnh.');
+        }
+
+        if (nextPeriodRef) {
+          const nextPeriodSnapshot = await transaction.get(nextPeriodRef);
+          if (nextPeriodSnapshot.exists() && isPayrollPeriodLocked(nextPeriodSnapshot.data())) {
+            throw new Error('Kỳ lương kế tiếp đã khóa. Hãy lập điều chỉnh tại kỳ kế tiếp để không thay đổi chuỗi lịch sử đã chốt.');
+          }
+        }
+
+        const latestAdjustmentId = currentPeriod?.latestAdjustmentBySnapshot?.[snapshotId] || '';
+        let previousAdjustment = null;
+        if (latestAdjustmentId) {
+          const previousAdjustmentRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollAdjustments', latestAdjustmentId);
+          const previousAdjustmentSnapshot = await transaction.get(previousAdjustmentRef);
+          if (previousAdjustmentSnapshot.exists()) {
+            previousAdjustment = { id: previousAdjustmentSnapshot.id, ...previousAdjustmentSnapshot.data() };
+          }
+        }
+
+        const carryoverId = buildPayrollDebtCarryoverId(myCompanyId, nextMonthKey, payrollSnapshot.employeeId);
+        const carryoverRef = carryoverId
+          ? doc(db, 'artifacts', appId, 'public', 'data', 'payrollDebtCarryovers', carryoverId)
+          : null;
+        let existingCarryover = null;
+        if (carryoverRef) {
+          const carryoverSnapshot = await transaction.get(carryoverRef);
+          if (carryoverSnapshot.exists()) existingCarryover = { id: carryoverSnapshot.id, ...carryoverSnapshot.data() };
+        }
+
+        const adjustment = createPayrollAdjustment({
+          period: { id: periodId, ...currentPeriod },
+          snapshot: payrollSnapshot,
+          previousAdjustment,
+          nextNetSalary,
+          nextEndingDebt,
+          reason: normalizedReason,
+          adjustedAt,
+          adjustedByEmployeeId: currentUser?.id || currentUser?.employeeId || '',
+          adjustedByName: currentUser?.name || currentUser?.displayName || currentEmployee?.name || '',
+          adjustedByRole: currentEmployee?.position || currentUser?.role || ''
+        });
+        if (!adjustment) throw new Error('Thông tin điều chỉnh chưa hợp lệ.');
+        const auditLog = createPayrollAdjustmentAuditLog(adjustment);
+        const carryoverPatch = buildAdjustedDebtCarryoverPatch({ adjustment, existingCarryover });
+        const currentTotals = currentPeriod.totals || {};
+        const updatedTotals = {
+          ...currentTotals,
+          totalSalary: Number(currentTotals.totalSalary || 0) + Number(adjustment.differences.netSalary || 0),
+          totalEndingDebt: Math.max(0, Number(currentTotals.totalEndingDebt || 0) + Number(adjustment.differences.endingDebt || 0))
+        };
+        const currentDebtCarryoverIds = Array.isArray(currentPeriod.debtCarryoverIds)
+          ? currentPeriod.debtCarryoverIds
+          : [];
+        const nextDebtCarryoverIds = carryoverPatch?.id && !currentDebtCarryoverIds.includes(carryoverPatch.id)
+          ? [...currentDebtCarryoverIds, carryoverPatch.id]
+          : currentDebtCarryoverIds;
+        const updatedPeriod = {
+          ...currentPeriod,
+          id: periodId,
+          status: 'ADJUSTED',
+          totals: updatedTotals,
+          totalEndingDebt: updatedTotals.totalEndingDebt,
+          debtCarryoverIds: nextDebtCarryoverIds,
+          debtTransferCount: nextDebtCarryoverIds.length,
+          adjustmentCount: Math.max(0, Number(currentPeriod.adjustmentCount || 0)) + 1,
+          latestAdjustmentBySnapshot: {
+            ...(currentPeriod.latestAdjustmentBySnapshot || {}),
+            [snapshotId]: adjustment.id
+          },
+          lastAdjustmentId: adjustment.id,
+          lastAdjustedAt: adjustedAt,
+          lastAdjustedByEmployeeId: adjustment.adjustedByEmployeeId,
+          updatedAt: adjustedAt
+        };
+
+        transaction.set(
+          doc(db, 'artifacts', appId, 'public', 'data', 'payrollAdjustments', adjustment.id),
+          adjustment,
+          { merge: false }
+        );
+        if (auditLog) {
+          transaction.set(
+            doc(db, 'artifacts', appId, 'public', 'data', 'activityLogs', auditLog.id),
+            auditLog,
+            { merge: false }
+          );
+        }
+        if (carryoverRef && carryoverPatch) transaction.set(carryoverRef, carryoverPatch, { merge: false });
+        transaction.set(periodRef, updatedPeriod, { merge: false });
+
+        committedAdjustment = adjustment;
+        committedAuditLog = auditLog;
+        committedCarryover = carryoverPatch;
+        committedPeriod = updatedPeriod;
+      });
+
+      applyLocalCollectionWrite('payrollAdjustments', committedAdjustment.id, committedAdjustment, { merge: false });
+      if (committedAuditLog) applyLocalCollectionWrite('activityLogs', committedAuditLog.id, committedAuditLog, { merge: false });
+      if (committedCarryover) applyLocalCollectionWrite('payrollDebtCarryovers', committedCarryover.id, committedCarryover, { merge: false });
+      applyLocalCollectionWrite('payrollPeriods', periodId, committedPeriod, { merge: false });
+      scheduleCollectionRefresh('payrollPeriods', [300, 1500]);
+      scheduleCollectionRefresh('payrollDebtCarryovers', [300, 1500]);
+      return { success: true, adjustment: committedAdjustment, period: committedPeriod };
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không lưu được phiếu điều chỉnh. Snapshot kỳ lương vẫn được giữ nguyên.')
+      };
+    }
+  };
+
   const handlePreparePayrollAutoLockPlan = async ({ period, snapshots, sourceSignature = '' } = {}) => {
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
     const planId = buildPayrollAutoLockPlanId(myCompanyId, safeMonthKey);
@@ -15750,39 +16037,59 @@ export default function App() {
     }
 
     const preparedAt = new Date().toISOString();
-    const stagedSnapshots = safeSnapshots.map(snapshot => ({
-      ...snapshot,
-      id: buildPayrollAutoLockPlanSnapshotId(planId, snapshot.employeeId),
-      snapshotId: snapshot.id,
-      planId,
-      preparedAt,
-      isArchived: false
-    }));
+    const stagedSnapshots = safeSnapshots.map((snapshot) => {
+      const stagedSnapshot = {
+        ...snapshot,
+        id: buildPayrollAutoLockPlanSnapshotId(planId, snapshot.employeeId),
+        snapshotId: snapshot.id,
+        planId,
+        status: 'STAGED',
+        preparedAt,
+        isArchived: false
+      };
+      delete stagedSnapshot.lockedAt;
+      delete stagedSnapshot.lockedByEmployeeId;
+      return stagedSnapshot;
+    });
     if (stagedSnapshots.some(snapshot => !snapshot.id || !snapshot.snapshotId)) {
       return { success: false, message: 'Không thể chuẩn bị đủ ảnh chụp kỳ lương tự động.' };
     }
+    const stagedPeriod = {
+      ...(period || {}),
+      id: periodId,
+      companyId: myCompanyId,
+      monthKey: safeMonthKey,
+      status: 'OPEN',
+      rulesVersion: PAYROLL_RULES_VERSION,
+      employeeCount: safeSnapshots.length,
+      snapshotIds: safeSnapshots.map(snapshot => snapshot.id),
+      isArchived: false
+    };
+    delete stagedPeriod.lockedAt;
+    delete stagedPeriod.lockedByEmployeeId;
+    delete stagedPeriod.lockedByName;
+    delete stagedPeriod.lockedByRole;
     const plan = {
       id: planId,
       companyId: myCompanyId,
       monthKey: safeMonthKey,
       periodId,
-      status: 'ready',
+      status: PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN,
+      rulesVersion: PAYROLL_RULES_VERSION,
       autoLockAt: `${getPayrollMonthEndDateKey(safeMonthKey)}T23:59:59+07:00`,
+      closingSchedule: {
+        mode: 'MONTH_END',
+        timeZone: 'Asia/Ho_Chi_Minh',
+        time: '23:59:59',
+        source: 'SYSTEM_MONTH_END'
+      },
       preparedAt,
       preparedByEmployeeId: currentUser?.id || '',
       preparedByName: currentUser?.name || currentUser?.displayName || '',
       sourceSignature: `${sourceSignature || ''}`,
-      period: {
-        ...(period || {}),
-        id: periodId,
-        companyId: myCompanyId,
-        monthKey: safeMonthKey,
-        status: 'locked',
-        employeeCount: safeSnapshots.length,
-        snapshotIds: safeSnapshots.map(snapshot => snapshot.id),
-        isArchived: false
-      },
+      period: stagedPeriod,
       stagedSnapshotIds: stagedSnapshots.map(snapshot => snapshot.id),
+      expectedEmployeeIds: safeSnapshots.map(snapshot => snapshot.employeeId).sort(),
       snapshotCount: stagedSnapshots.length,
       updatedAt: preparedAt,
       isArchived: false
@@ -15793,8 +16100,17 @@ export default function App() {
       const planRef = doc(db, 'artifacts', appId, 'public', 'data', 'payrollAutoLockPlans', planId);
       await runTransaction(db, async (transaction) => {
         const existingPeriod = await transaction.get(periodRef);
-        if (existingPeriod.exists() && existingPeriod.data()?.status === 'locked') {
+        const existingPlan = await transaction.get(planRef);
+        if (existingPeriod.exists() && isPayrollPeriodLocked(existingPeriod.data())) {
           throw new Error('Kỳ lương này đã được khóa trước đó.');
+        }
+        if (existingPlan.exists()) {
+          const currentPlan = existingPlan.data() || {};
+          const currentStatus = `${currentPlan.status || ''}`.trim().toUpperCase();
+          if (![PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, 'READY'].includes(currentStatus)
+            || currentPlan.rulesVersion !== PAYROLL_RULES_VERSION) {
+            throw new Error('Existing payroll auto-lock plan requires review and cannot be overwritten.');
+          }
         }
         stagedSnapshots.forEach(snapshot => {
           transaction.set(
@@ -19330,7 +19646,7 @@ export default function App() {
         onAddAdvanceRequest={handleAddAdvanceRequest} onEditAttendance={handleEditAttendance}
         onAddFinancial={addFinancialRecord} onEditFinancial={handleEditFinancialRecord} onDeleteFinancial={handleDeleteFinancialRecord} onUpdatePerformance={updatePerformance}
         onApproveAdvance={handleApproveAdvance} onRejectAdvance={handleRejectAdvance} onDeleteAdvance={handleDeleteAdvance}
-        onLockPayrollPeriod={handleLockPayrollPeriod} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
+        onLockPayrollPeriod={handleLockPayrollPeriod} onAdjustLockedPayroll={handleAdjustLockedPayroll} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
         onAddEmployee={handleAddEmployee} onEditEmployee={handleEditEmployee} onDeleteEmployee={handleDeleteEmployee} onAddEmployeeReview={handleAddEmployeeReview}
         onOverrideCheckIn={handleCheckIn} onOverrideCheckOut={handleCheckOut}
         onAddProduct={handleAddProduct} onEditProduct={handleEditProduct} onDeleteProduct={handleDeleteProduct}
@@ -19790,7 +20106,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
-  onUpdateCompanySettings, onLockPayrollPeriod, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
+  onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
   onUpdateZaloOrderRequest, onConvertZaloOrderRequest,
@@ -21540,6 +21856,7 @@ function MainAppView({
           onDeleteAdvance={onDeleteAdvance}
           onUpdateCompanySettings={onUpdateCompanySettings}
           onLockPayrollPeriod={onLockPayrollPeriod}
+          onAdjustLockedPayroll={onAdjustLockedPayroll}
           onPreparePayrollAutoLockPlan={onPreparePayrollAutoLockPlan}
           onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots}
           canViewSalaryAdvance={canRoleAction('payroll', 'view_salary_advance') || canRoleAction('payroll', 'view_salary_detail_records')}
@@ -57048,9 +57365,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
   const resolveDraftItemQuantityUnit = (configSource = null, product = null, requestedUnit = '') => {
     const configuration = resolveCustomerProductBillingConfiguration(configSource, product);
-    const unitOptions = [resolveCustomerProductActualUnit(configuration, product)].filter(Boolean);
+    const defaultInputUnit = resolveCustomerProductActualUnit(configuration, product);
+    const unitOptions = getOrderInputUnitOptions({
+      product,
+      pricingUnit: configuration.billingUnit,
+      currentUnit: requestedUnit,
+      fallback: defaultInputUnit || defaultQuantityUnit,
+    });
     const normalizedRequestedUnit = normalizeProductPricingUnit(requestedUnit);
     return unitOptions.find(unit => normalizeLookupText(unit) === normalizeLookupText(normalizedRequestedUnit))
+      || unitOptions.find(unit => isSameBillingUnit(unit, defaultInputUnit))
       || unitOptions[0]
       || getCustomerProductDefaultUnit(configSource, product, defaultQuantityUnit);
   };
@@ -57064,7 +57388,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       sizeLabel: item.weightKg || item.sizeLabel || '',
       attributeLabel: item.attributeLabel || '',
     });
-    return [resolveCustomerProductActualUnit(configuration, product)].filter(Boolean);
+    const defaultInputUnit = resolveCustomerProductActualUnit(configuration, product);
+    return getOrderInputUnitOptions({
+      product,
+      pricingUnit: item.billingUnit || item.pricingUnit || configuration.billingUnit,
+      currentUnit: item.quantityUnit || item.actualUnit,
+      rememberedUnit: item.rememberedDefaultInputUnit,
+      fallback: defaultInputUnit || defaultQuantityUnit,
+    });
   };
 
   const persistSmartOrderingPreferences = async (savedRequests = []) => {
@@ -57111,22 +57442,23 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
     const product = productLookup.get(item?.productId);
     if (!draft || !item || !product) {
-      updateDraftItem(localId, itemLocalId, { quantityUnit: normalizeProductPricingUnit(nextUnit), inputUnitTouched: true });
+      const quantityUnit = normalizeProductPricingUnit(nextUnit);
+      updateDraftItem(localId, itemLocalId, { quantityUnit, actualUnit: quantityUnit, inputUnitTouched: true });
       return;
     }
-    const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
-    const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
-    const configuration = resolveCustomerProductBillingConfiguration(configSource, product);
-    const allowedActualUnit = resolveCustomerProductActualUnit(configuration, product);
-    if (!isSameBillingUnit(allowedActualUnit, nextUnit)) {
-      setRequestError(`Đơn vị số lượng của ${product.name || 'sản phẩm'} được cố định là ${allowedActualUnit || 'chưa cấu hình'}.`);
+    const availableUnits = getDraftItemUnitOptions(draft, item);
+    const normalizedNextUnit = normalizeProductPricingUnit(nextUnit);
+    const quantityUnit = availableUnits.find(unit => isSameBillingUnit(unit, normalizedNextUnit));
+    if (!quantityUnit) {
+      setRequestError(`Đơn vị đặt của ${product.name || 'sản phẩm'} chưa phù hợp với cấu hình tính giá.`);
       return;
     }
-    const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, nextUnit);
     updateDraftItem(localId, itemLocalId, {
       quantityUnit,
+      actualUnit: quantityUnit,
       inputUnitTouched: true
     });
+    setRequestError('');
   };
   const getOrderRequestBranchRef = (customer = null, source = {}, fallbackSource = {}) => {
     if (!customer) return { branchId: '', branchName: '', branchAddress: '' };
@@ -57750,7 +58082,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const getDraftItemVariantKey = (item = {}) => buildOrderRequestVariantKey(item.productId, {
     attributeLabel: item.attributeLabel,
     size: item.weightKg || item.sizeLabel,
-    unit: item.quantityUnit || item.unit,
+    unit: item.billingUnit || item.pricingUnit || item.quantityUnit || item.unit,
     price: item.unitPrice
   });
   const selectedQuickVariantKeys = useMemo(
@@ -57789,7 +58121,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         selectionKey: buildOrderRequestVariantKey(product.id, {
           attributeLabel: configuration.attributeLabel,
           size: configuration.sizeLabel,
-          unit: resolveCustomerProductActualUnit(configuration, product),
+          unit: configuration.billingUnit,
           price: configuration.unitPrice,
         }),
       };
@@ -58377,23 +58709,50 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }));
   };
 
-  const loadRememberedInputUnitForDraftItem = ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
+  const loadRememberedInputUnitForDraftItem = async ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
     if (!localId || !itemLocalId || !customerId || !productId) return;
     const localCustomer = customerLookup.get(customerId);
     const localProduct = productLookup.get(productId);
     if (!localCustomer || !localProduct) return;
     const localConfigSource = getCustomerBranchProductConfigSource(localCustomer, branchId, activeProducts);
     const localConfiguration = resolveCustomerProductBillingConfiguration(localConfigSource, localProduct);
-    const fixedActualUnit = resolveCustomerProductActualUnit(localConfiguration, localProduct);
-    updateDraftItem(localId, itemLocalId, (item) => {
-      if (item.productId !== productId || item.inputUnitTouched) return {};
+    const defaultInputUnit = resolveCustomerProductActualUnit(localConfiguration, localProduct);
+    const availableUnits = getOrderInputUnitOptions({
+      product: localProduct,
+      pricingUnit: localConfiguration.billingUnit,
+      fallback: defaultInputUnit || defaultQuantityUnit,
+    });
+    let preference = null;
+    if (typeof onGetCustomerProductPreference === 'function') {
+      try {
+        preference = await onGetCustomerProductPreference({ customerId, productId });
+      } catch (error) {
+        console.warn('Khong tai duoc goi y don vi dat; app su dung don vi mac dinh.', error);
+      }
+    }
+    const quantityUnit = resolveRememberedInputUnit({
+      preference,
+      availableUnits,
+      pricingUnit: defaultInputUnit,
+      product: localProduct,
+      fallback: defaultInputUnit || defaultQuantityUnit,
+    });
+    updateDraft(localId, (draft) => {
+      if (draft.customerId !== customerId || `${draft.branchId || ''}` !== `${branchId || ''}`) return {};
       return {
-        quantityUnit: fixedActualUnit,
-        actualUnit: fixedActualUnit,
-        pricingUnit: localConfiguration.billingUnit,
-        billingUnit: localConfiguration.billingUnit,
-        configurationId: localConfiguration.configurationId || '',
-        unitPrice: localConfiguration.unitPrice || item.unitPrice || '',
+        items: (draft.items || []).map((item) => {
+          if (item.localItemId !== itemLocalId || item.productId !== productId || item.inputUnitTouched) return item;
+          return {
+            ...item,
+            quantityUnit,
+            actualUnit: quantityUnit,
+            pricingUnit: localConfiguration.billingUnit,
+            billingUnit: localConfiguration.billingUnit,
+            configurationId: localConfiguration.configurationId || '',
+            rememberedDefaultInputUnit: preference?.defaultInputUnit || '',
+            unitPrice: localConfiguration.unitPrice || item.unitPrice || '',
+          };
+        })
       };
     });
   };
@@ -58416,7 +58775,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
         const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
-        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, pricingUnit);
+        const quantityUnit = resolveDraftItemQuantityUnit(
+          configSource,
+          product,
+          item.inputUnitTouched ? item.quantityUnit : ''
+        );
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
@@ -58457,7 +58820,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         const customAttribute = getCustomerProductAttribute(configSource, product);
         const attributeOptions = getProductAttributes(product);
         const pricingUnit = getCustomerProductPricingUnit(configSource, product, 'Con');
-        const quantityUnit = resolveDraftItemQuantityUnit(configSource, product, pricingUnit);
+        const quantityUnit = resolveDraftItemQuantityUnit(
+          configSource,
+          product,
+          item.inputUnitTouched ? item.quantityUnit : ''
+        );
         return {
           ...item,
           attributeLabel: attributeOptions.includes(customAttribute) ? customAttribute : item.attributeLabel,
@@ -59730,8 +60097,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           : configuredBilling;
         const billingUnit = billingConfiguration.billingUnit;
         const quantityUnit = hasSavedPricingSnapshot
-          ? normalizeProductPricingUnit(item.actualUnit || item.quantityUnit || billingUnit)
-          : resolveCustomerProductActualUnit(configuredBilling, product);
+          ? normalizeProductPricingUnit(item.quantityUnit || item.actualUnit || billingUnit)
+          : resolveDraftItemQuantityUnit(configSource, product, item.quantityUnit || item.actualUnit);
         const usesWeightPricing = isSameBillingUnit(billingUnit, 'Kg');
         if (!billingUnit || !quantityUnit || (!usesWeightPricing && !isSameBillingUnit(quantityUnit, billingUnit))) {
           invalidItemIndexes.push(itemIndex + 1);
@@ -60748,7 +61115,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               <div className={`grid ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1.75fr)_minmax(66px,0.6fr)_minmax(68px,0.62fr)] text-[10.5px]' : 'grid-cols-[minmax(260px,2.25fr)_minmax(120px,1fr)_minmax(120px,1fr)_minmax(140px,1fr)_minmax(160px,1fr)] text-[13px]'} bg-slate-100 text-center font-black text-slate-900`}>
                                 <div className={isCompactManualDetailStage ? 'border-r border-slate-300 px-1.5 py-2 leading-tight' : 'border-r border-slate-300 px-3 py-3'}>Loại hàng đặt</div>
                                 <div className={isCompactManualDetailStage ? 'border-r border-slate-300 px-1.5 py-2 leading-tight' : 'border-r border-slate-300 px-3 py-3'}>Số lượng</div>
-                                <div className={isCompactManualDetailStage ? 'px-1.5 py-2 leading-tight' : 'border-r border-slate-300 px-3 py-3'}>Loại</div>
+                                <div className={isCompactManualDetailStage ? 'px-1.5 py-2 leading-tight' : 'border-r border-slate-300 px-3 py-3'}>
+                                  {isCompactManualDetailStage ? 'ĐVT đặt' : 'Đơn vị đặt'}
+                                </div>
                                 {!isCompactManualDetailStage && (
                                   <>
                                     <div className="border-r border-slate-300 px-3 py-3">Size</div>
@@ -60808,13 +61177,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               ? (item.sizeLabel || item.weightKg || '')
                               : (selectedConfiguration?.sizeLabel || item.sizeLabel || item.weightKg || '')}`.trim();
                             const hasFixedAttribute = Boolean(fixedAttributeLabel);
-                            const itemUnitOptions = item.billingSnapshotVersion
-                              ? [normalizeProductPricingUnit(item.actualUnit || item.quantityUnit)]
-                                  .filter(Boolean)
-                              : getDraftItemUnitOptions(draft, item);
-                            const fixedItemUnit = itemUnitOptions[0]
-                              || normalizeProductPricingUnit(item.quantityUnit)
+                            const itemUnitOptions = getDraftItemUnitOptions(draft, item);
+                            const selectedOrderUnit = itemUnitOptions.find(unit => isSameBillingUnit(unit, item.quantityUnit || item.actualUnit))
+                              || itemUnitOptions[0]
                               || '';
+                            const selectedPricingUnit = normalizeProductPricingUnit(
+                              item.billingUnit || item.pricingUnit || selectedConfiguration?.billingUnit || ''
+                            );
 
                             return (
                               <div key={item.localItemId} className="border-t border-slate-300 bg-white">
@@ -60877,7 +61246,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                             const selectedVariantKey = buildOrderRequestVariantKey(product.id, {
                                               attributeLabel: configuredOption.attributeLabel,
                                               size: configuredOption.sizeLabel,
-                                              unit: resolveCustomerProductActualUnit(configuredOption, product),
+                                              unit: configuredOption.billingUnit,
                                               price: configuredOption.unitPrice,
                                             });
                                             const isSelectedVariant = getDraftItemVariantKey(item) === selectedVariantKey;
@@ -60922,12 +61291,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   </div>
 
                                   <div className={isCompactManualDetailStage ? 'p-1' : 'border-r border-slate-200 p-2'}>
-                                    <div
-                                      className={`flex w-full items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 text-center font-black text-emerald-700 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-3 text-sm'}`}
-                                      aria-label={`Đơn vị tính giá ${fixedItemUnit || 'chưa cấu hình'}`}
+                                    <select
+                                      value={selectedOrderUnit}
+                                      onChange={(event) => handleDraftItemQuantityUnitChange(draft.localId, item.localItemId, event.target.value)}
+                                      disabled={!selectedProduct}
+                                      className={`w-full rounded-xl border border-emerald-200 bg-emerald-50 text-center font-black text-emerald-700 outline-none transition-colors focus:ring-2 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-2 text-sm'}`}
+                                      aria-label={`Đơn vị đặt hàng; tính giá theo ${selectedPricingUnit || 'chưa cấu hình'}`}
+                                      title={selectedPricingUnit ? `Đơn vị đặt hàng. Đơn giá vẫn tính theo ${selectedPricingUnit}.` : 'Đơn vị đặt hàng'}
                                     >
-                                      {fixedItemUnit || '--'}
-                                    </div>
+                                      {!selectedProduct && <option value="">--</option>}
+                                      {itemUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+                                    </select>
                                   </div>
 
                                   {!isCompactManualDetailStage && (
@@ -70888,6 +71262,7 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
         basicSalary: '',
         // Leave blank to use the actual calendar days of the selected month.
         salaryMonthDays: '',
+        salaryPolicyEffectiveFrom: getTodayString(),
     supportSalary: '',
     responsibilitySalary: '',
     experienceSalary: '',
@@ -72518,6 +72893,7 @@ function EmployeeView({
       salaryBankAccountNumber: emp.salaryBankAccountNumber || emp.payrollBankAccountNumber || emp.bankAccountNumber || emp.accountNumber || '',
       basicSalary: emp.basicSalary,
       salaryMonthDays: emp.salaryMonthDays ?? '',
+      salaryPolicyEffectiveFrom: getTodayString(),
       supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
       shiftName: shiftPolicy.shiftName,
       shiftStart: shiftPolicy.shiftStart,
@@ -72658,6 +73034,23 @@ function EmployeeView({
         pData.autoEarlyOvertimeEnabled = editingEmp.autoEarlyOvertimeEnabled !== false;
         pData.autoLateCheckoutOvertimeEnabled = editingEmp.autoLateCheckoutOvertimeEnabled !== false;
       }
+    }
+    if (canEditEmployeeSalaryPolicy || !editingEmp) {
+      Object.assign(pData, buildEmployeePayrollPolicyUpdate({
+        employee: editingEmp,
+        nextEmployee: pData,
+        effectiveFrom: empData.salaryPolicyEffectiveFrom,
+        changedAt: new Date().toISOString(),
+        changedByEmployeeId: currentEmployee?.id || '',
+        changedByName: currentEmployee?.name || currentEmployee?.displayName || ''
+      }));
+    } else if (editingEmp) {
+      Object.assign(pData, {
+        payrollPolicies: editingEmp.payrollPolicies || editingEmp.salaryPolicyHistory || [],
+        salaryPolicyHistory: editingEmp.salaryPolicyHistory || editingEmp.payrollPolicies || [],
+        salaryPolicyVersion: editingEmp.salaryPolicyVersion || '',
+        salaryPolicyEffectiveFrom: editingEmp.salaryPolicyEffectiveFrom || editingEmp.startDate || ''
+      });
     }
     try {
       const result = editingEmp ? await onEditEmployee(editingEmp.id, pData) : await onAddEmployee(pData);
@@ -73509,6 +73902,17 @@ function EmployeeView({
 
               {!isSalesCollaboratorDraft && (
               <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-3 mt-2">
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">Áp dụng chính sách từ ngày</label>
+                  <input
+                    type="date"
+                    value={empData.salaryPolicyEffectiveFrom || getTodayString()}
+                    disabled={!canManageSalaryPolicy}
+                    onChange={event => setEmpData({ ...empData, salaryPolicyEffectiveFrom: event.target.value })}
+                    className="w-full rounded-lg border p-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"
+                  />
+                  <p className="mt-1 text-[10px] text-gray-500">Kỳ đã khóa luôn giữ nguyên chính sách trong snapshot.</p>
+                </div>
                 <h4 className="text-xs font-bold text-gray-700 border-b border-gray-200 pb-1">Chính sách lương & thử việc</h4>
                 <div className="grid grid-cols-2 gap-2">
                   <input required type="tel" placeholder={"L\u01b0\u01a1ng c\u01a1 b\u1ea3n"} value={formatInputCurrency(empData.basicSalary)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, basicSalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none placeholder:text-gray-400 focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
@@ -73803,7 +74207,8 @@ function SalaryViewLegacy({ employees, attendance, financials, performance, cust
           <p className="font-bold uppercase text-[11px] tracking-[0.16em] text-blue-700 mb-2">Duyệt tăng ca công bằng</p>
           <p className="leading-relaxed">Giờ tăng ca chỉ là số giờ đã được đối chiếu và duyệt. App không tự cộng tăng ca từ việc quên chấm ra, ra ca muộn hay để sót chấm công.</p>
         </div>
-        {salaryRows.map(({ emp, details }) => {
+        {salaryRows.map((row) => {
+          const { emp, details, snapshotId, latestAdjustment, policySnapshot } = row;
           const isExpanded = expandedEmp === emp.id;
           const isSales = isEmployeeSalesPosition(emp);
           const isSalesCollaborator = isSalesCollaboratorPosition(emp.position);
@@ -73979,6 +74384,7 @@ function SalaryView({
   onDeleteAdvance,
   onUpdateCompanySettings,
   onLockPayrollPeriod,
+  onAdjustLockedPayroll,
   onPreparePayrollAutoLockPlan,
   onLoadPayrollPeriodSnapshots,
   canViewSalaryAdvance = true,
@@ -74023,9 +74429,16 @@ function SalaryView({
   const [showPayrollLockConfirm, setShowPayrollLockConfirm] = useState(false);
   const [isLockingPayroll, setIsLockingPayroll] = useState(false);
   const [payrollLockStatus, setPayrollLockStatus] = useState('');
+  const [payrollAdjustmentRow, setPayrollAdjustmentRow] = useState(null);
+  const [payrollAdjustmentNetSalary, setPayrollAdjustmentNetSalary] = useState('');
+  const [payrollAdjustmentEndingDebt, setPayrollAdjustmentEndingDebt] = useState('');
+  const [payrollAdjustmentReason, setPayrollAdjustmentReason] = useState('');
+  const [payrollAdjustmentStatus, setPayrollAdjustmentStatus] = useState('');
+  const [isSavingPayrollAdjustment, setIsSavingPayrollAdjustment] = useState(false);
   const [lockedSnapshotRows, setLockedSnapshotRows] = useState([]);
   const [lockedSnapshotLoadState, setLockedSnapshotLoadState] = useState('idle');
   const [lockedSnapshotLoadError, setLockedSnapshotLoadError] = useState('');
+  const [lockedSnapshotIntegrityReport, setLockedSnapshotIntegrityReport] = useState(null);
   const [lockedSnapshotReloadToken, setLockedSnapshotReloadToken] = useState(0);
   const [payrollAutoLockPlanStatus, setPayrollAutoLockPlanStatus] = useState('');
   const [payrollAutoLockPlanSyncToken, setPayrollAutoLockPlanSyncToken] = useState(0);
@@ -74057,6 +74470,12 @@ function SalaryView({
     [currentMonth, payrollCompanyId, payrollPeriods]
   );
   const isPayrollLocked = Boolean(lockedPayrollPeriod);
+  const payrollPolicyEmployees = useMemo(
+    () => isPayrollLocked
+      ? []
+      : (employees || []).map(emp => applyEmployeePayrollPolicyForMonth(emp, currentMonth)),
+    [currentMonth, employees, isPayrollLocked]
+  );
   const activePayrollAutoLockPlan = useMemo(() => (
     (payrollAutoLockPlans || []).find(plan => (
       !plan?.isArchived
@@ -74112,18 +74531,19 @@ function SalaryView({
   const canCreateOwnSalaryAdvanceRequest = !isPayrollLocked && Boolean(currentEmployeeId && (canCreateSalaryAdvanceRequest || currentEmployee?.id === currentEmployeeId));
   const canCreateSalaryAdvanceForOthersInPeriod = !isPayrollLocked && Boolean(canCreateSalaryAdvanceForOthers);
   const visibleSalaryEmployees = useMemo(() => {
+    if (isPayrollLocked) return [];
     if (!currentEmployeeId) return [];
     if (canViewCompanyPayroll) {
-      return (employees || []).filter(emp =>
+      return payrollPolicyEmployees.filter(emp =>
         emp?.id &&
         !emp?.isArchived &&
         emp.role !== 'super_admin' &&
         !isOwnerPosition(emp.position)
       );
     }
-    const ownEmployee = employees.find(emp => emp.id === currentEmployeeId);
+    const ownEmployee = payrollPolicyEmployees.find(emp => emp.id === currentEmployeeId);
     return ownEmployee ? [ownEmployee] : [];
-  }, [employees, currentEmployeeId, canViewCompanyPayroll]);
+  }, [payrollPolicyEmployees, currentEmployeeId, canViewCompanyPayroll, isPayrollLocked]);
   const payrollSnapshotLoaderRef = useRef(onLoadPayrollPeriodSnapshots);
 
   useEffect(() => {
@@ -74136,6 +74556,7 @@ function SalaryView({
       setLockedSnapshotRows([]);
       setLockedSnapshotLoadState('idle');
       setLockedSnapshotLoadError('');
+      setLockedSnapshotIntegrityReport(null);
       return () => {
         isActive = false;
       };
@@ -74144,6 +74565,7 @@ function SalaryView({
     const loadSnapshots = async () => {
       setLockedSnapshotLoadState('loading');
       setLockedSnapshotLoadError('');
+      setLockedSnapshotIntegrityReport(null);
       const loader = payrollSnapshotLoaderRef.current;
       if (typeof loader !== 'function') {
         if (isActive) {
@@ -74165,6 +74587,7 @@ function SalaryView({
 
       const allowedEmployeeIds = canViewCompanyPayroll ? null : new Set([currentEmployeeId].filter(Boolean));
       setLockedSnapshotRows(mapPayrollSnapshotsToRows(result?.snapshots || [], allowedEmployeeIds));
+      setLockedSnapshotIntegrityReport(result?.integrityReport || null);
       setLockedSnapshotLoadState('loaded');
     };
 
@@ -74183,7 +74606,7 @@ function SalaryView({
     () => ModuleDependencyService.getEmployeesMissingPayrollConfig(visibleSalaryEmployees),
     [visibleSalaryEmployees]
   );
-  const showPayrollConfigNotice = canViewCompanyPayroll && !payrollConfigNoticeHidden && missingPayrollConfigEmployees.length > 0;
+  const showPayrollConfigNotice = !isPayrollLocked && canViewCompanyPayroll && !payrollConfigNoticeHidden && missingPayrollConfigEmployees.length > 0;
   const handleHidePayrollConfigNotice = () => {
     setPayrollConfigNoticeHidden(true);
     if (typeof window === 'undefined') return;
@@ -74195,6 +74618,9 @@ function SalaryView({
   };
 
   const payrollEvaluationContext = useMemo(() => {
+    if (isPayrollLocked) {
+      return { attendance: {}, orders: [], deliveryReports: [], reviews: [], monthKey: currentMonth };
+    }
     const reviewsForMonth = (employeeReviews || []).filter(review => (
       normalizeEmployeeReviewMonthKey(review?.monthKey || review?.date || review?.createdAt) === currentMonth
     ));
@@ -74217,10 +74643,11 @@ function SalaryView({
       reviews: reviewsForMonth,
       monthKey: currentMonth
     };
-  }, [attendance, deliveryReports, employeeReviews, orders, currentMonth]);
+  }, [attendance, deliveryReports, employeeReviews, orders, currentMonth, isPayrollLocked]);
 
   const payrollEvaluationResultsByEmployee = useMemo(() => {
     const results = new Map();
+    if (isPayrollLocked) return results;
     (employees || []).forEach(emp => {
       if (!emp?.id || emp?.isArchived) return;
       const summary = buildEmployeeReviewSummary(emp, payrollEvaluationContext);
@@ -74230,10 +74657,11 @@ function SalaryView({
       }));
     });
     return results;
-  }, [employees, payrollEvaluationContext, currentMonth]);
+  }, [employees, payrollEvaluationContext, currentMonth, isPayrollLocked]);
 
-  const payrollOpeningDebtByEmployee = useMemo(() => (
-    new Map((visibleSalaryEmployees || []).map(emp => [
+  const payrollOpeningDebtByEmployee = useMemo(() => {
+    if (isPayrollLocked) return new Map();
+    return new Map((visibleSalaryEmployees || []).map(emp => [
       emp.id,
       getEmployeePayrollOpeningDebt(
         payrollDebtCarryovers,
@@ -74241,13 +74669,14 @@ function SalaryView({
         currentMonth,
         emp.id
       )
-    ]))
-  ), [currentMonth, payrollCompanyId, payrollDebtCarryovers, visibleSalaryEmployees]);
+    ]));
+  }, [currentMonth, isPayrollLocked, payrollCompanyId, payrollDebtCarryovers, visibleSalaryEmployees]);
 
   const buildPayrollSalaryDetails = useCallback((employeeId) => {
+    if (isPayrollLocked) return null;
     const salaryDetails = buildSalaryDetails(
       employeeId,
-      employees,
+      payrollPolicyEmployees,
       attendance,
       financials,
       performance,
@@ -74265,14 +74694,17 @@ function SalaryView({
       detailsWithEvaluationBonus,
       payrollOpeningDebtByEmployee.get(employeeId) || 0
     );
-  }, [attendance, customers, employees, financials, holidays, currentMonth, orders, payments, performance, payrollEvaluationResultsByEmployee, payrollOpeningDebtByEmployee]);
+  }, [attendance, customers, financials, holidays, currentMonth, isPayrollLocked, orders, payments, payrollEvaluationResultsByEmployee, payrollOpeningDebtByEmployee, payrollPolicyEmployees, performance]);
 
-  const liveSalaryRows = useMemo(() => visibleSalaryEmployees
-    .map(emp => ({
-      emp,
-      details: buildPayrollSalaryDetails(emp.id)
-    }))
-    .filter(row => row.details), [visibleSalaryEmployees, buildPayrollSalaryDetails]);
+  const liveSalaryRows = useMemo(() => {
+    if (isPayrollLocked) return [];
+    return visibleSalaryEmployees
+      .map(emp => ({
+        emp,
+        details: buildPayrollSalaryDetails(emp.id)
+      }))
+      .filter(row => row.details);
+  }, [visibleSalaryEmployees, buildPayrollSalaryDetails, isPayrollLocked]);
 
   const salaryRows = isPayrollLocked ? lockedSnapshotRows : liveSalaryRows;
 
@@ -74325,16 +74757,19 @@ function SalaryView({
     const lockedRow = isPayrollLocked
       ? salaryRows.find(row => row.emp?.id === evaluationDetailEmployeeId)
       : null;
-    const targetEmployee = lockedRow?.emp || (employees || []).find(emp => emp.id === evaluationDetailEmployeeId);
+    const targetEmployee = isPayrollLocked
+      ? lockedRow?.emp
+      : (employees || []).find(emp => emp.id === evaluationDetailEmployeeId);
     if (!targetEmployee) return null;
     return {
       employee: targetEmployee,
-      result: lockedRow?.details?.evaluationResult
-        || payrollEvaluationResultsByEmployee.get(evaluationDetailEmployeeId)
-        || projectEvaluationSummaryToPayroll(null, {
-          employeeId: evaluationDetailEmployeeId,
-          monthKey: currentMonth
-        })
+      result: isPayrollLocked
+        ? (lockedRow?.details?.evaluationResult || null)
+        : (payrollEvaluationResultsByEmployee.get(evaluationDetailEmployeeId)
+          || projectEvaluationSummaryToPayroll(null, {
+            employeeId: evaluationDetailEmployeeId,
+            monthKey: currentMonth
+          }))
     };
   }, [currentMonth, employees, evaluationDetailEmployeeId, isPayrollLocked, payrollEvaluationResultsByEmployee, salaryRows]);
   const closeEvaluationDetail = useCallback(() => setEvaluationDetailEmployeeId(''), []);
@@ -74404,8 +74839,17 @@ function SalaryView({
       payrollAutoLockPlanSignatureRef.current = '';
       return undefined;
     }
+    const activePlanStatus = `${activePayrollAutoLockPlan?.status || ''}`.trim().toUpperCase();
+    if (activePayrollAutoLockPlan && (
+      ![PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, 'READY'].includes(activePlanStatus)
+      || activePayrollAutoLockPlan.rulesVersion !== PAYROLL_RULES_VERSION
+    )) {
+      payrollAutoLockPlanSignatureRef.current = payrollAutoLockPlanSignature;
+      setPayrollAutoLockPlanStatus('Káº¿ hoáº¡ch khĂ³a hiá»‡n táº¡i cáº§n rĂ  soĂ¡t; app khĂ´ng tá»± ghi Ä‘Ă¨ snapshot lá»‹ch sá»­.');
+      return undefined;
+    }
     if (
-      activePayrollAutoLockPlan?.status === 'ready'
+      [PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, 'READY'].includes(activePlanStatus)
       && activePayrollAutoLockPlan?.sourceSignature === payrollAutoLockPlanSignature
     ) {
       payrollAutoLockPlanSignatureRef.current = payrollAutoLockPlanSignature;
@@ -74448,6 +74892,7 @@ function SalaryView({
   }, [
     activePayrollAutoLockPlan?.sourceSignature,
     activePayrollAutoLockPlan?.status,
+    activePayrollAutoLockPlan?.rulesVersion,
     buildPayrollLockPayload,
     canPreparePayrollAutoLock,
     onPreparePayrollAutoLockPlan,
@@ -74482,6 +74927,47 @@ function SalaryView({
       setPayrollLockStatus(getFriendlyFirebaseErrorMessage(error, 'Không khóa được kỳ lương. Dữ liệu hiện tại vẫn được giữ nguyên.'));
     } finally {
       setIsLockingPayroll(false);
+    }
+  };
+  const openPayrollAdjustmentDialog = (row) => {
+    if (!row?.snapshotId || !isPayrollLocked || !canManagePayrollByRole) return;
+    setPayrollAdjustmentRow(row);
+    setPayrollAdjustmentNetSalary(`${Math.max(0, Number(row?.details?.netSalary || 0))}`);
+    setPayrollAdjustmentEndingDebt(`${Math.max(0, Number(row?.details?.endingDebt || 0))}`);
+    setPayrollAdjustmentReason('');
+    setPayrollAdjustmentStatus('');
+  };
+
+  const handleSubmitPayrollAdjustment = async (event) => {
+    event.preventDefault();
+    if (!payrollAdjustmentRow?.snapshotId || isSavingPayrollAdjustment || typeof onAdjustLockedPayroll !== 'function') return;
+    const normalizedReason = `${payrollAdjustmentReason || ''}`.trim();
+    if (!normalizedReason) {
+      setPayrollAdjustmentStatus('Vui lòng nhập lý do điều chỉnh.');
+      return;
+    }
+    setIsSavingPayrollAdjustment(true);
+    setPayrollAdjustmentStatus('Đang lưu phiếu điều chỉnh và nhật ký kiểm toán...');
+    try {
+      const result = await onAdjustLockedPayroll({
+        monthKey: currentMonth,
+        snapshotId: payrollAdjustmentRow.snapshotId,
+        nextNetSalary: parseInputCurrency(payrollAdjustmentNetSalary),
+        nextEndingDebt: parseInputCurrency(payrollAdjustmentEndingDebt),
+        reason: normalizedReason
+      });
+      if (result?.success === false) {
+        setPayrollAdjustmentStatus(result.message || 'Không lưu được phiếu điều chỉnh.');
+        return;
+      }
+      setPayrollAdjustmentRow(null);
+      setPayrollAdjustmentStatus('');
+      setLockedSnapshotReloadToken(token => token + 1);
+      setPayrollLockStatus('Đã lưu phiếu điều chỉnh chính thức; snapshot gốc không thay đổi.');
+    } catch (error) {
+      setPayrollAdjustmentStatus(getFriendlyFirebaseErrorMessage(error, 'Không lưu được phiếu điều chỉnh.'));
+    } finally {
+      setIsSavingPayrollAdjustment(false);
     }
   };
   const pendingAdvances = useMemo(() => (
@@ -75074,8 +75560,8 @@ function SalaryView({
                 Hệ thống sẽ khóa {currentMonthLabel.toLowerCase()} lúc 23:59:59 ngày {payrollMonthEndLabel || 'cuối tháng'} bằng ảnh chụp hiện tại.
               </p>
               <p className={`mt-1 text-[11px] font-bold ${payrollAutoLockPlanStatus && !activePayrollAutoLockPlan ? 'text-amber-700' : 'text-sky-700'}`}>
-                {activePayrollAutoLockPlan?.status === 'ready'
-                  ? 'Đã chuẩn bị ảnh chụp để khóa tự động.'
+                {[PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, 'READY'].includes(`${activePayrollAutoLockPlan?.status || ''}`.toUpperCase())
+                  ? 'Kỳ lương đang mở; dữ liệu xem trước sẽ được kiểm tra lại khi đến thời điểm chốt.'
                   : (payrollAutoLockPlanStatus || 'Đang chuẩn bị ảnh chụp khóa tự động...')}
               </p>
             </div>
@@ -75112,7 +75598,16 @@ function SalaryView({
       </div>
 
       <div className="space-y-3">
-        {salaryRows.map(({ emp, details }) => {
+        {salaryRows.map((row) => {
+          const {
+            emp,
+            details,
+            snapshotId = '',
+            policySnapshot = null,
+            latestAdjustment = null,
+            snapshotNeedsReview = false,
+            snapshotMissingFields = []
+          } = row;
           const isExpanded = expandedEmp === emp.id;
           const isSales = isEmployeeSalesPosition(emp);
           const isSalesCollaborator = isSalesCollaboratorPosition(emp.position);
@@ -75150,6 +75645,18 @@ function SalaryView({
                       <p className="text-[10px] uppercase text-gray-400">{hasEndingPayrollDebt ? 'Còn nợ chuyển kỳ' : 'Lương còn lại'}</p>
                       <p className={`font-black ${hasEndingPayrollDebt || details.netSalary < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(hasEndingPayrollDebt ? endingPayrollDebt : details.netSalary)} đ</p>
                     </div>
+                    {isPayrollLocked && canManagePayrollByRole && snapshotId && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openPayrollAdjustmentDialog(row);
+                        }}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-black text-amber-800"
+                      >
+                        Điều chỉnh
+                      </button>
+                    )}
                     {isExpanded ? <ChevronUp size={16} className="text-gray-400"/> : <ChevronDown size={16} className="text-gray-400"/>}
                   </div>
                 </div>
@@ -75218,6 +75725,26 @@ function SalaryView({
                       <h4 className="font-bold text-gray-800">Chi tiết các phần lương</h4>
                       <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${details.netSalary < 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>Thực lĩnh {formatCurrency(details.netSalary)} đ</span>
                     </div>
+                    {isPayrollLocked && (
+                      <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+                        <p>
+                          Chính sách: <strong>{policySnapshot?.version || row?.snapshot?.policyVersion || 'NEEDS_REVIEW'}</strong>
+                          {(policySnapshot?.effectiveFrom || row?.snapshot?.policyEffectiveFrom)
+                            ? ` • hiệu lực từ ${policySnapshot?.effectiveFrom || row?.snapshot?.policyEffectiveFrom}`
+                            : ''}
+                        </p>
+                        {snapshotNeedsReview && (
+                          <p className="mt-1 font-bold text-red-700">
+                            Snapshot lịch sử thiếu dữ liệu: {(snapshotMissingFields || []).join(', ') || 'cần rà soát'}.
+                          </p>
+                        )}
+                        {latestAdjustment && (
+                          <p className="mt-1 text-amber-700">
+                            Đã điều chỉnh lần {latestAdjustment.sequence || 1}: {latestAdjustment.reason}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3 text-xs text-gray-600">
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Lương cơ bản</span><strong>{formatCurrency(details.baseSalaryCalc)} đ</strong></div>}
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Lương hỗ trợ</span><strong>{formatCurrency(details.supportSalary)} đ</strong></div>}
@@ -75611,6 +76138,96 @@ function SalaryView({
         monthLabel={currentMonthLabel}
         onClose={closeEvaluationDetail}
       />
+
+      {payrollAdjustmentRow && isPayrollLocked && canManagePayrollByRole && (
+        <div className="fixed inset-0 z-[72] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={handleSubmitPayrollAdjustment}
+            className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-amber-100 bg-white shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Phiếu điều chỉnh chính thức</p>
+                <h3 className="mt-1 text-lg font-black text-slate-900">{payrollAdjustmentRow.emp?.name || 'Nhân sự'}</h3>
+                <p className="mt-1 text-xs text-slate-500">Snapshot gốc vẫn bất biến; thay đổi này được lưu riêng và có audit log.</p>
+              </div>
+              <button
+                type="button"
+                disabled={isSavingPayrollAdjustment}
+                onClick={() => setPayrollAdjustmentRow(null)}
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500"
+                aria-label="Đóng phiếu điều chỉnh"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-4 overflow-y-auto px-5 py-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-600">Thực nhận sau điều chỉnh</label>
+                  <input
+                    required
+                    type="tel"
+                    value={formatInputCurrency(payrollAdjustmentNetSalary)}
+                    onChange={event => setPayrollAdjustmentNetSalary(parseInputCurrency(event.target.value))}
+                    className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-600">Dư nợ chuyển kỳ</label>
+                  <input
+                    required
+                    type="tel"
+                    value={formatInputCurrency(payrollAdjustmentEndingDebt)}
+                    onChange={event => setPayrollAdjustmentEndingDebt(parseInputCurrency(event.target.value))}
+                    className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-600">Lý do điều chỉnh</label>
+                <textarea
+                  required
+                  rows={3}
+                  value={payrollAdjustmentReason}
+                  onChange={event => setPayrollAdjustmentReason(event.target.value)}
+                  className="w-full resize-none rounded-2xl border border-slate-200 px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-amber-300"
+                  placeholder="Mô tả sai lệch và căn cứ điều chỉnh"
+                />
+              </div>
+              {payrollAdjustmentStatus && (
+                <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{payrollAdjustmentStatus}</p>
+              )}
+            </div>
+            <div className="sticky bottom-0 grid grid-cols-2 gap-3 border-t border-slate-100 bg-white px-5 py-4">
+              <button
+                type="button"
+                disabled={isSavingPayrollAdjustment}
+                onClick={() => setPayrollAdjustmentRow(null)}
+                className="min-h-11 rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingPayrollAdjustment}
+                className="min-h-11 rounded-2xl bg-amber-600 px-4 py-3 text-sm font-black text-white disabled:bg-slate-300"
+              >
+                {isSavingPayrollAdjustment ? 'Đang lưu...' : 'Lưu điều chỉnh'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {isPayrollLocked && lockedSnapshotLoadState === 'loaded' && lockedSnapshotIntegrityReport?.needsReviewSnapshotCount > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 shadow-sm">
+          <p className="font-bold">Kỳ lương lịch sử cần rà soát snapshot</p>
+          <p className="mt-1 text-xs leading-relaxed">
+            Có {lockedSnapshotIntegrityReport.needsReviewSnapshotCount} bản ghi thiếu dữ liệu snapshot. App chỉ hiển thị số liệu gốc đã lưu và không dùng cấu hình lương hiện tại để tự điền hoặc tính lại.
+          </p>
+        </div>
+      )}
 
       {showPayrollLockConfirm && !isPayrollLocked && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">

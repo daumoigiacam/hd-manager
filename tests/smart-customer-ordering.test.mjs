@@ -6,6 +6,7 @@ import {
   buildCustomerProductPreferenceId,
   buildCustomerProductPreferenceWrite,
   calculatePricingAmount,
+  getOrderInputUnitOptions,
   normalizeCustomerProductPreference,
   resolvePricingQuantity,
   resolveRememberedInputUnit,
@@ -111,6 +112,38 @@ test('standard pricing catalog contains all requested units', () => {
   assert.deepEqual(PRODUCT_PRICING_UNIT_OPTIONS, [
     'Kg', 'Con', 'Cái', 'Bộ', 'Thùng', 'Bao', 'Khay', 'Lốc', 'Gói', 'Chai', 'Khác',
   ]);
+});
+
+test('Kg pricing keeps order input units independent from the billing unit', () => {
+  const units = getOrderInputUnitOptions({
+    product: { unit: 'Con' },
+    pricingUnit: 'Kg',
+    currentUnit: 'Con',
+  });
+  assert.equal(units[0], 'Con');
+  assert.ok(units.includes('Kg'));
+  assert.ok(units.includes('Thùng'));
+});
+
+test('count pricing does not expose incompatible weight input', () => {
+  assert.deepEqual(getOrderInputUnitOptions({
+    product: { unit: 'Con' },
+    pricingUnit: 'Con',
+  }), ['Con']);
+});
+
+test('50 Con ordered with Kg pricing waits for warehouse weight then bills by Kg', () => {
+  const pending = calculatePricingAmount({
+    pricingUnit: 'Kg', inputUnit: 'Con', inputQuantity: 50, unitPrice: 50_000,
+  });
+  assert.equal(pending.isPending, true);
+  assert.equal(pending.amount, 0);
+
+  const weighed = calculatePricingAmount({
+    pricingUnit: 'Kg', inputUnit: 'Con', inputQuantity: 50, actualWeightKg: 125, unitPrice: 50_000,
+  });
+  assert.equal(weighed.quantity, 125);
+  assert.equal(weighed.amount, 6_250_000);
 });
 
 test('Kg pricing uses actual delivered weight', () => {
@@ -253,6 +286,12 @@ test('Firestore integration reads one deterministic preference document', () => 
 test('order requests persist Smart Memory after successful writes', () => {
   assert.match(appSource, /await persistSmartOrderingPreferences\(normalizedRequests\)/);
   assert.match(appSource, /await persistSmartOrderingPreferences\(\[normalizedRequest\]\)/);
+});
+
+test('order form keeps the selected input unit separate from the pricing unit', () => {
+  assert.match(appSource, /onChange=\{\(event\) => handleDraftItemQuantityUnitChange/);
+  assert.match(appSource, /item\.quantityUnit \|\| item\.actualUnit \|\| billingUnit/);
+  assert.doesNotMatch(appSource, /Đơn vị số lượng của .* được cố định là/);
 });
 
 test('delivery reports persist the authoritative pricing result', () => {

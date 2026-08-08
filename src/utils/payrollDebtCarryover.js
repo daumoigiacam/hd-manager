@@ -132,16 +132,19 @@ export const createPayrollDebtCarryover = ({
 
 export const createPayrollDebtJournalEntry = ({
   carryover = null,
-  employee = {},
+  employee = /** @type {Record<string, any>} */ ({}),
   lockedAt = ''
 } = {}) => {
   if (!carryover?.id || !carryover?.amount) return null;
   return {
     id: `payroll_rollover_${carryover.id}`,
+    carryoverId: carryover.id,
     companyId: carryover.companyId,
     employeeId: carryover.employeeId,
     type: 'payroll_debt_rollover',
     action: 'payroll_period_locked',
+    sourcePeriodId: carryover.sourcePeriodId,
+    sourceSnapshotId: carryover.sourceSnapshotId,
     sourceMonthKey: carryover.sourceMonthKey,
     targetMonthKey: carryover.targetMonthKey,
     amount: carryover.amount,
@@ -173,8 +176,10 @@ export const createPayrollPeriodLockJournalEntry = ({
     companyId: `${companyId}`,
     type: 'payroll_period_lock',
     action: 'payroll_period_locked',
+    periodId: safePeriodId,
     monthKey: normalizedMonthKey,
     amount: normalizedEndingDebt,
+    employeeCount: Math.max(0, Number(employeeCount) || 0),
     actorType: 'system',
     actorName: 'Hệ thống',
     message: normalizedEndingDebt > 0

@@ -25,7 +25,14 @@ const employee = {
   name: 'Nguyen Van A',
   phone: '0900000001',
   position: 'San xuat',
-  basicSalary: 12_000_000
+  basicSalary: 12_000_000,
+  payrollPolicies: [{
+    id: 'policy-v1',
+    version: 'v1',
+    formulaVersion: 'HD_PAYROLL_FORMULA_V1',
+    effectiveFrom: '2026-01-01',
+    values: { position: 'San xuat', basicSalary: 12_000_000 }
+  }]
 };
 const salaryDetails = {
   monthKey,
@@ -34,7 +41,8 @@ const salaryDetails = {
   evaluationBonus: 100_000,
   grossSalary: 10_551_613,
   totalAdvance: 1_000_000,
-  netSalary: 9_551_613
+  netSalary: 9_551_613,
+  endingDebt: 0
 };
 
 test('normalizes only valid payroll month keys', () => {
@@ -100,7 +108,7 @@ test('stores final totals and snapshot count in locked-period metadata', () => {
     lockedByName: 'Owner'
   });
 
-  assert.equal(period.status, 'locked');
+  assert.equal(period.status, 'LOCKED');
   assert.equal(period.employeeCount, 1);
   assert.equal(period.totals.totalSalary, salaryDetails.netSalary);
   assert.deepEqual(period.snapshotIds, [snapshot.id]);

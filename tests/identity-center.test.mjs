@@ -33,6 +33,7 @@ assert.equal(verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
 const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', import.meta.url), 'utf8'));
 const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const identityFunctionSource = await readFile(new URL('../functions/identityCenter.js', import.meta.url), 'utf8');
 const identityRewriteSources = firebaseConfig.hosting.rewrites
   .filter(item => `${item.source || ''}`.startsWith('/api/identity/'))
   .map(item => item.source);
@@ -69,5 +70,15 @@ const identitySessionStart = appSource.indexOf('const establishIdentitySession =
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
 const identitySessionSource = appSource.slice(identitySessionStart, identitySessionEnd);
 assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWithCustomToken/);
+assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
+assert.ok(
+  identityFunctionSource.indexOf('setCustomUserClaims(firebaseUid, claims)')
+    < identityFunctionSource.indexOf('createCustomToken(firebaseUid, claims)'),
+  'Persistent Firebase claims must be synchronized before issuing a custom token'
+);
+assert.match(appSource, /firestore\.write\.token_refresh/);
+assert.match(appSource, /firestore\.write\.sdk_token_refresh/);
+assert.match(appSource, /firebaseUser\.getIdToken\(forceRefreshToken\)/);
+assert.match(appSource, /await firebaseUser\.getIdToken\(true\)/);
 
 console.log('Identity Center unit checks passed.');
