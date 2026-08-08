@@ -54,6 +54,33 @@ test('order submit keeps both state and ref duplicate guards', () => {
   assert.match(appSource, /requestSubmittingRef\.current = false;/);
 });
 
+test('existing order rows expose editable price and direct delete actions', () => {
+  assert.match(appSource, /canEditOrderRequestSizePrice = false/);
+  assert.match(appSource, /aria-label="Sua don gia"/);
+  assert.match(appSource, /unitPrice: parseInputCurrency\(event\.target\.value\)/);
+  assert.match(appSource, /title="Xoa toan bo don dat hang"/);
+  assert.match(appSource, /deletingRequestId === row\.requestId/);
+});
+
+test('shared order sheet keeps matching products next to each other', () => {
+  assert.match(appSource, /const groupedShareableRequestSheetProductGroups = useMemo/);
+  assert.match(appSource, /const productKey = row\.productId \|\| normalizeLookupText\(row\.productShortName \|\| row\.productName \|\| ''\)/);
+  assert.match(appSource, /groupedShareableRequestSheetProductGroups\.flatMap\(\(group\) => group\.rows\)/);
+  assert.match(appSource, /groupedShareableRequestSheetProductGroups\.forEach\(\(group\) =>/);
+  assert.doesNotMatch(appSource, /groupedShareableRequestSheetCustomerGroups/);
+});
+
+test('orders remain reachable from More when the adaptive footer does not promote them', () => {
+  const moreMenuSource = appSource.slice(
+    appSource.indexOf('function MoreMenu('),
+    appSource.indexOf('const PRICING_ENGINE_TABS')
+  );
+
+  assert.match(moreMenuSource, /id: 'orders', label: 'Đơn hàng'/);
+  assert.match(moreMenuSource, /show: tabPermissions\.orders/);
+  assert.match(moreMenuSource, /onClick=\{\(\) => setActiveTab\?\.\(item\.id\)\}/);
+});
+
 for (const { name, run } of tests) {
   await run();
   console.log(`PASS ${name}`);

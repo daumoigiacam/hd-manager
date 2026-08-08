@@ -72,6 +72,15 @@ import {
   auditPayrollHistoricalData,
   isCompletePayrollSnapshot
 } from './utils/payrollSnapshotIntegrity.js';
+import {
+  calculateEmployeeSalesRevenueForMonth,
+  summarizeEmployeeSalesRevenueForMonth
+} from './utils/salesRevenuePeriod.js';
+import {
+  getSalaryAdvanceMonth,
+  isSalaryAdvanceInMonth,
+  normalizeSalaryAdvanceMonth
+} from './utils/salaryAdvancePeriod.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -108,6 +117,15 @@ import { Share as CapacitorShare } from '@capacitor/share';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { useChunkedList, useDebouncedValue } from './services/renderOptimization';
+import {
+  hasSearchQuery as hasTokenSearchQuery,
+  rankCustomerSearchResults,
+  searchRecords as searchSharedRecords,
+  searchCustomers as searchCustomerRecords,
+  searchEmployees as searchEmployeeRecords,
+  searchOrders as searchOrderRecords,
+  searchProducts as searchProductRecords,
+} from './services/searchEngine.js';
 import {
   AI_ZALO_ASSISTANT_SYSTEM_PROMPT,
   AI_ZALO_OUTPUT_SCHEMA,
@@ -4825,12 +4843,7 @@ const getProductSearchValues = (product = {}) => {
 const buildProductLookupText = (product = {}) => getProductSearchValues(product).join(' ');
 
 const productMatchesLookup = (product = {}, keyword = '') => {
-  const normalizedKeyword = normalizeLookupText(keyword || '');
-  if (!normalizedKeyword) return true;
-  const collapsedKeyword = collapseLookupText(keyword || '');
-  const keywordValues = [...new Set([normalizedKeyword, collapsedKeyword].filter(Boolean))];
-  const productValues = getProductSearchValues(product);
-  return keywordValues.some(keywordValue => productValues.some(productValue => productValue.includes(keywordValue)));
+  return searchProductRecords([product], keyword).length > 0;
 };
 
 const findProductForLineItem = (item = {}, products = []) => {
@@ -10611,15 +10624,17 @@ const getOrderSalesEmpId = (order, customers = []) => {
 };
 
 const calculateRevenueForMonth = (empId, orders, customers = [], monthKey = getTodayString().substring(0, 7)) => {
-  return orders
-    .filter(o => getOrderSalesEmpId(o, customers) === empId && (o.date || '').startsWith(monthKey) && !o.isArchived)
-    .reduce((sum, o) => sum + (o.amount||0), 0);
+  return calculateEmployeeSalesRevenueForMonth({
+    employeeId: empId,
+    orders,
+    customers,
+    monthKey
+  });
 };
 
-const calculateMonthRevenue = (empId, orders, customers = []) => {
-  const currentMonth = getTodayString().substring(0, 7);
-  return calculateRevenueForMonth(empId, orders, customers, currentMonth);
-};
+const calculateMonthRevenue = (empId, orders, customers = [], monthKey = getTodayString().substring(0, 7)) => (
+  calculateRevenueForMonth(empId, orders, customers, monthKey)
+);
 
 const buildLocalAssistantReply = ({ input, activeTab, employee, company, customers, orders, expenses, employees = [], attendance = {}, holidays = [], products = [], warehouseImports = [] }) => {
   const lowerInput = input.trim().toLowerCase();
@@ -10745,10 +10760,10 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers) : (perf.revenue || 0);
+  const effectiveRevenue = isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers, monthKey) : (perf.revenue || 0);
   const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
-    ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers)
+    ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
   const downlineCommission = roundMoneyValue(downlineCommissionRows.reduce((sum, row) => sum + (row.commission || 0), 0));
   const commission = roundMoneyValue(directCommission + downlineCommission);
@@ -10764,7 +10779,11 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   let totalPenalty = 0;
   let totalAdvance = 0;
   let totalEmployeePurchase = 0;
-  financials.filter(f => f.empId === empId && !f.isArchived).forEach(record => {
+  financials.filter(f => (
+    f.empId === empId
+    && !f.isArchived
+    && (f.type !== 'advance' || isSalaryAdvanceInMonth(f, monthKey))
+  )).forEach(record => {
     const amount = parseLooseMoneyValue(record.amount);
     if (record.type === 'bonus') totalBonus += amount;
     if (record.type === 'penalty') totalPenalty += amount;
@@ -10951,7 +10970,13 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const overtimePay = isSalesCollaborator ? 0 : roundMoneyValue((approvedOvertimeHours + automaticOvertimeHours) * overtimeRate);
 
   const monthlyFinancials = financials
-    .filter(f => f.empId === empId && !f.isArchived && (!f.date || f.date.startsWith(monthKey)))
+    .filter(f => (
+      f.empId === empId
+      && !f.isArchived
+      && (f.type === 'advance'
+        ? isSalaryAdvanceInMonth(f, monthKey)
+        : (!f.date || f.date.startsWith(monthKey)))
+    ))
     .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
 
   const bonusRecords = monthlyFinancials.filter(record => record.type === 'bonus');
@@ -14107,6 +14132,12 @@ export default function App() {
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const cleanAmount = parseLooseMoneyValue(amount);
     if (!empId || cleanAmount <= 0) return { success: false, message: 'Số tiền ứng không hợp lệ.' };
+    const requestedSalaryMonth = extraData?.salaryMonth || extraData?.deductionMonth || getTodayString().substring(0, 7);
+    const salaryMonth = normalizeSalaryAdvanceMonth(requestedSalaryMonth);
+    if (!salaryMonth) return { success: false, message: 'Tháng trừ lương không hợp lệ.' };
+    if (getLockedPayrollPeriod(payrollPeriods, myCompanyId, salaryMonth)) {
+      return { success: false, message: `Kỳ lương ${formatMonthYearLabel(salaryMonth)} đã khóa, không thể thêm lệnh ứng.` };
+    }
     const id = `adv_${Date.now()}`;
     const payload = {
       id,
@@ -14118,7 +14149,8 @@ export default function App() {
       status: 'pending',
       createdAt: new Date().toISOString(),
       createdBy: currentUser?.id || empId,
-      ...extraData
+      ...extraData,
+      salaryMonth
     };
     upsertLocalListRecord(setRawAdvanceRequests, payload);
     rememberRecentLocalWrite('advances', id, payload);
@@ -14170,6 +14202,10 @@ export default function App() {
     const req = (Array.isArray(advanceRequests) ? advanceRequests : []).find(r => r.id === reqId)
       || (Array.isArray(rawAdvanceRequests) ? rawAdvanceRequests : []).find(r => r.id === reqId);
     if (req && req.status === 'pending') {
+      const salaryMonth = getSalaryAdvanceMonth(req) || getTodayString().substring(0, 7);
+      if (getLockedPayrollPeriod(payrollPeriods, myCompanyId, salaryMonth)) {
+        return { success: false, message: `Kỳ lương ${formatMonthYearLabel(salaryMonth)} đã khóa, không thể duyệt thêm khoản ứng.` };
+      }
       const nowIso = new Date().toISOString();
       const reviewerId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
       const existingLinkedFinancial = (Array.isArray(rawFinancials) ? rawFinancials : []).find(record =>
@@ -14187,6 +14223,7 @@ export default function App() {
         approvedAt: nowIso,
         approvedBy: reviewerId,
         reviewedByEmpId: reviewerId,
+        salaryMonth,
         linkedFinancialRecordId,
         financialRecordId: linkedFinancialRecordId
       };
@@ -14199,6 +14236,7 @@ export default function App() {
         amount: parseLooseMoneyValue(req.amount),
         reason: capitalizeFirst(req.reason || 'Ứng lương'),
         date: req.date || getTodayString(),
+        salaryMonth,
         isArchived: false,
         sourceType: 'salary_advance_request',
         linkedAdvanceRequestId: req.id,
@@ -20289,6 +20327,9 @@ function MainAppView({
   const [showAdvanceModal, setShowAdvanceModal] = useState(false);
   const [advanceAmount, setAdvanceAmount] = useState('');
   const [advanceReason, setAdvanceReason] = useState('');
+  const [advanceSalaryMonth, setAdvanceSalaryMonth] = useState(getTodayString().substring(0, 7));
+  const [advanceSubmitStatus, setAdvanceSubmitStatus] = useState('');
+  const [isSubmittingAdvance, setIsSubmittingAdvance] = useState(false);
   const [financeSearchKeyword, setFinanceSearchKeyword] = useState('');
   const [financeSearchOpen, setFinanceSearchOpen] = useState(false);
   const [financeFilterOpen, setFinanceFilterOpen] = useState(false);
@@ -21291,12 +21332,24 @@ function MainAppView({
     }
   };
   
-  const handleAdvanceSubmit = (e) => {
+  const handleAdvanceSubmit = async (e) => {
     e.preventDefault();
-    if(advanceAmount && parseInt(parseInputCurrency(advanceAmount)) > 0) {
-      onAddAdvanceRequest(employee.id, parseInputCurrency(advanceAmount), advanceReason);
+    const requestedAmount = parseInputCurrency(advanceAmount);
+    const salaryMonth = normalizeSalaryAdvanceMonth(advanceSalaryMonth);
+    if (!requestedAmount || requestedAmount <= 0 || !salaryMonth || isSubmittingAdvance) return;
+    setIsSubmittingAdvance(true);
+    setAdvanceSubmitStatus('');
+    try {
+      const result = await onAddAdvanceRequest(employee.id, requestedAmount, advanceReason, { salaryMonth });
+      if (result?.success === false) throw new Error(result.message || 'Không tạo được lệnh ứng lương.');
       setShowAdvanceModal(false);
-      setAdvanceAmount(''); setAdvanceReason('');
+      setAdvanceAmount('');
+      setAdvanceReason('');
+      setAdvanceSalaryMonth(getTodayString().substring(0, 7));
+    } catch (error) {
+      setAdvanceSubmitStatus(getFriendlyFirebaseErrorMessage(error, 'Không tạo được lệnh ứng lương.'));
+    } finally {
+      setIsSubmittingAdvance(false);
     }
   };
   const renderNotificationBell = (buttonClassName = 'bg-white/10 border border-white/30 text-white hover:bg-white/20') => (
@@ -21713,6 +21766,7 @@ function MainAppView({
         <EmployeeView
           currentEmployee={employee}
           employees={employees}
+          customers={customers}
           employeeReviews={employeeReviews}
           attendance={attendance}
           orders={orders}
@@ -21746,7 +21800,7 @@ function MainAppView({
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
-      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (!hasWorkflowProductData && (isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'))) {
           return renderWorkflowGuide({
@@ -22376,8 +22430,14 @@ function MainAppView({
             <div className="hd-dialog-header flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">Yêu Cầu Tạm Ứng</h3><button onClick={() => setShowAdvanceModal(false)} className="text-gray-400"><X /></button></div>
             <form onSubmit={handleAdvanceSubmit} className="hd-dialog-body space-y-4">
               <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input type="tel" required value={formatInputCurrency(advanceAmount)} onChange={(e) => setAdvanceAmount(parseInputCurrency(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="VD: 2.000.000" /></div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Tháng trừ vào lương</label>
+                <input type="month" required value={advanceSalaryMonth} onChange={(e) => setAdvanceSalaryMonth(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" />
+                <p className="mt-1 text-[11px] text-gray-500">Khoản ứng chỉ được khấu trừ trong kỳ lương đã chọn.</p>
+              </div>
               <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input type="text" required value={advanceReason} onChange={(e) => setAdvanceReason(capitalizeFirst(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Lý do cá nhân..." /></div>
-                <button type="submit" className="hd-dialog-footer flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
+              {advanceSubmitStatus && <p className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{advanceSubmitStatus}</p>}
+                <button type="submit" disabled={isSubmittingAdvance} className="hd-dialog-footer flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold disabled:bg-slate-300">{isSubmittingAdvance ? 'Đang lưu...' : 'Lưu'}</button>
             </form>
           </div>
         </div>
@@ -23145,14 +23205,13 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
   };
 
   const filteredEmployees = useMemo(() => {
-    const keyword = searchKeyword.trim().toLowerCase();
-    return attendanceEmployees.filter(emp => {
+    const baseList = attendanceEmployees.filter(emp => {
       if (positionFilter !== 'Tất cả' && !employeeHasPosition(emp, positionFilter)) return false;
-      if (!keyword) return true;
-
-      const haystack = [emp.name, emp.phone, getEmployeePositionSummary(emp)].filter(Boolean).join(' ').toLowerCase();
-      return haystack.includes(keyword);
+      return true;
     });
+    return hasTokenSearchQuery(searchKeyword)
+      ? searchEmployeeRecords(baseList.map(emp => ({ ...emp, searchText: getEmployeePositionSummary(emp) })), searchKeyword)
+      : baseList;
   }, [attendanceEmployees, positionFilter, searchKeyword]);
 
   const summary = useMemo(() => {
@@ -34161,6 +34220,7 @@ function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWare
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
   const menuItems = [
     { id: 'order_requests', label: 'Lên đơn đặt hàng', icon: <Receipt className="text-sky-500" />, show: tabPermissions.order_requests },
+    { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList className="text-orange-500" />, show: tabPermissions.orders },
     { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package className="text-emerald-500" />, show: tabPermissions.warehouse_import },
     { id: 'warehouse_dispatch', label: 'Xuất kho', icon: <ClipboardList className="text-violet-500" />, show: tabPermissions.warehouse_dispatch },
     { id: 'delivery_reports', label: 'Báo cáo giao hàng', icon: <Camera className="text-cyan-500" />, show: tabPermissions.delivery_reports },
@@ -39804,7 +39864,7 @@ function EmployeePersonalHomeView({
       `${req?.empId || req?.employeeId || ''}` === `${employee?.id || ''}` &&
       req?.status === 'pending' &&
       !req?.isArchived &&
-      (!req?.date || `${req.date}`.startsWith(monthKey))
+      isSalaryAdvanceInMonth(req, monthKey)
     ))
   ), [advanceRequests, employee?.id, monthKey]);
   const pendingAdvanceAmount = pendingAdvanceRows.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
@@ -53986,6 +54046,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const rankDispatchPickerOptions = useCallback((options = [], keyword = '', getLabels = () => []) => {
     const normalizedKeyword = normalizeLookupText(keyword || '');
     if (!normalizedKeyword) return options;
+    const tokenMatches = searchSharedRecords(options, keyword, (item) => [{
+      key: 'primary',
+      priority: 100,
+      values: getLabels(item),
+    }]);
+    if (tokenMatches.length > 0) return tokenMatches;
     const keywordCandidates = [
       normalizedKeyword,
       collapseLookupText(normalizedKeyword),
@@ -57146,7 +57212,7 @@ const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelect
   );
 });
 
-function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -57154,7 +57220,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const canViewAllRequests = Boolean(canViewAllOrderRequests);
   const canViewSalesDownlineRequests = Boolean(!canViewAllRequests && canViewAllOrderRequests && isSales);
   const canCreate = Boolean(canCreateOrderRequest);
-  const canEdit = Boolean(canEditOrderRequest);
+  const canEditGeneral = Boolean(canEditOrderRequest);
+  const canEditQuantity = Boolean(canEditGeneral || canEditOrderRequestQuantityUnit);
+  const canEditSizePrice = Boolean(canEditGeneral || canEditOrderRequestSizePrice);
+  const canEdit = Boolean(canEditGeneral || canEditQuantity || canEditSizePrice);
   const canSetDeposit = Boolean(canSetOrderRequestDeposit || canEditOrderRequestDeposit || canEditOrderRequest);
   const canEditDeposit = Boolean(canEditOrderRequestDeposit || canEditOrderRequest);
   const canDelete = Boolean(canDeleteOrderRequest);
@@ -57201,6 +57270,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [editingRequestId, setEditingRequestId] = useState(null);
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
   const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
+  const [deletingRequestId, setDeletingRequestId] = useState('');
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
   const [isRequestSubmitting, setIsRequestSubmitting] = useState(false);
@@ -58151,16 +58221,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const isManualCustomerPickerOpen = Boolean(manualCustomerPickerKey) && openDraftPicker === manualCustomerPickerKey;
   const manualCustomerSearchKeyword = normalizeLookupText(primaryDraft?.customerSearch || '');
   const manualFilteredCustomers = manualCustomerSearchKeyword
-    ? availableCustomers.filter(customer => {
-        const haystacks = [
-          customer.name,
-          customer.phone,
-          customer.address,
-          customer.group,
-          customer.customerGroup
-        ];
-        return haystacks.some(value => normalizeLookupText(value || '').includes(manualCustomerSearchKeyword));
-      })
+    ? searchCustomerRecords(availableCustomers, primaryDraft?.customerSearch || '')
     : availableCustomers;
   const buildRequestDraftFromExisting = (request = {}) => {
     const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
@@ -58399,31 +58460,24 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       .map(({ sortIndex, amountSum, ...row }) => ({ ...row, amount: amountSum }));
   }, [editableCurrentDayRows]);
 
-  const groupedShareableRequestSheetCustomerGroups = useMemo(() => {
-    const customerGroups = new Map();
+  const groupedShareableRequestSheetProductGroups = useMemo(() => {
+    const productGroups = new Map();
     shareableMergedRequestSheetRows.forEach((row, index) => {
-      const branchKey = row.branchId || normalizeLookupText(row.branchName || '') || 'main';
-      const customerKey = `${row.customerId || normalizeLookupText(row.customerName || '') || `customer_${index}`}__${branchKey}`;
-      if (!customerGroups.has(customerKey)) {
-        customerGroups.set(customerKey, {
-          key: customerKey,
-          sortIndex: Number.isFinite(row.shareSortIndex) ? row.shareSortIndex : index,
-          latestTime: row.requestSortTime || 0,
+      const productKey = row.productId || normalizeLookupText(row.productShortName || row.productName || '') || `product_${index}`;
+      if (!productGroups.has(productKey)) {
+        productGroups.set(productKey, {
+          key: productKey,
+          sortIndex: index,
           rows: []
         });
       }
 
-      const group = customerGroups.get(customerKey);
-      group.sortIndex = Math.min(group.sortIndex, Number.isFinite(row.shareSortIndex) ? row.shareSortIndex : index);
-      group.latestTime = Math.max(group.latestTime, row.requestSortTime || 0);
+      const group = productGroups.get(productKey);
       group.rows.push(row);
     });
 
-    return Array.from(customerGroups.values())
-      .sort((a, b) => {
-        if (b.latestTime !== a.latestTime) return b.latestTime - a.latestTime;
-        return a.sortIndex - b.sortIndex;
-      })
+    return Array.from(productGroups.values())
+      .sort((a, b) => a.sortIndex - b.sortIndex)
       .map((group) => ({
         ...group,
         rows: group.rows.slice().sort(compareOrderRequestRowsByProduct)
@@ -58431,8 +58485,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   }, [shareableMergedRequestSheetRows]);
 
   const groupedShareableMergedRequestSheetRows = useMemo(
-    () => groupedShareableRequestSheetCustomerGroups.flatMap((group) => group.rows),
-    [groupedShareableRequestSheetCustomerGroups]
+    () => groupedShareableRequestSheetProductGroups.flatMap((group) => group.rows),
+    [groupedShareableRequestSheetProductGroups]
   );
 
   const resetInlineEditing = () => {
@@ -59540,14 +59594,23 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const handleDeleteExistingRequest = async (request) => {
-    if (!request?.id || !canDelete) return;
+    if (!request?.id || !canDelete || deletingRequestId === request.id) return;
     const customerName = request.customer?.name || customerLookup.get(request.customerId)?.name || 'don hang nay';
     if (!window.confirm(`Xoa don dat hang cua ${customerName}?`)) return;
-    await onDeleteOrderRequest(request.id);
-    setRequestStatus(`Da xoa don dat hang cua ${customerName}.`);
-    setSheetStatus('');
-    if (editingRequestId === request.id) {
-      closeOrderRequestForm();
+    setDeletingRequestId(request.id);
+    setRequestStatus(`Dang xoa don dat hang cua ${customerName}...`);
+    try {
+      await onDeleteOrderRequest(request.id);
+      setRequestStatus(`Da xoa don dat hang cua ${customerName}.`);
+      setSheetStatus('');
+      if (editingRequestId === request.id) {
+        closeOrderRequestForm();
+      }
+      if (inlineEditingRowKey.startsWith(`${request.id}_`)) resetInlineEditing();
+    } catch (error) {
+      setRequestStatus(`Xoa don dat hang chua thanh cong: ${getFriendlyFirebaseErrorMessage(error, 'Vui long thu lai.')}`);
+    } finally {
+      setDeletingRequestId('');
     }
   };
 
@@ -59579,11 +59642,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     let currentPageRows = [];
     let currentPageLineCount = 0;
 
-    groupedShareableRequestSheetCustomerGroups.forEach((group) => {
+    groupedShareableRequestSheetProductGroups.forEach((group) => {
       const groupRows = group.rows || [];
       if (groupRows.length === 0) return;
 
-      // Keep every customer's products together. A large customer can exceed the
+      // Keep every product together. A large product group can exceed the
       // normal 12-line target, but it must not be split into separate share images.
       if (currentPageRows.length > 0 && currentPageLineCount + groupRows.length > orderRequestSheetRowsPerImage) {
         pages.push(currentPageRows);
@@ -60475,7 +60538,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           {...(mergedCustomerRowSpan && mergedCustomerRowSpan > 1 ? { rowSpan: mergedCustomerRowSpan } : {})}
                           className={`max-w-[170px] border border-slate-700 px-2 py-2 font-semibold break-words whitespace-normal ${mergedCustomerRowSpan && mergedCustomerRowSpan > 1 ? 'align-middle text-center bg-white text-[12px] leading-snug' : 'align-top'}`}
                         >
-                        {isEditingRow ? (
+                        {isEditingRow && canEditGeneral ? (
                           <select value={inlineEditingDraft.customerId} onChange={(e) => {
                             const selectedCustomer = customerLookup.get(e.target.value);
                             const selectedProduct = productLookup.get(inlineEditingDraft.productId);
@@ -60511,7 +60574,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         </td>
                       )}
                       <td className="max-w-[170px] border border-slate-700 px-2 py-2 font-semibold align-top break-words whitespace-normal">
-                        {isEditingRow ? (
+                        {isEditingRow && canEditGeneral ? (
                           <div className="space-y-2">
                           <select value={inlineEditingDraft.productId} onChange={(e) => {
                             const selectedProduct = productLookup.get(e.target.value);
@@ -60539,7 +60602,28 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </div>
                         ) : (
                           <div className="space-y-1">
-                            <p className="font-semibold text-slate-900">{getOrderRequestRowProductLabel(row)}</p>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="min-w-0 flex-1 font-semibold text-slate-900">{getOrderRequestRowProductLabel(row)}</p>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const requestToDelete = filteredRequests.find(item => item.id === row.requestId)
+                                      || orderRequests.find(item => item.id === row.requestId);
+                                    if (requestToDelete) handleDeleteExistingRequest(requestToDelete);
+                                  }}
+                                  disabled={deletingRequestId === row.requestId}
+                                  aria-label={`Xoa don dat hang cua ${row.customerName}`}
+                                  title="Xoa toan bo don dat hang"
+                                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-red-500 transition hover:border-red-200 hover:bg-red-100 disabled:cursor-wait disabled:opacity-60"
+                                >
+                                  {deletingRequestId === row.requestId
+                                    ? <Loader2 size={14} className="animate-spin" />
+                                    : <Trash2 size={14} />}
+                                </button>
+                              )}
+                            </div>
                             {row.isCustomerPortalRequest && row.itemIndex === 0 && row.customerPortalApprovalLabel && (
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {row.customerPortalApprovalState === 'pending' && row.canApproveCustomerPortal && (
@@ -60599,7 +60683,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         )}
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow ? (
+                        {isEditingRow && canEditQuantity ? (
                           <div className="space-y-2">
                             <input type="number" min="0" step="0.01" value={inlineEditingDraft.quantity} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, quantity: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Số lượng" />
                             <div className="w-full min-w-0 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-2 text-center text-[11px] font-bold text-emerald-700">
@@ -60609,14 +60693,28 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         ) : formatSheetQuantity(row.quantity, row.quantityUnit)}
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow ? (
+                        {isEditingRow && canEditSizePrice ? (
                           <input type="text" value={inlineEditingDraft.sizeLabel} onChange={(e) => setInlineEditingDraft(prev => ({ ...prev, sizeLabel: e.target.value }))} className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-2 text-[11px] outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Size" />
                         ) : formatOrderRequestSizeCell(row)}
                       </td>
                       <td className="w-px border border-slate-700 px-1 py-2 font-semibold align-top whitespace-nowrap">
-                        {isEditingRow ? (
-                          <div className="w-full min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-center text-[11px] font-bold text-slate-700">
-                            {formatCurrency(inlineEditingDraft.unitPrice)} / {inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || inlineEditingDraft.quantityUnit}
+                        {isEditingRow && canEditSizePrice ? (
+                          <div className="space-y-1">
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              value={formatInputCurrency(inlineEditingDraft.unitPrice)}
+                              onChange={(event) => setInlineEditingDraft(prev => ({
+                                ...prev,
+                                unitPrice: parseInputCurrency(event.target.value)
+                              }))}
+                              aria-label="Sua don gia"
+                              className="w-full min-w-0 rounded-lg border border-emerald-200 bg-white px-2 py-2 text-center text-[11px] font-black text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500"
+                              placeholder="Don gia"
+                            />
+                            <p className="text-center text-[9px] font-bold text-slate-400">
+                              / {inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || inlineEditingDraft.quantityUnit}
+                            </p>
                           </div>
                         ) : row.unitPrice ? formatCurrency(row.unitPrice) : ''}
                       </td>
@@ -60955,16 +61053,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                     const isCustomerPickerOpen = openDraftPicker === customerPickerKey;
                     const customerSearchKeyword = normalizeLookupText(draft.customerSearch || '');
                     const filteredCustomers = customerSearchKeyword
-                      ? availableCustomers.filter(customer => {
-                          const haystacks = [
-                            customer.name,
-                            customer.phone,
-                            customer.address,
-                            customer.group,
-                            customer.customerGroup
-                          ];
-                          return haystacks.some(value => normalizeLookupText(value || '').includes(customerSearchKeyword));
-                        })
+                      ? searchCustomerRecords(availableCustomers, draft.customerSearch || '')
                       : availableCustomers;
                     return (
                       <div key={draft.localId} className={`rounded-3xl border border-emerald-100 bg-white shadow-sm ${isCompactManualDetailStage ? 'overflow-hidden' : 'p-4 space-y-4'}`}>
@@ -61527,15 +61616,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                   const isProductPickerOpen = openDraftPicker === productPickerKey;
                   const customerSearchKeyword = normalizeLookupText(draft.customerSearch || '');
                   const filteredCustomers = customerSearchKeyword
-                    ? availableCustomers.filter(customer => {
-                        const haystacks = [
-                          customer.name,
-                          customer.phone,
-                          customer.address,
-                          customer.group
-                        ];
-                        return haystacks.some(value => normalizeLookupText(value || '').includes(customerSearchKeyword));
-                      })
+                    ? searchCustomerRecords(availableCustomers, draft.customerSearch || '')
                     : availableCustomers;
                   const productSearchKeyword = normalizeLookupText(draft.productSearch || '');
                   const filteredProducts = productSearchKeyword
@@ -61898,7 +61979,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const customerLedgerMap = useMemo(() => Object.fromEntries(
     customers.map(customer => [customer.id, buildCustomerLedger(customer, orders, payments)])
   ), [customers, orders, payments]);
-  const filteredCustomers = customers.filter(c => (c.name || '').toLowerCase().includes(searchCus.toLowerCase()) || (c.phone || '').includes(searchCus));
+  const filteredCustomers = useMemo(
+    () => searchCustomerRecords(customers, searchCus),
+    [customers, searchCus]
+  );
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
   const deliveryReportIssueByDispatch = useMemo(() => {
     const dispatchLookup = new Map((warehouseDispatches || []).map(dispatch => [dispatch.id, dispatch]));
@@ -62063,8 +62147,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const displayOrders = useMemo(() => {
-    const keyword = normalizeLookupText(orderSearchKeyword);
-    const collapsedKeyword = collapseLookupText(orderSearchKeyword);
+    const hasKeyword = hasTokenSearchQuery(orderSearchKeyword);
     const selectedProduct = orderProductFilter ? activeProducts.find(product => product.id === orderProductFilter) : null;
     const selectedProductName = normalizeLookupText(selectedProduct?.name || '');
     const source = activeOrders
@@ -62088,29 +62171,17 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         }
         return true;
       })
-      .filter(order => {
-        if (!keyword) return true;
-        const orderCode = formatOrderCode(order.id);
-        const itemSummary = (order.items || [])
+      ;
+    const rankedSource = hasKeyword
+      ? searchOrderRecords(source, orderSearchKeyword, {
+        getItemText: (order) => (order.items || [])
           .map(item => buildLineItemProductSearchText(item, products))
-          .join(' ');
-        const haystack = normalizeLookupText([
-          orderCode,
-          order.customer?.name,
-          order.customer?.phone,
-          order.branchName,
-          order.customerBranchName,
-          order.branchAddress,
-          order.customerBranchAddress,
-          order.date,
-          order.salesOwner?.name,
-          itemSummary
-        ].filter(Boolean).join(' '));
-        const collapsedHaystack = collapseLookupText(haystack);
-        return haystack.includes(keyword) || (collapsedKeyword && collapsedHaystack.includes(collapsedKeyword));
+          .join(' '),
       })
-      .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
-    return source;
+      : source;
+    return hasKeyword
+      ? rankedSource
+      : rankedSource.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
   }, [activeOrders, activeProducts, customers, orderDateFilter, orderPaymentFilter, orderProductFilter, orderSalesEmpFilter, orderSearchKeyword, orderViewModels, products, tab]);
   const selectedRevenueDate = orderDateFilter || getTodayString();
   const dailyOrderRevenueSummary = useMemo(() => {
@@ -65870,18 +65941,16 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
   }, [activeProducts]);
 
   const displayedProducts = useMemo(() => {
-    const keyword = normalizeLookupText(productSearch);
-
-    return activeProducts.filter(p => {
+    const filtered = activeProducts.filter(p => {
       if (activeCategory !== 'Tất cả' && p.category !== activeCategory) return false;
       if (selectedUnit !== 'Tất cả' && p.unit !== selectedUnit) return false;
       if (discountFilter === 'Đang giảm giá' && !(p.discount > 0)) return false;
       if (discountFilter === 'Không giảm giá' && p.discount > 0) return false;
-
-      if (!keyword) return true;
-
-      return productMatchesLookup(p, keyword);
+      return true;
     });
+    return hasTokenSearchQuery(productSearch)
+      ? searchProductRecords(filtered, productSearch)
+      : filtered;
   }, [activeProducts, activeCategory, selectedUnit, discountFilter, productSearch]);
 
   useEffect(() => {
@@ -66995,11 +67064,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
 
   const filteredCustomers = useMemo(() => {
     const rawKeyword = `${debouncedCustomerSearch || ''}`.trim();
-    const normalizedKeyword = normalizeLookupText(rawKeyword);
-    const collapsedKeyword = collapseLookupText(rawKeyword);
-    const keywordTokens = tokenizeLookupText(rawKeyword);
-    const digitTokens = [...new Set((rawKeyword.match(/\d+/g) || []).map(token => token.replace(/\D/g, '')).filter(Boolean))];
-    const hasKeyword = Boolean(normalizedKeyword || collapsedKeyword || digitTokens.length);
+    const hasKeyword = hasTokenSearchQuery(rawKeyword);
     const getCustomerDateActivityTime = (cus) => {
       const targetDate = customerDateFilter || getTodayString();
       const activityItems = [
@@ -67014,79 +67079,29 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         return Math.max(latest, timeValue);
       }, 0);
     };
-    const buildCustomerSearchText = (cus) => {
-      const manager = employees.find(emp => emp.id === cus.empId) || {};
-      const branchRows = [
-        ...(Array.isArray(cus.branches) ? cus.branches : []),
-        ...(Array.isArray(cus.customerBranches) ? cus.customerBranches : []),
-        ...(Array.isArray(cus.deliveryBranches) ? cus.deliveryBranches : [])
-      ];
-      const branchFields = branchRows.flatMap(branch => [
-        branch?.name,
-        branch?.branchName,
-        branch?.label,
-        branch?.code,
-        branch?.phone,
-        canSeeCustomerLocation ? branch?.address : '',
-        canSeeCustomerLocation ? branch?.locationInput : ''
-      ]);
-      const fixedProductNames = (Array.isArray(cus.customerProductIds) ? cus.customerProductIds : [])
-        .map(productId => activeProductForPricingLookup.get(productId)?.name)
-        .filter(Boolean);
-      return [
-        cus.id,
-        cus.code,
-        cus.customerCode,
-        cus.name,
-        cus.plainName,
-        cus.displayName,
-        cus.customerHonorific,
-        ...buildCustomerNameAliases(cus),
-        cus.phone,
-        cus.phoneNumber,
-        canSeeCustomerLocation ? cus.address : '',
-        canSeeCustomerLocation ? cus.locationInput : '',
-        canSeeCustomerLocation ? getCustomerLocationShareText(cus) : '',
-        cus.customerGroup,
-        cus.groupName,
-        cus.managerName,
-        manager.name,
-        manager.phone,
-        cus.zaloContact,
-        cus.zaloGroupLink,
-        ...(Array.isArray(cus.allowedDriverNames) ? cus.allowedDriverNames : []),
-        ...branchFields,
-        ...fixedProductNames
-      ].filter(Boolean).join(' ');
-    };
-    const matchesCustomerKeyword = (cus) => {
-      if (!hasKeyword) return true;
-      const haystack = buildCustomerSearchText(cus);
-      const normalizedHaystack = normalizeLookupText(haystack);
-      const collapsedHaystack = collapseLookupText(haystack);
-      const digitHaystack = `${haystack}`.replace(/\D/g, '');
-      if (normalizedKeyword && normalizedHaystack.includes(normalizedKeyword)) return true;
-      if (collapsedKeyword && collapsedHaystack.includes(collapsedKeyword)) return true;
-      if (keywordTokens.length && keywordTokens.every(token => (
-        normalizedHaystack.includes(token) || collapsedHaystack.includes(token)
-      ))) return true;
-      if (digitTokens.length && digitTokens.every(token => digitHaystack.includes(token))) return true;
-      return false;
-    };
-    const getCustomerSearchScore = (cus) => {
-      if (!hasKeyword) return 0;
-      const displayName = cus.displayName || cus.name || '';
-      const normalizedName = normalizeLookupText(displayName);
-      const collapsedName = collapseLookupText(displayName);
-      const phoneDigits = `${cus.phone || cus.phoneNumber || ''}`.replace(/\D/g, '');
-      if (normalizedKeyword && normalizedName === normalizedKeyword) return 0;
-      if (collapsedKeyword && collapsedName === collapsedKeyword) return 0;
-      if (normalizedKeyword && normalizedName.startsWith(normalizedKeyword)) return 1;
-      if (collapsedKeyword && collapsedName.startsWith(collapsedKeyword)) return 1;
-      if (digitTokens.length && digitTokens.some(token => phoneDigits.includes(token))) return 2;
-      if (keywordTokens.length && keywordTokens.every(token => normalizedName.includes(token) || collapsedName.includes(token))) return 3;
-      return 4;
-    };
+    const customerSearchRankById = new Map(
+      hasKeyword
+        ? rankCustomerSearchResults(customerSummaries.map((cus) => {
+          const manager = employees.find(emp => emp.id === cus.empId) || {};
+          const fixedProductNames = (Array.isArray(cus.customerProductIds) ? cus.customerProductIds : [])
+            .map(productId => activeProductForPricingLookup.get(productId)?.name)
+            .filter(Boolean);
+          return {
+            ...cus,
+            searchAliases: buildCustomerNameAliases(cus),
+            // Supplemental fields stay ephemeral so private source data is never changed.
+            searchText: [
+              manager.name,
+              manager.phone,
+              ...(Array.isArray(cus.allowedDriverNames) ? cus.allowedDriverNames : []),
+              ...fixedProductNames,
+              canSeeCustomerLocation ? getCustomerLocationShareText(cus) : '',
+            ].filter(Boolean).join(' '),
+          };
+        }), rawKeyword).map(result => [result.record.id, result.score])
+        : []
+    );
+    const matchesCustomerKeyword = (cus) => !hasKeyword || customerSearchRankById.has(cus.id);
     const filteredList = customerSummaries.filter(cus => {
       if (!matchesCustomerKeyword(cus)) return false;
       if (!hasKeyword) {
@@ -67102,7 +67117,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
     });
     return filteredList.sort((a, b) => {
       if (hasKeyword) {
-        const scoreDiff = getCustomerSearchScore(a) - getCustomerSearchScore(b);
+        const scoreDiff = (customerSearchRankById.get(b.id) || 0) - (customerSearchRankById.get(a.id) || 0);
         if (scoreDiff !== 0) return scoreDiff;
       }
       if (customerSortFilter === 'revenue' && canSeeCustomerStats) {
@@ -67589,19 +67604,19 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const filteredOrders = useMemo(() => {
     if (!selectedCustomer) return [];
 
-    const keyword = normalizeLookupText(orderSearch);
-    const collapsedKeyword = collapseLookupText(orderSearch);
+    const hasKeyword = hasTokenSearchQuery(orderSearch);
     const list = selectedCustomer.orders.filter(order => {
       if (orderMonth && !order.date.startsWith(orderMonth)) return false;
-      if (!keyword) return true;
-
-      const orderCode = `HD${(order.id || '').slice(-6).toUpperCase()}`;
-      const productNames = (order.items || []).map(item => buildLineItemProductSearchText(item, activeProductsForPricing)).join(' ');
-      const haystack = normalizeLookupText([orderCode, order.date, productNames].join(' '));
-      const collapsedHaystack = collapseLookupText(haystack);
-      return haystack.includes(keyword) || (collapsedKeyword && collapsedHaystack.includes(collapsedKeyword));
+      return true;
     });
 
+    if (hasKeyword) {
+      return searchOrderRecords(list, orderSearch, {
+        getItemText: (order) => (order.items || [])
+          .map(item => buildLineItemProductSearchText(item, activeProductsForPricing))
+          .join(' '),
+      });
+    }
     return list.sort((a, b) => {
       if (orderSort === 'oldest') return new Date(a.date) - new Date(b.date);
       if (orderSort === 'amount_desc') return (b.amount || 0) - (a.amount || 0);
@@ -72524,6 +72539,7 @@ function HolidayConfigCard({
 function EmployeeView({
   currentEmployee = null,
   employees,
+  customers = [],
   attendance = {},
   orders = [],
   deliveryReports = [],
@@ -72564,6 +72580,7 @@ function EmployeeView({
   const [documentUploadEmp, setDocumentUploadEmp] = useState(null);
   const [documentUploadType, setDocumentUploadType] = useState('id_card');
   const [reviewMonth, setReviewMonth] = useState(getTodayString().slice(0, 7));
+  const [salesRevenueMonth, setSalesRevenueMonth] = useState(getTodayString().slice(0, 7));
   const [reviewTargetEmp, setReviewTargetEmp] = useState(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewCriteriaScores, setReviewCriteriaScores] = useState(() => buildDefaultEmployeeReviewCriteriaScores(5));
@@ -72577,6 +72594,26 @@ function EmployeeView({
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi')),
     [employees, editingEmployeeId]
   );
+  const salesRevenueRows = useMemo(() => (employees || [])
+    .filter(emp => !emp?.isArchived && isEmployeeSalesPosition(emp))
+    .map(emp => ({
+      employee: emp,
+      summary: summarizeEmployeeSalesRevenueForMonth({
+        employeeId: emp.id,
+        orders,
+        customers,
+        monthKey: salesRevenueMonth
+      })
+    })), [customers, employees, orders, salesRevenueMonth]);
+  const salesRevenueByEmployeeId = useMemo(
+    () => new Map(salesRevenueRows.map(row => [row.employee.id, row.summary])),
+    [salesRevenueRows]
+  );
+  const salesRevenueOverview = useMemo(() => salesRevenueRows.reduce((summary, row) => ({
+    revenue: summary.revenue + (row.summary.revenue || 0),
+    orderCount: summary.orderCount + (row.summary.orderCount || 0),
+    customerCount: summary.customerCount + (row.summary.customerCount || 0)
+  }), { revenue: 0, orderCount: 0, customerCount: 0 }), [salesRevenueRows]);
   const selectedSecondaryPositions = normalizeEmployeePositionList(empData.secondaryPositions)
     .filter(position => position && position !== normalizeEmployeePosition(empData.position) && !isOwnerPosition(position));
   const draftEmployeeShape = {
@@ -73245,6 +73282,37 @@ function EmployeeView({
           canManage={Boolean(isSuperAdmin || canManageHolidayConfig)}
         />
       )}
+      {salesRevenueRows.length > 0 && (
+        <div className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 to-teal-600 p-4 text-white shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">Doanh thu nhân viên kinh doanh</p>
+              <p className="mt-1 text-xs font-semibold text-white/80">Mỗi tháng được tính độc lập theo ngày phát sinh đơn hàng.</p>
+            </div>
+            <input
+              type="month"
+              value={salesRevenueMonth}
+              onChange={event => setSalesRevenueMonth(normalizePayrollMonthKey(event.target.value) || getTodayString().slice(0, 7))}
+              className="min-h-11 shrink-0 rounded-2xl border border-white/30 bg-white/15 px-3 text-xs font-black text-white outline-none [color-scheme:dark] focus:ring-2 focus:ring-white/50"
+              aria-label="Chọn tháng doanh thu nhân viên kinh doanh"
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
+              <p className="text-[9px] font-bold uppercase text-emerald-100">Doanh thu</p>
+              <p className="mt-1 text-sm font-black">{formatCurrency(salesRevenueOverview.revenue)} đ</p>
+            </div>
+            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
+              <p className="text-[9px] font-bold uppercase text-emerald-100">Đơn hàng</p>
+              <p className="mt-1 text-sm font-black">{formatNumber(salesRevenueOverview.orderCount)}</p>
+            </div>
+            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
+              <p className="text-[9px] font-bold uppercase text-emerald-100">Lượt khách</p>
+              <p className="mt-1 text-sm font-black">{formatNumber(salesRevenueOverview.customerCount)}</p>
+            </div>
+          </div>
+        </div>
+      )}
       {false && canUseEmployeeReviews && (
         <div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -73335,6 +73403,7 @@ function EmployeeView({
           const avatarUrl = getEmployeeAvatarUrl(emp);
           const initials = (emp.name || 'NV').trim().split(/\s+/).slice(-2).map(part => part.charAt(0)).join('').toUpperCase() || 'NV';
           const assignedAssets = getAssignedAssetsForEmployee(emp.id);
+          const salesRevenueSummary = salesRevenueByEmployeeId.get(emp.id) || null;
           return (
             <div
               key={emp.id}
@@ -73370,6 +73439,13 @@ function EmployeeView({
                   <div className="min-w-0">
                     <h3 className="font-semibold text-gray-800 truncate">{emp.name}</h3>
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full inline-block mt-1 ${isOwnerPosition(emp.position) || emp.role === 'super_admin' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>{getEmployeePositionSummary(emp)}</span>
+                    {salesRevenueSummary && (
+                      <div className="mt-1 text-[10px] font-semibold text-emerald-700">
+                        {formatMonthYearLabel(salesRevenueMonth)}: <strong>{formatCurrency(salesRevenueSummary.revenue)} đ</strong>
+                        {' • '}{formatNumber(salesRevenueSummary.orderCount)} đơn
+                        {' • '}{formatNumber(salesRevenueSummary.customerCount)} khách
+                      </div>
+                    )}
                     {isSalesCollaboratorPosition(emp.position) ? (
                       <div className="text-[10px] text-emerald-600 mt-1">Hoa hồng: <strong>{formatCommissionPercentLabel(emp.commissionRate)}</strong> trên doanh thu</div>
                     ) : (
@@ -74166,7 +74242,9 @@ function SalaryViewLegacy({ employees, attendance, financials, performance, cust
     setShowModal(false);
   };
 
-  const pendingAdvances = advanceRequests ? advanceRequests.filter(r => r.status === 'pending') : [];
+  const pendingAdvances = advanceRequests
+    ? advanceRequests.filter(r => r.status === 'pending' && isSalaryAdvanceInMonth(r, currentMonth))
+    : [];
   const canViewSalaryAdvance = true;
   const canReviewSalaryAdvances = false;
 
@@ -74419,6 +74497,7 @@ function SalaryView({
   const [financialModalError, setFinancialModalError] = useState('');
   const [advanceRequestAmount, setAdvanceRequestAmount] = useState('');
   const [advanceRequestReason, setAdvanceRequestReason] = useState('');
+  const [advanceRequestSalaryMonth, setAdvanceRequestSalaryMonth] = useState(getTodayString().substring(0, 7));
   const [advanceRequestTargetEmployeeId, setAdvanceRequestTargetEmployeeId] = useState(currentEmployee?.id || '');
   const [advanceRequestStatus, setAdvanceRequestStatus] = useState('');
   const [isSubmittingAdvanceRequest, setIsSubmittingAdvanceRequest] = useState(false);
@@ -74461,7 +74540,6 @@ function SalaryView({
   const [payrollConfigNoticeHidden, setPayrollConfigNoticeHidden] = useState(false);
 
   const [salaryMonth, setSalaryMonth] = useState(getTodayString().substring(0, 7));
-  const salaryMonthInputRef = useRef(null);
   const currentMonth = salaryMonth || getTodayString().substring(0, 7);
   const currentMonthLabel = `Tháng ${currentMonth.substring(5, 7)}/${currentMonth.substring(0, 4)}`;
   const payrollCompanyId = currentCompany?.id || currentCompany?.companyId || currentEmployee?.companyId || currentUser?.companyId || '';
@@ -74519,13 +74597,6 @@ function SalaryView({
       return acc;
     }, {}));
   }, [salaryAdvancePercentByDepartment]);
-
-  const openSalaryMonthPicker = () => {
-    const input = salaryMonthInputRef.current;
-    if (!input) return;
-    if (typeof input.showPicker === 'function') input.showPicker();
-    else input.click();
-  };
 
   const currentEmployeeId = currentEmployee?.id || '';
   const canCreateOwnSalaryAdvanceRequest = !isPayrollLocked && Boolean(currentEmployeeId && (canCreateSalaryAdvanceRequest || currentEmployee?.id === currentEmployeeId));
@@ -74972,12 +75043,12 @@ function SalaryView({
   };
   const pendingAdvances = useMemo(() => (
     advanceRequests
-      ? advanceRequests.filter(r => r.empId === currentEmployeeId && r.status === 'pending' && (!r.date || `${r.date}`.startsWith(currentMonth)))
+      ? advanceRequests.filter(r => r.empId === currentEmployeeId && r.status === 'pending' && isSalaryAdvanceInMonth(r, currentMonth))
       : []
   ), [advanceRequests, currentEmployeeId, currentMonth]);
   const reviewAdvanceRequests = useMemo(() => (
     canReviewSalaryAdvances && advanceRequests
-      ? advanceRequests.filter(r => r.status === 'pending' && (!r.date || `${r.date}`.startsWith(currentMonth)))
+      ? advanceRequests.filter(r => r.status === 'pending' && isSalaryAdvanceInMonth(r, currentMonth))
       : []
   ), [advanceRequests, canReviewSalaryAdvances, currentMonth]);
   const pendingAdvanceAmount = pendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
@@ -75015,7 +75086,7 @@ function SalaryView({
     const targetPendingAdvances = (advanceRequests || []).filter(req => (
       req.empId === targetEmployee.id
       && req.status === 'pending'
-      && (!req.date || `${req.date}`.startsWith(currentMonth))
+      && isSalaryAdvanceInMonth(req, currentMonth)
     ));
     const targetPendingAmount = targetPendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
     const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
@@ -75185,7 +75256,7 @@ function SalaryView({
           const targetLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, targetEmployee, null);
           const targetPercent = targetLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, targetEmployee, null);
           const targetPendingAmount = (advanceRequests || [])
-            .filter(req => req.empId === targetEmployee.id && req.status === 'pending' && (!req.date || `${req.date}`.startsWith(currentMonth)))
+            .filter(req => req.empId === targetEmployee.id && req.status === 'pending' && isSalaryAdvanceInMonth(req, currentMonth))
             .reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
           const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
           const targetIsUnlimited = Boolean(targetLimitConfig.isUnlimited);
@@ -75202,6 +75273,7 @@ function SalaryView({
     setAdvanceRequestTargetEmployeeId(targetId);
     setAdvanceRequestAmount('');
     setAdvanceRequestReason('');
+    setAdvanceRequestSalaryMonth(currentMonth);
     setAdvanceRequestStatus('');
     setShowAdvanceRequestModal(true);
   };
@@ -75225,8 +75297,17 @@ function SalaryView({
       return;
     }
     const requestedAmount = parseInputCurrency(advanceRequestAmount);
+    const salaryMonth = normalizeSalaryAdvanceMonth(advanceRequestSalaryMonth);
     if (!requestedAmount || requestedAmount <= 0) {
       setAdvanceRequestStatus('Vui lòng nhập số tiền ứng hợp lệ.');
+      return;
+    }
+    if (!salaryMonth) {
+      setAdvanceRequestStatus('Vui lòng chọn tháng trừ vào lương.');
+      return;
+    }
+    if (salaryMonth !== currentMonth || isPayrollLocked) {
+      setAdvanceRequestStatus('Kỳ lương đã thay đổi hoặc đã khóa. Vui lòng chọn lại tháng trừ lương.');
       return;
     }
     if (!targetSummary.targetIsUnlimited && requestedAmount > targetSummary.targetRemainingAmount) {
@@ -75238,7 +75319,7 @@ function SalaryView({
     setAdvanceRequestStatus('');
     try {
       const result = await onAddAdvanceRequest(targetId, requestedAmount, advanceRequestReason || (isOwnRequest ? 'Ứng lương' : 'Ứng hộ'), {
-        salaryMonth: currentMonth,
+        salaryMonth,
         salaryAdvancePercent: targetSummary.targetIsUnlimited ? null : targetSummary.targetPercent,
         salaryAdvanceLimitMode: targetSummary.targetIsUnlimited ? 'unlimited' : 'percent',
         salaryAdvanceBaseAmount: targetSummary.targetBaseAmount,
@@ -75418,6 +75499,7 @@ function SalaryView({
                     <div className="min-w-0">
                       <p className="truncate text-sm font-black text-slate-900">{e?.name || 'Nhân sự'}</p>
                       <p className="mt-1 text-xs text-slate-500">{req.reason || 'Ứng lương'} • {req.date ? new Date(req.date).toLocaleDateString('vi-VN') : currentMonthLabel}</p>
+                      <p className="mt-1 text-[11px] font-bold text-orange-700">Trừ lương: {formatMonthYearLabel(getSalaryAdvanceMonth(req) || currentMonth)}</p>
                       <p className="mt-1 text-[11px] text-blue-700">
                         {requestIsUnlimited
                           ? 'Không giới hạn ứng • Chờ chủ doanh nghiệp duyệt'
@@ -75470,53 +75552,50 @@ function SalaryView({
       <div className="relative overflow-hidden rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-emerald-900 to-teal-600 p-5 text-white shadow-xl shadow-emerald-900/20">
         <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-20 left-8 h-44 w-44 rounded-full bg-cyan-300/20 blur-3xl" />
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider">
             {canViewCompanyPayroll ? 'Tổng lương toàn bộ nhân viên' : 'Lương thực tế của bạn'}
           </p>
-          <button
-            type="button"
-            onClick={openSalaryMonthPicker}
-            className="shrink-0 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-center text-xs font-bold text-white transition-colors hover:bg-white/25"
-          >
-            {currentMonthLabel}
-          </button>
-          {canManagePayrollByRole && canViewCompanyPayroll && (
-            isPayrollLocked ? (
-              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200/40 bg-emerald-300/20 px-3 py-2 text-xs font-black text-emerald-50">
-                <Lock size={14} /> Đã khóa
-              </span>
-            ) : (
+          <div className="flex flex-wrap items-end justify-end gap-2">
+            <label className="shrink-0">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-100">Xem tháng</span>
+              <input
+                type="month"
+                value={currentMonth}
+                onChange={(event) => setSalaryMonth(event.target.value || getTodayString().substring(0, 7))}
+                className="h-10 rounded-xl border border-white/40 bg-white px-3 text-xs font-black text-slate-900 shadow-sm outline-none [color-scheme:light] focus:border-emerald-200 focus:ring-2 focus:ring-white/40"
+                aria-label="Chọn tháng năm xem lương"
+              />
+            </label>
+            {canManagePayrollByRole && canViewCompanyPayroll && (
+              isPayrollLocked ? (
+                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200/40 bg-emerald-300/20 px-3 py-2 text-xs font-black text-emerald-50">
+                  <Lock size={14} /> Đã khóa
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!canLockSelectedPayrollPeriod}
+                  onClick={() => setShowPayrollLockConfirm(true)}
+                  title={isPayrollLockDateEligible ? 'Khóa và lưu ảnh chụp kỳ lương' : `Có thể khóa từ ${payrollMonthEndLabel}`}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-black text-white transition-colors hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  <Lock size={14} /> {isPayrollLockDateEligible ? 'Khóa kỳ lương' : `Khóa từ ${payrollMonthEndLabel}`}
+                </button>
+              )
+            )}
+            {canCreateSalaryAdvanceForOthersInPeriod && advanceTargetEmployees.length > 0 && (
               <button
                 type="button"
-                disabled={!canLockSelectedPayrollPeriod}
-                onClick={() => setShowPayrollLockConfirm(true)}
-                title={isPayrollLockDateEligible ? 'Khóa và lưu ảnh chụp kỳ lương' : `Có thể khóa từ ${payrollMonthEndLabel}`}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-black text-white transition-colors hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-55"
+                onClick={() => openAdvanceRequestModal(advanceTargetEmployees[0].id)}
+                className="shrink-0 rounded-full border border-orange-200/40 bg-orange-400/90 px-3 py-2 text-center text-xs font-black text-white transition-colors hover:bg-orange-400"
               >
-                <Lock size={14} /> {isPayrollLockDateEligible ? 'Khóa kỳ lương' : `Khóa từ ${payrollMonthEndLabel}`}
+                Tạo lệnh ứng hộ
               </button>
-            )
-          )}
-          {canCreateSalaryAdvanceForOthersInPeriod && advanceTargetEmployees.length > 0 && (
-            <button
-              type="button"
-              onClick={() => openAdvanceRequestModal(advanceTargetEmployees[0].id)}
-              className="shrink-0 rounded-full border border-orange-200/40 bg-orange-400/90 px-3 py-2 text-center text-xs font-black text-white transition-colors hover:bg-orange-400"
-            >
-              Tạo lệnh ứng hộ
-            </button>
-          )}
-          <input
-            ref={salaryMonthInputRef}
-            type="month"
-            value={currentMonth}
-            onChange={(event) => setSalaryMonth(event.target.value || getTodayString().substring(0, 7))}
-            className="sr-only"
-            aria-label="Chọn tháng năm xem lương"
-          />
+            )}
+          </div>
         </div>
-        <h3 className="text-center text-3xl font-black mb-4">{formatCurrency(aggregateData.totalSalary)} đ</h3>
+        <h3 className="mb-4 text-center text-3xl font-black text-white drop-shadow-[0_2px_4px_rgba(2,44,34,0.45)]">{formatCurrency(aggregateData.totalSalary)} đ</h3>
         <div className="grid grid-cols-2 gap-3 border-t border-emerald-400/50 pt-3 sm:grid-cols-4">
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ngày công</p><p className="font-bold text-sm">{aggregateData.totalDays}</p></div>
           <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ứng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalAdvance)} đ</p></div>
@@ -75617,7 +75696,7 @@ function SalaryView({
           const isAttendanceExpanded = expandedAttendanceEmp === emp.id;
           const canSeeEmployeeAdvanceQueue = canReviewSalaryAdvances || emp.id === currentEmployeeId;
           const employeePendingAdvances = canSeeEmployeeAdvanceQueue
-            ? (advanceRequests || []).filter(req => req.empId === emp.id && req.status === 'pending' && (!req.date || `${req.date}`.startsWith(currentMonth)))
+            ? (advanceRequests || []).filter(req => req.empId === emp.id && req.status === 'pending' && isSalaryAdvanceInMonth(req, currentMonth))
             : [];
           const employeePendingAdvanceAmount = employeePendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
           const employeeAdvanceBaseAmount = Math.max(0, roundMoneyValue(details?.grossSalary || details?.netSalary || 0));
@@ -76052,7 +76131,10 @@ function SalaryView({
                                         )}
                                       </div>
                                     </div>
-                                    <p className="mt-1 text-[11px] text-slate-400">{req.date ? new Date(req.date).toLocaleDateString('vi-VN') : currentMonthLabel}</p>
+                                    <p className="mt-1 text-[11px] text-slate-400">
+                                      {req.date ? new Date(req.date).toLocaleDateString('vi-VN') : currentMonthLabel}
+                                      {' • Trừ lương: '}{formatMonthYearLabel(getSalaryAdvanceMonth(req) || currentMonth)}
+                                    </p>
                                   </div>
                                 ))}
                               </div>
@@ -76342,6 +76424,21 @@ function SalaryView({
                   </select>
                 </div>
               )}
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-600">Tháng trừ vào lương</label>
+                <input
+                  type="month"
+                  required
+                  value={advanceRequestSalaryMonth}
+                  onChange={(event) => {
+                    const nextMonth = normalizeSalaryAdvanceMonth(event.target.value);
+                    setAdvanceRequestSalaryMonth(nextMonth);
+                    if (nextMonth && nextMonth !== currentMonth) setSalaryMonth(nextMonth);
+                  }}
+                  className="w-full rounded-2xl border border-orange-100 bg-orange-50/40 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-orange-300"
+                />
+                <p className="mt-1 text-[11px] text-slate-500">Khoản ứng chỉ được tính và khấu trừ trong kỳ này.</p>
+              </div>
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-600">Số tiền ứng</label>
                 <input
@@ -76697,8 +76794,8 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   }, [selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
-    const keyword = debouncedDebtSearchKeyword.trim().toLowerCase();
-    return accessibleCustomers
+    const hasKeyword = hasTokenSearchQuery(debouncedDebtSearchKeyword);
+    const baseList = accessibleCustomers
       .filter(customer => {
         if (debtViewFilter === 'debt') return customer.ledger.currentDebt > 0;
         if (debtViewFilter === 'credit') return customer.ledger.creditBalance > 0;
@@ -76709,12 +76806,9 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
         if (!debtDateRange) return true;
         return (customer.debtTransactions || []).some(item => item.dateKey >= debtDateRange.start && item.dateKey <= debtDateRange.end);
       })
-      .filter(customer => {
-        if (!keyword) return true;
-        const haystack = [customer.name, customer.phone, customer.address, customer.managerName].filter(Boolean).join(' ').toLowerCase();
-        return haystack.includes(keyword);
-      })
-      .sort((a, b) => {
+      ;
+    if (hasKeyword) return searchCustomerRecords(baseList, debouncedDebtSearchKeyword);
+    return baseList.sort((a, b) => {
         if (debtTransactionSort === 'debt_desc' || debtTransactionSort === 'debt_asc') {
           const aDebtAmount = debtViewFilter === 'credit'
             ? a.ledger.creditBalance

@@ -261,6 +261,15 @@ test('the locked UI dependency graph exits before live policy and formula calcul
   assert.match(source, /const salaryRows = isPayrollLocked \? lockedSnapshotRows : liveSalaryRows;/);
 });
 
+test('company payroll summary exposes a visible month selector with readable total salary', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /<span className="mb-1 block[^>]*>Xem tháng<\/span>/);
+  assert.match(source, /type="month"\s+value=\{currentMonth\}/);
+  assert.match(source, /onChange=\{\(event\) => setSalaryMonth\(event\.target\.value/);
+  assert.match(source, /text-3xl font-black text-white drop-shadow/);
+  assert.doesNotMatch(source, /ref=\{salaryMonthInputRef\}/);
+});
+
 test('Rules make snapshots and payroll audit records immutable after creation', () => {
   const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
   assert.match(rules, /isImmutablePayrollCollection/);
@@ -269,5 +278,5 @@ test('Rules make snapshots and payroll audit records immutable after creation', 
   assert.match(rules, /!isImmutablePayrollAudit\(collectionId, resource\.data\)/);
 });
 
-assert.equal(passed, 13);
-console.log(`\nPayroll period hardening: ${passed}/13 cases PASS`);
+assert.equal(passed, 14);
+console.log(`\nPayroll period hardening: ${passed}/14 cases PASS`);
