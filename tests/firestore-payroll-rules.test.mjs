@@ -184,22 +184,30 @@ try {
 
   const ownerDb = testEnvironment.authenticatedContext('firebase-owner', {
     companyId,
+    identityId: 'identity-owner-01',
     appUserId: 'owner-01',
+    accountType: 'employee',
     role: 'super_admin'
   }).firestore();
   const accountantDb = testEnvironment.authenticatedContext('firebase-accountant', {
     companyId,
+    identityId: 'identity-accountant-01',
     appUserId: 'accountant-01',
+    accountType: 'employee',
     role: 'employee'
   }).firestore();
   const employeeDb = testEnvironment.authenticatedContext('firebase-employee', {
     companyId,
+    identityId: 'identity-employee-01',
     appUserId: 'employee-01',
+    accountType: 'employee',
     role: 'employee'
   }).firestore();
   const otherCompanyDb = testEnvironment.authenticatedContext('firebase-other-company', {
     companyId: 'company-02',
+    identityId: 'identity-other-owner',
     appUserId: 'other-owner',
+    accountType: 'employee',
     role: 'super_admin'
   }).firestore();
   const anonymousDb = testEnvironment.authenticatedContext('firebase-anonymous', {}).firestore();

@@ -2,7 +2,7 @@
   "expo": {
     "name": "HD Manager",
     "slug": "hd-manager",
-    "version": "2026.7.6",
+    "version": "2026.8.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "hdmanager",
@@ -10,6 +10,28 @@
     "ios": {
       "bundleIdentifier": "com.hdmanager.app",
       "supportsTablet": true,
+      "privacyManifests": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyTrackingDomains": [],
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": ["C617.1", "0A2A.1", "3B52.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
+            "NSPrivacyAccessedAPITypeReasons": ["E174.1", "85F4.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
+            "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
+          }
+        ]
+      },
       "infoPlist": {
         "NSCameraUsageDescription": "HD Manager can dung camera de chup anh so sach, hang hoa va bao cao giao hang.",
         "NSMicrophoneUsageDescription": "HD Manager can dung micro de ghi am len don va phieu xuat kho.",

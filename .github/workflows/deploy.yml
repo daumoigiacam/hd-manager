@@ -27,17 +27,44 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
+
+      - name: Setup Java for Firebase Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Functions dependencies
+        run: npm ci --prefix functions
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit Functions production dependencies
+        run: npm audit --prefix functions --omit=dev --audit-level=high
+
       - name: Check Functions syntax
         run: node --check functions/index.js
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Run functional test suite
         run: npm run test:all
+
+      - name: Verify Firestore payroll rules
+        run: npm run test:firestore-payroll-rules
+
+      - name: Verify Firestore tenant isolation
+        run: npm run test:firestore-tenant-rules
 
       - name: Performance architecture audit
         run: npm run test:performance
@@ -63,6 +90,51 @@ jobs:
           path: dist
           if-no-files-found: error
           retention-days: 14
+
+      - name: Require Firebase deployment credential
+        if: github.event_name == 'push'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "${FIREBASE_SERVICE_ACCOUNT}" ]; then
+            echo "::error::Missing FIREBASE_SERVICE_ACCOUNT; refusing to deploy a frontend that can drift from Functions and Rules."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy Firebase backend, rules, indexes, and API rewrites
+        if: github.event_name == 'push'
+        run: >-
+          npx firebase-tools deploy
+          --project hd-manager-c5839
+          --only functions,firestore:rules,firestore:indexes,storage,hosting
+          --non-interactive
+
+      - name: Verify Firebase API release
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          for path in \
+            /api/identity/login \
+            /api/customer/bootstrap \
+            /api/ai/generate-content \
+            /api/sepay/create-payment-request; do
+            status="$(curl --silent --show-error --output /tmp/hd-api-body \
+              --write-out '%{http_code}' --request OPTIONS \
+              --header 'Origin: https://app.hdconnect.net' \
+              "https://hd-manager-c5839.web.app${path}")"
+            echo "${path}: HTTP ${status}"
+            if [ "${status}" = '404' ] || [ "${status}" -ge 500 ]; then
+              cat /tmp/hd-api-body
+              echo "::error::Firebase API endpoint ${path} is unavailable after deploy."
+              exit 1
+            fi
+          done
 
       - name: Package build artifact
         if: github.event_name == 'push'

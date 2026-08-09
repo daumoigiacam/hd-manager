@@ -6,6 +6,29 @@ const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
 const { createIdentityCenter } = require('./identityCenter');
 const {
+  authorizeTenantRequest,
+  authorizeTenantOrderAccess
+} = require('./requestAuthorization');
+const {
+  buildPointRedemptionId,
+  calculateCustomerOutstandingDebt,
+  calculatePointRedemption,
+  cloneJsonSafe,
+  hashAuditValue,
+  normalizeRequestId,
+  sanitizeCompanyForCustomer,
+  sanitizeCustomerAccountForClient,
+  sanitizeCustomerProfileForClient,
+  sanitizeProductForCustomer,
+  sanitizePromotionForCustomer,
+  sanitizeRewardForCustomer
+} = require('./customerPortalSecurity');
+const {
+  assertAiRequestSize,
+  buildAiRateLimitId,
+  sanitizeGeminiRequestPayload
+} = require('./aiGatewaySecurity');
+const {
   PAYROLL_AUTO_LOCK_PLAN_STATUS,
   PAYROLL_RULES_VERSION,
   createDebtRolloverArtifacts,
@@ -821,6 +844,58 @@ exports.sepayQrImageProxy = functions.https.onRequest(async (req, res) => {
 
 const normalizeAppId = (appId = '') => `${appId || getEnv('HD_MANAGER_APP_ID', DEFAULT_APP_ID)}`.trim() || DEFAULT_APP_ID;
 
+const getBearerToken = (req = {}) => {
+  const authHeader = `${req.headers?.authorization || ''}`;
+  return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+};
+
+const createRequestError = (decision = {}) => Object.assign(
+  new Error(decision.message || 'Yeu cau khong duoc phep.'),
+  {
+    statusCode: Number(decision.statusCode || 403),
+    code: decision.code || 'request_denied'
+  }
+);
+
+const verifyTenantIdentityRequest = async (req, appId) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) {
+    throw createRequestError({
+      statusCode: 401,
+      code: 'missing_firebase_token',
+      message: 'Thieu token dang nhap Firebase.'
+    });
+  }
+  const claims = await admin.auth().verifyIdToken(idToken, true);
+  const decision = authorizeTenantRequest({
+    claims,
+    appId,
+    allowedAppId: normalizeAppId()
+  });
+  if (!decision.allowed) throw createRequestError(decision);
+  return claims;
+};
+
+const verifyTenantOrderRequest = ({ claims, appId, order }) => {
+  const decision = authorizeTenantOrderAccess({
+    claims,
+    appId,
+    allowedAppId: normalizeAppId(),
+    order
+  });
+  if (!decision.allowed) throw createRequestError(decision);
+  return decision;
+};
+
+const sendProtectedEndpointError = (res, error, fallbackMessage) => {
+  const statusCode = Number(error?.statusCode || 500);
+  return sendJson(res, statusCode, {
+    success: false,
+    code: error?.code || (statusCode >= 500 ? 'internal_error' : 'request_denied'),
+    message: statusCode >= 500 ? fallbackMessage : (error?.message || 'Yeu cau khong duoc phep.')
+  });
+};
+
 // Identity data lives outside the public app collections. Only Cloud Functions
 // can read password hashes, device secrets, recovery tokens and audit records.
 const identityCenter = createIdentityCenter({
@@ -839,7 +914,12 @@ const runIdentityRequest = (operation) => async (req, res) => {
   } catch (error) {
     const statusCode = Number(error?.statusCode || 500);
     if (statusCode >= 500) console.error('identityApi failed', error);
-    return sendJson(res, statusCode, { success: false, message: error?.message || 'Khong the xu ly yeu cau xac thuc.' });
+    return sendJson(res, statusCode, {
+      success: false,
+      message: statusCode >= 500
+        ? 'Khong the xu ly yeu cau xac thuc.'
+        : (error?.message || 'Khong the xu ly yeu cau xac thuc.')
+    });
   }
 };
 
@@ -848,6 +928,15 @@ exports.identityLogin = functions.https.onRequest(runIdentityRequest((req) => id
   password: req.body?.password,
   device: req.body?.device,
   appId: req.body?.appId
+})));
+
+exports.identityRegisterCompany = functions.https.onRequest(runIdentityRequest((req) => identityCenter.registerCompany({
+  companyName: req.body?.companyName,
+  phone: req.body?.phone,
+  password: req.body?.password,
+  device: req.body?.device,
+  appId: req.body?.appId,
+  companySettings: req.body?.companySettings
 })));
 
 exports.identityCompleteSetup = functions.https.onRequest(runIdentityRequest((req) => identityCenter.completeSetup({
@@ -1074,6 +1163,422 @@ const isPayosPaymentMatchedToOrder = ({ order = {}, data = {}, description = '',
 };
 
 const collectionPath = (appId, name) => `artifacts/${normalizeAppId(appId)}/public/data/${name}`;
+
+const requireCustomerIdentity = (claims = {}) => {
+  if (claims.accountType !== 'customer' || !claims.customerId || !claims.appUserId) {
+    throw createRequestError({
+      statusCode: 403,
+      code: 'customer_identity_required',
+      message: 'Chi tai khoan khach hang moi duoc phep thuc hien thao tac nay.'
+    });
+  }
+  return {
+    companyId: `${claims.companyId || ''}`,
+    customerId: `${claims.customerId || ''}`,
+    appUserId: `${claims.appUserId || ''}`,
+    identityId: `${claims.identityId || ''}`
+  };
+};
+
+const runProtectedCustomerRequest = (operation, fallbackMessage) => async (req, res) => {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+  if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
+  try {
+    const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
+    const customerIdentity = requireCustomerIdentity(claims);
+    const result = await operation({ req, appId, claims, customerIdentity });
+    res.set('Cache-Control', 'private, no-store, max-age=0');
+    return sendJson(res, result?.statusCode || 200, result);
+  } catch (error) {
+    if (Number(error?.statusCode || 500) >= 500) {
+      console.error('protectedCustomerApi failed', {
+        code: error?.code || 'internal_error',
+        message: error?.message || String(error)
+      });
+    }
+    return sendProtectedEndpointError(res, error, fallbackMessage);
+  }
+};
+
+const loadTenantCatalog = async ({ appId, companyId, collectionName, sanitizer }) => {
+  const snapshot = await db.collection(collectionPath(appId, collectionName))
+    .where('companyId', '==', companyId)
+    .get();
+  return snapshot.docs.map(snapshotDoc => sanitizer(snapshotDoc.data(), snapshotDoc.id));
+};
+
+exports.customerPortalBootstrap = functions.https.onRequest(runProtectedCustomerRequest(async ({
+  appId,
+  customerIdentity
+}) => {
+  const { companyId, customerId, appUserId } = customerIdentity;
+  const companyRef = db.doc(`${collectionPath(appId, 'companies')}/${companyId}`);
+  const customerRef = db.doc(`${collectionPath(appId, 'customers')}/${customerId}`);
+  const accountRef = db.doc(`${collectionPath(appId, 'customer_accounts')}/${appUserId}`);
+  const [companySnapshot, customerSnapshot, accountSnapshot, products, rewardCatalog, promotions] = await Promise.all([
+    companyRef.get(),
+    customerRef.get(),
+    accountRef.get(),
+    loadTenantCatalog({ appId, companyId, collectionName: 'products', sanitizer: sanitizeProductForCustomer }),
+    loadTenantCatalog({ appId, companyId, collectionName: 'reward_catalog', sanitizer: sanitizeRewardForCustomer }),
+    loadTenantCatalog({ appId, companyId, collectionName: 'promotions', sanitizer: sanitizePromotionForCustomer })
+  ]);
+
+  if (!companySnapshot.exists || !customerSnapshot.exists) {
+    throw createRequestError({
+      statusCode: 404,
+      code: 'customer_portal_profile_missing',
+      message: 'Khong tim thay ho so cong ty hoac khach hang.'
+    });
+  }
+  const customerData = customerSnapshot.data() || {};
+  if (`${customerData.companyId || ''}` !== companyId) {
+    throw createRequestError({
+      statusCode: 403,
+      code: 'customer_company_mismatch',
+      message: 'Ho so khach hang khong thuoc cong ty dang dang nhap.'
+    });
+  }
+
+  return {
+    success: true,
+    company: sanitizeCompanyForCustomer(companySnapshot.data(), companySnapshot.id),
+    customer: sanitizeCustomerProfileForClient(customerData, customerSnapshot.id),
+    customerAccount: accountSnapshot.exists
+      ? sanitizeCustomerAccountForClient(accountSnapshot.data(), accountSnapshot.id)
+      : null,
+    products,
+    rewardCatalog,
+    promotions
+  };
+}, 'Khong the tai du lieu cong khai cho tai khoan khach hang.'));
+
+const AI_RATE_LIMIT_PER_MINUTE = 24;
+
+const enforceAiRateLimit = async (identityId = '') => {
+  const now = new Date();
+  const windowKey = `${now.getUTCFullYear()}-${now.getUTCMonth() + 1}-${now.getUTCDate()}-${now.getUTCHours()}-${now.getUTCMinutes()}`;
+  const rateLimitId = buildAiRateLimitId({ identityId });
+  const rateLimitRef = db.collection('identity_api_rate_limits').doc(`ai_${rateLimitId}`);
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(rateLimitRef);
+    const previousWindowKey = `${snapshot.data()?.windowKey || ''}`;
+    const count = previousWindowKey === windowKey ? Number(snapshot.data()?.count || 0) : 0;
+    if (count >= AI_RATE_LIMIT_PER_MINUTE) {
+      throw createRequestError({
+        statusCode: 429,
+        code: 'ai_rate_limited',
+        message: 'AI dang nhan qua nhieu yeu cau. Vui long thu lai sau mot phut.'
+      });
+    }
+    transaction.set(rateLimitRef, {
+      identityIdHash: hashAuditValue(identityId),
+      count: count + 1,
+      windowKey,
+      updatedAt: now,
+      expiresAt: new Date(now.getTime() + (10 * 60 * 1000))
+    }, { merge: true });
+  });
+};
+
+exports.geminiGenerateContent = functions.runWith({
+  timeoutSeconds: 60,
+  memory: '1GB'
+}).https.onRequest(async (req, res) => {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+  if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
+  try {
+    assertAiRequestSize(req);
+    const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
+    if (claims.accountType !== 'employee') {
+      throw createRequestError({
+        statusCode: 403,
+        code: 'employee_identity_required',
+        message: 'Tai khoan khong co quyen su dung AI noi bo.'
+      });
+    }
+    await enforceAiRateLimit(`${claims.identityId || claims.uid || ''}`);
+    const apiKey = `${getEnv('GEMINI_API_KEY') || ''}`.trim();
+    if (!apiKey) throw Object.assign(new Error('GEMINI_API_KEY is not configured.'), { code: 'ai_not_configured' });
+    const payload = sanitizeGeminiRequestPayload(req.body?.request || {});
+    const model = `${getEnv('GEMINI_MODEL', 'gemini-2.5-flash')}`.trim() || 'gemini-2.5-flash';
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000);
+    let upstreamResponse;
+    try {
+      upstreamResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    const responseText = await upstreamResponse.text();
+    res.set('Cache-Control', 'private, no-store, max-age=0');
+    res.status(upstreamResponse.status).set('Content-Type', 'application/json; charset=utf-8').send(responseText || '{}');
+  } catch (error) {
+    const statusCode = error?.name === 'AbortError' ? 504 : Number(error?.statusCode || 500);
+    if (statusCode >= 500) {
+      console.error('geminiGenerateContent failed', {
+        code: error?.code || 'internal_error',
+        message: error?.message || String(error)
+      });
+    }
+    return sendJson(res, statusCode, {
+      success: false,
+      error: {
+        code: error?.code || (statusCode >= 500 ? 'ai_gateway_error' : 'invalid_ai_request'),
+        message: statusCode >= 500
+          ? 'Khong the xu ly yeu cau AI luc nay.'
+          : (error?.message || 'Yeu cau AI khong hop le.')
+      }
+    });
+  }
+});
+
+const resolveCustomerPointsRef = async ({ appId, companyId, customerId }) => {
+  const pointsCollection = db.collection(collectionPath(appId, 'customer_points'));
+  const deterministicRef = pointsCollection.doc(`customer_points_${customerId}`);
+  const deterministicSnapshot = await deterministicRef.get();
+  if (deterministicSnapshot.exists) return deterministicRef;
+
+  const byCustomerId = await pointsCollection
+    .where('companyId', '==', companyId)
+    .where('customerId', '==', customerId)
+    .limit(1)
+    .get();
+  if (!byCustomerId.empty) return byCustomerId.docs[0].ref;
+
+  const byLegacyCustomerId = await pointsCollection
+    .where('companyId', '==', companyId)
+    .where('customer_id', '==', customerId)
+    .limit(1)
+    .get();
+  return byLegacyCustomerId.empty ? deterministicRef : byLegacyCustomerId.docs[0].ref;
+};
+
+exports.customerRedeemPoints = functions.https.onRequest(runProtectedCustomerRequest(async ({
+  req,
+  appId,
+  customerIdentity
+}) => {
+  const { companyId, customerId, identityId } = customerIdentity;
+  const requestedCustomerId = `${req.body?.customerId || customerId}`.trim();
+  if (requestedCustomerId !== customerId) {
+    throw createRequestError({
+      statusCode: 403,
+      code: 'customer_scope_mismatch',
+      message: 'Khong duoc dung diem cho tai khoan khach hang khac.'
+    });
+  }
+  const requestId = normalizeRequestId(req.body?.requestId);
+  const paymentId = buildPointRedemptionId({ customerId, requestId });
+  if (!requestId || !paymentId) {
+    throw createRequestError({
+      statusCode: 400,
+      code: 'invalid_idempotency_key',
+      message: 'Yeu cau dung diem thieu ma chong trung lap hop le.'
+    });
+  }
+
+  const companyRef = db.doc(`${collectionPath(appId, 'companies')}/${companyId}`);
+  const customerRef = db.doc(`${collectionPath(appId, 'customers')}/${customerId}`);
+  const paymentRef = db.doc(`${collectionPath(appId, 'payments')}/${paymentId}`);
+  const auditRef = db.doc(`${collectionPath(appId, 'activityLogs')}/point_redeem_${paymentId}`);
+  const pointsRef = await resolveCustomerPointsRef({ appId, companyId, customerId });
+  const ordersQuery = db.collection(collectionPath(appId, 'orders'))
+    .where('companyId', '==', companyId)
+    .where('customerId', '==', customerId);
+  const paymentsQuery = db.collection(collectionPath(appId, 'payments'))
+    .where('companyId', '==', companyId)
+    .where('customerId', '==', customerId);
+
+  const result = await db.runTransaction(async (transaction) => {
+    const [companySnapshot, customerSnapshot, pointsSnapshot, paymentSnapshot, orderSnapshots, paymentSnapshots] = await Promise.all([
+      transaction.get(companyRef),
+      transaction.get(customerRef),
+      transaction.get(pointsRef),
+      transaction.get(paymentRef),
+      transaction.get(ordersQuery),
+      transaction.get(paymentsQuery)
+    ]);
+
+    if (paymentSnapshot.exists) {
+      return {
+        duplicate: true,
+        payment: cloneJsonSafe({ id: paymentSnapshot.id, ...paymentSnapshot.data() }),
+        pointsRecord: pointsSnapshot.exists
+          ? cloneJsonSafe({ id: pointsSnapshot.id, ...pointsSnapshot.data() })
+          : null
+      };
+    }
+    if (!companySnapshot.exists || !customerSnapshot.exists) {
+      throw createRequestError({
+        statusCode: 404,
+        code: 'customer_redemption_profile_missing',
+        message: 'Khong tim thay ho so de doi diem.'
+      });
+    }
+    const company = companySnapshot.data() || {};
+    const customer = customerSnapshot.data() || {};
+    if (`${customer.companyId || ''}` !== companyId) {
+      throw createRequestError({
+        statusCode: 403,
+        code: 'customer_company_mismatch',
+        message: 'Ho so khach hang khong thuoc cong ty dang dang nhap.'
+      });
+    }
+    const loyaltyOverride = customer.customerLoyaltyEnabledOverride ?? customer.loyaltyEnabledOverride ?? null;
+    const loyaltyEnabled = loyaltyOverride === true || loyaltyOverride === 'enabled' || loyaltyOverride === 'true'
+      ? true
+      : (loyaltyOverride === false || loyaltyOverride === 'disabled' || loyaltyOverride === 'false'
+        ? false
+        : company.customerLoyaltyEnabled === true);
+    if (!loyaltyEnabled) {
+      throw createRequestError({
+        statusCode: 409,
+        code: 'loyalty_redemption_disabled',
+        message: 'Cong ty chua bat chuc nang dung diem.'
+      });
+    }
+
+    const orders = orderSnapshots.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }));
+    const payments = paymentSnapshots.docs.map(snapshotDoc => ({ id: snapshotDoc.id, ...snapshotDoc.data() }));
+    const outstandingDebt = calculateCustomerOutstandingDebt({ customer, orders, payments });
+    const currentPoints = pointsSnapshot.exists ? pointsSnapshot.data() : {};
+    const redemption = calculatePointRedemption({
+      pointsRecord: currentPoints,
+      company,
+      requestedPoints: req.body?.pointsToUse,
+      requestedAmount: req.body?.amount,
+      outstandingDebt
+    });
+    if (!redemption.valid) {
+      throw createRequestError({
+        statusCode: 409,
+        code: 'invalid_point_redemption',
+        message: outstandingDebt <= 0
+          ? 'Khach hang khong con cong no de tru diem.'
+          : 'So diem hoac so tien quy doi khong hop le.'
+      });
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const customerName = `${customer.name || ''}`.trim();
+    const historySource = Array.isArray(currentPoints.history)
+      ? currentPoints.history
+      : (Array.isArray(currentPoints.pointHistory) ? currentPoints.pointHistory : []);
+    const historyEntry = {
+      id: `redeem_${requestId}`,
+      operationId: paymentId,
+      type: 'redeem_debt',
+      label: 'Dung diem tru cong no',
+      points: -redemption.pointsToUse,
+      amount: redemption.amount,
+      pointValue: redemption.pointValue,
+      balance: redemption.nextAvailablePoints,
+      date: getVietnamDateKey(now),
+      createdAt: nowIso
+    };
+    const nextPointsPayload = {
+      id: pointsRef.id,
+      companyId,
+      customerId,
+      customer_id: customerId,
+      available_points: redemption.nextAvailablePoints,
+      availablePoints: redemption.nextAvailablePoints,
+      total_points: redemption.nextAvailablePoints,
+      totalPoints: redemption.nextAvailablePoints,
+      used_points: redemption.nextUsedPoints,
+      usedPoints: redemption.nextUsedPoints,
+      pointValue: redemption.pointValue,
+      redeem_value: redemption.nextAvailablePoints * redemption.pointValue,
+      redeemValue: redemption.nextAvailablePoints * redemption.pointValue,
+      lastRedeemedAt: nowIso,
+      lastRedeemedPoints: redemption.pointsToUse,
+      lastRedeemedAmount: redemption.amount,
+      lastRedemptionOperationId: paymentId,
+      history: [...historySource, historyEntry].slice(-120),
+      updatedAt: nowIso,
+      updatedBy: identityId,
+      isArchived: false
+    };
+    const paymentPayload = {
+      id: paymentId,
+      operationId: paymentId,
+      requestId,
+      companyId,
+      customerId,
+      customerName,
+      amount: redemption.amount,
+      totalAmount: redemption.amount,
+      paymentAmount: redemption.amount,
+      actualAmount: redemption.amount,
+      method: 'Diem thuong',
+      paymentMethod: 'Diem thuong',
+      type: 'Thu no',
+      category: 'Thu no',
+      direction: 'income',
+      sourceType: 'loyalty_points_redeem',
+      sourceLabel: 'Dung diem tru no',
+      note: `Dung ${redemption.pointsToUse} diem tru cong no`,
+      bankContent: `Diem thuong ${customerId}`,
+      date: getVietnamDateKey(now),
+      empId: identityId,
+      collectorName: customerName || 'Khach hang',
+      requiresApproval: false,
+      approvalStatus: 'approved',
+      handoverStatus: 'confirmed',
+      status: 'confirmed',
+      confirmedAt: nowIso,
+      confirmedBy: identityId,
+      pointsRedeemed: redemption.pointsToUse,
+      pointValue: redemption.pointValue,
+      isArchived: false,
+      createdAt: nowIso
+    };
+
+    transaction.set(pointsRef, nextPointsPayload, { merge: true });
+    transaction.create(paymentRef, paymentPayload);
+    transaction.create(auditRef, {
+      id: auditRef.id,
+      companyId,
+      customerId,
+      identityId,
+      type: 'customer_points_redeemed',
+      operationId: paymentId,
+      requestFingerprint: hashAuditValue(`${customerId}:${requestId}`),
+      pointsRedeemed: redemption.pointsToUse,
+      amount: redemption.amount,
+      createdAt: nowIso
+    });
+    return {
+      duplicate: false,
+      payment: paymentPayload,
+      pointsRecord: { ...currentPoints, ...nextPointsPayload },
+      redemption
+    };
+  });
+
+  return {
+    success: true,
+    duplicate: result.duplicate,
+    payment: result.payment,
+    pointsRecord: result.pointsRecord,
+    pointsRedeemed: result.payment?.pointsRedeemed || result.redemption?.pointsToUse || 0,
+    amount: result.payment?.amount || result.redemption?.amount || 0
+  };
+}, 'Khong the doi diem luc nay. Vui long thu lai.'));
 
 const PAYROLL_AUTO_LOCK_MAX_TRANSACTION_WRITES = 450;
 
@@ -2144,12 +2649,8 @@ exports.createPayosPaymentLink = functions.https.onRequest(async (req, res) => {
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chỉ hỗ trợ POST.' });
 
   try {
-    const authHeader = req.headers.authorization || '';
-    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!idToken) return sendJson(res, 401, { success: false, message: 'Thiếu token đăng nhập Firebase.' });
-    await admin.auth().verifyIdToken(idToken);
-
     const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
     const orderId = `${req.body?.orderId || ''}`.trim();
     if (!orderId) return sendJson(res, 400, { success: false, message: 'Thiếu orderId.' });
 
@@ -2158,6 +2659,7 @@ exports.createPayosPaymentLink = functions.https.onRequest(async (req, res) => {
     if (!orderSnap.exists) return sendJson(res, 404, { success: false, message: 'Không tìm thấy đơn hàng.' });
 
     const order = { id: orderSnap.id, ...orderSnap.data() };
+    verifyTenantOrderRequest({ claims, appId, order });
     if (order.isArchived || order.reviewStatus === 'cancelled' || order.status === 'cancelled') {
       return sendJson(res, 409, { success: false, message: 'Đơn đã hủy hoặc đã lưu trữ, không thể tạo PayOS.' });
     }
@@ -2229,11 +2731,8 @@ exports.createPayosPaymentLink = functions.https.onRequest(async (req, res) => {
 
     return sendJson(res, 200, { success: true, payment });
   } catch (error) {
-    console.error('createPayosPaymentLink failed', error);
-    return sendJson(res, 500, {
-      success: false,
-      message: error.message || 'Không tạo được link PayOS.'
-    });
+    if (Number(error?.statusCode || 500) >= 500) console.error('createPayosPaymentLink failed', error);
+    return sendProtectedEndpointError(res, error, 'Không tạo được link PayOS.');
   }
 });
 
@@ -2428,12 +2927,8 @@ exports.syncPayosPaymentStatus = functions.https.onRequest(async (req, res) => {
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
 
   try {
-    const authHeader = req.headers.authorization || '';
-    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!idToken) return sendJson(res, 401, { success: false, message: 'Thieu token dang nhap Firebase.' });
-    await admin.auth().verifyIdToken(idToken);
-
     const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
     const orderId = `${req.body?.orderId || ''}`.trim();
     if (!orderId) return sendJson(res, 400, { success: false, message: 'Thieu orderId.' });
 
@@ -2441,6 +2936,7 @@ exports.syncPayosPaymentStatus = functions.https.onRequest(async (req, res) => {
     if (!orderDoc.exists) return sendJson(res, 404, { success: false, message: 'Khong tim thay don hang.' });
 
     const order = { id: orderDoc.id, ...orderDoc.data() };
+    verifyTenantOrderRequest({ claims, appId, order });
     const payosOrderCode = Number(order.payosOrderCode || order.paymentOrderCode || 0);
     const paymentLinkId = `${order.paymentLinkId || ''}`.trim();
     const lookupId = payosOrderCode || paymentLinkId;
@@ -2513,11 +3009,8 @@ exports.syncPayosPaymentStatus = functions.https.onRequest(async (req, res) => {
       amountSynced: amountToApply
     });
   } catch (error) {
-    console.error('syncPayosPaymentStatus failed', error);
-    return sendJson(res, 500, {
-      success: false,
-      message: error.message || 'Khong dong bo duoc trang thai PayOS.'
-    });
+    if (Number(error?.statusCode || 500) >= 500) console.error('syncPayosPaymentStatus failed', error);
+    return sendProtectedEndpointError(res, error, 'Khong dong bo duoc trang thai PayOS.');
   }
 });
 
@@ -2645,13 +3138,9 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
   markPaymentTrace(trace, 'request_received');
 
   try {
-    const authHeader = req.headers.authorization || '';
-    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!idToken) return sendJson(res, 401, { success: false, message: 'Thieu token dang nhap Firebase.' });
-    await admin.auth().verifyIdToken(idToken);
-    markPaymentTrace(trace, 'auth_verified');
-
     const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
+    markPaymentTrace(trace, 'auth_verified');
     trace.appId = appId;
     const orderId = `${req.body?.orderId || ''}`.trim();
     trace.orderId = orderId;
@@ -2663,6 +3152,7 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
     markPaymentTrace(trace, 'order_loaded');
 
     const order = { id: orderSnap.id, ...orderSnap.data() };
+    verifyTenantOrderRequest({ claims, appId, order });
     if (order.status === 'cancelled' || order.isArchived) {
       return sendJson(res, 409, { success: false, message: 'Don da huy hoac da luu tru, khong the tao SePay.' });
     }
@@ -2832,12 +3322,9 @@ exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) =
 
     return sendJson(res, 200, { success: true, performance: summarizePaymentTrace(trace), payment });
   } catch (error) {
-    console.error('createSepayPaymentRequest failed', error);
+    if (Number(error?.statusCode || 500) >= 500) console.error('createSepayPaymentRequest failed', error);
     markPaymentTrace(trace, 'request_failed', { errorMessage: error.message || `${error}` });
-    return sendJson(res, 500, {
-      success: false,
-      message: error.message || 'Khong tao duoc QR SePay.'
-    });
+    return sendProtectedEndpointError(res, error, 'Khong tao duoc QR SePay.');
   }
 });
 
@@ -2972,18 +3459,15 @@ exports.syncSepayPaymentStatus = functions.https.onRequest(async (req, res) => {
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
 
   try {
-    const authHeader = req.headers.authorization || '';
-    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!idToken) return sendJson(res, 401, { success: false, message: 'Thieu token dang nhap Firebase.' });
-    await admin.auth().verifyIdToken(idToken);
-
     const appId = normalizeAppId(req.body?.appId);
+    const claims = await verifyTenantIdentityRequest(req, appId);
     const orderId = `${req.body?.orderId || ''}`.trim();
     if (!orderId) return sendJson(res, 400, { success: false, message: 'Thieu orderId.' });
 
     const orderDoc = await db.collection(collectionPath(appId, 'orders')).doc(orderId).get();
     if (!orderDoc.exists) return sendJson(res, 404, { success: false, message: 'Khong tim thay don hang.' });
     const order = { id: orderDoc.id, ...orderDoc.data() };
+    verifyTenantOrderRequest({ claims, appId, order });
     const recordedAmount = await getRecordedPayosAmountForOrder(appId, order.id, 'sepay');
     const expectedAmount = parseMoney(order.paymentAmount || order.amount || 0);
     const outstandingAmount = Math.max(0, expectedAmount - recordedAmount);
@@ -2996,10 +3480,7 @@ exports.syncSepayPaymentStatus = functions.https.onRequest(async (req, res) => {
       outstandingAmount
     });
   } catch (error) {
-    console.error('syncSepayPaymentStatus failed', error);
-    return sendJson(res, 500, {
-      success: false,
-      message: error.message || 'Khong kiem tra duoc trang thai SePay.'
-    });
+    if (Number(error?.statusCode || 500) >= 500) console.error('syncSepayPaymentStatus failed', error);
+    return sendProtectedEndpointError(res, error, 'Khong kiem tra duoc trang thai SePay.');
   }
 });

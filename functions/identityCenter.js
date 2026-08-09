@@ -10,6 +10,22 @@ const DEFAULT_FIRST_LOGIN_PASSWORD = '12345678';
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_MS = 10 * 60 * 1000;
+const COMPANY_REGISTRATION_SETTING_KEYS = new Set([
+  'bankId',
+  'bankName',
+  'bankAccountName',
+  'bankAccountNumber',
+  'invoiceQrTemplate',
+  'autoReconcileByOrderCode',
+  'customerLoyaltyEnabled',
+  'loyaltyEarnAmountPerPoint',
+  'loyaltyRedeemValuePerPoint',
+  'customerCareReminderEnabled',
+  'customerCareInactiveDays',
+  'salaryAdvancePercent',
+  'salaryAdvancePercentByDepartment',
+  'rolePermissions'
+]);
 
 const normalizePhone = (value = '') => {
   const digits = `${value || ''}`.replace(/\D/g, '');
@@ -43,6 +59,10 @@ const timingSafeTextEqual = (left = '', right = '') => {
 };
 const hashOpaqueSecret = (value = '') => crypto.createHash('sha256').update(`${value || ''}`).digest('hex');
 const makeOpaqueSecret = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
+const sanitizeCompanyRegistrationSettings = (settings = {}) => Object.fromEntries(
+  Object.entries(settings && typeof settings === 'object' ? settings : {})
+    .filter(([key]) => COMPANY_REGISTRATION_SETTING_KEYS.has(key))
+);
 
 const validatePassword = (password = '') => {
   const value = `${password || ''}`;
@@ -333,6 +353,129 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     };
   };
 
+  const registerCompany = async ({ companyName, phone, password, device, appId, companySettings = {} }) => {
+    const normalizedName = `${companyName || ''}`.trim().replace(/\s+/g, ' ');
+    const normalizedPhone = normalizePhone(phone);
+    const resolvedAppId = getAppId(appId);
+    const passwordError = validatePassword(password);
+    if (normalizedName.length < 2 || normalizedName.length > 160) {
+      return { success: false, statusCode: 400, message: 'Ten doanh nghiep khong hop le.' };
+    }
+    if (normalizedPhone.length < 9 || normalizedPhone.length > 11) {
+      return { success: false, statusCode: 400, message: 'So dien thoai khong hop le.' };
+    }
+    if (passwordError) return { success: false, statusCode: 400, message: passwordError };
+
+    const [existingIdentity, existingPublicAccount] = await Promise.all([
+      findIdentity(normalizedPhone),
+      getPublicAccountFromIdentifier({ db, appId: resolvedAppId, identifier: normalizedPhone })
+    ]);
+    if (existingIdentity || existingPublicAccount) {
+      return { success: false, statusCode: 409, message: 'So dien thoai nay da duoc dang ky.' };
+    }
+
+    const now = new Date();
+    const companyId = `comp_${safeIdPart(crypto.randomUUID())}`;
+    const employeeId = `emp_${safeIdPart(crypto.randomUUID())}`;
+    const identityId = identityIdForPublicAccount('employee', employeeId);
+    const phoneReservationId = hashOpaqueSecret(`${resolvedAppId}|phone|${normalizedPhone}`);
+    const phoneReservationRef = db.collection('identity_unique_keys').doc(phoneReservationId);
+    const companyRef = db.doc(publicPath(resolvedAppId, 'companies', companyId));
+    const employeeRef = db.doc(publicPath(resolvedAppId, 'employees', employeeId));
+    const identityRef = getIdentityRef(identityId);
+    const passwordHash = await hashPassword(password);
+    const safeSettings = sanitizeCompanyRegistrationSettings(companySettings);
+    const company = {
+      id: companyId,
+      companyId,
+      name: normalizedName,
+      ownerPhone: normalizedPhone,
+      createdAt: now.toISOString().slice(0, 10),
+      createdAtIso: now.toISOString(),
+      status: 'trial',
+      expiresAt: new Date(now.getTime() + (14 * 24 * 60 * 60 * 1000)).toISOString(),
+      ...safeSettings
+    };
+    const employee = {
+      id: employeeId,
+      companyId,
+      phone: normalizedPhone,
+      name: 'Chu doanh nghiep',
+      position: 'Chu doanh nghiep',
+      role: 'super_admin',
+      startDate: now.toISOString().slice(0, 10),
+      probationDuration: 0,
+      probationUnit: 'days',
+      probationRate: 100,
+      basicSalary: 0,
+      supportSalary: 0,
+      responsibilitySalary: 0,
+      experienceSalary: 0,
+      experienceSalaryPeriod: 'months',
+      commissionRate: 0,
+      targetRevenue: 0,
+      overtimeRate: 0,
+      latePenaltyRate: 0,
+      identityId,
+      identityMigratedAt: now.toISOString()
+    };
+    const identity = {
+      id: identityId,
+      accountType: 'employee',
+      publicCollection: 'employees',
+      publicId: employeeId,
+      appUserId: employeeId,
+      customerId: null,
+      companyId,
+      role: 'super_admin',
+      name: employee.name,
+      phone: normalizedPhone,
+      phoneNormalized: normalizedPhone,
+      username: '',
+      usernameNormalized: '',
+      passwordHash,
+      requiresPasswordChange: false,
+      setup: {
+        passwordChanged: true,
+        usernameSet: false,
+        pinSet: false,
+        biometricEnabled: false,
+        trustedDevice: false
+      },
+      status: 'active',
+      createdAt: now,
+      createdAtIso: now.toISOString(),
+      updatedAt: now,
+      updatedAtIso: now.toISOString(),
+      registeredByIdentityCenter: true
+    };
+
+    await db.runTransaction(async transaction => {
+      const reservationSnapshot = await transaction.get(phoneReservationRef);
+      if (reservationSnapshot.exists) {
+        throw Object.assign(new Error('So dien thoai nay da duoc dang ky.'), { statusCode: 409 });
+      }
+      transaction.create(phoneReservationRef, {
+        type: 'phone',
+        appId: resolvedAppId,
+        normalizedValueHash: phoneReservationId,
+        identityId,
+        companyId,
+        createdAt: now
+      });
+      transaction.create(companyRef, company);
+      transaction.create(employeeRef, employee);
+      transaction.create(identityRef, identity);
+    });
+
+    await logAudit(identityId, 'company_registered', { companyId, appId: resolvedAppId });
+    return {
+      success: true,
+      company: { id: companyId, name: company.name },
+      ...(await issueSession({ identityId, identity, device }))
+    };
+  };
+
   const enforceLoginRateLimit = async (identifier = '') => {
     const key = hashOpaqueSecret(`${normalizePhone(identifier) || normalizeUsername(identifier)}|login`);
     const ref = db.collection(IDENTITY_RATE_LIMIT_COLLECTION).doc(key);
@@ -581,6 +724,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
   };
 
   return {
+    registerCompany,
     login,
     completeSetup,
     requestRecovery,

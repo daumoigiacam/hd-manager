@@ -3,6 +3,12 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const {
+  normalizeExternalUrl,
+  normalizeZaloExternalUrl,
+  normalizeTrustedQrImageSource,
+  normalizeQrPayload,
+} = require('./security.cjs');
 
 const isDev = !app.isPackaged;
 let cachedMachineInfo = null;
@@ -86,12 +92,13 @@ function isDirectImageSource(value = '') {
 function buildQrImageSource(value = '') {
   const raw = `${value || ''}`.trim();
   if (!raw) return '';
-  if (isDirectImageSource(raw)) return raw;
+  const trustedImageSource = normalizeTrustedQrImageSource(raw);
+  if (trustedImageSource && isDirectImageSource(trustedImageSource)) return trustedImageSource;
   return `https://api.qrserver.com/v1/create-qr-code/?size=520x520&margin=12&data=${encodeURIComponent(raw)}`;
 }
 
 async function loadNativeImageFromSource(source = '') {
-  const raw = `${source || ''}`.trim();
+  const raw = normalizeQrPayload(source);
   if (!raw) return null;
 
   if (/^data:image\//i.test(raw)) {
@@ -148,7 +155,7 @@ function getZaloExecutableCandidates() {
 }
 
 async function openWithZaloPc(targetUrl, options = {}) {
-  const target = `${targetUrl || ''}`.trim();
+  const target = normalizeZaloExternalUrl(targetUrl);
   if (!target || process.platform !== 'win32') return null;
   const settleMs = Math.max(1200, Number(options.settleMs) || 1200);
   const tryAllArgSets = Boolean(options.tryAllArgSets);
@@ -421,7 +428,7 @@ function clickZaloJoinGroupButtonIfShown(timeoutMs = 8500) {
 }
 
 async function openWithWindowsShell(targetUrl) {
-  const target = `${targetUrl || ''}`.trim();
+  const target = normalizeZaloExternalUrl(targetUrl);
   if (!target) return null;
   await shell.openExternal(target);
   await sleep(1400);
@@ -870,8 +877,8 @@ function registerDesktopIpcHandlers() {
   ipcMain.handle('hd-desktop:check-pc-permissions', async () => buildPcPermissionReport());
 
   ipcMain.handle('hd-desktop:open-external', async (_event, url) => {
-    const finalUrl = `${url || ''}`.trim();
-    if (!finalUrl) throw new Error('Thiếu đường dẫn cần mở.');
+    const finalUrl = normalizeExternalUrl(url);
+    if (!finalUrl) throw new Error('Đường dẫn bên ngoài không hợp lệ hoặc không được phép.');
     await shell.openExternal(finalUrl);
     return { success: true };
   });
@@ -911,7 +918,7 @@ function registerDesktopIpcHandlers() {
     const openResult = process.platform === 'win32'
       ? await openZaloLinkCandidates(openCandidates)
       : await (async () => {
-        const webLink = openCandidates.find(candidate => /^https?:\/\//i.test(candidate)) || openCandidates[0];
+        const webLink = normalizeZaloExternalUrl(openCandidates.find(candidate => /^https?:\/\//i.test(candidate)) || openCandidates[0]);
         if (!webLink) throw new Error('Khong mo duoc link nhom Zalo.');
         await shell.openExternal(webLink);
         return {
@@ -994,7 +1001,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   });
   mainWindowRef = mainWindow;
@@ -1006,14 +1013,16 @@ function createWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url).catch(() => {});
+    const safeUrl = normalizeExternalUrl(url);
+    if (safeUrl) shell.openExternal(safeUrl).catch(() => {});
     return { action: 'deny' };
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('file://')) {
       event.preventDefault();
-      shell.openExternal(url).catch(() => {});
+      const safeUrl = normalizeExternalUrl(url);
+      if (safeUrl) shell.openExternal(safeUrl).catch(() => {});
     }
   });
 

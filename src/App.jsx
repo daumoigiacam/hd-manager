@@ -90,7 +90,6 @@ import {
   indexedDBLocalPersistence,
   browserLocalPersistence,
   signInWithCustomToken,
-  signInAnonymously,
   signOut,
   onAuthStateChanged
 } from 'firebase/auth';
@@ -180,6 +179,7 @@ import {
 } from './services/smartCustomerOrdering.js';
 import {
   buildCustomerProductBillingSnapshot,
+  buildWarehouseDispatchOrderBillingSnapshot,
   calculateBillableAmount,
   isCustomerProductUnitAllowed,
   isSameBillingUnit,
@@ -193,6 +193,7 @@ import {
   identityCompleteRecovery,
   identityCompleteSetup,
   identityLogin,
+  identityRegisterCompany,
   identityLogout,
   identityRequestRecovery,
   identityRevokeDevices,
@@ -200,6 +201,9 @@ import {
   identityListDevices,
   identitySetBiometric,
   identityVerifyPin,
+  customerPortalBootstrap,
+  customerRedeemPoints,
+  requestAiGenerateContent,
 } from './services/identityCenter.js';
 
 const getCapacitorPlugin = (name) => {
@@ -871,10 +875,30 @@ const dispatchScreenBackRequest = () => {
   window.dispatchEvent(event);
   return isAppBackHandled(event);
 };
-const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
+const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
+// Native WebViews keep a limited listener set to stay stable on low-memory devices.
+// Supplementary data becomes realtime only while the related workspace is open.
+const NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
+  home: ['performance', 'holidays', 'assets', 'assetCostLogs'],
+  executive_dashboard: ['performance', 'holidays', 'assets', 'assetCostLogs'],
+  customers: ['customerLoans', 'customer_points', 'reward_catalog', 'promotions'],
+  debt: ['customerLoans'],
+  points: ['customer_points', 'reward_catalog'],
+  employees: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance'],
+  employee_reviews: ['employeeReviews', 'performance'],
+  payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance'],
+  asset_management: ['assets', 'assetCostLogs'],
+  finance: ['assetCostLogs', 'customerLoans'],
+  pricing: ['pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
+  report: ['performance', 'holidays', 'assets', 'assetCostLogs', 'pricingInputs'],
+  messages: ['zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
+  settings: ['reward_catalog', 'promotions', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'ai_reply_rules'],
+  customer_home: ['customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions']
+});
+const NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT = 8;
 const decodeFirestoreRestValue = (value = {}) => {
   if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
   if (Object.prototype.hasOwnProperty.call(value, 'integerValue')) return Number(value.integerValue || 0);
@@ -897,6 +921,11 @@ const decodeFirestoreRestFields = (fields = {}) => Object.fromEntries(
 );
 const PENDING_FIREBASE_WRITES_STORAGE_KEY = 'hd-manager-pending-firebase-writes-v1';
 const REALTIME_COLLECTION_CACHE_STORAGE_KEY = 'hd-manager-realtime-collection-cache-v1';
+const normalizeTenantStorageScope = (companyId = '') => `${companyId || ''}`.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+const getTenantStorageKey = (baseKey, companyId = '') => {
+  const scope = normalizeTenantStorageScope(companyId);
+  return scope ? `${baseKey}:${scope}` : '';
+};
 const REALTIME_COLLECTION_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const REALTIME_COLLECTION_CACHE_MAX_ITEMS = 120;
 const REALTIME_COLLECTION_CACHE_MAX_BYTES = 850000;
@@ -940,6 +969,7 @@ const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
 const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|image|photo|file|document|attachment|preview|raw|blob|html|qr|canvas|screenshot)/i;
 let realtimeCollectionCacheWriteTimer = null;
 let realtimeCollectionCacheWriteMap = null;
+let realtimeCollectionCacheWriteScope = '';
 let realtimeCollectionCacheDisabled = false;
 const isNativeAppShellRuntime = () => {
   try {
@@ -961,25 +991,57 @@ const cancelIdleScheduler = (timerId) => {
   if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(timerId);
   else window.clearTimeout(timerId);
 };
-const loadPendingFirebaseWrites = () => {
+const loadPendingFirebaseWrites = (companyId = '') => {
   if (typeof window === 'undefined') return [];
+  const storageKey = getTenantStorageKey(PENDING_FIREBASE_WRITES_STORAGE_KEY, companyId);
+  if (!storageKey) return [];
   try {
-    const raw = window.localStorage.getItem(PENDING_FIREBASE_WRITES_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(item => item?.collectionName && item?.documentId) : [];
+    const scopedWrites = Array.isArray(parsed) ? parsed : [];
+
+    // Migrate only legacy writes that already carry an unambiguous tenant id.
+    const legacyRaw = window.localStorage.getItem(PENDING_FIREBASE_WRITES_STORAGE_KEY);
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) : [];
+    const legacyWrites = Array.isArray(legacy) ? legacy : [];
+    const matchingLegacy = legacyWrites.filter(item => (
+      `${item?.companyId || item?.payload?.companyId || ''}`.trim() === `${companyId || ''}`.trim()
+    ));
+    const remainingLegacy = legacyWrites.filter(item => !matchingLegacy.includes(item));
+    if (matchingLegacy.length > 0) {
+      if (remainingLegacy.length > 0) {
+        window.localStorage.setItem(PENDING_FIREBASE_WRITES_STORAGE_KEY, JSON.stringify(remainingLegacy));
+      } else {
+        window.localStorage.removeItem(PENDING_FIREBASE_WRITES_STORAGE_KEY);
+      }
+    }
+
+    const merged = new Map();
+    [...scopedWrites, ...matchingLegacy].forEach(item => {
+      if (!item?.collectionName || !item?.documentId) return;
+      const key = item.key || `${item.collectionName}:${item.documentId}`;
+      merged.set(key, { ...item, key, companyId: `${companyId || ''}`.trim() });
+    });
+    const result = Array.from(merged.values());
+    if (matchingLegacy.length > 0) window.localStorage.setItem(storageKey, JSON.stringify(result.slice(-500)));
+    return result;
   } catch {
     return [];
   }
 };
-const savePendingFirebaseWrites = (writes = []) => {
+const savePendingFirebaseWrites = (writes = [], companyId = '') => {
   if (typeof window === 'undefined') return;
+  const storageKey = getTenantStorageKey(PENDING_FIREBASE_WRITES_STORAGE_KEY, companyId);
+  if (!storageKey) return;
   try {
-    const safeWrites = Array.isArray(writes) ? writes : [];
+    const safeWrites = (Array.isArray(writes) ? writes : []).filter(item => (
+      `${item?.companyId || item?.payload?.companyId || ''}`.trim() === `${companyId || ''}`.trim()
+    ));
     if (safeWrites.length === 0) {
-      window.localStorage.removeItem(PENDING_FIREBASE_WRITES_STORAGE_KEY);
+      window.localStorage.removeItem(storageKey);
       return;
     }
-    window.localStorage.setItem(PENDING_FIREBASE_WRITES_STORAGE_KEY, JSON.stringify(safeWrites.slice(-500)));
+    window.localStorage.setItem(storageKey, JSON.stringify(safeWrites.slice(-500)));
   } catch (error) {
     console.warn('Khong the luu hang cho dong bo Firebase:', error);
   }
@@ -1002,12 +1064,16 @@ const sanitizeRealtimeCacheValue = (value, depth = 0, maxItems = REALTIME_COLLEC
   }
   return value;
 };
-const loadRealtimeCollectionCache = () => {
+const loadRealtimeCollectionCache = (companyId = '') => {
   if (typeof window === 'undefined') return new Map();
+  const storageKey = getTenantStorageKey(REALTIME_COLLECTION_CACHE_STORAGE_KEY, companyId);
+  if (!storageKey) return new Map();
   try {
-    const raw = window.localStorage.getItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+    // The old global cache cannot prove tenant ownership, so never hydrate it.
+    window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (raw && raw.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
-      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+      window.localStorage.removeItem(storageKey);
       return new Map();
     }
     const parsed = raw ? JSON.parse(raw) : null;
@@ -1027,8 +1093,10 @@ const loadRealtimeCollectionCache = () => {
     return new Map();
   }
 };
-const writeRealtimeCollectionCacheNow = (cacheMap) => {
+const writeRealtimeCollectionCacheNow = (cacheMap, companyId = '') => {
   if (typeof window === 'undefined' || !(cacheMap instanceof Map) || realtimeCollectionCacheDisabled) return;
+  const storageKey = getTenantStorageKey(REALTIME_COLLECTION_CACHE_STORAGE_KEY, companyId);
+  if (!storageKey) return;
   try {
     const collections = {};
     cacheMap.forEach((value, name) => {
@@ -1056,38 +1124,44 @@ const writeRealtimeCollectionCacheNow = (cacheMap) => {
       });
     }
     if (payload.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
-      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+      window.localStorage.removeItem(storageKey);
       realtimeCollectionCacheDisabled = true;
       return;
     }
-    window.localStorage.setItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY, payload);
+    window.localStorage.setItem(storageKey, payload);
   } catch (error) {
     try {
-      window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
+      window.localStorage.removeItem(storageKey);
     } catch {}
     realtimeCollectionCacheDisabled = true;
     console.warn('Da tat cache realtime cuc bo vi thiet bi khong du dung luong:', error);
   }
 };
-const saveRealtimeCollectionCache = (cacheMap, options = {}) => {
+const saveRealtimeCollectionCache = (cacheMap, companyId = '', options = {}) => {
   if (typeof window === 'undefined' || !(cacheMap instanceof Map)) return;
+  const scope = normalizeTenantStorageScope(companyId);
+  if (!scope) return;
   if (options.immediate) {
     if (realtimeCollectionCacheWriteTimer) {
       cancelIdleScheduler(realtimeCollectionCacheWriteTimer);
       realtimeCollectionCacheWriteTimer = null;
     }
     realtimeCollectionCacheWriteMap = null;
-    writeRealtimeCollectionCacheNow(cacheMap);
+    realtimeCollectionCacheWriteScope = '';
+    writeRealtimeCollectionCacheNow(cacheMap, scope);
     return;
   }
   realtimeCollectionCacheWriteMap = new Map(cacheMap);
+  realtimeCollectionCacheWriteScope = scope;
   if (realtimeCollectionCacheWriteTimer) return;
   const scheduleIdle = getIdleScheduler();
   realtimeCollectionCacheWriteTimer = scheduleIdle(() => {
     const snapshot = realtimeCollectionCacheWriteMap;
+    const snapshotScope = realtimeCollectionCacheWriteScope;
     realtimeCollectionCacheWriteTimer = null;
     realtimeCollectionCacheWriteMap = null;
-    if (snapshot instanceof Map) writeRealtimeCollectionCacheNow(snapshot);
+    realtimeCollectionCacheWriteScope = '';
+    if (snapshot instanceof Map) writeRealtimeCollectionCacheNow(snapshot, snapshotScope);
   });
 };
 const getLocalDateInputValue = (date = new Date()) => {
@@ -2482,8 +2556,7 @@ const POSITION_SHIFT_DEFAULTS = {
   'Chủ doanh nghiệp': { shiftName: 'Điều hành linh hoạt', shiftStart: '08:00', shiftEnd: '17:00', graceMinutes: 0, missingAlertMinutes: 30 }
 };
 const APP_SESSION_KEY = 'hd-manager-session-v2';
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY?.trim() || '';
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_PROXY_ENABLED = import.meta.env.VITE_GEMINI_PROXY_ENABLED !== 'false';
 const WifiInfo = getCapacitorPlugin('WifiInfo');
 const MicrophonePermission = getCapacitorPlugin('MicrophonePermission');
 const ContactPicker = getCapacitorPlugin('ContactPicker');
@@ -3806,12 +3879,9 @@ const DEFAULT_PAYOS_API_BASE_URL = 'https://hd-manager-c5839.web.app';
 const getPayosApiBaseUrl = () => {
   const envBaseUrl = `${import.meta.env.VITE_SEPAY_API_BASE_URL || import.meta.env.VITE_PAYOS_API_BASE_URL || ''}`.trim();
   if (envBaseUrl) return envBaseUrl.replace(/\/+$/, '');
-  if (typeof window === 'undefined') return '';
-  const origin = `${window.location?.origin || ''}`.trim();
-  const isLocalAppOrigin = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(origin)
-    || /^capacitor:\/\//i.test(origin)
-    || /^file:\/\//i.test(origin);
-  return isLocalAppOrigin ? DEFAULT_PAYOS_API_BASE_URL : '';
+  // The VPS may host another API at /api. Use the Firebase Hosting rewrite
+  // explicitly so payment requests cannot be routed to an unrelated backend.
+  return DEFAULT_PAYOS_API_BASE_URL;
 };
 const PAYOS_API_BASE_URL = getPayosApiBaseUrl();
 const buildPayosApiUrl = (path = '') => `${PAYOS_API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
@@ -4625,7 +4695,19 @@ const getShareChannelLabel = (channel = 'native') => {
     return 'web';
 };
 
-const buildGeminiGenerateUrl = () => `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+const requestGeminiGenerateContent = async (request) => {
+  if (!GEMINI_PROXY_ENABLED) {
+    throw new Error('Dịch vụ AI đang được tắt trong cấu hình ứng dụng.');
+  }
+  const firebaseUser = auth?.currentUser;
+  if (!firebaseUser) {
+    const error = new Error('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để sử dụng AI.');
+    error.code = 'auth_required';
+    throw error;
+  }
+  const idToken = await firebaseUser.getIdToken();
+  return requestAiGenerateContent({ idToken, appId, request });
+};
 
 const normalizeLookupText = (value = '') => `${value}`
   .normalize('NFD')
@@ -7081,7 +7163,7 @@ const BACKUP_COLLECTION_LABELS = {
 };
 
 const RESET_DATA_SCOPE_OPTIONS = [
-  { id: 'customers', label: 'Khách hàng', description: 'Hồ sơ khách, chi nhánh, tài khoản khách và dữ liệu điểm/nợ liên quan', collections: ['customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'bankAccounts'] },
+  { id: 'customers', label: 'Khách hàng', description: 'Hồ sơ khách, chi nhánh và dữ liệu điểm/nợ liên quan', collections: ['customers', 'customer_cart', 'customer_points', 'customerLoans', 'bankAccounts'] },
   { id: 'products', label: 'Sản phẩm', description: 'Danh mục sản phẩm và nhóm hàng', collections: ['products'] },
   { id: 'pricing', label: 'Giá cả', description: 'Bảng giá, định mức hao hụt, biên lợi nhuận', collections: ['pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'] },
   { id: 'orders', label: 'Đơn hàng / công nợ', description: 'Hóa đơn bán hàng, thu tiền, giao dịch ngân hàng', collections: ['orders', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations'] },
@@ -7541,9 +7623,8 @@ const requestVehicleDocumentDraftFromLocalOcr = async (documents = []) => {
 const requestVehicleDocumentDraftFromGemini = async (documents = []) => {
   const validDocuments = documents.filter(item => item?.file);
   if (!validDocuments.length) throw new Error('Chưa chọn ảnh đăng ký hoặc đăng kiểm xe.');
-  if (!GEMINI_API_KEY) throw new Error('Chưa cấu hình AI để đọc ảnh giấy tờ xe. Bạn vẫn có thể tải ảnh lên và nhập tay.');
+  if (!GEMINI_PROXY_ENABLED) throw new Error('Chưa cấu hình AI để đọc ảnh giấy tờ xe. Bạn vẫn có thể tải ảnh lên và nhập tay.');
 
-  const url = buildGeminiGenerateUrl();
   const inlineDocuments = await Promise.all(validDocuments.map(async item => ({
     type: item.type,
     inlineData: await readFileAsGeminiInlineData(item.file)
@@ -7562,22 +7643,18 @@ const requestVehicleDocumentDraftFromGemini = async (documents = []) => {
 
   let response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            ...inlineDocuments.flatMap(item => ([
-              { text: item.type === 'registration' ? 'Ảnh giấy đăng ký xe:' : 'Ảnh giấy đăng kiểm xe:' },
-              { inlineData: { mimeType: item.inlineData.mimeType, data: item.inlineData.data } }
-            ]))
-          ]
-        }],
-        generationConfig: { responseMimeType: 'application/json' }
-      })
+    response = await requestGeminiGenerateContent({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          ...inlineDocuments.flatMap(item => ([
+            { text: item.type === 'registration' ? 'Ảnh giấy đăng ký xe:' : 'Ảnh giấy đăng kiểm xe:' },
+            { inlineData: { mimeType: item.inlineData.mimeType, data: item.inlineData.data } }
+          ]))
+        ]
+      }],
+      generationConfig: { responseMimeType: 'application/json' }
     });
   } catch {
     throw new Error('Không thể kết nối AI để đọc ảnh giấy tờ xe.');
@@ -7601,14 +7678,13 @@ const requestVehicleDocumentDraftFromGemini = async (documents = []) => {
 };
 
 const requestNotebookOrderDraftsFromGemini = async (file) => {
-  if (!GEMINI_API_KEY) {
+  if (!GEMINI_PROXY_ENABLED) {
       throw new Error('permission_denied');
   }
 
   const inlineData = await readFileAsGeminiInlineData(file);
   const customerOptions = [];
   const productOptions = [];
-  const url = buildGeminiGenerateUrl();
   const prompt = [
       '',
       '',
@@ -7635,21 +7711,17 @@ const requestNotebookOrderDraftsFromGemini = async (file) => {
 
   let response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: warehouseVoicePrompt },
-            { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json'
-        }
-      })
+    response = await requestGeminiGenerateContent({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: warehouseVoicePrompt },
+          { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: 'application/json'
+      }
     });
   } catch (error) {
       throw new Error('permission_denied');
@@ -7680,12 +7752,11 @@ const requestNotebookOrderDraftsFromGemini = async (file) => {
 };
 
 const requestWarehouseDispatchDraftFromGemini = async (audioBlob, context = {}) => {
-  if (!GEMINI_API_KEY) {
+  if (!GEMINI_PROXY_ENABLED) {
       throw new Error('permission_denied');
   }
 
   const inlineData = await readBlobAsGeminiInlineData(audioBlob, 'audio/webm');
-  const url = buildGeminiGenerateUrl();
   const customerOptions = Array.isArray(context?.customers) ? context.customers.map((item) => `${item || ''}`.trim()).filter(Boolean).slice(0, 80) : [];
   const productOptions = Array.isArray(context?.products) ? context.products.map((item) => `${item || ''}`.trim()).filter(Boolean).slice(0, 120) : [];
   const orderLineOptions = Array.isArray(context?.orderLines) ? context.orderLines.map((item) => `${item || ''}`.trim()).filter(Boolean).slice(0, 160) : [];
@@ -7723,22 +7794,18 @@ const requestWarehouseDispatchDraftFromGemini = async (audioBlob, context = {}) 
 
   let response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: warehouseVoicePrompt },
-            { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0
-        }
-      })
+    response = await requestGeminiGenerateContent({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: warehouseVoicePrompt },
+          { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        temperature: 0
+      }
     });
   } catch (error) {
       throw new Error('permission_denied');
@@ -7802,30 +7869,25 @@ const buildOrderRequestBatchVoicePrompt = (context = {}) => {
 };
 
 const requestOrderRequestDraftFromGeminiTranscript = async (transcript, context = {}) => {
-  if (!GEMINI_API_KEY) {
+  if (!GEMINI_PROXY_ENABLED) {
     throw new Error('Chưa cấu hình Gemini API key cho nhập giọng nói.');
   }
 
-  const url = buildGeminiGenerateUrl();
   const prompt = buildOrderRequestBatchVoicePrompt(context);
 
   let response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { text: `Câu nói cần xử lý: ${transcript}` }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json'
-        }
-      })
+    response = await requestGeminiGenerateContent({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { text: `Câu nói cần xử lý: ${transcript}` }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: 'application/json'
+      }
     });
   } catch (error) {
     throw new Error('Không kết nối được tới Gemini để đọc giọng nói. Bạn hãy kiểm tra mạng rồi thử lại.');
@@ -7854,31 +7916,26 @@ const requestOrderRequestDraftFromGeminiTranscript = async (transcript, context 
 };
 
 const requestOrderRequestDraftFromGeminiAudio = async (audioBlob, context = {}) => {
-  if (!GEMINI_API_KEY) {
+  if (!GEMINI_PROXY_ENABLED) {
     throw new Error('Chưa cấu hình Gemini API key cho nhập giọng nói.');
   }
 
   const inlineData = await readBlobAsGeminiInlineData(audioBlob, 'audio/webm');
-  const url = buildGeminiGenerateUrl();
   const prompt = buildOrderRequestBatchVoicePrompt(context);
 
   let response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json'
-        }
-      })
+    response = await requestGeminiGenerateContent({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: inlineData.mimeType, data: inlineData.data } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: 'application/json'
+      }
     });
   } catch (error) {
     throw new Error('Không kết nối được tới Gemini để đọc ghi âm. Bạn hãy kiểm tra mạng rồi thử lại.');
@@ -11264,7 +11321,7 @@ function MissingFirebaseError() {
 }
 
 function SmartAIAssistant({ employee, company, activeTab, customers, orders, expenses, employees = [], attendance = {}, holidays = [], products = [] }) {
-  const hasCloudAi = Boolean(GEMINI_API_KEY);
+  const hasCloudAi = GEMINI_PROXY_ENABLED;
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([{ role: 'model', text: `Chào ${employee?.name || 'bạn'}! Mình là Trợ lý AI của công ty. Bạn cần hỗ trợ phân tích số liệu, hướng dẫn sử dụng app hay tư vấn công việc hôm nay?` }]);
   const [input, setInput] = useState('');
@@ -11303,8 +11360,6 @@ Hãy trả lời ngắn gọn, hữu ích, đúng nghiệp vụ, ưu tiên hư�
       return;
     }
 
-    const url = buildGeminiGenerateUrl();
-    
     const payload = {
       contents: newMessages.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: [{ text: m.text }] })),
       systemInstruction: { parts: [{ text: contextStr }] }
@@ -11316,7 +11371,7 @@ Hãy trả lời ngắn gọn, hữu ích, đúng nghiệp vụ, ưu tiên hư�
 
     while (attempt < 6) {
       try {
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const res = await requestGeminiGenerateContent(payload);
         if (!res.ok) throw new Error('API Error');
         const data = await res.json();
         aiResponseText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Mình chưa hiểu rõ ý bạn, hãy thử diễn đạt lại nhé.";
@@ -11596,28 +11651,33 @@ export default function App() {
   const orderCreateInFlightRef = useRef(new Set());
   const orderRequestCreateInFlightRef = useRef(new Set());
   const customerProductPreferenceCacheRef = useRef(new Map());
+  const pointRedemptionRequestRef = useRef(new Map());
   const refreshCollectionsInFlightRef = useRef(false);
-  const pendingFirebaseWritesRef = useRef(loadPendingFirebaseWrites());
+  const activeTenantScopeRef = useRef('');
+  const pendingFirebaseWritesRef = useRef([]);
   const recentLocalWritesRef = useRef(new Map());
   const recentLocalDeletesRef = useRef(new Map());
   const lastRealtimeSnapshotAtRef = useRef(new Map());
-  const lastStableCollectionDataRef = useRef(loadRealtimeCollectionCache());
+  const lastStableCollectionDataRef = useRef(new Map());
   const lastRealtimeStatusUpdateAtRef = useRef(0);
   const lastCriticalRefreshAtRef = useRef(0);
   const lastFirestoreInternalRefreshAtRef = useRef(0);
   const autoBackupInFlightRef = useRef(new Set());
   const realtimeCachePersistTimerRef = useRef(null);
   const forceRefreshCollectionRef = useRef(() => Promise.resolve(false));
+  const activateNativeForegroundRealtimeRef = useRef(() => () => {});
   const collectionRefreshTimersRef = useRef(new Map());
   const collectionRefreshLastScheduledAtRef = useRef(new Map());
   const realtimeUnsubscribersRef = useRef([]);
   const realtimeListenerStartTimersRef = useRef([]);
   const realtimeRecoveringCollectionsRef = useRef(new Map());
   const lastFirestoreWriteCollectionsRef = useRef([]);
-  const pendingFirebaseFlushInFlightRef = useRef(false);
+  // A retry belongs to its tenant. A slow retry for company A must never block
+  // company B after an account switch in the same app session.
+  const pendingFirebaseFlushInFlightRef = useRef(new Set());
+  const pendingFirebaseWritePromisesRef = useRef(new Map());
   const restQuotaBlockedUntilRef = useRef(0);
   const firestoreNetworkEnableRef = useRef({ inFlight: false, lastAt: 0 });
-  const anonymousBootstrapAllowedRef = useRef(false);
   const firebaseAuthMutationQueueRef = useRef(Promise.resolve());
   const runFirebaseAuthMutation = (operation) => {
     const task = firebaseAuthMutationQueueRef.current
@@ -11642,6 +11702,19 @@ export default function App() {
   );
   const isCoreDataLoaded = isInitialDataLoaded;
   const isLoginDataLoaded = Boolean(loadedCollections.companies && loadedCollections.employees);
+
+  useEffect(() => {
+    const companyId = `${currentUser?.companyId || ''}`.trim();
+    if (activeTenantScopeRef.current === companyId) return;
+    activeTenantScopeRef.current = companyId;
+    pendingFirebaseWritesRef.current = companyId ? loadPendingFirebaseWrites(companyId) : [];
+    lastStableCollectionDataRef.current = companyId ? loadRealtimeCollectionCache(companyId) : new Map();
+    recentLocalWritesRef.current.clear();
+    recentLocalDeletesRef.current.clear();
+    lastRealtimeSnapshotAtRef.current.clear();
+    setPendingFirebaseWriteCount(pendingFirebaseWritesRef.current.length);
+    setLoadedCollections({});
+  }, [currentUser?.companyId]);
 
   useEffect(() => {
     recordStartupEvent('app.component.mounted', {
@@ -11684,18 +11757,22 @@ export default function App() {
   }, [isInitialDataLoaded]);
 
   const persistPendingFirebaseWrites = (writes = []) => {
-    const safeWrites = Array.isArray(writes) ? writes : [];
+    const companyId = activeTenantScopeRef.current;
+    const safeWrites = (Array.isArray(writes) ? writes : []).filter(item => item?.companyId === companyId);
     pendingFirebaseWritesRef.current = safeWrites;
-    savePendingFirebaseWrites(safeWrites);
+    savePendingFirebaseWrites(safeWrites, companyId);
     setPendingFirebaseWriteCount(safeWrites.length);
   };
 
   const enqueuePendingFirebaseWrite = ({ collectionName, documentId, payload, options = {}, error = null }) => {
+    const companyId = activeTenantScopeRef.current;
+    if (!companyId) throw new Error('Khong the xep hang ghi du lieu khi chua xac dinh cong ty.');
     const now = new Date().toISOString();
     const key = `${collectionName}:${documentId}`;
     const previousWrite = pendingFirebaseWritesRef.current.find(item => item?.key === key);
     const nextWrite = {
       key,
+      companyId,
       collectionName,
       documentId,
       payload,
@@ -11719,7 +11796,7 @@ export default function App() {
       lastAt: now,
       error: pendingMessage
     });
-    return { queued: true, id: documentId };
+    return { queued: true, id: documentId, companyId };
   };
 
   const rememberRecentLocalWrite = (collectionName, documentId, payload = {}, ttlMs = 45000) => {
@@ -11826,7 +11903,7 @@ export default function App() {
       }
     }
 
-    saveRealtimeCollectionCache(lastStableCollectionDataRef.current);
+    saveRealtimeCollectionCache(lastStableCollectionDataRef.current, activeTenantScopeRef.current);
   };
 
   const getLocalCollectionBinding = (collectionName) => {
@@ -11842,7 +11919,6 @@ export default function App() {
       advances: [setRawAdvanceRequests],
       performance: [setRawPerformance, true],
       customers: [setRawCustomers],
-      customer_accounts: [setRawCustomerAccounts],
       customer_cart: [setRawCustomerCart],
       customer_points: [setRawCustomerPoints],
       customerLoans: [setRawCustomerLoans],
@@ -12019,6 +12095,116 @@ export default function App() {
     collectionRefreshTimersRef.current.set(collectionName, nextTimers);
   };
 
+  const flushPendingFirebaseWriteNow = (collectionName, documentId, timeoutMs = 12000, expectedCompanyId = activeTenantScopeRef.current) => {
+    const companyId = `${expectedCompanyId || ''}`.trim();
+    if (!companyId) {
+      const error = new Error('Khong the dong bo du lieu khi chua xac dinh cong ty.');
+      error.code = 'firestore/missing-tenant';
+      return Promise.reject(error);
+    }
+    const key = `${collectionName}:${documentId}`;
+    const inFlightKey = `${normalizeTenantStorageScope(companyId)}:${key}`;
+    const inFlightPromise = pendingFirebaseWritePromisesRef.current.get(inFlightKey);
+    if (inFlightPromise) return inFlightPromise;
+
+    const task = (async () => {
+      const pendingWrite = pendingFirebaseWritesRef.current.find(item => (
+        item?.key === key && `${item?.companyId || ''}`.trim() === companyId
+      ));
+      if (!pendingWrite) return { confirmed: true, id: documentId };
+      if (activeTenantScopeRef.current !== companyId) {
+        const error = new Error('Phien cong ty da thay doi, lenh dong bo cu duoc giu an toan cho dung tai khoan.');
+        error.code = 'firestore/tenant-scope-changed';
+        throw error;
+      }
+
+      const documentRef = doc(
+        db,
+        'artifacts',
+        appId,
+        'public',
+        'data',
+        pendingWrite.collectionName,
+        pendingWrite.documentId
+      );
+
+      try {
+        await withTimeout(
+          setDoc(documentRef, pendingWrite.payload || {}, pendingWrite.options || {}),
+          timeoutMs,
+          'Firebase phan hoi cham khi xac nhan dong bo du lieu.'
+        );
+        const nextWrites = pendingFirebaseWritesRef.current.filter(item => !(
+          item?.key === key && `${item?.companyId || ''}`.trim() === companyId
+        ));
+        if (activeTenantScopeRef.current === companyId) {
+          persistPendingFirebaseWrites(nextWrites);
+          scheduleCollectionRefresh(pendingWrite.collectionName, [300, 1800]);
+          setRealtimeStatus({
+            state: 'online',
+            collection: pendingWrite.collectionName,
+            lastAt: new Date().toISOString(),
+            error: ''
+          });
+        } else {
+          const scopedWrites = loadPendingFirebaseWrites(companyId).filter(item => item?.key !== key);
+          savePendingFirebaseWrites(scopedWrites, companyId);
+        }
+        return { confirmed: true, id: pendingWrite.documentId };
+      } catch (error) {
+        if (error?.code === 'firestore/tenant-scope-changed') throw error;
+        const now = new Date().toISOString();
+        const sourceWrites = activeTenantScopeRef.current === companyId
+          ? pendingFirebaseWritesRef.current
+          : loadPendingFirebaseWrites(companyId);
+        const nextWrites = sourceWrites.map(item => (
+          item?.key === key && `${item?.companyId || ''}`.trim() === companyId ? {
+          ...item,
+          attempts: (item.attempts || 0) + 1,
+          updatedAt: now,
+          lastError: getFriendlyFirebaseErrorMessage(error, '').slice(0, 500)
+          } : item
+        ));
+        if (activeTenantScopeRef.current === companyId) {
+          persistPendingFirebaseWrites(nextWrites);
+          setRealtimeStatus({
+            state: 'queued',
+            collection: pendingWrite.collectionName,
+            lastAt: now,
+            error: `Con ${nextWrites.length} thao tac chua duoc Firebase xac nhan.`
+          });
+        } else {
+          savePendingFirebaseWrites(nextWrites, companyId);
+        }
+        throw error;
+      }
+    })().finally(() => {
+      pendingFirebaseWritePromisesRef.current.delete(inFlightKey);
+    });
+
+    pendingFirebaseWritePromisesRef.current.set(inFlightKey, task);
+    return task;
+  };
+
+  const requireSharedWriteConfirmation = async (writeResult, collectionName, documentId) => {
+    if (!writeResult?.queued) return writeResult;
+    try {
+      return await flushPendingFirebaseWriteNow(
+        collectionName,
+        documentId,
+        12000,
+        writeResult?.companyId || activeTenantScopeRef.current
+      );
+    } catch (error) {
+      const syncError = new Error(
+        'Chua xac nhan duoc du lieu tren may chu. App da giu thao tac trong hang cho; vui long giu ket noi mang va thu lai sau khi dong bo xong.'
+      );
+      syncError.code = 'firestore/sync-pending';
+      syncError.cause = error;
+      throw syncError;
+    }
+  };
+
   const saveDataDocument = async (collectionName, documentId, payload, options = {}, timeoutMs = 4500, timeoutMessage = 'Firebase SDK phản hồi chậm') => {
     const activeCompanyId = currentUser?.companyId || currentCompany?.id || '';
     const isCompanyScopedCollection = COMPANY_SCOPED_DATA_COLLECTION_NAMES.has(collectionName);
@@ -12157,53 +12343,28 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!firebaseUser || !isFirebaseConfigured || pendingFirebaseWriteCount === 0) return;
+    const companyId = `${currentUser?.companyId || ''}`.trim();
+    if (!firebaseUser || !isFirebaseConfigured || !companyId || pendingFirebaseWriteCount === 0) return;
     let cancelled = false;
 
     const flushPendingWrites = async () => {
-      if (pendingFirebaseFlushInFlightRef.current || pendingFirebaseWritesRef.current.length === 0) return;
+      if (pendingFirebaseFlushInFlightRef.current.has(companyId) || pendingFirebaseWritesRef.current.length === 0) return;
       if (Date.now() < restQuotaBlockedUntilRef.current) return;
-      pendingFirebaseFlushInFlightRef.current = true;
+      pendingFirebaseFlushInFlightRef.current.add(companyId);
       try {
-        const batch = pendingFirebaseWritesRef.current.slice(0, 8);
+        const batch = pendingFirebaseWritesRef.current
+          .filter(write => write?.companyId === companyId)
+          .slice(0, 8);
         for (const write of batch) {
           if (cancelled) break;
-          const documentRef = doc(db, 'artifacts', appId, 'public', 'data', write.collectionName, write.documentId);
           try {
-            await withTimeout(
-              setDoc(documentRef, write.payload || {}, write.options || {}),
-              8000,
-              'Firebase SDK phản hồi chậm khi đồng bộ hàng chờ.'
-            );
-            const nextWrites = pendingFirebaseWritesRef.current.filter(item => item?.key !== write.key);
-            persistPendingFirebaseWrites(nextWrites);
-            scheduleCollectionRefresh(write.collectionName, [300, 1800]);
-            setRealtimeStatus({
-              state: 'online',
-              collection: write.collectionName,
-              lastAt: new Date().toISOString(),
-              error: ''
-            });
+            await flushPendingFirebaseWriteNow(write.collectionName, write.documentId, 8000, companyId);
           } catch (error) {
-            const now = new Date().toISOString();
-            const nextWrites = pendingFirebaseWritesRef.current.map(item => item?.key === write.key ? {
-              ...item,
-              attempts: (item.attempts || 0) + 1,
-              updatedAt: now,
-              lastError: getFriendlyFirebaseErrorMessage(error, '').slice(0, 500)
-            } : item);
-            persistPendingFirebaseWrites(nextWrites);
-            setRealtimeStatus({
-              state: 'queued',
-              collection: write.collectionName,
-              lastAt: now,
-              error: `Còn ${nextWrites.length} lệnh đang chờ Firebase đồng bộ lại.`
-            });
             if (isFirebaseQuotaError(error)) break;
           }
         }
       } finally {
-        pendingFirebaseFlushInFlightRef.current = false;
+        pendingFirebaseFlushInFlightRef.current.delete(companyId);
       }
     };
 
@@ -12213,7 +12374,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [firebaseUser?.uid, pendingFirebaseWriteCount]);
+  }, [firebaseUser?.uid, currentUser?.companyId, pendingFirebaseWriteCount]);
 
   useEffect(() => {
     saveAppSession({ currentUser, currentCompany, activeTab });
@@ -12345,11 +12506,17 @@ export default function App() {
         }
         return;
       }
-      if (u.isAnonymous && !anonymousBootstrapAllowedRef.current && persistedSession.currentUser) {
+      if (u.isAnonymous) {
         clearAppSession();
+        setFirebaseUser(null);
         setCurrentUser(null);
         setCurrentCompany(null);
         setActiveTab('home');
+        setIsFirebaseLoading(false);
+        void runFirebaseAuthMutation(() => signOut(auth)).catch(error => {
+          console.warn('Khong the xoa phien Firebase an danh cu:', error);
+        });
+        return;
       }
       setFirebaseUser(u);
       await restoreIdentityFromClaims(u);
@@ -12390,7 +12557,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!firebaseUser || !isFirebaseConfigured) return;
+    const tenantCompanyId = `${currentUser?.companyId || ''}`.trim();
+    if (!firebaseUser || !isFirebaseConfigured || !tenantCompanyId) return;
+    const customerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
+    const sessionCustomerId = `${currentUser?.customerId || ''}`.trim();
+    const customerOwnedCollections = new Set([
+      'bankAccounts',
+      'customer_cart',
+      'customer_points',
+      'customerLoans',
+      'notifications',
+      'orders',
+      'orderRequests',
+      'warehouseDispatches',
+      'deliveryReports',
+      'payments',
+      'messages',
+      'order_requests',
+    ]);
+    const customerVisibleCollections = new Set([
+      'customers',
+      ...customerOwnedCollections,
+    ]);
     let cancelled = false;
     let refreshTimer = null;
     realtimeListenerStartTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
@@ -12406,7 +12594,7 @@ export default function App() {
     setRealtimeStatus({ state: 'connecting', collection: '', lastAt: new Date().toISOString(), error: '' });
     recordStartupEvent('background.sync.started', {
       coreCollections: CORE_DATA_COLLECTION_NAMES,
-      cachedCollections: Object.keys(lastStableCollectionDataRef.current || {}).length,
+      cachedCollections: lastStableCollectionDataRef.current?.size || 0,
     });
 
     const normalizeFirestoreSnapshotData = (data = {}) => Object.fromEntries(
@@ -12415,6 +12603,42 @@ export default function App() {
         value && typeof value.toDate === 'function' ? value.toDate().toISOString() : value
       ])
     );
+
+    const getTenantCollectionSource = (colName) => {
+      if (colName === 'companies') {
+        return doc(db, 'artifacts', appId, 'public', 'data', 'companies', tenantCompanyId);
+      }
+      if (!customerSession) {
+        return firebaseQuery(
+          collection(db, 'artifacts', appId, 'public', 'data', colName),
+          firebaseWhere('companyId', '==', tenantCompanyId)
+        );
+      }
+      if (colName === 'customers' && sessionCustomerId) {
+        return doc(db, 'artifacts', appId, 'public', 'data', 'customers', sessionCustomerId);
+      }
+      if (customerOwnedCollections.has(colName) && sessionCustomerId) {
+        return firebaseQuery(
+          collection(db, 'artifacts', appId, 'public', 'data', colName),
+          firebaseWhere('companyId', '==', tenantCompanyId),
+          firebaseWhere('customerId', '==', sessionCustomerId)
+        );
+      }
+      return null;
+    };
+
+    const getSnapshotItems = (snapshot) => {
+      if (Array.isArray(snapshot?.docs)) {
+        return snapshot.docs.map(snapshotDoc => ({
+          id: snapshotDoc.id,
+          data: normalizeFirestoreSnapshotData(snapshotDoc.data())
+        }));
+      }
+      if (snapshot?.exists?.()) {
+        return [{ id: snapshot.id, data: normalizeFirestoreSnapshotData(snapshot.data()) }];
+      }
+      return [];
+    };
 
     const updateRealtimeStatusLightly = (nextStatus = {}, options = {}) => {
       const nowMs = Date.now();
@@ -12459,6 +12683,77 @@ export default function App() {
       if (loadedCollectionMarkTimer) return;
       loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
     };
+
+    if (customerSession && sessionCustomerId) {
+      const bootstrapCacheKey = `hd-customer-portal-bootstrap-v1:${appId}:${tenantCompanyId}:${sessionCustomerId}`;
+      const applyCustomerBootstrap = (payload = {}, { cache = false } = {}) => {
+        if (cancelled || !payload?.company?.id) return false;
+        const customerAccount = payload.customerAccount || null;
+        setRawCompanies([payload.company]);
+        setCurrentCompany(prev => ({ ...(prev || {}), ...payload.company }));
+        setRawProducts(Array.isArray(payload.products) ? payload.products : []);
+        setRawRewardCatalog(Array.isArray(payload.rewardCatalog) ? payload.rewardCatalog : []);
+        setRawPromotions(Array.isArray(payload.promotions) ? payload.promotions : []);
+        if (payload.customer?.id) setRawCustomers([payload.customer]);
+        setRawCustomerAccounts(customerAccount ? [customerAccount] : []);
+        ['companies', 'products', 'reward_catalog', 'promotions'].forEach(markCollectionLoaded);
+        if (!cache) {
+          try {
+            window.localStorage.setItem(bootstrapCacheKey, JSON.stringify({
+              company: payload.company,
+              customer: payload.customer || null,
+              customerAccount,
+              products: Array.isArray(payload.products) ? payload.products : [],
+              rewardCatalog: Array.isArray(payload.rewardCatalog) ? payload.rewardCatalog : [],
+              promotions: Array.isArray(payload.promotions) ? payload.promotions : [],
+              cachedAt: new Date().toISOString(),
+            }));
+          } catch {
+            // The authenticated session can continue without an offline catalog cache.
+          }
+        }
+        return true;
+      };
+
+      let hasCachedBootstrap = false;
+      try {
+        const cachedPayload = JSON.parse(window.localStorage.getItem(bootstrapCacheKey) || 'null');
+        hasCachedBootstrap = applyCustomerBootstrap(cachedPayload, { cache: true });
+      } catch {
+        window.localStorage.removeItem(bootstrapCacheKey);
+      }
+
+      void (async () => {
+        try {
+          const idToken = await firebaseUser.getIdToken();
+          const payload = await customerPortalBootstrap({ idToken, appId });
+          if (!applyCustomerBootstrap(payload)) return;
+          updateRealtimeStatusLightly({
+            state: 'online',
+            collection: 'customer_portal_bootstrap',
+            lastAt: new Date().toISOString(),
+            error: ''
+          }, { force: true });
+        } catch (error) {
+          if (cancelled) return;
+          if (!hasCachedBootstrap) {
+            setRawCompanies([{ id: tenantCompanyId, name: '' }]);
+            markCollectionLoaded('companies');
+          }
+          updateRealtimeStatusLightly({
+            state: hasCachedBootstrap ? 'offline' : 'error',
+            collection: 'customer_portal_bootstrap',
+            lastAt: new Date().toISOString(),
+            error: getFriendlyFirebaseErrorMessage(
+              error,
+              hasCachedBootstrap
+                ? 'Dang dung danh muc da luu va se dong bo lai khi co mang.'
+                : 'Chua tai duoc danh muc danh cho khach hang.'
+            )
+          }, { force: true });
+        }
+      })();
+    }
 
     const mergePendingArrayItems = (colName, arr = []) => {
       const pendingWrites = pendingFirebaseWritesRef.current
@@ -12525,7 +12820,7 @@ export default function App() {
       if (typeof window === 'undefined' || realtimeCachePersistTimerRef.current) return;
       realtimeCachePersistTimerRef.current = window.setTimeout(() => {
         realtimeCachePersistTimerRef.current = null;
-        saveRealtimeCollectionCache(lastStableCollectionDataRef.current);
+        saveRealtimeCollectionCache(lastStableCollectionDataRef.current, tenantCompanyId);
       }, 900);
     };
 
@@ -12623,52 +12918,26 @@ export default function App() {
         // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
         return;
       }
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 9000);
-      let tokenTimeoutId;
       try {
-        const token = await Promise.race([
-          firebaseUser.getIdToken(),
-          new Promise((_, reject) => {
-            tokenTimeoutId = window.setTimeout(() => reject(new Error('Firebase token timeout')), 5000);
-          })
-        ]);
-        if (tokenTimeoutId) window.clearTimeout(tokenTimeoutId);
-        const projectId = activeFirebaseConfig?.projectId;
-        const apiKey = activeFirebaseConfig?.apiKey;
-        if (!projectId || !apiKey) throw new Error('Firebase config thiếu projectId hoặc apiKey.');
-        const restPath = [
-          'artifacts',
-          appId,
-          'public',
-          'data',
-          colName
-        ].map(part => encodeURIComponent(part)).join('/');
-        const docs = [];
-        let pageToken = '';
-        do {
-          const query = new URLSearchParams({
-            key: apiKey,
-            pageSize: '1000'
-          });
-          if (pageToken) query.set('pageToken', pageToken);
-          const response = await fetch(
-            `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${restPath}?${query.toString()}`,
-            { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal }
-          );
-          if (!response.ok) {
-            const detail = await response.text().catch(() => '');
-            throw new Error(`Firebase REST ${response.status}: ${detail.slice(0, 240)}`);
-          }
-          const payload = await response.json();
-          docs.push(...(Array.isArray(payload.documents) ? payload.documents : []));
-          pageToken = payload.nextPageToken || '';
-        } while (pageToken && !cancelled);
+        const source = getTenantCollectionSource(colName);
+        if (!source) {
+          markCollectionLoaded(colName);
+          return;
+        }
+        const snapshot = await withTimeout(
+          colName === 'companies' ? firebaseGetDoc(source) : firebaseGetDocs(source),
+          9000,
+          `Firebase read timeout: ${colName}`
+        );
         if (cancelled) return;
-        applyCollectionItems(colName, setFn, docs.map(d => ({
-          id: `${d.name || ''}`.split('/').pop(),
-          data: decodeFirestoreRestFields(d.fields || {})
-        })), isObject, parser, { source: 'rest', keepPreviousOnEmpty: !force });
+        applyCollectionItems(
+          colName,
+          setFn,
+          getSnapshotItems(snapshot),
+          isObject,
+          parser,
+          { source: 'query', keepPreviousOnEmpty: !force }
+        );
         updateRealtimeStatusLightly({
           state: 'online',
           collection: colName,
@@ -12699,13 +12968,10 @@ export default function App() {
             error: recoverableRead ? '' : getFriendlyFirebaseErrorMessage(error, `Không thể đồng bộ ${colName}.`)
           });
         }
-      } finally {
-        if (tokenTimeoutId) window.clearTimeout(tokenTimeoutId);
-        window.clearTimeout(timeoutId);
       }
     };
 
-    const collectionBindings = [
+    const allCollectionBindings = [
       ['companies', setRawCompanies],
       ['employees', setRawEmployees],
       ['employeeReviews', setRawEmployeeReviews],
@@ -12713,7 +12979,6 @@ export default function App() {
       ['payrollDebtCarryovers', setRawPayrollDebtCarryovers],
       ['payrollAutoLockPlans', setRawPayrollAutoLockPlans],
       ['customers', setRawCustomers],
-      ['customer_accounts', setRawCustomerAccounts],
       ['customer_cart', setRawCustomerCart],
       ['customer_points', setRawCustomerPoints],
       ['customerLoans', setRawCustomerLoans],
@@ -12756,6 +13021,16 @@ export default function App() {
         checkOut: data.checkOut ? new Date(data.checkOut) : null,
       })],
     ];
+    const collectionBindings = customerSession
+      ? allCollectionBindings.filter(([colName]) => customerVisibleCollections.has(colName))
+      : allCollectionBindings;
+
+    if (customerSession) {
+      // Customer accounts must never load the employee directory or financial
+      // configuration merely to satisfy the generic startup readiness gate.
+      setRawEmployees([]);
+      markCollectionLoaded('employees');
+    }
 
     const collectionBindingMap = new Map(collectionBindings.map(binding => [binding[0], binding]));
     forceRefreshCollectionRef.current = async (collectionName) => {
@@ -12795,6 +13070,7 @@ export default function App() {
     };
 
     const unsubscribeCollectionListeners = [];
+    const activeRealtimeCollectionListeners = new Map();
     const listenerStartTimers = [];
 
     const shouldLogRecoverableRealtimeError = (colName) => {
@@ -12805,19 +13081,37 @@ export default function App() {
       return true;
     };
 
-    const startCollectionListener = ([colName, setFn, isObject, parser]) => {
+    const stopCollectionListener = (colName) => {
+      const unsubscribe = activeRealtimeCollectionListeners.get(colName);
+      if (!unsubscribe) return false;
+      activeRealtimeCollectionListeners.delete(colName);
+      const index = unsubscribeCollectionListeners.indexOf(unsubscribe);
+      if (index >= 0) unsubscribeCollectionListeners.splice(index, 1);
       try {
-        const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
-        const unsubscribe = onSnapshot(
+        unsubscribe();
+      } catch (error) {
+        console.warn(`Khong the huy realtime listener ${colName}:`, error);
+      }
+      realtimeUnsubscribersRef.current = [...unsubscribeCollectionListeners];
+      return true;
+    };
+
+    const startCollectionListener = ([colName, setFn, isObject, parser]) => {
+      const existingListener = activeRealtimeCollectionListeners.get(colName);
+      if (existingListener) return existingListener;
+      try {
+        const collectionRef = getTenantCollectionSource(colName);
+        if (!collectionRef) {
+          markCollectionLoaded(colName);
+          return () => {};
+        }
+        const firestoreUnsubscribe = onSnapshot(
           collectionRef,
           (snapshot) => {
             if (cancelled) return;
             lastRealtimeSnapshotAtRef.current.set(colName, Date.now());
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
-            const docs = snapshot.docs.map(snapshotDoc => ({
-              id: snapshotDoc.id,
-              data: normalizeFirestoreSnapshotData(snapshotDoc.data())
-            }));
+            const docs = getSnapshotItems(snapshot);
             applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
               fromCache,
@@ -12855,8 +13149,10 @@ export default function App() {
             readCollection(colName, setFn, isObject, parser).catch(() => {});
           }
         );
+        const unsubscribe = () => firestoreUnsubscribe?.();
+        activeRealtimeCollectionListeners.set(colName, unsubscribe);
         unsubscribeCollectionListeners.push(unsubscribe);
-        realtimeUnsubscribersRef.current = unsubscribeCollectionListeners;
+        realtimeUnsubscribersRef.current = [...unsubscribeCollectionListeners];
         return unsubscribe;
       } catch (error) {
         console.error(`Cannot subscribe ${colName}:`, error);
@@ -12868,7 +13164,6 @@ export default function App() {
     const nativeRealtimeStartup = isNativeRuntime();
     const webInitialRealtimePriority = new Set([
       'customers',
-      'customer_accounts',
       'customer_points',
       'products',
       'orders',
@@ -12915,6 +13210,38 @@ export default function App() {
       'attendance'
     ]);
     const initialRealtimePriority = nativeRealtimeStartup ? nativeInitialRealtimePriority : webInitialRealtimePriority;
+    const nativeForegroundCollectionNames = new Set();
+    const activateNativeForegroundRealtimeCollections = (collectionNames = []) => {
+      if (!nativeRealtimeStartup) return () => {};
+      const requested = Array.isArray(collectionNames) ? collectionNames : [];
+      const nextCollectionNames = new Set(
+        requested
+          .filter(colName => collectionBindingMap.has(colName) && !nativeInitialRealtimePriority.has(colName))
+          .slice(0, NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT)
+      );
+
+      Array.from(nativeForegroundCollectionNames).forEach((colName) => {
+        if (nextCollectionNames.has(colName)) return;
+        nativeForegroundCollectionNames.delete(colName);
+        stopCollectionListener(colName);
+      });
+
+      nextCollectionNames.forEach((colName) => {
+        const binding = collectionBindingMap.get(colName);
+        if (!binding) return;
+        nativeForegroundCollectionNames.add(colName);
+        startCollectionListener(binding);
+      });
+
+      return () => {
+        Array.from(nextCollectionNames).forEach((colName) => {
+          if (!nativeForegroundCollectionNames.has(colName)) return;
+          nativeForegroundCollectionNames.delete(colName);
+          stopCollectionListener(colName);
+        });
+      };
+    };
+    activateNativeForegroundRealtimeRef.current = activateNativeForegroundRealtimeCollections;
     let priorityListenerIndex = 0;
     let deferredListenerIndex = 0;
     let readOnlyCollectionIndex = 0;
@@ -12967,10 +13294,11 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      activateNativeForegroundRealtimeRef.current = () => () => {};
       if (realtimeCachePersistTimerRef.current) {
         window.clearTimeout(realtimeCachePersistTimerRef.current);
         realtimeCachePersistTimerRef.current = null;
-        saveRealtimeCollectionCache(lastStableCollectionDataRef.current, { immediate: true });
+        saveRealtimeCollectionCache(lastStableCollectionDataRef.current, tenantCompanyId, { immediate: true });
       }
       if (loadedCollectionMarkTimer) {
         window.clearTimeout(loadedCollectionMarkTimer);
@@ -12995,7 +13323,27 @@ export default function App() {
       });
       collectionRefreshTimersRef.current.clear();
     };
-  }, [firebaseUser?.uid]);
+  }, [
+    firebaseUser?.uid,
+    currentUser?.accountId,
+    currentUser?.accountType,
+    currentUser?.companyId,
+    currentUser?.customerId,
+    currentUser?.id,
+    currentUser?.role,
+  ]);
+
+  useEffect(() => {
+    if (!isNativeRuntime() || !firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
+    const collectionNames = NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || [];
+    return activateNativeForegroundRealtimeRef.current(collectionNames);
+  }, [
+    activeTab,
+    firebaseUser?.uid,
+    currentUser?.accountType,
+    currentUser?.companyId,
+    currentUser?.customerId,
+  ]);
 
   useEffect(() => {
     if (!firebaseUser || !isFirebaseConfigured || typeof window === 'undefined') return undefined;
@@ -13536,25 +13884,10 @@ export default function App() {
   };
 
   const handleRegisterCompany = async (companyName, phone, password) => {
-    const registrationUser = firebaseUser || await getLoginFirebaseUser();
-    if (!registrationUser) return { success: false, message: "Lỗi kết nối máy chủ." };
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: "Vui lòng nhập số điện thoại hợp lệ." };
     const passwordError = validateAccountPasswordInput(password, password);
     if (passwordError) return { success: false, message: passwordError };
-    const exist = rawEmployees.find(e => isSameLoginPhone(e.phone, normalizedPhone));
-    if (exist) return { success: false, message: "Số điện thoại này đã được đăng ký!" };
-
-    let passwordHash;
-    try {
-      passwordHash = await hashAccountPassword(password);
-    } catch (error) {
-      console.error('Không thể tạo mật khẩu cho công ty:', error);
-      return { success: false, message: 'Thiết bị không hỗ trợ mã hóa mật khẩu an toàn.' };
-    }
-
-    const newCompanyId = `comp_${Date.now()}`;
-    const newEmpId = `emp_${Date.now()}`;
     const defaultCompanyPaymentSettings = {
       bankId: DEFAULT_INVOICE_TRANSFER_PROFILE.bankId,
       bankName: DEFAULT_INVOICE_TRANSFER_PROFILE.bankName,
@@ -13571,25 +13904,29 @@ export default function App() {
       salaryAdvancePercentByDepartment: normalizeCompanySalaryAdvancePercentByDepartment({}, DEFAULT_SALARY_ADVANCE_PERCENT),
       rolePermissions: DEFAULT_ROLE_PERMISSIONS
     };
-
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', newCompanyId), {
-      id: newCompanyId, name: companyName, ownerPhone: normalizedPhone, createdAt: getTodayString(), status: 'trial', expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-      ...defaultCompanyPaymentSettings
-    });
-
-    const adminData = {
-      id: newEmpId, companyId: newCompanyId, phone: normalizedPhone, name: 'Chủ doanh nghiệp', position: 'Chủ doanh nghiệp', role: 'super_admin', 
-      startDate: getTodayString(), probationDuration: 0, probationUnit: 'days', probationRate: 100,
-      basicSalary: 0, supportSalary: 0, responsibilitySalary: 0, experienceSalary: 0, experienceSalaryPeriod: 'months', commissionRate: 0, targetRevenue: 0, overtimeRate: 0, latePenaltyRate: 0,
-      password_hash: passwordHash,
-      passwordUpdatedAt: new Date().toISOString()
-    };
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', newEmpId), adminData);
-
-    const companyData = { id: newCompanyId, name: companyName, ownerPhone: normalizedPhone, createdAt: getTodayString(), status: 'trial', expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(), ...defaultCompanyPaymentSettings };
-    setRawCompanies(prev => [...prev.filter(company => company.id !== newCompanyId), companyData]);
-    setRawEmployees(prev => [...prev.filter(emp => emp.id !== newEmpId), adminData]);
-    return handleIdentityLogin(normalizedPhone, password);
+    try {
+      const session = await identityRegisterCompany({
+        companyName,
+        phone: normalizedPhone,
+        password,
+        appId,
+        companySettings: defaultCompanyPaymentSettings,
+      });
+      identitySetupPendingRef.current = Boolean(session.requiresSetup);
+      const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
+      if (!established.success) return established;
+      return {
+        success: true,
+        requiresSetup: Boolean(session.requiresSetup),
+        setup: session.setup || {},
+        identity: established.identity,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error?.message || 'Không thể tạo công ty an toàn. Vui lòng thử lại.',
+      };
+    }
   };
 
   const getLoginFirebaseUser = async () => {
@@ -13614,33 +13951,8 @@ export default function App() {
       logLoginStep('Firebase Auth reuse current user', { signedIn: true });
       return auth.currentUser;
     }
-    try {
-      const credential = await runFirebaseAuthMutation(async () => {
-        // Re-check inside the serialized mutation. A private custom-token login
-        // may have completed while this on-demand anonymous request was queued.
-        if (auth.currentUser) return { user: auth.currentUser, reused: true };
-        anonymousBootstrapAllowedRef.current = true;
-        return signInAnonymously(auth);
-      });
-      setFirebaseUser(credential.user);
-      setIsFirebaseLoading(false);
-      logLoginStep(
-        credential.reused ? 'Firebase Auth reuse queued user' : 'Firebase Auth anonymous success',
-        { signedIn: true, anonymous: Boolean(credential.user?.isAnonymous) }
-      );
-      return credential.user;
-    } catch (error) {
-      anonymousBootstrapAllowedRef.current = false;
-      console.error('Không thể khôi phục Firebase Auth trước khi đăng nhập:', error);
-      logLoginStep('Firebase Auth error', { error }, 'error');
-      setRealtimeStatus({
-        state: 'error',
-        collection: 'auth',
-        lastAt: new Date().toISOString(),
-        error: getFriendlyFirebaseErrorMessage(error, 'Không thể kết nối Firebase Auth để đăng nhập.')
-      });
-      return null;
-    }
+    logLoginStep('Firebase Auth has no authenticated user', { signedIn: false });
+    return null;
   };
 
   const readLoginCollectionsFromCloud = async () => {
@@ -13715,7 +14027,6 @@ export default function App() {
       signedIn: Boolean(credential.user),
       anonymous: Boolean(credential.user?.isAnonymous),
     });
-    anonymousBootstrapAllowedRef.current = false;
     setFirebaseUser(credential.user);
     setIsFirebaseLoading(false);
     const identity = session.identity;
@@ -14739,7 +15050,6 @@ export default function App() {
     const localCollectionSources = {
       employeeReviews,
       customers,
-      customer_accounts: customerAccounts,
       customer_cart: customerCart,
       customer_points: customerPoints,
       customerLoans,
@@ -14781,7 +15091,6 @@ export default function App() {
     const localCollectionSetters = {
       employeeReviews: setRawEmployeeReviews,
       customers: setRawCustomers,
-      customer_accounts: setRawCustomerAccounts,
       customer_cart: setRawCustomerCart,
       customer_points: setRawCustomerPoints,
       customerLoans: setRawCustomerLoans,
@@ -15404,149 +15713,69 @@ export default function App() {
 
   const handleRedeemCustomerPoints = async ({
     customerId,
-    customerName = '',
-    pointsInfo = {},
     pointsToUse = 0,
-    pointValue = 1000,
     amount = 0
   } = {}) => {
-    if (!db || !myCompanyId || !customerId) {
+    if (!firebaseUser || !myCompanyId || !customerId) {
       return { success: false, message: 'Chưa đủ thông tin để dùng điểm.' };
     }
 
-    const now = new Date().toISOString();
-    const availablePoints = Math.max(0, Math.floor(parseLooseMoneyValue(
-      pointsInfo.currentPoints
-      ?? pointsInfo.current_points
-      ?? pointsInfo.balance
-      ?? pointsInfo.points
-      ?? pointsInfo.pointBalance
-      ?? pointsInfo.point_balance
-      ?? pointsInfo.available_points
-      ?? pointsInfo.availablePoints
-      ?? pointsInfo.available
-      ?? pointsInfo.total_points
-      ?? pointsInfo.totalPoints
-      ?? 0
-    )));
-    const redeemPoints = Math.min(availablePoints, Math.max(0, Math.floor(parseLooseMoneyValue(pointsToUse))));
-    const normalizedPointValue = Math.max(1, parseLooseMoneyValue(pointValue) || 1000);
-    const redeemAmount = roundMoneyValue(Math.max(0, Math.min(parseLooseMoneyValue(amount), redeemPoints * normalizedPointValue)));
-
-    if (redeemPoints <= 0 || redeemAmount <= 0) {
+    const requestedPoints = Math.max(0, Math.floor(parseLooseMoneyValue(pointsToUse)));
+    const requestedAmount = roundMoneyValue(Math.max(0, parseLooseMoneyValue(amount)));
+    if (requestedPoints <= 0 || requestedAmount <= 0) {
       return { success: false, message: 'Số điểm hoặc số tiền quy đổi chưa hợp lệ.' };
     }
 
-    const pointDocId = pointsInfo.id || `customer_points_${customerId}`;
-    const paymentId = `p_points_${customerId}_${Date.now()}`;
-    const nextAvailablePoints = Math.max(0, availablePoints - redeemPoints);
-    const nextUsedPoints = Math.max(0, Math.floor(parseLooseMoneyValue(
-      pointsInfo.used_points
-      ?? pointsInfo.usedPoints
-      ?? 0
-    ))) + redeemPoints;
-    const historySource = Array.isArray(pointsInfo.history)
-      ? pointsInfo.history
-      : (Array.isArray(pointsInfo.pointHistory) ? pointsInfo.pointHistory : []);
-    const historyEntry = {
-      id: `redeem_${Date.now()}`,
-      type: 'redeem_debt',
-      label: 'Dùng điểm trừ công nợ',
-      points: -redeemPoints,
-      amount: redeemAmount,
-      pointValue: normalizedPointValue,
-      balance: nextAvailablePoints,
-      date: getTodayString(),
-      createdAt: now
-    };
-    const pointsPaymentPayload = {
-      id: paymentId,
-      companyId: myCompanyId,
-      customerId,
-      customerName,
-      amount: redeemAmount,
-      totalAmount: redeemAmount,
-      paymentAmount: redeemAmount,
-      actualAmount: redeemAmount,
-      method: 'Điểm thưởng',
-      paymentMethod: 'Điểm thưởng',
-      type: 'Thu nợ',
-      category: 'Thu nợ',
-      direction: 'income',
-      sourceType: 'loyalty_points_redeem',
-      sourceLabel: 'Dùng điểm trừ nợ',
-      note: `Dùng ${formatNumber(redeemPoints)} điểm trừ công nợ`,
-      bankContent: `Diem thuong ${customerId}`,
-      date: getTodayString(),
-      empId: currentUser?.id || 'customer_portal',
-      collectorName: customerName || 'Khách hàng',
-      requiresApproval: false,
-      approvalStatus: CASHFLOW_APPROVAL_STATUS.approved,
-      handoverStatus: 'confirmed',
-      status: 'confirmed',
-      confirmedAt: now,
-      confirmedBy: currentUser?.id || 'customer_portal',
-      pointsRedeemed: redeemPoints,
-      pointValue: normalizedPointValue,
-      isArchived: false,
-      createdAt: now
-    };
-    const nextPointsPayload = {
-      ...pointsInfo,
-      id: pointDocId,
-      companyId: myCompanyId,
-      customerId,
-      customer_id: customerId,
-      available_points: nextAvailablePoints,
-      availablePoints: nextAvailablePoints,
-      total_points: nextAvailablePoints,
-      totalPoints: nextAvailablePoints,
-      used_points: nextUsedPoints,
-      usedPoints: nextUsedPoints,
-      pointValue: normalizedPointValue,
-      redeem_value: roundMoneyValue(nextAvailablePoints * normalizedPointValue),
-      redeemValue: roundMoneyValue(nextAvailablePoints * normalizedPointValue),
-      lastRedeemedAt: now,
-      lastRedeemedPoints: redeemPoints,
-      lastRedeemedAmount: redeemAmount,
-      history: [...historySource, historyEntry].slice(-120),
-      updatedAt: now,
-      updatedBy: currentUser?.id || 'customer_portal',
-      isArchived: false
-    };
+    const requestKey = `${customerId}:${requestedPoints}:${requestedAmount}`;
+    let requestId = pointRedemptionRequestRef.current.get(requestKey);
+    if (!requestId) {
+      requestId = globalThis.crypto?.randomUUID?.()
+        || `redeem_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+      pointRedemptionRequestRef.current.set(requestKey, requestId);
+    }
 
+    const idToken = await firebaseUser.getIdToken();
+    const result = await customerRedeemPoints({
+      idToken,
+      appId,
+      customerId,
+      pointsToUse: requestedPoints,
+      amount: requestedAmount,
+      requestId
+    });
+    if (!result?.success || !result?.payment?.id || !result?.pointsRecord?.id) {
+      throw new Error(result?.message || 'Chưa dùng được điểm, vui lòng thử lại.');
+    }
+
+    const pointsPaymentPayload = result.payment;
+    const nextPointsPayload = result.pointsRecord;
+    const pointDocId = nextPointsPayload.id;
     setRawCustomerPoints(prev => {
       const list = Array.isArray(prev) ? prev : [];
       const existingIndex = list.findIndex(item => (
-        item?.id === pointDocId ||
-        item?.customerId === customerId ||
-        item?.customer_id === customerId
+        item?.id === pointDocId
+        || item?.customerId === customerId
+        || item?.customer_id === customerId
       ));
       if (existingIndex >= 0) {
         return list.map((item, index) => index === existingIndex ? { ...item, ...nextPointsPayload } : item);
       }
       return [nextPointsPayload, ...list];
     });
-    setRawPayments(prev => {
-      const list = Array.isArray(prev) ? prev : [];
-      return list.some(payment => payment?.id === paymentId)
-        ? list.map(payment => payment?.id === paymentId ? { ...payment, ...pointsPaymentPayload } : payment)
-        : [pointsPaymentPayload, ...list];
-    });
+    upsertLocalListRecord(setRawPayments, pointsPaymentPayload);
     rememberRecentLocalWrite('customer_points', pointDocId, nextPointsPayload);
-    rememberRecentLocalWrite('payments', paymentId, pointsPaymentPayload);
+    rememberRecentLocalWrite('payments', pointsPaymentPayload.id, pointsPaymentPayload);
+    pointRedemptionRequestRef.current.delete(requestKey);
 
-    await Promise.all([
-      saveDataDocument('customer_points', pointDocId, nextPointsPayload, { merge: true }),
-      saveDataDocument('payments', paymentId, pointsPaymentPayload, { merge: true })
-    ]);
-    await createPaymentConfirmationNotice(pointsPaymentPayload).catch(error => {
-      console.warn('Không thể gửi thông báo xác nhận dùng điểm:', error);
-    });
+    if (!result.duplicate) {
+      await createPaymentConfirmationNotice(pointsPaymentPayload).catch(error => {
+        console.warn('Không thể gửi thông báo xác nhận dùng điểm:', error);
+      });
+    }
 
     return {
       success: true,
-      message: `Đã dùng ${formatNumber(redeemPoints)} điểm để trừ ${formatCurrency(redeemAmount)} đ công nợ.`
+      message: `Đã dùng ${formatNumber(result.pointsRedeemed)} điểm để trừ ${formatCurrency(result.amount)} đ công nợ.`
     };
   };
 
@@ -16800,37 +17029,51 @@ export default function App() {
     });
     rememberRecentLocalWrite('orders', id, newOrderDocument);
 
-    saveDataDocument('orders', id, newOrderDocument, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu đơn hàng.')
-      .then(() => {
-        scheduleOrderShareWarmup({
-          order: newOrderDocument,
-          company: currentCompany,
-          customers,
-          orders: [newOrderDocument, ...(orders || []).filter(order => order?.id !== id)],
-          payments,
-          ensurePayment: handleEnsureOrderPayosPayment,
-          reason: 'order_created'
-        });
-        return syncCustomerLoyaltyPoints(newOrderDocument.customerId, {
-          extraOrders: [newOrderDocument],
-          reason: 'order_created'
-        });
-      })
-      .catch((error) => {
-        setRawOrders(prev => (Array.isArray(prev) ? prev.filter(order => order?.id !== id) : prev));
-        setRealtimeStatus({
-          state: 'error',
-          collection: 'orders',
-          lastAt: new Date().toISOString(),
-          error: `Lưu đơn hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được đơn hàng.')}`
-        });
-        console.error('Không thể lưu đơn hàng lên Firebase:', error);
-      })
-      .finally(() => {
-        if (duplicateSignature) orderCreateInFlightRef.current.delete(duplicateSignature);
+    try {
+      const writeResult = await saveDataDocument(
+        'orders',
+        id,
+        newOrderDocument,
+        {},
+        4500,
+        'Firebase SDK phản hồi chậm khi lưu đơn hàng.'
+      );
+      await requireSharedWriteConfirmation(writeResult, 'orders', id);
+      scheduleOrderShareWarmup({
+        order: newOrderDocument,
+        company: currentCompany,
+        customers,
+        orders: [newOrderDocument, ...(orders || []).filter(order => order?.id !== id)],
+        payments,
+        ensurePayment: handleEnsureOrderPayosPayment,
+        reason: 'order_created'
       });
-
-    return id;
+      void syncCustomerLoyaltyPoints(newOrderDocument.customerId, {
+        extraOrders: [newOrderDocument],
+        reason: 'order_created'
+      }).catch((error) => {
+        console.warn('Khong the dong bo diem khach hang sau khi tao don:', error);
+      });
+      return id;
+    } catch (error) {
+      if (error?.code === 'firestore/sync-pending') {
+        setRawOrders(prev => (Array.isArray(prev)
+          ? prev.map(order => order?.id === id ? { ...order, __pendingFirebaseSync: true } : order)
+          : prev));
+      } else {
+        setRawOrders(prev => (Array.isArray(prev) ? prev.filter(order => order?.id !== id) : prev));
+      }
+      setRealtimeStatus({
+        state: error?.code === 'firestore/sync-pending' ? 'queued' : 'error',
+        collection: 'orders',
+        lastAt: new Date().toISOString(),
+        error: `Lưu đơn hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được đơn hàng.')}`
+      });
+      console.error('Không thể lưu đơn hàng lên Firebase:', error);
+      throw error;
+    } finally {
+      if (duplicateSignature) orderCreateInFlightRef.current.delete(duplicateSignature);
+    }
   };
 
   const handleGetCustomerProductPreference = async ({ customerId = '', productId = '' } = {}) => {
@@ -16995,29 +17238,41 @@ export default function App() {
         });
     };
 
-    saveDataDocument('orderRequests', id, newRequestDocument, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.')
-      .then(() => {
-        notifyAssignedSalesEmployee();
-        notifyOrderRequestShareWarmup({
-          requestId: id,
-          reason: 'order_request_created'
-        });
-      })
-      .catch((error) => {
-        setRawOrderRequests(prev => (Array.isArray(prev) ? prev.filter(request => request?.id !== id) : prev));
-        setRealtimeStatus({
-          state: 'error',
-          collection: 'orderRequests',
-          lastAt: new Date().toISOString(),
-          error: `Lưu đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được đơn đặt hàng.')}`
-        });
-        console.error('Không thể lưu đơn đặt hàng lên Firebase:', error);
-      })
-      .finally(() => {
-        if (duplicateSignature) orderRequestCreateInFlightRef.current.delete(duplicateSignature);
+    try {
+      const writeResult = await saveDataDocument(
+        'orderRequests',
+        id,
+        newRequestDocument,
+        {},
+        4500,
+        'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.'
+      );
+      await requireSharedWriteConfirmation(writeResult, 'orderRequests', id);
+      notifyAssignedSalesEmployee();
+      notifyOrderRequestShareWarmup({
+        requestId: id,
+        reason: 'order_request_created'
       });
-
-    return id;
+      return id;
+    } catch (error) {
+      if (error?.code === 'firestore/sync-pending') {
+        setRawOrderRequests(prev => (Array.isArray(prev)
+          ? prev.map(request => request?.id === id ? { ...request, __pendingFirebaseSync: true } : request)
+          : prev));
+      } else {
+        setRawOrderRequests(prev => (Array.isArray(prev) ? prev.filter(request => request?.id !== id) : prev));
+      }
+      setRealtimeStatus({
+        state: error?.code === 'firestore/sync-pending' ? 'queued' : 'error',
+        collection: 'orderRequests',
+        lastAt: new Date().toISOString(),
+        error: `Lưu đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được đơn đặt hàng.')}`
+      });
+      console.error('Không thể lưu đơn đặt hàng lên Firebase:', error);
+      throw error;
+    } finally {
+      if (duplicateSignature) orderRequestCreateInFlightRef.current.delete(duplicateSignature);
+    }
   };
 
   const handleEditOrderRequest = async (requestId, updatedData, empId = '') => {
@@ -17072,12 +17327,13 @@ export default function App() {
       updatedAt,
       updatedByEmpId: empId || ''
     });
-    await saveDataDocument('orderRequests', requestId, {
+    const writeResult = await saveDataDocument('orderRequests', requestId, {
       ...normalizedUpdatedData,
       salesEmpId,
       updatedAt,
       updatedByEmpId: empId || ''
     }, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật đơn đặt hàng.');
+    await requireSharedWriteConfirmation(writeResult, 'orderRequests', requestId);
     notifyOrderRequestShareWarmup({
       requestId,
       reason: 'order_request_updated'
@@ -17095,7 +17351,8 @@ export default function App() {
       ? prev.map(request => request?.id === requestId ? { ...request, ...archivedPayload } : request)
       : prev));
     rememberRecentLocalWrite('orderRequests', requestId, archivedPayload);
-    await saveDataDocument('orderRequests', requestId, archivedPayload, { merge: true });
+    const writeResult = await saveDataDocument('orderRequests', requestId, archivedPayload, { merge: true });
+    await requireSharedWriteConfirmation(writeResult, 'orderRequests', requestId);
   };
 
   const handleAddWarehouseImport = async (empId, importData = {}) => {
@@ -18037,7 +18294,8 @@ export default function App() {
       order?.id === orderId ? { ...order, ...updatedOrderPayload } : order
     )) : prev));
     rememberRecentLocalWrite('orders', orderId, updatedOrderPayload);
-    await saveDataDocument('orders', orderId, updatedOrderPayload, { merge: true });
+    const writeResult = await saveDataDocument('orders', orderId, updatedOrderPayload, { merge: true });
+    await requireSharedWriteConfirmation(writeResult, 'orders', orderId);
     const updatedOrderForSync = {
       ...(existingOrder || {}),
       ...updatedOrderPayload,
@@ -18744,7 +19002,8 @@ export default function App() {
       order?.id === orderId ? { ...order, ...archivedPayload } : order
     )) : prev));
     rememberRecentLocalWrite('orders', orderId, archivedPayload);
-    await saveDataDocument('orders', orderId, archivedPayload, { merge: true });
+    const writeResult = await saveDataDocument('orders', orderId, archivedPayload, { merge: true });
+    await requireSharedWriteConfirmation(writeResult, 'orders', orderId);
     if (existingOrder?.customerId) {
       syncCustomerLoyaltyPoints(existingOrder.customerId, {
         extraOrders: [{ ...existingOrder, ...archivedPayload }],
@@ -42080,6 +42339,7 @@ const buildProcessingInventoryDraftRows = ({ company = null, date = getTodayStri
         || normalizeProcessingInventoryRecord({ groupName: label, unit: label === 'Vật tư' ? 'Cái' : 'Con' }, index),
       carryover
     );
+
     if (!importSummary) return baseRecord;
     return {
       ...baseRecord,
@@ -59858,7 +60118,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const startRecordedOrderVoiceCapture = async (target) => {
-    if (!GEMINI_API_KEY) {
+    if (!GEMINI_PROXY_ENABLED) {
       setOrderVoiceStatus('App chua co khoa AI de doc ghi am tren thiet bi nay. Ban hay nhap tay.');
       return;
     }
@@ -60912,16 +61172,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     requestSubmittingRef.current = true;
     setIsRequestSubmitting(true);
-    const closeImmediatelyAfterSubmit = true;
-    if (closeImmediatelyAfterSubmit) {
-      flushSync(() => {
-        setRequestStatus(isEditingRequest
-          ? 'Dang cap nhat don dat hang...'
-          : `Dang luu ${normalizedRequests.length} don dat hang...`);
-        setRequestError('');
-        closeOrderRequestForm();
-      });
-    }
+    setRequestStatus(isEditingRequest
+      ? 'Dang cap nhat don dat hang...'
+      : `Dang luu ${normalizedRequests.length} don dat hang...`);
+    setRequestError('');
 
     try {
       if (isEditingRequest) {
@@ -60948,19 +61202,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     } catch (error) {
       const message = getFriendlyFirebaseErrorMessage(error, 'Không thể lưu đơn đặt hàng. Vui lòng thử lại.');
       setRequestError(message);
-      if (closeImmediatelyAfterSubmit && !isTimeoutLikeError(error)) {
-        setRequestStatus(`Luu don dat hang bi loi: ${message}`);
-        return;
-      }
       if (isTimeoutLikeError(error)) {
-        setRequestStatus('Firebase đang phản hồi chậm. App đã chuyển sang luồng đồng bộ dự phòng, vui lòng tải lại danh sách nếu chưa thấy đơn.');
-        closeOrderRequestForm();
+        setRequestStatus('Đơn chưa được máy chủ xác nhận. App vẫn giữ biểu mẫu để bạn kiểm tra kết nối và thử lại an toàn.');
         return;
       }
-      if (message.includes('Quá thời gian')) {
-        setRequestStatus('Đã dừng trạng thái chờ để tránh tạo trùng. Hãy kiểm tra danh sách đơn trước khi bấm lưu lại.');
-        closeOrderRequestForm();
-      }
+      setRequestStatus(`Luu don dat hang bi loi: ${message}`);
     } finally {
       requestSubmittingRef.current = false;
       setIsRequestSubmitting(false);
@@ -63983,8 +64229,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const isOrderSaveTimeoutError = (error) => {
-    return isTimeoutLikeError(error);
-    if (error?.code === 'HD_TIMEOUT') return true;
+    if (error?.code === 'firestore/sync-pending' || error?.code === 'HD_TIMEOUT') return true;
+    if (isTimeoutLikeError(error)) return true;
     const message = `${error?.message || error || ''}`.toLowerCase();
     return message.includes('quá thời gian')
       || message.includes('qua thoi gian')
@@ -64039,7 +64285,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         depositMap.set(key, (depositMap.get(key) || 0) + deposit);
         return depositMap;
       }, new Map());
-    const findOrderRequestUnitPriceForDispatch = (dispatch = {}, customer = null, product = null, productName = '', customerName = '') => {
+    const findOrderRequestPricingForDispatch = (dispatch = {}, customer = null, product = null, productName = '', customerName = '') => {
       const dispatchCustomerId = dispatch.customerId || customer?.id || '';
       const dispatchProductId = dispatch.productId || product?.id || '';
       const dispatchBranchId = `${dispatch.branchId || dispatch.customerBranchId || ''}`.trim();
@@ -64065,6 +64311,13 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         ?? dispatch.requestUnitPrice
         ?? dispatch.orderedUnitPrice
         ?? dispatch.customerOrderUnitPrice
+      );
+      const dispatchSourcePricingUnit = normalizeProductPricingUnit(
+        dispatch.sourceOrderRequestPricingUnit
+        || dispatch.orderRequestPricingUnit
+        || dispatch.requestPricingUnit
+        || dispatch.sourcePricingUnit
+        || ''
       );
       const sourceRequestDate = dispatch.sourceOrderRequestDate
         || dispatch.orderRequestDate
@@ -64137,12 +64390,16 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
           const requestUnitPrice = getOrderLineUnitPriceValue(item);
           if (requestUnitPrice > 0) {
+            const requestBillingSnapshot = resolveTransactionBillingSnapshot({ record: item, product: requestProduct || product });
             const itemQuantity = getOrderLineQuantityValue(item);
             const itemWeightKg = getOrderLineWeightKgValue(item);
             const itemSizeKey = normalizeLookupText(getOrderLineSizeLabel(item));
             const itemUnitKey = normalizeLookupText(item?.quantityUnit || item?.unit || product?.unit || '');
             matchedPriceCandidates.push({
               price: requestUnitPrice,
+              billingUnit: requestBillingSnapshot.billingUnit || normalizeProductPricingUnit(
+                item?.billingUnit || item?.pricingUnit || item?.defaultUnit || item?.quantityUnit || item?.unit || ''
+              ),
               requestTimestamp: requestTimestamp || 0,
               exactRequest: isExactSourceRequest ? 1 : 0,
               exactRow: sourceRequestRowKey && [itemRowKey, compositeRowKey, legacyProductRowKey].includes(sourceRequestRowKey) ? 1 : 0,
@@ -64168,7 +64425,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         || b.exactProductId - a.exactProductId
         || b.requestTimestamp - a.requestTimestamp
       ));
-      return matchedPriceCandidates[0]?.price || dispatchSourceUnitPrice || 0;
+      return matchedPriceCandidates[0] || {
+        price: dispatchSourceUnitPrice || 0,
+        billingUnit: dispatchSourcePricingUnit,
+      };
     };
     const groupedDrafts = pendingWarehouseDispatches.reduce((groupMap, dispatch) => {
       const customer = customerLookup.get(dispatch.customerId);
@@ -64195,54 +64455,33 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const group = groupMap.get(customerKey);
       const product = productLookup.get(dispatch.productId);
       const productName = dispatch.productNameSnapshot || product?.name || 'Hàng hóa';
-      const weightKg = parseLooseQuantityValue(dispatch.weightKg);
-      const orderRequestUnitPrice = findOrderRequestUnitPriceForDispatch(dispatch, customer, product, productName, customerName);
-      const dispatchSnapshot = resolveTransactionBillingSnapshot({ record: dispatch, product });
-      const billingUnit = dispatchSnapshot.billingUnit
-        || normalizeProductPricingUnit(dispatch.pricingUnit || (weightKg > 0 ? 'Kg' : dispatch.quantityUnit || product?.unit || 'Con'));
-      const actualUnit = dispatchSnapshot.actualUnit
-        || normalizeProductPricingUnit(dispatch.quantityUnit || dispatch.unit || product?.unit || billingUnit);
-      const unitPrice = dispatchSnapshot.unitPrice
-        || orderRequestUnitPrice
-        || parseLooseMoneyValue(dispatch.unitPrice)
-        || parseLooseMoneyValue(product?.sellingPrice)
-        || 0;
-      const actualQuantity = dispatchSnapshot.actualQuantity
-        || parseLooseQuantityValue(dispatch.quantity ?? dispatch.pieceCount ?? dispatch.quantityCount)
-        || (isSameBillingUnit(actualUnit, 'Kg') ? weightKg : 0);
-      const actualWeightKg = dispatchSnapshot.actualWeightKg || weightKg;
-      const billingQuantityCandidate = dispatchSnapshot.billingQuantity
-        || (isSameBillingUnit(billingUnit, 'Kg') ? actualWeightKg : actualQuantity);
-      const calculatedDispatchSnapshot = buildCustomerProductBillingSnapshot({
-        configuration: {
-          productId: product?.id || dispatch.productId || '',
-          productName,
-          configurationId: dispatchSnapshot.configurationId || dispatch.configurationId || '',
-          billingUnit,
-          pricingUnit: billingUnit,
-          unitPrice,
-          source: dispatchSnapshot.hasFrozenPricing ? 'warehouse_dispatch_snapshot' : 'legacy_dispatch_fallback',
-        },
+      const customerProductConfig = resolveCustomerProductBillingConfiguration(
+        getCustomerBranchProductConfigSource(customer, branchId, activeProducts),
         product,
-        productId: product?.id || dispatch.productId || '',
-        productName,
-        sizeLabel: dispatch.sizeLabel || dispatch.size || '',
-        attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
-        actualQuantity,
-        actualUnit,
-        actualWeightKg,
-        billingQuantity: billingQuantityCandidate,
-        billingUnit,
-        unitPrice,
+        {
+          configurationId: dispatch.configurationId || '',
+          sizeLabel: dispatch.sizeLabel || dispatch.size || '',
+          attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
+        }
+      );
+      const orderRequestPricing = findOrderRequestPricingForDispatch(dispatch, customer, product, productName, customerName);
+      const resolvedDispatchBilling = buildWarehouseDispatchOrderBillingSnapshot({
+        dispatch,
+        product,
+        configuration: customerProductConfig,
+        sourceUnitPrice: orderRequestPricing.price,
+        sourcePricingUnit: orderRequestPricing.billingUnit,
       });
-      const resolvedDispatchBilling = dispatchSnapshot.hasFrozenPricing
-        ? dispatchSnapshot
-        : calculatedDispatchSnapshot;
+      const billingUnit = resolvedDispatchBilling.billingUnit;
+      const actualUnit = resolvedDispatchBilling.actualUnit;
+      const unitPrice = resolvedDispatchBilling.unitPrice;
+      const actualQuantity = resolvedDispatchBilling.actualQuantity;
+      const actualWeightKg = resolvedDispatchBilling.actualWeightKg;
       const billingQuantity = resolvedDispatchBilling.billingQuantity;
       const amount = resolvedDispatchBilling.amount;
       const productKey = [
         dispatch.productId || normalizeLookupText(productName),
-        dispatchSnapshot.configurationId || dispatch.configurationId || 'default',
+        resolvedDispatchBilling.configurationId || dispatch.configurationId || 'default',
         normalizeLookupText(actualUnit),
         normalizeLookupText(billingUnit),
         unitPrice,
@@ -64255,7 +64494,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           description: product?.name || productName,
           productName: product?.name || productName,
           productNameSnapshot: productName,
-          configurationId: dispatchSnapshot.configurationId || dispatch.configurationId || '',
+          configurationId: resolvedDispatchBilling.configurationId || dispatch.configurationId || '',
           sizeLabel: dispatch.sizeLabel || dispatch.size || '',
           attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
           actualQuantity: 0,
@@ -64271,8 +64510,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           pricingUnit: billingUnit,
           pricingAmount: 0,
           lineTotal: 0,
-          billingSnapshotVersion: dispatchSnapshot.hasFrozenPricing ? 1 : 0,
-          billingSnapshotSource: dispatchSnapshot.hasFrozenPricing ? 'warehouse_dispatch_snapshot' : 'legacy_dispatch_fallback',
+          billingSnapshotVersion: 1,
+          billingSnapshotSource: resolvedDispatchBilling.billingSnapshotSource || 'warehouse_dispatch_order_snapshot',
           sourceDispatchIds: []
         });
       }
@@ -64282,7 +64521,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       item.actualWeightKg += actualWeightKg;
       item.billingQuantity += billingQuantity;
       item.amount += amount;
-      item.quantity = item.actualQuantity;
+      item.quantity = item.billingQuantity;
       item.quantityCount = item.actualQuantity;
       item.weightKg = item.actualWeightKg;
       item.pricingQuantity = item.billingQuantity;
@@ -64315,7 +64554,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         actualQuantity: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : 0,
         actualWeightKg: item.actualWeightKg > 0 ? Number(item.actualWeightKg.toFixed(2)) : 0,
         billingQuantity: item.billingQuantity > 0 ? Number(item.billingQuantity.toFixed(2)) : 0,
-        quantity: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : '',
+        quantity: item.billingQuantity > 0 ? Number(item.billingQuantity.toFixed(2)) : '',
         quantityCount: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : 0,
         weightKg: item.actualWeightKg > 0 ? Number(item.actualWeightKg.toFixed(2)) : 0,
         pricingQuantity: item.billingQuantity > 0 ? Number(item.billingQuantity.toFixed(2)) : 0,
@@ -64334,11 +64573,71 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setBulkOrderDrafts((prev) => prev.map((draft) => draft.localId === draftId ? { ...draft, [field]: value } : draft));
   };
 
+  const refreshBulkDraftItemBilling = (item = {}, patch = {}) => {
+    const nextItem = { ...item, ...patch };
+    const product = activeProducts.find(candidate => candidate.id === nextItem.productId) || null;
+    const billingUnit = normalizeProductPricingUnit(
+      nextItem.billingUnit || nextItem.pricingUnit || nextItem.defaultUnit || nextItem.quantityUnit || product?.unit || ''
+    );
+    const actualUnit = normalizeProductPricingUnit(
+      nextItem.actualUnit || nextItem.actualQuantityUnit || nextItem.quantityUnit || product?.unit || billingUnit
+    );
+    const patchBillingQuantity = patch.billingQuantity ?? patch.pricingQuantity ?? patch.quantity;
+    const billingQuantity = parseLooseQuantityValue(
+      patchBillingQuantity ?? nextItem.billingQuantity ?? nextItem.pricingQuantity ?? nextItem.quantity
+    );
+    const actualQuantity = parseLooseQuantityValue(
+      nextItem.actualQuantity ?? nextItem.quantityCount
+    );
+    const actualWeightKg = parseLooseQuantityValue(
+      nextItem.actualWeightKg ?? nextItem.weightKg ?? nextItem.totalKg ?? nextItem.kg
+    );
+    const unitPrice = parseLooseMoneyValue(nextItem.unitPrice);
+    const snapshot = buildCustomerProductBillingSnapshot({
+      configuration: {
+        productId: nextItem.productId || product?.id || '',
+        productName: nextItem.productName || nextItem.productNameSnapshot || nextItem.description || product?.name || '',
+        configurationId: nextItem.configurationId || '',
+        billingUnit,
+        pricingUnit: billingUnit,
+        unitPrice,
+        source: 'warehouse_dispatch_order_snapshot',
+      },
+      product,
+      productId: nextItem.productId || product?.id || '',
+      productName: nextItem.productName || nextItem.productNameSnapshot || nextItem.description || product?.name || '',
+      sizeLabel: nextItem.sizeLabel || nextItem.size || '',
+      attributeLabel: nextItem.attributeLabel || nextItem.productAttribute || '',
+      actualQuantity,
+      actualUnit,
+      actualWeightKg,
+      billingQuantity,
+      billingUnit,
+      unitPrice,
+    });
+
+    return {
+      ...nextItem,
+      ...snapshot,
+      actualQuantity: snapshot.actualQuantity,
+      actualWeightKg: snapshot.actualWeightKg,
+      billingQuantity: snapshot.billingQuantity,
+      quantity: snapshot.billingQuantity,
+      quantityCount: snapshot.actualQuantity,
+      quantityUnit: snapshot.actualUnit,
+      pricingQuantity: snapshot.billingQuantity,
+      pricingUnit: snapshot.billingUnit,
+      amount: snapshot.amount,
+      pricingAmount: snapshot.amount,
+      lineTotal: snapshot.amount,
+    };
+  };
+
   const handleBulkDraftItemChange = (draftId, itemIndex, field, value) => {
     setBulkOrderDrafts((prev) => prev.map((draft) => {
       if (draft.localId !== draftId) return draft;
       const items = [...draft.items];
-      items[itemIndex] = { ...items[itemIndex], [field]: value };
+      items[itemIndex] = refreshBulkDraftItemBilling(items[itemIndex], { [field]: value });
       return { ...draft, items };
     }));
   };
@@ -64378,7 +64677,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       window.alert('Số lượng phải lớn hơn 0.');
       return;
     }
-    handleBulkDraftItemChange(draftId, itemIndex, 'quantity', Number(quantity.toFixed(2)));
+    handleBulkDraftItemChange(draftId, itemIndex, 'billingQuantity', Number(quantity.toFixed(2)));
   };
 
   const promptEditBulkDraftItemPrice = (draftId, itemIndex, currentValue) => {
@@ -64490,15 +64789,29 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       if (draft.localId !== draftId) return draft;
       const product = activeProducts.find((item) => item.id === productId);
       const items = [...draft.items];
-      items[itemIndex] = product ? {
+      const customer = customers.find((candidate) => candidate.id === draft.customerId) || null;
+      const configuration = product
+        ? resolveCustomerProductBillingConfiguration(
+          getCustomerBranchProductConfigSource(customer, draft.branchId || draft.customerBranchId || '', activeProducts),
+          product
+        )
+        : null;
+      const nextItem = product ? {
         ...items[itemIndex],
         productId: product.id,
+        productName: product.name,
+        productNameSnapshot: product.name,
         description: product.name,
-        unitPrice: items[itemIndex].unitPrice || product.sellingPrice
+        configurationId: configuration?.configurationId || '',
+        billingUnit: configuration?.billingUnit || configuration?.pricingUnit || getProductPrimaryPricingUnit(product, 'Con'),
+        pricingUnit: configuration?.pricingUnit || configuration?.billingUnit || getProductPrimaryPricingUnit(product, 'Con'),
+        actualUnit: resolveCustomerProductActualUnit(configuration, product),
+        unitPrice: configuration?.unitPrice || items[itemIndex].unitPrice || product.sellingPrice,
       } : {
         ...items[itemIndex],
         productId: ''
       };
+      items[itemIndex] = refreshBulkDraftItemBilling(nextItem);
       return { ...draft, items };
     }));
   };
@@ -64524,7 +64837,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     if (!file) return;
 
     setBulkOrderStatus('');
-    if (!GEMINI_API_KEY) {
+    if (!GEMINI_PROXY_ENABLED) {
       setBulkOrderStatus('Chưa cấu hình Gemini API key cho tính năng này.');
       if (bulkOrderImageInputRef.current) bulkOrderImageInputRef.current.value = '';
       return;
@@ -64611,11 +64924,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     }
     bulkOrderSubmittingRef.current = true;
     setIsBulkOrderSubmitting(true);
-    flushSync(() => {
-      setShowAddOrder(false);
-      setShowOrderSourcePicker(false);
-      setOrderCreationSource('');
-    });
+    setBulkOrderStatus(`Đang xác nhận ${bulkOrderDrafts.length} đơn với máy chủ...`);
     let createdCount = 0;
     const postSaveWarnings = [];
 
@@ -64633,11 +64942,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       setBulkOrderStatus(`Đã tạo ${createdCount} đơn hàng từ ${sourceLabel}.${postSaveWarnings.length > 0 ? ` Có ${postSaveWarnings.length} cảnh báo phụ cần kiểm tra.` : ''}`);
     } catch (error) {
       if (isOrderSaveTimeoutError(error)) {
-        setBulkOrderDrafts([]);
-        setShowAddOrder(false);
-        setShowOrderSourcePicker(false);
-        setOrderCreationSource('');
-        setBulkOrderStatus(`Đã dừng chờ sau khi gửi lệnh tạo đơn. Vui lòng kiểm tra danh sách đơn hàng trước khi bấm tạo lại để tránh trùng đơn.`);
+        setBulkOrderStatus('Có đơn chưa được máy chủ xác nhận. App giữ nguyên dữ liệu để bạn kiểm tra kết nối và thử lại an toàn.');
       } else {
         setBulkOrderStatus(`Dừng ở đơn nháp ${createdCount + 1}: ${getFriendlyFirebaseErrorMessage(error, 'Không thể tạo đơn.')}`);
       }
@@ -64658,12 +64963,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
     bulkOrderSubmittingRef.current = true;
     setIsBulkOrderSubmitting(true);
-    flushSync(() => {
-      setShowAddOrder(false);
-      setShowOrderSourcePicker(false);
-      setShowCusDropdown(false);
-      setOrderCreationSource('');
-    });
+    setBulkOrderStatus('Đang xác nhận đơn với máy chủ...');
     try {
       const result = await submitOrderDraft(newOrder, { allowDescriptionOnly: false });
       setShowAddOrder(false);
@@ -64676,13 +64976,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       }
     } catch (error) {
       if (isOrderSaveTimeoutError(error)) {
-        setShowAddOrder(false);
-        setShowOrderSourcePicker(false);
-        setSearchCus('');
-        setShowCusDropdown(false);
-        setNewOrder(createSingleOrderState());
-        setOrderCreationSource('');
-        setBulkOrderStatus('Đã dừng chờ sau khi gửi lệnh tạo đơn. Vui lòng kiểm tra danh sách đơn hàng trước khi bấm tạo lại để tránh trùng đơn.');
+        setErrorMsg('Đơn chưa được máy chủ xác nhận. App giữ nguyên biểu mẫu để bạn kiểm tra kết nối và thử lại an toàn.');
       } else {
         setErrorMsg(getFriendlyFirebaseErrorMessage(error, 'Không thể tạo đơn hàng này.'));
       }
@@ -65970,7 +66264,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-bold text-slate-900">{bulkOrderDrafts.length} đơn nháp chờ rà soát</p>
-                          <p className="text-[11px] text-slate-500 mt-1">Sửa trực tiếp tên khách, mặt hàng, số kg và đơn giá rồi bấm tạo hàng loạt.</p>
+                          <p className="text-[11px] text-slate-500 mt-1">Sửa trực tiếp khách, mặt hàng, số lượng tính tiền và đơn giá rồi bấm tạo hàng loạt.</p>
                         </div>
                         <button
                           type="button"
@@ -66026,13 +66320,14 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                               <div className="overflow-hidden rounded-2xl border border-slate-200">
                                 <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(76px,.72fr)_minmax(68px,.66fr)_minmax(84px,.78fr)] bg-slate-50 text-center text-[10px] font-black uppercase tracking-wide text-slate-500">
                                   <div className="border-r border-slate-200 px-2 py-2">Sản phẩm</div>
-                                  <div className="border-r border-slate-200 px-1.5 py-2">Kg</div>
+                                  <div className="border-r border-slate-200 px-1.5 py-2">SL tính tiền</div>
                                   <div className="border-r border-slate-200 px-1.5 py-2">Đơn giá</div>
                                   <div className="px-1.5 py-2">Thành tiền</div>
                                 </div>
 
                                 {(draft.items || []).map((item, itemIndex) => {
-                                  const lineTotal = getOrderItemBillingPresentation(item).amount;
+                                  const billingPresentation = getOrderItemBillingPresentation(item);
+                                  const lineTotal = billingPresentation.amount;
                                   return (
                                     <div key={`${draft.localId}_${itemIndex}`} className="grid grid-cols-[minmax(0,1.35fr)_minmax(76px,.72fr)_minmax(68px,.66fr)_minmax(84px,.78fr)] border-t border-slate-200 text-[12px]">
                                       <div className="relative min-w-0 border-r border-slate-200 p-1.5">
@@ -66059,14 +66354,17 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                         )}
                                       </div>
                                       <div className="border-r border-slate-200 p-1.5">
+                                        <span className="mb-0.5 block text-center text-[10px] font-bold text-slate-400">
+                                          {billingPresentation.billingUnit || 'ĐV'}
+                                        </span>
                                         <input
                                           type="number"
                                           step="0.01"
-                                          value={item.quantity}
-                                          onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'quantity', e.target.value)}
+                                          value={item.billingQuantity ?? item.pricingQuantity ?? item.quantity}
+                                          onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'billingQuantity', e.target.value)}
                                           className="weight-entry-input h-10 w-full min-w-0 rounded-xl border border-transparent bg-white px-1 text-center text-[12px] font-semibold tabular-nums text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
                                           placeholder="0"
-                                          aria-label="Số kg"
+                                          aria-label={`Số lượng tính tiền (${billingPresentation.billingUnit || 'đơn vị'})`}
                                         />
                                       </div>
                                       <div className="border-r border-slate-200 p-1.5">
@@ -66246,10 +66544,11 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                     <input
                                       type="number"
                                       step="0.01"
-                                      value={item.quantity}
-                                      onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'quantity', e.target.value)}
+                                      value={item.billingQuantity ?? item.pricingQuantity ?? item.quantity}
+                                      onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'billingQuantity', e.target.value)}
                                       className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none bg-white focus:ring-2 focus:ring-indigo-500"
-                                      placeholder="Số kg / số lượng"
+                                      placeholder={`Số lượng tính tiền (${getOrderItemBillingPresentation(item).billingUnit || 'đơn vị'})`}
+                                      aria-label={`Số lượng tính tiền (${getOrderItemBillingPresentation(item).billingUnit || 'đơn vị'})`}
                                     />
                                     <input
                                       type="tel"
@@ -81538,11 +81837,16 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
     if (!regCompanyName.trim() || !regPhone.trim()) { setRegError('Vui lòng điền đủ thông tin'); return; }
     const passwordError = validateAccountPasswordInput(regPassword, regPasswordConfirm);
     if (passwordError) { setRegError(passwordError); return; }
-    if (!isLoginReady) { setRegError('App đang kết nối dữ liệu Cloud, vui lòng chờ vài giây rồi thử lại.'); return; }
     setIsRegistering(true);
-    const result = await onRegister(toTitleCase(regCompanyName), regPhone, regPassword);
-    if (!result.success) setRegError(result.message);
-    setIsRegistering(false);
+    try {
+      const result = await onRegister(toTitleCase(regCompanyName), regPhone, regPassword);
+      if (!result.success) setRegError(result.message);
+      else if (result.requiresSetup) setIdentitySetupContext(result);
+    } catch (error) {
+      setRegError(error?.message || 'Không thể tạo công ty. Vui lòng thử lại.');
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
   if (identitySetupContext) {
@@ -81681,8 +81985,8 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                 </div>
               )}
               <p className="-mt-2 px-1 text-[11px] leading-relaxed text-gray-400">Mật khẩu tối thiểu 8 ký tự, gồm chữ và số.</p>
-              <button type="submit" disabled={isRegistering || !isLoginReady} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] mt-2 ${(isRegistering || !isLoginReady) ? 'bg-orange-300 cursor-not-allowed shadow-orange-200/30' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/30'}`}>
-                {!isLoginReady ? 'Đang nạp dữ liệu...' : isRegistering ? 'Đang khởi tạo Cloud...' : 'Bắt Đầu Miễn Phí'}
+              <button type="submit" disabled={isRegistering} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] mt-2 ${isRegistering ? 'bg-orange-300 cursor-not-allowed shadow-orange-200/30' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/30'}`}>
+                {isRegistering ? 'Đang khởi tạo Cloud...' : 'Bắt Đầu Miễn Phí'}
               </button>
             </form>
             <p className="mt-4 text-[11px] text-gray-500 leading-relaxed text-center">Sau khi tạo công ty, chủ doanh nghiệp đăng nhập rồi vào mục <strong>Nhân sự</strong> để tạo các tài khoản <strong>Kế toán & nhân sự</strong>, <strong>Tài xế</strong>, <strong>Sản xuất</strong>, <strong>Kinh doanh</strong>.</p>

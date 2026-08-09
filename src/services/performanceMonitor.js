@@ -6,6 +6,11 @@ const SLOW_SCREEN_MS = 2000;
 const SLOW_RENDER_MS = 16;
 const MEMORY_SAMPLE_MS = 15000;
 const LOW_FPS_THRESHOLD = 50;
+const PERFORMANCE_ENV = Object.freeze({
+  VITE_PERFORMANCE_MONITOR: import.meta.env.VITE_PERFORMANCE_MONITOR,
+  VITE_PERFORMANCE_LOG_LIMIT: import.meta.env.VITE_PERFORMANCE_LOG_LIMIT,
+  VITE_PERFORMANCE_CONSOLE: import.meta.env.VITE_PERFORMANCE_CONSOLE,
+});
 
 let monitorEnabled = false;
 let monitorInitialized = false;
@@ -44,11 +49,9 @@ const toBooleanFlag = (value) => {
 };
 
 const envFlag = (name) => {
-  try {
-    return import.meta.env?.[name];
-  } catch {
-    return undefined;
-  }
+  return Object.prototype.hasOwnProperty.call(PERFORMANCE_ENV, name)
+    ? PERFORMANCE_ENV[name]
+    : undefined;
 };
 
 const readUrlFlag = (name) => {

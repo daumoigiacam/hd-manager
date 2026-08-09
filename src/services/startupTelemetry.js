@@ -15,7 +15,7 @@ const isTelemetryEnabled = () => {
     const params = new URLSearchParams(window.location.search || '');
     if (params.has('perfMonitor')) return toBoolean(params.get('perfMonitor'));
     if (params.has('perfCheck')) return toBoolean(params.get('perfCheck'));
-    if (toBoolean(import.meta.env?.VITE_PERFORMANCE_MONITOR)) return true;
+    if (toBoolean(import.meta.env.VITE_PERFORMANCE_MONITOR)) return true;
     return toBoolean(window.localStorage?.getItem('hd_performance_monitor'));
   } catch {
     return false;

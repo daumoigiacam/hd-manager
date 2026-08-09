@@ -39,6 +39,7 @@ const identityRewriteSources = firebaseConfig.hosting.rewrites
   .map(item => item.source);
 for (const expectedPath of [
   '/api/identity/login',
+  '/api/identity/register-company',
   '/api/identity/complete-setup',
   '/api/identity/request-recovery',
   '/api/identity/complete-recovery',
@@ -52,25 +53,33 @@ for (const expectedPath of [
 }
 assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.cloudfunctions\.net/);
 assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
+assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identityRegisterCompany'/);
+assert.match(identityClientSource, /export const identityRegisterCompany/);
 assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
 assert.match(appSource, /auth\.bootstrap\.not_required/);
 assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 
 const anonymousSignInCalls = appSource.match(/signInAnonymously\(auth\)/g) || [];
-assert.equal(anonymousSignInCalls.length, 1, 'Anonymous Auth must remain on-demand only');
-const anonymousLoginStart = appSource.indexOf('const getLoginFirebaseUser = async () =>');
-const anonymousLoginEnd = appSource.indexOf('const readLoginCollectionsFromCloud = async () =>');
-const anonymousLoginSource = appSource.slice(anonymousLoginStart, anonymousLoginEnd);
-assert.match(anonymousLoginSource, /runFirebaseAuthMutation/);
-assert.match(anonymousLoginSource, /if \(auth\.currentUser\)/);
-assert.match(anonymousLoginSource, /signInAnonymously\(auth\)/);
+assert.equal(anonymousSignInCalls.length, 0, 'Anonymous Auth must never run in login or startup paths');
+assert.doesNotMatch(appSource, /anonymousBootstrapAllowedRef/);
+assert.match(appSource, /if \(u\.isAnonymous\)/);
+assert.match(appSource, /identityRegisterCompany\(\{/);
 
 const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
 const identitySessionSource = appSource.slice(identitySessionStart, identitySessionEnd);
 assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWithCustomToken/);
 assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
+assert.match(identityFunctionSource, /const registerCompany = async/);
+assert.match(identityFunctionSource, /await db\.runTransaction/);
+assert.match(identityFunctionSource, /transaction\.create\(companyRef, company\)/);
+assert.match(identityFunctionSource, /transaction\.create\(employeeRef, employee\)/);
+assert.match(identityFunctionSource, /transaction\.create\(identityRef, identity\)/);
+const registerStart = identityFunctionSource.indexOf('const registerCompany = async');
+const registerEnd = identityFunctionSource.indexOf('const enforceLoginRateLimit = async');
+const registerSource = identityFunctionSource.slice(registerStart, registerEnd);
+assert.doesNotMatch(registerSource, /password_hash\s*:/);
 assert.ok(
   identityFunctionSource.indexOf('setCustomUserClaims(firebaseUid, claims)')
     < identityFunctionSource.indexOf('createCustomToken(firebaseUid, claims)'),

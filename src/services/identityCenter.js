@@ -1,15 +1,19 @@
 import { Capacitor } from '@capacitor/core';
 import { NativeBiometric, AccessControl } from '@capgo/capacitor-native-biometric';
+import { fetchWithTimeout } from './fetchWithTimeout.js';
 
 const DEVICE_KEY = 'hd-identity-device-v1';
 const WEB_SECRET_PREFIX = 'hd-identity-device-secret-v1:';
 const NATIVE_SECRET_PREFIX = 'hd.identity.device.v1.';
+const IDENTITY_REQUEST_TIMEOUT_MS = 30000;
+const AI_REQUEST_TIMEOUT_MS = 55000;
 // Identity routes are served by Cloud Functions. Do not fall back to Firebase
 // Hosting: an unknown Hosting path responds with the SPA HTML, which browsers
 // surface as a CORS/network error instead of a useful authentication message.
 const DEFAULT_IDENTITY_API_BASE_URL = 'https://us-central1-hd-manager-c5839.cloudfunctions.net';
 const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/login': 'identityLogin',
+  '/api/identity/register-company': 'identityRegisterCompany',
   '/api/identity/complete-setup': 'identityCompleteSetup',
   '/api/identity/request-recovery': 'identityRequestRecovery',
   '/api/identity/complete-recovery': 'identityCompleteRecovery',
@@ -18,6 +22,9 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/revoke-devices': 'identityRevokeDevices',
   '/api/identity/logout': 'identityLogout',
   '/api/identity/audit': 'identityAudit',
+  '/api/customer/bootstrap': 'customerPortalBootstrap',
+  '/api/customer/redeem-points': 'customerRedeemPoints',
+  '/api/ai/generate-content': 'geminiGenerateContent',
 };
 
 const getRuntimePlatform = () => {
@@ -169,14 +176,14 @@ export const removeTrustedDeviceSecret = async (deviceId) => {
 };
 
 const requestIdentityApi = async (path, payload = {}, { idToken = '' } = {}) => {
-  const response = await fetch(getIdentityApiUrl(path), {
+  const response = await fetchWithTimeout(getIdentityApiUrl(path), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
     },
     body: JSON.stringify(payload),
-  });
+  }, IDENTITY_REQUEST_TIMEOUT_MS);
   let body = {};
   try {
     body = await response.json();
@@ -195,6 +202,15 @@ export const identityLogin = ({ identifier, password, appId }) => requestIdentit
   identifier,
   password,
   appId,
+  device: getIdentityDevice(),
+});
+
+export const identityRegisterCompany = ({ companyName, phone, password, appId, companySettings }) => requestIdentityApi('/api/identity/register-company', {
+  companyName,
+  phone,
+  password,
+  appId,
+  companySettings,
   device: getIdentityDevice(),
 });
 
@@ -257,5 +273,37 @@ export const identityRevokeDevices = async ({ idToken, deviceId = '', all = fals
 };
 export const identityLogout = ({ idToken }) => requestIdentityApi('/api/identity/logout', { device: getIdentityDevice() }, { idToken });
 export const identityListAudit = ({ idToken }) => requestIdentityApi('/api/identity/audit', {}, { idToken });
+
+export const customerPortalBootstrap = ({ idToken, appId }) => requestIdentityApi('/api/customer/bootstrap', {
+  appId,
+}, { idToken });
+
+export const customerRedeemPoints = ({
+  idToken,
+  appId,
+  customerId,
+  pointsToUse,
+  amount,
+  requestId,
+}) => requestIdentityApi('/api/customer/redeem-points', {
+  appId,
+  customerId,
+  pointsToUse,
+  amount,
+  requestId,
+}, { idToken });
+
+export const requestAiGenerateContent = async ({ idToken, appId, request }) => fetchWithTimeout(
+  getIdentityApiUrl('/api/ai/generate-content'),
+  {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({ appId, request }),
+  },
+  AI_REQUEST_TIMEOUT_MS,
+);
 
 export const getIdentityApiUrlForDiagnostics = () => getIdentityApiBaseUrl();

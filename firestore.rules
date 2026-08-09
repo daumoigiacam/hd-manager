@@ -7,15 +7,118 @@ service cloud.firestore {
     }
 
     function hasCompanyClaim() {
-      return signedIn() && request.auth.token.companyId is string;
+      return signedIn()
+        && request.auth.token.companyId is string
+        && request.auth.token.companyId.size() > 0;
     }
 
-    function hasNoCompanyField(data) {
-      return !('companyId' in data);
+    function hasIdentitySession() {
+      return hasCompanyClaim()
+        && request.auth.token.identityId is string
+        && request.auth.token.identityId.size() > 0
+        && request.auth.token.accountType is string
+        && request.auth.token.accountType in ['employee', 'customer'];
     }
 
-    function belongsToSignedInCompany(data) {
-      return !hasCompanyClaim() || hasNoCompanyField(data) || data.companyId == request.auth.token.companyId;
+    function isEmployeeIdentity() {
+      return hasIdentitySession() && request.auth.token.accountType == 'employee';
+    }
+
+    function isCustomerIdentity() {
+      return hasIdentitySession()
+        && request.auth.token.accountType == 'customer'
+        && request.auth.token.customerId is string
+        && request.auth.token.customerId.size() > 0
+        && request.auth.token.appUserId is string
+        && request.auth.token.appUserId.size() > 0;
+    }
+
+    function belongsToSignedInCompany(collectionId, docId, data) {
+      return hasIdentitySession()
+        && (
+          (collectionId == 'companies' && docId == request.auth.token.companyId)
+          || (
+            collectionId != 'companies'
+            && data.companyId is string
+            && data.companyId == request.auth.token.companyId
+          )
+        );
+    }
+
+    function customerOwnsDocument(collectionId, docId, data) {
+      return isCustomerIdentity()
+        && (
+          (collectionId == 'customers' && docId == request.auth.token.customerId)
+          || ('customerId' in data && data.customerId == request.auth.token.customerId)
+          || ('customer_id' in data && data.customer_id == request.auth.token.customerId)
+          || ('createdByCustomerId' in data && data.createdByCustomerId == request.auth.token.customerId)
+          || ('senderCustomerId' in data && data.senderCustomerId == request.auth.token.customerId)
+        );
+    }
+
+    function canCustomerReadDocument(collectionId, docId, data) {
+      return isCustomerIdentity()
+        && !(collectionId in ['companies', 'products', 'reward_catalog', 'promotions', 'customer_accounts'])
+        && customerOwnsDocument(collectionId, docId, data);
+    }
+
+    function isCustomerWritableCollection(collectionId) {
+      return collectionId in [
+        'customers',
+        'bankAccounts',
+        'customer_cart',
+        'notifications',
+        'orderRequests',
+        'order_requests',
+        'messages'
+      ];
+    }
+
+    function canCustomerCreateDocument(collectionId, docId, data) {
+      return isCustomerWritableCollection(collectionId)
+        && customerOwnsDocument(collectionId, docId, data);
+    }
+
+    function canCustomerUpdateDocument(collectionId, docId, oldData, newData) {
+      return isCustomerWritableCollection(collectionId)
+        && customerOwnsDocument(collectionId, docId, oldData)
+        && customerOwnsDocument(collectionId, docId, newData)
+        && newData.companyId == oldData.companyId
+        && (
+          collectionId != 'customers'
+          || newData.diff(oldData).affectedKeys().hasOnly([
+            'name',
+            'customerHonorific',
+            'phone',
+            'avatarUrl',
+            'avatar',
+            'address',
+            'location',
+            'locationUrl',
+            'locationInput',
+            'locationLat',
+            'locationLng',
+            'mapLocation',
+            'locationUpdatedAt',
+            'locationSource',
+            'birthday',
+            'dateOfBirth',
+            'email',
+            'zaloGroupLink',
+            'zaloLink',
+            'updatedAt'
+          ])
+        );
+    }
+
+    function canCustomerDeleteDocument(collectionId, docId, data) {
+      return collectionId in ['customer_cart', 'orderRequests', 'order_requests']
+        && customerOwnsDocument(collectionId, docId, data);
+    }
+
+    function canReadApplicationDocument(collectionId, docId, data) {
+      return (isEmployeeIdentity() && collectionId != 'customer_accounts')
+        || canCustomerReadDocument(collectionId, docId, data);
     }
 
     function employeePath(appId, employeeId) {
@@ -43,7 +146,7 @@ service cloud.firestore {
     }
 
     function isPayrollManager(appId) {
-      return signedIn()
+      return isEmployeeIdentity()
         && (
           (
             'role' in request.auth.token
@@ -450,22 +553,28 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/public/data/{collectionId}/{docId} {
-      allow get: if signedIn()
+      allow get: if hasIdentitySession()
         && (
           resource == null
             ? (!isProtectedPayrollCollection(collectionId) || isPayrollManager(appId))
             : (
-              belongsToSignedInCompany(resource.data)
+              belongsToSignedInCompany(collectionId, docId, resource.data)
+              && canReadApplicationDocument(collectionId, docId, resource.data)
               && canReadPayrollDocument(collectionId, resource.data)
             )
         );
 
-      allow list: if signedIn()
-        && belongsToSignedInCompany(resource.data)
+      allow list: if hasIdentitySession()
+        && belongsToSignedInCompany(collectionId, docId, resource.data)
+        && canReadApplicationDocument(collectionId, docId, resource.data)
         && canReadPayrollDocument(collectionId, resource.data);
 
-      allow create: if signedIn()
-        && belongsToSignedInCompany(request.resource.data)
+      allow create: if hasIdentitySession()
+        && belongsToSignedInCompany(collectionId, docId, request.resource.data)
+        && (
+          (isEmployeeIdentity() && collectionId != 'customer_accounts')
+          || canCustomerCreateDocument(collectionId, docId, request.resource.data)
+        )
         && (
           (collectionId == 'payrollPeriods' && isValidLockedPayrollPeriodCreate(appId, docId))
           || (collectionId == 'payrollSnapshots' && isValidPayrollSnapshotCreate(appId, docId))
@@ -477,9 +586,13 @@ service cloud.firestore {
           || (!isProtectedPayrollCollection(collectionId) && !isImmutablePayrollAudit(collectionId, request.resource.data))
         );
 
-      allow update: if signedIn()
-        && belongsToSignedInCompany(resource.data)
-        && belongsToSignedInCompany(request.resource.data)
+      allow update: if hasIdentitySession()
+        && belongsToSignedInCompany(collectionId, docId, resource.data)
+        && belongsToSignedInCompany(collectionId, docId, request.resource.data)
+        && (
+          (isEmployeeIdentity() && collectionId != 'customer_accounts')
+          || canCustomerUpdateDocument(collectionId, docId, resource.data, request.resource.data)
+        )
         && !isImmutablePayrollCollection(collectionId)
         && !isImmutablePayrollAudit(collectionId, resource.data)
         && (
@@ -503,8 +616,12 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if signedIn()
-        && belongsToSignedInCompany(resource.data)
+      allow delete: if hasIdentitySession()
+        && belongsToSignedInCompany(collectionId, docId, resource.data)
+        && (
+          (isEmployeeIdentity() && collectionId != 'customer_accounts')
+          || canCustomerDeleteDocument(collectionId, docId, resource.data)
+        )
         && !isImmutablePayrollCollection(collectionId)
         && !isImmutablePayrollAudit(collectionId, resource.data)
         && (

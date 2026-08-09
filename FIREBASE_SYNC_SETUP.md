@@ -7,7 +7,7 @@ App hiện có 2 chế độ dữ liệu:
 
 ## 1. Cấu hình `.env.local`
 
-Giữ `VITE_GEMINI_API_KEY` nếu đang dùng AI, sau đó thêm các dòng Firebase:
+Gemini dùng khóa phía Cloud Functions (`functions/.env` hoặc secret production), không đặt khóa Gemini trong biến `VITE_*`. Ở frontend chỉ cần giữ `VITE_GEMINI_PROXY_ENABLED=true`, sau đó thêm các dòng Firebase:
 
 ```env
 VITE_DATA_MODE=cloud

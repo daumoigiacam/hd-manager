@@ -328,3 +328,101 @@ export const resolveTransactionBillingSnapshot = ({
     hasFrozenPricing,
   };
 };
+
+// A warehouse dispatch records what physically left the warehouse.  A sales
+// order created from that dispatch must always bill by the customer's pricing
+// unit, never by whichever quantity field happened to be entered first.
+export const buildWarehouseDispatchOrderBillingSnapshot = ({
+  dispatch = null,
+  product = null,
+  configuration = null,
+  sourceUnitPrice = 0,
+  sourcePricingUnit = '',
+} = {}) => {
+  const source = dispatch || {};
+  const frozenSnapshot = resolveTransactionBillingSnapshot({ record: source, product });
+  const hasCustomerPricingConfiguration = configuration?.isCustomerConfigured !== false;
+  const configuredBillingUnit = hasCustomerPricingConfiguration
+    ? normalizeProductPricingUnit(configuration?.billingUnit || configuration?.pricingUnit || '')
+    : '';
+  const fallbackBillingUnit = normalizeProductPricingUnit(
+    frozenSnapshot.billingUnit
+    || source.billingUnit
+    || source.pricingUnit
+    || source.quantityUnit
+    || source.unit
+    || getProductPrimaryPricingUnit(product || {}, 'Con')
+  );
+  const billingUnit = configuredBillingUnit || fallbackBillingUnit;
+  const configuredUnitPrice = hasCustomerPricingConfiguration ? parseMoney(configuration?.unitPrice) : 0;
+  const matchedSourceUnit = normalizeProductPricingUnit(sourcePricingUnit);
+  const matchedSourcePrice = parseMoney(sourceUnitPrice);
+  const frozenPriceCanBeUsed = isSameBillingUnit(frozenSnapshot.billingUnit, billingUnit);
+  const sourcePriceCanBeUsed = matchedSourcePrice > 0
+    && matchedSourceUnit
+    && isSameBillingUnit(matchedSourceUnit, billingUnit);
+  const unitPrice = sourcePriceCanBeUsed
+    ? matchedSourcePrice
+    : (configuredUnitPrice > 0
+      ? configuredUnitPrice
+      : (frozenPriceCanBeUsed
+        ? parseMoney(frozenSnapshot.unitPrice)
+        : parseMoney(source.unitPrice ?? source.price ?? product?.sellingPrice)));
+  const effectiveConfiguration = {
+    ...(configuration || {}),
+    productId: product?.id || source.productId || configuration?.productId || '',
+    productName: product?.name || source.productName || source.productNameSnapshot || configuration?.productName || '',
+    configurationId: configuration?.configurationId || source.configurationId || frozenSnapshot.configurationId || '',
+    billingUnit,
+    pricingUnit: billingUnit,
+    unitPrice,
+    source: configuredBillingUnit ? 'customer_fixed_product' : 'warehouse_dispatch_fallback',
+  };
+  const configuredActualUnit = resolveCustomerProductActualUnit(effectiveConfiguration, product);
+  const actualUnit = normalizeProductPricingUnit(
+    source.actualUnit
+    || source.actualQuantityUnit
+    || source.quantityUnit
+    || source.unit
+    || frozenSnapshot.actualUnit
+    || configuredActualUnit
+    || billingUnit
+  );
+  const actualQuantity = parsePositiveNumber(
+    source.actualQuantity
+    ?? source.quantity
+    ?? source.pieceCount
+    ?? source.quantityCount
+    ?? frozenSnapshot.actualQuantity
+  );
+  const actualWeightKg = parsePositiveNumber(
+    source.actualWeightKg
+    ?? source.weightKg
+    ?? source.totalKg
+    ?? source.kg
+    ?? source.weight
+    ?? frozenSnapshot.actualWeightKg
+  );
+  const usesWeightPricing = isSameBillingUnit(billingUnit, 'Kg');
+  const fallbackFrozenQuantity = frozenPriceCanBeUsed
+    ? parsePositiveNumber(frozenSnapshot.billingQuantity)
+    : 0;
+  const billingQuantity = usesWeightPricing
+    ? (actualWeightKg > 0 ? actualWeightKg : fallbackFrozenQuantity)
+    : (actualQuantity > 0 ? actualQuantity : fallbackFrozenQuantity);
+
+  return buildCustomerProductBillingSnapshot({
+    configuration: effectiveConfiguration,
+    product,
+    productId: effectiveConfiguration.productId,
+    productName: effectiveConfiguration.productName,
+    sizeLabel: source.sizeLabel || source.size || '',
+    attributeLabel: source.attributeLabel || source.productAttribute || '',
+    actualQuantity,
+    actualUnit,
+    actualWeightKg,
+    billingQuantity,
+    billingUnit,
+    unitPrice,
+  });
+};

@@ -23,8 +23,10 @@ const latestJson = (prefix) => {
   if (!fs.existsSync(RESULT_DIR)) return null;
   return fs.readdirSync(RESULT_DIR)
     .filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
-    .map((name) => path.join(RESULT_DIR, name))
-    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] || null;
+    // Report filenames end in an ISO timestamp. Sorting the names avoids
+    // selecting an older report when copied files share the same mtime.
+    .sort((a, b) => b.localeCompare(a))
+    .map((name) => path.join(RESULT_DIR, name))[0] || null;
 };
 
 const makeCheck = (name, actual, target, pass, source, warning = '') => ({
@@ -68,24 +70,32 @@ const main = () => {
     const crashCount = report.crash ? 1 : 0;
     const eventLoopMaxMs = report.eventLoop?.maxMs || 0;
 
-    checks.push(makeCheck('API normal', maxApiMs, `<= ${KPI.apiMs} ms`, maxApiMs <= KPI.apiMs, path.basename(bigStressPath)));
-    checks.push(makeCheck('Screen open', maxScreenMs, '<= 2000 ms', maxScreenMs <= 2000, path.basename(bigStressPath)));
-    checks.push(makeCheck('Memory leak', memoryLeakCount, KPI.memoryLeaks, memoryLeakCount === KPI.memoryLeaks, path.basename(bigStressPath)));
-    checks.push(makeCheck('Crash local simulation', crashCount, 0, crashCount === 0, path.basename(bigStressPath)));
-    checks.push(makeCheck('Local UI freeze', eventLoopMaxMs, '<= 50 ms event-loop max', eventLoopMaxMs <= 50, path.basename(bigStressPath)));
+    const simulationWarning = 'Local Node simulation only; this is not physical-device or production-network evidence.';
+    checks.push(makeCheck('API simulation', maxApiMs, `<= ${KPI.apiMs} ms`, maxApiMs <= KPI.apiMs, path.basename(bigStressPath), simulationWarning));
+    checks.push(makeCheck('Screen-work simulation', maxScreenMs, '<= 2000 ms', maxScreenMs <= 2000, path.basename(bigStressPath), simulationWarning));
+    checks.push(makeCheck('Memory leak simulation', memoryLeakCount, KPI.memoryLeaks, memoryLeakCount === KPI.memoryLeaks, path.basename(bigStressPath), simulationWarning));
+    checks.push(makeCheck('Crash local simulation', crashCount, 0, crashCount === 0, path.basename(bigStressPath), simulationWarning));
+    checks.push(makeCheck('Local event-loop freeze', eventLoopMaxMs, '<= 50 ms event-loop max', eventLoopMaxMs <= 50, path.basename(bigStressPath), simulationWarning));
   } else {
     checks.push(makeCheck('Big stress report', 'missing', 'required', false, 'test-results'));
   }
 
   if (perfPath) {
     const report = readJson(perfPath);
-    const worstOptimizedOpenMs = Math.max(...(report.results || []).map((item) => item.optimizedTarget?.openMs || 0), 0);
-    const optimizedStatuses = new Set((report.results || []).map((item) => item.optimizedTarget?.status));
+    const currentFailures = (report.results || []).filter((item) => item.current?.status === 'FAIL').length;
+    const highBottlenecks = (report.bottlenecks || []).filter((item) => item.severity === 'HIGH').length;
     checks.push(makeCheck(
-      'Cold Start architecture target',
-      worstOptimizedOpenMs,
-      `<= ${KPI.coldStartMs} ms`,
-      worstOptimizedOpenMs <= KPI.coldStartMs && !optimizedStatuses.has('FAIL'),
+      'Current architecture scale projection',
+      currentFailures,
+      '0 failed scale points',
+      currentFailures === 0,
+      path.basename(perfPath),
+    ));
+    checks.push(makeCheck(
+      'Static HIGH performance bottlenecks',
+      highBottlenecks,
+      0,
+      highBottlenecks === 0,
       path.basename(perfPath),
     ));
   } else {

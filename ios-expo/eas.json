@@ -10,7 +10,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_HD_MANAGER_URL": "https://hd-manager-c5839.web.app"
+        "EXPO_PUBLIC_HD_MANAGER_URL": "https://app.hdconnect.net"
       }
     },
     "simulator": {
@@ -18,13 +18,13 @@
         "simulator": true
       },
       "env": {
-        "EXPO_PUBLIC_HD_MANAGER_URL": "https://hd-manager-c5839.web.app"
+        "EXPO_PUBLIC_HD_MANAGER_URL": "https://app.hdconnect.net"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_HD_MANAGER_URL": "https://hd-manager-c5839.web.app"
+        "EXPO_PUBLIC_HD_MANAGER_URL": "https://app.hdconnect.net"
       }
     }
   }
