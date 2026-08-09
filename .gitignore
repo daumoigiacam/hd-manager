@@ -14,6 +14,22 @@ stable-apk-web/
 *.aab
 *.exe
 *.msi
+*.idsig
+
+# One-off export and local validation artifacts
+/hdconnect-website-upload*.zip
+/temp-restore*.zip
+/sanity-web/
+/ios-expo/dist-ios-test/
+/ios-expo/expo-go-qr.png
+/.last_export_stamp.txt
+/after-login.png
+/*-check.png
+/report-dashboard-*.png
+/share-popup-*.png
+/order-view.png
+/employees-owner.png
+/more-menu-owner.png
 
 # Local env files
 .env
