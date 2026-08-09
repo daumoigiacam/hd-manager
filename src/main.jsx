@@ -64,7 +64,11 @@ function installResponsiveViewportVars() {
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const isStandalone = isStandaloneWebApp();
     const topFallback = isAndroidNative ? '24px' : isIosWeb ? (isStandalone ? '18px' : '12px') : '0px';
-    const bottomFallback = isAndroidNative ? '10px' : isIosWeb ? '18px' : '0px';
+    const bottomFallback = isAndroidNative
+      ? '10px'
+      : isIosWeb
+        ? (isStandalone ? '18px' : '4px')
+        : '0px';
 
     // Some WebView/Safari surfaces report env(safe-area-inset-*) as 0 while drawing under system bars.
     root.style.setProperty('--hd-safe-top-fallback', topFallback);

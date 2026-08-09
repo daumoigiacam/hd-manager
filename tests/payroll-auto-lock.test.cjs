@@ -11,14 +11,14 @@ const {
   inspectPayrollAutoLockCandidate,
   isCompleteFinalPayrollSnapshot,
   isPayrollAutoLockDue,
-  normalizePayrollAutoLockStatus
+  normalizePayrollAutoLockStatus,
+  runPayrollAutoLockPlanStateMachine
 } = require('../functions/payrollAutoLock.js');
 
 let passed = 0;
+const cases = [];
 const test = (name, callback) => {
-  callback();
-  passed += 1;
-  console.log(`PASS ${name}`);
+  cases.push({ name, callback });
 };
 
 const dueClock = { dateKey: '2026-07-31', hour: 23, minute: 59, second: 59 };
@@ -161,6 +161,95 @@ test('the complete close flow cannot skip any state', () => {
   );
 });
 
+test('one scheduler invocation completes the full validated close flow', async () => {
+  const eligibilityStates = [
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK
+  ];
+  let eligibilityCalls = 0;
+  let finalizeCalls = 0;
+  const result = await runPayrollAutoLockPlanStateMachine({
+    initialStatus: PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN,
+    evaluateEligibility: async () => ({ state: eligibilityStates[eligibilityCalls++] }),
+    finalizeLock: async () => {
+      finalizeCalls += 1;
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED, totalEndingDebt: 2_000_000 };
+    }
+  });
+
+  assert.equal(result.state, PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED);
+  assert.equal(result.transitionCount, 4);
+  assert.equal(eligibilityCalls, 3);
+  assert.equal(finalizeCalls, 1);
+  assert.deepEqual(result.transitions.map(transition => transition.state), [
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.SNAPSHOT_VALIDATED,
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK,
+    PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED
+  ]);
+});
+
+test('the scheduler stops safely when production Rules are not confirmed', async () => {
+  let finalizeCalls = 0;
+  const result = await runPayrollAutoLockPlanStateMachine({
+    initialStatus: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+    evaluateEligibility: async () => ({
+      state: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+      gateState: 'RULES_PENDING'
+    }),
+    finalizeLock: async () => {
+      finalizeCalls += 1;
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED };
+    }
+  });
+
+  assert.equal(result.state, PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING);
+  assert.equal(result.gateState, 'RULES_PENDING');
+  assert.equal(result.transitionCount, 1);
+  assert.equal(finalizeCalls, 0);
+});
+
+test('the scheduler never finalizes a payroll period that needs review', async () => {
+  let finalizeCalls = 0;
+  const result = await runPayrollAutoLockPlanStateMachine({
+    initialStatus: PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING,
+    evaluateEligibility: async () => ({
+      state: PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW,
+      blockers: ['policySnapshot.values']
+    }),
+    finalizeLock: async () => {
+      finalizeCalls += 1;
+      return { state: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED };
+    }
+  });
+
+  assert.equal(result.state, PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW);
+  assert.equal(result.transitionCount, 1);
+  assert.equal(finalizeCalls, 0);
+});
+
+test('a concurrent worker result is reconciled without duplicate finalization', async () => {
+  let eligibilityCalls = 0;
+  let finalizeCalls = 0;
+  const result = await runPayrollAutoLockPlanStateMachine({
+    initialStatus: PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN,
+    evaluateEligibility: async () => {
+      eligibilityCalls += 1;
+      return { state: 'skipped', status: PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK };
+    },
+    finalizeLock: async () => {
+      finalizeCalls += 1;
+      return { state: 'already_locked' };
+    }
+  });
+
+  assert.equal(result.state, PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED);
+  assert.equal(result.completionReason, 'period_already_locked');
+  assert.equal(eligibilityCalls, 1);
+  assert.equal(finalizeCalls, 1);
+});
+
 test('production Rules confirmation is mandatory during CLOSING', () => {
   const result = inspectAtStatus(PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING, { runtimeRulesVersion: '' });
   assert.equal(result.state, PAYROLL_AUTO_LOCK_PLAN_STATUS.CLOSING);
@@ -260,4 +349,16 @@ test('reads a Vietnam clock in a timezone-safe format', () => {
   assert.deepEqual(clock, dueClock);
 });
 
-console.log(`\nPayroll auto lock: ${passed}/${passed} cases PASS`);
+const run = async () => {
+  for (const entry of cases) {
+    await entry.callback();
+    passed += 1;
+    console.log(`PASS ${entry.name}`);
+  }
+  console.log(`\nPayroll auto lock: ${passed}/${cases.length} cases PASS`);
+};
+
+run().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

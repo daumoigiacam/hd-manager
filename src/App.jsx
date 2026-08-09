@@ -85,6 +85,11 @@ import {
   getRelatedShareCollectionItems,
   upsertOrderIntoShareCollection
 } from './utils/orderShareCache.js';
+import {
+  applyOrderRequestClassificationEdit,
+  getOrderRequestSizeDisplayValue
+} from './utils/orderRequestEditing.js';
+import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -170,6 +175,7 @@ import {
 import { HDButton, HDBadge } from './design-system/index.js';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
+  getProductCatalogUnitSuggestions,
   getProductPrimaryPricingUnit,
   normalizeProductPricingUnit,
   normalizeUnitPriceMap,
@@ -197,6 +203,7 @@ import {
 import {
   getBiometricAvailability,
   getIdentityDevice,
+  isIdentityTenantValidationReady,
   identityCompleteRecovery,
   identityCompleteSetup,
   identityLogin,
@@ -11779,6 +11786,9 @@ export default function App() {
   const identitySetupPendingRef = useRef(false);
   const [pendingFirebaseWriteCount, setPendingFirebaseWriteCount] = useState(pendingFirebaseWritesRef.current.length);
   const [loadedCollections, setLoadedCollections] = useState({});
+  const [loadedCollectionsTenantId, setLoadedCollectionsTenantId] = useState(
+    () => `${persistedSession.currentUser?.companyId || ''}`.trim()
+  );
   const [realtimeStatus, setRealtimeStatus] = useState({
     state: 'idle',
     collection: '',
@@ -11803,6 +11813,7 @@ export default function App() {
     lastRealtimeSnapshotAtRef.current.clear();
     lastRealtimeServerSnapshotAtRef.current.clear();
     setPendingFirebaseWriteCount(pendingFirebaseWritesRef.current.length);
+    setLoadedCollectionsTenantId(companyId);
     setLoadedCollections({});
   }, [currentUser?.companyId]);
 
@@ -12517,6 +12528,7 @@ export default function App() {
         if (!claims.identityId || !claims.companyId || !claims.accountType) return;
         const restoredUser = {
           id: claims.appUserId || '',
+          identityKey: claims.identityId || '',
           accountId: claims.accountType === 'customer' ? (claims.appUserId || '') : undefined,
           customerId: claims.customerId || undefined,
           companyId: claims.companyId,
@@ -12768,7 +12780,7 @@ export default function App() {
       });
     };
     const markCollectionLoaded = (colName) => {
-      if (!colName) return;
+      if (!colName || activeTenantScopeRef.current !== tenantCompanyId) return;
       pendingLoadedCollectionMarks.add(colName);
       if (loadedCollectionMarkTimer) return;
       loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
@@ -14224,15 +14236,12 @@ export default function App() {
     }
   };
 
-  const handleIdentityCompleteRecovery = async ({ resetToken, password }) => {
+  const handleIdentityCompleteRecovery = async ({ resetToken, password, identifier }) => {
     try {
-      const session = await identityCompleteRecovery({ resetToken, password });
-      identitySetupPendingRef.current = Boolean(session.requiresSetup);
-      const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
-      if (!established.success) return established;
-      return { success: true, requiresSetup: Boolean(session.requiresSetup), setup: session.setup || {}, identity: established.identity };
+      const result = await identityCompleteRecovery({ resetToken, password, identifier });
+      return { success: true, message: result.message || 'Đổi mật khẩu thành công.' };
     } catch (error) {
-      return { success: false, message: error?.message || 'Không thể đặt lại mật khẩu.' };
+      return { success: false, message: getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại mật khẩu. Vui lòng xác minh lại rồi thử lần nữa.') };
     }
   };
 
@@ -20082,7 +20091,11 @@ export default function App() {
   const hasOwnerValidationData = isCustomerSession
     ? Boolean(loadedCollections.customers && rawCustomers.length > 0)
     : Boolean(loadedCollections.employees && rawEmployees.length > 0);
-  const hasSessionValidationData = Boolean(effectiveSessionCompanyId) && hasCompanyValidationData && hasOwnerValidationData;
+  const hasSessionValidationData = isIdentityTenantValidationReady({
+    loadedTenantId: loadedCollectionsTenantId,
+    sessionTenantId: effectiveSessionCompanyId,
+    coreDataLoaded: hasCompanyValidationData && hasOwnerValidationData,
+  });
   const isSessionRecovering = Boolean(currentUser) && !isInitialDataLoaded && !sessionRecoveryTimedOut;
   const hasValidSessionOwner = isCustomerSession ? Boolean(currentCustomerInfo || sessionCustomerRecord) : Boolean(sessionEmployeeRecord);
   const isSessionInvalid = Boolean(currentUser) && hasSessionValidationData && !isSessionRecovering && (!currentUser?.id || !effectiveSessionCompanyId || !companyInfo || !hasValidSessionOwner);
@@ -20552,7 +20565,7 @@ const APP_NAV_ITEM_MAP = {
   delivery_reports: { id: 'delivery_reports', label: 'Báo cáo', icon: <Camera /> },
   warehouse_import: { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package /> },
   customers: { id: 'customers', label: 'Khách hàng', icon: <Users /> },
-  debt: { id: 'debt', label: 'Công nợ', icon: <BookText /> },
+  debt: { id: 'debt', label: 'Sổ nợ', icon: <BookText /> },
   finance: { id: 'finance', label: 'Thu chi', icon: <ArrowRightLeft /> },
   bank_payments: { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard /> },
   messages: { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle /> },
@@ -20725,6 +20738,7 @@ function MainAppView({
   const canUseCompanyHomeDashboard = isOwnerAccount || isAccounting;
   const isSales = isEmployeeSalesPosition(employee);
   const isDriver = isEmployeeDriverPosition(employee);
+  const isDeliveryParticipant = isEmployeeDeliveryParticipant(employee);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
   const officialExpenses = useMemo(() => (expenses || []).filter(expense => isCashflowOfficial(expense)), [expenses]);
   const officialPayments = useMemo(() => (payments || []).filter(payment => isCashflowOfficial(payment)), [payments]);
@@ -20834,8 +20848,8 @@ function MainAppView({
     tabPermissions.warehouse_dispatch
   ]);
 
-  // Keep footer ordering local to this device/account. Permissions remain the
-  // source of truth; usage only decides which allowed modules are promoted.
+  // Usage may organize the wider desktop sidebar, while the mobile footer is
+  // deliberately fixed by role and always remains permission-gated.
   const footerUsageKey = useMemo(
     () => `hd-footer-usage-v1:${currentCompany?.id || currentUser?.companyId || 'local'}:${employee?.id || currentUser?.employeeId || currentUser?.id || 'anonymous'}`,
     [currentCompany?.id, currentUser?.companyId, currentUser?.employeeId, currentUser?.id, employee?.id]
@@ -22054,12 +22068,12 @@ function MainAppView({
     if (isCompactHeaderAction && headerSearchOpen) {
       return (
         <HDHeader className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition shrink-0">
               <ChevronLeft size={23} />
             </button>
-            <div data-search-zone="true" className="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-white px-3 py-2 text-emerald-700 shadow-sm">
-              <Search size={17} className="shrink-0 text-emerald-500" />
+            <div data-search-zone="true" className="hd-header-search-field flex h-11 min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded-full bg-white px-2.5 text-emerald-700">
+              <Search size={16} className="shrink-0 text-emerald-500" />
               <input
                 ref={inlineHeaderSearchInputRef}
                 type="search"
@@ -22071,7 +22085,7 @@ function MainAppView({
                 placeholder={inlineHeaderSearchPlaceholder}
                 enterKeyHint="search"
                 autoFocus
-                className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-gray-800 outline-none placeholder:text-gray-400"
+                className="hd-header-search-input h-full min-w-0 flex-1 bg-transparent p-0 text-sm font-semibold text-gray-800 placeholder:text-gray-400"
               />
               {(headerSearchKeyword || headerSearchOpen) && (
                 <button
@@ -22080,7 +22094,7 @@ function MainAppView({
                     if (headerSearchKeyword) updateHeaderSearchKeyword('');
                     else closeHeaderSearch();
                   }}
-                  className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  className="hd-header-search-clear inline-flex w-10 shrink-0 items-center justify-center rounded-full p-0 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                   aria-label="Xóa tìm kiếm"
                 >
                   <X size={15} />
@@ -22504,78 +22518,22 @@ function MainAppView({
   };
 
   const footerNavItems = useMemo(() => {
-    const itemMap = APP_NAV_ITEM_MAP;
-    const rolePriorityIds = isWarehouseScale
-        ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'warehouse_import', 'more']
-        : isDriver
-          ? ['home', 'delivery_reports', 'customers', 'maps', 'more']
-          : isSales
-            ? ['home', 'order_requests', 'debt', 'customers', 'pricing', 'more']
-            : (!isOwnerAccount && isAccounting)
-              ? ['home', 'orders', 'order_requests', 'customers', 'debt', 'more']
-              : ['home', 'orders', 'warehouse_dispatch', 'order_requests', 'customers', 'more'];
-    const rolePriorityIndex = new Map(rolePriorityIds.map((id, index) => [id, index]));
-    const sortedAllowedItems = Object.keys(itemMap)
-      .filter(id => id !== 'more' && tabPermissions[id])
-      .sort((leftId, rightId) => {
-        if (leftId === 'home') return -1;
-        if (rightId === 'home') return 1;
-        const usageDifference = Number(footerUsage[rightId] || 0) - Number(footerUsage[leftId] || 0);
-        if (usageDifference !== 0) return usageDifference;
-        return (rolePriorityIndex.get(leftId) ?? 999) - (rolePriorityIndex.get(rightId) ?? 999);
-      });
-
-    // Keep only the shell modules stable. All other visible slots follow the
-    // account's actual usage so the footer learns each user's workflow.
-    const pinnedIds = new Set(['home']);
-    if (
-      activeTab !== 'more'
-      && activeTab !== 'home'
-      && itemMap[activeTab]
-      && tabPermissions[activeTab]
-    ) {
-      pinnedIds.add(activeTab);
-    }
-
-    const pinnedItems = sortedAllowedItems.filter(id => pinnedIds.has(id));
-    const remainingItems = sortedAllowedItems.filter(id => !pinnedIds.has(id));
-    const allowedItems = [...pinnedItems, ...remainingItems]
-      .slice(0, 4)
-      .map(id => itemMap[id]);
-    return [...allowedItems, itemMap.more];
+    const fixedIds = getFixedFooterNavIds({
+      isOwnerAccount,
+      isAccounting,
+      isSales,
+      isDeliveryParticipant,
+      isWarehouseScale,
+      permissions: tabPermissions,
+    });
+    return fixedIds.map((id) => APP_NAV_ITEM_MAP[id]);
   }, [
-    activeTab,
-    footerUsage,
     isAccounting,
-    isDriver,
+    isDeliveryParticipant,
     isOwnerAccount,
     isSales,
     isWarehouseScale,
-    tabPermissions.company_attendance,
-    tabPermissions.customers,
-    tabPermissions.debt,
-    tabPermissions.delivery_reports,
-    tabPermissions.employee_reviews,
-    tabPermissions.executive_dashboard,
-    tabPermissions.finance,
-    tabPermissions.bank_payments,
-    tabPermissions.home,
-    tabPermissions.messages,
-    tabPermissions.maps,
-    tabPermissions.order_requests,
-    tabPermissions.orders,
-    tabPermissions.pricing,
-    tabPermissions.warehouse_dispatch,
-    tabPermissions.warehouse_import,
-    tabPermissions.asset_management,
-    tabPermissions.payroll,
-    tabPermissions.employees,
-    tabPermissions.products,
-    tabPermissions.price_quotes,
-    tabPermissions.report,
-    tabPermissions.settings,
-    tabPermissions.role_permissions,
-    tabPermissions.billing
+    tabPermissions,
   ]);
   const desktopSidebarItems = useMemo(() => {
     const rolePriorityIds = isWarehouseScale
@@ -25526,7 +25484,7 @@ function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) 
     try {
       const idToken = await onGetIdentityToken?.();
       if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      const result = await identitySetBiometric({ idToken, enabled: !biometricEnabled });
+      const result = await identitySetBiometric({ idToken, enabled: !biometricEnabled, identity: identityUser });
       setBiometricEnabled(Boolean(result?.setup?.biometricEnabled));
       setSecurityStatus(!biometricEnabled ? 'Đã bật Face ID / vân tay trên thiết bị này.' : 'Đã tắt yêu cầu Face ID / vân tay trên thiết bị này.');
       await refreshSecurityData();
@@ -25544,7 +25502,7 @@ function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) 
     try {
       const idToken = await onGetIdentityToken?.();
       if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      await identityRevokeDevices({ idToken, deviceId, all });
+      await identityRevokeDevices({ idToken, deviceId, all, identity: identityUser });
       if (all || deviceId === device.deviceId) {
         await onLogout?.();
         return;
@@ -57573,38 +57531,33 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                       Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.
                     </td>
                   </tr>
-                ) : groupedEditableDispatchRowsByDriver.flatMap(driverGroup => driverGroup.customerGroups.flatMap((group, driverCustomerIndex) => group.rows.map((row, groupRowIndex) => {
+                ) : groupedEditableDispatchRowsByDriver.flatMap(driverGroup => driverGroup.customerGroups.flatMap(group => group.rows.map((row, groupRowIndex) => {
                   const isSelectedEditorRow = dispatchCellEditor?.displayRow?.id === row.id || dispatchCellEditor?.row?.id === row.id;
-                  const isFirstDriverRow = driverCustomerIndex === 0 && groupRowIndex === 0;
-                  const shouldShowDriverCell = isFirstDriverRow;
                   const shouldShowCustomerCell = groupRowIndex === 0;
-                  const driverCellRowSpan = driverGroup.rowsCount;
                   const customerCellRowSpan = group.rows.length;
+                  const rowDriverName = row.assignedDriverName
+                    || row.assignedDriverNameSnapshot
+                    || row.driverNameSnapshot
+                    || (row.assignedDriverId ? employeeLookup.get(row.assignedDriverId)?.name : '')
+                    || 'Chưa giao';
                   return (
                     <React.Fragment key={row.id}>
                     <tr
                       className={`min-h-[56px] transition ${isSelectedEditorRow ? 'bg-emerald-50/70' : row.isMergedDispatchRow ? 'bg-sky-50/40' : ''}`}
                     >
-                      {shouldShowDriverCell && (
-                      <td rowSpan={driverCellRowSpan} className="border border-slate-700 bg-sky-50/60 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                      <td className="border border-slate-700 bg-sky-50/60 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
                         <button
                           type="button"
                           onClick={(event) => openDispatchCellEditor(row, 'assignedDriverId', event)}
                           disabled={!canEditDispatchCellField('assignedDriverId') && !canDelete}
                           className="w-full rounded-xl px-1 py-1 text-center transition hover:bg-sky-100 disabled:cursor-default disabled:hover:bg-transparent"
                           title={canEditDispatchCellField('assignedDriverId') || canDelete ? 'Bấm để sửa người giao' : undefined}
+                          aria-label={`Sửa người giao phiếu xuất của ${group.customerName || row.customerName || 'khách hàng'}`}
                         >
                           <span className="block text-[9px] font-medium uppercase tracking-[0.08em] text-sky-600">Giao hàng</span>
-                          <span className="mt-1 block font-medium text-slate-900">{driverGroup.assignedDriverName || 'Chưa giao'}</span>
-                          {driverGroup.rowsCount > 1 && (
-                            <span className="mt-1 block text-[10px] font-medium text-slate-500">{driverGroup.rowsCount} phiếu</span>
-                          )}
-                          {driverGroup.quantitySummary && (
-                            <span className="mt-1 block text-[10px] font-medium text-emerald-700">{driverGroup.quantitySummary}</span>
-                          )}
+                          <span className="mt-1 block font-medium text-slate-900">{rowDriverName}</span>
                         </button>
                       </td>
-                      )}
                       {shouldShowCustomerCell && (
                       <td rowSpan={customerCellRowSpan} className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
                         <button
@@ -57956,7 +57909,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const canDelete = Boolean(canDeleteOrderRequest);
   const canManage = Boolean(canEdit || canEditDeposit || canDelete);
   const canAccess = Boolean(employee);
-  const quantityUnitOptions = ORDER_REQUEST_QUANTITY_UNIT_OPTIONS;
   const defaultQuantityUnit = 'Con';
   const createDraftItem = (seed = {}) => ({
     localItemId: seed.localItemId || `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -57998,6 +57950,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
   const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
   const [orderCellEditor, setOrderCellEditor] = useState(null);
+  const [orderUnitEditor, setOrderUnitEditor] = useState(null);
   const [isSavingOrderCell, setIsSavingOrderCell] = useState(false);
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
@@ -58096,6 +58049,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         markAppBackHandled(event);
         return;
       }
+      if (orderUnitEditor) {
+        setOrderUnitEditor(null);
+        markAppBackHandled(event);
+        return;
+      }
       if (orderCellEditor && !isSavingOrderCell) {
         setOrderCellEditor(null);
         setInlineEditingRowKey('');
@@ -58130,7 +58088,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     };
     window.addEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
     return () => window.removeEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
-  }, [inlineEditingRowKey, isOrderVoiceListening, isOrderVoiceProcessing, isSavingOrderCell, openDraftPicker, orderCellEditor, showForm, showRequestFilterPanel]);
+  }, [inlineEditingRowKey, isOrderVoiceListening, isOrderVoiceProcessing, isSavingOrderCell, openDraftPicker, orderCellEditor, orderUnitEditor, showForm, showRequestFilterPanel]);
 
   const salesVisibleEmployeeIdSet = useMemo(() => {
     const ids = new Set();
@@ -58154,6 +58112,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi')),
     [products]
   );
+  const quantityUnitOptions = useMemo(() => {
+    const catalogUnits = getProductCatalogUnitSuggestions(activeProducts);
+    return catalogUnits.length > 0 ? catalogUnits : [defaultQuantityUnit];
+  }, [activeProducts]);
   const customerLookup = useMemo(
     () => new Map(availableCustomers.map(customer => [customer.id, customer])),
     [availableCustomers]
@@ -58176,6 +58138,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       product,
       pricingUnit: configuration.billingUnit,
       currentUnit: requestedUnit,
+      catalogUnits: quantityUnitOptions,
       fallback: defaultInputUnit || defaultQuantityUnit,
     });
     const normalizedRequestedUnit = normalizeProductPricingUnit(requestedUnit);
@@ -58200,6 +58163,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       pricingUnit: item.billingUnit || item.pricingUnit || configuration.billingUnit,
       currentUnit: item.quantityUnit || item.actualUnit,
       rememberedUnit: item.rememberedDefaultInputUnit,
+      catalogUnits: quantityUnitOptions,
       fallback: defaultInputUnit || defaultQuantityUnit,
     });
   };
@@ -58247,17 +58211,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const draft = requestDrafts.find(item => item.localId === localId);
     const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
     const product = productLookup.get(item?.productId);
-    if (!draft || !item || !product) {
-      const quantityUnit = normalizeProductPricingUnit(nextUnit);
-      updateDraftItem(localId, itemLocalId, { quantityUnit, actualUnit: quantityUnit, inputUnitTouched: true });
-      return;
-    }
-    const availableUnits = getDraftItemUnitOptions(draft, item);
-    const normalizedNextUnit = normalizeProductPricingUnit(nextUnit);
-    const quantityUnit = availableUnits.find(unit => isSameBillingUnit(unit, normalizedNextUnit));
+    const quantityUnit = normalizeProductPricingUnit(nextUnit);
     if (!quantityUnit) {
-      setRequestError(`Đơn vị đặt của ${product.name || 'sản phẩm'} chưa phù hợp với cấu hình tính giá.`);
-      return;
+      setRequestError('Bạn hãy nhập đơn vị đặt hàng trước khi lưu.');
+      return false;
+    }
+    if (!draft || !item || !product) {
+      updateDraftItem(localId, itemLocalId, { quantityUnit, actualUnit: quantityUnit, inputUnitTouched: true });
+      return true;
     }
     updateDraftItem(localId, itemLocalId, {
       quantityUnit,
@@ -58265,6 +58226,44 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       inputUnitTouched: true
     });
     setRequestError('');
+    return true;
+  };
+  const openDraftItemUnitEditor = (draft = {}, item = {}) => {
+    const product = productLookup.get(item.productId);
+    if (!product) return;
+    const options = quantityUnitOptions;
+    const value = normalizeProductPricingUnit(item.quantityUnit || item.actualUnit)
+      || options[0]
+      || defaultQuantityUnit;
+    setOrderUnitEditor({
+      draftLocalId: draft.localId,
+      itemLocalId: item.localItemId,
+      productName: product.name || 'Sản phẩm',
+      pricingUnit: normalizeProductPricingUnit(item.billingUnit || item.pricingUnit || ''),
+      value,
+      options,
+      error: '',
+    });
+  };
+  const saveDraftItemUnitEditor = (event) => {
+    event?.preventDefault?.();
+    if (!orderUnitEditor) return;
+    const quantityUnit = normalizeProductPricingUnit(orderUnitEditor.value);
+    if (!quantityUnit) {
+      setOrderUnitEditor(previous => ({ ...previous, error: 'Vui lòng nhập tên đơn vị.' }));
+      return;
+    }
+    const isNewCatalogUnit = !quantityUnitOptions.some(unit => isSameBillingUnit(unit, quantityUnit));
+    const saved = handleDraftItemQuantityUnitChange(
+      orderUnitEditor.draftLocalId,
+      orderUnitEditor.itemLocalId,
+      quantityUnit
+    );
+    if (!saved) return;
+    setOrderUnitEditor(null);
+    if (isNewCatalogUnit) {
+      setRequestStatus(`Đã thêm đơn vị đặt "${quantityUnit}". Đơn vị này sẽ được ghi nhớ cho khách và sản phẩm sau khi lưu đơn.`);
+    }
   };
   const getOrderRequestBranchRef = (customer = null, source = {}, fallbackSource = {}) => {
     if (!customer) return { branchId: '', branchName: '', branchAddress: '' };
@@ -58567,9 +58566,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
   const getOrderRequestRowNoteText = (row = {}) => capitalizeFirstPreservingSpacing(`${row?.note || row?.requestNote || ''}`.trim());
   const getOrderRequestRowProductLabel = (row = {}) => row.productShortName || getCompactProductName(null, row.productName || 'Hàng hóa');
-  const getOrderRequestAttributeLabel = (row = {}) => `${row.attributeLabel ?? row.productAttribute ?? row.attribute ?? row.variant ?? ''}`.trim();
-  const getOrderRequestRawSizeLabel = (row = {}) => `${row.sizeLabel ?? row.weightKg ?? row.size ?? ''}`.trim();
-  const getOrderRequestSizeCellLabel = (row = {}) => getOrderRequestAttributeLabel(row) || getOrderRequestRawSizeLabel(row);
+  const getOrderRequestSizeCellLabel = (row = {}) => getOrderRequestSizeDisplayValue(row);
   const buildOrderRequestProductCellText = (row = {}, { multiline = false } = {}) => {
     const productLabel = getOrderRequestRowProductLabel(row);
     const noteLabel = getOrderRequestRowNoteText(row);
@@ -59428,7 +59425,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
 
     const requestItems = (request.items || []).length > 0 ? [...request.items] : (request.primaryItem ? [{ ...request.primaryItem }] : []);
-    requestItems[row.itemIndex] = {
+    requestItems[row.itemIndex] = applyOrderRequestClassificationEdit({
       ...requestItems[row.itemIndex],
       productId: product.id,
       description: product.name || 'Hang hoa',
@@ -59438,15 +59435,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       customerBranchId: branchRef.branchId,
       customerBranchName: branchRef.branchName,
       customerBranchAddress: branchRef.branchAddress,
-      attributeLabel,
-      productAttribute: attributeLabel,
-      sizeLabel,
       ...snapshot,
       unit: snapshot.actualUnit,
       price: snapshot.unitPrice,
       total: snapshot.amount,
       weightKg: snapshot.actualWeightKg,
-    };
+    }, { sizeLabel, attributeLabel });
 
     const normalizedRequest = {
       customerId: customer.id,
@@ -59696,6 +59690,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const availableUnits = getOrderInputUnitOptions({
       product: localProduct,
       pricingUnit: localConfiguration.billingUnit,
+      catalogUnits: quantityUnitOptions,
       fallback: defaultInputUnit || defaultQuantityUnit,
     });
     let preference = null;
@@ -60481,6 +60476,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setRequestDrafts([createDraft()]);
     setRequestError('');
     setOpenDraftPicker(null);
+    setOrderUnitEditor(null);
     setQuickProductSearch('');
   };
 
@@ -60523,9 +60519,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     return raw;
   };
   const formatOrderRequestSizeCell = (row = {}) => {
-    const attributeLabel = getOrderRequestAttributeLabel(row);
-    if (attributeLabel) return attributeLabel;
-    return formatSheetSize(getOrderRequestRawSizeLabel(row));
+    return formatSheetSize(getOrderRequestSizeCellLabel(row));
   };
 
   const formatSheetQuantity = (quantity, unit = '') => {
@@ -61474,8 +61468,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           <div className="mt-4 overflow-x-auto overflow-y-visible rounded-2xl border-2 border-slate-800">
             <table className="order-request-summary-table w-full table-fixed text-center text-[10px] sm:text-[11px] md:text-[13px] text-slate-900">
               <colgroup>
-                <col style={{ width: '22%' }} />
-                <col style={{ width: '26%' }} />
+                <col style={{ width: '24%' }} />
+                <col style={{ width: '24%' }} />
                 <col style={{ width: '19%' }} />
                 <col style={{ width: '14%' }} />
                 <col style={{ width: '19%' }} />
@@ -61559,19 +61553,19 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </button>
                         </td>
                       )}
-                      <td className="max-w-[170px] border border-slate-700 px-2 py-2 font-semibold align-top break-words whitespace-normal">
-                          <div className="space-y-1">
+                      <td className="max-w-[170px] border border-slate-700 px-2 py-2 text-center font-semibold align-top break-words whitespace-normal">
+                          <div className="space-y-1 text-center">
                             <button
                               type="button"
                               onClick={(event) => openOrderCellEditor(row, 'productId', event)}
                               disabled={!canEditGeneral && !canDelete}
-                              className="w-full rounded-xl px-1 py-1 text-left font-semibold text-slate-900 transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
+                              className="w-full rounded-xl px-1 py-1 text-center font-semibold text-slate-900 transition hover:bg-emerald-50 disabled:cursor-default disabled:hover:bg-transparent"
                               title={canEditGeneral || canDelete ? 'Bấm để sửa ô sản phẩm' : undefined}
                             >
                               {getOrderRequestRowProductLabel(row)}
                             </button>
                             {row.isCustomerPortalRequest && row.itemIndex === 0 && row.customerPortalApprovalLabel && (
-                              <div className="flex flex-wrap items-center gap-1.5">
+                              <div className="flex flex-wrap items-center justify-center gap-1.5">
                                 {row.customerPortalApprovalState === 'pending' && row.canApproveCustomerPortal && (
                                   <>
                                     <button
@@ -61707,18 +61701,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       {showForm && (
         <div className="hd-order-request-modal-layer fixed inset-0 z-[120] isolate bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
           <div className="hd-order-request-modal-panel relative z-[121] flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden">
-            <div className={`shrink-0 border-b border-gray-100 flex items-start justify-between gap-4 ${isCompactManualDetailStage ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
-              <div>
+            <div className={`shrink-0 border-b border-gray-100 flex items-start justify-between gap-4 ${(isCompactManualDetailStage || isManualSetupStage) ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
+              <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-emerald-600">{isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên Đơn Đặt'}</p>
-                {(isEditingRequest || isModeSelectionStage || isManualSetupStage || orderEntryMode === 'voice') && (
+                {(isEditingRequest || isModeSelectionStage || orderEntryMode === 'voice') && (
                   <p className="text-xs text-slate-500 mt-2">
                     {isEditingRequest
                       ? 'Bạn có thể sửa khách, mặt hàng, số lượng, giá hoặc ghi chú rồi lưu lại.'
                       : isModeSelectionStage
                         ? 'Chọn cách lên đơn để bắt đầu thao tác nhanh hơn.'
-                        : isManualSetupStage
-                          ? 'Chọn khách hàng trước, app sẽ hiện sản phẩm cố định của khách để bạn tick nhanh.'
-                          : 'AI sẽ hỗ trợ nghe cả đơn và tự tách khách hàng, mặt hàng, size, số lượng và giá.'}
+                        : 'AI sẽ hỗ trợ nghe cả đơn và tự tách khách hàng, mặt hàng, size, số lượng và giá.'}
                   </p>
                 )}
               </div>
@@ -61761,11 +61753,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {isManualSetupStage && primaryDraft && primaryDraftItem && (
-                <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-slate-50">
-                  <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm space-y-4">
-                    <div className="space-y-2 relative">
+                <div className="min-h-0 flex-1 overflow-y-auto space-y-2 bg-slate-50 px-2 pb-2 pt-1.5 sm:px-3 sm:pb-3 sm:pt-2">
+                  <div className="space-y-3 rounded-2xl bg-white px-2 py-2 shadow-sm sm:px-3">
+                    <div className="relative space-y-1.5">
                       <label className="block text-[11px] font-bold uppercase text-gray-500">Họ tên khách hàng</label>
-                      <div className={`flex w-full items-center gap-2 rounded-xl border px-3 py-3 text-sm font-semibold transition-colors duration-200 focus-within:ring-2 focus-within:ring-emerald-500 ${primaryDraft.customerId ? 'border-emerald-300 bg-emerald-50/40' : 'border-gray-200 bg-white'}`}>
+                      <div className={`hd-order-request-customer-search flex h-11 w-full items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition-colors duration-200 focus-within:border-emerald-500 ${primaryDraft.customerId ? 'border-emerald-300 bg-emerald-50/40' : 'border-gray-200 bg-white'}`}>
                         <Search size={15} className="shrink-0 text-emerald-600" />
                         <input
                           type="text"
@@ -61779,7 +61771,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                             customerId: '',
                             customerSearch: capitalizeFirstPreservingSpacing(e.target.value)
                           })}
-                          className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400"
+                          className="hd-order-request-customer-search-input min-w-0 flex-1 border-0 bg-transparent p-0 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-0 focus:ring-0"
                           placeholder="Chọn hoặc tìm khách hàng"
                         />
                         {primaryDraft.customerSearch && (
@@ -61799,8 +61791,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                         {isManualCustomerPickerOpen ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
                       </div>
                       {isManualCustomerPickerOpen && (
-                        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
-                          <div className="max-h-[min(52dvh,430px)] overflow-y-auto p-2 space-y-1">
+                        <div className="mt-1.5 overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-lg" role="listbox" aria-label="Gợi ý khách hàng">
+                          <div className="max-h-[min(40dvh,20rem)] space-y-0.5 overflow-y-auto p-1.5">
                             {manualFilteredCustomers.map(customer => {
                               const isSelectedCustomer = primaryDraft.customerId === customer.id;
                               return (
@@ -61813,11 +61805,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   }}
                                   aria-pressed={isSelectedCustomer}
                                   aria-selected={isSelectedCustomer}
-                                  className={`flex w-full touch-manipulation items-center gap-3 rounded-xl border px-3 py-2 text-left transition-colors duration-200 ${isSelectedCustomer ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-transparent text-slate-900 hover:bg-slate-50'}`}
+                                  role="option"
+                                  className={`flex w-full touch-manipulation items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors duration-200 ${isSelectedCustomer ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-transparent text-slate-900 hover:bg-slate-50'}`}
                                 >
                                   <span className="min-w-0 flex-1">
                                     <span className={`block text-sm ${isSelectedCustomer ? 'font-black' : 'font-semibold'}`}>{customer.name}</span>
-                                    <span className="mt-1 block text-[11px] text-slate-500">{customer.phone || 'Chưa có số điện thoại'}{customer.address ? ` • ${customer.address}` : ''}</span>
+                                    <span className="mt-0.5 block truncate text-[11px] text-slate-500">{customer.phone || 'Chưa có số điện thoại'}{customer.address ? ` • ${customer.address}` : ''}</span>
                                   </span>
                                   {isSelectedCustomer && (
                                     <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
@@ -61943,11 +61936,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </div>
                         )}
                       </div>
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs font-semibold text-slate-400">
-                        Chọn khách hàng trước, app sẽ hiện sản phẩm cố định của khách ở đây.
-                      </div>
-                    )}
+                    ) : null}
                   </div>
 
                   {requestError && (
@@ -62330,17 +62319,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   </div>
 
                                   <div className={isCompactManualDetailStage ? 'p-1' : 'border-r border-slate-200 p-2'}>
-                                    <select
-                                      value={selectedOrderUnit}
-                                      onChange={(event) => handleDraftItemQuantityUnitChange(draft.localId, item.localItemId, event.target.value)}
+                                    <button
+                                      type="button"
+                                      onClick={() => openDraftItemUnitEditor(draft, item)}
                                       disabled={!selectedProduct}
-                                      className={`w-full rounded-xl border border-emerald-200 bg-emerald-50 text-center font-black text-emerald-700 outline-none transition-colors focus:ring-2 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-2 text-sm'}`}
-                                      aria-label={`Đơn vị đặt hàng; tính giá theo ${selectedPricingUnit || 'chưa cấu hình'}`}
-                                      title={selectedPricingUnit ? `Đơn vị đặt hàng. Đơn giá vẫn tính theo ${selectedPricingUnit}.` : 'Đơn vị đặt hàng'}
+                                      className={`flex w-full items-center justify-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 text-center font-black text-emerald-700 outline-none transition-colors hover:bg-emerald-100 focus:ring-2 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-xs' : 'h-[52px] px-2 text-sm'}`}
+                                      aria-label={`Sửa đơn vị đặt hàng; tính giá theo ${selectedPricingUnit || 'chưa cấu hình'}`}
+                                      title={selectedPricingUnit ? `Bấm để sửa đơn vị đặt. Đơn giá vẫn tính theo ${selectedPricingUnit}.` : 'Bấm để sửa đơn vị đặt'}
                                     >
-                                      {!selectedProduct && <option value="">--</option>}
-                                      {itemUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
-                                    </select>
+                                      <span className="min-w-0 truncate">{selectedProduct ? selectedOrderUnit : '--'}</span>
+                                      {selectedProduct && <Edit3 size={isCompactManualDetailStage ? 11 : 14} className="shrink-0" aria-hidden="true" />}
+                                    </button>
                                   </div>
 
                                   {!isCompactManualDetailStage && (
@@ -62516,11 +62505,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {!isOrderDetailStage && (
-                <div className="hd-order-request-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]">
+                <div className={`hd-order-request-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white ${isManualSetupStage ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+8px)] pt-2' : 'p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]'}`}>
                   <div className="flex gap-3">
                     <button type="button" onClick={closeOrderRequestForm} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60">Hủy</button>
                     {isManualSetupStage && (
-                      <button type="button" onClick={continueManualOrderEntry} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-emerald-500 px-4 py-3 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60">
+                      <button type="button" onClick={continueManualOrderEntry} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-emerald-500 px-4 py-2.5 font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60">
                         Tiếp tục
                       </button>
                     )}
@@ -62529,6 +62518,90 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
             </form>
           </div>
+        </div>
+      )}
+
+      {orderUnitEditor && (
+        <div className="fixed inset-0 z-[190] flex items-end justify-center bg-slate-950/55 p-3 sm:items-center" role="presentation">
+          <form
+            onSubmit={saveDraftItemUnitEditor}
+            className="w-full max-w-sm rounded-[26px] border border-emerald-100 bg-white p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="order-unit-editor-title"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Đơn vị đặt hàng</p>
+                <h3 id="order-unit-editor-title" className="mt-1 truncate text-lg font-black text-slate-950">{orderUnitEditor.productName}</h3>
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  {orderUnitEditor.pricingUnit
+                    ? `Đơn giá vẫn tính theo ${orderUnitEditor.pricingUnit}.`
+                    : 'Chỉ thay đổi đơn vị nhập của đơn đặt hàng.'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setOrderUnitEditor(null)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500" aria-label="Đóng bảng sửa đơn vị">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <label htmlFor="order-request-unit-input" className="mb-1.5 block text-[11px] font-black uppercase tracking-wide text-slate-500">Chọn hoặc nhập đơn vị mới</label>
+              <input
+                id="order-request-unit-input"
+                list="order-request-unit-suggestions"
+                value={orderUnitEditor.value || ''}
+                onChange={(event) => setOrderUnitEditor(previous => ({
+                  ...previous,
+                  value: event.target.value,
+                  error: '',
+                }))}
+                autoFocus
+                autoComplete="off"
+                enterKeyHint="done"
+                className="h-12 w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 text-center text-base font-black text-emerald-800 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
+                placeholder="Ví dụ: Rổ"
+              />
+              <datalist id="order-request-unit-suggestions">
+                {(orderUnitEditor.options || []).map(unit => <option key={unit} value={unit} />)}
+              </datalist>
+            </div>
+
+            {(orderUnitEditor.options || []).length > 0 && (
+              <div className="mt-3">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Đơn vị đang có trong sản phẩm</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(orderUnitEditor.options || []).map(unit => {
+                    const isSelected = isSameBillingUnit(unit, orderUnitEditor.value);
+                    return (
+                      <button
+                        key={unit}
+                        type="button"
+                        onClick={() => setOrderUnitEditor(previous => ({ ...previous, value: unit, error: '' }))}
+                        className={`min-h-10 rounded-full border px-3 py-2 text-xs font-black transition-colors ${isSelected ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50'}`}
+                        aria-pressed={isSelected}
+                      >
+                        {unit}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {orderUnitEditor.error && (
+              <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{orderUnitEditor.error}</p>
+            )}
+
+            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+              Danh sách gợi ý chỉ lấy từ đơn vị đang dùng trong sản phẩm. Đơn vị mới sẽ được ghi nhớ cho khách và sản phẩm này sau khi lưu đơn.
+            </p>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 pb-[env(safe-area-inset-bottom)]">
+              <button type="button" onClick={() => setOrderUnitEditor(null)} className="min-h-12 rounded-2xl bg-slate-100 px-4 text-sm font-black text-slate-700">Hủy</button>
+              <button type="submit" className="min-h-12 rounded-2xl bg-emerald-500 px-4 text-sm font-black text-white shadow-lg shadow-emerald-500/20">Lưu ĐVT</button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -75468,6 +75541,32 @@ const PayrollEvaluationDetailDialog = React.memo(function PayrollEvaluationDetai
   );
 });
 
+const PAYROLL_COMPACT_METRIC_TONES = Object.freeze({
+  slate: Object.freeze({ surface: 'border-slate-100 bg-slate-50', label: 'text-slate-500', value: 'text-slate-800' }),
+  orange: Object.freeze({ surface: 'border-orange-100 bg-orange-50', label: 'text-orange-600', value: 'text-orange-700' }),
+  violet: Object.freeze({ surface: 'border-violet-100 bg-violet-50', label: 'text-violet-600', value: 'text-violet-700' }),
+  red: Object.freeze({ surface: 'border-red-100 bg-red-50', label: 'text-red-600', value: 'text-red-700' }),
+  blue: Object.freeze({ surface: 'border-blue-100 bg-blue-50', label: 'text-blue-600', value: 'text-blue-700' }),
+  emerald: Object.freeze({ surface: 'border-emerald-100 bg-emerald-50', label: 'text-emerald-600', value: 'text-emerald-700' }),
+});
+
+const PayrollCompactMetric = React.memo(function PayrollCompactMetric({ label, value, tone = 'slate' }) {
+  const palette = PAYROLL_COMPACT_METRIC_TONES[tone] || PAYROLL_COMPACT_METRIC_TONES.slate;
+  return (
+    <div
+      data-payroll-compact-metric="true"
+      className={`flex h-16 min-w-0 flex-col items-center justify-center rounded-xl border px-1.5 py-2 text-center ${palette.surface}`}
+    >
+      <p className={`flex min-h-5 items-center justify-center text-[8px] font-extrabold uppercase leading-[1.15] tracking-[0.04em] ${palette.label}`}>
+        {label}
+      </p>
+      <p className={`mt-0.5 max-w-full truncate text-[11px] font-black leading-tight ${palette.value}`} title={`${value}`}>
+        {value}
+      </p>
+    </div>
+  );
+});
+
 function SalaryView({
   currentCompany,
   currentUser,
@@ -76787,10 +76886,44 @@ function SalaryView({
             (canCreateOwnSalaryAdvanceRequest && emp.id === currentEmployeeId)
             || (canCreateSalaryAdvanceForOthersInPeriod && emp.id !== currentEmployeeId)
           );
+          const compactPayrollMetrics = [
+            {
+              id: 'work',
+              label: isSalesCollaborator ? 'Doanh thu' : 'Tổng ngày công',
+              value: isSalesCollaborator ? `${formatCurrency(details.salesRevenue)} đ` : details.workDays,
+              tone: 'slate',
+            },
+            {
+              id: 'advance',
+              label: 'Ứng + nợ đầu kỳ',
+              value: `${formatCurrency((details.totalAdvance || 0) + (details.openingDebt || 0))} đ`,
+              tone: 'orange',
+            },
+            {
+              id: 'purchase',
+              label: 'Mua hàng',
+              value: `${formatCurrency(details.totalEmployeePurchase || 0)} đ`,
+              tone: 'violet',
+            },
+            {
+              id: 'penalty',
+              label: 'Tổng phạt',
+              value: `${formatCurrency(details.totalPenalty)} đ`,
+              tone: 'red',
+            },
+            {
+              id: 'overtime',
+              label: isSalesCollaborator ? '% hoa hồng' : 'Tăng ca',
+              value: isSalesCollaborator
+                ? formatCommissionPercentLabel(emp.commissionRate)
+                : `${(details.approvedOvertimeHours || 0) + (details.automaticOvertimeHours || details.earlyOvertimeHours || 0)} giờ`,
+              tone: 'blue',
+            },
+          ];
 
           return (
             <div key={emp.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all">
-              <div className="p-4 cursor-pointer" onClick={() => setExpandedEmp(isExpanded ? null : emp.id)}>
+              <div className="cursor-pointer p-3 sm:p-4" onClick={() => setExpandedEmp(isExpanded ? null : emp.id)}>
                 <div className="flex justify-between items-start gap-3">
                   <div>
                     <h3 className="font-bold text-gray-800 text-sm">{emp.name}</h3>
@@ -76817,63 +76950,41 @@ function SalaryView({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  <div className="bg-gray-50 rounded-xl border border-gray-100 p-3">
-                    <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">{isSalesCollaborator ? 'Doanh thu' : 'Tổng ngày công'}</p>
-                    <p className="text-sm font-black text-gray-800">{isSalesCollaborator ? `${formatCurrency(details.salesRevenue)} đ` : details.workDays}</p>
-                  </div>
-                  <div className="bg-orange-50 rounded-xl border border-orange-100 p-3">
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[10px] uppercase font-bold text-orange-600 mb-1">Ứng + nợ đầu kỳ</p>
-                        <p className="text-sm font-black text-orange-700">{formatCurrency((details.totalAdvance || 0) + (details.openingDebt || 0))} đ</p>
-                        {(details.openingDebt || 0) > 0 && (
-                          <p className="mt-1 text-[9px] font-semibold leading-snug text-orange-600">
-                            Ứng {formatCurrency(details.totalAdvance || 0)} đ • Nợ chuyển {formatCurrency(details.openingDebt || 0)} đ
-                          </p>
-                        )}
-                      </div>
-                      {canCreateThisAdvanceRequest && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openAdvanceRequestModal(emp.id);
-                          }}
-                          disabled={!employeeAdvanceIsUnlimited && employeeAdvanceRemainingAmount <= 0}
-                          className="shrink-0 rounded-xl bg-orange-500 px-2.5 py-1.5 text-[10px] font-black leading-tight text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-                        >
-                          Tạo lệnh ứng
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="bg-violet-50 rounded-xl border border-violet-100 p-3">
-                    <p className="text-[10px] uppercase font-bold text-violet-600 mb-1">Mua hàng</p>
-                    <p className="text-sm font-black text-violet-700">{formatCurrency(details.totalEmployeePurchase || 0)} đ</p>
-                  </div>
-                  <div className="bg-red-50 rounded-xl border border-red-100 p-3">
-                    <p className="text-[10px] uppercase font-bold text-red-600 mb-1">Tổng phạt</p>
-                    <p className="text-sm font-black text-red-700">{formatCurrency(details.totalPenalty)} đ</p>
-                  </div>
-                       <div className="bg-blue-50 rounded-xl border border-blue-100 p-3">
-                         <p className="text-[10px] uppercase font-bold text-blue-600 mb-1">{isSalesCollaborator ? '% hoa hồng' : 'Tăng ca'}</p>
-                         <p className="text-sm font-black text-blue-700">{isSalesCollaborator ? formatCommissionPercentLabel(emp.commissionRate) : `${(details.approvedOvertimeHours || 0) + (details.automaticOvertimeHours || details.earlyOvertimeHours || 0)} giờ`}</p>
-                       </div>
-                     </div>
+                <div data-payroll-compact-metrics="true" className="mt-3 grid grid-cols-3 gap-1.5 sm:gap-2">
+                  {compactPayrollMetrics.map(metric => (
+                    <PayrollCompactMetric key={metric.id} {...metric} />
+                  ))}
+                  {canCreateThisAdvanceRequest ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openAdvanceRequestModal(emp.id);
+                      }}
+                      disabled={!employeeAdvanceIsUnlimited && employeeAdvanceRemainingAmount <= 0}
+                      data-payroll-compact-action="true"
+                      className="flex h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-xl border border-orange-200 bg-orange-50 px-1.5 py-2 text-center text-[9px] font-black uppercase leading-tight text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <Plus size={15} aria-hidden="true" />
+                      <span>Tạo lệnh ứng</span>
+                    </button>
+                  ) : (
+                    <PayrollCompactMetric label="Tổng thưởng" value={`${formatCurrency(details.totalBonus || 0)} đ`} tone="emerald" />
+                  )}
+                </div>
                      {!isSalesCollaborator && (
-                       <div className="grid grid-cols-3 gap-2 mt-2">
-                         <div className="min-w-0 rounded-xl border border-blue-100 bg-blue-50 px-2 py-2 text-center">
-                           <p className="truncate text-[9px] font-bold uppercase text-blue-600">Lương cơ bản</p>
-                           <p className="mt-1 truncate text-[11px] font-black text-blue-800">{formatCurrency(details.baseSalaryCalc)} đ</p>
+                       <div className="mt-2 grid grid-cols-3 gap-1.5 sm:gap-2">
+                         <div className="flex h-14 min-w-0 flex-col items-center justify-center rounded-lg border border-blue-100 bg-blue-50 px-1.5 py-1.5 text-center">
+                           <p className="truncate text-[8px] font-bold uppercase text-blue-600">Cơ bản</p>
+                           <p className="mt-0.5 max-w-full truncate text-[10px] font-black text-blue-800" title={`${formatCurrency(details.baseSalaryCalc)} đ`}>{formatCurrency(details.baseSalaryCalc)} đ</p>
                          </div>
-                         <div className="min-w-0 rounded-xl border border-emerald-100 bg-emerald-50 px-2 py-2 text-center">
-                           <p className="truncate text-[9px] font-bold uppercase text-emerald-600">Lương hỗ trợ</p>
-                           <p className="mt-1 truncate text-[11px] font-black text-emerald-800">{formatCurrency(details.supportSalary)} đ</p>
+                         <div className="flex h-14 min-w-0 flex-col items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50 px-1.5 py-1.5 text-center">
+                           <p className="truncate text-[8px] font-bold uppercase text-emerald-600">Hỗ trợ</p>
+                           <p className="mt-0.5 max-w-full truncate text-[10px] font-black text-emerald-800" title={`${formatCurrency(details.supportSalary)} đ`}>{formatCurrency(details.supportSalary)} đ</p>
                          </div>
-                         <div className="min-w-0 rounded-xl border border-indigo-100 bg-indigo-50 px-2 py-2 text-center">
-                           <p className="truncate text-[9px] font-bold uppercase text-indigo-600">Lương trách nhiệm</p>
-                           <p className="mt-1 truncate text-[11px] font-black text-indigo-800">{formatCurrency(details.responsibilitySalary)} đ</p>
+                         <div className="flex h-14 min-w-0 flex-col items-center justify-center rounded-lg border border-indigo-100 bg-indigo-50 px-1.5 py-1.5 text-center">
+                           <p className="truncate text-[8px] font-bold uppercase text-indigo-600">Trách nhiệm</p>
+                           <p className="mt-0.5 max-w-full truncate text-[10px] font-black text-indigo-800" title={`${formatCurrency(details.responsibilitySalary)} đ`}>{formatCurrency(details.responsibilitySalary)} đ</p>
                          </div>
                        </div>
                      )}
@@ -81869,6 +81980,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginMessage, setLoginMessage] = useState('');
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotPhone, setForgotPhone] = useState('');
   const [forgotPin, setForgotPin] = useState('');
@@ -81905,6 +82017,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
     setRecoveryPasswordConfirm('');
     setForgotError('');
     setForgotMessage('');
+    setLoginMessage('');
     setShowForgotPassword(true);
   };
 
@@ -81964,20 +82077,38 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
     setIsRequestingRecovery(true);
     setForgotError('');
     try {
-      const result = await onCompleteRecovery?.({ resetToken: recoveryToken, password: recoveryPassword });
+      const result = await onCompleteRecovery?.({ resetToken: recoveryToken, password: recoveryPassword, identifier: forgotPhone });
       if (!result?.success) {
         setForgotError(result?.message || 'Không thể đặt lại mật khẩu.');
-      } else if (result?.requiresSetup) {
-        setShowForgotPassword(false);
-        setIdentitySetupContext(result);
       } else {
+        const nextLoginIdentifier = forgotPhone.trim();
+        const nextLoginPassword = recoveryPassword;
+        setLoginPhone(nextLoginIdentifier);
+        setLoginPassword(nextLoginPassword);
+        setShowLoginPassword(false);
+        setLoginError('');
+        setLoginMessage(result.message || 'Đổi mật khẩu thành công. Bạn có thể đăng nhập bằng mật khẩu mới.');
         setShowForgotPassword(false);
+        setForgotPin('');
+        setRecoveryToken('');
+        setRecoveryPassword('');
+        setRecoveryPasswordConfirm('');
+        setForgotError('');
+        setForgotMessage('');
       }
     } catch (error) {
-      setForgotError(error?.message || 'Không thể đặt lại mật khẩu.');
+      console.error('Đặt lại mật khẩu lỗi:', error);
+      setForgotError(getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại mật khẩu. Vui lòng xác minh lại rồi thử lần nữa.'));
     } finally {
       setIsRequestingRecovery(false);
     }
+  };
+
+  const handleAuthFormSubmit = (event) => {
+    if (!showForgotPassword) return handleLoginSubmit(event);
+    if (!recoveryToken) return handleForgotPasswordSubmit(event);
+    event.preventDefault();
+    return handleCompleteRecoverySubmit();
   };
 
   const handleRegisterSubmit = async (e) => {
@@ -82022,36 +82153,39 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
         
         {isLogin ? (
           <div>
-            {!isLoginReady && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold">Đang nạp dữ liệu tài khoản từ Cloud. Nếu cần, bạn vẫn có thể bấm đăng nhập, app sẽ kiểm tra trực tiếp trên Cloud.</div>}
-            {loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div className="hd-login-3d-field">
-                <input type="text" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Username hoặc số điện thoại" autoComplete="username" inputMode="text" />
-              </div>
-              <div className="hd-login-3d-field relative">
-                <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
-                <input
-                  type={showLoginPassword ? 'text' : 'password'}
-                  value={loginPassword}
-                  onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
-                  className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl py-4 pl-11 pr-12 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors"
-                  placeholder="Mật khẩu"
-                  autoComplete="current-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowLoginPassword(value => !value)}
-                  className="absolute right-3 top-1/2 z-[2] -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
-                  aria-label={showLoginPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                  aria-pressed={showLoginPassword}
-                >
-                  {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-              <div className="-mt-2 flex items-center justify-between gap-3 px-1">
-                <p className="text-[11px] leading-relaxed text-gray-400">Tối thiểu 8 ký tự, gồm chữ và số.</p>
-                <button type="button" onClick={openForgotPassword} className="shrink-0 text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
-              </div>
+            {!showForgotPassword && !isLoginReady && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold">Đang nạp dữ liệu tài khoản từ Cloud. Nếu cần, bạn vẫn có thể bấm đăng nhập, app sẽ kiểm tra trực tiếp trên Cloud.</div>}
+            {!showForgotPassword && loginMessage && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold" role="status">{loginMessage}</div>}
+            {!showForgotPassword && loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
+            <form onSubmit={handleAuthFormSubmit} className="space-y-4">
+              {!showForgotPassword && <>
+                <div className="hd-login-3d-field">
+                  <input type="text" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Username hoặc số điện thoại" autoComplete="username" inputMode="text" />
+                </div>
+                <div className="hd-login-3d-field relative">
+                  <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    value={loginPassword}
+                    onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); setLoginMessage(''); }}
+                    className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl py-4 pl-11 pr-12 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors"
+                    placeholder="Mật khẩu"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword(value => !value)}
+                    className="absolute right-3 top-1/2 z-[2] -translate-y-1/2 rounded-xl p-2 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
+                    aria-label={showLoginPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                    aria-pressed={showLoginPassword}
+                  >
+                    {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+                <div className="-mt-2 flex items-center justify-between gap-3 px-1">
+                  <p className="text-[11px] leading-relaxed text-gray-400">Tối thiểu 8 ký tự, gồm chữ và số.</p>
+                  <button type="button" onClick={openForgotPassword} className="shrink-0 text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
+                </div>
+              </>}
               {showForgotPassword && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
@@ -82066,17 +82200,19 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                     {forgotError && <p className="text-[11px] font-semibold text-red-600" role="alert">{forgotError}</p>}
                     {forgotMessage && <p className="text-[11px] font-semibold leading-relaxed text-emerald-700" role="status">{forgotMessage}</p>}
                     <div className="flex gap-2">
-                      <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Đóng</button>
+                      <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Quay lại đăng nhập</button>
                       <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : 'Xác minh thiết bị'}</button>
                     </div>
                   </div>
                 </div>
               )}
-              <button type="submit" disabled={isLoggingIn} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] ${isLoggingIn ? 'bg-emerald-300 cursor-not-allowed shadow-emerald-200/30' : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/30'}`}>
-                {isLoggingIn ? 'Đang đăng nhập...' : 'Vào Ứng Dụng'}
-              </button>
+              {!showForgotPassword && (
+                <button type="submit" disabled={isLoggingIn} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] ${isLoggingIn ? 'bg-emerald-300 cursor-not-allowed shadow-emerald-200/30' : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/30'}`}>
+                  {isLoggingIn ? 'Đang đăng nhập...' : 'Vào Ứng Dụng'}
+                </button>
+              )}
             </form>
-            <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>
+            {!showForgotPassword && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
           </div>
         ) : (
           <div>

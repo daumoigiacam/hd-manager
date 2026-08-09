@@ -8,6 +8,11 @@ import {
   releaseOrderRequestSelectionLock,
   tryAcquireOrderRequestSelectionLock
 } from '../src/utils/orderRequestInteraction.js';
+import {
+  applyOrderRequestClassificationEdit,
+  getOrderRequestSizeDisplayValue
+} from '../src/utils/orderRequestEditing.js';
+import { getFixedFooterNavIds } from '../src/utils/footerNavigation.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
@@ -65,6 +70,47 @@ test('existing order rows edit one selected cell and keep delete inside the edit
   assert.doesNotMatch(appSource, /title="Xoa toan bo don dat hang"/);
 });
 
+test('saved size overrides stale billing snapshot and is displayed before the old attribute', () => {
+  const editedItem = applyOrderRequestClassificationEdit({
+    sizeLabel: '1-1.2kg',
+    attributeLabel: 'Trung',
+    billingSnapshotVersion: 1,
+  }, {
+    sizeLabel: '2-2.5kg',
+    attributeLabel: 'Trung',
+  });
+
+  assert.equal(editedItem.sizeLabel, '2-2.5kg');
+  assert.equal(editedItem.attributeLabel, 'Trung');
+  assert.equal(editedItem.productAttribute, 'Trung');
+  assert.equal(getOrderRequestSizeDisplayValue(editedItem), '2-2.5kg');
+  assert.equal(getOrderRequestSizeDisplayValue({ attributeLabel: 'Trung' }), 'Trung');
+  assert.match(appSource, /applyOrderRequestClassificationEdit\(\{/);
+  assert.match(appSource, /return formatSheetSize\(getOrderRequestSizeCellLabel\(row\)\);/);
+});
+
+test('customer and product columns use the same width', () => {
+  assert.match(
+    appSource,
+    /<col style=\{\{ width: '24%' \}\} \/>\s*<col style=\{\{ width: '24%' \}\} \/>/
+  );
+});
+
+test('product column content is centered consistently', () => {
+  assert.match(appSource, /className="w-full rounded-xl px-1 py-1 text-center font-semibold text-slate-900 transition/);
+  assert.match(appSource, /className="flex flex-wrap items-center justify-center gap-1\.5"/);
+});
+
+test('order unit editor suggests catalog units and accepts a new custom unit', () => {
+  assert.match(appSource, /getProductCatalogUnitSuggestions\(activeProducts\)/);
+  assert.match(appSource, /openDraftItemUnitEditor\(draft, item\)/);
+  assert.match(appSource, /const options = quantityUnitOptions;/);
+  assert.match(appSource, /list="order-request-unit-suggestions"/);
+  assert.match(appSource, /Đơn vị đang có trong sản phẩm/);
+  assert.match(appSource, />Lưu ĐVT<\/button>/);
+  assert.match(appSource, /Đơn vị mới sẽ được ghi nhớ cho khách và sản phẩm này sau khi lưu đơn/);
+});
+
 test('shared order sheet keeps matching products next to each other', () => {
   assert.match(appSource, /const groupedShareableRequestSheetProductGroups = useMemo/);
   assert.match(appSource, /const productKey = row\.productId \|\| normalizeLookupText\(row\.productShortName \|\| row\.productName \|\| ''\)/);
@@ -90,7 +136,54 @@ test('share images are prepared in background and reused from persistent cache',
   assert.doesNotMatch(appSource, /const canvases = await renderOrderRequestSheetCanvases\(\);\s*const blobs = await Promise\.all\(canvases\.map\(\(canvas\) => canvasToBlob\(canvas, 'image\/png'\)\)\);\s*const result = await shareOrderRequestSheetBlobs/);
 });
 
-test('orders remain reachable from More when the adaptive footer does not promote them', () => {
+test('mobile footer stays fixed for accounting, delivery and sales roles', () => {
+  const permissions = {
+    home: true,
+    orders: true,
+    finance: true,
+    debt: true,
+    delivery_reports: true,
+    employee_reviews: true,
+    company_attendance: true,
+    order_requests: true,
+  };
+
+  assert.deepEqual(
+    getFixedFooterNavIds({ isAccounting: true, permissions }),
+    ['home', 'orders', 'finance', 'debt', 'more'],
+  );
+  assert.deepEqual(
+    getFixedFooterNavIds({ isDeliveryParticipant: true, permissions }),
+    ['home', 'delivery_reports', 'employee_reviews', 'company_attendance', 'more'],
+  );
+  assert.deepEqual(
+    getFixedFooterNavIds({ isSales: true, permissions }),
+    ['home', 'order_requests', 'debt', 'company_attendance', 'more'],
+  );
+
+  const footerSource = appSource.slice(
+    appSource.indexOf('const footerNavItems = useMemo'),
+    appSource.indexOf('const desktopSidebarItems = useMemo'),
+  );
+  assert.match(footerSource, /getFixedFooterNavIds\(\{/);
+  assert.doesNotMatch(footerSource, /footerUsage|activeTab|\.sort\(/);
+});
+
+test('fixed footer never replaces a denied module with another feature', () => {
+  const ids = getFixedFooterNavIds({
+    isSales: true,
+    permissions: {
+      home: true,
+      order_requests: true,
+      debt: false,
+      company_attendance: true,
+    },
+  });
+
+  assert.deepEqual(ids, ['home', 'order_requests', 'company_attendance', 'more']);
+});
+
+test('orders remain reachable from More when the fixed footer belongs to another role', () => {
   const moreMenuSource = appSource.slice(
     appSource.indexOf('function MoreMenu('),
     appSource.indexOf('const PRICING_ENGINE_TABS')

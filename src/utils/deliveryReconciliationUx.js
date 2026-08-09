@@ -1,4 +1,4 @@
-export const DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT = 5;
+export const DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT = 3;
 
 const toFiniteNumber = (value) => {
   const parsed = Number(value);

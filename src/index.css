@@ -32,9 +32,9 @@ html {
   --hd-page-x: clamp(0.75rem, 3.6vw, 1rem);
   --hd-card-pad: clamp(0.75rem, 3.8vw, 1.25rem);
   --hd-card-radius: clamp(1rem, 5vw, 1.75rem);
-  --hd-header-pad-y: clamp(0.55rem, 2vw, 0.75rem);
-  --hd-footer-content-height: 3.8rem;
-  --hd-footer-height: calc(4.3rem + var(--hd-safe-bottom));
+  --hd-header-pad-y: clamp(0.25rem, 1vw, 0.4rem);
+  --hd-footer-content-height: var(--hd-bottom-nav-height, 56px);
+  --hd-footer-height: calc(var(--hd-bottom-nav-height, 56px) + var(--hd-safe-bottom));
   --hd-keyboard-safe-bottom: calc(var(--hd-footer-height) + 1rem);
   --hd-customer-system-nav-gap: max(var(--hd-safe-bottom), 1.55rem);
   --hd-customer-footer-height: 4.35rem;
@@ -156,6 +156,20 @@ svg {
 
 .hd-order-request-modal-panel > form > .flex-1.overflow-y-auto {
   min-height: 0;
+}
+
+/* The customer picker owns its single visible outline. Global mobile input
+ * sizing would otherwise add a second inset frame and waste vertical space. */
+.hd-order-request-customer-search .hd-order-request-customer-search-input,
+.hd-order-request-customer-search .hd-order-request-customer-search-input:focus,
+.hd-order-request-customer-search .hd-order-request-customer-search-input:focus-visible {
+  min-height: 0 !important;
+  height: auto;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 !important;
 }
 
 @media (max-width: 639px) {
@@ -363,7 +377,7 @@ svg {
 
 .mobile-app-shell > nav {
   min-height: var(--hd-footer-height);
-  padding-bottom: max(var(--hd-safe-bottom), 0.35rem) !important;
+  padding-bottom: var(--hd-safe-bottom) !important;
 }
 
 .mobile-app-shell > nav > div {
@@ -1092,7 +1106,8 @@ html.hd-low-power-ui .hd-soft-red-outline {
   --hd-elevation-1: 0 1px 3px rgba(15, 23, 42, 0.1), 0 1px 2px rgba(15, 23, 42, 0.06);
   --hd-elevation-2: 0 8px 24px rgba(15, 23, 42, 0.12);
   --hd-elevation-3: 0 20px 48px rgba(15, 23, 42, 0.18);
-  --hd-header-height: 56px;
+  /* Compact visual height while preserving the 44px accessible touch target. */
+  --hd-header-height: 44px;
   --hd-bottom-nav-height: 56px;
   --hd-sidebar-width: 18rem;
   --hd-dialog-max-height: 90dvh;
@@ -1126,6 +1141,36 @@ html.hd-low-power-ui .hd-soft-red-outline {
   width: 100%;
   min-height: var(--hd-header-height);
   align-items: center;
+}
+
+/* Compact header search uses one surface instead of stacking browser and input rings. */
+.hd-header-search-field {
+  border: 1px solid transparent;
+  box-shadow: none;
+  transition: border-color var(--hd-motion-fast) ease-out, background-color var(--hd-motion-fast) ease-out;
+}
+
+.hd-header-search-field:focus-within {
+  border-color: color-mix(in srgb, var(--hd-color-primary, #059669) 42%, transparent);
+}
+
+.hd-header-search-input,
+.hd-header-search-input:focus,
+.hd-header-search-input:focus-visible {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.hd-header-search-input::-webkit-search-decoration,
+.hd-header-search-input::-webkit-search-cancel-button,
+.hd-header-search-input::-webkit-search-results-button,
+.hd-header-search-input::-webkit-search-results-decoration {
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .hd-app-content {
@@ -1233,7 +1278,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 @media (min-width: 600px) and (max-width: 1099px) {
   :root {
     --hd-app-max-width: 48rem;
-    --hd-header-height: 60px;
+    --hd-header-height: 48px;
     --hd-bottom-nav-height: 64px;
     --hd-page-x: clamp(1rem, 3vw, 1.5rem);
     --hd-card-pad: clamp(1rem, 3vw, 1.5rem);
@@ -1252,7 +1297,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 @media (min-width: 1100px) {
   :root {
     --hd-app-max-width: 120rem;
-    --hd-header-height: 64px;
+    --hd-header-height: 48px;
     --hd-bottom-nav-height: 64px;
     --hd-desktop-sidebar-width: var(--hd-sidebar-width);
     --hd-page-x: 2rem;
@@ -1557,12 +1602,12 @@ html.hd-low-power-ui .hd-soft-red-outline {
 
 @media (max-width: 359px) {
   .hd-enterprise-app-shell {
-    --hd-ui-header-height: 52px;
+    --hd-ui-header-height: 44px;
     --hd-ui-footer-height: 56px;
   }
 
   .hd-enterprise-header {
-    min-block-size: 52px;
+    min-block-size: 44px;
   }
 }
 

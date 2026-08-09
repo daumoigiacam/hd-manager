@@ -111,6 +111,12 @@ test('danh sách phiếu xuất mở đúng editor theo từng ô', () => {
   assert.match(warehouseModuleSource, /onDelete=\{deleteDispatchCellEditorRow\}/);
 });
 
+test('ô người giao thuộc đúng từng dòng phiếu xuất của khách hàng', () => {
+  assert.doesNotMatch(warehouseModuleSource, /<td rowSpan=\{driverCellRowSpan\}[^>]*bg-sky-50/);
+  assert.match(warehouseModuleSource, /aria-label=\{`Sửa người giao phiếu xuất của \$\{group\.customerName \|\| row\.customerName \|\| 'khách hàng'\}`\}/);
+  assert.match(warehouseModuleSource, /<span className="mt-1 block font-medium text-slate-900">\{rowDriverName\}<\/span>/);
+});
+
 test('sửa ô kg thay thế cả tổng kg và snapshot các lần cân', () => {
   assert.match(warehouseModuleSource, /field === 'weightKg' \? \{ weightEntries: nextValue === '' \? \[\] : \[nextValue\] \} : \{\}/);
   assert.match(warehouseModuleSource, /weightEntries: normalizeWarehouseWeightEntries\(inlineEditingDispatchDraft\.weightEntries \|\| \[\]\)/);

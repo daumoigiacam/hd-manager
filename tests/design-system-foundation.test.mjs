@@ -9,6 +9,7 @@ const shell = read('src/layout/AppShell.jsx');
 const tokens = read('src/design-system/tokens.js');
 const foundation = read('src/design-system/foundation.css');
 const components = read('src/design-system/components.jsx');
+const indexCss = read('src/index.css');
 
 assert(!app.includes('fonts.googleapis.com'), 'UI must not depend on remote Google Fonts');
 assert(main.includes('@fontsource-variable/inter'), 'Inter Variable must be loaded locally');
@@ -93,5 +94,36 @@ for (const selector of [
 ]) {
   assert(foundation.includes(selector), `Missing Phase 2.5 visual polish rule: ${selector}`);
 }
+
+assert.match(
+  app,
+  /hd-header-search-field flex h-11/,
+  'Compact header search must use a single 44px surface',
+);
+for (const selector of [
+  '.hd-header-search-field',
+  '.hd-header-search-field:focus-within',
+  '.hd-header-search-input:focus-visible',
+  '.hd-header-search-input::-webkit-search-cancel-button',
+]) {
+  assert(indexCss.includes(selector), `Missing compact header search rule: ${selector}`);
+}
+
+assert(app.includes('const PayrollCompactMetric = React.memo'), 'Payroll summary metrics must use one shared compact component');
+assert.match(
+  app,
+  /data-payroll-compact-metrics="true" className="mt-3 grid grid-cols-3/,
+  'Employee payroll summaries must use a compact three-column grid on mobile',
+);
+assert.match(
+  app,
+  /data-payroll-compact-metric="true"[\s\S]{0,180}flex h-16/,
+  'Payroll summary metric cards must have one equal compact height',
+);
+assert.match(
+  app,
+  /data-payroll-compact-action="true"[\s\S]{0,180}flex h-16/,
+  'Payroll advance action must share the compact metric height instead of adding another row',
+);
 
 console.log('PASS Design System foundation: AppShell, tokens, themes, shared primitives and Phase 2.5 visual polish.');

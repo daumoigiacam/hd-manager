@@ -59,6 +59,21 @@ const timingSafeTextEqual = (left = '', right = '') => {
 };
 const hashOpaqueSecret = (value = '') => crypto.createHash('sha256').update(`${value || ''}`).digest('hex');
 const makeOpaqueSecret = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
+const createRecoveryToken = (identityId = '') => {
+  const safeIdentityId = safeIdPart(identityId);
+  if (!safeIdentityId || safeIdentityId !== identityId) throw new Error('Invalid recovery identity.');
+  return `${Buffer.from(safeIdentityId, 'utf8').toString('base64url')}.${makeOpaqueSecret(32)}`;
+};
+const getRecoveryIdentityIdFromToken = (resetToken = '') => {
+  const [encodedIdentityId, secret, ...extraParts] = `${resetToken || ''}`.split('.');
+  if (!encodedIdentityId || !secret || extraParts.length > 0 || secret.length < 32) return '';
+  try {
+    const identityId = Buffer.from(encodedIdentityId, 'base64url').toString('utf8');
+    return identityId && safeIdPart(identityId) === identityId ? identityId : '';
+  } catch {
+    return '';
+  }
+};
 const sanitizeCompanyRegistrationSettings = (settings = {}) => Object.fromEntries(
   Object.entries(settings && typeof settings === 'object' ? settings : {})
     .filter(([key]) => COMPANY_REGISTRATION_SETTING_KEYS.has(key))
@@ -346,7 +361,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     await logAudit(identityId, 'login', { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform });
     return {
       customToken,
-      identity: buildPublicIdentity(identity),
+      identityKey: identityId,
+      identity: { ...buildPublicIdentity(identity), identityKey: identityId },
       device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
       requiresSetup: Boolean(identity.requiresPasswordChange || !identity.setup?.usernameSet || !identity.setup?.pinSet || !identity.setup?.trustedDevice),
       setup: identity.setup || {}
@@ -623,7 +639,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       success: true,
       deviceSecret,
       setup: nextSetup,
-      identity: { ...buildPublicIdentity(refreshedIdentity), username: normalizedUsername },
+      identityKey: identityId,
+      identity: { ...buildPublicIdentity(refreshedIdentity), identityKey: identityId, username: normalizedUsername },
       customToken: refreshedSession.customToken
     };
   };
@@ -643,36 +660,82 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (!biometricConfirmed && (!identity.pinHash || !(await verifyPassword(pin, identity.pinHash)))) {
       return { success: false, statusCode: 401, message: 'Nhập PIN 6 số để xác minh thiết bị tin cậy.' };
     }
-    const token = makeOpaqueSecret(32);
+    const token = createRecoveryToken(identity.id);
+    const tokenHash = hashOpaqueSecret(token);
     const now = new Date();
-    const resetRef = getIdentityRef(identity.id).collection('reset_tokens').doc(crypto.randomUUID());
-    await resetRef.create({ tokenHash: hashOpaqueSecret(token), createdAt: now, expiresAt: new Date(now.getTime() + RESET_TOKEN_TTL_MS), usedAt: null, deviceId: cleanDevice.deviceId });
+    const resetRef = getIdentityRef(identity.id).collection('reset_tokens').doc(tokenHash);
+    await resetRef.create({ identityId: identity.id, tokenHash, createdAt: now, expiresAt: new Date(now.getTime() + RESET_TOKEN_TTL_MS), usedAt: null, deviceId: cleanDevice.deviceId });
     await logAudit(identity.id, 'password_reset_requested', { deviceId: cleanDevice.deviceId });
     return { success: true, resetToken: token, expiresInSeconds: RESET_TOKEN_TTL_MS / 1000, message: 'Xác minh thành công. Bạn có thể đặt mật khẩu mới.' };
   };
 
-  const completeRecovery = async ({ resetToken, password, device }) => {
+  const completeRecovery = async ({ resetToken, password, device, identifier = '' }) => {
     const passwordError = validatePassword(password);
     if (passwordError) return { success: false, statusCode: 400, message: passwordError };
     const tokenHash = hashOpaqueSecret(resetToken);
-    const resets = await db.collectionGroup('reset_tokens').where('tokenHash', '==', tokenHash).limit(1).get();
-    if (resets.empty) return { success: false, statusCode: 400, message: 'Phiên đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.' };
-    const resetDoc = resets.docs[0];
-    const reset = resetDoc.data();
-    if (reset.usedAt || reset.expiresAt.toMillis() <= Date.now()) return { success: false, statusCode: 400, message: 'Phiên đặt lại mật khẩu đã hết hạn. Vui lòng xác minh lại.' };
-    const identityId = resetDoc.ref.parent.parent.id;
+    const tokenIdentityId = getRecoveryIdentityIdFromToken(resetToken);
+    const matchedIdentity = tokenIdentityId ? { id: tokenIdentityId } : await findIdentity(identifier);
+    if (!matchedIdentity?.id) return { success: false, statusCode: 400, message: 'Phiên đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.' };
+
+    const identityId = matchedIdentity.id;
     const identityRef = getIdentityRef(identityId);
-    const identitySnap = await identityRef.get();
-    if (!identitySnap.exists) return { success: false, statusCode: 400, message: 'Không tìm thấy tài khoản.' };
-    const identity = identitySnap.data();
+    const resetCollection = identityRef.collection('reset_tokens');
+    let resetDoc = await resetCollection.doc(tokenHash).get();
+    if (!resetDoc.exists) {
+      // Tokens issued before this fix used random document IDs. Limit the lookup
+      // to the already-identified account so no collection-group index is needed.
+      const legacyResets = await resetCollection.where('tokenHash', '==', tokenHash).limit(1).get();
+      if (legacyResets.empty) return { success: false, statusCode: 400, message: 'Phiên đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.' };
+      resetDoc = legacyResets.docs[0];
+    }
+
+    const cleanDevice = sanitizeDevice(device);
+    const nextPasswordHash = await hashPassword(password);
     const now = new Date();
-    const nextSetup = { ...(identity.setup || {}), passwordChanged: true };
-    const batch = db.batch();
-    batch.update(resetDoc.ref, { usedAt: now, usedAtIso: now.toISOString() });
-    batch.update(identityRef, { passwordHash: await hashPassword(password), requiresPasswordChange: false, setup: nextSetup, updatedAt: now, updatedAtIso: now.toISOString() });
-    await batch.commit();
-    await logAudit(identityId, 'password_reset_completed', { deviceId: sanitizeDevice(device).deviceId });
-    return { success: true, ...(await issueSession({ identityId, identity: { ...identity, setup: nextSetup, requiresPasswordChange: false }, device })) };
+    const auditRef = db.collection(IDENTITY_AUDIT_COLLECTION).doc();
+    const transactionResult = await db.runTransaction(async transaction => {
+      const [freshResetDoc, identitySnap] = await Promise.all([
+        transaction.get(resetDoc.ref),
+        transaction.get(identityRef)
+      ]);
+      if (!freshResetDoc.exists || !identitySnap.exists) return { error: 'Phiên đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.' };
+
+      const reset = freshResetDoc.data();
+      const expiresAtMs = typeof reset.expiresAt?.toMillis === 'function'
+        ? reset.expiresAt.toMillis()
+        : new Date(reset.expiresAt || 0).getTime();
+      if (
+        reset.usedAt
+        || !Number.isFinite(expiresAtMs)
+        || expiresAtMs <= Date.now()
+        || (reset.identityId && reset.identityId !== identityId)
+        || (reset.deviceId && reset.deviceId !== cleanDevice.deviceId)
+      ) {
+        return { error: 'Phiên đặt lại mật khẩu đã hết hạn. Vui lòng xác minh lại.' };
+      }
+
+      const identity = identitySnap.data();
+      const nextSetup = { ...(identity.setup || {}), passwordChanged: true };
+      transaction.update(freshResetDoc.ref, { usedAt: now, usedAtIso: now.toISOString() });
+      transaction.update(identityRef, {
+        passwordHash: nextPasswordHash,
+        requiresPasswordChange: false,
+        setup: nextSetup,
+        updatedAt: now,
+        updatedAtIso: now.toISOString()
+      });
+      transaction.set(auditRef, {
+        accountId: identityId,
+        action: 'password_reset_completed',
+        metadata: { deviceId: cleanDevice.deviceId },
+        createdAt: now,
+        createdAtIso: now.toISOString(),
+        immutable: true
+      });
+      return { success: true };
+    });
+    if (transactionResult?.error) return { success: false, statusCode: 400, message: transactionResult.error };
+    return { success: true, message: 'Đổi mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.' };
   };
 
   const verifyPin = async ({ authorization, pin }) => {
@@ -745,6 +808,8 @@ module.exports = {
   IDENTITY_ACCOUNT_COLLECTION,
   IDENTITY_AUDIT_COLLECTION,
   buildPhoneVariants,
+  createRecoveryToken,
+  getRecoveryIdentityIdFromToken,
   normalizePhone,
   normalizeUsername,
   validatePassword,

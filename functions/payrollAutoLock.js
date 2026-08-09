@@ -150,6 +150,77 @@ const normalizePayrollAutoLockStatus = (status = '') => {
   return Object.values(PAYROLL_AUTO_LOCK_PLAN_STATUS).includes(normalized) ? normalized : '';
 };
 
+const runPayrollAutoLockPlanStateMachine = async ({
+  initialStatus = '',
+  evaluateEligibility,
+  finalizeLock,
+  maxTransitions = 4
+} = {}) => {
+  if (typeof evaluateEligibility !== 'function' || typeof finalizeLock !== 'function') {
+    throw new TypeError('Payroll auto-lock requires eligibility and finalize handlers.');
+  }
+
+  let status = normalizePayrollAutoLockStatus(initialStatus);
+  if (!status) return { state: 'skipped', status: '', transitionCount: 0, transitions: [] };
+  if ([PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED, PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW].includes(status)) {
+    return { state: status, transitionCount: 0, transitions: [] };
+  }
+
+  const safeTransitionLimit = Math.max(1, Math.min(8, Math.floor(Number(maxTransitions) || 4)));
+  const transitions = [];
+  let lastOutcome = { state: status };
+
+  for (let index = 0; index < safeTransitionLimit; index += 1) {
+    const action = status === PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK ? 'finalize' : 'evaluate';
+    const outcome = await (action === 'finalize' ? finalizeLock() : evaluateEligibility());
+    lastOutcome = outcome && typeof outcome === 'object' ? outcome : { state: 'unknown' };
+    const rawState = `${lastOutcome.state || ''}`.trim();
+    transitions.push({ action, state: rawState, status: `${lastOutcome.status || ''}`.trim() });
+
+    if (lastOutcome.gateState === 'RULES_PENDING' || lastOutcome.due === false) {
+      return { ...lastOutcome, transitionCount: transitions.length, transitions };
+    }
+    if (rawState === 'already_locked') {
+      return {
+        ...lastOutcome,
+        state: PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED,
+        completionReason: 'period_already_locked',
+        transitionCount: transitions.length,
+        transitions
+      };
+    }
+    if (rawState === 'skipped') {
+      const concurrentStatus = normalizePayrollAutoLockStatus(lastOutcome.status);
+      if (concurrentStatus && concurrentStatus !== status) {
+        status = concurrentStatus;
+        if ([PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED, PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW].includes(status)) {
+          return { ...lastOutcome, state: status, transitionCount: transitions.length, transitions };
+        }
+        continue;
+      }
+      return { ...lastOutcome, transitionCount: transitions.length, transitions };
+    }
+    if (['missing_plan', 'failed', 'unknown'].includes(rawState)) {
+      return { ...lastOutcome, transitionCount: transitions.length, transitions };
+    }
+
+    const nextStatus = normalizePayrollAutoLockStatus(rawState);
+    if (!nextStatus) return { ...lastOutcome, transitionCount: transitions.length, transitions };
+    status = nextStatus;
+    if ([PAYROLL_AUTO_LOCK_PLAN_STATUS.LOCKED, PAYROLL_AUTO_LOCK_PLAN_STATUS.NEEDS_REVIEW].includes(status)) {
+      return { ...lastOutcome, state: status, transitionCount: transitions.length, transitions };
+    }
+  }
+
+  return {
+    ...lastOutcome,
+    state: 'transition_limit',
+    lastStatus: status,
+    transitionCount: transitions.length,
+    transitions
+  };
+};
+
 const getClockComparableKey = (clock = {}) => (
   `${clock?.dateKey || ''}T${`${Number(clock?.hour) || 0}`.padStart(2, '0')}:${`${Number(clock?.minute) || 0}`.padStart(2, '0')}:${`${Number(clock?.second) || 0}`.padStart(2, '0')}`
 );
@@ -422,5 +493,6 @@ module.exports = {
   isPayrollAutoLockDue,
   isValidPayrollClosingSchedule,
   normalizePayrollAutoLockStatus,
-  normalizePayrollMonthKey
+  normalizePayrollMonthKey,
+  runPayrollAutoLockPlanStateMachine
 };

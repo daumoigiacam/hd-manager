@@ -119,10 +119,31 @@ test('Kg pricing keeps order input units independent from the billing unit', () 
     product: { unit: 'Con' },
     pricingUnit: 'Kg',
     currentUnit: 'Con',
+    catalogUnits: ['Con', 'Kg', 'Thùng'],
   });
   assert.equal(units[0], 'Con');
   assert.ok(units.includes('Kg'));
   assert.ok(units.includes('Thùng'));
+});
+
+test('order unit suggestions exclude standard units unused by the product catalog', () => {
+  const units = getOrderInputUnitOptions({
+    product: { unit: 'Con' },
+    pricingUnit: 'Kg',
+    catalogUnits: ['Con', 'Kg'],
+  });
+  assert.deepEqual(units, ['Con', 'Kg']);
+  assert.equal(units.includes('Thùng'), false);
+});
+
+test('a newly typed order unit remains selectable without changing the pricing unit', () => {
+  const units = getOrderInputUnitOptions({
+    product: { unit: 'Con' },
+    pricingUnit: 'Kg',
+    currentUnit: 'Rổ',
+    catalogUnits: ['Con', 'Kg'],
+  });
+  assert.deepEqual(units, ['Rổ', 'Con', 'Kg']);
 });
 
 test('count pricing does not expose incompatible weight input', () => {
@@ -289,7 +310,8 @@ test('order requests persist Smart Memory after successful writes', () => {
 });
 
 test('order form keeps the selected input unit separate from the pricing unit', () => {
-  assert.match(appSource, /onChange=\{\(event\) => handleDraftItemQuantityUnitChange/);
+  assert.match(appSource, /onClick=\{\(\) => openDraftItemUnitEditor\(draft, item\)\}/);
+  assert.match(appSource, /handleDraftItemQuantityUnitChange\(\s*orderUnitEditor\.draftLocalId/);
   assert.match(appSource, /item\.quantityUnit \|\| item\.actualUnit \|\| billingUnit/);
   assert.doesNotMatch(appSource, /Đơn vị số lượng của .* được cố định là/);
 });

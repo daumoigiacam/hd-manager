@@ -61,6 +61,30 @@ export const getProductPrimaryPricingUnit = (productOrUnit = {}, fallback = 'Con
   getProductPricingUnits(productOrUnit, fallback)[0] || normalizeProductPricingUnit(fallback) || fallback
 );
 
+export const getProductCatalogUnitSuggestions = (products = []) => {
+  const usageByUnit = new Map();
+
+  (Array.isArray(products) ? products : []).forEach((product, productIndex) => {
+    if (!product || product.isArchived) return;
+    getProductPricingUnits(product, '').forEach((unit, unitIndex) => {
+      const key = normalizeText(unit);
+      if (!key) return;
+      const current = usageByUnit.get(key);
+      usageByUnit.set(key, current
+        ? { ...current, count: current.count + 1 }
+        : { unit, count: 1, firstIndex: (productIndex * 100) + unitIndex });
+    });
+  });
+
+  return [...usageByUnit.values()]
+    .sort((left, right) => (
+      right.count - left.count
+      || left.firstIndex - right.firstIndex
+      || left.unit.localeCompare(right.unit, 'vi')
+    ))
+    .map(entry => entry.unit);
+};
+
 export const normalizeUnitPriceMap = (source = {}) => {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
   return Object.entries(source).reduce((result, [unit, price]) => {

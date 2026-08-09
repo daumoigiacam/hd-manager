@@ -4,8 +4,17 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
+  getIdentityAccountScope,
+  isIdentityTenantValidationReady,
+  readTrustedDeviceSecret,
+  removeTrustedDeviceSecret,
+  storeTrustedDeviceSecret,
+} = await import('../src/services/identityCenter.js');
+const {
   DEFAULT_FIRST_LOGIN_PASSWORD,
   buildPhoneVariants,
+  createRecoveryToken,
+  getRecoveryIdentityIdFromToken,
   normalizePhone,
   normalizeUsername,
   validatePassword,
@@ -29,6 +38,36 @@ assert.equal(validatePin('123456'), '');
 assert.notEqual(validatePin('12345'), '');
 assert.equal(verifyLegacyPassword('Abcd1234', legacyHash('Abcd1234')), true);
 assert.equal(verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
+const recoveryToken = createRecoveryToken('employee_emp_123');
+assert.equal(getRecoveryIdentityIdFromToken(recoveryToken), 'employee_emp_123');
+assert.equal(getRecoveryIdentityIdFromToken('legacy-token-without-routing'), '');
+assert.equal(getRecoveryIdentityIdFromToken('bad.identity.extra.parts'), '');
+
+assert.equal(getIdentityAccountScope({ identityKey: 'employee_emp_a' }), 'employee_emp_a');
+assert.notEqual(
+  getIdentityAccountScope({ accountType: 'employee', companyId: 'company_a', id: 'employee_a' }),
+  getIdentityAccountScope({ accountType: 'employee', companyId: 'company_b', id: 'employee_b' }),
+);
+assert.equal(isIdentityTenantValidationReady({ loadedTenantId: 'company_a', sessionTenantId: 'company_b', coreDataLoaded: true }), false);
+assert.equal(isIdentityTenantValidationReady({ loadedTenantId: 'company_b', sessionTenantId: 'company_b', coreDataLoaded: true }), true);
+
+const localSecretStore = new Map();
+globalThis.window = {
+  localStorage: {
+    getItem: key => localSecretStore.get(key) || null,
+    setItem: (key, value) => localSecretStore.set(key, `${value}`),
+    removeItem: key => localSecretStore.delete(key),
+  },
+};
+const sharedDeviceId = 'shared-device-001';
+await storeTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_a', secret: 'secret-a' });
+await storeTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_b', secret: 'secret-b' });
+assert.equal(await readTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_a' }), 'secret-a');
+assert.equal(await readTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_b' }), 'secret-b');
+await removeTrustedDeviceSecret(sharedDeviceId, 'employee_account_a');
+assert.equal(await readTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_a' }), '');
+assert.equal(await readTrustedDeviceSecret({ deviceId: sharedDeviceId, accountScope: 'employee_account_b' }), 'secret-b');
+delete globalThis.window;
 
 const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', import.meta.url), 'utf8'));
 const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
@@ -56,7 +95,18 @@ assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
 assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identityRegisterCompany'/);
 assert.match(identityClientSource, /export const identityRegisterCompany/);
 assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
+assert.match(identityClientSource, /identityCompleteRecovery = \(\{ resetToken, password, identifier \}\)/);
+assert.match(identityClientSource, /accountScope/);
+assert.match(identityClientSource, /rememberIdentitySessionAccount\(result\)/);
+assert.match(identityClientSource, /resetToken,\s*password,\s*identifier,\s*device:/);
+const passwordLoginStart = identityFunctionSource.indexOf('const login = async');
+const passwordLoginEnd = identityFunctionSource.indexOf('const completeSetup = async', passwordLoginStart);
+const passwordLoginSource = identityFunctionSource.slice(passwordLoginStart, passwordLoginEnd);
+assert.ok(passwordLoginStart >= 0 && passwordLoginEnd > passwordLoginStart, 'Identity password login must exist');
+assert.doesNotMatch(passwordLoginSource, /\.trusted|deviceSecret|biometric/i, 'Trusted-device state must never block normal password login');
 assert.match(appSource, /auth\.bootstrap\.not_required/);
+assert.match(appSource, /isIdentityTenantValidationReady\(\{/);
+assert.match(appSource, /loadedTenantId: loadedCollectionsTenantId/);
 assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 
@@ -89,5 +139,40 @@ assert.match(appSource, /firestore\.write\.token_refresh/);
 assert.match(appSource, /firestore\.write\.sdk_token_refresh/);
 assert.match(appSource, /firebaseUser\.getIdToken\(forceRefreshToken\)/);
 assert.match(appSource, /await firebaseUser\.getIdToken\(true\)/);
+assert.doesNotMatch(identityFunctionSource, /collectionGroup\('reset_tokens'\)/);
+assert.match(identityFunctionSource, /collection\('reset_tokens'\)\.doc\(tokenHash\)/);
+assert.match(identityFunctionSource, /db\.runTransaction\(async transaction/);
+assert.match(identityFunctionSource, /completeRecovery = async \(\{ resetToken, password, device, identifier = '' \}\)/);
+const recoveryFunctionStart = identityFunctionSource.indexOf('const completeRecovery = async');
+const recoveryFunctionEnd = identityFunctionSource.indexOf('const verifyPin = async', recoveryFunctionStart);
+const recoveryFunctionSource = identityFunctionSource.slice(recoveryFunctionStart, recoveryFunctionEnd);
+assert.doesNotMatch(recoveryFunctionSource, /issueSession\(/);
+assert.match(recoveryFunctionSource, /password_reset_completed/);
+const recoveryUiHandlerStart = appSource.indexOf('const handleIdentityCompleteRecovery = async');
+const recoveryUiHandlerEnd = appSource.indexOf('const handleLogin = async', recoveryUiHandlerStart);
+const recoveryUiHandlerSource = appSource.slice(recoveryUiHandlerStart, recoveryUiHandlerEnd);
+assert.doesNotMatch(recoveryUiHandlerSource, /establishIdentitySession/);
+assert.match(recoveryUiHandlerSource, /identityCompleteRecovery\(\{ resetToken, password, identifier \}\)/);
+
+const loginViewStart = appSource.indexOf('function LoginRegisterView');
+const loginViewSource = appSource.slice(loginViewStart, loginViewStart + 25000);
+assert.ok(loginViewStart >= 0, 'LoginRegisterView must exist');
+assert.match(
+  loginViewSource,
+  /\{!showForgotPassword && <>[\s\S]*?placeholder="Username hoặc số điện thoại"[\s\S]*?placeholder="Mật khẩu"[\s\S]*?<\/>,?\}/,
+  'Login credentials must be hidden while password recovery is open'
+);
+assert.match(
+  loginViewSource,
+  /\{!showForgotPassword && \([\s\S]*?type="submit"[\s\S]*?Vào Ứng Dụng[\s\S]*?\)\}/,
+  'Login submit action must be hidden while password recovery is open'
+);
+assert.match(loginViewSource, /<form onSubmit=\{handleAuthFormSubmit\}/);
+assert.match(loginViewSource, /if \(!showForgotPassword\) return handleLoginSubmit\(event\)/);
+assert.match(loginViewSource, /if \(!recoveryToken\) return handleForgotPasswordSubmit\(event\)/);
+assert.match(loginViewSource, />Quay lại đăng nhập<\/button>/);
+assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
+assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
+assert.match(loginViewSource, /Đổi mật khẩu thành công\. Bạn có thể đăng nhập bằng mật khẩu mới\./);
 
 console.log('Identity Center unit checks passed.');

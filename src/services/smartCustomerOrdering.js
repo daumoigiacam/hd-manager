@@ -1,5 +1,4 @@
 import {
-  PRODUCT_PRICING_UNIT_OPTIONS,
   getProductPricingUnits,
   getProductPrimaryPricingUnit,
   normalizeProductPricingUnit,
@@ -132,35 +131,25 @@ export const getOrderInputUnitOptions = ({
   pricingUnit = '',
   currentUnit = '',
   rememberedUnit = '',
+  catalogUnits = [],
   fallback = 'Con',
 } = {}) => {
   const normalizedPricingUnit = normalizeProductPricingUnit(pricingUnit);
-  const usesWeightPricing = sameUnit(normalizedPricingUnit, 'Kg');
   const productUnits = getProductPricingUnits(product || {}, '');
-  const candidates = usesWeightPricing
-    ? [
-        currentUnit,
-        rememberedUnit,
-        ...productUnits,
-        fallback,
-        'Con',
-        'Kg',
-        ...PRODUCT_PRICING_UNIT_OPTIONS,
-      ]
-    : [
-        normalizedPricingUnit,
-        currentUnit,
-        rememberedUnit,
-        ...productUnits,
-        fallback,
-      ];
+  const candidates = [
+    currentUnit,
+    rememberedUnit,
+    ...productUnits,
+    ...(Array.isArray(catalogUnits) ? catalogUnits : []),
+    normalizedPricingUnit,
+    fallback,
+  ];
   const uniqueUnits = [];
 
   candidates
     .map(normalizeProductPricingUnit)
     .filter(Boolean)
     .forEach((unit) => {
-      if (!usesWeightPricing && normalizedPricingUnit && !sameUnit(unit, normalizedPricingUnit)) return;
       if (!uniqueUnits.some(existingUnit => sameUnit(existingUnit, unit))) uniqueUnits.push(unit);
     });
 

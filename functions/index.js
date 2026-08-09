@@ -39,7 +39,8 @@ const {
   isCompleteFinalPayrollSnapshot,
   isLockedPayrollStatus,
   isPayrollAutoLockDue,
-  normalizePayrollAutoLockStatus
+  normalizePayrollAutoLockStatus,
+  runPayrollAutoLockPlanStateMachine
 } = require('./payrollAutoLock');
 
 admin.initializeApp();
@@ -960,7 +961,8 @@ exports.identityRequestRecovery = functions.https.onRequest(runIdentityRequest((
 exports.identityCompleteRecovery = functions.https.onRequest(runIdentityRequest((req) => identityCenter.completeRecovery({
   resetToken: req.body?.resetToken,
   password: req.body?.password,
-  device: req.body?.device
+  device: req.body?.device,
+  identifier: req.body?.identifier
 })));
 
 exports.identityVerifyPin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.verifyPin({
@@ -2058,10 +2060,11 @@ exports.autoLockPayrollPeriods = onSchedule({
         await waitForPayrollPeriodCloseSecond(plan);
         const latestClock = getVietnamClock();
         if (!isPayrollAutoLockDue(plan.monthKey, latestClock, plan.autoLockAt)) continue;
-        const status = normalizePayrollAutoLockStatus(plan.status);
-        const outcome = status === PAYROLL_AUTO_LOCK_PLAN_STATUS.READY_FOR_LOCK
-          ? await finalizePayrollAutoLockPlan({ appId, planId: planSnapshot.id })
-          : await evaluatePayrollAutoLockPlanEligibility({ appId, planId: planSnapshot.id });
+        const outcome = await runPayrollAutoLockPlanStateMachine({
+          initialStatus: plan.status,
+          evaluateEligibility: () => evaluatePayrollAutoLockPlanEligibility({ appId, planId: planSnapshot.id }),
+          finalizeLock: () => finalizePayrollAutoLockPlan({ appId, planId: planSnapshot.id })
+        });
         outcomes.push({ appId, planId: planSnapshot.id, ...outcome });
       } catch (error) {
         console.error('autoLockPayrollPeriods failed', {

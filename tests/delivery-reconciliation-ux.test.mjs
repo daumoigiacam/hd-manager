@@ -86,14 +86,14 @@ test('groups and totals quantity-priced products without treating them as Kg', (
   assert.equal(pending[0].paymentSummaryTotal, 800_000);
 });
 
-test('shows five customers by default and all customers when expanded', () => {
+test('shows three customers by default and all customers when expanded', () => {
   const groups = Array.from({ length: 8 }, (_, index) => (
     createGroup(index + 1, [createRow(`dispatch-${index + 1}`)])
   ));
   const pending = buildPendingDeliveryReconciliationGroups(groups);
 
-  assert.equal(DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT, 5);
-  assert.equal(getVisibleDeliveryReconciliationGroups(pending, false).length, 5);
+  assert.equal(DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT, 3);
+  assert.equal(getVisibleDeliveryReconciliationGroups(pending, false).length, 3);
   assert.equal(getVisibleDeliveryReconciliationGroups(pending, true).length, 8);
   assert.equal(countPendingDeliveryReconciliationDispatches(pending), 8);
 });
@@ -107,7 +107,7 @@ test('pending list preparation stays well below one frame for a large workday', 
   const visible = getVisibleDeliveryReconciliationGroups(pending, false);
   const elapsedMs = performance.now() - startedAt;
 
-  assert.equal(visible.length, 5);
+  assert.equal(visible.length, 3);
   assert.ok(elapsedMs < 16, `List preparation took ${elapsedMs.toFixed(2)} ms`);
   console.log(`INFO 1000 groups prepared in ${elapsedMs.toFixed(2)} ms; initial cards 1000 -> ${visible.length}`);
 });
