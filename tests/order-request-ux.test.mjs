@@ -73,6 +73,23 @@ test('shared order sheet keeps matching products next to each other', () => {
   assert.doesNotMatch(appSource, /groupedShareableRequestSheetCustomerGroups/);
 });
 
+test('share images are prepared in background and reused from persistent cache', () => {
+  assert.match(appSource, /const SHARE_IMAGE_CACHE_DB_NAME = 'hd-manager-share-image-cache'/);
+  assert.match(appSource, /const readPersistentShareImageAsset = async/);
+  assert.match(appSource, /const writePersistentShareImageAsset = async/);
+  assert.match(appSource, /scope: 'sales_order_invoice'/);
+  assert.match(appSource, /reason: 'order_created'/);
+  assert.match(appSource, /reason: 'order_updated'/);
+  assert.match(appSource, /reason: 'order_request_created'/);
+  assert.match(appSource, /reason: 'order_request_updated'/);
+  assert.match(appSource, /window\.addEventListener\(ORDER_REQUEST_SHARE_WARMUP_EVENT, handleSavedOrderRequest\)/);
+  assert.match(appSource, /const prepareOrderRequestSheetBlobs = async/);
+  assert.match(appSource, /reason = 'order_request_loaded_or_changed'/);
+  assert.match(appSource, /prepareOrderRequestSheetBlobs\(\{ reason: 'share_click' \}\)/);
+  assert.match(appSource, /prepareOrderRequestSheetBlobs\(\{ reason: 'download_click' \}\)/);
+  assert.doesNotMatch(appSource, /const canvases = await renderOrderRequestSheetCanvases\(\);\s*const blobs = await Promise\.all\(canvases\.map\(\(canvas\) => canvasToBlob\(canvas, 'image\/png'\)\)\);\s*const result = await shareOrderRequestSheetBlobs/);
+});
+
 test('orders remain reachable from More when the adaptive footer does not promote them', () => {
   const moreMenuSource = appSource.slice(
     appSource.indexOf('function MoreMenu('),

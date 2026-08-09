@@ -5844,8 +5844,166 @@ const drawSalesInvoiceShareImage = async ({
   }
 };
 
+const SHARE_IMAGE_CACHE_DB_NAME = 'hd-manager-share-image-cache';
+const SHARE_IMAGE_CACHE_STORE_NAME = 'assets';
+const SHARE_IMAGE_CACHE_DB_VERSION = 1;
+const SHARE_IMAGE_CACHE_LIMIT = 64;
+const SHARE_IMAGE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let shareImageCacheDatabasePromise = null;
+
+const debugShareImageCache = (message = '', detail = {}) => {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return;
+  if (!new URLSearchParams(window.location.search).has('perfCheck')) return;
+  console.debug('[HD Share Cache]', message, detail);
+};
+
+const buildPersistentShareImageCacheKey = (sourceKey = '') => (
+  `share_${buildStableHash(sourceKey)}_${sourceKey.length}`
+);
+
+const openShareImageCacheDatabase = () => {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (shareImageCacheDatabasePromise) return shareImageCacheDatabasePromise;
+
+  shareImageCacheDatabasePromise = new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    try {
+      const request = indexedDB.open(SHARE_IMAGE_CACHE_DB_NAME, SHARE_IMAGE_CACHE_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(SHARE_IMAGE_CACHE_STORE_NAME)) {
+          database.createObjectStore(SHARE_IMAGE_CACHE_STORE_NAME, { keyPath: 'key' });
+        }
+      };
+      request.onsuccess = () => finish(request.result);
+      request.onerror = () => finish(null);
+      request.onblocked = () => finish(null);
+    } catch {
+      finish(null);
+    }
+  });
+
+  return shareImageCacheDatabasePromise;
+};
+
+const readPersistentShareImageAsset = async (sourceKey = '', maxAgeMs = SHARE_IMAGE_CACHE_TTL_MS) => {
+  if (!sourceKey) return null;
+  const database = await openShareImageCacheDatabase();
+  if (!database) {
+    debugShareImageCache('persistent database unavailable');
+    return null;
+  }
+  const key = buildPersistentShareImageCacheKey(sourceKey);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    try {
+      const transaction = database.transaction(SHARE_IMAGE_CACHE_STORE_NAME, 'readonly');
+      const request = transaction.objectStore(SHARE_IMAGE_CACHE_STORE_NAME).get(key);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (!record || record.sourceKey !== sourceKey) {
+          debugShareImageCache('persistent miss', { key });
+          finish(null);
+          return;
+        }
+        if (Date.now() - Number(record.createdAt || 0) > maxAgeMs) {
+          debugShareImageCache('persistent expired', { key });
+          finish(null);
+          return;
+        }
+        debugShareImageCache('persistent hit', { key, scope: record.scope, entityId: record.entityId });
+        finish(record);
+      };
+      request.onerror = () => finish(null);
+      transaction.onabort = () => finish(null);
+      transaction.onerror = () => finish(null);
+    } catch {
+      finish(null);
+    }
+  });
+};
+
+const writePersistentShareImageAsset = async ({
+  sourceKey = '',
+  scope = '',
+  entityId = '',
+  payload = null,
+  createdAt = Date.now()
+} = {}) => {
+  if (!sourceKey || !payload) return false;
+  const database = await openShareImageCacheDatabase();
+  if (!database) return false;
+  const key = buildPersistentShareImageCacheKey(sourceKey);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    try {
+      const transaction = database.transaction(SHARE_IMAGE_CACHE_STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(SHARE_IMAGE_CACHE_STORE_NAME);
+      const recordsRequest = store.getAll();
+      recordsRequest.onsuccess = () => {
+        const nextRecord = { key, sourceKey, scope, entityId, payload, createdAt };
+        const existingRecords = (recordsRequest.result || []).filter(record => record?.key !== key);
+        const retainedKeys = new Set(
+          [...existingRecords, nextRecord]
+            .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))
+            .slice(0, SHARE_IMAGE_CACHE_LIMIT)
+            .map(record => record.key)
+        );
+
+        // The replacement and pruning share one transaction. If the new blob
+        // cannot be stored, IndexedDB keeps every previously valid image.
+        store.put(nextRecord);
+        existingRecords.forEach((record) => {
+          if (!retainedKeys.has(record.key)) store.delete(record.key);
+        });
+      };
+      recordsRequest.onerror = () => {
+        try {
+          transaction.abort();
+        } catch {
+          // The transaction may already be closing.
+        }
+      };
+      transaction.oncomplete = () => {
+        debugShareImageCache('persistent write complete', { key, scope, entityId });
+        finish(true);
+      };
+      transaction.onabort = () => {
+        debugShareImageCache('persistent write aborted', { key, scope, entityId });
+        finish(false);
+      };
+      transaction.onerror = () => {
+        debugShareImageCache('persistent write failed', { key, scope, entityId });
+        finish(false);
+      };
+    } catch {
+      finish(false);
+    }
+  });
+};
+
 const ORDER_SHARE_ASSET_CACHE_LIMIT = 32;
-const ORDER_SHARE_ASSET_CACHE_TTL_MS = 10 * 60 * 1000;
+const ORDER_SHARE_ASSET_CACHE_TTL_MS = SHARE_IMAGE_CACHE_TTL_MS;
 const orderShareAssetCache = new Map();
 const orderShareAssetPendingCache = new Map();
 const orderShareRelatedOrdersFingerprintCache = new WeakMap();
@@ -5966,7 +6124,7 @@ const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) =>
   ].map(serializeOrderShareFingerprintValue).join('|');
 };
 
-const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context = {}) => {
+const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context = {}, options = {}) => {
   if (!order?.id || !asset?.blob) return null;
   const key = buildOrderShareAssetCacheKey(order, company, context);
   const entry = {
@@ -5974,7 +6132,7 @@ const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context
     orderId: order.id,
     order,
     blob: asset.blob,
-    createdAt: Date.now()
+    createdAt: Number(options.createdAt || Date.now())
   };
   orderShareAssetCache.delete(key);
   orderShareAssetCache.set(key, entry);
@@ -5986,6 +6144,15 @@ const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context
   while (orderShareAssetCache.size > ORDER_SHARE_ASSET_CACHE_LIMIT) {
     const oldestKey = orderShareAssetCache.keys().next().value;
     orderShareAssetCache.delete(oldestKey);
+  }
+  if (options.persist !== false) {
+    void writePersistentShareImageAsset({
+      sourceKey: key,
+      scope: 'sales_order_invoice',
+      entityId: order.id,
+      payload: { blob: asset.blob },
+      createdAt: entry.createdAt
+    });
   }
   return entry;
 };
@@ -6014,17 +6181,43 @@ const warmOrderShareAssetCache = async ({
 } = {}) => {
   if (!order?.id) return null;
   const cacheContext = { customers, orders, payments };
+  const cacheKey = buildOrderShareAssetCacheKey(order, company, cacheContext);
   const cached = getCachedOrderShareAsset(order, company, cacheContext);
   if (cached) {
-    recordPerformanceEvent('share_invoice.cache_lookup', { orderId: order.id, hit: true, reason });
+    recordPerformanceEvent('share_invoice.cache_lookup', { orderId: order.id, hit: true, source: 'memory', reason });
     return cached;
   }
-  const pending = orderShareAssetPendingCache.get(order.id);
+  const pending = orderShareAssetPendingCache.get(cacheKey);
   if (pending) return pending;
 
-  recordPerformanceEvent('share_invoice.cache_lookup', { orderId: order.id, hit: false, reason });
-  const prepareSpan = createPerformanceSpan('share_invoice.prepare', { orderId: order.id, reason });
+  let prepareSpan = null;
   const promise = (async () => {
+    const persisted = await readPersistentShareImageAsset(cacheKey, ORDER_SHARE_ASSET_CACHE_TTL_MS);
+    const persistedBlob = persisted?.payload?.blob;
+    if (persistedBlob && typeof persistedBlob.arrayBuffer === 'function') {
+      const persistedEntry = rememberOrderShareAsset(
+        order,
+        company,
+        { blob: persistedBlob },
+        cacheContext,
+        { persist: false, createdAt: persisted.createdAt }
+      );
+      recordPerformanceEvent('share_invoice.cache_lookup', {
+        orderId: order.id,
+        hit: true,
+        source: 'indexeddb',
+        reason
+      });
+      return persistedEntry;
+    }
+
+    recordPerformanceEvent('share_invoice.cache_lookup', {
+      orderId: order.id,
+      hit: false,
+      source: 'render',
+      reason
+    });
+    prepareSpan = createPerformanceSpan('share_invoice.prepare', { orderId: order.id, reason });
     let orderForShare = order;
     const paymentSource = getOrderPayosPaymentSource(orderForShare);
     const paymentDueAmount = getOrderSharePaymentDueAmount(orderForShare, customers, orders, payments);
@@ -6097,7 +6290,7 @@ const warmOrderShareAssetCache = async ({
       throw error;
     }
     const entry = rememberOrderShareAsset(orderForShare, company, { blob }, cacheContext);
-    prepareSpan.end({
+    prepareSpan?.end({
       status: 'ok',
       bytes: blob?.size || 0,
       legacyQrReused: legacyStoredQrCanBeReused,
@@ -6105,7 +6298,7 @@ const warmOrderShareAssetCache = async ({
     });
     return entry;
   })().catch((error) => {
-    prepareSpan.fail(error);
+    prepareSpan?.fail(error);
     recordPerformanceEvent('share_invoice.cache_error', {
       orderId: order.id,
       reason,
@@ -6113,19 +6306,25 @@ const warmOrderShareAssetCache = async ({
     }, 'warn');
     return null;
   }).finally(() => {
-    orderShareAssetPendingCache.delete(order.id);
+    orderShareAssetPendingCache.delete(cacheKey);
   });
-  orderShareAssetPendingCache.set(order.id, promise);
+  orderShareAssetPendingCache.set(cacheKey, promise);
   return promise;
 };
 
 const scheduleOrderShareWarmup = (options = {}) => {
   const run = () => warmOrderShareAssetCache(options).catch(() => null);
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-    window.requestIdleCallback(run, { timeout: 1500 });
+    window.requestIdleCallback(run, { timeout: 250 });
   } else {
     setTimeout(run, 0);
   }
+};
+
+const ORDER_REQUEST_SHARE_WARMUP_EVENT = 'hd-order-request-share-warmup';
+const notifyOrderRequestShareWarmup = (detail = {}) => {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  window.dispatchEvent(new CustomEvent(ORDER_REQUEST_SHARE_WARMUP_EVENT, { detail }));
 };
 
 const normalizeWarehouseMeasureUnit = (unit = '') => {
@@ -16820,6 +17019,10 @@ export default function App() {
     saveDataDocument('orderRequests', id, newRequestDocument, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.')
       .then(() => {
         notifyAssignedSalesEmployee();
+        notifyOrderRequestShareWarmup({
+          requestId: id,
+          reason: 'order_request_created'
+        });
       })
       .catch((error) => {
         setRawOrderRequests(prev => (Array.isArray(prev) ? prev.filter(request => request?.id !== id) : prev));
@@ -16896,6 +17099,10 @@ export default function App() {
       updatedAt,
       updatedByEmpId: empId || ''
     }, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật đơn đặt hàng.');
+    notifyOrderRequestShareWarmup({
+      requestId,
+      reason: 'order_request_updated'
+    });
   };
 
   const handleDeleteOrderRequest = async (requestId) => {
@@ -57434,6 +57641,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const requestSubmittingRef = useRef(false);
   const [sheetStatus, setSheetStatus] = useState('');
   const [isSheetExporting, setIsSheetExporting] = useState(false);
+  const orderRequestSheetAssetCacheRef = useRef(new Map());
+  const orderRequestSheetPendingCacheRef = useRef(new Map());
   const [openDraftPicker, setOpenDraftPicker] = useState(null);
   const [internalShowRequestFilterPanel, setInternalShowRequestFilterPanel] = useState(false);
   const showRequestFilterPanel = typeof showFilterPanel === 'boolean' ? showFilterPanel : internalShowRequestFilterPanel;
@@ -58651,6 +58860,44 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     () => groupedShareableRequestSheetProductGroups.flatMap((group) => group.rows),
     [groupedShareableRequestSheetProductGroups]
   );
+  const orderRequestSheetAssetKey = useMemo(() => {
+    if (groupedShareableMergedRequestSheetRows.length === 0) return '';
+    const rowFingerprint = groupedShareableMergedRequestSheetRows.map((row) => ({
+      id: row.id || '',
+      customerId: row.customerId || '',
+      customerName: row.customerName || '',
+      branchId: row.branchId || '',
+      branchName: row.branchName || '',
+      productId: row.productId || '',
+      productName: row.productName || '',
+      productShortName: row.productShortName || '',
+      productGroupName: row.productGroupName || '',
+      attributeLabel: row.attributeLabel || '',
+      sizeLabel: row.sizeLabel || '',
+      configurationId: row.configurationId || '',
+      quantity: row.quantity || 0,
+      quantityUnit: row.quantityUnit || '',
+      billingQuantity: row.billingQuantity || 0,
+      billingUnit: row.billingUnit || '',
+      unitPrice: row.unitPrice || 0,
+      amount: row.amount || 0,
+      note: row.note || '',
+      date: row.date || ''
+    }));
+    const fingerprint = buildStableHash(JSON.stringify({
+      date: requestFilterDate || getTodayString(),
+      employeeId: employee?.id || '',
+      employeeName: employee?.name || '',
+      rows: rowFingerprint
+    }));
+    return [
+      'order_request_sheet',
+      employee?.companyId || 'company',
+      employee?.id || 'shared',
+      requestFilterDate || getTodayString(),
+      fingerprint
+    ].join('|');
+  }, [employee?.companyId, employee?.id, employee?.name, groupedShareableMergedRequestSheetRows, requestFilterDate]);
 
   const resetInlineEditing = () => {
     setInlineEditingRowKey('');
@@ -60248,6 +60495,119 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     })));
   };
 
+  const prepareOrderRequestSheetBlobs = async ({ reason = 'background' } = {}) => {
+    const cacheKey = orderRequestSheetAssetKey;
+    if (!cacheKey || groupedShareableMergedRequestSheetRows.length === 0) return [];
+
+    const cached = orderRequestSheetAssetCacheRef.current.get(cacheKey);
+    if (cached?.blobs?.length) {
+      debugShareImageCache('order request memory hit', { count: cached.blobs.length, reason });
+      recordPerformanceEvent('share_order_request.cache_lookup', {
+        hit: true,
+        source: 'memory',
+        reason,
+        count: cached.blobs.length
+      });
+      return cached.blobs;
+    }
+
+    const pending = orderRequestSheetPendingCacheRef.current.get(cacheKey);
+    if (pending) return pending;
+
+    let prepareSpan = null;
+    const promise = (async () => {
+      const persisted = await readPersistentShareImageAsset(cacheKey, SHARE_IMAGE_CACHE_TTL_MS);
+      const persistedBlobs = persisted?.payload?.blobs;
+      if (Array.isArray(persistedBlobs)
+        && persistedBlobs.length > 0
+        && persistedBlobs.every(blob => blob && typeof blob.arrayBuffer === 'function')) {
+        orderRequestSheetAssetCacheRef.current.set(cacheKey, {
+          blobs: persistedBlobs,
+          createdAt: Number(persisted.createdAt || Date.now())
+        });
+        debugShareImageCache('order request persistent ready', { count: persistedBlobs.length, reason });
+        recordPerformanceEvent('share_order_request.cache_lookup', {
+          hit: true,
+          source: 'indexeddb',
+          reason,
+          count: persistedBlobs.length
+        });
+        return persistedBlobs;
+      }
+
+      recordPerformanceEvent('share_order_request.cache_lookup', {
+        hit: false,
+        source: 'render',
+        reason
+      });
+      prepareSpan = createPerformanceSpan('share_order_request.prepare', { reason });
+      const canvases = await renderOrderRequestSheetCanvases();
+      const blobs = await Promise.all(canvases.map((canvas) => canvasToBlob(canvas, 'image/png')));
+      const createdAt = Date.now();
+      orderRequestSheetAssetCacheRef.current.delete(cacheKey);
+      orderRequestSheetAssetCacheRef.current.set(cacheKey, { blobs, createdAt });
+      while (orderRequestSheetAssetCacheRef.current.size > 4) {
+        const oldestKey = orderRequestSheetAssetCacheRef.current.keys().next().value;
+        orderRequestSheetAssetCacheRef.current.delete(oldestKey);
+      }
+
+      // Publish the complete image set in memory first, then persist it. A
+      // storage failure never removes the last usable set of share images.
+      void writePersistentShareImageAsset({
+        sourceKey: cacheKey,
+        scope: 'order_request_sheet',
+        entityId: `${employee?.id || 'shared'}_${requestFilterDate || getTodayString()}`,
+        payload: { blobs },
+        createdAt
+      });
+      prepareSpan?.end({
+        status: 'ok',
+        count: blobs.length,
+        bytes: blobs.reduce((sum, blob) => sum + Number(blob?.size || 0), 0)
+      });
+      return blobs;
+    })().catch((error) => {
+      prepareSpan?.fail(error);
+      recordPerformanceEvent('share_order_request.cache_error', {
+        reason,
+        error: error?.message || String(error)
+      }, 'warn');
+      throw error;
+    }).finally(() => {
+      orderRequestSheetPendingCacheRef.current.delete(cacheKey);
+    });
+
+    orderRequestSheetPendingCacheRef.current.set(cacheKey, promise);
+    return promise;
+  };
+
+  useEffect(() => {
+    if (!canShareOrderRequestSheet || !orderRequestSheetAssetKey) return undefined;
+    const run = (reason = 'order_request_loaded_or_changed') => {
+      void prepareOrderRequestSheetBlobs({ reason }).catch(() => null);
+    };
+    const handleSavedOrderRequest = (event) => {
+      run(event?.detail?.reason || 'order_request_saved_or_updated');
+    };
+    window.addEventListener(ORDER_REQUEST_SHARE_WARMUP_EVENT, handleSavedOrderRequest);
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(
+        () => run('order_request_loaded_or_changed'),
+        { timeout: 250 }
+      );
+      return () => {
+        window.cancelIdleCallback?.(idleId);
+        window.removeEventListener(ORDER_REQUEST_SHARE_WARMUP_EVENT, handleSavedOrderRequest);
+      };
+    }
+    const timerId = window.setTimeout(() => run('order_request_loaded_or_changed'), 0);
+    return () => {
+      window.clearTimeout(timerId);
+      window.removeEventListener(ORDER_REQUEST_SHARE_WARMUP_EVENT, handleSavedOrderRequest);
+    };
+  }, [canShareOrderRequestSheet, orderRequestSheetAssetKey]);
+
   const shareOrderRequestSheetBlobs = async (blobs = []) => {
     if (blobs.length === 1) {
       return shareBlobFile({
@@ -60318,10 +60678,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       return;
     }
 
+    const shareAssetStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     setIsSheetExporting(true);
     try {
-      const canvases = await renderOrderRequestSheetCanvases();
-      const blobs = await Promise.all(canvases.map((canvas) => canvasToBlob(canvas, 'image/png')));
+      const blobs = await prepareOrderRequestSheetBlobs({ reason: 'share_click' });
+      const shareAssetReadyMs = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - shareAssetStartedAt);
+      debugShareImageCache(`order request share assets ready ${Math.round(shareAssetReadyMs)}ms`, {
+        readyMs: Math.round(shareAssetReadyMs * 100) / 100,
+        count: blobs.length,
+        bytes: blobs.reduce((sum, blob) => sum + Number(blob?.size || 0), 0)
+      });
       const result = await shareOrderRequestSheetBlobs(blobs);
 
       if (result.status === 'shared') setSheetStatus(result.count > 1 ? `Đã mở bảng chia sẻ ${result.count} ảnh. Bạn có thể gửi lên Zalo theo từng ảnh.` : 'Đã mở bảng chia sẻ. Bạn có thể gửi lên Zalo hoặc chia sẻ tiếp.');
@@ -60346,8 +60712,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     setIsSheetExporting(true);
     try {
-      const canvases = await renderOrderRequestSheetCanvases();
-      const blobs = await Promise.all(canvases.map((canvas) => canvasToBlob(canvas, 'image/png')));
+      const blobs = await prepareOrderRequestSheetBlobs({ reason: 'download_click' });
       const baseFilename = buildOrderRequestSheetFilename();
       const results = await Promise.all(blobs.map((blob, index) => saveBlobFile(
         blobs.length > 1 ? `${baseFilename}-trang-${index + 1}.png` : `${baseFilename}.png`,
@@ -63348,6 +63713,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       return;
     }
     if (!selectedOrder) return;
+    const shareAssetStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const title = `${formatOrderCode(selectedOrder.id)} - ${selectedOrder.customer?.name || 'Hóa đơn'}`;
     const shareSpan = createPerformanceSpan('share_invoice.total', {
       orderId: selectedOrder.id,
@@ -63387,6 +63753,13 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       if (!asset?.blob) {
         throw new Error('Chưa chuẩn bị được ảnh hóa đơn. Vui lòng thử lại sau vài giây.');
       }
+      const shareAssetReadyMs = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - shareAssetStartedAt);
+      debugShareImageCache(`sales invoice share asset ready ${Math.round(shareAssetReadyMs)}ms`, {
+        orderId: selectedOrder.id,
+        readyMs: Math.round(shareAssetReadyMs * 100) / 100,
+        bytes: Number(asset.blob?.size || 0),
+        source: cachedAsset ? 'memory' : 'persistent_or_rendered'
+      });
       const shareApiSpan = createPerformanceSpan('share_invoice.native_share', {
         orderId: selectedOrder.id,
         channel,
