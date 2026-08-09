@@ -1,7 +1,7 @@
 # Code Cleanup Audit
 
-Audit date: 2026-08-09  
-Checkpoint: `e123fba chore(cleanup): audit checkpoint before cleanup`  
+Audit date: 2026-08-09
+Checkpoint: `e123fba chore(cleanup): audit checkpoint before cleanup`
 Policy: delete only category A. Preserve categories B, C, and D until runtime use is proven.
 
 ## Baseline

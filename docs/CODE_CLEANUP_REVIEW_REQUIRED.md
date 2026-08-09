@@ -318,4 +318,3 @@ This appendix records every remaining strict `no-unused-vars` finding after cate
 | `src/aiZaloAssistant.js:150` | `senderName` | B | Public/service compatibility parameter; removal could break external or future callers. |
 | `src/services/executiveDashboardService.js:2026` | `priority` | D | Intentional rest-destructuring omission so internal sort metadata is not returned. |
 | `src/services/pricingEngineService.js:525` | `orderRequests` | B | Public/service compatibility parameter; removal could break external or future callers. |
-

@@ -1,8 +1,8 @@
 # Code Cleanup Final Report
 
-Audit date: 2026-08-09  
-Baseline checkpoint: `e123fba chore(cleanup): audit checkpoint before cleanup`  
-Policy: `SAFE > CLEAN`; only category-A candidates were removed.  
+Audit date: 2026-08-09
+Baseline checkpoint: `e123fba chore(cleanup): audit checkpoint before cleanup`
+Policy: `SAFE > CLEAN`; only category-A candidates were removed.
 Deployment status: local commits only; nothing was pushed or deployed by this audit.
 
 ## Executive result
