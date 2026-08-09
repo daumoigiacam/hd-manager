@@ -2,7 +2,6 @@ const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off', 'disabled']);
 
 const DEFAULT_LOG_LIMIT = 800;
-const SLOW_API_MS = 500;
 const SLOW_SCREEN_MS = 2000;
 const SLOW_RENDER_MS = 16;
 const MEMORY_SAMPLE_MS = 15000;

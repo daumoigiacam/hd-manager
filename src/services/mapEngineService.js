@@ -75,7 +75,7 @@ export const geocodeAddress = async (query = '') => {
         };
       }
     }
-  } catch (error) {
+  } catch {
     // Offline or provider throttled. Keep the map usable with the local fallback below.
   }
   return fallback;

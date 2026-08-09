@@ -6,14 +6,13 @@ import {
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
   Edit3, LogOut, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star, 
-  Package, Trash2, Wallet, Banknote, History, Target, CalendarDays, Filter, Building, Crown, 
+  Package, Trash2, Wallet, Banknote, Target, CalendarDays, Filter, Building, Crown,
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
   MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff
 } from 'lucide-react';
 import {
-  WAREHOUSE_WEIGHT_ENTRY_ROW_SIZE,
   createWarehouseWeightEntryRow,
   ensureWarehouseWeightEntryRows,
   getWarehouseWeightEntryTotal,
@@ -142,7 +141,6 @@ import {
   buildOfflineRouteSnapshot,
   extractCustomerCoordinates,
   formatDistanceKm,
-  formatEtaMinutes,
   getDefaultMapProvider,
   isValidLatLng,
 } from './services/mapEngineService.js';
@@ -875,7 +873,6 @@ const dispatchScreenBackRequest = () => {
 };
 const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_accounts', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
-const OPTIONAL_ZALO_COLLECTION_NAMES = ['zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules'];
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
 const decodeFirestoreRestValue = (value = {}) => {
@@ -1320,22 +1317,6 @@ const getZaloSchedulerSettings = (company = null) => {
     editHoldMinutes: Math.max(0, parseInt(company?.zaloSchedulerEditHoldMinutes ?? DEFAULT_ZALO_SCHEDULER_SETTINGS.editHoldMinutes, 10) || 0)
   };
 };
-const buildZaloScheduledAt = (settings = {}, baseDate = new Date()) => {
-  const mode = settings.mode || DEFAULT_ZALO_SCHEDULER_SETTINGS.mode;
-  const anchor = baseDate instanceof Date && !Number.isNaN(baseDate.getTime()) ? baseDate : new Date();
-  if (mode === 'immediate') return anchor.toISOString();
-  if (mode === 'delay_minutes') {
-    return new Date(anchor.getTime() + (Math.max(0, parseInt(settings.delayMinutes, 10) || 0) * 60000)).toISOString();
-  }
-  if (mode === 'route_closed') return '';
-  const [hourText, minuteText] = normalizeClockTime(settings.dailyTime).split(':');
-  const scheduled = new Date(anchor);
-  scheduled.setHours(parseInt(hourText, 10) || 0, parseInt(minuteText, 10) || 0, 0, 0);
-  if (scheduled.getTime() <= anchor.getTime()) {
-    scheduled.setDate(scheduled.getDate() + 1);
-  }
-  return scheduled.toISOString();
-};
 const isZaloImmediateSendQueueItem = (item = {}) => (
   item?.sendImmediately === true ||
   item?.forceSendNow === true ||
@@ -1432,8 +1413,6 @@ const isWithinAiAutoReplyWindow = (settings = {}, now = new Date()) => {
 };
 const renderAiReplyTemplate = (template = '', variables = {}) => `${template || ''}`.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => variables[key] ?? '');
 const classifyZaloMessageIntent = (messageText = '') => classifyAiZaloIntent(messageText);
-const STANDARD_WORK_DAYS = 26;
-const BASE_SALARY_MONTH_DAYS = 30;
 const DEFAULT_SHIFT_POLICY = {
   shiftName: 'Ca hành chính',
   shiftStart: '08:00',

@@ -22,12 +22,6 @@ const normalizeText = (value = '') =>
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
-const startOfDay = (date = new Date()) => {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-};
-
 const getDateValue = (value) => {
   if (!value) return null;
   if (value instanceof Date) return value;

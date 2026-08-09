@@ -53,13 +53,6 @@ const formatDepartmentLabel = (value = '', fallback = 'Chi phí chung') => {
   return DEPARTMENT_LABELS[key] || raw;
 };
 
-const formatMoneyInsight = (value = 0) => {
-  const amount = Math.round(toNumber(value));
-  if (Math.abs(amount) >= 1000000000) return `${(amount / 1000000000).toLocaleString('vi-VN', { maximumFractionDigits: 1 })} tỷ`;
-  if (Math.abs(amount) >= 1000000) return `${Math.round(amount / 1000000).toLocaleString('vi-VN')} triệu`;
-  return `${amount.toLocaleString('vi-VN')} đ`;
-};
-
 const parseDate = (value) => {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -520,7 +513,6 @@ export const FinancialService = {
 export const CostAnalysisService = {
   build(source, finance) {
     const currentMonthKey = finance.currentMonthKey;
-    const previousMonthKey = finance.previousMonthKey;
     const daysPassed = Math.max(1, source.now.getDate());
     const payrollRows = payrollEmployeesOf(source.employees, source.now);
     const activeEmployees = payrollRows.length || 1;
@@ -1319,27 +1311,6 @@ export const BusinessAnalysisService = {
       .sort((a, b) => b.averageDailyProfit - a.averageDailyProfit)
       .slice(0, 10);
 
-    const profitabilityTopRows = (rows = [], valueKey = 'profit') => rows
-      .map(row => {
-        const quantityBasis = profitQuantityBasisOf(row);
-        return {
-          id: row.id || normalizeText(row.name),
-          name: row.name || row.groupName || 'Chưa rõ',
-          label: row.name || row.groupName || 'Chưa rõ',
-          value: toNumber(row[valueKey] ?? row.value),
-          [valueKey]: toNumber(row[valueKey] ?? row.value),
-          revenue: toNumber(row.revenue),
-          profit: toNumber(row.profit),
-          quantity: toNumber(quantityBasis.quantity || row.costQuantity || row.soldQuantity || row.quantitySold),
-          unit: quantityBasis.unit || row.costQuantityUnit || row.unit || 'đv',
-          averageInputCost: toNumber(row.averageInputCost),
-          averageSalePrice: toNumber(row.averageSalePrice),
-          profitPerUnit: toNumber(row.profitPerUnit)
-        };
-      })
-      .filter(row => toNumber(row[valueKey]) > 0)
-      .sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]))
-      .slice(0, 10);
     const topProductsByRevenueFromMonth = topRows(productRevenueMonth, 'revenue', productRevenueMonth.size || 10);
     const topProductsByProfitFromMonth = topRows(productProfitMonth, 'profit', productProfitMonth.size || 10);
     const daysPassed = Math.max(1, source.now.getDate());
@@ -1450,7 +1421,7 @@ export const AlertService = {
 const formatPercentInsight = (value = 0) => `${Math.abs(Math.round(value)).toLocaleString('vi-VN')}%`;
 
 const formatDateShort = (key = '') => {
-  const [year, month, day] = String(key || '').split('-');
+  const [, month, day] = String(key || '').split('-');
   if (!day || !month) return '';
   return `${day}/${month}`;
 };
@@ -2058,86 +2029,6 @@ const buildExecutiveInsightItems = (source = {}, dashboard = {}, alerts = []) =>
 export const InsightService = {
   build(source, dashboard, alerts = []) {
     return buildExecutiveInsightItems(source, dashboard, alerts);
-    const insights = [];
-    const revenueDelta = percentChange(dashboard.finance.revenueToday, dashboard.finance.revenueYesterday);
-    if (Math.abs(revenueDelta) >= 5) {
-      insights.push({
-        id: 'revenue-delta',
-        type: revenueDelta >= 0 ? 'good' : 'warn',
-        text: `Doanh thu hôm nay ${revenueDelta >= 0 ? 'tăng' : 'giảm'} ${Math.abs(Math.round(revenueDelta))}% so với hôm qua.`
-      });
-    }
-    const salaryRatio = dashboard.costs.salaryToRevenuePct;
-    if (salaryRatio > 0) {
-      insights.push({
-        id: 'salary-ratio',
-        type: salaryRatio > 25 ? 'warn' : 'neutral',
-        text: `Chi phí lương đang chiếm ${Math.round(salaryRatio)}% doanh thu tháng.`
-      });
-    }
-    const topProduct = dashboard.business.topProductsByProfit[0];
-    if (topProduct?.profit > 0 && dashboard.finance.profitMonth > 0) {
-      const share = Math.round((topProduct.profit / dashboard.finance.profitMonth) * 100);
-      const margin = topProduct.revenue > 0 ? Math.round((topProduct.profit / topProduct.revenue) * 100) : 0;
-      insights.push({
-        id: 'top-product-profit',
-        type: 'good',
-        text: `${topProduct.name} đang tạo lợi nhuận cao nhất: ${formatMoneyInsight(topProduct.profit)} trong tháng, chiếm khoảng ${share}% lợi nhuận${margin > 0 ? `, biên lãi ${margin}%` : ''}.`
-      });
-    }
-    const topDailyProduct = dashboard.business.topProductsByAverageDailyProfit?.[0];
-    if (topDailyProduct?.averageDailyProfit > 0) {
-      insights.push({
-        id: 'top-product-daily-average-profit',
-        type: 'good',
-        text: `Bình quân theo ngày bán, ${topDailyProduct.name} đang mang lại khoảng ${formatMoneyInsight(topDailyProduct.averageDailyProfit)}/ngày.`
-      });
-    }
-    const topProfitabilityProduct = dashboard.profitability?.topProduct;
-    if (topProfitabilityProduct?.profit > 0) {
-      insights.push({
-        id: 'today-product-profitability',
-        type: 'good',
-        text: `${topProfitabilityProduct.name} đang lãi cao nhất hôm nay: ${formatMoneyInsight(topProfitabilityProduct.profit)}, bình quân ${formatMoneyInsight(topProfitabilityProduct.profitPerUnit)}/${topProfitabilityProduct.unit || 'đơn vị'}.`
-      });
-    }
-    const topProfitabilityGroup = dashboard.profitability?.topGroup;
-    if (topProfitabilityGroup?.profit > 0) {
-      insights.push({
-        id: 'today-group-profitability',
-        type: 'good',
-        text: `Nhóm ${topProfitabilityGroup.name} đang là nhóm lợi nhuận tốt nhất hôm nay với ${formatMoneyInsight(topProfitabilityGroup.profit)} lãi gộp.`
-      });
-    }
-    if ((dashboard.profitability?.totals?.carryoverValue || 0) > 0) {
-      insights.push({
-        id: 'carryover-stock-value',
-        type: 'neutral',
-        text: `Giá trị tồn chuyển sang ngày sau khoảng ${formatMoneyInsight(dashboard.profitability.totals.carryoverValue)} theo giá vốn bình quân.`
-      });
-    }
-    const topRevenueProduct = dashboard.business.topProductsByRevenue?.[0];
-    if (topRevenueProduct?.revenue > 0) {
-      insights.push({
-        id: 'top-product-revenue',
-        type: 'neutral',
-        text: `${topRevenueProduct.name} là nhóm/sản phẩm kéo doanh thu mạnh nhất với ${formatMoneyInsight(topRevenueProduct.revenue)} doanh thu tháng.`
-      });
-    }
-    const topDebt = dashboard.business.topCustomersByDebt[0];
-    if (topDebt?.debt > 0) {
-      insights.push({ id: 'top-debt', type: 'warn', text: `${topDebt.name} là khách có công nợ cao nhất, cần ưu tiên theo dõi dòng tiền.` });
-    }
-    if (dashboard.operations.slowMovingProducts > 0) {
-      insights.push({ id: 'slow-stock', type: 'warn', text: `Có ${dashboard.operations.slowMovingProducts} mặt hàng bán chậm, nên rà soát nhập hàng và giá bán.` });
-    }
-    if (alerts.length > 0) {
-      insights.push({ id: 'alerts', type: 'warn', text: `Hôm nay có ${alerts.length} cảnh báo cần xử lý để tránh thất thoát hoặc chậm dòng tiền.` });
-    }
-    if (insights.length === 0) {
-      insights.push({ id: 'stable', type: 'good', text: 'Các chỉ số chính đang ổn định. Nên tiếp tục theo dõi công nợ và tồn kho trong ngày.' });
-    }
-    return insights.slice(0, 12);
   }
 };
 

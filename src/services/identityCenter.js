@@ -117,7 +117,7 @@ export const authenticateBiometric = async (reason = 'Xác thực để tiếp t
       maxAttempts: 3,
     });
     return { success: true };
-  } catch (error) {
+  } catch {
     return { success: false, message: 'Xác thực sinh trắc học không thành công.' };
   }
 };
