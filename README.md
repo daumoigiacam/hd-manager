@@ -1,41 +1,45 @@
-# HD Manager Local App
+# HD Manager
 
-App này được dựng lại từ `code.txt` thành một project React/Vite có thể chạy trực tiếp trong thư mục hiện tại.
+HD Manager is a React + Vite business management application delivered as a web app, a Capacitor Android app, and an Electron Windows app. Production data and identity use the configured Firebase project; local preview data is available only through the explicit preview build mode.
 
-## Chạy app
+## Local development
 
-```bash
+```powershell
 npm install
 npm run dev
 ```
 
-Sau đó mở `http://127.0.0.1:5173`.
+Vite normally serves the app at `http://127.0.0.1:5173`.
 
-## Tài khoản demo
+## Quality gates
 
-- Chủ doanh nghiệp: `0909000001`
-- Nhân viên kinh doanh: `0909000002`
-- Tài xế: `0909000003`
-
-## Những gì đã được làm
-
-- Chuyển mã nguồn một file sang project React/Vite chạy được
-- Tạo backend giả lập ngay trong app để thay thế môi trường Firebase cũ
-- Lưu dữ liệu cục bộ bằng `localStorage`, nên thêm/sửa/xóa vẫn còn sau khi refresh
-- Lưu phiên đăng nhập gần nhất để đỡ phải đăng nhập lại mỗi lần mở app
-- Thêm AI fallback nội bộ để khung chat vẫn phản hồi khi chưa có API key
-- Thêm script `build` và `preview`
-
-## AI cloud tùy chọn
-
-Nếu muốn nối khóa Gemini cho khung chat, tạo file `.env.local`:
-
-```bash
-VITE_GEMINI_API_KEY=your_key_here
+```powershell
+npm run lint
+npm run typecheck
+npm test
+npm run build
 ```
 
-## Ghi chú
+Additional suites are available through the `test:*` scripts in `package.json`.
 
-- Dữ liệu demo hiện nằm trong `src/mocks/seed-data.js`
-- Nguồn giao diện chính hiện ở `src/App.jsx`
-- Nếu muốn reset dữ liệu demo, hãy xóa `localStorage` của site `127.0.0.1`
+## Production builds
+
+```powershell
+npm run build
+npm run android:apk:debug
+npm run android:apk:release
+npm run desktop:dist:win
+```
+
+Environment values must be supplied through ignored local environment files or deployment secrets. Never commit passwords, private keys, service-account credentials, or production tokens.
+
+## Architecture notes
+
+- Main UI entry: `src/App.jsx`
+- Firebase Cloud Functions: `functions/`
+- Firestore rules: `firestore.rules`
+- Explicit preview-only Firebase adapters: `src/mocks/`
+- Android native project: `android/`
+- Electron entry: `electron/main.mjs`
+
+The preview adapters are required by the configured preview mode and must not be treated as production fallback data.
