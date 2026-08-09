@@ -84,57 +84,12 @@ jobs:
           echo "Build successful"
 
       - name: Upload web build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: hd-manager-dist-${{ github.sha }}
           path: dist
           if-no-files-found: error
           retention-days: 14
-
-      - name: Require Firebase deployment credential
-        if: github.event_name == 'push'
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          if [ -z "${FIREBASE_SERVICE_ACCOUNT}" ]; then
-            echo "::error::Missing FIREBASE_SERVICE_ACCOUNT; refusing to deploy a frontend that can drift from Functions and Rules."
-            exit 1
-          fi
-
-      - name: Authenticate to Google Cloud
-        if: github.event_name == 'push'
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
-      - name: Deploy Firebase backend, rules, indexes, and API rewrites
-        if: github.event_name == 'push'
-        run: >-
-          npx firebase-tools deploy
-          --project hd-manager-c5839
-          --only functions,firestore:rules,firestore:indexes,storage,hosting
-          --non-interactive
-
-      - name: Verify Firebase API release
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          for path in \
-            /api/identity/login \
-            /api/customer/bootstrap \
-            /api/ai/generate-content \
-            /api/sepay/create-payment-request; do
-            status="$(curl --silent --show-error --output /tmp/hd-api-body \
-              --write-out '%{http_code}' --request OPTIONS \
-              --header 'Origin: https://app.hdconnect.net' \
-              "https://hd-manager-c5839.web.app${path}")"
-            echo "${path}: HTTP ${status}"
-            if [ "${status}" = '404' ] || [ "${status}" -ge 500 ]; then
-              cat /tmp/hd-api-body
-              echo "::error::Firebase API endpoint ${path} is unavailable after deploy."
-              exit 1
-            fi
-          done
 
       - name: Package build artifact
         if: github.event_name == 'push'
