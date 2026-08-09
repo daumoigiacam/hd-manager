@@ -525,8 +525,8 @@ try {
     });
   });
 
-  assert.equal(passed, 17);
-  console.log(`\nFirestore payroll rules: ${passed}/17 integration cases PASS`);
+  assert.equal(passed, 19);
+  console.log(`\nFirestore payroll rules: ${passed}/19 integration cases PASS`);
 } finally {
   await testEnvironment.cleanup();
 }
