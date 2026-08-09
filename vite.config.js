@@ -21,6 +21,10 @@ const defaultProductionAppId = 'hd-manager-production';
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env };
+  const builtAt = new Date().toISOString();
+  const buildId = `${env.GITHUB_SHA || env.VITE_HD_BUILD_ID || `${env.npm_package_version || 'local'}-${Date.now()}`}`
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, '-');
   const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
   const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
   const useCloudData = !usePreviewData;
@@ -44,13 +48,27 @@ export default defineConfig(({ mode }) => {
         'firebase/auth': fileURLToPath(new URL('./src/mocks/firebase-auth.js', import.meta.url)),
         'firebase/firestore': fileURLToPath(new URL('./src/mocks/firebase-firestore.js', import.meta.url))
       };
+  const releaseManifestPlugin = {
+    name: 'hd-manager-release-manifest',
+    transformIndexHtml(html) {
+      return html.replaceAll('__HD_MANAGER_BUILD_ID__', buildId);
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: `${JSON.stringify({ buildId, builtAt })}\n`
+      });
+    }
+  };
 
   return {
-    plugins: [react()],
+    plugins: [react(), releaseManifestPlugin],
     base: './',
     define: {
       __firebase_config: JSON.stringify(JSON.stringify(firebaseConfig)),
-      __app_id: JSON.stringify(dataAppId)
+      __app_id: JSON.stringify(dataAppId),
+      'import.meta.env.VITE_HD_BUILD_ID': JSON.stringify(buildId)
     },
     resolve: {
       alias: firebaseAliases

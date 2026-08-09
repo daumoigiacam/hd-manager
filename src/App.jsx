@@ -81,6 +81,10 @@ import {
   isSalaryAdvanceInMonth,
   normalizeSalaryAdvanceMonth
 } from './utils/salaryAdvancePeriod.js';
+import {
+  getRelatedShareCollectionItems,
+  upsertOrderIntoShareCollection
+} from './utils/orderShareCache.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -99,7 +103,9 @@ import {
   collection,
   doc,
   getDoc as firebaseGetDoc,
+  getDocFromServer as firebaseGetDocFromServer,
   getDocs as firebaseGetDocs,
+  getDocsFromServer as firebaseGetDocsFromServer,
   setDoc as firebaseSetDoc,
   deleteDoc as firebaseDeleteDoc,
   runTransaction as firebaseRunTransaction,
@@ -109,6 +115,7 @@ import {
   query as firebaseQuery,
   where as firebaseWhere,
 } from 'firebase/firestore';
+import { isServerSnapshotFresh } from './services/realtimeFreshness.js';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Geolocation } from '@capacitor/geolocation';
@@ -3798,7 +3805,8 @@ const isOrderPaymentQrFingerprintAligned = (order = {}, company = null, amountOv
 const getOrderSharePaymentDueAmount = (order = {}, customers = [], orders = [], payments = []) => {
   if (!order?.id) return 0;
   const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
-  const ledger = customer?.id ? buildCustomerLedger(customer, orders, payments) : null;
+  const shareOrders = upsertOrderIntoShareCollection(orders, order);
+  const ledger = customer?.id ? buildCustomerLedger(customer, shareOrders, payments) : null;
   const ledgerOrder = ledger?.orders?.find(item => item?.id === order.id) || null;
   const orderAmount = parseLooseMoneyValue(
     ledgerOrder?.amount
@@ -4636,24 +4644,51 @@ const saveBlobFile = async (filename, blob) => {
   return { status: 'downloaded', path: filename };
 };
 
-const shareBlobFile = async ({ filename, blob, title = '', text = '', dialogTitle = '', fallbackToDownload = true }) => {
+const shareBlobFile = async ({
+  filename,
+  blob,
+  title = '',
+  text = '',
+  dialogTitle = '',
+  fallbackToDownload = true,
+  preparedNativeFile = null
+}) => {
   if (!blob) return { status: 'unsupported', path: filename };
 
   if (Capacitor.getPlatform() !== 'web') {
     try {
-      const { path, uri } = await writeBlobToShareCache(filename, blob);
-      const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
-      if (capability?.value && uri) {
-        await withTimeout(CapacitorShare.share({
-          title,
-          text,
-          dialogTitle: dialogTitle || title,
-          files: [uri]
-        }), 15000, 'share-timeout');
-        return { status: 'shared', path, uri };
+      let nativeFile = preparedNativeFile?.uri ? preparedNativeFile : null;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          if (!nativeFile || attempt > 0) {
+            nativeFile = await writeBlobToShareCache(filename, blob);
+          }
+          const { path, uri } = nativeFile || {};
+          const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
+          if (capability?.value && uri) {
+            await withTimeout(CapacitorShare.share({
+              title,
+              text,
+              dialogTitle: dialogTitle || title,
+              files: [uri]
+            }), 15000, 'share-timeout');
+            return { status: 'shared', path, uri };
+          }
+          if (!fallbackToDownload) return { status: 'unsupported', path, uri };
+          return saveBlobFile(filename, blob);
+        } catch (error) {
+          if (`${error?.message || ''}`.toLowerCase().includes('cancel')) {
+            return { status: 'cancelled' };
+          }
+          if (nativeFile === preparedNativeFile && attempt === 0) {
+            recordPerformanceEvent('share_invoice.native_file_rebuilt', { filename }, 'warn');
+            nativeFile = null;
+            continue;
+          }
+          throw error;
+        }
       }
-      if (!fallbackToDownload) return { status: 'unsupported', path, uri };
-      return saveBlobFile(filename, blob);
     } catch (error) {
       if (`${error?.message || ''}`.toLowerCase().includes('cancel')) {
         return { status: 'cancelled' };
@@ -5484,7 +5519,8 @@ const drawSalesInvoiceShareImage = async ({
   const itemSubtotal = items.reduce((sum, item) => (
     sum + getTransactionBillingPresentation(item).amount
   ), 0);
-  const ledger = customer?.id ? buildCustomerLedger(customer, orders, payments) : null;
+  const shareOrders = upsertOrderIntoShareCollection(orders, order);
+  const ledger = customer?.id ? buildCustomerLedger(customer, shareOrders, payments) : null;
   const ledgerOrder = ledger?.orders?.find(item => item.id === order.id) || null;
   const explicitCustomerFee = parseLooseMoneyValue(order.customerExtraExpense ?? 0);
   const fallbackCustomerFee = order.extraExpensePayer === 'buyer'
@@ -6067,8 +6103,34 @@ const ORDER_SHARE_ASSET_CACHE_LIMIT = 32;
 const ORDER_SHARE_ASSET_CACHE_TTL_MS = SHARE_IMAGE_CACHE_TTL_MS;
 const orderShareAssetCache = new Map();
 const orderShareAssetPendingCache = new Map();
+const orderShareAssetPendingByOrderId = new Map();
 const orderShareRelatedOrdersFingerprintCache = new WeakMap();
 const orderShareRelatedPaymentsFingerprintCache = new WeakMap();
+
+const buildSalesOrderShareFilename = (order = {}) => (
+  `${sanitizeShareFileName(formatOrderCode(order?.id))}-hoa-don-ban-hang.png`
+);
+
+const prepareOrderShareNativeFile = async (order = {}, blob = null, reason = 'background') => {
+  if (!blob || Capacitor.getPlatform() === 'web') return null;
+  const span = createPerformanceSpan('share_invoice.native_file_prepare', {
+    orderId: order?.id || '',
+    reason
+  });
+  try {
+    const nativeFile = await writeBlobToShareCache(buildSalesOrderShareFilename(order), blob);
+    span.end({ status: nativeFile?.uri ? 'ok' : 'empty', bytes: Number(blob?.size || 0) });
+    return nativeFile?.uri ? nativeFile : null;
+  } catch (error) {
+    span.fail(error);
+    recordPerformanceEvent('share_invoice.native_file_prepare_failed', {
+      orderId: order?.id || '',
+      reason,
+      error: error?.message || String(error)
+    }, 'warn');
+    return null;
+  }
+};
 
 const serializeOrderShareFingerprintValue = (value) => {
   if (value === null || value === undefined) return '';
@@ -6090,28 +6152,34 @@ const serializeOrderShareFingerprintValue = (value) => {
   return String(value);
 };
 
-const buildRelatedOrderShareCollectionFingerprint = (collection, customerId, fields, cache) => {
+const buildRelatedOrderShareCollectionFingerprint = (
+  collection,
+  customerId,
+  fields,
+  cache,
+  excludedEntityId = ''
+) => {
   if (!Array.isArray(collection) || !customerId) return '';
   let byCustomer = cache.get(collection);
   if (!byCustomer) {
     byCustomer = new Map();
     cache.set(collection, byCustomer);
   }
-  if (byCustomer.has(customerId)) return byCustomer.get(customerId);
-  const signature = collection
-    .filter(item => item?.customerId === customerId && !item.isArchived)
+  const cacheScope = `${customerId}|${excludedEntityId || ''}`;
+  if (byCustomer.has(cacheScope)) return byCustomer.get(cacheScope);
+  const signature = getRelatedShareCollectionItems(collection, customerId, excludedEntityId)
     .map(item => fields
       .map(field => serializeOrderShareFingerprintValue(item?.[field]))
       .join(':'))
     .sort()
     .join(';');
-  byCustomer.set(customerId, signature);
+  byCustomer.set(cacheScope, signature);
   return signature;
 };
 
 const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) => {
   const customers = Array.isArray(context.customers) ? context.customers : [];
-  const orders = Array.isArray(context.orders) ? context.orders : [];
+  const orders = upsertOrderIntoShareCollection(context.orders, order);
   const payments = Array.isArray(context.payments) ? context.payments : [];
   const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
   const customerId = customer.id || order.customerId || '';
@@ -6143,7 +6211,8 @@ const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) =>
       'paymentAmount',
       'paymentLookupSyncedAt'
     ],
-    orderShareRelatedOrdersFingerprintCache
+    orderShareRelatedOrdersFingerprintCache,
+    order.id || ''
   );
   const relatedPaymentSignature = buildRelatedOrderShareCollectionFingerprint(
     payments,
@@ -6193,6 +6262,7 @@ const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context
     orderId: order.id,
     order,
     blob: asset.blob,
+    nativeFile: asset.nativeFile || null,
     createdAt: Number(options.createdAt || Date.now())
   };
   orderShareAssetCache.delete(key);
@@ -6211,7 +6281,7 @@ const rememberOrderShareAsset = (order = {}, company = {}, asset = null, context
       sourceKey: key,
       scope: 'sales_order_invoice',
       entityId: order.id,
-      payload: { blob: asset.blob },
+      payload: { blob: asset.blob, nativeFile: asset.nativeFile || null },
       createdAt: entry.createdAt
     });
   }
@@ -6251,15 +6321,25 @@ const warmOrderShareAssetCache = async ({
   const pending = orderShareAssetPendingCache.get(cacheKey);
   if (pending) return pending;
 
+  const pendingForOrder = orderShareAssetPendingByOrderId.get(order.id);
+  if (pendingForOrder) {
+    await pendingForOrder;
+    const warmedForCurrentVersion = getCachedOrderShareAsset(order, company, cacheContext);
+    if (warmedForCurrentVersion) return warmedForCurrentVersion;
+  }
+
   let prepareSpan = null;
   const promise = (async () => {
     const persisted = await readPersistentShareImageAsset(cacheKey, ORDER_SHARE_ASSET_CACHE_TTL_MS);
     const persistedBlob = persisted?.payload?.blob;
     if (persistedBlob && typeof persistedBlob.arrayBuffer === 'function') {
+      const persistedNativeFile = persisted?.payload?.nativeFile?.uri
+        ? persisted.payload.nativeFile
+        : await prepareOrderShareNativeFile(order, persistedBlob, `${reason}_persistent_restore`);
       const persistedEntry = rememberOrderShareAsset(
         order,
         company,
-        { blob: persistedBlob },
+        { blob: persistedBlob, nativeFile: persistedNativeFile },
         cacheContext,
         { persist: false, createdAt: persisted.createdAt }
       );
@@ -6350,7 +6430,13 @@ const warmOrderShareAssetCache = async ({
       }
       throw error;
     }
-    const entry = rememberOrderShareAsset(orderForShare, company, { blob }, cacheContext);
+    const nativeFile = await prepareOrderShareNativeFile(orderForShare, blob, reason);
+    const finalCacheContext = {
+      customers,
+      orders: upsertOrderIntoShareCollection(orders, orderForShare),
+      payments
+    };
+    const entry = rememberOrderShareAsset(orderForShare, company, { blob, nativeFile }, finalCacheContext);
     prepareSpan?.end({
       status: 'ok',
       bytes: blob?.size || 0,
@@ -6367,19 +6453,21 @@ const warmOrderShareAssetCache = async ({
     }, 'warn');
     return null;
   }).finally(() => {
-    orderShareAssetPendingCache.delete(cacheKey);
+    if (orderShareAssetPendingCache.get(cacheKey) === promise) {
+      orderShareAssetPendingCache.delete(cacheKey);
+    }
+    if (orderShareAssetPendingByOrderId.get(order.id) === promise) {
+      orderShareAssetPendingByOrderId.delete(order.id);
+    }
   });
   orderShareAssetPendingCache.set(cacheKey, promise);
+  orderShareAssetPendingByOrderId.set(order.id, promise);
   return promise;
 };
 
 const scheduleOrderShareWarmup = (options = {}) => {
   const run = () => warmOrderShareAssetCache(options).catch(() => null);
-  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-    window.requestIdleCallback(run, { timeout: 250 });
-  } else {
-    setTimeout(run, 0);
-  }
+  setTimeout(run, 0);
 };
 
 const ORDER_REQUEST_SHARE_WARMUP_EVENT = 'hd-order-request-share-warmup';
@@ -11658,6 +11746,7 @@ export default function App() {
   const recentLocalWritesRef = useRef(new Map());
   const recentLocalDeletesRef = useRef(new Map());
   const lastRealtimeSnapshotAtRef = useRef(new Map());
+  const lastRealtimeServerSnapshotAtRef = useRef(new Map());
   const lastStableCollectionDataRef = useRef(new Map());
   const lastRealtimeStatusUpdateAtRef = useRef(0);
   const lastCriticalRefreshAtRef = useRef(0);
@@ -11712,6 +11801,7 @@ export default function App() {
     recentLocalWritesRef.current.clear();
     recentLocalDeletesRef.current.clear();
     lastRealtimeSnapshotAtRef.current.clear();
+    lastRealtimeServerSnapshotAtRef.current.clear();
     setPendingFirebaseWriteCount(pendingFirebaseWritesRef.current.length);
     setLoadedCollections({});
   }, [currentUser?.companyId]);
@@ -12081,11 +12171,11 @@ export default function App() {
           collectionName,
           currentTimers.filter(item => item !== timerId)
         );
-        const lastRealtimeSnapshotAt = lastRealtimeSnapshotAtRef.current.get(collectionName) || 0;
-        if (lastRealtimeSnapshotAt && Date.now() - lastRealtimeSnapshotAt < 25000) {
+        const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(collectionName) || 0;
+        if (isServerSnapshotFresh(lastServerSnapshotAt)) {
           return;
         }
-        Promise.resolve(forceRefreshCollectionRef.current?.(collectionName)).catch((error) => {
+        Promise.resolve(forceRefreshCollectionRef.current?.(collectionName, { serverOnly: true })).catch((error) => {
           console.warn(`Khong the lam moi ${collectionName}:`, error);
         });
       }, delay);
@@ -12794,7 +12884,9 @@ export default function App() {
     };
 
     const clearConfirmedLocalMutations = (colName, items = [], options = {}) => {
-      if (options.source !== 'realtime' || options.fromCache) return;
+      const isConfirmedServerData = options.source === 'server'
+        || (options.source === 'realtime' && !options.fromCache);
+      if (!isConfirmedServerData) return;
       const snapshotIds = new Set((Array.isArray(items) ? items : []).map(item => item?.id).filter(Boolean));
       recentLocalWritesRef.current.forEach((write, key) => {
         if (write?.collectionName === colName && snapshotIds.has(write.documentId)) {
@@ -12913,8 +13005,9 @@ export default function App() {
 
     const readCollection = async (colName, setFn, isObject = false, parser = null, options = {}) => {
       const force = Boolean(options.force);
-      const lastRealtimeSnapshotAt = lastRealtimeSnapshotAtRef.current.get(colName) || 0;
-      if (!force && lastRealtimeSnapshotAt && Date.now() - lastRealtimeSnapshotAt < 45000) {
+      const serverOnly = Boolean(options.serverOnly);
+      const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(colName) || 0;
+      if (!force && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
         // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
         return;
       }
@@ -12924,19 +13017,26 @@ export default function App() {
           markCollectionLoaded(colName);
           return;
         }
+        const readDocument = serverOnly ? firebaseGetDocFromServer : firebaseGetDoc;
+        const readDocuments = serverOnly ? firebaseGetDocsFromServer : firebaseGetDocs;
         const snapshot = await withTimeout(
-          colName === 'companies' ? firebaseGetDoc(source) : firebaseGetDocs(source),
+          colName === 'companies' ? readDocument(source) : readDocuments(source),
           9000,
           `Firebase read timeout: ${colName}`
         );
         if (cancelled) return;
+        if (serverOnly) {
+          const confirmedAt = Date.now();
+          lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
+          lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
+        }
         applyCollectionItems(
           colName,
           setFn,
           getSnapshotItems(snapshot),
           isObject,
           parser,
-          { source: 'query', keepPreviousOnEmpty: !force }
+          { source: serverOnly ? 'server' : 'query', keepPreviousOnEmpty: !force }
         );
         updateRealtimeStatusLightly({
           state: 'online',
@@ -13033,12 +13133,15 @@ export default function App() {
     }
 
     const collectionBindingMap = new Map(collectionBindings.map(binding => [binding[0], binding]));
-    forceRefreshCollectionRef.current = async (collectionName) => {
+    forceRefreshCollectionRef.current = async (collectionName, refreshOptions = {}) => {
       if (cancelled || !collectionName) return false;
       const binding = collectionBindingMap.get(collectionName);
       if (!binding) return false;
       const [colName, setFn, isObject, parser] = binding;
-      await readCollection(colName, setFn, isObject, parser, { force: true });
+      await readCollection(colName, setFn, isObject, parser, {
+        force: true,
+        serverOnly: refreshOptions.serverOnly !== false
+      });
       return true;
     };
 
@@ -13107,10 +13210,15 @@ export default function App() {
         }
         const firestoreUnsubscribe = onSnapshot(
           collectionRef,
+          { includeMetadataChanges: true },
           (snapshot) => {
             if (cancelled) return;
-            lastRealtimeSnapshotAtRef.current.set(colName, Date.now());
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
+            const snapshotAt = Date.now();
+            lastRealtimeSnapshotAtRef.current.set(colName, snapshotAt);
+            if (!fromCache) {
+              lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
+            }
             const docs = getSnapshotItems(snapshot);
             applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
@@ -13118,7 +13226,7 @@ export default function App() {
               keepPreviousOnEmpty: fromCache && docs.length === 0
             });
             updateRealtimeStatusLightly({
-              state: 'online',
+              state: fromCache ? 'connecting' : 'online',
               collection: colName,
               lastAt: new Date().toISOString(),
               error: ''
@@ -13347,6 +13455,8 @@ export default function App() {
 
   useEffect(() => {
     if (!firebaseUser || !isFirebaseConfigured || typeof window === 'undefined') return undefined;
+    let disposed = false;
+    let nativeAppStateHandle = null;
     const criticalCollections = [
       'orders',
       'orderRequests',
@@ -13400,12 +13510,27 @@ export default function App() {
     window.addEventListener('focus', refreshCriticalCollections);
     window.addEventListener('online', refreshCriticalCollections);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    if (isNativeRuntime()) {
+      CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) refreshCriticalCollections('native-app-active');
+      }).then((handle) => {
+        if (disposed) {
+          handle?.remove?.();
+          return;
+        }
+        nativeAppStateHandle = handle;
+      }).catch((error) => {
+        console.warn('Khong the theo doi trang thai foreground cua app:', error);
+      });
+    }
 
     return () => {
+      disposed = true;
       window.removeEventListener(FIRESTORE_WRITE_EVENT, handleFirestoreWrite);
       window.removeEventListener('focus', refreshCriticalCollections);
       window.removeEventListener('online', refreshCriticalCollections);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      nativeAppStateHandle?.remove?.();
     };
   }, [firebaseUser?.uid]);
 
@@ -63096,6 +63221,28 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   ]);
 
   useEffect(() => {
+    if (!canSharePaymentQr || !selectedOrder?.id) return;
+    scheduleOrderShareWarmup({
+      order: selectedOrder,
+      company: currentCompany,
+      customers,
+      orders,
+      payments,
+      ensurePayment: onEnsureOrderPayosPayment,
+      reason: 'order_detail_opened_or_refreshed'
+    });
+  }, [
+    canSharePaymentQr,
+    currentCompany,
+    customers,
+    orders,
+    payments,
+    selectedOrder?.id,
+    selectedOrder?.updatedAt,
+    selectedOrder?.paymentLookupSyncedAt
+  ]);
+
+  useEffect(() => {
     if (!zaloPreviewOrder) {
       setZaloPreviewDraft('');
       setZaloPreviewSaveStatus('');
@@ -63993,8 +64140,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       let result;
       try {
         result = await shareBlobFile({
-          filename: `${sanitizeShareFileName(formatOrderCode(selectedOrder.id))}-hoa-don-ban-hang.png`,
+          filename: buildSalesOrderShareFilename(selectedOrder),
           blob: asset.blob,
+          preparedNativeFile: asset.nativeFile,
           title,
           text: `Hóa đơn ${formatOrderCode(selectedOrder.id)}`,
           dialogTitle: channel === 'native' ? 'Chia sẻ hóa đơn' : `Chia sẻ qua ${getShareChannelLabel(channel)}`

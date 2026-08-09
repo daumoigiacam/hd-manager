@@ -8,6 +8,7 @@ import '@fontsource-variable/roboto-flex';
 import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
+import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
@@ -513,6 +514,10 @@ flushStartupEvents();
 recordStartupEvent('react.ready');
 installResponsiveViewportVars();
 installRuntimePerformanceMode();
+installReleaseFreshnessMonitor({
+  buildId: import.meta.env.VITE_HD_BUILD_ID,
+  enabled: import.meta.env.PROD && !Capacitor.isNativePlatform?.()
+});
 recordStartupEvent('first.ui.render.requested');
 
 ReactDOM.createRoot(document.getElementById('root')).render(

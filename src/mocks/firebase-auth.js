@@ -4,6 +4,9 @@ const authState = {
   currentUser: null
 };
 
+export const indexedDBLocalPersistence = { type: 'LOCAL_INDEXED_DB' };
+export const browserLocalPersistence = { type: 'LOCAL_BROWSER' };
+
 function notify() {
   for (const listener of listeners) {
     listener(authState.currentUser);
@@ -12,6 +15,10 @@ function notify() {
 
 export function getAuth() {
   return authState;
+}
+
+export async function setPersistence() {
+  return undefined;
 }
 
 export async function signInAnonymously() {
@@ -30,6 +37,11 @@ export async function signInWithCustomToken(_, token) {
   };
   notify();
   return { user: authState.currentUser };
+}
+
+export async function signOut() {
+  authState.currentUser = null;
+  notify();
 }
 
 export function onAuthStateChanged(_, callback) {

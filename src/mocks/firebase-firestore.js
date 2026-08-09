@@ -98,6 +98,10 @@ function createSnapshot(name) {
     })),
     empty: entries.length === 0,
     size: entries.length,
+    metadata: {
+      fromCache: false,
+      hasPendingWrites: false
+    },
     forEach(callback) {
       entries.forEach((entry) => {
         callback({
@@ -239,9 +243,14 @@ export async function deleteDoc(docRef) {
   emitCollection(collectionName);
 }
 
-export function onSnapshot(ref, onNext) {
+export function onSnapshot(ref, optionsOrNext, nextOrError) {
   if (ref.kind !== 'collection') {
     throw new Error('Preview mock currently supports collection snapshots only.');
+  }
+
+  const onNext = typeof optionsOrNext === 'function' ? optionsOrNext : nextOrError;
+  if (typeof onNext !== 'function') {
+    throw new Error('Preview mock requires an onSnapshot callback.');
   }
 
   const listeners = collectionListeners.get(ref.name) || new Set();
@@ -266,9 +275,24 @@ export async function getDocs(ref) {
   return createSnapshot(ref.name);
 }
 
+export function where(field, operator, value) {
+  return { kind: 'where', field, operator, value };
+}
+
+export function query(collectionRef, ...constraints) {
+  return {
+    ...collectionRef,
+    constraints
+  };
+}
+
+export const getDocsFromServer = getDocs;
+
 export async function getDoc(ref) {
   return createDocumentSnapshot(ref);
 }
+
+export const getDocFromServer = getDoc;
 
 export function increment(amount) {
   return new MockIncrementSentinel(amount);

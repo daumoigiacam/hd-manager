@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#10b981" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="HD Manager" />
@@ -14,7 +17,7 @@
     <script>
       (function () {
         try {
-          const buildMarker = 'hd-manager-build-20260721-production-firebase-v1';
+          const buildMarker = '__HD_MANAGER_BUILD_ID__';
           window.HD_MANAGER_BUILD = buildMarker;
           window.localStorage.setItem('hd-manager-installed-build', buildMarker);
         } catch (error) {
