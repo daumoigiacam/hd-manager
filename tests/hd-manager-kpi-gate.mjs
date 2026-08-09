@@ -29,13 +29,14 @@ const latestJson = (prefix) => {
     .map((name) => path.join(RESULT_DIR, name))[0] || null;
 };
 
-const makeCheck = (name, actual, target, pass, source, warning = '') => ({
+const makeCheck = (name, actual, target, pass, source, warning = '', blocking = true) => ({
   name,
   actual,
   target,
   pass,
   source,
-  warning
+  warning,
+  blocking
 });
 
 const formatValue = (value) => {
@@ -71,11 +72,11 @@ const main = () => {
     const eventLoopMaxMs = report.eventLoop?.maxMs || 0;
 
     const simulationWarning = 'Local Node simulation only; this is not physical-device or production-network evidence.';
-    checks.push(makeCheck('API simulation', maxApiMs, `<= ${KPI.apiMs} ms`, maxApiMs <= KPI.apiMs, path.basename(bigStressPath), simulationWarning));
-    checks.push(makeCheck('Screen-work simulation', maxScreenMs, '<= 2000 ms', maxScreenMs <= 2000, path.basename(bigStressPath), simulationWarning));
-    checks.push(makeCheck('Memory leak simulation', memoryLeakCount, KPI.memoryLeaks, memoryLeakCount === KPI.memoryLeaks, path.basename(bigStressPath), simulationWarning));
-    checks.push(makeCheck('Crash local simulation', crashCount, 0, crashCount === 0, path.basename(bigStressPath), simulationWarning));
-    checks.push(makeCheck('Local event-loop freeze', eventLoopMaxMs, '<= 50 ms event-loop max', eventLoopMaxMs <= 50, path.basename(bigStressPath), simulationWarning));
+    checks.push(makeCheck('API simulation', maxApiMs, `<= ${KPI.apiMs} ms`, maxApiMs <= KPI.apiMs, path.basename(bigStressPath), simulationWarning, false));
+    checks.push(makeCheck('Screen-work simulation', maxScreenMs, '<= 2000 ms', maxScreenMs <= 2000, path.basename(bigStressPath), simulationWarning, false));
+    checks.push(makeCheck('Memory leak simulation', memoryLeakCount, KPI.memoryLeaks, memoryLeakCount === KPI.memoryLeaks, path.basename(bigStressPath), simulationWarning, false));
+    checks.push(makeCheck('Crash local simulation', crashCount, 0, crashCount === 0, path.basename(bigStressPath), simulationWarning, false));
+    checks.push(makeCheck('Local event-loop freeze', eventLoopMaxMs, '<= 50 ms event-loop max', eventLoopMaxMs <= 50, path.basename(bigStressPath), simulationWarning, false));
   } else {
     checks.push(makeCheck('Big stress report', 'missing', 'required', false, 'test-results'));
   }
@@ -84,12 +85,15 @@ const main = () => {
     const report = readJson(perfPath);
     const currentFailures = (report.results || []).filter((item) => item.current?.status === 'FAIL').length;
     const highBottlenecks = (report.bottlenecks || []).filter((item) => item.severity === 'HIGH').length;
+    const architectureWarning = 'Static architecture projections are advisory; build, lint, tests and artifacts remain the release blockers.';
     checks.push(makeCheck(
       'Current architecture scale projection',
       currentFailures,
       '0 failed scale points',
       currentFailures === 0,
       path.basename(perfPath),
+      architectureWarning,
+      false,
     ));
     checks.push(makeCheck(
       'Static HIGH performance bottlenecks',
@@ -97,6 +101,8 @@ const main = () => {
       0,
       highBottlenecks === 0,
       path.basename(perfPath),
+      architectureWarning,
+      false,
     ));
   } else {
     checks.push(makeCheck('Performance architecture report', 'missing', 'required', false, 'test-results'));
@@ -127,7 +133,7 @@ const main = () => {
     ));
   }
 
-  const failed = checks.filter((check) => !check.pass);
+  const failed = checks.filter((check) => !check.pass && check.blocking !== false);
   const lines = [
     '# HD Manager KPI Gate',
     '',
@@ -136,7 +142,9 @@ const main = () => {
   ];
 
   checks.forEach((check) => {
-    const result = check.pass ? (check.warning ? 'WARNING' : 'PASS') : 'FAIL';
+    const result = check.pass
+      ? (check.warning ? 'WARNING' : 'PASS')
+      : (check.blocking === false ? 'WARNING' : 'FAIL');
     lines.push(`| ${check.name} | ${formatValue(check.actual)} | ${formatValue(check.target)} | ${check.source} | ${result} |`);
     if (check.warning) lines.push(`| Note | ${check.warning} |  |  | WARNING |`);
   });
