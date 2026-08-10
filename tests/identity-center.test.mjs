@@ -137,6 +137,23 @@ assert.ok(authTimeoutStart >= 0 && authTimeoutEnd > authTimeoutStart, 'Auth rest
 assert.doesNotMatch(authTimeoutSource, /clearAppSession|setCurrentUser\(null\)/, 'Slow Auth restoration must not delete a valid cached session');
 assert.match(appSource, /if \(!firebaseUser && currentUser\)/, 'Cached app state must be protected until Firebase Auth confirms the user');
 
+const logoutHandlerStart = appSource.indexOf('const handleLogout = () =>');
+const logoutHandlerEnd = appSource.indexOf('const handleSwitchToCustomerLogin = () =>', logoutHandlerStart);
+const logoutHandlerSource = appSource.slice(logoutHandlerStart, logoutHandlerEnd);
+assert.ok(logoutHandlerStart >= 0 && logoutHandlerEnd > logoutHandlerStart, 'Fast logout handler must exist');
+assert.match(logoutHandlerSource, /startIdentityLogoutAudit\(auth\?\.currentUser\)/);
+assert.match(logoutHandlerSource, /signOut\(auth\)\.catch/);
+assert.match(logoutHandlerSource, /setFirebaseUser\(null\)/);
+assert.match(logoutHandlerSource, /clearAppSession\(\)/);
+assert.match(logoutHandlerSource, /void Promise\.allSettled/);
+assert.doesNotMatch(logoutHandlerSource, /await identityLogout|await signOut/, 'Network audit and Firebase sign-out must not block the logout UI');
+
+const dashboardSyncStart = appSource.indexOf('if (!isCompanyDashboardServerReady)');
+const dashboardSyncEnd = appSource.indexOf('return <ExecutiveDashboardView', dashboardSyncStart);
+const dashboardSyncSource = appSource.slice(dashboardSyncStart, dashboardSyncEnd);
+assert.match(dashboardSyncSource, /Đang đồng bộ dữ liệu mới nhất/);
+assert.doesNotMatch(dashboardSyncSource, /Số liệu tài chính chỉ hiển thị|confirmedDashboardCollectionCount|transition-\[width\]/);
+
 const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
 const identitySessionSource = appSource.slice(identitySessionStart, identitySessionEnd);

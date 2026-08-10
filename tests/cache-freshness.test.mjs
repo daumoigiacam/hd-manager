@@ -85,7 +85,7 @@ test('company dashboard waits for server-confirmed financial collections instead
   assert.match(appSource, /function MainAppView\([\s\S]*?isCompanyDashboardServerReady = false/);
   assert.match(appSource, /if \(!isCompanyDashboardServerReady\)/);
   assert.match(appSource, /Đang đồng bộ dữ liệu mới nhất/);
-  assert.match(appSource, /Số liệu tài chính chỉ hiển thị sau khi Firestore xác nhận dữ liệu từ máy chủ/);
+  assert.doesNotMatch(appSource, /Số liệu tài chính chỉ hiển thị sau khi Firestore xác nhận dữ liệu từ máy chủ/);
 });
 
 test('preview Firestore supports the same freshness APIs as production', () => {

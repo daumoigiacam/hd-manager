@@ -9303,6 +9303,17 @@ const clearAppSession = () => {
   }
 };
 
+const startIdentityLogoutAudit = (authenticatedUser) => {
+  try {
+    const idTokenPromise = authenticatedUser?.getIdToken?.();
+    return Promise.resolve(idTokenPromise)
+      .then(idToken => (idToken ? identityLogout({ idToken }) : undefined))
+      .catch(() => undefined);
+  } catch {
+    return Promise.resolve();
+  }
+};
+
 const getInitialLoginMode = () => {
   if (typeof window === 'undefined') return 'staff';
   try {
@@ -14554,41 +14565,33 @@ export default function App() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      const idToken = await auth?.currentUser?.getIdToken?.();
-      if (idToken) await identityLogout({ idToken });
-    } catch {
-      // Logout audit must not prevent a user from leaving the device.
-    }
-    try {
-      await signOut(auth);
-    } catch {
-      // Local session clearing remains reliable if Firebase is temporarily offline.
-    }
+  const handleLogout = () => {
+    const logoutAuditPromise = startIdentityLogoutAudit(auth?.currentUser);
+    const firebaseSignOutPromise = auth
+      ? signOut(auth).catch(() => undefined)
+      : Promise.resolve();
+
     clearAppSession();
+    setFirebaseUser(null);
     setCurrentUser(null);
     setCurrentCompany(null);
     setActiveTab('home');
+    void Promise.allSettled([firebaseSignOutPromise, logoutAuditPromise]);
   };
 
-  const handleSwitchToCustomerLogin = async () => {
-    try {
-      const idToken = await auth?.currentUser?.getIdToken?.();
-      if (idToken) await identityLogout({ idToken });
-    } catch {
-      // Switching account type still clears the local session if offline.
-    }
-    try {
-      await signOut(auth);
-    } catch {
-      // The login mode can still be reset locally.
-    }
+  const handleSwitchToCustomerLogin = () => {
+    const logoutAuditPromise = startIdentityLogoutAudit(auth?.currentUser);
+    const firebaseSignOutPromise = auth
+      ? signOut(auth).catch(() => undefined)
+      : Promise.resolve();
+
     setPreferredCustomerLoginMode();
     clearAppSession();
+    setFirebaseUser(null);
     setCurrentUser(null);
     setCurrentCompany(null);
     setActiveTab('home');
+    void Promise.allSettled([firebaseSignOutPromise, logoutAuditPromise]);
   };
 
   const handleCheckIn = async (empId, method) => {
@@ -20196,7 +20199,7 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
-        isCompanyDashboardServerReady={isCompanyDashboardServerReady} confirmedDashboardCollectionCount={companyDashboardServerConfirmedCount}
+        isCompanyDashboardServerReady={isCompanyDashboardServerReady}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => auth?.currentUser?.getIdToken?.() || Promise.resolve('')} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
@@ -20672,7 +20675,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
-  isCompanyDashboardServerReady = false, confirmedDashboardCollectionCount = 0,
+  isCompanyDashboardServerReady = false,
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
@@ -22151,22 +22154,9 @@ function MainAppView({
   const renderExecutiveDashboard = () => {
     if (!isCompanyDashboardServerReady) {
       return (
-        <div className="mx-auto w-full max-w-4xl p-4 sm:p-6" role="status" aria-live="polite">
-          <section className="rounded-3xl border border-emerald-100 bg-white p-5 text-center shadow-sm sm:p-7">
-            <p className="text-sm font-black text-emerald-800">Đang đồng bộ dữ liệu mới nhất</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">
-              Số liệu tài chính chỉ hiển thị sau khi Firestore xác nhận dữ liệu từ máy chủ.
-            </p>
-            <div className="mt-4 h-2 overflow-hidden rounded-full bg-emerald-50">
-              <div
-                className="h-full rounded-full bg-emerald-500 transition-[width] duration-200"
-                style={{
-                  width: `${Math.round((confirmedDashboardCollectionCount / COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES.length) * 100)}%`
-                }}
-              />
-            </div>
-          </section>
-        </div>
+        <p className="p-5 text-center text-sm font-black text-emerald-800" role="status" aria-live="polite">
+          Đang đồng bộ dữ liệu mới nhất
+        </p>
       );
     }
     return <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} />;
