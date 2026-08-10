@@ -20,6 +20,13 @@ import {
   updateWarehouseWeightEntryRows
 } from './utils/warehouseWeightEntries.js';
 import {
+  buildWarehouseStockChecklistRows,
+  hasRecordedWarehouseStockMeasure,
+  resolveWarehouseStockChecklistDisplayValue,
+  resolveWarehouseStockCountStatus,
+  selectLatestWarehouseStockCountMeasures
+} from './utils/warehouseInventory.js';
+import {
   ORDER_REQUEST_SELECTION_LOCK_MS,
   releaseOrderRequestSelectionLock,
   tryAcquireOrderRequestSelectionLock
@@ -120,7 +127,12 @@ import {
   query as firebaseQuery,
   where as firebaseWhere,
 } from 'firebase/firestore';
-import { isServerSnapshotFresh } from './services/realtimeFreshness.js';
+import {
+  isRealtimeWriteConfirmed,
+  isServerConfirmedRealtimeSnapshot,
+  isServerSnapshotFresh,
+  shouldApplyRealtimeSnapshot
+} from './services/realtimeFreshness.js';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Geolocation } from '@capacitor/geolocation';
@@ -895,6 +907,26 @@ const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'pay
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
+const COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES = [
+  'companies',
+  'employees',
+  'attendance',
+  'customers',
+  'orders',
+  'orderRequests',
+  'payments',
+  'expenses',
+  'financials',
+  'advances',
+  'products',
+  'warehouseImports',
+  'warehouseDispatches',
+  'warehouseStockCounts',
+  'assets',
+  'assetCostLogs',
+  'deliveryReports',
+  'messages',
+];
 // Native WebViews keep a limited listener set to stay stable on low-memory devices.
 // Supplementary data becomes realtime only while the related workspace is open.
 const NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
@@ -942,51 +974,6 @@ const getTenantStorageKey = (baseKey, companyId = '') => {
   const scope = normalizeTenantStorageScope(companyId);
   return scope ? `${baseKey}:${scope}` : '';
 };
-const REALTIME_COLLECTION_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const REALTIME_COLLECTION_CACHE_MAX_ITEMS = 120;
-const REALTIME_COLLECTION_CACHE_MAX_BYTES = 850000;
-const REALTIME_COLLECTION_CACHE_COMPACT_ITEMS = 50;
-const REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
-  'companies',
-  'employees',
-  'customers',
-  'products',
-  'orders',
-  'orderRequests',
-  'warehouseImports',
-  'warehouseDispatches',
-  'warehouseStockCounts',
-  'deliveryReports',
-  'payments',
-  'expenses',
-  'financials',
-  'bankAccounts',
-  'notifications',
-  'advances',
-  'attendance',
-  'performance',
-  'payrollPeriods'
-]);
-const NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES = new Set([
-  'companies',
-  'employees',
-  'customers',
-  'products',
-  'orders',
-  'orderRequests',
-  'warehouseDispatches',
-  'payments',
-  'notifications',
-  'advances',
-  'attendance',
-  'performance',
-  'payrollPeriods'
-]);
-const REALTIME_COLLECTION_CACHE_DROP_FIELD = /(base64|image|photo|file|document|attachment|preview|raw|blob|html|qr|canvas|screenshot)/i;
-let realtimeCollectionCacheWriteTimer = null;
-let realtimeCollectionCacheWriteMap = null;
-let realtimeCollectionCacheWriteScope = '';
-let realtimeCollectionCacheDisabled = false;
 const isNativeAppShellRuntime = () => {
   try {
     return typeof Capacitor !== 'undefined' && Capacitor.getPlatform?.() !== 'web';
@@ -994,9 +981,6 @@ const isNativeAppShellRuntime = () => {
     return false;
   }
 };
-const canUseRealtimeCollectionCache = (collectionName = '') => (
-  !isNativeAppShellRuntime() || NATIVE_REALTIME_COLLECTION_CACHEABLE_NAMES.has(collectionName)
-);
 const getIdleScheduler = () => (
   typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
     ? (callback) => window.requestIdleCallback(callback, { timeout: 2500 })
@@ -1062,123 +1046,23 @@ const savePendingFirebaseWrites = (writes = [], companyId = '') => {
     console.warn('Khong the luu hang cho dong bo Firebase:', error);
   }
 };
-const sanitizeRealtimeCacheValue = (value, depth = 0, maxItems = REALTIME_COLLECTION_CACHE_MAX_ITEMS) => {
-  if (depth > 3) return value;
-  if (Array.isArray(value)) {
-    return value.slice(-maxItems).map(item => sanitizeRealtimeCacheValue(item, depth + 1, maxItems));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .slice(-maxItems)
-        .filter(([key]) => !REALTIME_COLLECTION_CACHE_DROP_FIELD.test(key))
-        .map(([key, item]) => [key, sanitizeRealtimeCacheValue(item, depth + 1, maxItems)])
-    );
-  }
-  if (typeof value === 'string' && value.length > 1200) {
-    return value.startsWith('data:') ? '' : value.slice(0, 1200);
-  }
-  return value;
-};
 const loadRealtimeCollectionCache = (companyId = '') => {
   if (typeof window === 'undefined') return new Map();
-  const storageKey = getTenantStorageKey(REALTIME_COLLECTION_CACHE_STORAGE_KEY, companyId);
-  if (!storageKey) return new Map();
   try {
-    // The old global cache cannot prove tenant ownership, so never hydrate it.
-    window.localStorage.removeItem(REALTIME_COLLECTION_CACHE_STORAGE_KEY);
-    const raw = window.localStorage.getItem(storageKey);
-    if (raw && raw.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
-      window.localStorage.removeItem(storageKey);
-      return new Map();
+    const scopedKey = getTenantStorageKey(REALTIME_COLLECTION_CACHE_STORAGE_KEY, companyId);
+    const staleKeys = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key === REALTIME_COLLECTION_CACHE_STORAGE_KEY || key?.startsWith(`${REALTIME_COLLECTION_CACHE_STORAGE_KEY}:`)) {
+        staleKeys.push(key);
+      }
     }
-    const parsed = raw ? JSON.parse(raw) : null;
-    const collections = parsed?.collections && typeof parsed.collections === 'object' ? parsed.collections : {};
-    const now = Date.now();
-    const entries = Object.entries(collections)
-      .filter(([name, entry]) => (
-        REALTIME_COLLECTION_CACHEABLE_NAMES.has(name)
-        && canUseRealtimeCollectionCache(name)
-        && entry?.savedAt
-        && now - Date.parse(entry.savedAt) <= REALTIME_COLLECTION_CACHE_MAX_AGE_MS
-      ))
-      .map(([name, entry]) => [name, entry.value]);
-    return new Map(entries);
-  } catch (error) {
-    console.warn('Khong the doc cache realtime Firebase:', error);
-    return new Map();
+    if (scopedKey && !staleKeys.includes(scopedKey)) staleKeys.push(scopedKey);
+    staleKeys.forEach(key => window.localStorage.removeItem(key));
+  } catch {
+    // Business data must never be hydrated from a stale device cache.
   }
-};
-const writeRealtimeCollectionCacheNow = (cacheMap, companyId = '') => {
-  if (typeof window === 'undefined' || !(cacheMap instanceof Map) || realtimeCollectionCacheDisabled) return;
-  const storageKey = getTenantStorageKey(REALTIME_COLLECTION_CACHE_STORAGE_KEY, companyId);
-  if (!storageKey) return;
-  try {
-    const collections = {};
-    cacheMap.forEach((value, name) => {
-      if (!REALTIME_COLLECTION_CACHEABLE_NAMES.has(name) || !canUseRealtimeCollectionCache(name)) return;
-      collections[name] = {
-        savedAt: new Date().toISOString(),
-        value: sanitizeRealtimeCacheValue(value)
-      };
-    });
-    let payload = JSON.stringify({
-      savedAt: new Date().toISOString(),
-      collections
-    });
-    if (payload.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
-      const compactCollections = {};
-      Object.entries(collections).forEach(([name, entry]) => {
-        compactCollections[name] = {
-          ...entry,
-          value: sanitizeRealtimeCacheValue(entry.value, 0, REALTIME_COLLECTION_CACHE_COMPACT_ITEMS)
-        };
-      });
-      payload = JSON.stringify({
-        savedAt: new Date().toISOString(),
-        collections: compactCollections
-      });
-    }
-    if (payload.length > REALTIME_COLLECTION_CACHE_MAX_BYTES) {
-      window.localStorage.removeItem(storageKey);
-      realtimeCollectionCacheDisabled = true;
-      return;
-    }
-    window.localStorage.setItem(storageKey, payload);
-  } catch (error) {
-    try {
-      window.localStorage.removeItem(storageKey);
-    } catch {}
-    realtimeCollectionCacheDisabled = true;
-    console.warn('Da tat cache realtime cuc bo vi thiet bi khong du dung luong:', error);
-  }
-};
-const saveRealtimeCollectionCache = (cacheMap, companyId = '', options = {}) => {
-  if (typeof window === 'undefined' || !(cacheMap instanceof Map)) return;
-  const scope = normalizeTenantStorageScope(companyId);
-  if (!scope) return;
-  if (options.immediate) {
-    if (realtimeCollectionCacheWriteTimer) {
-      cancelIdleScheduler(realtimeCollectionCacheWriteTimer);
-      realtimeCollectionCacheWriteTimer = null;
-    }
-    realtimeCollectionCacheWriteMap = null;
-    realtimeCollectionCacheWriteScope = '';
-    writeRealtimeCollectionCacheNow(cacheMap, scope);
-    return;
-  }
-  realtimeCollectionCacheWriteMap = new Map(cacheMap);
-  realtimeCollectionCacheWriteScope = scope;
-  if (realtimeCollectionCacheWriteTimer) return;
-  const scheduleIdle = getIdleScheduler();
-  realtimeCollectionCacheWriteTimer = scheduleIdle(() => {
-    const snapshot = realtimeCollectionCacheWriteMap;
-    const snapshotScope = realtimeCollectionCacheWriteScope;
-    realtimeCollectionCacheWriteTimer = null;
-    realtimeCollectionCacheWriteMap = null;
-    realtimeCollectionCacheWriteScope = '';
-    if (snapshot instanceof Map) writeRealtimeCollectionCacheNow(snapshot, snapshotScope);
-  });
+  return new Map();
 };
 const getLocalDateInputValue = (date = new Date()) => {
   const safeDate = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
@@ -6587,6 +6471,19 @@ const normalizeWarehouseMeasureEntries = (entries = []) => {
   return Array.from(grouped.values());
 };
 
+const normalizeWarehouseCountedMeasureEntries = (entries = []) => {
+  const grouped = new Map();
+  (entries || []).forEach((entry) => {
+    const rawQuantity = entry?.quantity ?? entry?.value ?? entry?.amount ?? entry?.total;
+    const unit = normalizeWarehouseMeasureUnit(entry?.unit || entry?.label || '');
+    if (rawQuantity === null || rawQuantity === undefined || `${rawQuantity}`.trim() === '' || !unit) return;
+    const quantity = parseLooseQuantityValue(rawQuantity);
+    if (quantity < 0) return;
+    grouped.set(normalizeLookupText(unit), { unit, quantity });
+  });
+  return Array.from(grouped.values());
+};
+
 const buildWarehouseImportMeasureEntries = ({ totalKg = 0, quantity = 0, quantityUnit = 'Con', extraMeasures = [] } = {}) => normalizeWarehouseMeasureEntries([
   totalKg > 0 ? { unit: 'Kg', quantity: totalKg } : null,
   quantity > 0 ? { unit: quantityUnit || 'Con', quantity } : null,
@@ -6616,6 +6513,13 @@ const buildStoredWarehouseMeasureEntries = (item = {}) => {
     quantityUnit,
     extraMeasures: extraSource
   });
+};
+
+const buildStoredWarehouseStockCountMeasureEntries = (item = {}) => {
+  if (Array.isArray(item.countedMeasures) && item.countedMeasures.length > 0) {
+    return normalizeWarehouseCountedMeasureEntries(item.countedMeasures);
+  }
+  return buildStoredWarehouseMeasureEntries(item);
 };
 
 const sumWarehouseWeightEntries = (entries = []) => {
@@ -9819,6 +9723,8 @@ const resolveEntityDateKey = (entity = {}, fallbackDate = getTodayString()) => {
   return `${parsedTimestamp.getFullYear()}-${String(parsedTimestamp.getMonth() + 1).padStart(2, '0')}-${String(parsedTimestamp.getDate()).padStart(2, '0')}`;
 };
 
+const resolveWarehouseRecordDateKey = (entity = {}) => `${resolveEntityDateKey(entity, '') || ''}`.slice(0, 10);
+
 const buildDuplicateOrderItemKey = (item = {}) => {
   const productKey = `${item.productId || item.product_id || ''}`.trim()
     || normalizeLookupText(item.description || item.productName || item.productNameSnapshot || item.name || '');
@@ -11761,7 +11667,6 @@ export default function App() {
   const lastCriticalRefreshAtRef = useRef(0);
   const lastFirestoreInternalRefreshAtRef = useRef(0);
   const autoBackupInFlightRef = useRef(new Set());
-  const realtimeCachePersistTimerRef = useRef(null);
   const forceRefreshCollectionRef = useRef(() => Promise.resolve(false));
   const activateNativeForegroundRealtimeRef = useRef(() => () => {});
   const collectionRefreshTimersRef = useRef(new Map());
@@ -11791,6 +11696,7 @@ export default function App() {
   const [loadedCollectionsTenantId, setLoadedCollectionsTenantId] = useState(
     () => `${persistedSession.currentUser?.companyId || ''}`.trim()
   );
+  const [serverConfirmedCollections, setServerConfirmedCollections] = useState({});
   const [realtimeStatus, setRealtimeStatus] = useState({
     state: 'idle',
     collection: '',
@@ -11803,6 +11709,14 @@ export default function App() {
   );
   const isCoreDataLoaded = isInitialDataLoaded;
   const isLoginDataLoaded = Boolean(loadedCollections.companies && loadedCollections.employees);
+  const companyDashboardServerConfirmedCount = COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES
+    .filter(collectionName => serverConfirmedCollections[collectionName])
+    .length;
+  const isCompanyDashboardServerReady = Boolean(
+    currentUser?.companyId
+    && loadedCollectionsTenantId === `${currentUser.companyId}`.trim()
+    && companyDashboardServerConfirmedCount === COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES.length
+  );
 
   useEffect(() => {
     const companyId = `${currentUser?.companyId || ''}`.trim();
@@ -11817,6 +11731,7 @@ export default function App() {
     setPendingFirebaseWriteCount(pendingFirebaseWritesRef.current.length);
     setLoadedCollectionsTenantId(companyId);
     setLoadedCollections({});
+    setServerConfirmedCollections({});
   }, [currentUser?.companyId]);
 
   useEffect(() => {
@@ -12006,7 +11921,6 @@ export default function App() {
       }
     }
 
-    saveRealtimeCollectionCache(lastStableCollectionDataRef.current, activeTenantScopeRef.current);
   };
 
   const getLocalCollectionBinding = (collectionName) => {
@@ -12754,6 +12668,7 @@ export default function App() {
     };
 
     const pendingLoadedCollectionMarks = new Set();
+    const pendingServerConfirmedCollectionMarks = new Set();
     let loadedCollectionMarkTimer = null;
     const flushLoadedCollectionMarks = () => {
       if (loadedCollectionMarkTimer) {
@@ -12761,20 +12676,37 @@ export default function App() {
         loadedCollectionMarkTimer = null;
       }
       const names = Array.from(pendingLoadedCollectionMarks).filter(Boolean);
+      const confirmedNames = Array.from(pendingServerConfirmedCollectionMarks).filter(Boolean);
       pendingLoadedCollectionMarks.clear();
-      if (names.length === 0) return;
+      pendingServerConfirmedCollectionMarks.clear();
+      if (names.length === 0 && confirmedNames.length === 0) return;
       runNonBlockingStateUpdate(() => {
-        setLoadedCollections(prev => {
-          let changed = false;
-          const next = { ...prev };
-          names.forEach(name => {
-            if (!next[name]) {
-              next[name] = true;
-              changed = true;
-            }
+        if (names.length > 0) {
+          setLoadedCollections(prev => {
+            let changed = false;
+            const next = { ...prev };
+            names.forEach(name => {
+              if (!next[name]) {
+                next[name] = true;
+                changed = true;
+              }
+            });
+            return changed ? next : prev;
           });
-          return changed ? next : prev;
-        });
+        }
+        if (confirmedNames.length > 0) {
+          setServerConfirmedCollections(prev => {
+            let changed = false;
+            const next = { ...prev };
+            confirmedNames.forEach(name => {
+              if (!next[name]) {
+                next[name] = true;
+                changed = true;
+              }
+            });
+            return changed ? next : prev;
+          });
+        }
       });
     };
     const markCollectionLoaded = (colName) => {
@@ -12783,10 +12715,20 @@ export default function App() {
       if (loadedCollectionMarkTimer) return;
       loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
     };
+    const markCollectionServerConfirmed = (colName) => {
+      if (!colName || activeTenantScopeRef.current !== tenantCompanyId) return;
+      pendingLoadedCollectionMarks.add(colName);
+      pendingServerConfirmedCollectionMarks.add(colName);
+      if (loadedCollectionMarkTimer) return;
+      loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
+    };
 
     if (customerSession && sessionCustomerId) {
       const bootstrapCacheKey = `hd-customer-portal-bootstrap-v1:${appId}:${tenantCompanyId}:${sessionCustomerId}`;
-      const applyCustomerBootstrap = (payload = {}, { cache = false } = {}) => {
+      try {
+        window.localStorage.removeItem(bootstrapCacheKey);
+      } catch {}
+      const applyCustomerBootstrap = (payload = {}) => {
         if (cancelled || !payload?.company?.id) return false;
         const customerAccount = payload.customerAccount || null;
         setRawCompanies([payload.company]);
@@ -12796,32 +12738,9 @@ export default function App() {
         setRawPromotions(Array.isArray(payload.promotions) ? payload.promotions : []);
         if (payload.customer?.id) setRawCustomers([payload.customer]);
         setRawCustomerAccounts(customerAccount ? [customerAccount] : []);
-        ['companies', 'products', 'reward_catalog', 'promotions'].forEach(markCollectionLoaded);
-        if (!cache) {
-          try {
-            window.localStorage.setItem(bootstrapCacheKey, JSON.stringify({
-              company: payload.company,
-              customer: payload.customer || null,
-              customerAccount,
-              products: Array.isArray(payload.products) ? payload.products : [],
-              rewardCatalog: Array.isArray(payload.rewardCatalog) ? payload.rewardCatalog : [],
-              promotions: Array.isArray(payload.promotions) ? payload.promotions : [],
-              cachedAt: new Date().toISOString(),
-            }));
-          } catch {
-            // The authenticated session can continue without an offline catalog cache.
-          }
-        }
+        ['companies', 'products', 'reward_catalog', 'promotions'].forEach(markCollectionServerConfirmed);
         return true;
       };
-
-      let hasCachedBootstrap = false;
-      try {
-        const cachedPayload = JSON.parse(window.localStorage.getItem(bootstrapCacheKey) || 'null');
-        hasCachedBootstrap = applyCustomerBootstrap(cachedPayload, { cache: true });
-      } catch {
-        window.localStorage.removeItem(bootstrapCacheKey);
-      }
 
       void (async () => {
         try {
@@ -12836,19 +12755,15 @@ export default function App() {
           }, { force: true });
         } catch (error) {
           if (cancelled) return;
-          if (!hasCachedBootstrap) {
-            setRawCompanies([{ id: tenantCompanyId, name: '' }]);
-            markCollectionLoaded('companies');
-          }
+          setRawCompanies([{ id: tenantCompanyId, name: '' }]);
+          markCollectionLoaded('companies');
           updateRealtimeStatusLightly({
-            state: hasCachedBootstrap ? 'offline' : 'error',
+            state: 'error',
             collection: 'customer_portal_bootstrap',
             lastAt: new Date().toISOString(),
             error: getFriendlyFirebaseErrorMessage(
               error,
-              hasCachedBootstrap
-                ? 'Dang dung danh muc da luu va se dong bo lai khi co mang.'
-                : 'Chua tai duoc danh muc danh cho khach hang.'
+              'Chua tai duoc danh muc danh cho khach hang.'
             )
           }, { force: true });
         }
@@ -12895,11 +12810,18 @@ export default function App() {
 
     const clearConfirmedLocalMutations = (colName, items = [], options = {}) => {
       const isConfirmedServerData = options.source === 'server'
-        || (options.source === 'realtime' && !options.fromCache);
+        || (options.source === 'realtime' && !options.fromCache && !options.hasPendingWrites);
       if (!isConfirmedServerData) return;
-      const snapshotIds = new Set((Array.isArray(items) ? items : []).map(item => item?.id).filter(Boolean));
+      const snapshotItems = Array.isArray(items) ? items : [];
+      const snapshotIds = new Set(snapshotItems.map(item => item?.id).filter(Boolean));
+      const snapshotById = new Map(snapshotItems.map(item => [item?.id, item]).filter(([id]) => Boolean(id)));
       recentLocalWritesRef.current.forEach((write, key) => {
-        if (write?.collectionName === colName && snapshotIds.has(write.documentId)) {
+        const serverItem = snapshotById.get(write?.documentId);
+        if (
+          write?.collectionName === colName
+          && serverItem
+          && isRealtimeWriteConfirmed(serverItem, write.payload)
+        ) {
           recentLocalWritesRef.current.delete(key);
         }
       });
@@ -12918,18 +12840,9 @@ export default function App() {
 
     const getPreviousStableCollectionValue = (colName) => lastStableCollectionDataRef.current.get(colName);
 
-    const scheduleRealtimeCollectionCachePersist = () => {
-      if (typeof window === 'undefined' || realtimeCachePersistTimerRef.current) return;
-      realtimeCachePersistTimerRef.current = window.setTimeout(() => {
-        realtimeCachePersistTimerRef.current = null;
-        saveRealtimeCollectionCache(lastStableCollectionDataRef.current, tenantCompanyId);
-      }, 900);
-    };
-
     const rememberStableCollectionValue = (colName, value, isObject = false, options = {}) => {
       if (!hasCollectionValue(value, isObject) && !options.allowEmpty) return;
       lastStableCollectionDataRef.current.set(colName, value);
-      scheduleRealtimeCollectionCachePersist();
     };
 
     const setCollectionSafely = (colName, setFn, nextValue, isObject = false, options = {}) => {
@@ -13015,7 +12928,7 @@ export default function App() {
 
     const readCollection = async (colName, setFn, isObject = false, parser = null, options = {}) => {
       const force = Boolean(options.force);
-      const serverOnly = Boolean(options.serverOnly);
+      const serverOnly = true;
       const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(colName) || 0;
       if (!force && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
         // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
@@ -13039,6 +12952,7 @@ export default function App() {
           const confirmedAt = Date.now();
           lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
           lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
+          markCollectionServerConfirmed(colName);
         }
         applyCollectionItems(
           colName,
@@ -13046,7 +12960,7 @@ export default function App() {
           getSnapshotItems(snapshot),
           isObject,
           parser,
-          { source: serverOnly ? 'server' : 'query', keepPreviousOnEmpty: !force }
+          { source: 'server', keepPreviousOnEmpty: false }
         );
         updateRealtimeStatusLightly({
           state: 'online',
@@ -13155,19 +13069,6 @@ export default function App() {
       return true;
     };
 
-    collectionBindings.forEach(([colName, setFn, isObject, parser]) => {
-      const cachedValue = getPreviousStableCollectionValue(colName);
-      if (!hasCollectionValue(cachedValue, isObject)) return;
-      const hydratedValue = parser
-        ? (
-            isObject
-              ? Object.fromEntries(Object.entries(cachedValue).map(([key, value]) => [key, parser(value)]))
-              : cachedValue.map(value => parser(value))
-          )
-        : cachedValue;
-      setCollectionSafely(colName, setFn, hydratedValue, isObject, { keepPreviousOnEmpty: true });
-    });
-
     const refreshAllCollections = async () => {
       if (refreshCollectionsInFlightRef.current) return;
       refreshCollectionsInFlightRef.current = true;
@@ -13224,19 +13125,31 @@ export default function App() {
           (snapshot) => {
             if (cancelled) return;
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
+            const hasPendingWrites = Boolean(snapshot?.metadata?.hasPendingWrites);
             const snapshotAt = Date.now();
             lastRealtimeSnapshotAtRef.current.set(colName, snapshotAt);
-            if (!fromCache) {
+            if (isServerConfirmedRealtimeSnapshot(snapshot)) {
               lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
+              markCollectionServerConfirmed(colName);
+            }
+            if (!shouldApplyRealtimeSnapshot(snapshot)) {
+              updateRealtimeStatusLightly({
+                state: 'connecting',
+                collection: colName,
+                lastAt: new Date().toISOString(),
+                error: ''
+              });
+              return;
             }
             const docs = getSnapshotItems(snapshot);
             applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
               fromCache,
-              keepPreviousOnEmpty: fromCache && docs.length === 0
+              hasPendingWrites,
+              keepPreviousOnEmpty: false
             });
             updateRealtimeStatusLightly({
-              state: fromCache ? 'connecting' : 'online',
+              state: hasPendingWrites ? 'connecting' : 'online',
               collection: colName,
               lastAt: new Date().toISOString(),
               error: ''
@@ -13413,15 +13326,11 @@ export default function App() {
     return () => {
       cancelled = true;
       activateNativeForegroundRealtimeRef.current = () => () => {};
-      if (realtimeCachePersistTimerRef.current) {
-        window.clearTimeout(realtimeCachePersistTimerRef.current);
-        realtimeCachePersistTimerRef.current = null;
-        saveRealtimeCollectionCache(lastStableCollectionDataRef.current, tenantCompanyId, { immediate: true });
-      }
       if (loadedCollectionMarkTimer) {
         window.clearTimeout(loadedCollectionMarkTimer);
         loadedCollectionMarkTimer = null;
         pendingLoadedCollectionMarks.clear();
+        pendingServerConfirmedCollectionMarks.clear();
       }
       unsubscribeCollectionListeners.forEach(unsubscribe => {
         try {
@@ -17816,6 +17725,11 @@ export default function App() {
       quantityUnit: countData.quantityUnit || countData.unit || 'Con',
       extraMeasures: countData.extraMeasures || []
     });
+    const countedMeasures = normalizeWarehouseCountedMeasureEntries(
+      Array.isArray(countData.countedMeasures) && countData.countedMeasures.length > 0
+        ? countData.countedMeasures
+        : measures
+    );
     const payload = {
       ...countData,
       id,
@@ -17826,6 +17740,7 @@ export default function App() {
       quantity,
       quantityUnit: normalizeLeadingLabel(countData.quantityUnit || countData.unit || 'Con'),
       measures,
+      countedMeasures,
       date: countData.date || getTodayString(),
       companyId: myCompanyId,
       isArchived: false,
@@ -17847,6 +17762,11 @@ export default function App() {
       quantityUnit: countData.quantityUnit || countData.unit || 'Con',
       extraMeasures: countData.extraMeasures || []
     });
+    const countedMeasures = normalizeWarehouseCountedMeasureEntries(
+      Array.isArray(countData.countedMeasures) && countData.countedMeasures.length > 0
+        ? countData.countedMeasures
+        : measures
+    );
     const payload = {
       ...countData,
       id: stockCountId,
@@ -17855,6 +17775,7 @@ export default function App() {
       quantity,
       quantityUnit: normalizeLeadingLabel(countData.quantityUnit || countData.unit || 'Con'),
       measures,
+      countedMeasures,
       date: countData.date || getTodayString(),
       companyId: myCompanyId,
       updatedAt: new Date().toISOString()
@@ -20275,6 +20196,7 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
+        isCompanyDashboardServerReady={isCompanyDashboardServerReady} confirmedDashboardCollectionCount={companyDashboardServerConfirmedCount}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => auth?.currentUser?.getIdToken?.() || Promise.resolve('')} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
@@ -20750,6 +20672,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
+  isCompanyDashboardServerReady = false, confirmedDashboardCollectionCount = 0,
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
@@ -22225,9 +22148,29 @@ function MainAppView({
     );
   };
 
-  const renderExecutiveDashboard = () => (
-    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} />
-  );
+  const renderExecutiveDashboard = () => {
+    if (!isCompanyDashboardServerReady) {
+      return (
+        <div className="mx-auto w-full max-w-4xl p-4 sm:p-6" role="status" aria-live="polite">
+          <section className="rounded-3xl border border-emerald-100 bg-white p-5 text-center shadow-sm sm:p-7">
+            <p className="text-sm font-black text-emerald-800">Đang đồng bộ dữ liệu mới nhất</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              Số liệu tài chính chỉ hiển thị sau khi Firestore xác nhận dữ liệu từ máy chủ.
+            </p>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-emerald-50">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-[width] duration-200"
+                style={{
+                  width: `${Math.round((confirmedDashboardCollectionCount / COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES.length) * 100)}%`
+                }}
+              />
+            </div>
+          </section>
+        </div>
+      );
+    }
+    return <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} />;
+  };
 
   const renderClassicDashboard = () => (
     <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
@@ -39406,7 +39349,7 @@ function ExecutiveDashboardView({
     const value = expense.date || expense.transactionDate || expense.paymentDate || expense.createdAt || expense.created_at || expense.updatedAt;
     if (value?.toDate && typeof value.toDate === 'function') return value.toDate();
     if (value?.seconds) return new Date(value.seconds * 1000);
-    return value || getTodayString();
+    return value || '';
   };
   const currentMonthExpenseRows = useMemo(() => (
     (expenses || [])
@@ -40440,7 +40383,7 @@ function EmployeePersonalHomeView({
   };
   const isRowInHomeMonth = (row = {}) => {
     const key = getDateKeyFromAnyValue(row.date || row.dateKey || row.createdAt || row.updatedAt || getEntityTimestamp(row));
-    return buildMonthKeyFromDate(key || getTodayString()) === monthKey;
+    return Boolean(key) && buildMonthKeyFromDate(key) === monthKey;
   };
   const employeeDeliveryMonthReports = useMemo(() => (
     (deliveryReports || [])
@@ -40458,23 +40401,26 @@ function EmployeePersonalHomeView({
   ), [employee?.id, expenses, monthKey]);
   const employeeDeliveryMonthSummary = useMemo(() => {
     const dayMap = new Map();
-    const ensureDay = (dateKey = getTodayString()) => {
-      const key = dateKey || getTodayString();
+    const ensureDay = (dateKey = '') => {
+      const key = dateKey;
+      if (!key) return null;
       if (!dayMap.has(key)) {
         dayMap.set(key, { date: key, reportCount: 0, income: 0, expense: 0 });
       }
       return dayMap.get(key);
     };
     employeeDeliveryMonthReports.forEach(report => {
-      const key = getDateKeyFromAnyValue(report.date || report.dateKey || report.createdAt || report.updatedAt || getEntityTimestamp(report)) || getTodayString();
+      const key = getDateKeyFromAnyValue(report.date || report.dateKey || report.createdAt || report.updatedAt || getEntityTimestamp(report));
       const row = ensureDay(key);
+      if (!row) return;
       row.reportCount += 1;
       row.income += parseLooseMoneyValue(report.collectedAmount);
       row.expense += parseLooseMoneyValue(report.deliveryExpenseAmount);
     });
     employeeDeliveryMonthStandaloneExpenses.forEach(expense => {
-      const key = getDateKeyFromAnyValue(expense.date || expense.dateKey || expense.createdAt || expense.updatedAt || getEntityTimestamp(expense)) || getTodayString();
+      const key = getDateKeyFromAnyValue(expense.date || expense.dateKey || expense.createdAt || expense.updatedAt || getEntityTimestamp(expense));
       const row = ensureDay(key);
+      if (!row) return;
       row.expense += parseLooseMoneyValue(expense.amount);
     });
     const rows = Array.from(dayMap.values()).sort((a, b) => `${b.date}`.localeCompare(`${a.date}`));
@@ -40581,7 +40527,7 @@ function EmployeePersonalHomeView({
   }, [assignedAssetIds, expenses]);
   const isAssetRowInCurrentMonth = (row = {}) => {
     const key = getDateKeyFromAnyValue(row.date || row.createdAt || row.updatedAt);
-    return buildMonthKeyFromDate(key || getTodayString()) === monthKey;
+    return Boolean(key) && buildMonthKeyFromDate(key) === monthKey;
   };
   const employeeAssetMonthCost = useMemo(() => (
     employeeAssetCostRows.reduce((sum, log) => (isAssetRowInCurrentMonth(log) ? sum + parseLooseMoneyValue(log.amount) : sum), 0) +
@@ -40608,7 +40554,7 @@ function EmployeePersonalHomeView({
       const orderSalesEmpId = getOrderSalesEmpId(order, customers || []);
       if (`${orderSalesEmpId || ''}` !== employeeId) return false;
       const orderDateKey = getDateKeyFromAnyValue(order.date || order.createdAt || order.updatedAt || getEntityTimestamp(order));
-      return buildMonthKeyFromDate(orderDateKey || getTodayString()) === monthKey;
+      return Boolean(orderDateKey) && buildMonthKeyFromDate(orderDateKey) === monthKey;
     });
   }, [customers, employee?.id, isSalesEmployeeHome, monthKey, orders]);
   const salesOrderCount = employeeSalesOrderRows.length;
@@ -51058,7 +51004,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   const [quickStockEdit, setQuickStockEdit] = useState(null);
   const [stockVarianceReport, setStockVarianceReport] = useState(null);
   const [warehouseInventoryTab, setWarehouseInventoryTab] = useState('import');
-  const [warehouseMovementUnitFilter, setWarehouseMovementUnitFilter] = useState('piece');
+  const [warehouseMovementUnitFilter, setWarehouseMovementUnitFilter] = useState(normalizeLookupText('Con'));
   const [selectedWarehouseMovementRowKey, setSelectedWarehouseMovementRowKey] = useState('');
   const [showHiddenWarehouseStockItems, setShowHiddenWarehouseStockItems] = useState(false);
   const [warehouseStockVisibilityStatus, setWarehouseStockVisibilityStatus] = useState('');
@@ -51436,7 +51382,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   );
   const isAfterWarehouseStockReset = useCallback((item = {}) => {
     if (!warehouseStockResetTimestamp) return true;
-    const dateKey = resolveEntityDateKey(item, '');
+    const dateKey = resolveWarehouseRecordDateKey(item);
     const timestamp = getEntityTimestamp(item);
     if (timestamp) return timestamp >= warehouseStockResetTimestamp;
     if (dateKey && warehouseStockResetDateKey) return `${dateKey}`.slice(0, 10) >= warehouseStockResetDateKey;
@@ -51446,10 +51392,10 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   }, [warehouseStockResetDateKey, warehouseStockResetTimestamp]);
 
   const dayImports = useMemo(() => warehouseImports
-    .filter(item => !item?.isArchived && resolveEntityDateKey(item, item.date || workingDate) === workingDate && isAfterWarehouseStockReset(item))
+    .filter(item => !item?.isArchived && resolveWarehouseRecordDateKey(item) === workingDate && isAfterWarehouseStockReset(item))
     .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [isAfterWarehouseStockReset, warehouseImports, workingDate]);
   const dayStockCounts = useMemo(() => warehouseStockCounts
-    .filter(item => !item?.isArchived && resolveEntityDateKey(item, item.date || workingDate) === workingDate && isAfterWarehouseStockReset(item))
+    .filter(item => !item?.isArchived && resolveWarehouseRecordDateKey(item) === workingDate && isAfterWarehouseStockReset(item))
     .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [isAfterWarehouseStockReset, warehouseStockCounts, workingDate]);
 
   const daySummary = useMemo(() => dayImports.reduce((acc, item) => {
@@ -51487,8 +51433,8 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   );
   const warehouseImportCalendarMap = useMemo(() => {
     const grouped = new Map();
-    (warehouseImports || []).filter(item => !item?.isArchived && item.date).forEach((item) => {
-      const dateKey = `${item.date || ''}`.slice(0, 10);
+    (warehouseImports || []).filter(item => !item?.isArchived && isAfterWarehouseStockReset(item)).forEach((item) => {
+      const dateKey = resolveWarehouseRecordDateKey(item);
       if (!dateKey) return;
       const row = grouped.get(dateKey) || { count: 0, groupKeys: new Set(), totalKg: 0, amount: 0 };
       row.count += 1;
@@ -51498,11 +51444,11 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       grouped.set(dateKey, row);
     });
     return grouped;
-  }, [warehouseImports]);
+  }, [isAfterWarehouseStockReset, warehouseImports]);
   const warehouseExportCalendarMap = useMemo(() => {
     const grouped = new Map();
     (warehouseDispatches || []).filter(item => !item?.isArchived && isAfterWarehouseStockReset(item)).forEach((item) => {
-      const dateKey = resolveEntityDateKey(item, item.date || item.createdAt || getTodayString());
+      const dateKey = resolveWarehouseRecordDateKey(item);
       if (!dateKey) return;
       const product = productLookup.get(item.productId);
       const row = grouped.get(dateKey) || { count: 0, groupKeys: new Set(), totalKg: 0 };
@@ -51518,7 +51464,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   const warehouseStockCalendarMap = useMemo(() => {
     const grouped = new Map();
     (warehouseStockCounts || []).filter(item => !item?.isArchived && isAfterWarehouseStockReset(item)).forEach((item) => {
-      const dateKey = `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10);
+      const dateKey = resolveWarehouseRecordDateKey(item);
       if (!dateKey) return;
       const row = grouped.get(dateKey) || { count: 0, groupKeys: new Set(), totalKg: 0 };
       row.count += 1;
@@ -51585,7 +51531,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     };
 
     (warehouseDispatches || [])
-      .filter(item => !item?.isArchived && resolveEntityDateKey(item, workingDate) === workingDate && isAfterWarehouseStockReset(item))
+      .filter(item => !item?.isArchived && resolveWarehouseRecordDateKey(item) === workingDate && isAfterWarehouseStockReset(item))
       .forEach((item) => {
         const product = productLookup.get(item.productId);
         const row = ensureRow(getWarehouseStockGroupLabel(item, product));
@@ -51600,7 +51546,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       }))
       .filter(row => row.measureRows.length > 0)
       .sort((a, b) => (a.groupName || '').localeCompare(b.groupName || '', 'vi'));
-  }, [dayImportGroupUnitMap, getWarehouseStockGroupLabel, productLookup, warehouseDispatches, workingDate]);
+  }, [dayImportGroupUnitMap, getWarehouseStockGroupLabel, isAfterWarehouseStockReset, productLookup, warehouseDispatches, workingDate]);
   const getMandatoryWarehouseStockUnitsForGroup = (groupName = '') => {
     const lookup = normalizeLookupText(groupName || '');
     if (lookup.includes('ga') || lookup.includes('vit')) return ['Con', 'Kg'];
@@ -51619,111 +51565,94 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
           key,
           groupName: label,
           unit: normalizeLeadingLabel(unit || 'Đơn vị'),
-          baselineDate: '',
-          baselineAt: 0,
-          baselineQty: 0,
-          baselineKg: 0,
-          importedQty: 0,
-          importedKg: 0,
-          exportedQty: 0,
-          exportedKg: 0,
           measureMap: new Map()
         });
       }
       return grouped.get(key);
     };
-    const addMeasure = (row, type, unit, quantity) => {
-      const normalizedUnit = normalizeWarehouseMeasureUnit(unit || 'Đơn vị');
-      const amount = parseLooseQuantityValue(quantity);
-      if (!normalizedUnit || amount <= 0) return;
-      const key = normalizeLookupText(normalizedUnit);
-      const current = row.measureMap.get(key) || { unit: normalizedUnit, baseline: 0, imported: 0, exported: 0 };
-      current[type] += amount;
-      row.measureMap.set(key, current);
-    };
-    const getMovementDateKey = (item = {}, fallbackDate = '') => `${resolveEntityDateKey(item, item.date || fallbackDate || '') || ''}`.slice(0, 10);
-    const isAfterBaseline = (row, item, fallbackDate = '') => {
-      if (!row?.baselineDate) return true;
-      const dateKey = getMovementDateKey(item, fallbackDate);
-      if (!dateKey) return true;
-      if (dateKey > row.baselineDate) return true;
-      if (dateKey < row.baselineDate) return false;
+    const isMovementAfterMeasureBaseline = (measure = {}, item = {}) => {
+      if (!measure?.baselineDate) return true;
+      const dateKey = resolveWarehouseRecordDateKey(item);
+      if (!dateKey) return false;
+      if (dateKey > measure.baselineDate) return true;
+      if (dateKey < measure.baselineDate) return false;
       const movementTimestamp = getEntityTimestamp(item) || 0;
-      if (row.baselineAt && movementTimestamp) return movementTimestamp > row.baselineAt;
+      if (measure.baselineAt && movementTimestamp) return movementTimestamp > measure.baselineAt;
       return false;
     };
-    const latestActualStockByGroup = new Map();
+    const addMeasure = (row, type, unit, quantity, metadata = {}) => {
+      const normalizedUnit = normalizeWarehouseMeasureUnit(unit || 'Đơn vị');
+      const amount = parseLooseQuantityValue(quantity);
+      if (!normalizedUnit || amount < 0 || (type !== 'baseline' && amount <= 0)) return;
+      const key = normalizeLookupText(normalizedUnit);
+      const current = row.measureMap.get(key) || {
+        unit: normalizedUnit,
+        baseline: 0,
+        imported: 0,
+        exported: 0,
+        baselineDate: '',
+        baselineAt: 0,
+        baselineItemId: ''
+      };
+      if (type === 'baseline') {
+        current.baseline = amount;
+        current.baselineDate = metadata.dateKey || '';
+        current.baselineAt = metadata.timestamp || 0;
+        current.baselineItemId = metadata.item?.id || '';
+      } else {
+        if (!isMovementAfterMeasureBaseline(current, metadata.item)) return;
+        current[type] += amount;
+      }
+      row.measureMap.set(key, current);
+    };
 
-    (warehouseStockCounts || [])
-      .filter(item => !item?.isArchived)
-      .filter(isAfterWarehouseStockReset)
-      .filter((item) => {
-        const dateKey = `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10);
-        return dateKey && (!safeTargetDate || dateKey <= safeTargetDate);
-      })
-      .forEach((item) => {
-        const groupName = normalizeLeadingLabel(item.groupName || item.productGroup || 'Nhóm hàng');
-        const key = buildProcessingInventoryGroupKey(groupName);
-        const dateKey = `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10);
-        const timestamp = Math.max(
+    const latestActualStockByGroup = selectLatestWarehouseStockCountMeasures(
+      (warehouseStockCounts || []).filter(item => !item?.isArchived && isAfterWarehouseStockReset(item)),
+      {
+        getGroupKey: item => buildProcessingInventoryGroupKey(item.groupName || item.productGroup || 'Nhóm hàng'),
+        getGroupName: item => normalizeLeadingLabel(item.groupName || item.productGroup || 'Nhóm hàng'),
+        getDateKey: resolveWarehouseRecordDateKey,
+        getTimestamp: item => Math.max(
           parseEntityTimestampValue(item.createdAt) || 0,
           parseEntityTimestampValue(item.updatedAt) || 0,
           getEntityTimestamp(item) || 0
-        );
-        const current = latestActualStockByGroup.get(key);
-        if (
-          current
-          && (
-            current.dateKey > dateKey
-            || (current.dateKey === dateKey && (current.timestamp || 0) >= timestamp)
-          )
-        ) {
-          return;
-        }
-        latestActualStockByGroup.set(key, {
-          item,
-          key,
-          groupName,
-          dateKey,
-          timestamp,
-          measures: buildStoredWarehouseMeasureEntries(item)
-        });
-      });
+        ),
+         getMeasures: buildStoredWarehouseStockCountMeasureEntries,
+         getUnitKey: measure => normalizeLookupText(normalizeWarehouseMeasureUnit(measure?.unit || '')),
+         targetDate: safeTargetDate,
+         excludeTargetDate: true
+       }
+     );
 
     latestActualStockByGroup.forEach((baseline) => {
-      const row = ensureRow(baseline.groupName, baseline.item?.quantityUnit || baseline.item?.unit || 'Đơn vị');
-      const primaryMeasure = getWarehousePrimaryMeasureRows(baseline.measures).find(measure => !isWarehouseWeightUnit(measure.unit));
-      const kgMeasure = baseline.measures.find(measure => isWarehouseWeightUnit(measure.unit));
-      row.baselineDate = baseline.dateKey;
-      row.baselineAt = baseline.timestamp;
-      row.baselineQty = parseLooseQuantityValue(primaryMeasure?.quantity ?? baseline.item?.quantity ?? baseline.item?.totalQuantity);
-      row.baselineKg = parseLooseQuantityValue(kgMeasure?.quantity ?? baseline.item?.totalKg ?? baseline.item?.weightKg);
-      row.baselineStockCountId = baseline.item?.id || '';
-      if (primaryMeasure?.unit) row.unit = normalizeLeadingLabel(primaryMeasure.unit);
-      baseline.measures.forEach(measure => addMeasure(row, 'baseline', measure.unit, measure.quantity));
+      const row = ensureRow(baseline.groupName, baseline.latestItem?.quantityUnit || baseline.latestItem?.unit || 'Đơn vị');
+      baseline.measures.forEach((measure) => {
+        if (!isWarehouseWeightUnit(measure.unit)) row.unit = normalizeLeadingLabel(measure.unit);
+        addMeasure(row, 'baseline', measure.unit, measure.quantity, measure);
+      });
     });
 
     (warehouseImports || [])
       .filter(item => !item?.isArchived)
       .filter(isAfterWarehouseStockReset)
       .filter(item => {
-        const dateKey = `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10);
+        const dateKey = resolveWarehouseRecordDateKey(item);
         return dateKey && (!safeTargetDate || dateKey <= safeTargetDate);
       })
       .forEach((item) => {
         const row = ensureRow(item.groupName || item.productGroup || 'Nhóm hàng', item.quantityUnit || item.unit || 'Đơn vị');
-        if (!isAfterBaseline(row, item, item.date)) return;
-        row.importedQty += parseLooseQuantityValue(item.quantity ?? item.totalQuantity);
-        row.importedKg += parseLooseQuantityValue(item.totalKg ?? item.weightKg);
         if (item.quantityUnit || item.unit) row.unit = normalizeLeadingLabel(item.quantityUnit || item.unit);
         const measures = buildStoredWarehouseMeasureEntries(item);
-        measures.forEach(measure => addMeasure(row, 'imported', measure.unit, measure.quantity));
+        measures.forEach(measure => addMeasure(row, 'imported', measure.unit, measure.quantity, { item }));
       });
 
     (warehouseDispatches || [])
       .filter(item => !item?.isArchived)
       .filter(isAfterWarehouseStockReset)
-      .filter(item => !safeTargetDate || resolveEntityDateKey(item, safeTargetDate) <= safeTargetDate)
+      .filter(item => {
+        const dateKey = resolveWarehouseRecordDateKey(item);
+        return dateKey && (!safeTargetDate || dateKey <= safeTargetDate);
+      })
       .forEach((item) => {
         const product = productLookup.get(item.productId);
         const row = ensureRow(
@@ -51732,12 +51661,9 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
           false
         );
         if (!row) return;
-        if (!isAfterBaseline(row, item, resolveEntityDateKey(item, safeTargetDate))) return;
         const dispatchMeasures = buildWarehouseDispatchMeasureEntries(item, product);
-        row.exportedQty += parseLooseQuantityValue(item.quantity ?? item.pieceCount ?? item.quantityCount ?? item.totalQuantity ?? item.count ?? item.actualQuantity);
-        row.exportedKg += parseLooseQuantityValue(item.weightKg ?? item.totalKg ?? item.kg ?? item.actualWeightKg ?? item.weight) || sumWarehouseWeightEntries(item.weightEntries);
         if (item.quantityUnit || item.unit || product?.unit) row.unit = normalizeLeadingLabel(item.quantityUnit || item.unit || product?.unit);
-        dispatchMeasures.forEach(measure => addMeasure(row, 'exported', measure.unit, measure.quantity));
+        dispatchMeasures.forEach(measure => addMeasure(row, 'exported', measure.unit, measure.quantity, { item }));
       });
 
     return Array.from(grouped.values())
@@ -51756,12 +51682,15 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
         const annotatedMeasureRows = annotateWarehouseMeasureRows(measureRows);
         const primaryMeasureRows = annotatedMeasureRows.filter(measure => measure.isPrimaryStockUnit);
         const referenceMeasureRows = annotatedMeasureRows.filter(measure => measure.isReferenceStockUnit);
+        const primaryQuantityMeasure = primaryMeasureRows.find(measure => !isWarehouseWeightUnit(measure.unit))
+          || annotatedMeasureRows.find(measure => !isWarehouseWeightUnit(measure.unit));
+        const kgMeasure = annotatedMeasureRows.find(measure => isWarehouseWeightUnit(measure.unit));
         const hasPrimaryStockWarning = primaryMeasureRows.some(measure => parseLooseQuantityValue(measure.remaining) < 0);
         const hasReferenceStockWarning = referenceMeasureRows.some(measure => parseLooseQuantityValue(measure.remaining) < 0);
         return {
           ...row,
-          remainingQty: row.baselineQty + row.importedQty - row.exportedQty,
-          remainingKg: row.baselineKg + row.importedKg - row.exportedKg,
+          remainingQty: parseLooseQuantityValue(primaryQuantityMeasure?.remaining),
+          remainingKg: parseLooseQuantityValue(kgMeasure?.remaining),
           measureRows: annotatedMeasureRows,
           primaryMeasureRows,
           referenceMeasureRows,
@@ -51907,38 +51836,34 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   const actualStockRows = useMemo(() => {
     const systemMap = new Map((warehouseStockRows || []).map(row => [row.key, row]));
     const actualMap = new Map();
-    const ensureActualRow = (groupName) => {
-      const label = normalizeLeadingLabel(groupName || 'Nhóm hàng');
-      const key = buildProcessingInventoryGroupKey(label);
-      if (!actualMap.has(key)) {
-        actualMap.set(key, {
-          key,
-          groupName: label,
-          measureMap: new Map(),
-          items: [],
-          countCount: 0,
-          latestAt: 0
-        });
-      }
-      return actualMap.get(key);
-    };
-    const addActualMeasure = (row, unit, quantity) => {
-      const normalizedUnit = normalizeWarehouseMeasureUnit(unit || 'Đơn vị');
-      const amount = parseLooseQuantityValue(quantity);
-      if (!normalizedUnit || amount <= 0) return;
-      const key = normalizeLookupText(normalizedUnit);
-      const current = row.measureMap.get(key) || { unit: normalizedUnit, actual: 0 };
-      current.actual += amount;
-      row.measureMap.set(key, current);
-    };
-
-    dayStockCounts.forEach((item) => {
-      const actualRow = ensureActualRow(item.groupName || item.productGroup || 'Nhóm hàng');
-      actualRow.countCount += 1;
-      actualRow.latestAt = Math.max(actualRow.latestAt, getEntityTimestamp(item) || 0);
-      actualRow.items.push(item);
-      const measures = buildStoredWarehouseMeasureEntries(item);
-      measures.forEach(measure => addActualMeasure(actualRow, measure.unit, measure.quantity));
+    const latestActualGroups = selectLatestWarehouseStockCountMeasures(dayStockCounts, {
+      getGroupKey: item => buildProcessingInventoryGroupKey(item.groupName || item.productGroup || 'Nhóm hàng'),
+      getGroupName: item => normalizeLeadingLabel(item.groupName || item.productGroup || 'Nhóm hàng'),
+      getDateKey: resolveWarehouseRecordDateKey,
+      getTimestamp: item => Math.max(
+        parseEntityTimestampValue(item.createdAt) || 0,
+        parseEntityTimestampValue(item.updatedAt) || 0,
+        getEntityTimestamp(item) || 0
+      ),
+      getMeasures: buildStoredWarehouseStockCountMeasureEntries,
+      getUnitKey: measure => normalizeLookupText(normalizeWarehouseMeasureUnit(measure?.unit || ''))
+    });
+    latestActualGroups.forEach((group) => {
+      const measureMap = new Map(group.measures.map(measure => [measure.unitKey, {
+        unit: normalizeWarehouseMeasureUnit(measure.unit || 'Đơn vị'),
+        actual: parseLooseQuantityValue(measure.quantity),
+        actualItemId: measure.itemId || '',
+        actualItem: measure.item || null
+      }]));
+      actualMap.set(group.key, {
+        key: group.key,
+        groupName: group.groupName,
+        measureMap,
+        items: group.items,
+        countCount: group.items.length,
+        latestAt: group.latestAt,
+        latestItem: group.latestItem
+      });
     });
 
     const allKeys = new Set([...systemMap.keys(), ...actualMap.keys()]);
@@ -51969,22 +51894,18 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
           imported,
           exported,
           expected,
-          actual,
-          diff,
-          status: !actualRow ? 'uncounted' : Math.abs(diff) < 0.0001 ? 'ok' : diff < 0 ? 'loss' : 'surplus'
+           actual,
+           diff,
+           actualItemId: actualMeasure?.actualItemId || '',
+           actualItem: actualMeasure?.actualItem || null,
+           status: !actualMeasure ? 'uncounted' : Math.abs(diff) < 0.0001 ? 'ok' : diff < 0 ? 'loss' : 'surplus'
         };
       });
       const measureRows = annotateWarehouseMeasureRows(rawMeasureRows);
       const primaryRows = measureRows.filter(measure => measure.isPrimaryStockUnit);
       const rowsForStatus = primaryRows.length > 0 ? primaryRows : measureRows;
       const hasReferenceMismatch = measureRows.some(measure => measure.isReferenceStockUnit && measure.status !== 'ok' && measure.status !== 'uncounted');
-      const status = !actualRow
-        ? 'uncounted'
-        : rowsForStatus.some(measure => measure.status === 'loss')
-        ? 'loss'
-        : rowsForStatus.some(measure => measure.status === 'surplus')
-          ? 'surplus'
-          : 'ok';
+      const status = resolveWarehouseStockCountStatus(rowsForStatus, Boolean(actualRow));
       return {
         key,
         groupName: actualRow?.groupName || systemRow?.groupName || 'Nhóm hàng',
@@ -51996,7 +51917,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
         countCount: actualRow?.countCount || 0,
         latestAt: actualRow?.latestAt || 0,
         items: actualRow?.items || [],
-        latestItem: (actualRow?.items || []).slice().sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))[0] || null
+        latestItem: actualRow?.latestItem || null
       };
     }).sort((a, b) => {
       const order = { loss: 0, surplus: 1, ok: 2, uncounted: 3 };
@@ -52012,11 +51933,31 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     lossCount: actualStockRows.filter(row => row.countCount > 0 && row.status === 'loss').length
   }), [actualStockRows]);
   const actualStockLookup = useMemo(() => new Map(actualStockRows.map(row => [row.key, row])), [actualStockRows]);
-  const warehouseMovementUnitOptions = useMemo(() => ([
-    { key: 'piece', label: 'Con' },
-    { key: 'kg', label: 'Kg' }
-  ]), []);
   const warehouseMovementMonthKey = buildMonthKeyFromDate(workingDate || getTodayString());
+  const warehouseMovementUnitOptions = useMemo(() => {
+    const unitMap = new Map();
+    (warehouseImports || [])
+      .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
+      .filter(item => resolveWarehouseRecordDateKey(item).slice(0, 7) === warehouseMovementMonthKey)
+      .forEach((item) => {
+        buildStoredWarehouseMeasureEntries(item).forEach((measure) => {
+          const unit = normalizeWarehouseMeasureUnit(measure.unit || 'Đơn vị');
+          const key = normalizeLookupText(unit);
+          if (key && !unitMap.has(key)) unitMap.set(key, unit);
+        });
+      });
+    const options = sortWarehouseMeasureRows(Array.from(unitMap.entries()).map(([key, unit]) => ({ key, unit })))
+      .map(option => ({ key: option.key, label: option.unit }));
+    return options.length > 0
+      ? options
+      : [{ key: normalizeLookupText('Con'), label: 'Con' }, { key: normalizeLookupText('Kg'), label: 'Kg' }];
+  }, [isAfterWarehouseStockReset, warehouseImports, warehouseMovementMonthKey]);
+  useEffect(() => {
+    if (warehouseMovementUnitOptions.some(option => option.key === warehouseMovementUnitFilter)) return;
+    setWarehouseMovementUnitFilter(warehouseMovementUnitOptions[0]?.key || normalizeLookupText('Con'));
+  }, [warehouseMovementUnitFilter, warehouseMovementUnitOptions]);
+  const warehouseMovementSelectedUnitLabel = warehouseMovementUnitOptions
+    .find(option => option.key === warehouseMovementUnitFilter)?.label || 'Đơn vị';
   const warehouseMovementMonthLabel = useMemo(() => {
     const [yearText, monthText] = `${warehouseMovementMonthKey || ''}`.split('-');
     const year = parseInt(yearText, 10);
@@ -52036,12 +51977,12 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     return Array.from({ length: daysInMonth }, (_, index) => `${warehouseMovementMonthKey}-${String(index + 1).padStart(2, '0')}`);
   }, [warehouseMovementMonthKey]);
   const warehouseMovementTableRows = useMemo(() => {
-    const targetIsKg = warehouseMovementUnitFilter === 'kg';
+    const selectedUnitKey = normalizeLookupText(warehouseMovementUnitFilter);
     const importedGroupKeysInMonth = new Set();
     (warehouseImports || [])
       .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
       .forEach((item) => {
-        const dateKey = `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10);
+        const dateKey = resolveWarehouseRecordDateKey(item);
         if (!dateKey || `${dateKey}`.slice(0, 7) !== warehouseMovementMonthKey) return;
         importedGroupKeysInMonth.add(buildProcessingInventoryGroupKey(item.groupName || item.productGroup || 'Nhóm hàng'));
       });
@@ -52057,15 +51998,8 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       const visibleMeasures = annotateWarehouseMeasureRows(measures || []).filter((measure) => {
         return !hiddenUnits.has(normalizeLookupText(measure.unit));
       });
-      if (targetIsKg) {
-        return visibleMeasures
-          .filter(measure => isWarehouseWeightUnit(measure.unit))
-          .reduce((sum, measure) => sum + getMeasureValue(measure, valueKey), 0);
-      }
-      const primaryMeasure = visibleMeasures.find(measure => !isWarehouseWeightUnit(measure.unit) && measure.isPrimaryStockUnit)
-        || visibleMeasures.find(measure => !isWarehouseWeightUnit(measure.unit))
-        || null;
-      return primaryMeasure ? getMeasureValue(primaryMeasure, valueKey) : 0;
+      const selectedMeasure = visibleMeasures.find(measure => normalizeLookupText(measure.unit) === selectedUnitKey);
+      return selectedMeasure ? getMeasureValue(selectedMeasure, valueKey) : 0;
     };
     const getItemGroupKey = (item = {}, product = null) => buildProcessingInventoryGroupKey(
       getWarehouseStockGroupLabel(item, product)
@@ -52082,10 +52016,12 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       if (!shouldShowGroup(groupKey)) return 0;
       return getSelectedMeasureValue(buildWarehouseDispatchMeasureEntries(item, product), 'quantity', groupKey);
     };
-    const getSelectedStockCountQuantity = (item = {}) => {
-      const groupKey = buildProcessingInventoryGroupKey(item.groupName || item.productGroup || 'Nhóm hàng');
-      if (!shouldShowGroup(groupKey)) return 0;
-      return getSelectedMeasureValue(buildStoredWarehouseMeasureEntries(item), 'quantity', groupKey);
+    const getSelectedStockCountMeasure = (measures = [], groupKey = '') => {
+      const hiddenUnits = hiddenWarehouseStockUnitKeyMap.get(groupKey) || new Set();
+      const visibleMeasures = annotateWarehouseMeasureRows(measures || []).filter(
+        measure => !hiddenUnits.has(normalizeLookupText(measure.unit))
+      );
+      return visibleMeasures.find(measure => normalizeLookupText(measure.unit) === selectedUnitKey) || null;
     };
 
     return warehouseMovementMonthDateKeys.flatMap((dateKey) => {
@@ -52102,7 +52038,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
             dayNumber: parseInt(dateKey.slice(8, 10), 10) || '',
             groupKey,
             groupName: groupLabel,
-            unit: targetIsKg ? 'Kg' : 'Con',
+            unit: warehouseMovementSelectedUnitLabel,
             imported: 0,
             hasImport: false,
             exported: 0,
@@ -52115,20 +52051,35 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       };
       const dayImportsForDate = (warehouseImports || [])
         .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-        .filter(item => `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10) === dateKey);
+        .filter(item => resolveWarehouseRecordDateKey(item) === dateKey);
       const dayDispatchesForDate = (warehouseDispatches || [])
         .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-        .filter(item => `${resolveEntityDateKey(item, dateKey) || ''}`.slice(0, 10) === dateKey);
+        .filter(item => resolveWarehouseRecordDateKey(item) === dateKey);
       const dayStockCountsForDate = (warehouseStockCounts || [])
         .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-        .filter(item => `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10) === dateKey);
+        .filter(item => resolveWarehouseRecordDateKey(item) === dateKey);
+      const latestDayStockCountGroups = selectLatestWarehouseStockCountMeasures(dayStockCountsForDate, {
+        getGroupKey: item => buildProcessingInventoryGroupKey(item.groupName || item.productGroup || 'Nhóm hàng'),
+        getGroupName: item => normalizeLeadingLabel(item.groupName || item.productGroup || 'Nhóm hàng'),
+        getDateKey: resolveWarehouseRecordDateKey,
+        getTimestamp: item => Math.max(
+          parseEntityTimestampValue(item.createdAt) || 0,
+          parseEntityTimestampValue(item.updatedAt) || 0,
+          getEntityTimestamp(item) || 0
+        ),
+        getMeasures: buildStoredWarehouseStockCountMeasureEntries,
+        getUnitKey: measure => normalizeLookupText(normalizeWarehouseMeasureUnit(measure?.unit || '')),
+        targetDate: dateKey
+      });
       const expectedStockRows = buildWarehouseStockRowsForDate(dateKey).filter(row => shouldShowGroup(row.key));
 
       dayImportsForDate.forEach((item) => {
         const row = ensureMovementGroupRow(item.groupName || item.productGroup || 'Nhóm hàng');
         if (!row) return;
+        const importedQuantity = getSelectedImportQuantity(item);
+        if (importedQuantity <= 0) return;
         row.hasImport = true;
-        row.imported += getSelectedImportQuantity(item);
+        row.imported += importedQuantity;
       });
       dayDispatchesForDate.forEach((item) => {
         const product = productLookup.get(item.productId);
@@ -52141,11 +52092,16 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
         if (!row) return;
         row.expected += getSelectedMeasureValue(stockRow.measureRows || [], 'remaining', stockRow.key);
       });
-      dayStockCountsForDate.forEach((item) => {
-        const row = ensureMovementGroupRow(item.groupName || item.productGroup || 'Nhóm hàng');
+      latestDayStockCountGroups.forEach((group) => {
+        const row = ensureMovementGroupRow(group.groupName || 'Nhóm hàng');
         if (!row) return;
+        const selectedMeasure = getSelectedStockCountMeasure(
+          group.measures.map(measure => ({ unit: measure.unit, quantity: measure.quantity })),
+          group.key
+        );
+        if (!selectedMeasure) return;
         row.hasActual = true;
-        row.actual = (row.actual || 0) + getSelectedStockCountQuantity(item);
+        row.actual = parseLooseQuantityValue(selectedMeasure.quantity);
       });
 
       return Array.from(groupRows.values())
@@ -52178,6 +52134,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     warehouseDispatches,
     warehouseImports,
     warehouseMovementMonthDateKeys,
+    warehouseMovementSelectedUnitLabel,
     warehouseMovementUnitFilter,
     warehouseStockCounts
   ]);
@@ -52233,12 +52190,12 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     const isSameGroup = (groupName = '') => buildProcessingInventoryGroupKey(groupName || 'Nhóm hàng') === groupKey;
     const importItems = (warehouseImports || [])
       .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-      .filter(item => `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10) === dateKey)
+      .filter(item => resolveWarehouseRecordDateKey(item) === dateKey)
       .filter(item => isSameGroup(item.groupName || item.productGroup || 'Nhóm hàng'))
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
     const dispatchItems = (warehouseDispatches || [])
       .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-      .filter(item => `${resolveEntityDateKey(item, dateKey) || ''}`.slice(0, 10) === dateKey)
+      .filter(item => resolveWarehouseRecordDateKey(item) === dateKey)
       .filter((item) => {
         const product = productLookup.get(item.productId);
         return isSameGroup(getWarehouseStockGroupLabel(item, product));
@@ -52246,7 +52203,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
     const stockCountItems = (warehouseStockCounts || [])
       .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
-      .filter(item => `${resolveEntityDateKey(item, item.date || '') || ''}`.slice(0, 10) === dateKey)
+      .filter(item => resolveWarehouseRecordDateKey(item) === dateKey)
       .filter(item => isSameGroup(item.groupName || item.productGroup || 'Nhóm hàng'))
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
     return { importItems, dispatchItems, stockCountItems };
@@ -52271,7 +52228,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     const unit = normalizeWarehouseMeasureUnit(selectedUnit || 'Đơn vị');
     const unitKey = normalizeLookupText(unit);
     const measureMap = new Map();
-    (actualRow?.measureRows || []).forEach((measure) => {
+    (actualRow?.measureRows || []).filter(measure => measure.status !== 'uncounted').forEach((measure) => {
       const currentUnit = normalizeWarehouseMeasureUnit(measure.unit || 'Đơn vị');
       const currentKey = normalizeLookupText(currentUnit);
       if (!currentKey) return;
@@ -52281,10 +52238,11 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       });
     });
     measureMap.set(unitKey, { unit, quantity: parseLooseQuantityValue(selectedValue) });
-    const measures = Array.from(measureMap.values()).filter(measure => measure.quantity > 0);
-    const kgMeasure = measures.find(measure => normalizeLookupText(measure.unit) === normalizeLookupText('Kg'));
-    const primaryMeasure = measures.find(measure => normalizeLookupText(measure.unit) !== normalizeLookupText('Kg'));
-    const extraMeasures = measures.filter(measure => {
+    const countedMeasures = Array.from(measureMap.values());
+    const positiveMeasures = countedMeasures.filter(measure => measure.quantity > 0);
+    const kgMeasure = positiveMeasures.find(measure => normalizeLookupText(measure.unit) === normalizeLookupText('Kg'));
+    const primaryMeasure = positiveMeasures.find(measure => normalizeLookupText(measure.unit) !== normalizeLookupText('Kg'));
+    const extraMeasures = positiveMeasures.filter(measure => {
       const key = normalizeLookupText(measure.unit);
       return key !== normalizeLookupText('Kg') && key !== normalizeLookupText(primaryMeasure?.unit || '');
     });
@@ -52295,6 +52253,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       quantityUnit: normalizeWarehouseMeasureUnit(primaryMeasure?.unit || 'Con'),
       measures: extraMeasures,
       extraMeasures,
+      countedMeasures,
       date: workingDate,
       reason: canRecordActualStockReason ? (extra.reason || '') : '',
       note: `${extra.note || ''}`.trim(),
@@ -52308,14 +52267,16 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     }
     const actualRow = actualStockLookup.get(row.key);
     const actualMeasure = actualRow?.measureRows?.find(item => normalizeLookupText(item.unit) === normalizeLookupText(measure.unit));
+    const hasRecordedActual = hasRecordedWarehouseStockMeasure(actualMeasure);
+    const sourceItem = hasRecordedActual ? (actualMeasure?.actualItem || null) : null;
     setQuickStockEdit({
       groupName: row.groupName,
       unit: normalizeWarehouseMeasureUnit(measure.unit),
-      value: `${actualMeasure ? (actualMeasure.actual || 0) : (measure.remaining || 0)}`,
+      value: `${resolveWarehouseStockChecklistDisplayValue(actualMeasure, measure.remaining)}`,
       expected: parseLooseQuantityValue(measure.remaining),
-      actualItemId: actualRow?.latestItem?.id || '',
-      reason: actualRow?.latestItem?.reason || '',
-      note: actualRow?.latestItem?.note || ''
+      actualItemId: hasRecordedActual ? (actualMeasure?.actualItemId || sourceItem?.id || '') : '',
+      reason: sourceItem?.reason || '',
+      note: sourceItem?.note || ''
     });
     setStockCountStatus('');
   };
@@ -52349,9 +52310,10 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     }
   };
   const openStockVarianceReport = (row, measure, actualMeasure) => {
-    if (!actualMeasure || actualMeasure.status === 'ok') return;
-    const savedReasons = Array.isArray(actualStockLookup.get(row.key)?.latestItem?.varianceReasons)
-      ? actualStockLookup.get(row.key).latestItem.varianceReasons
+    if (!hasRecordedWarehouseStockMeasure(actualMeasure) || actualMeasure.status === 'ok') return;
+    const sourceItem = actualMeasure?.actualItem || actualStockLookup.get(row.key)?.latestItem || null;
+    const savedReasons = Array.isArray(sourceItem?.varianceReasons)
+      ? sourceItem.varianceReasons
       : [];
     const reasonMap = new Map(savedReasons.map(item => [item.reason, item.quantity]));
     setStockVarianceReport({
@@ -52363,7 +52325,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       expected: parseLooseQuantityValue(actualMeasure.expected),
       actual: parseLooseQuantityValue(actualMeasure.actual),
       diff: Number(actualMeasure.diff || 0),
-      actualItemId: actualStockLookup.get(row.key)?.latestItem?.id || '',
+      actualItemId: actualMeasure?.actualItemId || sourceItem?.id || '',
       reasons: actualStockReasonOptions.map(reason => ({
         reason,
         quantity: reasonMap.get(reason) || ''
@@ -52416,19 +52378,10 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       setIsSavingStockCount(false);
     }
   };
-  const warehouseStockChecklistRows = useMemo(() => warehouseStockRows
-    .map(row => {
-      const primaryRows = getWarehousePrimaryMeasureRows(row.measureRows || []);
-      const measureRows = (primaryRows.length > 0 ? primaryRows : row.measureRows || [])
-        .filter(measure => parseLooseQuantityValue(measure.remaining) > 0);
-      return {
-        key: row.key,
-        groupName: row.groupName,
-        measureRows
-      };
-    })
-    .filter(row => row.measureRows.length > 0)
-    .slice(0, 12), [warehouseStockRows]);
+  const warehouseStockChecklistRows = useMemo(
+    () => buildWarehouseStockChecklistRows(warehouseStockRows),
+    [warehouseStockRows]
+  );
   const canOpenActualStockForm = canCreateActualStockCount || canEditActualStockCount;
 
   const suggestedAmount = useMemo(() => {
@@ -52520,12 +52473,15 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     }));
   };
   const handleEditStockCountFromItem = (item = {}) => {
+    const countedMeasures = buildStoredWarehouseStockCountMeasureEntries(item);
+    const kgMeasure = countedMeasures.find(measure => isWarehouseWeightUnit(measure.unit));
+    const quantityMeasure = countedMeasures.find(measure => !isWarehouseWeightUnit(measure.unit));
     setEditingStockCountId(item.id || '');
     setStockCountDraft({
       groupName: normalizeLeadingLabel(item.groupName || item.productGroup || stockCountDraft.groupName || 'Nhóm hàng'),
-      totalKg: parseLooseQuantityValue(item.totalKg ?? item.weightKg) || '',
-      quantity: parseLooseQuantityValue(item.quantity ?? item.totalQuantity) || '',
-      quantityUnit: normalizeWarehouseMeasureUnit(item.quantityUnit || item.unit || 'Con'),
+      totalKg: kgMeasure ? `${parseLooseQuantityValue(kgMeasure.quantity)}` : '',
+      quantity: quantityMeasure ? `${parseLooseQuantityValue(quantityMeasure.quantity)}` : '',
+      quantityUnit: normalizeWarehouseMeasureUnit(quantityMeasure?.unit || item.quantityUnit || item.unit || 'Con'),
       reason: item.reason || '',
       note: item.note || ''
     });
@@ -52553,6 +52509,12 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     const groupName = normalizeLeadingLabel(stockCountDraft.groupName || '');
     const quantity = parseLooseQuantityValue(stockCountDraft.quantity);
     const totalKg = parseLooseQuantityValue(stockCountDraft.totalKg);
+    const hasQuantityInput = `${stockCountDraft.quantity ?? ''}`.trim() !== '';
+    const hasTotalKgInput = `${stockCountDraft.totalKg ?? ''}`.trim() !== '';
+    const countedMeasures = normalizeWarehouseCountedMeasureEntries([
+      hasQuantityInput ? { unit: stockCountDraft.quantityUnit || 'Con', quantity } : null,
+      hasTotalKgInput ? { unit: 'Kg', quantity: totalKg } : null
+    ].filter(Boolean));
     const measures = buildWarehouseImportMeasureEntries({
       totalKg,
       quantity,
@@ -52563,7 +52525,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       setStockCountStatus('Vui lòng chọn nhóm hàng cần kiểm thực tế.');
       return;
     }
-    if (measures.length === 0) {
+    if (countedMeasures.length === 0) {
       setStockCountStatus('Cần nhập ít nhất một chỉ số thực tế như số con, số kg, số bao hoặc số thùng.');
       return;
     }
@@ -52577,6 +52539,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
         quantityUnit: normalizeWarehouseMeasureUnit(stockCountDraft.quantityUnit || 'Con'),
         measures,
         extraMeasures: [],
+        countedMeasures,
         date: workingDate,
         reason: canRecordActualStockReason ? stockCountDraft.reason : '',
         note: `${stockCountDraft.note || ''}`.trim()
@@ -53207,17 +53170,18 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] items-center gap-2">
                     <p className="min-w-0 truncate text-center text-sm font-black text-slate-900">{row.groupName}</p>
-                    <div className="grid auto-cols-fr grid-flow-col gap-1">
-                      {row.measureRows.slice(0, 3).map(measure => {
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {row.measureRows.map(measure => {
                         const actualMeasure = actualRow?.measureRows?.find(item => normalizeLookupText(item.unit) === normalizeLookupText(measure.unit));
+                        const hasRecordedActual = hasRecordedWarehouseStockMeasure(actualMeasure);
                         return (
                           <button
                             key={`${row.key}_${measure.unit}`}
                             type="button"
                             onClick={() => openQuickStockEdit(row, measure)}
-                            className={`min-w-0 rounded-full px-2 py-1 text-center text-[11px] font-black shadow-sm transition active:scale-95 ${actualMeasure ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100'}`}
+                            className={`min-w-0 flex-1 rounded-full px-2 py-1 text-center text-[11px] font-black shadow-sm transition active:scale-95 ${hasRecordedActual ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100'}`}
                           >
-                            <span className="block truncate">Tồn {formatNumber(actualMeasure?.actual ?? measure.remaining)} {measure.unit}</span>
+                            <span className="block truncate">Tồn {formatNumber(resolveWarehouseStockChecklistDisplayValue(actualMeasure, measure.remaining))} {measure.unit}</span>
                           </button>
                         );
                       })}
@@ -53327,7 +53291,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {visibleWarehouseStockRows.slice(0, 12).map(row => {
+            {visibleWarehouseStockRows.map(row => {
               const actualRow = actualStockLookup.get(row.key);
               const measureRows = getVisibleWarehouseStockMeasureRows(row);
               const isNegative = Boolean(row.hasPrimaryStockWarning);
@@ -53361,7 +53325,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
                     ) : measureRows.map(measure => {
                       const measureNegative = measure.remaining < 0;
                       const actualMeasure = actualRow?.measureRows?.find(item => normalizeLookupText(item.unit) === normalizeLookupText(measure.unit));
-                      const hasActual = actualRow && actualRow.status !== 'uncounted' && actualMeasure;
+                      const hasActual = hasRecordedWarehouseStockMeasure(actualMeasure);
                       const hasActualMismatch = Boolean(hasActual && actualMeasure.status !== 'ok');
                       const isPrimaryMeasure = measure.isPrimaryStockUnit !== false;
                       const isPrimaryMismatch = hasActualMismatch && (actualMeasure?.isPrimaryStockUnit !== false) && isPrimaryMeasure;
@@ -53407,9 +53371,6 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
             })}
           </div>
         )}
-        {visibleWarehouseStockRows.length > 12 && (
-          <p className="mt-3 text-center text-xs font-bold text-slate-500">Còn {visibleWarehouseStockRows.length - 12} nhóm tồn khác.</p>
-        )}
       </section>
 
         </>
@@ -53443,7 +53404,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
         <div className="overflow-hidden rounded-2xl border border-slate-200">
           {warehouseMovementTableRows.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm font-bold text-slate-400">
-              Chưa có dữ liệu {warehouseMovementUnitFilter === 'kg' ? 'kg' : 'con'} để hiển thị trong tháng này.
+              Chưa có dữ liệu {warehouseMovementSelectedUnitLabel.toLocaleLowerCase('vi')} để hiển thị trong tháng này.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -53555,7 +53516,7 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
                 ) : (
                   <div className="space-y-2">
                     {selectedWarehouseMovementDetails.importItems.map(item => {
-                      const measureLabel = buildStoredWarehouseMeasureEntries(item)
+                      const measureLabel = buildStoredWarehouseStockCountMeasureEntries(item)
                         .map(measure => `${formatNumber(measure.quantity)} ${measure.unit}`)
                         .join(' • ');
                       return (
@@ -54838,7 +54799,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
 
   const todayDispatchRows = useMemo(
     () => (warehouseDispatches || [])
-      .filter(item => !item.isArchived && resolveEntityDateKey(item, workingDate) === workingDate)
+      .filter(item => !item.isArchived && resolveWarehouseRecordDateKey(item) === workingDate)
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)),
     [warehouseDispatches, workingDate]
   );

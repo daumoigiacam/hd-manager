@@ -15,3 +15,34 @@ export const isServerSnapshotFresh = (
 export const getRealtimeSnapshotSource = (snapshot) => (
   snapshot?.metadata?.fromCache ? 'cache' : 'server'
 );
+
+export const shouldApplyRealtimeSnapshot = (snapshot) => (
+  !Boolean(snapshot?.metadata?.fromCache)
+);
+
+export const isServerConfirmedRealtimeSnapshot = (snapshot) => (
+  !Boolean(snapshot?.metadata?.fromCache)
+  && !Boolean(snapshot?.metadata?.hasPendingWrites)
+);
+
+const normalizeVersionValue = (value) => {
+  if (value?.toMillis && typeof value.toMillis === 'function') return value.toMillis();
+  if (value?.toDate && typeof value.toDate === 'function') return value.toDate().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  if (value && typeof value === 'object' && Number.isFinite(Number(value.seconds))) {
+    return `${Number(value.seconds)}:${Number(value.nanoseconds || 0)}`;
+  }
+  return `${value ?? ''}`;
+};
+
+export const isRealtimeWriteConfirmed = (serverRecord = {}, expectedPayload = {}) => {
+  const data = serverRecord?.data && typeof serverRecord.data === 'object'
+    ? serverRecord.data
+    : serverRecord;
+  const versionField = ['updatedAt', 'modifiedAt', 'archivedAt', 'createdAt']
+    .find(field => expectedPayload?.[field] !== undefined && expectedPayload?.[field] !== null);
+
+  // Legacy writes without a version marker keep the existing id-based confirmation behavior.
+  if (!versionField) return true;
+  return normalizeVersionValue(data?.[versionField]) === normalizeVersionValue(expectedPayload[versionField]);
+};

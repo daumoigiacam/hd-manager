@@ -51,3 +51,11 @@ test('order forms stay open while the server confirms the write', () => {
   assert.doesNotMatch(salesSubmitSection, /flushSync\(\(\) => \{[\s\S]*?setShowAddOrder\(false\)/);
   assert.match(salesSubmitSection, /Đang xác nhận đơn với máy chủ/);
 });
+
+test('realtime confirmation compares the server version before removing the local edit guard', () => {
+  const section = getSection('const clearConfirmedLocalMutations =', 'const hasCollectionValue =');
+
+  assert.match(section, /!options\.fromCache && !options\.hasPendingWrites/);
+  assert.match(section, /isRealtimeWriteConfirmed\(serverItem, write\.payload\)/);
+  assert.match(section, /snapshotById/);
+});
