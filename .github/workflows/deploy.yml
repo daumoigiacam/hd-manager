@@ -66,6 +66,9 @@ jobs:
       - name: Verify Firestore tenant isolation
         run: npm run test:firestore-tenant-rules
 
+      - name: Verify password recovery transaction
+        run: npm run test:identity:firestore
+
       - name: Performance architecture audit
         run: npm run test:performance
 

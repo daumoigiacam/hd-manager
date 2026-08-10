@@ -4,10 +4,12 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
+  findIdentitySessionOwner,
   getIdentityAccountScope,
   isIdentityTenantValidationReady,
   readTrustedDeviceSecret,
   removeTrustedDeviceSecret,
+  shouldInvalidateIdentitySession,
   storeTrustedDeviceSecret,
 } = await import('../src/services/identityCenter.js');
 const {
@@ -50,6 +52,16 @@ assert.notEqual(
 );
 assert.equal(isIdentityTenantValidationReady({ loadedTenantId: 'company_a', sessionTenantId: 'company_b', coreDataLoaded: true }), false);
 assert.equal(isIdentityTenantValidationReady({ loadedTenantId: 'company_b', sessionTenantId: 'company_b', coreDataLoaded: true }), true);
+const legacySessionOwner = findIdentitySessionOwner([
+  { id: 'employee_other', companyId: 'company_a', phone: '0900000000' },
+  { employee_id: 'employee_a', company_id: 'company_a', phone: '0978194836' },
+], { id: 'employee_a', companyId: 'company_a', phone: '0978194836' });
+assert.equal(legacySessionOwner?.employee_id, 'employee_a');
+assert.equal(findIdentitySessionOwner([], { id: 'employee_a', companyId: 'company_a' }), null);
+assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, ownerRecord: null }), false);
+assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: false, ownerRecord: { isArchived: true } }), false);
+assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, ownerRecord: { isArchived: true } }), true);
+assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, companyRecord: { status: 'blocked' } }), true);
 
 const localSecretStore = new Map();
 globalThis.window = {
@@ -73,6 +85,7 @@ const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', imp
 const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const identityFunctionSource = await readFile(new URL('../functions/identityCenter.js', import.meta.url), 'utf8');
+const functionsIndexSource = await readFile(new URL('../functions/index.js', import.meta.url), 'utf8');
 const identityRewriteSources = firebaseConfig.hosting.rewrites
   .filter(item => `${item.source || ''}`.startsWith('/api/identity/'))
   .map(item => item.source);
@@ -105,8 +118,10 @@ const passwordLoginSource = identityFunctionSource.slice(passwordLoginStart, pas
 assert.ok(passwordLoginStart >= 0 && passwordLoginEnd > passwordLoginStart, 'Identity password login must exist');
 assert.doesNotMatch(passwordLoginSource, /\.trusted|deviceSecret|biometric/i, 'Trusted-device state must never block normal password login');
 assert.match(appSource, /auth\.bootstrap\.not_required/);
-assert.match(appSource, /isIdentityTenantValidationReady\(\{/);
-assert.match(appSource, /loadedTenantId: loadedCollectionsTenantId/);
+assert.match(appSource, /findIdentitySessionOwner\(rawEmployees, currentUser\)/);
+assert.match(appSource, /shouldInvalidateIdentitySession\(\{/);
+assert.match(appSource, /loadedCollectionsTenantId === effectiveSessionCompanyId/);
+assert.match(appSource, /firebaseAuthenticated: isSessionRevocationDataReady/);
 assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 
@@ -115,6 +130,12 @@ assert.equal(anonymousSignInCalls.length, 0, 'Anonymous Auth must never run in l
 assert.doesNotMatch(appSource, /anonymousBootstrapAllowedRef/);
 assert.match(appSource, /if \(u\.isAnonymous\)/);
 assert.match(appSource, /identityRegisterCompany\(\{/);
+const authTimeoutStart = appSource.indexOf('const authTimeout = window.setTimeout');
+const authTimeoutEnd = appSource.indexOf('const restoreIdentityFromClaims', authTimeoutStart);
+const authTimeoutSource = appSource.slice(authTimeoutStart, authTimeoutEnd);
+assert.ok(authTimeoutStart >= 0 && authTimeoutEnd > authTimeoutStart, 'Auth restore timeout guard must exist');
+assert.doesNotMatch(authTimeoutSource, /clearAppSession|setCurrentUser\(null\)/, 'Slow Auth restoration must not delete a valid cached session');
+assert.match(appSource, /if \(!firebaseUser && currentUser\)/, 'Cached app state must be protected until Firebase Auth confirms the user');
 
 const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
@@ -141,6 +162,8 @@ assert.match(appSource, /firebaseUser\.getIdToken\(forceRefreshToken\)/);
 assert.match(appSource, /await firebaseUser\.getIdToken\(true\)/);
 assert.doesNotMatch(identityFunctionSource, /collectionGroup\('reset_tokens'\)/);
 assert.match(identityFunctionSource, /collection\('reset_tokens'\)\.doc\(tokenHash\)/);
+assert.doesNotMatch(functionsIndexSource, /functions\.runWith\(/, 'Functions SDK v7 no longer exposes the legacy runWith API');
+assert.match(functionsIndexSource, /functions\.https\.onRequest\(\{[\s\S]*?memory: '1GiB'/, 'Gen 2 runtime options must use the onRequest options overload');
 assert.match(identityFunctionSource, /db\.runTransaction\(async transaction/);
 assert.match(identityFunctionSource, /completeRecovery = async \(\{ resetToken, password, device, identifier = '' \}\)/);
 const recoveryFunctionStart = identityFunctionSource.indexOf('const completeRecovery = async');

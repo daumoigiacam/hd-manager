@@ -196,14 +196,15 @@ import {
   calculateBillableAmount,
   isCustomerProductUnitAllowed,
   isSameBillingUnit,
+  isWarehouseDispatchActualUnitCompatible,
   resolveCustomerProductActualUnit,
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
 } from './services/customerProductBilling.js';
 import {
+  findIdentitySessionOwner,
   getBiometricAvailability,
   getIdentityDevice,
-  isIdentityTenantValidationReady,
   identityCompleteRecovery,
   identityCompleteSetup,
   identityLogin,
@@ -215,6 +216,7 @@ import {
   identityListDevices,
   identitySetBiometric,
   identityVerifyPin,
+  shouldInvalidateIdentitySession,
   customerPortalBootstrap,
   customerRedeemPoints,
   requestAiGenerateContent,
@@ -12508,14 +12510,10 @@ export default function App() {
     const authTimeout = window.setTimeout(() => {
       if (cancelled || authResolved) return;
       recordStartupEvent('auth.restore.slow', { timeoutMs: 10000 });
-      // Do not render a cached private profile as authenticated if Firebase
-      // has not confirmed the persisted credential.
-      if (persistedSession.currentUser) {
-        clearAppSession();
-        setCurrentUser(null);
-        setCurrentCompany(null);
-        setActiveTab('home');
-      }
+      // Keep the cached context while Firebase continues restoring its persisted
+      // credential. The render gate below never exposes private screens until a
+      // real Firebase user is present, so a slow/offline restore cannot log the
+      // user out or grant access from local state alone.
       setIsFirebaseLoading(false);
     }, 10000);
 
@@ -20085,20 +20083,28 @@ export default function App() {
     : (currentUser?.companyId || '');
   const employeeInfo = currentUser ? (isCustomerSession ? currentUser : (employees.find(e => e.id === currentUser.id) || currentUser)) : null;
   const companyInfo = currentUser ? (rawCompanies.find(comp => comp.id === effectiveSessionCompanyId) || currentCompany || (effectiveSessionCompanyId ? { id: effectiveSessionCompanyId, name: 'Công ty' } : null)) : null;
-  const sessionEmployeeRecord = currentUser ? rawEmployees.find(emp => emp.id === currentUser.id && emp.companyId === currentUser.companyId && !emp.isArchived) : null;
-  const sessionCustomerRecord = isCustomerSession && currentCustomerInfo?.id ? currentCustomerInfo : null;
-  const hasCompanyValidationData = Boolean(loadedCollections.companies && (rawCompanies.length > 0 || currentCompany?.id));
-  const hasOwnerValidationData = isCustomerSession
-    ? Boolean(loadedCollections.customers && rawCustomers.length > 0)
-    : Boolean(loadedCollections.employees && rawEmployees.length > 0);
-  const hasSessionValidationData = isIdentityTenantValidationReady({
-    loadedTenantId: loadedCollectionsTenantId,
-    sessionTenantId: effectiveSessionCompanyId,
-    coreDataLoaded: hasCompanyValidationData && hasOwnerValidationData,
-  });
+  const sessionCompanyRecord = rawCompanies.find(company => company.id === effectiveSessionCompanyId) || null;
+  const sessionEmployeeRecord = currentUser && !isCustomerSession
+    ? findIdentitySessionOwner(rawEmployees, currentUser)
+    : null;
+  const sessionCustomerRecord = currentUser && isCustomerSession
+    ? findIdentitySessionOwner([...rawCustomerAccounts, ...rawCustomers], currentUser)
+    : null;
   const isSessionRecovering = Boolean(currentUser) && !isInitialDataLoaded && !sessionRecoveryTimedOut;
-  const hasValidSessionOwner = isCustomerSession ? Boolean(currentCustomerInfo || sessionCustomerRecord) : Boolean(sessionEmployeeRecord);
-  const isSessionInvalid = Boolean(currentUser) && hasSessionValidationData && !isSessionRecovering && (!currentUser?.id || !effectiveSessionCompanyId || !companyInfo || !hasValidSessionOwner);
+  const isSessionRevocationDataReady = Boolean(
+    firebaseUser
+    && effectiveSessionCompanyId
+    && loadedCollectionsTenantId === effectiveSessionCompanyId
+    && loadedCollections.companies
+    && (isCustomerSession
+      ? (loadedCollections.customer_accounts || loadedCollections.customers)
+      : loadedCollections.employees)
+  );
+  const isSessionInvalid = shouldInvalidateIdentitySession({
+    firebaseAuthenticated: isSessionRevocationDataReady,
+    companyRecord: sessionCompanyRecord,
+    ownerRecord: isCustomerSession ? sessionCustomerRecord : sessionEmployeeRecord,
+  });
 
   useEffect(() => {
     if (isSessionInvalid) {
@@ -20149,6 +20155,27 @@ export default function App() {
 
   if (!isFirebaseConfigured) return <MissingFirebaseError />;
   if (isFirebaseLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
+
+  if (!firebaseUser && currentUser) {
+    return (
+      <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
+        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-6 text-center border border-emerald-100">
+          <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-4">
+            <Loader2 size={24} className="animate-spin" />
+          </div>
+          <h2 className="font-bold text-lg">Đang khôi phục phiên đăng nhập</h2>
+          <p className="text-sm text-gray-500 mt-2">Phiên trên thiết bị vẫn được giữ an toàn. App đang chờ Firebase xác nhận lại kết nối.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-2xl transition-colors"
+          >
+            Thử kết nối lại
+          </button>
+        </div>
+      </div>
+    );
+  }
   
   if (!currentUser) {
     return (
@@ -54565,7 +54592,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       actualUnit,
       actualWeightKg,
     });
-    if (expectedActualUnit && !isSameBillingUnit(expectedActualUnit, actualUnit)) {
+    if (!isWarehouseDispatchActualUnitCompatible({
+      expectedActualUnit,
+      actualUnit,
+      billingUnit: snapshot.billingUnit,
+      actualWeightKg: snapshot.actualWeightKg,
+    })) {
       return {
         ...snapshot,
         billingSnapshotValid: false,

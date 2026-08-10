@@ -40,6 +40,7 @@
     "test:payroll-debt-rollover": "node tests/payroll-debt-carryover.test.mjs",
     "test:payroll-auto-lock": "node tests/payroll-auto-lock.test.cjs",
     "test:identity": "node tests/identity-center.test.mjs",
+    "test:identity:firestore": "firebase emulators:exec --only firestore \"node tests/identity-recovery-firestore.test.cjs\"",
     "test:request-authorization": "node tests/request-authorization.test.mjs",
     "test:customer-portal-security": "node tests/customer-portal-security.test.mjs",
     "test:ai-gateway-security": "node tests/ai-gateway-security.test.mjs",

@@ -3,6 +3,7 @@ import {
   buildCustomerProductBillingSnapshot,
   calculateBillableAmount,
   isCustomerProductUnitAllowed,
+  isWarehouseDispatchActualUnitCompatible,
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
 } from '../src/services/customerProductBilling.js';
@@ -193,6 +194,43 @@ const decimalWeight = buildCustomerProductBillingSnapshot({
 });
 assert.equal(decimalWeight.amount, 125000, '38. decimal Kg billing is rounded and calculated correctly');
 
+const lo47Configuration = resolveCustomerProductConfiguration({
+  customerConfig: { pricingUnit: 'Kg', price: 52000 },
+  product: { id: 'unplucked-chicken', name: 'Ga Khong Moc', unit: 'Kg', sellingPrice: 57000 },
+});
+const lo47Dispatch = buildCustomerProductBillingSnapshot({
+  configuration: lo47Configuration,
+  product: { id: 'unplucked-chicken', name: 'Ga Khong Moc', unit: 'Kg', sellingPrice: 57000 },
+  actualQuantity: 20,
+  actualUnit: 'Con',
+  actualWeightKg: 45.7,
+});
+assert.equal(
+  isWarehouseDispatchActualUnitCompatible({
+    expectedActualUnit: 'Kg',
+    actualUnit: 'Con',
+    billingUnit: lo47Dispatch.billingUnit,
+    actualWeightKg: lo47Dispatch.actualWeightKg,
+  }),
+  true,
+  '39. a measured count plus Kg dispatch is valid when this customer is priced by Kg'
+);
+assert.equal(lo47Dispatch.billingUnit, 'Kg', '40. the customer fixed-product pricing unit remains authoritative');
+assert.equal(lo47Dispatch.billingQuantity, 45.7, '41. the measured weight is used as the billing quantity');
+assert.equal(lo47Dispatch.unitPrice, 52000, '42. the customer-specific price wins over the global product price');
+assert.equal(lo47Dispatch.amount, 2376400, '43. 45.7 Kg x 52,000 is calculated exactly');
+
+assert.equal(
+  isWarehouseDispatchActualUnitCompatible({
+    expectedActualUnit: 'Con',
+    actualUnit: 'Bao',
+    billingUnit: 'Con',
+    actualWeightKg: 45.7,
+  }),
+  false,
+  '44. a non-weight pricing unit cannot silently use an incompatible physical unit'
+);
+
 const reportDate = new Date('2026-08-08T10:00:00+07:00');
 const frozenBillingOrder = {
   id: 'billing-order',
@@ -221,4 +259,4 @@ assert.equal(
   '40. pricing analytics uses the same frozen billing amount as the order and debt flow'
 );
 
-console.log('Customer product billing tests: PASS (16 scenarios, 40 assertions)');
+console.log('Customer product billing tests: PASS (18 scenarios, 46 assertions)');

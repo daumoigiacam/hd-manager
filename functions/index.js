@@ -1285,10 +1285,10 @@ const enforceAiRateLimit = async (identityId = '') => {
   });
 };
 
-exports.geminiGenerateContent = functions.runWith({
+exports.geminiGenerateContent = functions.https.onRequest({
   timeoutSeconds: 60,
-  memory: '1GB'
-}).https.onRequest(async (req, res) => {
+  memory: '1GiB'
+}, async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).send('');
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });

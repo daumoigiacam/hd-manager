@@ -77,6 +77,58 @@ const normalizeIdentityAlias = (value = '') => {
   return `identifier:${raw}`;
 };
 
+const getRecordIdentityKeys = (record = {}) => [
+  record?.id,
+  record?.employeeId,
+  record?.employee_id,
+  record?.appUserId,
+  record?.userId,
+  record?.user_id,
+  record?.identityId,
+  record?.identityKey,
+  record?.accountId,
+  record?.customerId,
+  record?.customer_id,
+].map(value => `${value || ''}`.trim()).filter(Boolean);
+
+const getRecordCompanyId = (record = {}) => `${
+  record?.companyId || record?.company_id || record?.tenantId || record?.tenant_id || ''
+}`.trim();
+
+export const findIdentitySessionOwner = (records = [], identity = {}) => {
+  const identityKeys = new Set(getRecordIdentityKeys(identity));
+  const identityCompanyId = getRecordCompanyId(identity);
+  const identityPhone = normalizeIdentityAlias(identity?.phone || '');
+
+  return (Array.isArray(records) ? records : []).find(record => {
+    if (!record) return false;
+    const recordCompanyId = getRecordCompanyId(record);
+    if (identityCompanyId && recordCompanyId && identityCompanyId !== recordCompanyId) return false;
+
+    const hasMatchingKey = getRecordIdentityKeys(record).some(key => identityKeys.has(key));
+    if (hasMatchingKey) return true;
+
+    const recordPhone = normalizeIdentityAlias(record?.phone || record?.phoneNumber || '');
+    return Boolean(identityPhone && recordPhone && identityPhone === recordPhone);
+  }) || null;
+};
+
+const isExplicitlyRevokedIdentityRecord = (record = {}) => {
+  const status = `${record?.status || record?.accountStatus || ''}`.trim().toLowerCase();
+  return record?.isArchived === true
+    || record?.disabled === true
+    || ['blocked', 'disabled', 'revoked', 'suspended'].includes(status);
+};
+
+export const shouldInvalidateIdentitySession = ({
+  firebaseAuthenticated = false,
+  companyRecord = null,
+  ownerRecord = null,
+} = {}) => Boolean(
+  firebaseAuthenticated
+  && (isExplicitlyRevokedIdentityRecord(companyRecord) || isExplicitlyRevokedIdentityRecord(ownerRecord))
+);
+
 export const getIdentityAccountScope = (identity = {}) => {
   const identityKey = `${identity?.identityKey || ''}`.trim();
   if (identityKey) return identityKey;

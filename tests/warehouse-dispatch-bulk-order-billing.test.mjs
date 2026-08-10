@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { buildWarehouseDispatchOrderBillingSnapshot } from '../src/services/customerProductBilling.js';
+import {
+  buildWarehouseDispatchOrderBillingSnapshot,
+  isWarehouseDispatchActualUnitCompatible,
+} from '../src/services/customerProductBilling.js';
 
 const duckProduct = {
   id: 'duck',
@@ -94,10 +97,18 @@ const noCustomerOverride = buildWarehouseDispatchOrderBillingSnapshot({
 assert.equal(noCustomerOverride.billingUnit, 'Con', 'a product fallback cannot overwrite an eligible legacy frozen dispatch unit');
 assert.equal(noCustomerOverride.amount, 5000000, 'only an actual customer product configuration can override legacy fallback pricing');
 
+assert.equal(isWarehouseDispatchActualUnitCompatible({
+  expectedActualUnit: 'Kg',
+  actualUnit: 'Con',
+  billingUnit: kilogramBilling.billingUnit,
+  actualWeightKg: kilogramBilling.actualWeightKg,
+}), true, 'a count plus measured Kg is accepted for a Kg-priced customer product');
+
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 assert.match(appSource, /buildWarehouseDispatchOrderBillingSnapshot\(/, 'bulk conversion uses the dispatch-to-order billing resolver');
 assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchId, activeProducts\)/, 'bulk conversion reads the customer product pricing configuration');
 assert.match(appSource, /quantity: item\.billingQuantity > 0/, 'draft quantity is the billing quantity rather than the physical count');
 assert.match(appSource, /'billingQuantity', e\.target\.value/, 'editing the visible quantity recalculates the billing quantity');
+assert.match(appSource, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
 
-console.log('Warehouse dispatch bulk order billing tests: PASS (6 scenarios, 21 assertions)');
+console.log('Warehouse dispatch bulk order billing tests: PASS (7 scenarios, 23 assertions)');

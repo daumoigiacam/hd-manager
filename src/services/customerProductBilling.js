@@ -159,6 +159,20 @@ export const resolveCustomerProductActualUnit = (configuration = null, product =
   return billingUnit || productUnit;
 };
 
+export const isWarehouseDispatchActualUnitCompatible = ({
+  expectedActualUnit = '',
+  actualUnit = '',
+  billingUnit = '',
+  actualWeightKg = 0,
+} = {}) => {
+  if (!expectedActualUnit || isSameBillingUnit(expectedActualUnit, actualUnit)) return true;
+
+  // Count and weight describe two different facts for weight-priced products.
+  // The measured Kg is authoritative for billing; the count unit remains useful
+  // for warehouse reconciliation and therefore does not need to match "Kg".
+  return isSameBillingUnit(billingUnit, 'Kg') && parsePositiveNumber(actualWeightKg) > 0;
+};
+
 export const calculateBillableAmount = ({
   configuration = null,
   actualQuantity = 0,

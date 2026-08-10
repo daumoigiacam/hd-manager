@@ -49,7 +49,10 @@ const buildPhoneVariants = (value = '') => {
 };
 
 const normalizeUsername = (value = '') => `${value || ''}`.trim().toLowerCase().replace(/\s+/g, '');
-const isPhoneIdentifier = (value = '') => /\d/.test(`${value || ''}`) && normalizePhone(value).length >= 9;
+const isPhoneIdentifier = (value = '') => {
+  const raw = `${value || ''}`.trim();
+  return /^[+\d\s().-]+$/.test(raw) && normalizePhone(raw).length >= 9;
+};
 const safeIdPart = (value = '') => `${value || ''}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
 const asIso = (value = new Date()) => value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 const timingSafeTextEqual = (left = '', right = '') => {
