@@ -148,16 +148,17 @@ assert.match(logoutHandlerSource, /clearAppSession\(\)/);
 assert.match(logoutHandlerSource, /void Promise\.allSettled/);
 assert.doesNotMatch(logoutHandlerSource, /await identityLogout|await signOut/, 'Network audit and Firebase sign-out must not block the logout UI');
 
-const dashboardSyncStart = appSource.indexOf('if (!isCompanyDashboardServerReady)');
-const dashboardSyncEnd = appSource.indexOf('return <ExecutiveDashboardView', dashboardSyncStart);
-const dashboardSyncSource = appSource.slice(dashboardSyncStart, dashboardSyncEnd);
-assert.match(dashboardSyncSource, /Đang đồng bộ dữ liệu mới nhất/);
-assert.doesNotMatch(dashboardSyncSource, /Số liệu tài chính chỉ hiển thị|confirmedDashboardCollectionCount|transition-\[width\]/);
+assert.doesNotMatch(appSource, /isCompanyDashboardServerReady/);
+assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
+assert.doesNotMatch(appSource, /Đang nạp dữ liệu tài khoản từ Cloud/);
+assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<ExecutiveDashboardView/);
 
 const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');
 const identitySessionSource = appSource.slice(identitySessionStart, identitySessionEnd);
 assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWithCustomToken/);
+assert.match(identitySessionSource, /auth\.identity_login\.custom_token_completed/);
+assert.match(identitySessionSource, /auth\.identity_login\.shell_released/);
 assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
 assert.match(identityFunctionSource, /const registerCompany = async/);
 assert.match(identityFunctionSource, /await db\.runTransaction/);
@@ -173,9 +174,9 @@ assert.ok(
     < identityFunctionSource.indexOf('createCustomToken(firebaseUid, claims)'),
   'Persistent Firebase claims must be synchronized before issuing a custom token'
 );
-assert.match(appSource, /firestore\.write\.token_refresh/);
+assert.match(appSource, /firestore\.write\.rest_token_refresh/);
 assert.match(appSource, /firestore\.write\.sdk_token_refresh/);
-assert.match(appSource, /firebaseUser\.getIdToken\(forceRefreshToken\)/);
+assert.match(appSource, /authenticatedUser\.getIdToken\(forceRefreshToken\)/);
 assert.match(appSource, /await firebaseUser\.getIdToken\(true\)/);
 assert.doesNotMatch(identityFunctionSource, /collectionGroup\('reset_tokens'\)/);
 assert.match(identityFunctionSource, /collection\('reset_tokens'\)\.doc\(tokenHash\)/);

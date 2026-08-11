@@ -33,7 +33,8 @@ test('Firestore listeners distinguish cache delivery from server confirmation', 
   assert.match(appSource, /isServerConfirmedRealtimeSnapshot\(snapshot\)/);
   assert.match(appSource, /if \(!shouldApplyRealtimeSnapshot\(snapshot\)\)/);
   assert.match(appSource, /const hasPendingWrites = Boolean/);
-  assert.match(appSource, /getDocsFromServer as firebaseGetDocsFromServer/);
+  assert.match(appSource, /const readTenantCollectionViaRest = async/);
+  assert.match(appSource, /hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, collectionName\)/);
   assert.match(appSource, /forceRefreshCollectionRef\.current\?\.\(collectionName, \{ serverOnly: true \}\)/);
   assert.match(appSource, /CapacitorApp\.addListener\('appStateChange'/);
   assert.match(appSource, /native-app-active/);
@@ -66,7 +67,7 @@ test('persistent business collection cache is purged and never hydrated', () => 
   assert.match(appSource, /Business data must never be hydrated from a stale device cache/);
   assert.doesNotMatch(appSource, /cachedValue\.map\(value => parser\(value\)\)/);
   assert.doesNotMatch(appSource, /saveRealtimeCollectionCache/);
-  assert.match(appSource, /const serverOnly = true/);
+  assert.match(appSource, /readTenantCollectionViaRest\(colName\)/);
 });
 
 test('undated financial rows are not reassigned to the current day or month', () => {
@@ -77,15 +78,13 @@ test('undated financial rows are not reassigned to the current day or month', ()
   assert.doesNotMatch(appSource, /buildMonthKeyFromDate\(orderDateKey \|\| getTodayString\(\)\)/);
 });
 
-test('company dashboard waits for server-confirmed financial collections instead of showing temporary zeroes', () => {
-  assert.match(appSource, /COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES/);
-  assert.match(appSource, /setServerConfirmedCollections/);
-  assert.match(appSource, /markCollectionServerConfirmed\(colName\)/);
-  assert.match(appSource, /<MainAppView[\s\S]*?isCompanyDashboardServerReady=\{isCompanyDashboardServerReady\}/);
-  assert.match(appSource, /function MainAppView\([\s\S]*?isCompanyDashboardServerReady = false/);
-  assert.match(appSource, /if \(!isCompanyDashboardServerReady\)/);
-  assert.match(appSource, /Đang đồng bộ dữ liệu mới nhất/);
-  assert.doesNotMatch(appSource, /Số liệu tài chính chỉ hiển thị sau khi Firestore xác nhận dữ liệu từ máy chủ/);
+test('company dashboard renders immediately while server-confirmed data syncs in the background', () => {
+  assert.doesNotMatch(appSource, /COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES/);
+  assert.doesNotMatch(appSource, /isCompanyDashboardServerReady/);
+  assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
+  assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<ExecutiveDashboardView/);
+  assert.match(appSource, /if \(!shouldApplyRealtimeSnapshot\(snapshot\)\)/);
+  assert.match(appSource, /readTenantCollectionViaRest\(colName\)/);
 });
 
 test('preview Firestore supports the same freshness APIs as production', () => {

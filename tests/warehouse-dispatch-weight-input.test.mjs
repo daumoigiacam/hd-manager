@@ -10,6 +10,7 @@ import {
   sanitizeWarehouseWeightEntryValue,
   updateWarehouseWeightEntryRows
 } from '../src/utils/warehouseWeightEntries.js';
+import { buildWarehouseDispatchProductOptions } from '../src/utils/warehouseDispatchProductOptions.js';
 
 const test = (name, callback) => {
   callback();
@@ -74,6 +75,42 @@ test('toan bo chuyen doi state cua mot ky tu nam duoi 16 ms', () => {
   console.log(`INFO full input transition average ${averageMs.toFixed(4)} ms/input`);
 });
 
+test('khach chua co don dat duoc chon loai hang trong danh muc dang hoat dong', () => {
+  const orderedProduct = { id: 'ordered', name: 'Hang da dat' };
+  const fixedProduct = { id: 'fixed', name: 'Hang co dinh' };
+  const catalogProduct = { id: 'catalog', name: 'Hang trong danh muc' };
+  const archivedProduct = { id: 'archived', name: 'Hang da luu tru', isArchived: true };
+  const options = buildWarehouseDispatchProductOptions({
+    orderedProducts: [orderedProduct],
+    fixedProducts: [fixedProduct, orderedProduct],
+    catalogProducts: [catalogProduct, archivedProduct, fixedProduct],
+    hasOrderRequest: false,
+    canCreateWithoutOrderRequest: true,
+  });
+
+  assert.deepEqual(options.map(product => product.id), ['ordered', 'fixed', 'catalog']);
+});
+
+test('khong mo danh muc ngoai don neu khach co don hoac tai khoan thieu quyen', () => {
+  const orderedProduct = { id: 'ordered', name: 'Hang da dat' };
+  const catalogProduct = { id: 'catalog', name: 'Hang trong danh muc' };
+  const withOrder = buildWarehouseDispatchProductOptions({
+    orderedProducts: [orderedProduct],
+    catalogProducts: [catalogProduct],
+    hasOrderRequest: true,
+    canCreateWithoutOrderRequest: true,
+  });
+  const withoutPermission = buildWarehouseDispatchProductOptions({
+    orderedProducts: [],
+    catalogProducts: [catalogProduct],
+    hasOrderRequest: false,
+    canCreateWithoutOrderRequest: false,
+  });
+
+  assert.deepEqual(withOrder.map(product => product.id), ['ordered']);
+  assert.deepEqual(withoutPermission, []);
+});
+
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const modalStart = appSource.indexOf('const WarehouseWeightEntriesModal = React.memo');
 const moduleStart = appSource.indexOf('function WarehouseDispatchView');
@@ -120,6 +157,13 @@ test('ô người giao thuộc đúng từng dòng phiếu xuất của khách h
 test('sửa ô kg thay thế cả tổng kg và snapshot các lần cân', () => {
   assert.match(warehouseModuleSource, /field === 'weightKg' \? \{ weightEntries: nextValue === '' \? \[\] : \[nextValue\] \} : \{\}/);
   assert.match(warehouseModuleSource, /weightEntries: normalizeWarehouseWeightEntries\(inlineEditingDispatchDraft\.weightEntries \|\| \[\]\)/);
+});
+
+test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => {
+  assert.match(warehouseModuleSource, /buildWarehouseDispatchProductOptions\(\{/);
+  assert.match(warehouseModuleSource, /hasOrderRequest: dispatchCustomerOrderRows\.length > 0/);
+  assert.match(warehouseModuleSource, /canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest/);
+  assert.match(warehouseModuleSource, /hasOrderRequest: customerOrderRows\.length > 0/);
 });
 
 console.log('Warehouse dispatch weight input regression suite passed.');

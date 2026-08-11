@@ -26,6 +26,7 @@ import {
   resolveWarehouseStockCountStatus,
   selectLatestWarehouseStockCountMeasures
 } from './utils/warehouseInventory.js';
+import { buildWarehouseDispatchProductOptions } from './utils/warehouseDispatchProductOptions.js';
 import {
   ORDER_REQUEST_SELECTION_LOCK_MS,
   releaseOrderRequestSelectionLock,
@@ -97,6 +98,7 @@ import {
   getOrderRequestSizeDisplayValue
 } from './utils/orderRequestEditing.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
+import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -115,14 +117,11 @@ import {
   collection,
   doc,
   getDoc as firebaseGetDoc,
-  getDocFromServer as firebaseGetDocFromServer,
   getDocs as firebaseGetDocs,
-  getDocsFromServer as firebaseGetDocsFromServer,
   setDoc as firebaseSetDoc,
   deleteDoc as firebaseDeleteDoc,
   runTransaction as firebaseRunTransaction,
   increment,
-  enableNetwork as firebaseEnableNetwork,
   onSnapshot as firebaseOnSnapshot,
   query as firebaseQuery,
   where as firebaseWhere,
@@ -133,6 +132,10 @@ import {
   isServerSnapshotFresh,
   shouldApplyRealtimeSnapshot
 } from './services/realtimeFreshness.js';
+import {
+  hasActiveRealtimeListener,
+  runResilientFirestoreWrite
+} from './services/firestoreResilience.js';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Geolocation } from '@capacitor/geolocation';
@@ -582,7 +585,9 @@ try {
     auth = getAuth(app);
     try {
       db = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true,
+        // Auto-detect can overlap watch target teardown with short-lived reads
+        // in WebKit/WebView and poison Firestore's internal AsyncQueue (ca9/b815).
+        experimentalAutoDetectLongPolling: false,
         useFetchStreams: false,
       });
     } catch (firestoreInitError) {
@@ -818,10 +823,6 @@ const getDoc = async (documentRef) => recordFirestoreOperation('getDoc', {
   id: documentRef?.id || '',
 }, () => firebaseGetDoc(documentRef));
 
-const enableNetwork = async (database) => recordFirestoreOperation('enableNetwork', {
-  appName: database?.app?.name || '',
-}, () => firebaseEnableNetwork(database));
-
 const runTransaction = async (database, updateFunction, options) => recordFirestoreOperation('runTransaction', {
   appName: database?.app?.name || '',
 }, () => firebaseRunTransaction(database, updateFunction, options));
@@ -907,26 +908,6 @@ const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'pay
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
-const COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES = [
-  'companies',
-  'employees',
-  'attendance',
-  'customers',
-  'orders',
-  'orderRequests',
-  'payments',
-  'expenses',
-  'financials',
-  'advances',
-  'products',
-  'warehouseImports',
-  'warehouseDispatches',
-  'warehouseStockCounts',
-  'assets',
-  'assetCostLogs',
-  'deliveryReports',
-  'messages',
-];
 // Native WebViews keep a limited listener set to stay stable on low-memory devices.
 // Supplementary data becomes realtime only while the related workspace is open.
 const NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
@@ -4485,6 +4466,26 @@ const toFirestoreRestValue = (value) => {
 const toFirestoreRestFields = (data = {}) => Object.entries(data).reduce((acc, [key, value]) => {
   const converted = toFirestoreRestValue(value);
   if (converted) acc[key] = converted;
+  return acc;
+}, {});
+
+const fromFirestoreRestValue = (value = {}) => {
+  if (Object.prototype.hasOwnProperty.call(value, 'nullValue')) return null;
+  if (Object.prototype.hasOwnProperty.call(value, 'booleanValue')) return Boolean(value.booleanValue);
+  if (Object.prototype.hasOwnProperty.call(value, 'integerValue')) return Number(value.integerValue);
+  if (Object.prototype.hasOwnProperty.call(value, 'doubleValue')) return Number(value.doubleValue);
+  if (Object.prototype.hasOwnProperty.call(value, 'timestampValue')) return value.timestampValue;
+  if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
+  if (Object.prototype.hasOwnProperty.call(value, 'bytesValue')) return value.bytesValue;
+  if (Object.prototype.hasOwnProperty.call(value, 'referenceValue')) return value.referenceValue;
+  if (value.geoPointValue) return { ...value.geoPointValue };
+  if (value.arrayValue) return (value.arrayValue.values || []).map(fromFirestoreRestValue);
+  if (value.mapValue) return fromFirestoreRestFields(value.mapValue.fields || {});
+  return null;
+};
+
+const fromFirestoreRestFields = (fields = {}) => Object.entries(fields || {}).reduce((acc, [key, value]) => {
+  acc[key] = fromFirestoreRestValue(value);
   return acc;
 }, {});
 
@@ -11673,6 +11674,8 @@ export default function App() {
   const recentLocalDeletesRef = useRef(new Map());
   const lastRealtimeSnapshotAtRef = useRef(new Map());
   const lastRealtimeServerSnapshotAtRef = useRef(new Map());
+  const activeRealtimeCollectionsRef = useRef(new Set());
+  const firestoreSdkFailedRef = useRef(false);
   const lastStableCollectionDataRef = useRef(new Map());
   const lastRealtimeStatusUpdateAtRef = useRef(0);
   const lastCriticalRefreshAtRef = useRef(0);
@@ -11691,7 +11694,6 @@ export default function App() {
   const pendingFirebaseFlushInFlightRef = useRef(new Set());
   const pendingFirebaseWritePromisesRef = useRef(new Map());
   const restQuotaBlockedUntilRef = useRef(0);
-  const firestoreNetworkEnableRef = useRef({ inFlight: false, lastAt: 0 });
   const firebaseAuthMutationQueueRef = useRef(Promise.resolve());
   const runFirebaseAuthMutation = (operation) => {
     const task = firebaseAuthMutationQueueRef.current
@@ -11707,7 +11709,6 @@ export default function App() {
   const [loadedCollectionsTenantId, setLoadedCollectionsTenantId] = useState(
     () => `${persistedSession.currentUser?.companyId || ''}`.trim()
   );
-  const [serverConfirmedCollections, setServerConfirmedCollections] = useState({});
   const [realtimeStatus, setRealtimeStatus] = useState({
     state: 'idle',
     collection: '',
@@ -11719,15 +11720,6 @@ export default function App() {
     [loadedCollections]
   );
   const isCoreDataLoaded = isInitialDataLoaded;
-  const isLoginDataLoaded = Boolean(loadedCollections.companies && loadedCollections.employees);
-  const companyDashboardServerConfirmedCount = COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES
-    .filter(collectionName => serverConfirmedCollections[collectionName])
-    .length;
-  const isCompanyDashboardServerReady = Boolean(
-    currentUser?.companyId
-    && loadedCollectionsTenantId === `${currentUser.companyId}`.trim()
-    && companyDashboardServerConfirmedCount === COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES.length
-  );
 
   useEffect(() => {
     const companyId = `${currentUser?.companyId || ''}`.trim();
@@ -11742,7 +11734,6 @@ export default function App() {
     setPendingFirebaseWriteCount(pendingFirebaseWritesRef.current.length);
     setLoadedCollectionsTenantId(companyId);
     setLoadedCollections({});
-    setServerConfirmedCollections({});
   }, [currentUser?.companyId]);
 
   useEffect(() => {
@@ -12063,30 +12054,6 @@ export default function App() {
     setFn(prev => (Array.isArray(prev) ? prev.filter(item => item?.id !== recordId) : prev));
   };
 
-  const requestFirestoreNetworkEnable = (reason = 'startup') => {
-    if (!db || firestoreNetworkEnableRef.current.inFlight) return;
-    const now = Date.now();
-    if (now - firestoreNetworkEnableRef.current.lastAt < 15000) return;
-    firestoreNetworkEnableRef.current = { inFlight: true, lastAt: now };
-
-    Promise.resolve()
-      .then(() => enableNetwork(db))
-      .catch((error) => {
-        const message = getFriendlyFirebaseErrorMessage(error, 'Không thể bật lại kết nối Firebase.');
-        console.warn(`Khong the bat lai Firestore network (${reason}):`, error);
-        setRealtimeStatus(prev => ({
-          ...prev,
-          state: prev.state === 'online' ? prev.state : 'recovering',
-          collection: prev.collection || 'network',
-          lastAt: new Date().toISOString(),
-          error: message || 'Không thể bật lại kết nối Firebase.'
-        }));
-      })
-      .finally(() => {
-        firestoreNetworkEnableRef.current.inFlight = false;
-      });
-  };
-
   const scheduleCollectionRefresh = (collectionName, delays = [1400]) => {
     if (!collectionName || typeof window === 'undefined') return;
     const now = Date.now();
@@ -12123,6 +12090,56 @@ export default function App() {
     collectionRefreshTimersRef.current.set(collectionName, nextTimers);
   };
 
+  const writeFirestoreDocumentViaRest = async (collectionName, documentId, payload, options = {}) => {
+    const authenticatedUser = firebaseUser || auth?.currentUser;
+    if (!authenticatedUser?.getIdToken) {
+      const authError = new Error('Phiên đăng nhập Firebase chưa sẵn sàng để lưu dữ liệu.');
+      authError.code = 'auth/unauthenticated';
+      throw authError;
+    }
+
+    const merge = Boolean(options?.merge);
+    const fieldPaths = merge ? Object.keys(payload || {}) : [];
+    const url = buildFirestoreRestDocumentUrl(collectionName, documentId, { merge, fieldPaths });
+    if (!url) {
+      const configError = new Error('Không thể xác định địa chỉ lưu dữ liệu Firebase.');
+      configError.code = 'firestore/rest-url-unavailable';
+      throw configError;
+    }
+
+    const send = async (forceRefreshToken = false) => {
+      const token = await authenticatedUser.getIdToken(forceRefreshToken);
+      return fetch(url, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ fields: toFirestoreRestFields(payload) })
+      });
+    };
+
+    let response = await send(false);
+    if (response.status === 401 || response.status === 403) {
+      recordStartupEvent('firestore.write.rest_token_refresh', {
+        collection: collectionName,
+        status: response.status
+      }, 'warn');
+      response = await send(true);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      const restError = new Error(`Không thể lưu dữ liệu lên Firebase (${response.status}). ${errorText}`.trim());
+      restError.code = response.status === 401
+        ? 'auth/unauthenticated'
+        : (response.status === 403 ? 'firestore/permission-denied' : 'firestore/rest-write-failed');
+      throw restError;
+    }
+
+    return response.json().catch(() => ({ ok: true }));
+  };
+
   const flushPendingFirebaseWriteNow = (collectionName, documentId, timeoutMs = 12000, expectedCompanyId = activeTenantScopeRef.current) => {
     const companyId = `${expectedCompanyId || ''}`.trim();
     if (!companyId) {
@@ -12157,8 +12174,26 @@ export default function App() {
       );
 
       try {
+        const commitPendingWrite = runResilientFirestoreWrite({
+          preferRest: firestoreSdkFailedRef.current,
+          sdkWrite: () => setDoc(documentRef, pendingWrite.payload || {}, pendingWrite.options || {}),
+          restWrite: () => writeFirestoreDocumentViaRest(
+            pendingWrite.collectionName,
+            pendingWrite.documentId,
+            pendingWrite.payload || {},
+            pendingWrite.options || {}
+          ),
+          isInternalError: isFirestoreInternalAssertionError,
+          onSdkInternalError: () => {
+            firestoreSdkFailedRef.current = true;
+            recordStartupEvent('firestore.write.pending_rest_fallback', {
+              collection: pendingWrite.collectionName,
+              documentId: pendingWrite.documentId
+            }, 'warn');
+          }
+        });
         await withTimeout(
-          setDoc(documentRef, pendingWrite.payload || {}, pendingWrite.options || {}),
+          commitPendingWrite,
           timeoutMs,
           'Firebase phan hoi cham khi xac nhan dong bo du lieu.'
         );
@@ -12262,15 +12297,33 @@ export default function App() {
     rememberRecentLocalWrite(collectionName, documentId, scopedPayload, 90000);
     applyLocalCollectionWrite(collectionName, documentId, scopedPayload, options);
     const documentRef = doc(db, 'artifacts', appId, 'public', 'data', collectionName, documentId);
-    const sdkWrite = setDoc(documentRef, scopedPayload, options);
 
     try {
-      const result = await withTimeout(sdkWrite, timeoutMs, timeoutMessage);
+      const result = await withTimeout(
+        runResilientFirestoreWrite({
+          preferRest: firestoreSdkFailedRef.current,
+          sdkWrite: () => setDoc(documentRef, scopedPayload, options),
+          restWrite: () => writeFirestoreDocumentViaRest(collectionName, documentId, scopedPayload, options),
+          isInternalError: isFirestoreInternalAssertionError,
+          onSdkInternalError: () => {
+            firestoreSdkFailedRef.current = true;
+            recordStartupEvent('firestore.write.sdk_internal_failure', {
+              collection: collectionName,
+              documentId
+            }, 'warn');
+          }
+        }),
+        timeoutMs,
+        timeoutMessage
+      );
       scheduleCollectionRefresh(collectionName);
       return result;
     } catch (error) {
       let writeError = error;
-      if (isFirebasePermissionError(writeError) && firebaseUser?.getIdToken) {
+      if (isFirestoreInternalAssertionError(writeError)) {
+        firestoreSdkFailedRef.current = true;
+      }
+      if (isFirebasePermissionError(writeError) && !firestoreSdkFailedRef.current && firebaseUser?.getIdToken) {
         try {
           recordStartupEvent('firestore.write.sdk_token_refresh', {
             collection: collectionName
@@ -12285,6 +12338,9 @@ export default function App() {
           return retryResult;
         } catch (retryError) {
           writeError = retryError;
+          if (isFirestoreInternalAssertionError(writeError)) {
+            firestoreSdkFailedRef.current = true;
+          }
           if (isFirebasePermissionError(writeError)) throw writeError;
         }
       }
@@ -12308,48 +12364,11 @@ export default function App() {
       }
 
       try {
-        const merge = Boolean(options?.merge);
-        const fieldPaths = merge ? Object.keys(scopedPayload || {}) : [];
-        const url = buildFirestoreRestDocumentUrl(collectionName, documentId, { merge, fieldPaths });
-        if (!url) throw writeError;
-
-        const writeViaRest = async (forceRefreshToken = false) => {
-          const token = await firebaseUser.getIdToken(forceRefreshToken);
-          return fetch(url, {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ fields: toFirestoreRestFields(scopedPayload) })
-          });
-        };
-
-        let response = await writeViaRest(false);
-        if (response.status === 401 || response.status === 403) {
-          recordStartupEvent('firestore.write.token_refresh', {
-            collection: collectionName,
-            status: response.status
-          }, 'warn');
-          response = await writeViaRest(true);
-        }
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '');
-          const restError = new Error(`Không thể lưu dữ liệu lên Firebase (${response.status}). ${errorText}`.trim());
-          restError.code = response.status === 401
-            ? 'auth/unauthenticated'
-            : (response.status === 403 ? 'firestore/permission-denied' : 'firestore/rest-write-failed');
-          if (isFirebaseQuotaError(restError)) {
-            restQuotaBlockedUntilRef.current = Date.now() + 60 * 1000;
-            const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: restError });
-            scheduleCollectionRefresh(collectionName, [5000, 15000]);
-            return queuedResult;
-          }
-          throw restError;
-        }
-
-        const restResult = await response.json().catch(() => ({ ok: true }));
+        const restResult = await withTimeout(
+          writeFirestoreDocumentViaRest(collectionName, documentId, scopedPayload, options),
+          Math.max(timeoutMs, 8000),
+          'Firebase REST phản hồi chậm khi lưu dữ liệu.'
+        );
         scheduleCollectionRefresh(collectionName);
         return restResult;
       } catch (restError) {
@@ -12652,6 +12671,77 @@ export default function App() {
       return null;
     };
 
+    const readTenantCollectionViaRest = async (colName) => {
+      const authenticatedUser = firebaseUser || auth?.currentUser;
+      const projectId = activeFirebaseConfig?.projectId || '';
+      if (!authenticatedUser?.getIdToken || !projectId || !colName) {
+        throw new Error(`Firebase REST chưa sẵn sàng để đọc ${colName}.`);
+      }
+
+      const directDocumentId = colName === 'companies'
+        ? tenantCompanyId
+        : (customerSession && colName === 'customers' ? sessionCustomerId : '');
+      const directUrl = directDocumentId
+        ? buildFirestoreRestDocumentUrl(colName, directDocumentId)
+        : '';
+      const queryUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data:runQuery`;
+      const fieldFilters = [{
+        fieldFilter: {
+          field: { fieldPath: 'companyId' },
+          op: 'EQUAL',
+          value: { stringValue: tenantCompanyId }
+        }
+      }];
+      if (customerSession && customerOwnedCollections.has(colName) && sessionCustomerId) {
+        fieldFilters.push({
+          fieldFilter: {
+            field: { fieldPath: 'customerId' },
+            op: 'EQUAL',
+            value: { stringValue: sessionCustomerId }
+          }
+        });
+      }
+      const queryBody = directUrl ? null : {
+        structuredQuery: {
+          from: [{ collectionId: colName }],
+          where: fieldFilters.length === 1
+            ? fieldFilters[0]
+            : { compositeFilter: { op: 'AND', filters: fieldFilters } }
+        }
+      };
+
+      const send = async (forceRefreshToken = false) => {
+        const token = await authenticatedUser.getIdToken(forceRefreshToken);
+        return fetch(directUrl || queryUrl, {
+          method: directUrl ? 'GET' : 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(directUrl ? {} : { 'Content-Type': 'application/json' })
+          },
+          ...(queryBody ? { body: JSON.stringify(queryBody) } : {})
+        });
+      };
+
+      let response = await send(false);
+      if (response.status === 401 || response.status === 403) response = await send(true);
+      if (response.status === 404 && directUrl) return [];
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        const readError = new Error(`Không thể đọc ${colName} từ Firebase (${response.status}). ${errorText}`.trim());
+        readError.code = response.status === 403 ? 'firestore/permission-denied' : 'firestore/rest-read-failed';
+        throw readError;
+      }
+
+      const responseData = await response.json().catch(() => (directUrl ? null : []));
+      const documents = directUrl
+        ? (responseData ? [responseData] : [])
+        : (Array.isArray(responseData) ? responseData.map(item => item?.document).filter(Boolean) : []);
+      return documents.map(documentData => ({
+        id: `${documentData?.name || ''}`.split('/').pop(),
+        data: fromFirestoreRestFields(documentData?.fields || {})
+      })).filter(item => item.id);
+    };
+
     const getSnapshotItems = (snapshot) => {
       if (Array.isArray(snapshot?.docs)) {
         return snapshot.docs.map(snapshotDoc => ({
@@ -12679,7 +12769,6 @@ export default function App() {
     };
 
     const pendingLoadedCollectionMarks = new Set();
-    const pendingServerConfirmedCollectionMarks = new Set();
     let loadedCollectionMarkTimer = null;
     const flushLoadedCollectionMarks = () => {
       if (loadedCollectionMarkTimer) {
@@ -12687,37 +12776,20 @@ export default function App() {
         loadedCollectionMarkTimer = null;
       }
       const names = Array.from(pendingLoadedCollectionMarks).filter(Boolean);
-      const confirmedNames = Array.from(pendingServerConfirmedCollectionMarks).filter(Boolean);
       pendingLoadedCollectionMarks.clear();
-      pendingServerConfirmedCollectionMarks.clear();
-      if (names.length === 0 && confirmedNames.length === 0) return;
+      if (names.length === 0) return;
       runNonBlockingStateUpdate(() => {
-        if (names.length > 0) {
-          setLoadedCollections(prev => {
-            let changed = false;
-            const next = { ...prev };
-            names.forEach(name => {
-              if (!next[name]) {
-                next[name] = true;
-                changed = true;
-              }
-            });
-            return changed ? next : prev;
+        setLoadedCollections(prev => {
+          let changed = false;
+          const next = { ...prev };
+          names.forEach(name => {
+            if (!next[name]) {
+              next[name] = true;
+              changed = true;
+            }
           });
-        }
-        if (confirmedNames.length > 0) {
-          setServerConfirmedCollections(prev => {
-            let changed = false;
-            const next = { ...prev };
-            confirmedNames.forEach(name => {
-              if (!next[name]) {
-                next[name] = true;
-                changed = true;
-              }
-            });
-            return changed ? next : prev;
-          });
-        }
+          return changed ? next : prev;
+        });
       });
     };
     const markCollectionLoaded = (colName) => {
@@ -12726,14 +12798,6 @@ export default function App() {
       if (loadedCollectionMarkTimer) return;
       loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
     };
-    const markCollectionServerConfirmed = (colName) => {
-      if (!colName || activeTenantScopeRef.current !== tenantCompanyId) return;
-      pendingLoadedCollectionMarks.add(colName);
-      pendingServerConfirmedCollectionMarks.add(colName);
-      if (loadedCollectionMarkTimer) return;
-      loadedCollectionMarkTimer = window.setTimeout(flushLoadedCollectionMarks, 40);
-    };
-
     if (customerSession && sessionCustomerId) {
       const bootstrapCacheKey = `hd-customer-portal-bootstrap-v1:${appId}:${tenantCompanyId}:${sessionCustomerId}`;
       try {
@@ -12749,7 +12813,7 @@ export default function App() {
         setRawPromotions(Array.isArray(payload.promotions) ? payload.promotions : []);
         if (payload.customer?.id) setRawCustomers([payload.customer]);
         setRawCustomerAccounts(customerAccount ? [customerAccount] : []);
-        ['companies', 'products', 'reward_catalog', 'promotions'].forEach(markCollectionServerConfirmed);
+        ['companies', 'products', 'reward_catalog', 'promotions'].forEach(markCollectionLoaded);
         return true;
       };
 
@@ -12939,7 +13003,6 @@ export default function App() {
 
     const readCollection = async (colName, setFn, isObject = false, parser = null, options = {}) => {
       const force = Boolean(options.force);
-      const serverOnly = true;
       const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(colName) || 0;
       if (!force && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
         // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
@@ -12951,24 +13014,20 @@ export default function App() {
           markCollectionLoaded(colName);
           return;
         }
-        const readDocument = serverOnly ? firebaseGetDocFromServer : firebaseGetDoc;
-        const readDocuments = serverOnly ? firebaseGetDocsFromServer : firebaseGetDocs;
-        const snapshot = await withTimeout(
-          colName === 'companies' ? readDocument(source) : readDocuments(source),
+        const items = await withTimeout(
+          readTenantCollectionViaRest(colName),
           9000,
           `Firebase read timeout: ${colName}`
         );
         if (cancelled) return;
-        if (serverOnly) {
-          const confirmedAt = Date.now();
-          lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
-          lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
-          markCollectionServerConfirmed(colName);
-        }
+        const confirmedAt = Date.now();
+        lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
+        lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
+        markCollectionLoaded(colName);
         applyCollectionItems(
           colName,
           setFn,
-          getSnapshotItems(snapshot),
+          items,
           isObject,
           parser,
           { source: 'server', keepPreviousOnEmpty: false }
@@ -13070,6 +13129,10 @@ export default function App() {
     const collectionBindingMap = new Map(collectionBindings.map(binding => [binding[0], binding]));
     forceRefreshCollectionRef.current = async (collectionName, refreshOptions = {}) => {
       if (cancelled || !collectionName) return false;
+      // A live listener already owns freshness for this collection. Starting a
+      // transient getDocsFromServer beside it can race target teardown in the
+      // Firestore WebChannel and poison the SDK AsyncQueue (ca9/b815).
+      if (hasActiveRealtimeListener(activeRealtimeCollectionsRef.current, collectionName)) return true;
       const binding = collectionBindingMap.get(collectionName);
       if (!binding) return false;
       const [colName, setFn, isObject, parser] = binding;
@@ -13085,9 +13148,11 @@ export default function App() {
       refreshCollectionsInFlightRef.current = true;
       try {
         await Promise.allSettled(
-          collectionBindings.map(([colName, setFn, isObject, parser]) => (
-            cancelled ? Promise.resolve() : readCollection(colName, setFn, isObject, parser)
-          ))
+          collectionBindings
+            .filter(([colName]) => !hasActiveRealtimeListener(activeRealtimeCollectionsRef.current, colName))
+            .map(([colName, setFn, isObject, parser]) => (
+              cancelled ? Promise.resolve() : readCollection(colName, setFn, isObject, parser)
+            ))
         );
       } finally {
         refreshCollectionsInFlightRef.current = false;
@@ -13110,6 +13175,7 @@ export default function App() {
       const unsubscribe = activeRealtimeCollectionListeners.get(colName);
       if (!unsubscribe) return false;
       activeRealtimeCollectionListeners.delete(colName);
+      activeRealtimeCollectionsRef.current.delete(colName);
       const index = unsubscribeCollectionListeners.indexOf(unsubscribe);
       if (index >= 0) unsubscribeCollectionListeners.splice(index, 1);
       try {
@@ -13141,7 +13207,7 @@ export default function App() {
             lastRealtimeSnapshotAtRef.current.set(colName, snapshotAt);
             if (isServerConfirmedRealtimeSnapshot(snapshot)) {
               lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
-              markCollectionServerConfirmed(colName);
+              markCollectionLoaded(colName);
             }
             if (!shouldApplyRealtimeSnapshot(snapshot)) {
               updateRealtimeStatusLightly({
@@ -13178,7 +13244,12 @@ export default function App() {
             }
             markCollectionLoaded(colName);
             if (recoverable) {
-              scheduleCollectionRefresh(colName, [800, 3000, 9000]);
+              stopCollectionListener(colName);
+              if (isFirestoreInternalAssertionError(error)) {
+                firestoreSdkFailedRef.current = true;
+                return;
+              }
+              scheduleCollectionRefresh(colName, [1200, 4200]);
               return;
             }
             setRealtimeStatus({
@@ -13187,12 +13258,13 @@ export default function App() {
               lastAt: new Date().toISOString(),
               error: getFriendlyFirebaseErrorMessage(error, `Realtime lỗi ở ${colName}, app sẽ dùng đồng bộ dự phòng.`)
             });
-            requestFirestoreNetworkEnable(`listener-${colName}`);
-            readCollection(colName, setFn, isObject, parser).catch(() => {});
+            stopCollectionListener(colName);
+            scheduleCollectionRefresh(colName, [1200, 4200]);
           }
         );
         const unsubscribe = () => firestoreUnsubscribe?.();
         activeRealtimeCollectionListeners.set(colName, unsubscribe);
+        activeRealtimeCollectionsRef.current.add(colName);
         unsubscribeCollectionListeners.push(unsubscribe);
         realtimeUnsubscribersRef.current = [...unsubscribeCollectionListeners];
         return unsubscribe;
@@ -13341,7 +13413,6 @@ export default function App() {
         window.clearTimeout(loadedCollectionMarkTimer);
         loadedCollectionMarkTimer = null;
         pendingLoadedCollectionMarks.clear();
-        pendingServerConfirmedCollectionMarks.clear();
       }
       unsubscribeCollectionListeners.forEach(unsubscribe => {
         try {
@@ -13351,6 +13422,7 @@ export default function App() {
         }
       });
       realtimeUnsubscribersRef.current = [];
+      activeRealtimeCollectionsRef.current.clear();
       realtimeListenerStartTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
       realtimeListenerStartTimersRef.current = [];
       if (refreshTimer) window.clearInterval(refreshTimer);
@@ -13407,11 +13479,10 @@ export default function App() {
       'pricingChangeLogs'
     ];
 
-    const refreshCriticalCollections = (reason = 'app-resume') => {
+    const refreshCriticalCollections = () => {
       const now = Date.now();
       if (now - lastCriticalRefreshAtRef.current < 12000) return;
       lastCriticalRefreshAtRef.current = now;
-      requestFirestoreNetworkEnable(reason);
       criticalCollections.forEach(collectionName => {
         scheduleCollectionRefresh(collectionName, [900, 3200]);
       });
@@ -13467,25 +13538,18 @@ export default function App() {
   useEffect(() => {
     if (!firebaseUser || !isFirebaseConfigured || typeof window === 'undefined') return undefined;
 
-    const refreshAfterFirestoreInternalError = (reason = 'firestore-internal-assertion') => {
+    const guardAfterFirestoreInternalError = () => {
       const now = Date.now();
       if (now - lastFirestoreInternalRefreshAtRef.current < 8000) return;
       lastFirestoreInternalRefreshAtRef.current = now;
-      const recentCollections = lastFirestoreWriteCollectionsRef.current || [];
-      const collectionsToRefresh = [
-        ...recentCollections,
-        'customers',
-        'customer_points',
-        'orders',
-        'orderRequests',
-        'warehouseDispatches',
-        'payments',
-        'messages',
-        'notifications'
-      ].filter(Boolean);
-      [...new Set(collectionsToRefresh)].forEach(collectionName => {
-        scheduleCollectionRefresh(collectionName, [1200, 4200, 10000]);
-      });
+      firestoreSdkFailedRef.current = true;
+      setRealtimeStatus(prev => ({
+        ...prev,
+        state: 'recovering',
+        collection: prev.collection || 'firestore',
+        lastAt: new Date().toISOString(),
+        error: 'Kết nối realtime đang được phục hồi; thao tác lưu sẽ dùng đường truyền dự phòng an toàn.'
+      }));
     };
 
     const handleWindowError = (event) => {
@@ -13493,7 +13557,7 @@ export default function App() {
       event.preventDefault?.();
       event.stopImmediatePropagation?.();
       console.warn('Đã chặn lỗi realtime nội bộ của Firestore và đang tự phục hồi:', event?.error || event?.message);
-      refreshAfterFirestoreInternalError('window-error');
+      guardAfterFirestoreInternalError();
       return false;
     };
 
@@ -13503,12 +13567,12 @@ export default function App() {
       event.preventDefault?.();
       event.stopImmediatePropagation?.();
       console.warn('Đã chặn promise lỗi realtime nội bộ của Firestore và đang tự phục hồi:', reason);
-      refreshAfterFirestoreInternalError('unhandled-rejection');
+      guardAfterFirestoreInternalError();
       return false;
     };
 
     const handleGuardedFirestoreInternalError = () => {
-      refreshAfterFirestoreInternalError('global-firestore-guard');
+      guardAfterFirestoreInternalError();
     };
 
     window.addEventListener('error', handleWindowError, true);
@@ -14060,23 +14124,30 @@ export default function App() {
   };
 
   const resolveIdentityCompany = async (companyId = '') => {
-    const cached = rawCompanies.find(item => item.id === companyId);
-    if (cached || !companyId || !db) return cached || null;
-    try {
-      const snapshot = await firebaseGetDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', companyId));
-      return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
-    } catch {
-      return null;
-    }
+    if (!companyId) return null;
+    // Do not make a short-lived getDoc the first Firestore operation after
+    // authentication. The company listener hydrates the fresh record after the
+    // app shell opens; cached identity data is sufficient for that brief gap.
+    return rawCompanies.find(item => item.id === companyId)
+      || (currentCompany?.id === companyId ? currentCompany : null)
+      || null;
   };
 
   const establishIdentitySession = async (session = {}, { activate = true } = {}) => {
+    const sessionStartedAt = Date.now();
     if (!session?.customToken || !session?.identity || !auth) {
       return { success: false, message: 'Không thể tạo phiên đăng nhập an toàn.' };
     }
     const persistenceMode = await firebaseAuthPersistencePromise;
     recordStartupEvent('auth.identity_login.persistence_ready', { mode: persistenceMode });
+    const customTokenStartedAt = Date.now();
     const credential = await runFirebaseAuthMutation(() => signInWithCustomToken(auth, session.customToken));
+    recordStartupEvent('auth.identity_login.custom_token_completed', {
+      durationMs: Date.now() - customTokenStartedAt,
+    });
+    logLoginStep('Firebase custom token completed', {
+      durationMs: Date.now() - customTokenStartedAt,
+    });
     logLoginStep('Firebase Auth identity credential established', {
       persistenceMode,
       signedIn: Boolean(credential.user),
@@ -14097,19 +14168,44 @@ export default function App() {
       setActiveTab(nextTab);
       saveAppSession({ currentUser: nextUser, currentCompany: company || { id: identity.companyId, name: '' }, activeTab: nextTab });
     }
+    recordStartupEvent('auth.identity_login.shell_released', {
+      durationMs: Date.now() - sessionStartedAt,
+      activeTab: nextTab,
+    });
+    logLoginStep('App shell released after identity session', {
+      durationMs: Date.now() - sessionStartedAt,
+      activeTab: nextTab,
+    });
     return { success: true, ...session, identity: nextUser, company, activeTab: nextTab };
   };
 
   const handleIdentityLogin = async (identifier, password) => {
+    const loginStartedAt = Date.now();
     const normalizedIdentifier = `${identifier || ''}`.trim();
     if (!normalizedIdentifier || `${password || ''}`.length < 8) {
       return { success: false, message: 'Nhập username hoặc số điện thoại và mật khẩu tối thiểu 8 ký tự.' };
     }
     try {
+      recordStartupEvent('auth.identity_login.started');
+      const apiStartedAt = Date.now();
       const session = await identityLogin({ identifier: normalizedIdentifier, password, appId });
+      recordStartupEvent('auth.identity_login.api_completed', {
+        durationMs: Date.now() - apiStartedAt,
+      });
+      logLoginStep('Identity login API completed', {
+        durationMs: Date.now() - apiStartedAt,
+      });
       identitySetupPendingRef.current = Boolean(session.requiresSetup);
       const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
       if (!established.success) return established;
+      recordStartupEvent('auth.identity_login.completed', {
+        durationMs: Date.now() - loginStartedAt,
+        requiresSetup: Boolean(session.requiresSetup),
+      });
+      logLoginStep('Identity login completed', {
+        durationMs: Date.now() - loginStartedAt,
+        requiresSetup: Boolean(session.requiresSetup),
+      });
       return {
         success: true,
         requiresSetup: Boolean(session.requiresSetup),
@@ -14117,6 +14213,14 @@ export default function App() {
         identity: established.identity,
       };
     } catch (error) {
+      recordStartupEvent('auth.identity_login.failed', {
+        durationMs: Date.now() - loginStartedAt,
+        code: `${error?.code || ''}`,
+      }, 'error');
+      logLoginStep('Identity login failed', {
+        durationMs: Date.now() - loginStartedAt,
+        code: `${error?.code || ''}`,
+      }, 'error');
       return { success: false, message: error?.message || 'Không thể đăng nhập an toàn. Vui lòng thử lại.' };
     }
   };
@@ -18607,11 +18711,17 @@ export default function App() {
       warmLocalPaymentQrDataUrlCache(nextLocalPaymentPayload, { width: 520 });
     }
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId), patchWithFingerprint, { merge: true });
+      await saveDataDocument(
+        'orders',
+        orderId,
+        patchWithFingerprint,
+        { merge: true },
+        4500,
+        'Firebase phản hồi chậm khi lưu QR SePay.'
+      );
     } catch (error) {
       if (!isFirestoreInternalAssertionError(error)) throw error;
       console.warn('Firestore realtime dang tu phuc hoi khi luu QR SePay, tiep tuc chia se bang du lieu QR vua tao:', error);
-      requestFirestoreNetworkEnable('ensure-order-sepay-payment');
       scheduleCollectionRefresh('orders', [0, 1200, 3500, 9000]);
     }
 
@@ -20111,7 +20221,6 @@ export default function App() {
           onForgotPassword={handleIdentityRecovery}
           onCompleteRecovery={handleIdentityCompleteRecovery}
           onCompleteIdentitySetup={handleIdentitySetup}
-          isLoginReady={isLoginDataLoaded}
         />
       </>
     );
@@ -20199,7 +20308,6 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
-        isCompanyDashboardServerReady={isCompanyDashboardServerReady}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => auth?.currentUser?.getIdToken?.() || Promise.resolve('')} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
@@ -20675,7 +20783,6 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
-  isCompanyDashboardServerReady = false,
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
@@ -22151,16 +22258,9 @@ function MainAppView({
     );
   };
 
-  const renderExecutiveDashboard = () => {
-    if (!isCompanyDashboardServerReady) {
-      return (
-        <p className="p-5 text-center text-sm font-black text-emerald-800" role="status" aria-live="polite">
-          Đang đồng bộ dữ liệu mới nhất
-        </p>
-      );
-    }
-    return <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} />;
-  };
+  const renderExecutiveDashboard = () => (
+    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} />
+  );
 
   const renderClassicDashboard = () => (
     <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
@@ -22342,7 +22442,7 @@ function MainAppView({
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
-      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'order_requests': return (canRoleAction('order_requests', 'create_order_request') && (!hasWorkflowCustomerData || !hasWorkflowProductData)) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (!hasWorkflowProductData && (isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'))) {
           return renderWorkflowGuide({
@@ -54694,6 +54794,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       .map(productId => productLookup.get(productId))
       .filter(product => product && !product.isArchived);
   }, [productLookup, products, selectedDispatchCustomer]);
+  const activeDispatchCatalogProducts = useMemo(() => (products || [])
+    .filter(product => product?.id && !product.isArchived)
+    .sort((left, right) => `${left?.name || ''}`.localeCompare(`${right?.name || ''}`, 'vi')),
+  [products]);
   const rankDispatchPickerOptions = useCallback((options = [], keyword = '', getLabels = () => []) => {
     const normalizedKeyword = normalizeLookupText(keyword || '');
     if (!normalizedKeyword) return options;
@@ -54754,11 +54858,26 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   ), [dispatchCustomerSearchKeyword, rankDispatchPickerOptions, requestCustomerOptions]);
   const dispatchProductPickerOptions = useMemo(() => {
     if (!selectedDispatchCustomer) return [];
-    return Array.from(new Map([
-      ...dispatchCustomerOrderedProducts,
-      ...dispatchCustomerFixedProducts,
-    ].map(product => [product.id, product])).values());
-  }, [dispatchCustomerFixedProducts, dispatchCustomerOrderedProducts, selectedDispatchCustomer]);
+    return buildWarehouseDispatchProductOptions({
+      orderedProducts: dispatchCustomerOrderedProducts,
+      fixedProducts: dispatchCustomerFixedProducts,
+      catalogProducts: activeDispatchCatalogProducts,
+      hasOrderRequest: dispatchCustomerOrderRows.length > 0,
+      canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest,
+    });
+  }, [
+    activeDispatchCatalogProducts,
+    canCreateDispatchWithoutOrderRequest,
+    dispatchCustomerFixedProducts,
+    dispatchCustomerOrderRows.length,
+    dispatchCustomerOrderedProducts,
+    selectedDispatchCustomer,
+  ]);
+  const isDispatchCatalogFallbackActive = Boolean(
+    selectedDispatchCustomer
+    && dispatchCustomerOrderRows.length === 0
+    && canCreateDispatchWithoutOrderRequest
+  );
   const filteredDispatchProducts = useMemo(() => rankDispatchPickerOptions(
     dispatchProductPickerOptions,
     dispatchProductSearchKeyword,
@@ -54780,12 +54899,26 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     if (!inlineEditingCustomer) return [];
     const fixedProductIds = getCustomerFixedProductIds(inlineEditingCustomer, products);
     const fixedProducts = fixedProductIds.map(productId => productLookup.get(productId)).filter(Boolean);
-    const orderedProducts = warehouseVoiceOrderRows
-      .filter(row => row.customerId === inlineEditingCustomer.id && row.productId)
+    const customerOrderRows = warehouseVoiceOrderRows
+      .filter(row => row.customerId === inlineEditingCustomer.id && row.productId);
+    const orderedProducts = customerOrderRows
       .map(row => productLookup.get(row.productId) || row.product)
       .filter(Boolean);
-    return Array.from(new Map([...orderedProducts, ...fixedProducts].map(product => [product.id, product])).values());
-  }, [inlineEditingCustomer, productLookup, products, warehouseVoiceOrderRows]);
+    return buildWarehouseDispatchProductOptions({
+      orderedProducts,
+      fixedProducts,
+      catalogProducts: activeDispatchCatalogProducts,
+      hasOrderRequest: customerOrderRows.length > 0,
+      canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest,
+    });
+  }, [
+    activeDispatchCatalogProducts,
+    canCreateDispatchWithoutOrderRequest,
+    inlineEditingCustomer,
+    productLookup,
+    products,
+    warehouseVoiceOrderRows,
+  ]);
 
   const todayDispatchRows = useMemo(
     () => (warehouseDispatches || [])
@@ -56877,7 +57010,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(createEmptyDispatchDraft(assignedDriverId));
     } catch (error) {
-      setDispatchError(error?.message || 'Không thể lưu phiếu xuất kho. Vui lòng thử lại.');
+      setDispatchError(getFriendlyFirebaseErrorMessage(
+        error,
+        'Không thể lưu phiếu xuất kho. Vui lòng kiểm tra mạng rồi thử lại.'
+      ));
     } finally {
       dispatchSaveLockRef.current = false;
       setIsSavingDispatch(false);
@@ -57314,6 +57450,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                 {dispatchPickerOpen === 'product' && (
                   <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
                     <div className="max-h-56 overflow-y-auto p-2 space-y-1">
+                      {isDispatchCatalogFallbackActive && (
+                        <p className="px-3 py-2 text-[11px] font-semibold text-emerald-700">
+                          Khách chưa có đơn đặt - chọn loại hàng trong danh mục sản phẩm.
+                        </p>
+                      )}
                       {filteredDispatchProducts.map(product => (
                         <button
                           key={product.id}
@@ -57875,7 +58016,7 @@ const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelect
   );
 });
 
-function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -58189,6 +58330,62 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         console.warn('Khong luu duoc goi y don vi nhap; don hang van duoc giu nguyen.', error);
       }
     }
+  };
+  const persistAdditionalCustomerFixedProducts = async (savedRequests = []) => {
+    if (typeof onEditCustomer !== 'function') return { rememberedCount: 0, failedCustomerIds: [] };
+
+    const requestsByCustomer = new Map();
+    (Array.isArray(savedRequests) ? savedRequests : []).forEach((request) => {
+      const customerId = `${request?.customerId || ''}`.trim();
+      if (!customerId) return;
+      const customerRequests = requestsByCustomer.get(customerId) || [];
+      customerRequests.push(request);
+      requestsByCustomer.set(customerId, customerRequests);
+    });
+
+    let rememberedCount = 0;
+    const failedCustomerIds = [];
+    const validProductIds = activeProducts.map(product => product.id).filter(Boolean);
+
+    for (const [customerId, customerRequests] of requestsByCustomer.entries()) {
+      const customer = customerLookup.get(customerId);
+      if (!customer) continue;
+      const canonicalCustomer = {
+        ...customer,
+        customerProductIds: normalizeCustomerProductIds(customer, activeProducts),
+        branches: normalizeCustomerBranches(customer, activeProducts),
+      };
+      const memoryUpdate = buildCustomerFixedProductMemoryPatch({
+        customer: canonicalCustomer,
+        requests: customerRequests,
+        validProductIds,
+      });
+
+      if (memoryUpdate.skippedBranchIds.length > 0) {
+        console.warn('Khong ghi nho san pham cho chi nhanh khong con ton tai.', {
+          customerId,
+          branchIds: memoryUpdate.skippedBranchIds,
+        });
+      }
+      if (!memoryUpdate.patch) continue;
+
+      try {
+        await onEditCustomer(customerId, memoryUpdate.patch);
+        rememberedCount += memoryUpdate.addedProductIds.length;
+      } catch (error) {
+        failedCustomerIds.push(customerId);
+        console.warn('Don da luu nhung chua ghi nho duoc san pham co dinh cua khach.', error);
+      }
+    }
+
+    return { rememberedCount, failedCustomerIds };
+  };
+  const persistOrderRequestMemories = async (savedRequests = []) => {
+    const [, fixedProductResult] = await Promise.all([
+      persistSmartOrderingPreferences(savedRequests),
+      persistAdditionalCustomerFixedProducts(savedRequests),
+    ]);
+    return fixedProductResult;
   };
   const handleDraftItemQuantityUnitChange = (localId, itemLocalId, nextUnit) => {
     const draft = requestDrafts.find(item => item.localId === localId);
@@ -58913,11 +59110,33 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
   }), [manualFixedProductOptions, primaryProductConfigSource]);
+  const manualCatalogProductVariantOptions = useMemo(() => activeProducts.flatMap(product => {
+    const variants = getCustomerProductVariants(primaryProductConfigSource, product);
+    return variants.map((variant) => {
+      const configuration = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product, {
+        variant,
+        variantId: variant.id || '',
+        sizeLabel: variant.size || '',
+        attributeLabel: variant.attributeLabel || '',
+      });
+      return {
+        product,
+        variant,
+        key: buildOrderRequestVariantKey(product.id, variant),
+        selectionKey: buildOrderRequestVariantKey(product.id, {
+          attributeLabel: configuration.attributeLabel,
+          size: configuration.sizeLabel,
+          unit: configuration.billingUnit,
+          price: configuration.unitPrice,
+        }),
+      };
+    });
+  }), [activeProducts, primaryProductConfigSource]);
   const manualExtraProductPickerKey = primaryDraft ? `manual-extra-products:${primaryDraft.localId}` : '';
   const isManualExtraProductPickerOpen = Boolean(manualExtraProductPickerKey) && openDraftPicker === manualExtraProductPickerKey;
   const quickProductSearchKeyword = normalizeLookupText(quickProductSearch || '');
   const manualExtraProductVariantOptions = useMemo(() => {
-    const sourceVariants = manualFixedProductVariantOptions.filter(({ product, variant, selectionKey }) => {
+    const sourceVariants = manualCatalogProductVariantOptions.filter(({ product, variant, selectionKey }) => {
       if (quickProductSearchKeyword) {
         return productMatchesLookup(product, quickProductSearchKeyword)
           || [variant.size, variant.attributeLabel, variant.unit]
@@ -58932,7 +59151,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         return (a.product?.name || '').localeCompare(b.product?.name || '', 'vi');
       })
       .slice(0, quickProductSearchKeyword ? 80 : 16);
-  }, [manualFixedProductVariantOptions, quickProductSearchKeyword, selectedQuickVariantKeys]);
+  }, [manualCatalogProductVariantOptions, quickProductSearchKeyword, selectedQuickVariantKeys]);
   const manualCustomerPickerKey = primaryDraft ? `customer:${primaryDraft.localId}` : '';
   const isManualCustomerPickerOpen = Boolean(manualCustomerPickerKey) && openDraftPicker === manualCustomerPickerKey;
   const manualCustomerSearchKeyword = normalizeLookupText(primaryDraft?.customerSearch || '');
@@ -61126,11 +61345,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         }
 
         const configSource = getCustomerBranchProductConfigSource(customer, branchRef.branchId, activeProducts);
-        const fixedProductIds = new Set(
-          branchRef.branchId
-            ? getCustomerBranchFixedProductIds(customer, branchRef.branchId, activeProducts)
-            : getCustomerFixedProductIds(customer, activeProducts)
-        );
         const configuredBilling = resolveCustomerProductBillingConfiguration(configSource, product, {
           configurationId: item.configurationId || '',
           sizeLabel,
@@ -61140,7 +61354,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           item.billingSnapshotVersion
           || ((item.billingUnit || item.pricingUnit) && savedUnitPrice > 0)
         );
-        if ((!fixedProductIds.has(product.id) && !hasSavedPricingSnapshot) || (!configuredBilling.isValid && !hasSavedPricingSnapshot)) {
+        // The + picker can add any active catalog product. A valid catalog/customer
+        // billing configuration is enough; the product is remembered only after save.
+        if (!configuredBilling.isValid && !hasSavedPricingSnapshot) {
           invalidItemIndexes.push(itemIndex + 1);
           return;
         }
@@ -61287,7 +61503,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         }
 
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
-        await persistSmartOrderingPreferences(normalizedRequests);
+        await persistOrderRequestMemories(normalizedRequests);
 
         setRequestStatus('');
         closeOrderRequestForm();
@@ -61297,7 +61513,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       for (const requestPayload of normalizedRequests) {
         await onAddOrderRequest(employee?.id || 'admin', requestPayload);
       }
-      await persistSmartOrderingPreferences(normalizedRequests);
+      await persistOrderRequestMemories(normalizedRequests);
 
       setRequestStatus('');
       closeOrderRequestForm();
@@ -81957,7 +82173,7 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup, isLoginReady = true }) {
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -82136,7 +82352,6 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
         
         {isLogin ? (
           <div>
-            {!showForgotPassword && !isLoginReady && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold">Đang nạp dữ liệu tài khoản từ Cloud. Nếu cần, bạn vẫn có thể bấm đăng nhập, app sẽ kiểm tra trực tiếp trên Cloud.</div>}
             {!showForgotPassword && loginMessage && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold" role="status">{loginMessage}</div>}
             {!showForgotPassword && loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
             <form onSubmit={handleAuthFormSubmit} className="space-y-4">

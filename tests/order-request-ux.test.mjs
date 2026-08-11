@@ -13,6 +13,7 @@ import {
   getOrderRequestSizeDisplayValue
 } from '../src/utils/orderRequestEditing.js';
 import { getFixedFooterNavIds } from '../src/utils/footerNavigation.js';
+import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixedProductMemory.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
@@ -50,6 +51,62 @@ test('existing variant is toggled instead of creating a duplicate line', () => {
   assert.match(appSource, /const targetVariantKey = getDraftItemVariantKey\(normalizedQuickItem\);/);
   assert.match(appSource, /findIndex\(\(item\) => getDraftItemVariantKey\(item\) === targetVariantKey\)/);
   assert.match(appSource, /filter\(\(item\) => getDraftItemVariantKey\(item\) !== targetVariantKey\)/);
+});
+
+test('plus picker exposes the active catalog and remembers new customer products after save', () => {
+  assert.match(appSource, /const manualCatalogProductVariantOptions = useMemo\(\(\) => activeProducts\.flatMap/);
+  assert.match(appSource, /const sourceVariants = manualCatalogProductVariantOptions\.filter/);
+  assert.match(appSource, /await persistOrderRequestMemories\(normalizedRequests\);/);
+  assert.match(appSource, /onEditCustomer=\{onEditCustomer\}/);
+  assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
+});
+
+test('new product memory merges customer products once without replacing existing data', () => {
+  const input = {
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['product-a'],
+    },
+    requests: [{
+      customerId: 'customer-a',
+      items: [
+        { productId: 'product-a' },
+        { productId: 'product-b' },
+        { productId: 'product-b' },
+      ],
+    }],
+    validProductIds: ['product-a', 'product-b'],
+  };
+  const first = buildCustomerFixedProductMemoryPatch(input);
+  assert.deepEqual(first.patch, { customerProductIds: ['product-a', 'product-b'] });
+  assert.deepEqual(first.addedProductIds, ['product-b']);
+
+  const retry = buildCustomerFixedProductMemoryPatch({
+    ...input,
+    customer: { ...input.customer, ...first.patch },
+  });
+  assert.equal(retry.patch, null);
+  assert.deepEqual(retry.addedProductIds, []);
+});
+
+test('branch memory preserves inherited products and stays scoped to that branch', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['product-a'],
+      branches: [{ id: 'branch-a', name: 'Branch A', customerProductIds: [] }],
+    },
+    requests: [{
+      customerId: 'customer-a',
+      branchId: 'branch-a',
+      items: [{ productId: 'product-b' }],
+    }],
+    validProductIds: ['product-a', 'product-b'],
+  });
+
+  assert.equal(result.patch.customerProductIds, undefined);
+  assert.deepEqual(result.patch.branches[0].customerProductIds, ['product-a', 'product-b']);
+  assert.deepEqual(result.addedProductIds, ['product-b']);
 });
 
 test('order submit keeps both state and ref duplicate guards', () => {
