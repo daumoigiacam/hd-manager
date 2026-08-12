@@ -12,6 +12,10 @@ import {
   applyOrderRequestClassificationEdit,
   getOrderRequestSizeDisplayValue
 } from '../src/utils/orderRequestEditing.js';
+import {
+  buildOrderRequestSharePagesByCustomer,
+  groupOrderRequestShareRowsByCustomer
+} from '../src/utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from '../src/utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixedProductMemory.js';
 
@@ -168,12 +172,34 @@ test('order unit editor suggests catalog units and accepts a new custom unit', (
   assert.match(appSource, /Đơn vị mới sẽ được ghi nhớ cho khách và sản phẩm này sau khi lưu đơn/);
 });
 
-test('shared order sheet keeps matching products next to each other', () => {
-  assert.match(appSource, /const groupedShareableRequestSheetProductGroups = useMemo/);
-  assert.match(appSource, /const productKey = row\.productId \|\| normalizeLookupText\(row\.productShortName \|\| row\.productName \|\| ''\)/);
-  assert.match(appSource, /groupedShareableRequestSheetProductGroups\.flatMap\(\(group\) => group\.rows\)/);
-  assert.match(appSource, /groupedShareableRequestSheetProductGroups\.forEach\(\(group\) =>/);
-  assert.doesNotMatch(appSource, /groupedShareableRequestSheetCustomerGroups/);
+test('shared order sheet keeps every customer and all products together', () => {
+  const rows = [
+    { id: 'a-2', customerId: 'a', customerName: 'Customer A', productSort: 2 },
+    { id: 'b-1', customerId: 'b', customerName: 'Customer B', productSort: 1 },
+    { id: 'a-1', customerId: 'a', customerName: 'Customer A', productSort: 1 },
+    { id: 'a-3', customerId: 'a', customerName: 'Customer A', productSort: 3 },
+  ];
+  const groups = groupOrderRequestShareRowsByCustomer(rows, {
+    compareRows: (a, b) => a.productSort - b.productSort,
+  });
+
+  assert.deepEqual(groups.map((group) => group.customerId), ['a', 'b']);
+  assert.deepEqual(groups[0].rows.map((row) => row.id), ['a-1', 'a-2', 'a-3']);
+  assert.deepEqual(
+    groups.flatMap((group) => group.rows).map((row) => row.customerId),
+    ['a', 'a', 'a', 'b'],
+  );
+
+  const pages = buildOrderRequestSharePagesByCustomer(groups, 2);
+  assert.equal(pages.length, 2);
+  assert.deepEqual(pages[0].map((row) => row.customerId), ['a', 'a', 'a']);
+  assert.deepEqual(pages[1].map((row) => row.customerId), ['b']);
+
+  assert.match(appSource, /const groupedShareableRequestSheetCustomerGroups = useMemo/);
+  assert.match(appSource, /groupOrderRequestShareRowsByCustomer\(shareableMergedRequestSheetRows/);
+  assert.match(appSource, /groupedShareableRequestSheetCustomerGroups\.flatMap\(\(group\) => group\.rows\)/);
+  assert.match(appSource, /buildOrderRequestSharePagesByCustomer\(/);
+  assert.doesNotMatch(appSource, /groupedShareableRequestSheetProductGroups/);
 });
 
 test('share images are prepared in background and reused from persistent cache', () => {

@@ -362,7 +362,7 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
   const result = await requestIdentityApi('/api/identity/complete-setup', {
     device,
     password,
-    username,
+    ...(username !== undefined ? { username } : {}),
     pin,
     biometricEnabled,
     trustDevice,

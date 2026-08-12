@@ -99,6 +99,10 @@ import {
   applyOrderRequestClassificationEdit,
   getOrderRequestSizeDisplayValue
 } from './utils/orderRequestEditing.js';
+import {
+  buildOrderRequestSharePagesByCustomer,
+  groupOrderRequestShareRowsByCustomer
+} from './utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import {
@@ -14255,9 +14259,9 @@ export default function App() {
 
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
-    const normalizedIdentifier = `${identifier || ''}`.trim();
-    if (!normalizedIdentifier || `${password || ''}`.length < 8) {
-      return { success: false, message: 'Nhập username hoặc số điện thoại và mật khẩu tối thiểu 8 ký tự.' };
+    const normalizedIdentifier = normalizeEmployeeLoginPhone(identifier);
+    if (normalizedIdentifier.length < 9 || normalizedIdentifier.length > 11 || `${password || ''}`.length < 8) {
+      return { success: false, message: 'Nhập số điện thoại hợp lệ và mật khẩu tối thiểu 8 ký tự.' };
     }
     try {
       recordStartupEvent('auth.identity_login.started');
@@ -25541,18 +25545,13 @@ function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) 
   const [isLoading, setIsLoading] = useState(false);
   const [activeEditor, setActiveEditor] = useState('');
   const [currentPin, setCurrentPin] = useState('');
-  const [username, setUsername] = useState(identityUser?.username || '');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
   const [newPin, setNewPin] = useState('');
   const [newPinConfirm, setNewPinConfirm] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const device = useMemo(() => getIdentityDevice(), []);
-  const identityReady = Boolean(identityUser?.username);
-
-  useEffect(() => {
-    setUsername(identityUser?.username || '');
-  }, [identityUser?.username]);
+  const identityReady = Boolean(identityUser?.phone || identityUser?.id);
 
   const refreshSecurityData = useCallback(async () => {
     if (!identityReady) return;
@@ -25603,11 +25602,10 @@ function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) 
       await identityVerifyPin({ idToken, pin: currentPin });
       const result = await identityCompleteSetup({
         idToken,
-        username: activeEditor === 'username' ? username : undefined,
         password: activeEditor === 'password' ? newPassword : undefined,
         pin: activeEditor === 'pin' ? newPin : undefined,
       });
-      setSecurityStatus(activeEditor === 'username' ? 'Đã cập nhật username.' : activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
+      setSecurityStatus(activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
       setActiveEditor('');
       setCurrentPin('');
       setNewPassword('');
@@ -25675,21 +25673,18 @@ function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) 
       {expanded && (
         <div className="border-t border-slate-100 p-4 space-y-4">
           {!identityReady ? (
-            <div className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">Tài khoản này chưa hoàn tất Identity Center. Hãy đăng xuất và đăng nhập lại để thiết lập username, PIN và thiết bị tin cậy.</div>
+            <div className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">Tài khoản này chưa hoàn tất Identity Center. Hãy đăng xuất và đăng nhập lại để thiết lập PIN và thiết bị tin cậy.</div>
           ) : <>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="rounded-xl bg-slate-50 p-3 text-xs"><span className="block text-slate-500">Username</span><strong className="mt-1 block text-slate-800">{identityUser.username}</strong></div>
+            <div className="grid gap-2">
               <div className="rounded-xl bg-slate-50 p-3 text-xs"><span className="block text-slate-500">Số điện thoại</span><strong className="mt-1 block text-slate-800">{identityUser.phone || 'Chưa cập nhật'}</strong></div>
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
               <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>
-              <button type="button" onClick={() => setActiveEditor(activeEditor === 'username' ? '' : 'username')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi username</button>
               <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>
             </div>
             {activeEditor && (
               <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                {activeEditor === 'username' && <input value={username} onChange={event => setUsername(event.target.value.toLowerCase().replace(/\s+/g, ''))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Username mới" autoComplete="username" />}
                 {activeEditor === 'password' && <><input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" /><input type="password" value={newPasswordConfirm} onChange={event => setNewPasswordConfirm(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" /></>}
                 {activeEditor === 'pin' && <><input type="password" inputMode="numeric" maxLength={6} value={newPin} onChange={event => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN mới" /><input type="password" inputMode="numeric" maxLength={6} value={newPinConfirm} onChange={event => setNewPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="Xác nhận PIN mới" /></>}
                 <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
@@ -59530,37 +59525,20 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       });
 
     return Array.from(grouped.values())
-      .sort(compareOrderRequestRowsByProduct)
+      .sort(compareOrderRequestRowsByRecent)
       .map(({ sortIndex, amountSum, ...row }) => ({ ...row, amount: amountSum }));
   }, [editableCurrentDayRows]);
 
-  const groupedShareableRequestSheetProductGroups = useMemo(() => {
-    const productGroups = new Map();
-    shareableMergedRequestSheetRows.forEach((row, index) => {
-      const productKey = row.productId || normalizeLookupText(row.productShortName || row.productName || '') || `product_${index}`;
-      if (!productGroups.has(productKey)) {
-        productGroups.set(productKey, {
-          key: productKey,
-          sortIndex: index,
-          rows: []
-        });
-      }
-
-      const group = productGroups.get(productKey);
-      group.rows.push(row);
-    });
-
-    return Array.from(productGroups.values())
-      .sort((a, b) => a.sortIndex - b.sortIndex)
-      .map((group) => ({
-        ...group,
-        rows: group.rows.slice().sort(compareOrderRequestRowsByProduct)
-      }));
-  }, [shareableMergedRequestSheetRows]);
+  const groupedShareableRequestSheetCustomerGroups = useMemo(
+    () => groupOrderRequestShareRowsByCustomer(shareableMergedRequestSheetRows, {
+      compareRows: compareOrderRequestRowsByProduct
+    }),
+    [shareableMergedRequestSheetRows]
+  );
 
   const groupedShareableMergedRequestSheetRows = useMemo(
-    () => groupedShareableRequestSheetProductGroups.flatMap((group) => group.rows),
-    [groupedShareableRequestSheetProductGroups]
+    () => groupedShareableRequestSheetCustomerGroups.flatMap((group) => group.rows),
+    [groupedShareableRequestSheetCustomerGroups]
   );
   const orderRequestSheetAssetKey = useMemo(() => {
     if (groupedShareableMergedRequestSheetRows.length === 0) return '';
@@ -60873,28 +60851,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const orderRequestSheetRowsPerImage = 12;
 
   const buildOrderRequestSheetPages = () => {
-    if (groupedShareableMergedRequestSheetRows.length <= orderRequestSheetRowsPerImage) return [groupedShareableMergedRequestSheetRows];
-    const pages = [];
-    let currentPageRows = [];
-    let currentPageLineCount = 0;
-
-    groupedShareableRequestSheetProductGroups.forEach((group) => {
-      const groupRows = group.rows || [];
-      if (groupRows.length === 0) return;
-
-      // Keep every product together. A large product group can exceed the
-      // normal 12-line target, but it must not be split into separate share images.
-      if (currentPageRows.length > 0 && currentPageLineCount + groupRows.length > orderRequestSheetRowsPerImage) {
-        pages.push(currentPageRows);
-        currentPageRows = [];
-        currentPageLineCount = 0;
-      }
-
-      currentPageRows.push(...groupRows);
-      currentPageLineCount += groupRows.length;
-    });
-
-    if (currentPageRows.length > 0) pages.push(currentPageRows);
+    const pages = buildOrderRequestSharePagesByCustomer(
+      groupedShareableRequestSheetCustomerGroups,
+      orderRequestSheetRowsPerImage
+    );
     return pages.length ? pages : [groupedShareableMergedRequestSheetRows];
   };
 
@@ -82303,7 +82263,6 @@ function CustomerEmptyState({ text }) {
 function IdentitySetupWizard({ context = {}, onComplete }) {
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
-  const [username, setUsername] = useState(context?.identity?.username || '');
   const [pin, setPin] = useState('');
   const [pinConfirm, setPinConfirm] = useState('');
   const [biometric, setBiometric] = useState(false);
@@ -82312,8 +82271,12 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   const [isSaving, setIsSaving] = useState(false);
 
   const mustChangePassword = Boolean(context?.setup?.passwordChanged === false || context?.requiresPasswordChange);
-  const mustSetUsername = !context?.setup?.usernameSet;
   const mustSetPin = !context?.setup?.pinSet;
+  // Keep first-time setup compatible with older Identity Functions without
+  // exposing a separate username concept to users. Phone remains the only
+  // login identifier shown and accepted by the app.
+  const compatibilityIdentityAlias = context?.identity?.username
+    || normalizeEmployeeLoginPhone(context?.identity?.phone || '');
 
   useEffect(() => {
     let active = true;
@@ -82329,14 +82292,13 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
       const passwordError = validateAccountPasswordInput(password, passwordConfirm);
       if (passwordError) { setError(passwordError); return; }
     }
-    if (mustSetUsername && !`${username}`.trim()) { setError('Vui lòng đặt Username cho tài khoản.'); return; }
     if (mustSetPin && (!/^\d{6}$/.test(pin) || pin !== pinConfirm)) { setError('PIN gồm 6 số và cần khớp xác nhận.'); return; }
     setIsSaving(true);
     setError('');
     try {
       const result = await onComplete({
         password: mustChangePassword ? password : undefined,
-        username,
+        username: compatibilityIdentityAlias || undefined,
         pin: mustSetPin ? pin : undefined,
         biometricEnabled: Boolean(biometric && biometricAvailable?.available),
         trustDevice: true,
@@ -82361,13 +82323,11 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
           <div className="hd-login-3d-field"><input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Đặt mật khẩu mới" autoComplete="new-password" /></div>
           <div className="hd-login-3d-field"><input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" /></div>
         </>}
-        {mustSetUsername && <div className="hd-login-3d-field"><input type="text" value={username} onChange={(event) => { setUsername(event.target.value.toLowerCase().replace(/\s+/g, '')); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium" placeholder="Username (ví dụ: nguyenvana)" autoComplete="username" /></div>}
         {mustSetPin && <>
           <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => { setPin(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="PIN 6 số" autoComplete="new-password" /></div>
           <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pinConfirm} onChange={(event) => { setPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="Xác nhận PIN 6 số" autoComplete="new-password" /></div>
         </>}
         {biometricAvailable?.available && <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-xs text-emerald-800"><input type="checkbox" checked={biometric} onChange={(event) => setBiometric(event.target.checked)} className="h-4 w-4 accent-emerald-600" /><span><strong>Bật Face ID / Vân tay</strong><br />Xác thực sinh trắc học khi mở app và khôi phục mật khẩu.</span></label>}
-        <div className="rounded-xl bg-slate-50 px-3 py-2.5 text-[11px] leading-relaxed text-slate-500">Thiết bị này sẽ được đánh dấu tin cậy. Khóa thiết bị được lưu trong Keychain/Keystore, không lưu mật khẩu hoặc PIN.</div>
         {error && <p className="rounded-xl bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-600" role="alert">{error}</p>}
         <button type="submit" disabled={isSaving} className="w-full rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition active:scale-[0.98] disabled:bg-emerald-300">{isSaving ? 'Đang hoàn tất...' : 'Hoàn tất và vào trang chủ'}</button>
       </form>
@@ -82565,7 +82525,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
             <form onSubmit={handleAuthFormSubmit} className="space-y-4">
               {!showForgotPassword && <>
                 <div className="hd-login-3d-field">
-                  <input type="text" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Username hoặc số điện thoại" autoComplete="username" inputMode="text" />
+                  <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Số điện thoại" autoComplete="username" inputMode="tel" />
                 </div>
                 <div className="hd-login-3d-field relative">
                   <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />

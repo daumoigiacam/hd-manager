@@ -203,7 +203,7 @@ const loginViewSource = appSource.slice(loginViewStart, loginViewStart + 25000);
 assert.ok(loginViewStart >= 0, 'LoginRegisterView must exist');
 assert.match(
   loginViewSource,
-  /\{!showForgotPassword && <>[\s\S]*?placeholder="Username hoặc số điện thoại"[\s\S]*?placeholder="Mật khẩu"[\s\S]*?<\/>,?\}/,
+  /\{!showForgotPassword && <>[\s\S]*?placeholder="Số điện thoại"[\s\S]*?placeholder="Mật khẩu"[\s\S]*?<\/>,?\}/,
   'Login credentials must be hidden while password recovery is open'
 );
 assert.match(
@@ -219,5 +219,18 @@ assert.match(loginViewSource, />Quay lại đăng nhập<\/button>/);
 assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
 assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
 assert.match(loginViewSource, /Đổi mật khẩu thành công\. Bạn có thể đăng nhập bằng mật khẩu mới\./);
+
+const identitySetupStart = appSource.indexOf('function IdentitySetupWizard');
+const identitySetupEnd = appSource.indexOf('function LoginRegisterView', identitySetupStart);
+const identitySetupSource = appSource.slice(identitySetupStart, identitySetupEnd);
+assert.ok(identitySetupStart >= 0 && identitySetupEnd > identitySetupStart, 'Identity setup wizard must exist');
+assert.doesNotMatch(identitySetupSource, /mustSetUsername|placeholder="Username|Vui lòng đặt Username/);
+assert.doesNotMatch(identitySetupSource, /Keychain\/Keystore|Khóa thiết bị được lưu/);
+assert.doesNotMatch(
+  identityFunctionSource,
+  /requiresSetup:\s*Boolean\([^\n]*usernameSet/,
+  'Username must not block first-time setup completion'
+);
+assert.match(identityFunctionSource, /const requestedUsername = normalizeUsername\(username \|\| ''\)/);
 
 console.log('Identity Center unit checks passed.');

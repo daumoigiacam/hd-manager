@@ -253,12 +253,12 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (existing.exists) {
       const identity = existing.data();
       if (identity.status === 'blocked' || identity.lockedAt) return { error: 'Tài khoản đang bị khóa. Vui lòng liên hệ quản trị.' };
-      if (!(await verifyPassword(password, identity.passwordHash))) return { error: 'Tên đăng nhập hoặc mật khẩu không đúng.' };
+      if (!(await verifyPassword(password, identity.passwordHash))) return { error: 'Số điện thoại hoặc mật khẩu không đúng.' };
       return { identityId, identity };
     }
 
     const legacyVerified = legacyHash ? verifyLegacyPassword(password, legacyHash) : password === DEFAULT_FIRST_LOGIN_PASSWORD;
-    if (!legacyVerified) return { error: 'Tên đăng nhập hoặc mật khẩu không đúng.' };
+    if (!legacyVerified) return { error: 'Số điện thoại hoặc mật khẩu không đúng.' };
 
     const now = new Date();
     const identity = {
@@ -392,7 +392,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       identityKey: identityId,
       identity: { ...buildPublicIdentity(identity), identityKey: identityId },
       device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
-      requiresSetup: Boolean(identity.requiresPasswordChange || !identity.setup?.usernameSet || !identity.setup?.pinSet || !identity.setup?.trustedDevice),
+      requiresSetup: Boolean(identity.requiresPasswordChange || !identity.setup?.pinSet || !identity.setup?.trustedDevice),
       setup: identity.setup || {}
     };
   };
@@ -578,7 +578,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       const publicAccount = await getPublicAccountFromIdentifier({ db, appId: getAppId(appId), identifier });
       if (!publicAccount) {
         await recordLoginAttempt(rate.ref, false);
-        return { success: false, statusCode: 401, message: 'Tên đăng nhập hoặc mật khẩu không đúng.' };
+        return { success: false, statusCode: 401, message: 'Số điện thoại hoặc mật khẩu không đúng.' };
       }
       const migrated = await createOrMigrateIdentity({ publicAccount, password, identifier });
       if (migrated.error) {
@@ -589,7 +589,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       identityId = migrated.identityId;
     } else if (identity.status !== 'active' || identity.lockedAt || !(await verifyPassword(password, identity.passwordHash))) {
       await recordLoginAttempt(rate.ref, false);
-      return { success: false, statusCode: 401, message: 'Tên đăng nhập hoặc mật khẩu không đúng.' };
+      return { success: false, statusCode: 401, message: 'Số điện thoại hoặc mật khẩu không đúng.' };
     }
     const session = await issueSession({ identityId, identity, device, loginRateRef: rate.ref });
     return { success: true, ...session };
@@ -607,15 +607,19 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       updates.requiresPasswordChange = false;
       nextSetup.passwordChanged = true;
     }
-    const normalizedUsername = normalizeUsername(username || identity.username || '');
-    if (!normalizedUsername || normalizedUsername.length < 3 || !/^[a-z0-9._-]+$/.test(normalizedUsername)) {
-      throw Object.assign(new Error('Username gồm 3-40 ký tự: chữ thường, số, dấu chấm, gạch dưới hoặc gạch ngang.'), { statusCode: 400 });
+    let normalizedUsername = normalizeUsername(identity.username || '');
+    const requestedUsername = normalizeUsername(username || '');
+    if (requestedUsername) {
+      if (requestedUsername.length < 3 || !/^[a-z0-9._-]+$/.test(requestedUsername)) {
+        throw Object.assign(new Error('Username gồm 3-40 ký tự: chữ thường, số, dấu chấm, gạch dưới hoặc gạch ngang.'), { statusCode: 400 });
+      }
+      const usernameTaken = await db.collection(IDENTITY_ACCOUNT_COLLECTION).where('usernameNormalized', '==', requestedUsername).limit(1).get();
+      if (!usernameTaken.empty && usernameTaken.docs[0].id !== identityId) throw Object.assign(new Error('Username này đã được sử dụng.'), { statusCode: 409 });
+      normalizedUsername = requestedUsername;
+      updates.username = normalizedUsername;
+      updates.usernameNormalized = normalizedUsername;
+      nextSetup.usernameSet = true;
     }
-    const usernameTaken = await db.collection(IDENTITY_ACCOUNT_COLLECTION).where('usernameNormalized', '==', normalizedUsername).limit(1).get();
-    if (!usernameTaken.empty && usernameTaken.docs[0].id !== identityId) throw Object.assign(new Error('Username này đã được sử dụng.'), { statusCode: 409 });
-    updates.username = normalizedUsername;
-    updates.usernameNormalized = normalizedUsername;
-    nextSetup.usernameSet = true;
     if (pin !== undefined && `${pin}`.length) {
       const error = validatePin(pin);
       if (error) throw Object.assign(new Error(error), { statusCode: 400 });
