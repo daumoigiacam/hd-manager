@@ -238,6 +238,7 @@ import {
   shouldInvalidateIdentitySession,
   customerPortalBootstrap,
   customerRedeemPoints,
+  customerCreateDebtPayment,
   requestAiGenerateContent,
 } from './services/identityCenter.js';
 
@@ -3808,6 +3809,30 @@ const requestPayosPaymentLink = async ({ firebaseUser, appId, orderId, receiving
   const payment = payload.payment || payload;
   if (!payment?.checkoutUrl && !payment?.qrCode && !payment?.paymentLinkId) {
     throw new Error('SePay chưa trả về mã QR thanh toán hợp lệ.');
+  }
+  return payment;
+};
+
+const requestCustomerDebtPaymentIntent = async ({ firebaseUser, appId, orderIds = [] }) => {
+  if (!firebaseUser || !Array.isArray(orderIds) || orderIds.length === 0) {
+    throw new Error('Thiếu phiên đăng nhập hoặc danh sách hóa đơn cần thanh toán.');
+  }
+  const idToken = await firebaseUser.getIdToken();
+  let payload = null;
+  try {
+    payload = await customerCreateDebtPayment({ idToken, appId, orderIds });
+  } catch (error) {
+    console.warn('Customer debt payment request failed.', error);
+    throw new Error(error?.message || 'Không kết nối được máy chủ để tạo QR thanh toán công nợ. Vui lòng kiểm tra mạng.');
+  }
+
+  if (payload?.success === false) {
+    console.warn('Customer debt payment request rejected.', payload);
+    throw new Error(payload?.message || 'Chưa tạo được QR thanh toán công nợ.');
+  }
+  const payment = payload.payment || payload;
+  if (!payment?.paymentCode || (!payment?.paymentQrPayload && !payment?.qrCode && !payment?.qrImageUrl)) {
+    throw new Error('Máy chủ chưa trả về QR hoặc nội dung chuyển khoản hợp lệ.');
   }
   return payment;
 };
@@ -20323,6 +20348,7 @@ export default function App() {
       <>
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
         <CustomerPortalView
+          firebaseUser={firebaseUser}
           currentUser={currentUser}
           currentCompany={companyInfo}
           customer={currentCustomerInfo}
@@ -78985,6 +79011,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 }
 
 function CustomerPortalView({
+  firebaseUser,
   currentUser,
   currentCompany,
   customer,
@@ -79027,6 +79054,9 @@ function CustomerPortalView({
   const [isPaymentSheetOpen, setIsPaymentSheetOpen] = useState(false);
   const [selectedPaymentBankId, setSelectedPaymentBankId] = useState('BIDV');
   const [selectedPaymentOrderIds, setSelectedPaymentOrderIds] = useState([]);
+  const [debtPaymentIntent, setDebtPaymentIntent] = useState(null);
+  const [isPreparingDebtPayment, setIsPreparingDebtPayment] = useState(false);
+  const [debtPaymentActionMessage, setDebtPaymentActionMessage] = useState('');
   const [bankLinkForm, setBankLinkForm] = useState({
     bankCode: 'BIDV',
     bankName: getBankOptionLabel('BIDV'),
@@ -79100,6 +79130,12 @@ function CustomerPortalView({
       || safeBankAccounts.find(account => account.customerId === customerId && !account.isArchived)
       || null;
   }, [currentUser?.customerId, customerProfile?.id, safeBankAccounts]);
+  useEffect(() => {
+    const bankCode = `${customerDefaultBankAccount?.bankCode || customerDefaultBankAccount?.bankId || ''}`.trim().toUpperCase();
+    if (bankCode && BANK_ID_OPTIONS.some(option => option.value.toUpperCase() === bankCode)) {
+      setSelectedPaymentBankId(bankCode);
+    }
+  }, [customerDefaultBankAccount?.bankCode, customerDefaultBankAccount?.bankId]);
   const customerBankStatus = getCustomerBankDisplayText(customerDefaultBankAccount?.status, 'unlinked') || 'unlinked';
   const customerBankStatusLabel = {
     linked: 'Đã liên kết',
@@ -79593,14 +79629,16 @@ function CustomerPortalView({
   const noDebtAllowed = customerProfile?.debtPolicy === 'no_debt' || customerProfile?.debtLimitMode === 'no_debt' || customerProfile?.allowDebt === false || debtLimit <= 0;
   const remainingDebtLimit = debtLimit > 0 ? Math.max(0, debtLimit - Math.max(0, ledger.currentDebt || 0)) : 0;
   const isOrderingLocked = noDebtAllowed && (ledger.currentDebt || 0) > 0;
-  const transferProfile = useMemo(() => getInvoiceTransferProfile(currentCompany), [currentCompany]);
-  const customerTransferAccountNumber = transferProfile.sepayReceivingAccountNumber || transferProfile.accountNumber;
-  const hasTransferProfile = Boolean(transferProfile.bankId && customerTransferAccountNumber && transferProfile.accountName);
   const debtPaymentAmount = Math.max(0, Math.round(ledger.currentDebt || 0));
   const unpaidCustomerOrdersForPayment = useMemo(() => {
     const ledgerOrders = Array.isArray(ledger.orders) ? ledger.orders : [];
     return ledgerOrders
-      .filter(order => !order.isArchived && Math.round(parseLooseMoneyValue(order.outstandingAmount)) > 0)
+      .filter(order => (
+        !order.isArchived
+        && !order.isOpeningDebt
+        && `${order.id || order.orderId || ''}`.trim()
+        && Math.round(parseLooseMoneyValue(order.outstandingAmount)) > 0
+      ))
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
   }, [ledger.orders]);
   const unpaidPaymentOrderIdSet = useMemo(
@@ -79618,9 +79656,16 @@ function CustomerPortalView({
     () => selectedPaymentOrders.reduce((sum, order) => sum + Math.max(0, Math.round(parseLooseMoneyValue(order.outstandingAmount))), 0),
     [selectedPaymentOrders]
   );
+  const allPayableInvoiceAmount = useMemo(
+    () => unpaidCustomerOrdersForPayment.reduce((sum, order) => sum + Math.max(0, Math.round(parseLooseMoneyValue(order.outstandingAmount))), 0),
+    [unpaidCustomerOrdersForPayment]
+  );
   const customerPaymentAmount = selectedPaymentOrders.length > 0
     ? selectedPaymentOrderAmount
-    : debtPaymentAmount;
+    : allPayableInvoiceAmount;
+  const activeDebtPaymentAmount = Math.max(0, Math.round(parseLooseMoneyValue(debtPaymentIntent?.amount))) || customerPaymentAmount;
+  const activeDebtPaymentOrderCount = Math.max(0, Math.floor(parseLooseMoneyValue(debtPaymentIntent?.orderCount)))
+    || selectedPaymentOrders.length;
   const loyaltyPointValue = Math.max(1, parseLooseMoneyValue(loyaltySummary.redeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint);
   const availableCustomerPoints = Math.max(0, Math.floor(parseLooseMoneyValue(
     loyaltySummary.currentPoints
@@ -79698,32 +79743,25 @@ function CustomerPortalView({
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
       .slice(0, 10);
   }, [pointsInfo]);
-  const debtPaymentReference = useMemo(() => {
-    if (selectedPaymentOrders.length === 0) return buildCustomerPaymentReference(customerProfile);
-    const orderCodes = selectedPaymentOrders
-      .map(order => formatOrderCode(order.orderCode || order.code || order.id || order.orderId || ''))
-      .map(code => `${code || ''}`.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase())
-      .filter(Boolean);
-    const compactCode = orderCodes.length === 1
-      ? orderCodes[0]
-      : `${orderCodes[0] || 'DON'}-${orderCodes.length}DON`;
-    return compactCode;
-  }, [customerProfile, selectedPaymentOrders]);
-  const selectedPayosPaymentOrder = useMemo(() => {
-    if (selectedPaymentOrders.length !== 1) return null;
-    const order = selectedPaymentOrders[0];
-    return getOrderPayosPaymentSource(order) ? order : null;
-  }, [selectedPaymentOrders]);
-  const debtPaymentPayosSource = useMemo(() => (
-    selectedPayosPaymentOrder ? getOrderPayosPaymentSource(selectedPayosPaymentOrder) : ''
-  ), [selectedPayosPaymentOrder]);
-  const debtPaymentCheckoutUrl = useMemo(() => (
-    `${selectedPayosPaymentOrder?.checkoutUrl || selectedPayosPaymentOrder?.paymentCheckoutUrl || ''}`.trim()
-  ), [selectedPayosPaymentOrder]);
+  const paymentSelectionKey = useMemo(() => unpaidCustomerOrdersForPayment
+    .filter(order => selectedPaymentOrderIds.length === 0 || selectedPaymentOrderIds.includes(`${order.id || order.orderId || order.code || order.orderCode || ''}`))
+    .map(order => `${order.id || order.orderId || order.code || order.orderCode || ''}:${Math.round(parseLooseMoneyValue(order.outstandingAmount))}`)
+    .sort()
+    .join('|'), [selectedPaymentOrderIds, unpaidCustomerOrdersForPayment]);
+  useEffect(() => {
+    setDebtPaymentIntent(null);
+    setDebtPaymentActionMessage('');
+  }, [paymentSelectionKey]);
+  const debtPaymentReference = `${debtPaymentIntent?.paymentCode || ''}`.trim();
+  const debtPaymentCheckoutUrl = `${debtPaymentIntent?.checkoutUrl || debtPaymentIntent?.qrImageUrl || ''}`.trim();
   const debtPaymentQrUrl = useMemo(() => {
-    if (customerPaymentAmount <= 0 || !debtPaymentPayosSource) return '';
-    return buildPayosPaymentQrImageSource(debtPaymentPayosSource);
-  }, [customerPaymentAmount, debtPaymentPayosSource]);
+    const source = debtPaymentIntent?.paymentQrPayload
+      || debtPaymentIntent?.qrCode
+      || debtPaymentIntent?.qrImageUrl
+      || debtPaymentIntent?.paymentQrImageUrl
+      || '';
+    return source ? buildPayosPaymentQrImageSource(source) : '';
+  }, [debtPaymentIntent]);
 
   const getCustomerPortalOrderCode = (item = {}) => {
     if (item.type === 'order') return formatOrderCode(item.id || item.orderId || item.code || item.orderCode || '');
@@ -80028,10 +80066,6 @@ function CustomerPortalView({
     }, 80);
   };
 
-  useEffect(() => {
-    if (transferProfile.bankId) setSelectedPaymentBankId(prev => prev || transferProfile.bankId);
-  }, [transferProfile.bankId]);
-
   const resolveCustomerUnitPrice = (product, branchId = '') => (
     resolveCustomerPortalProductConfiguration(product, branchId || selectedBranchId).unitPrice || 0
   );
@@ -80102,43 +80136,77 @@ function CustomerPortalView({
   }));
   const removeCartItem = (lineId) => setCart(prev => prev.filter(item => item.lineId !== lineId));
 
-  const handleOpenDebtPayment = () => {
+  const handleOpenDebtPayment = async () => {
+    if (isPreparingDebtPayment) return;
     if (customerPaymentAmount <= 0) {
-      setSubmitMessage('Hiện tại bạn không có công nợ cần thanh toán.');
+      setDebtPaymentActionMessage(debtPaymentAmount > 0
+        ? 'Khoản nợ này chưa gắn với hóa đơn để tạo QR tự đối soát. Vui lòng liên hệ công ty.'
+        : 'Hiện tại bạn không có công nợ cần thanh toán.');
       return;
     }
-    if (selectedPaymentOrders.length !== 1) {
-      setSubmitMessage('Vui lòng chọn 1 hóa đơn có thanh toán SePay để đối soát tự động chính xác.');
+    const payableOrders = selectedPaymentOrders.length > 0
+      ? selectedPaymentOrders
+      : unpaidCustomerOrdersForPayment;
+    const orderIds = payableOrders
+      .map(order => `${order.id || order.orderId || ''}`.trim())
+      .filter(Boolean);
+    if (!orderIds.length) {
+      setDebtPaymentActionMessage('Không tìm thấy hóa đơn hợp lệ để tạo QR thanh toán.');
       return;
     }
-    if (!debtPaymentPayosSource || !debtPaymentQrUrl) {
-      setSubmitMessage('Hóa đơn này chưa có QR/link SePay. Vui lòng liên hệ nhân viên phụ trách tạo thanh toán SePay trước.');
-      return;
+
+    setIsPreparingDebtPayment(true);
+    setDebtPaymentActionMessage('');
+    try {
+      const payment = await requestCustomerDebtPaymentIntent({ firebaseUser, appId, orderIds });
+      setDebtPaymentIntent(payment);
+      setIsPaymentSheetOpen(true);
+    } catch (error) {
+      setDebtPaymentActionMessage(error?.message || 'Chưa tạo được QR thanh toán công nợ. Vui lòng thử lại.');
+    } finally {
+      setIsPreparingDebtPayment(false);
     }
-    setSelectedPaymentBankId(prev => prev || transferProfile.bankId || 'BIDV');
-    setIsPaymentSheetOpen(true);
   };
 
   const handleConfirmPaymentTransfer = async () => {
-    const payosUrl = debtPaymentCheckoutUrl || debtPaymentQrUrl;
-    const transferClipboardText = [
-      `Thanh toán SePay cho hóa đơn: ${debtPaymentReference}`,
-      `Số tiền: ${formatCurrency(customerPaymentAmount)} đ`,
-      payosUrl ? `Link SePay: ${payosUrl}` : '',
-      'Vui lòng thanh toán bằng QR/link SePay để hệ thống tự đối soát công nợ.'
-    ].filter(Boolean).join('\n');
-    await copyTextToClipboard(transferClipboardText);
+    if (!debtPaymentReference) return;
+    const copied = await copyTextToClipboard(debtPaymentReference);
+    const bankAppUrl = buildBankAppOpenUrl(selectedPaymentBankId);
+    const paymentFallbackUrl = debtPaymentCheckoutUrl || debtPaymentQrUrl;
+    const opened = bankAppUrl
+      ? await openExternalPaymentUrl(bankAppUrl, paymentFallbackUrl)
+      : await openExternalPaymentUrl(paymentFallbackUrl, debtPaymentQrUrl);
 
-    const opened = await openExternalPaymentUrl(payosUrl, debtPaymentQrUrl);
-
-    setSubmitMessage(opened
-      ? 'Đã mở QR/link SePay. Sau khi thanh toán qua SePay, app sẽ tự đối soát và trừ công nợ.'
-      : 'Chưa mở được QR/link SePay. App đã copy link SePay, bạn có thể dán vào trình duyệt để thanh toán.'
+    setDebtPaymentActionMessage(opened
+      ? `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Đã mở ứng dụng thanh toán.`
+      : `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Chưa mở được ứng dụng ngân hàng; vui lòng quét QR.`
     );
+  };
+
+  const handleCopyDebtPaymentReference = async () => {
+    if (!debtPaymentReference) return;
+    const copied = await copyTextToClipboard(debtPaymentReference);
+    setDebtPaymentActionMessage(copied
+      ? 'Đã sao chép chính xác nội dung chuyển khoản.'
+      : 'Chưa sao chép được. Vui lòng nhấn giữ mã để sao chép.');
   };
 
   const CustomerDebtPaymentButton = ({ compact = false }) => {
     if (debtPaymentAmount <= 0) return null;
+    if (compact) {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('debt');
+            window.setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
+          }}
+          className="mt-3 w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-100"
+        >
+          Thanh toán nợ {formatCurrency(debtPaymentAmount)}
+        </button>
+      );
+    }
     const selectedOrderLabel = selectedPaymentOrders.length > 0
       ? ` (${selectedPaymentOrders.length} đơn)`
       : '';
@@ -80146,9 +80214,12 @@ function CustomerPortalView({
       <button
         type="button"
         onClick={handleOpenDebtPayment}
-        className={`${compact ? 'mt-3' : 'mt-4'} w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-100`}
+        disabled={isPreparingDebtPayment || customerPaymentAmount <= 0}
+        className="mt-4 w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-100 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none"
       >
-        Thanh toán {formatCurrency(customerPaymentAmount)}{selectedOrderLabel}
+        {isPreparingDebtPayment
+          ? 'Đang tạo QR chính xác...'
+          : `Thanh toán ${formatCurrency(customerPaymentAmount)}${selectedOrderLabel}`}
       </button>
     );
   };
@@ -80616,73 +80687,87 @@ function CustomerPortalView({
     if (!isPaymentSheetOpen) return null;
     return (
       <div className="fixed inset-0 z-[90] bg-white text-slate-950">
-        <div className="customer-payment-sheet mx-auto flex min-h-screen w-full max-w-md flex-col px-5 pt-8">
+        <div className="customer-payment-sheet mx-auto flex min-h-screen w-full max-w-md flex-col overflow-y-auto px-5 pb-36 pt-6">
           <button
             type="button"
             onClick={() => setIsPaymentSheetOpen(false)}
-            className="mb-8 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm"
+            className="mb-5 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm"
             aria-label="Đóng thanh toán"
           >
             <X size={28} />
           </button>
 
-          <div className="space-y-9">
+          <div className="space-y-5">
             <section>
-              <p className="mb-3 text-lg font-semibold text-slate-500">Thanh toán SePay</p>
-              <div className="flex items-start gap-3">
-                <div className="mt-2 min-w-[62px] text-sm font-black text-emerald-700">SePay</div>
-                <div className="min-w-0">
-                  <p className="break-all text-3xl font-semibold tracking-tight">{debtPaymentReference}</p>
-                  <p className="mt-1 text-lg text-slate-500">Quét QR hoặc mở link SePay để app tự đối soát.</p>
-                </div>
-              </div>
+              <p className="text-sm font-black uppercase tracking-[0.18em] text-emerald-700">Thanh toán công nợ</p>
+              <h2 className="mt-1 text-2xl font-black text-slate-950">Quét QR hoặc mở app ngân hàng</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">QR đã chứa đúng số tiền và nội dung để SePay tự đối soát.</p>
             </section>
 
-            <section>
-              <p className="mb-3 text-lg font-semibold text-slate-500">Số tiền</p>
-              <div className="flex items-end justify-between border-b border-slate-200 pb-5">
-                <p className="text-5xl font-semibold tracking-tight">{formatNumber(customerPaymentAmount)}</p>
-                <p className="pb-2 text-2xl font-semibold">VND</p>
-              </div>
-              {selectedPaymentOrders.length > 0 && (
-                <p className="mt-3 rounded-2xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
-                  Đang thanh toán {selectedPaymentOrders.length} đơn đã chọn.
-                </p>
-              )}
-            </section>
-
-            <section>
-              <p className="mb-3 text-lg font-semibold text-slate-500">Mã hóa đơn</p>
-              <p className="border-b border-slate-200 pb-5 text-3xl font-medium text-slate-400">{debtPaymentReference}</p>
-            </section>
-
-            <section className="rounded-[2rem] border border-emerald-100 bg-emerald-50/60 p-4">
-              <div className="flex items-center gap-4">
+            <section className="rounded-[2rem] border border-emerald-100 bg-emerald-50/60 p-4 text-center">
+              <div className="flex flex-col items-center">
                 <img
                   src={debtPaymentQrUrl}
                   alt="Mã QR thanh toán"
-                  className="h-28 w-28 rounded-2xl border border-white bg-white object-contain p-2 shadow-sm"
+                  className="h-56 w-56 rounded-3xl border border-white bg-white object-contain p-3 shadow-sm"
                 />
-                <div className="min-w-0">
-                  <p className="text-sm font-black uppercase tracking-[0.18em] text-emerald-700">QR SePay</p>
-                  <p className="mt-2 text-sm font-semibold text-slate-600">Mã này thuộc hóa đơn SePay, thanh toán xong hệ thống sẽ tự đối soát và trừ công nợ.</p>
-                </div>
+                <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">{formatNumber(activeDebtPaymentAmount)} đ</p>
+                <p className="mt-1 text-sm font-semibold text-emerald-700">{activeDebtPaymentOrderCount} hóa đơn</p>
               </div>
             </section>
+
+            <section className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+              <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Nội dung chuyển khoản</p>
+                  <p className="mt-1 break-all text-xl font-black text-slate-950">{debtPaymentReference}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyDebtPaymentReference}
+                  className="rounded-2xl bg-white px-4 py-3 text-sm font-black text-emerald-700 shadow-sm"
+                >
+                  Sao chép
+                </button>
+              </div>
+              <div className="mt-4 border-t border-slate-200 pt-3 text-sm font-semibold text-slate-600">
+                <p>{debtPaymentIntent?.receivingBankName || debtPaymentIntent?.receivingBankCode || 'Ngân hàng nhận'}</p>
+                <p className="mt-1 font-black text-slate-900">{debtPaymentIntent?.receivingBankAccountNumber || ''}</p>
+                <p className="mt-1 text-xs uppercase text-slate-500">{debtPaymentIntent?.receivingBankAccountName || ''}</p>
+              </div>
+            </section>
+
+            <section>
+              <label htmlFor="customer-payment-bank" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                Chọn app ngân hàng muốn mở
+              </label>
+              <select
+                id="customer-payment-bank"
+                value={selectedPaymentBankId}
+                onChange={event => setSelectedPaymentBankId(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400"
+              >
+                {BANK_ID_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </section>
+
+            {debtPaymentActionMessage && (
+              <p className="rounded-2xl bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">{debtPaymentActionMessage}</p>
+            )}
           </div>
         </div>
 
         <div className="customer-payment-action-bar fixed inset-x-0 z-[91] border-t border-slate-100 bg-white/95 px-5 pt-4 shadow-[0_-10px_30px_rgba(15,23,42,0.06)]">
-          <div className="mx-auto grid max-w-md grid-cols-[1fr_auto] items-end gap-3">
-            <p className="min-w-0 text-sm font-semibold leading-5 text-slate-500">
-              Không chuyển khoản thủ công ngoài QR/link SePay nếu muốn tự đối soát.
+          <div className="mx-auto grid max-w-md grid-cols-[1fr_auto] items-center gap-3">
+            <p className="min-w-0 text-xs font-semibold leading-5 text-slate-500">
+              App sẽ sao chép mã <strong>{debtPaymentReference}</strong> trước khi mở ngân hàng.
             </p>
             <button
               type="button"
               onClick={handleConfirmPaymentTransfer}
-              className="rounded-[1.6rem] bg-blue-600 px-7 py-4 text-xl font-bold text-white shadow-lg shadow-blue-100"
+              className="rounded-[1.4rem] bg-blue-600 px-5 py-3 text-base font-bold text-white shadow-lg shadow-blue-100"
             >
-              Mở SePay
+              Mở ngân hàng
             </button>
           </div>
         </div>
@@ -81004,9 +81089,11 @@ function CustomerPortalView({
           </button>
         </div>
       </div>
-      {isOrderingLocked && (
-        <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-semibold text-red-700">
-          <p>Tài khoản đang có công nợ cần thanh toán trước khi đặt thêm đơn mới.</p>
+      {debtPaymentAmount > 0 && (
+        <div className={`rounded-2xl border p-4 text-sm font-semibold ${isOrderingLocked ? 'border-red-100 bg-red-50 text-red-700' : 'border-emerald-100 bg-emerald-50 text-emerald-800'}`}>
+          <p>{isOrderingLocked
+            ? 'Tài khoản đang có công nợ cần thanh toán trước khi đặt thêm đơn mới.'
+            : 'Bạn đang có công nợ. Mở danh sách hóa đơn để chọn và thanh toán.'}</p>
           <CustomerDebtPaymentButton compact />
         </div>
       )}
@@ -81613,10 +81700,13 @@ function CustomerPortalView({
           </div>
         )}
         <CustomerDebtPaymentButton />
+        {debtPaymentActionMessage && !isPaymentSheetOpen && (
+          <p className="mt-3 rounded-2xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{debtPaymentActionMessage}</p>
+        )}
         {debtPaymentAmount > 0 && (
           <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-xs text-emerald-800">
-            <p className="font-bold">Mã hóa đơn SePay: {debtPaymentReference}</p>
-            <p className="mt-1 text-emerald-700">Thanh toán bằng QR/link SePay để app tự đối soát và trừ công nợ.</p>
+            <p className="font-bold">Thanh toán bằng QR SePay</p>
+            <p className="mt-1 text-emerald-700">Chọn hóa đơn rồi bấm Thanh toán. App sẽ tạo đúng số tiền và nội dung chuyển khoản để tự đối soát.</p>
           </div>
         )}
       </div>

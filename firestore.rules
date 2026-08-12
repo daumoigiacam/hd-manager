@@ -58,8 +58,25 @@ service cloud.firestore {
 
     function canCustomerReadDocument(collectionId, docId, data) {
       return isCustomerIdentity()
-        && !(collectionId in ['companies', 'products', 'reward_catalog', 'promotions', 'customer_accounts'])
+        && !(collectionId in [
+          'companies',
+          'products',
+          'reward_catalog',
+          'promotions',
+          'customer_accounts',
+          'customer_payment_intents',
+          'customer_payment_intent_lookup',
+          'customer_payment_intent_transactions'
+        ])
         && customerOwnsDocument(collectionId, docId, data);
+    }
+
+    function isServerManagedCustomerPaymentCollection(collectionId) {
+      return collectionId in [
+        'customer_payment_intents',
+        'customer_payment_intent_lookup',
+        'customer_payment_intent_transactions'
+      ];
     }
 
     function isCustomerWritableCollection(collectionId) {
@@ -570,6 +587,7 @@ service cloud.firestore {
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
           (isEmployeeIdentity() && collectionId != 'customer_accounts')
@@ -587,6 +605,7 @@ service cloud.firestore {
         );
 
       allow update: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
@@ -617,6 +636,7 @@ service cloud.firestore {
         );
 
       allow delete: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && (
           (isEmployeeIdentity() && collectionId != 'customer_accounts')

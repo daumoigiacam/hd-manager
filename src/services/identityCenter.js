@@ -25,6 +25,7 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/audit': 'identityAudit',
   '/api/customer/bootstrap': 'customerPortalBootstrap',
   '/api/customer/redeem-points': 'customerRedeemPoints',
+  '/api/customer/create-debt-payment': 'createCustomerDebtPaymentRequest',
   '/api/ai/generate-content': 'geminiGenerateContent',
 };
 
@@ -452,6 +453,12 @@ export const customerRedeemPoints = ({
   amount,
   requestId,
 }, { idToken });
+
+export const customerCreateDebtPayment = ({ idToken, appId, orderIds }) => requestIdentityApi(
+  '/api/customer/create-debt-payment',
+  { appId, orderIds },
+  { idToken },
+);
 
 export const requestAiGenerateContent = async ({ idToken, appId, request }) => fetchWithTimeout(
   getIdentityApiUrl('/api/ai/generate-content'),

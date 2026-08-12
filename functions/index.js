@@ -7,8 +7,18 @@ const crypto = require('crypto');
 const { createIdentityCenter } = require('./identityCenter');
 const {
   authorizeTenantRequest,
-  authorizeTenantOrderAccess
+  authorizeTenantOrderAccess,
+  getCustomerIdFromOrder
 } = require('./requestAuthorization');
+const {
+  MAX_CUSTOMER_DEBT_PAYMENT_ORDERS,
+  allocateCustomerDebtPayment,
+  buildCustomerDebtLedger,
+  buildCustomerDebtPaymentCode,
+  buildCustomerDebtPaymentFingerprint,
+  buildCustomerDebtPaymentIntentId,
+  normalizeCustomerDebtPaymentOrderIds
+} = require('./customerDebtPayment');
 const {
   buildPointRedemptionId,
   calculateCustomerOutstandingDebt,
@@ -3126,6 +3136,589 @@ const mapSepayPaymentRequest = ({ order, amount, paymentCode, qrCode, qrPayload 
   paymentQrFingerprint: buildSepayPaymentQrFingerprint({ amount, paymentCode, receivingProfile })
 });
 
+const mapCustomerDebtPaymentIntent = (intent = {}) => ({
+  intentId: intent.id || intent.intentId || '',
+  orderIds: Array.isArray(intent.orderIds) ? intent.orderIds : [],
+  orderCount: Array.isArray(intent.orderIds) ? intent.orderIds.length : 0,
+  amount: parseMoney(intent.amount || intent.totalAmount),
+  paymentCode: intent.paymentCode || '',
+  paymentLinkId: intent.paymentLinkId || intent.id || '',
+  checkoutUrl: intent.qrImageUrl || intent.paymentQrImageUrl || '',
+  qrCode: intent.qrPayload || intent.qrImageUrl || '',
+  qrImageUrl: intent.qrImageUrl || intent.paymentQrImageUrl || '',
+  paymentQrImageUrl: intent.qrImageUrl || intent.paymentQrImageUrl || '',
+  paymentQrUrl: intent.qrImageUrl || intent.paymentQrImageUrl || '',
+  paymentQrPayload: intent.qrPayload || intent.qrImageUrl || '',
+  paymentStatus: intent.status || 'pending',
+  provider: 'sepay',
+  receivingBankName: intent.receivingBankName || '',
+  receivingBankCode: intent.receivingBankCode || '',
+  receivingBankAccountNumber: intent.receivingBankAccountNumber || '',
+  receivingBankAccountName: intent.receivingBankAccountName || ''
+});
+
+const buildCustomerDebtPaymentSelectionState = ({
+  companyId = '',
+  customerId = '',
+  customerSnapshot = null,
+  customerOrdersSnapshot = null,
+  customerPaymentsSnapshot = null,
+  selectedOrderSnapshots = [],
+  allowSettledOrders = false
+} = {}) => {
+  if (!customerSnapshot?.exists) {
+    throw createRequestError({ statusCode: 404, code: 'customer_not_found', message: 'Khong tim thay ho so khach hang.' });
+  }
+  const customer = { id: customerSnapshot.id, ...customerSnapshot.data() };
+  if (`${customer.companyId || ''}` !== `${companyId || ''}` || customerSnapshot.id !== `${customerId || ''}`) {
+    throw createRequestError({ statusCode: 403, code: 'customer_company_mismatch', message: 'Ho so khach hang khong thuoc cong ty dang dang nhap.' });
+  }
+
+  const selectedOrders = (Array.isArray(selectedOrderSnapshots) ? selectedOrderSnapshots : []).map((snapshot) => {
+    if (!snapshot?.exists) {
+      throw createRequestError({ statusCode: 404, code: 'order_not_found', message: 'Co hoa don khong con ton tai. Hay tai lai danh sach cong no.' });
+    }
+    const order = { id: snapshot.id, ...snapshot.data() };
+    if (`${order.companyId || ''}` !== `${companyId || ''}` || getCustomerIdFromOrder(order) !== `${customerId || ''}`) {
+      throw createRequestError({ statusCode: 403, code: 'customer_order_denied', message: 'Hoa don khong thuoc tai khoan khach hang nay.' });
+    }
+    if (order.isArchived || ['cancelled', 'canceled'].includes(`${order.status || order.reviewStatus || ''}`.toLowerCase())) {
+      throw createRequestError({ statusCode: 409, code: 'order_not_payable', message: 'Co hoa don da huy hoac luu tru, khong the thanh toan.' });
+    }
+    return order;
+  });
+
+  const orderById = new Map();
+  (customerOrdersSnapshot?.docs || []).forEach((snapshot) => {
+    const order = { id: snapshot.id, ...snapshot.data() };
+    if (`${order.companyId || ''}` === `${companyId || ''}` && getCustomerIdFromOrder(order) === `${customerId || ''}`) {
+      orderById.set(order.id, order);
+    }
+  });
+  selectedOrders.forEach(order => orderById.set(order.id, order));
+  const customerPayments = (customerPaymentsSnapshot?.docs || [])
+    .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }))
+    .filter(payment => `${payment.companyId || ''}` === `${companyId || ''}` && `${payment.customerId || ''}` === `${customerId || ''}`);
+  const ledger = buildCustomerDebtLedger({
+    customer,
+    orders: [...orderById.values()],
+    payments: customerPayments
+  });
+  const ledgerOrderById = new Map(ledger.orders.map(order => [order.id, order]));
+  const items = selectedOrders.map((order) => {
+    const amount = parseMoney(ledger.orderOutstandingById.get(order.id));
+    if (amount <= 0 && !allowSettledOrders) {
+      throw createRequestError({ statusCode: 409, code: 'order_already_paid', message: 'Co hoa don da het no. Hay tai lai danh sach cong no.' });
+    }
+    return {
+      orderId: order.id,
+      orderCode: getOrderInvoiceCode(order),
+      amount
+    };
+  });
+
+  return {
+    customer,
+    selectedOrders,
+    orderById,
+    ledger,
+    ledgerOrderById,
+    items,
+    totalAmount: items.reduce((total, item) => total + item.amount, 0)
+  };
+};
+
+const findCustomerDebtPaymentIntentByTokens = async (appId, tokens = []) => {
+  const normalizedTokens = [...new Set((Array.isArray(tokens) ? tokens : [])
+    .map(normalizeTransferCode)
+    .filter(token => /^HDP[A-Z0-9]{4,20}$/.test(token)))];
+  if (!normalizedTokens.length) return null;
+  const lookupRef = db.collection(collectionPath(appId, 'customer_payment_intent_lookup'));
+  const intentRef = db.collection(collectionPath(appId, 'customer_payment_intents'));
+  for (const token of normalizedTokens) {
+    const lookupSnap = await lookupRef.doc(safeDocIdPart(token)).get();
+    if (!lookupSnap.exists) continue;
+    const intentId = `${lookupSnap.data()?.intentId || ''}`.trim();
+    if (!intentId) continue;
+    const intentSnap = await intentRef.doc(intentId).get();
+    if (intentSnap.exists) return intentSnap;
+  }
+  return null;
+};
+
+const applyCustomerDebtPaymentIntent = async ({
+  appId,
+  intentDoc,
+  paidAmount,
+  description,
+  reference = '',
+  rawPayload = {},
+  trace = null
+}) => {
+  const safePaidAmount = parseMoney(paidAmount);
+  if (safePaidAmount <= 0) return { success: true, status: 'need_reconciliation', reason: 'invalid_amount' };
+
+  const intentData = { id: intentDoc.id, ...intentDoc.data() };
+  const paymentCode = normalizeTransferCode(intentData.paymentCode);
+  if (!paymentCode || !normalizeTransferCode(description).includes(paymentCode)) {
+    return { success: true, status: 'need_reconciliation', reason: 'payment_intent_code_mismatch' };
+  }
+
+  const rawIdentity = `${reference || rawPayload?.data?.id || rawPayload?.id || rawPayload?.transactionDate || ''}`.trim();
+  const identityHash = crypto.createHash('sha256')
+    .update(JSON.stringify({ paymentCode, safePaidAmount, rawIdentity, description }))
+    .digest('hex')
+    .slice(0, 24);
+  const paymentIdentity = safeDocIdPart(rawIdentity) || identityHash;
+  const settlementId = `customer_debt_${safeDocIdPart(intentDoc.id)}_${paymentIdentity}`;
+  const settlementRef = db.collection(collectionPath(appId, 'customer_payment_intent_transactions')).doc(settlementId);
+  const ordersRef = db.collection(collectionPath(appId, 'orders'));
+  const paymentsRef = db.collection(collectionPath(appId, 'payments'));
+  const customerRef = db.collection(collectionPath(appId, 'customers')).doc(`${intentData.customerId || ''}`);
+  const lookupRef = db.collection(collectionPath(appId, 'customer_payment_intent_lookup')).doc(safeDocIdPart(paymentCode));
+  const customerOrdersQuery = ordersRef
+    .where('companyId', '==', `${intentData.companyId || ''}`)
+    .where('customerId', '==', `${intentData.customerId || ''}`);
+  const customerPaymentsQuery = paymentsRef
+    .where('companyId', '==', `${intentData.companyId || ''}`)
+    .where('customerId', '==', `${intentData.customerId || ''}`);
+  const selectedOrderRefs = normalizeCustomerDebtPaymentOrderIds(intentData.orderIds)
+    .map(orderId => ordersRef.doc(orderId));
+  const transactionDate = resolveSepayTransactionDate(rawPayload);
+  const transactionAt = transactionDate.toISOString();
+  const paymentDateKey = getVietnamDateKey(transactionDate);
+  const transactionDateText = resolvePayosTransactionDateText(rawPayload) || transactionAt;
+  const now = new Date().toISOString();
+
+  markPaymentTrace(trace, 'customer_intent_transaction_start', { intentId: intentDoc.id, settlementId });
+  const result = await db.runTransaction(async (transaction) => {
+    const [
+      settlementSnap,
+      latestIntentSnap,
+      customerSnapshot,
+      customerOrdersSnapshot,
+      customerPaymentsSnapshot,
+      ...selectedOrderSnapshots
+    ] = await Promise.all([
+      transaction.get(settlementRef),
+      transaction.get(intentDoc.ref),
+      transaction.get(customerRef),
+      transaction.get(customerOrdersQuery),
+      transaction.get(customerPaymentsQuery),
+      ...selectedOrderRefs.map(orderRef => transaction.get(orderRef))
+    ]);
+    if (settlementSnap.exists) {
+      return { success: true, status: 'duplicate_ignored', settlementId, allocations: [] };
+    }
+    if (!latestIntentSnap.exists) {
+      return { success: true, status: 'need_reconciliation', reason: 'payment_intent_not_found', allocations: [] };
+    }
+
+    const latestIntent = { id: latestIntentSnap.id, ...latestIntentSnap.data() };
+    if (['paid', 'completed'].includes(`${latestIntent.status || ''}`.toLowerCase())) {
+      return { success: true, status: 'duplicate_ignored', reason: 'payment_intent_completed', settlementId, allocations: [] };
+    }
+
+    let selection;
+    try {
+      selection = buildCustomerDebtPaymentSelectionState({
+        companyId: latestIntent.companyId,
+        customerId: latestIntent.customerId,
+        customerSnapshot,
+        customerOrdersSnapshot,
+        customerPaymentsSnapshot,
+        selectedOrderSnapshots,
+        allowSettledOrders: true
+      });
+    } catch (error) {
+      return {
+        success: true,
+        status: 'need_reconciliation',
+        reason: error?.code || 'payment_intent_selection_invalid',
+        settlementId,
+        allocations: []
+      };
+    }
+
+    const allocationResult = allocateCustomerDebtPayment({
+      items: selection.items,
+      orderOutstandingById: selection.ledger.orderOutstandingById,
+      paidAmount: safePaidAmount
+    });
+    if (allocationResult.appliedAmount <= 0) {
+      return { success: true, status: 'need_reconciliation', reason: 'no_outstanding_invoice', settlementId, allocations: [] };
+    }
+
+    const appliedAllocations = [];
+    for (const allocation of allocationResult.allocations) {
+      if (allocation.appliedAmount <= 0) continue;
+      const order = selection.orderById.get(allocation.orderId);
+      const ledgerOrder = selection.ledgerOrderById.get(allocation.orderId);
+      if (!order || !ledgerOrder) continue;
+      const nextPaidAmount = Math.max(0, parseMoney(ledgerOrder.amount) - allocation.remainingAmount);
+      const nextStatus = allocation.remainingAmount <= 0 ? 'paid' : 'partial';
+      const paymentId = `sepay_${safeDocIdPart(order.id)}_${paymentIdentity}`;
+      const paymentRef = paymentsRef.doc(paymentId);
+      const settlementType = allocation.remainingAmount > 0 ? 'partial' : 'exact';
+
+      transaction.set(paymentRef, {
+        id: paymentId,
+        companyId: order.companyId || '',
+        customerId: getCustomerIdFromOrder(order),
+        customerName: order.customerNameSnapshot || order.customerName || order.customer || '',
+        amount: allocation.appliedAmount,
+        appliedAmount: allocation.appliedAmount,
+        overpaidAmount: 0,
+        outstandingAmount: allocation.remainingAmount,
+        remainingDebt: allocation.remainingAmount,
+        paymentStatus: nextStatus,
+        paymentSettlementType: settlementType,
+        method: 'SePay',
+        bankName: latestIntent.receivingBankName || 'SePay',
+        bankCode: latestIntent.receivingBankCode || '',
+        receivingBankName: latestIntent.receivingBankName || '',
+        receivingBankCode: latestIntent.receivingBankCode || '',
+        paymentProvider: 'sepay',
+        paymentLinkId: latestIntent.id,
+        sepayPaymentCode: paymentCode,
+        referenceCode: reference || '',
+        bankContent: paymentCode,
+        note: `SePay ${paymentCode}`,
+        date: paymentDateKey,
+        paymentDate: paymentDateKey,
+        transactionDate: paymentDateKey,
+        transactionDateTime: transactionDateText,
+        paidAt: transactionAt,
+        transactionAt,
+        matchedOrderId: order.id,
+        matchedOrderCode: getOrderInvoiceCode(order),
+        targetOrderId: order.id,
+        autoMatchedByOrderCode: true,
+        customerDebtPaymentIntentId: latestIntent.id,
+        sourceType: 'sepay_customer_debt_webhook',
+        sourceLabel: latestIntent.receivingBankName || 'SePay',
+        sourceOrderId: order.id,
+        createdByEmpId: 'system_sepay',
+        empId: 'system_sepay',
+        createdByRole: 'system',
+        status: 'paid',
+        approvalStatus: 'approved',
+        handoverStatus: 'confirmed',
+        isConfirmed: true,
+        confirmedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        webhookReceivedAt: now,
+        isArchived: false,
+        rawWebhook: rawPayload
+      }, { merge: false });
+
+      transaction.set(ordersRef.doc(order.id), {
+        paymentStatus: nextStatus,
+        sepayPaymentStatus: nextStatus,
+        paymentSettlementType: settlementType,
+        paidAt: nextStatus === 'paid' ? transactionAt : (order.paidAt || ''),
+        partialPaidAt: nextStatus === 'partial' ? transactionAt : (order.partialPaidAt || ''),
+        paidAmount: nextPaidAmount,
+        appliedAmount: nextPaidAmount,
+        outstandingAmount: allocation.remainingAmount,
+        lastPaymentId: paymentId,
+        lastSepayWebhookAt: now,
+        updatedAt: now
+      }, { merge: true });
+      appliedAllocations.push({
+        ...allocation,
+        paymentId,
+        status: nextStatus,
+        order
+      });
+    }
+
+    const appliedAmount = appliedAllocations.reduce((total, allocation) => total + allocation.appliedAmount, 0);
+    const remainingOutstanding = allocationResult.remainingOutstanding;
+    const overpaidAmount = Math.max(0, safePaidAmount - appliedAmount);
+    const nextIntentStatus = remainingOutstanding <= 0 ? 'paid' : 'partial';
+    const remainingCustomerDebt = Math.max(0, selection.ledger.currentDebt - safePaidAmount);
+
+    if (overpaidAmount > 0) {
+      const creditPaymentId = `sepay_credit_${safeDocIdPart(latestIntent.id)}_${paymentIdentity}`;
+      transaction.set(paymentsRef.doc(creditPaymentId), {
+        id: creditPaymentId,
+        companyId: latestIntent.companyId || '',
+        customerId: latestIntent.customerId || '',
+        customerName: selection.customer.name || selection.customer.customerName || '',
+        amount: overpaidAmount,
+        appliedAmount: 0,
+        overpaidAmount,
+        outstandingAmount: 0,
+        remainingDebt: remainingCustomerDebt,
+        paymentStatus: 'paid',
+        paymentSettlementType: 'overpaid',
+        method: 'SePay',
+        bankName: latestIntent.receivingBankName || 'SePay',
+        bankCode: latestIntent.receivingBankCode || '',
+        paymentProvider: 'sepay',
+        paymentLinkId: latestIntent.id,
+        sepayPaymentCode: paymentCode,
+        referenceCode: reference || '',
+        bankContent: paymentCode,
+        note: `SePay ${paymentCode} - tien du`,
+        date: paymentDateKey,
+        paymentDate: paymentDateKey,
+        transactionDate: paymentDateKey,
+        transactionDateTime: transactionDateText,
+        paidAt: transactionAt,
+        transactionAt,
+        customerDebtPaymentIntentId: latestIntent.id,
+        sourceType: 'sepay_customer_debt_credit',
+        sourceLabel: latestIntent.receivingBankName || 'SePay',
+        allocateOldestFirst: true,
+        createdByEmpId: 'system_sepay',
+        empId: 'system_sepay',
+        createdByRole: 'system',
+        status: 'paid',
+        approvalStatus: 'approved',
+        handoverStatus: 'confirmed',
+        isConfirmed: true,
+        confirmedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        webhookReceivedAt: now,
+        isArchived: false,
+        rawWebhook: rawPayload
+      }, { merge: false });
+    }
+
+    transaction.set(intentDoc.ref, {
+      status: nextIntentStatus,
+      paidAmount: parseMoney(latestIntent.paidAmount) + safePaidAmount,
+      appliedAmount: parseMoney(latestIntent.appliedAmount) + appliedAmount,
+      outstandingAmount: remainingOutstanding,
+      overpaidAmount: parseMoney(latestIntent.overpaidAmount) + overpaidAmount,
+      lastSettlementId: settlementId,
+      lastTransactionAt: transactionAt,
+      paidAt: nextIntentStatus === 'paid' ? transactionAt : (latestIntent.paidAt || ''),
+      updatedAt: now
+    }, { merge: true });
+    transaction.set(lookupRef, {
+      status: nextIntentStatus,
+      paidAmount: parseMoney(latestIntent.paidAmount) + safePaidAmount,
+      appliedAmount: parseMoney(latestIntent.appliedAmount) + appliedAmount,
+      outstandingAmount: remainingOutstanding,
+      lastSettlementId: settlementId,
+      updatedAt: now
+    }, { merge: true });
+    transaction.set(settlementRef, {
+      id: settlementId,
+      intentId: intentDoc.id,
+      companyId: latestIntent.companyId || '',
+      customerId: latestIntent.customerId || '',
+      paymentCode,
+      paidAmount: safePaidAmount,
+      appliedAmount,
+      overpaidAmount,
+      outstandingAmount: remainingOutstanding,
+      allocations: appliedAllocations.map(({ order, ...allocation }) => allocation),
+      transactionAt,
+      paymentDateKey,
+      referenceCode: reference || '',
+      status: nextIntentStatus,
+      rawWebhook: rawPayload,
+      createdAt: now,
+      updatedAt: now
+    }, { merge: false });
+    if (`${latestIntent.customerId || ''}`) {
+      transaction.set(customerRef, {
+        lastPaymentAt: transactionAt,
+        lastPaymentDate: paymentDateKey,
+        lastPaymentAmount: safePaidAmount,
+        lastPaymentAppliedAmount: appliedAmount,
+        lastPaymentOverpaidAmount: overpaidAmount,
+        lastPaymentRemainingDebt: remainingCustomerDebt,
+        lastPaymentSettlementType: nextIntentStatus,
+        updatedAt: now
+      }, { merge: true });
+    }
+
+    return {
+      success: true,
+      status: nextIntentStatus,
+      settlementId,
+      appliedAmount,
+      overpaidAmount,
+      outstandingAmount: remainingOutstanding,
+      allocations: appliedAllocations
+    };
+  });
+
+  if (result.allocations?.length) {
+    await Promise.allSettled(result.allocations.map(allocation => enqueuePaymentNotificationJob({
+      appId,
+      order: allocation.order,
+      paymentId: allocation.paymentId,
+      paidAmount: allocation.appliedAmount,
+      appliedAmount: allocation.appliedAmount,
+      overpaidAmount: 0,
+      outstandingAmount: allocation.remainingAmount,
+      status: allocation.status,
+      receivingBankName: intentData.receivingBankName || 'SePay',
+      paymentDateKey,
+      transactionAt,
+      now,
+      provider: 'sepay',
+      providerLabel: 'SePay'
+    })));
+  }
+  markPaymentTrace(trace, 'customer_intent_transaction_complete', {
+    intentId: intentDoc.id,
+    status: result.status,
+    allocationCount: result.allocations?.length || 0
+  });
+  return {
+    ...result,
+    allocations: result.allocations?.map(({ order, ...allocation }) => allocation) || []
+  };
+};
+
+exports.createCustomerDebtPaymentRequest = functions.https.onRequest(runProtectedCustomerRequest(async ({
+  req,
+  appId,
+  customerIdentity
+}) => {
+  const rawOrderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds : [];
+  const orderIds = normalizeCustomerDebtPaymentOrderIds(rawOrderIds);
+  if (!orderIds.length) {
+    throw createRequestError({ statusCode: 400, code: 'order_selection_required', message: 'Hay chon it nhat mot hoa don can thanh toan.' });
+  }
+  if (new Set(rawOrderIds.map(orderId => `${orderId || ''}`.trim()).filter(Boolean)).size > MAX_CUSTOMER_DEBT_PAYMENT_ORDERS) {
+    throw createRequestError({ statusCode: 400, code: 'too_many_orders', message: `Chi ho tro toi da ${MAX_CUSTOMER_DEBT_PAYMENT_ORDERS} hoa don trong mot lan thanh toan.` });
+  }
+
+  const ordersRef = db.collection(collectionPath(appId, 'orders'));
+  const paymentsRef = db.collection(collectionPath(appId, 'payments'));
+  const customerRef = db.collection(collectionPath(appId, 'customers')).doc(customerIdentity.customerId);
+  const selectedOrderRefs = orderIds.map(orderId => ordersRef.doc(orderId));
+  const initialOrderSnap = await selectedOrderRefs[0].get();
+  if (!initialOrderSnap.exists) {
+    throw createRequestError({ statusCode: 404, code: 'order_not_found', message: 'Hoa don khong con ton tai. Hay tai lai danh sach cong no.' });
+  }
+  const initialOrder = { id: initialOrderSnap.id, ...initialOrderSnap.data() };
+  if (
+    `${initialOrder.companyId || ''}` !== `${customerIdentity.companyId || ''}`
+    || getCustomerIdFromOrder(initialOrder) !== `${customerIdentity.customerId || ''}`
+  ) {
+    throw createRequestError({ statusCode: 403, code: 'customer_order_denied', message: 'Hoa don khong thuoc tai khoan khach hang nay.' });
+  }
+  if (initialOrder.isArchived || ['cancelled', 'canceled'].includes(`${initialOrder.status || initialOrder.reviewStatus || ''}`.toLowerCase())) {
+    throw createRequestError({ statusCode: 409, code: 'order_not_payable', message: 'Hoa don da huy hoac luu tru, khong the thanh toan.' });
+  }
+  const receivingProfile = await resolveSepayReceivingProfile(appId, initialOrder, {}, {});
+  if (!receivingProfile.accountNumber) {
+    throw createRequestError({ statusCode: 400, code: 'receiving_account_missing', message: 'Cong ty chua cau hinh tai khoan nhan tien.' });
+  }
+  const customerOrdersQuery = ordersRef
+    .where('companyId', '==', customerIdentity.companyId)
+    .where('customerId', '==', customerIdentity.customerId);
+  const customerPaymentsQuery = paymentsRef
+    .where('companyId', '==', customerIdentity.companyId)
+    .where('customerId', '==', customerIdentity.customerId);
+
+  const result = await db.runTransaction(async (transaction) => {
+    const [customerSnapshot, customerOrdersSnapshot, customerPaymentsSnapshot, ...selectedOrderSnapshots] = await Promise.all([
+      transaction.get(customerRef),
+      transaction.get(customerOrdersQuery),
+      transaction.get(customerPaymentsQuery),
+      ...selectedOrderRefs.map(orderRef => transaction.get(orderRef))
+    ]);
+    const selection = buildCustomerDebtPaymentSelectionState({
+      companyId: customerIdentity.companyId,
+      customerId: customerIdentity.customerId,
+      customerSnapshot,
+      customerOrdersSnapshot,
+      customerPaymentsSnapshot,
+      selectedOrderSnapshots
+    });
+    const items = selection.items;
+    const totalAmount = selection.totalAmount;
+    const fingerprint = buildCustomerDebtPaymentFingerprint({
+      companyId: customerIdentity.companyId,
+      customerId: customerIdentity.customerId,
+      items,
+      receivingProfile
+    });
+    const intentId = buildCustomerDebtPaymentIntentId(fingerprint);
+    const paymentCode = buildCustomerDebtPaymentCode(fingerprint);
+    const intentRef = db.collection(collectionPath(appId, 'customer_payment_intents')).doc(intentId);
+    const lookupRef = db.collection(collectionPath(appId, 'customer_payment_intent_lookup')).doc(safeDocIdPart(paymentCode));
+    const existingIntentSnap = await transaction.get(intentRef);
+    if (existingIntentSnap.exists) {
+      const existingIntent = { id: existingIntentSnap.id, ...existingIntentSnap.data() };
+      if (['pending', 'partial'].includes(`${existingIntent.status || ''}`.toLowerCase())) {
+        return { reused: true, intent: existingIntent };
+      }
+      throw createRequestError({
+        statusCode: 409,
+        code: 'payment_intent_completed',
+        message: 'Phien thanh toan nay da hoan tat. Hay tai lai danh sach cong no.'
+      });
+    }
+
+    const qrImageUrl = buildSepayQrImageUrl({ receivingProfile, amount: totalAmount, description: paymentCode });
+    const qrPayload = buildSepayQrPayload({ receivingProfile, amount: totalAmount, description: paymentCode });
+    if (!qrImageUrl && !qrPayload) {
+      throw createRequestError({ statusCode: 500, code: 'qr_generation_failed', message: 'Khong tao duoc QR thanh toan cong no.' });
+    }
+    const now = new Date().toISOString();
+    const intent = {
+      id: intentId,
+      intentId,
+      companyId: customerIdentity.companyId,
+      customerId: customerIdentity.customerId,
+      appUserId: customerIdentity.appUserId,
+      identityId: customerIdentity.identityId,
+      fingerprint,
+      paymentCode,
+      paymentLinkId: intentId,
+      orderIds,
+      items,
+      amount: totalAmount,
+      totalAmount,
+      paidAmount: 0,
+      appliedAmount: 0,
+      outstandingAmount: totalAmount,
+      overpaidAmount: 0,
+      status: 'pending',
+      provider: 'sepay',
+      qrImageUrl,
+      paymentQrImageUrl: qrImageUrl,
+      qrPayload: qrPayload || qrImageUrl,
+      receivingBankName: receivingProfile.bankName,
+      receivingBankCode: receivingProfile.bankCode,
+      receivingBankAccountNumber: receivingProfile.accountNumber,
+      receivingBankAccountName: receivingProfile.accountName,
+      receivingBankMainAccountNumber: receivingProfile.mainAccountNumber || '',
+      receivingBankVirtualAccountNumber: receivingProfile.virtualAccountNumber || '',
+      receivingBankIsVirtualAccount: Boolean(receivingProfile.isVirtualAccount),
+      isArchived: false,
+      createdAt: now,
+      updatedAt: now
+    };
+    transaction.set(intentRef, intent, { merge: false });
+    transaction.set(lookupRef, {
+      id: safeDocIdPart(paymentCode),
+      paymentCode,
+      intentId,
+      companyId: customerIdentity.companyId,
+      customerId: customerIdentity.customerId,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now
+    }, { merge: false });
+    return { reused: false, intent };
+  });
+  return { success: true, reused: result.reused, payment: mapCustomerDebtPaymentIntent(result.intent) };
+}, 'Khong tao duoc QR thanh toan cong no.'));
+
 exports.createSepayPaymentRequest = functions.https.onRequest(async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).send('');
@@ -3369,6 +3962,20 @@ exports.sepayWebhook = functions.https.onRequest(async (req, res) => {
     if (!invoiceTokens.length && /sepay\s+test\s+webhook\s+delivery/i.test(description)) {
       markPaymentTrace(trace, 'webhook_test_accepted');
       return sendJson(res, 200, { success: true, status: 'test_accepted' });
+    }
+    const customerDebtIntentDoc = await findCustomerDebtPaymentIntentByTokens(appId, invoiceTokens);
+    if (customerDebtIntentDoc) {
+      markPaymentTrace(trace, 'customer_intent_lookup_found', { intentId: customerDebtIntentDoc.id });
+      const result = await applyCustomerDebtPaymentIntent({
+        appId,
+        intentDoc: customerDebtIntentDoc,
+        paidAmount,
+        description,
+        reference: webhookData.referenceCode || webhookData.id || `${webhookData.transactionDate || Date.now()}`,
+        rawPayload: req.body,
+        trace
+      });
+      return sendJson(res, 200, { success: true, performance: summarizePaymentTrace(trace), ...result });
     }
     markPaymentTrace(trace, 'order_lookup_start');
     let orderDoc = await findOrderByPayosData(appId, {

@@ -67,6 +67,10 @@
         "function": "customerRedeemPoints"
       },
       {
+        "source": "/api/customer/create-debt-payment",
+        "function": "createCustomerDebtPaymentRequest"
+      },
+      {
         "source": "/api/ai/generate-content",
         "function": "geminiGenerateContent"
       },

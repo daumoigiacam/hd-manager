@@ -8,6 +8,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -95,6 +96,21 @@ try {
       companyId: companyA,
       employeeId: 'employee-a',
       status: 'LOCKED'
+    });
+    await seed('customer_payment_intents', 'intent-a', {
+      companyId: companyA,
+      customerId: customerA,
+      status: 'pending'
+    });
+    await seed('customer_payment_intent_lookup', 'lookup-a', {
+      companyId: companyA,
+      customerId: customerA,
+      intentId: 'intent-a'
+    });
+    await seed('customer_payment_intent_transactions', 'transaction-a', {
+      companyId: companyA,
+      customerId: customerA,
+      intentId: 'intent-a'
     });
   });
 
@@ -244,6 +260,33 @@ try {
     await assertFails(updateDoc(doc(customerADb, pathFor('customer_points', 'points-a')), {
       available_points: 0
     }));
+  });
+
+  await test('customer debt payment intents are writable only by the trusted server', async () => {
+    const seededDocuments = [
+      ['customer_payment_intents', 'intent-a'],
+      ['customer_payment_intent_lookup', 'lookup-a'],
+      ['customer_payment_intent_transactions', 'transaction-a']
+    ];
+    for (const [collectionName, seededId] of seededDocuments) {
+      const employeeRef = doc(employeeADb, pathFor(collectionName, seededId));
+      const customerRef = doc(customerADb, pathFor(collectionName, seededId));
+      await assertFails(getDoc(customerRef));
+      await assertFails(setDoc(doc(employeeADb, pathFor(collectionName, `${seededId}-employee-create`)), {
+        id: `${seededId}-employee-create`,
+        companyId: companyA,
+        customerId: customerA
+      }));
+      await assertFails(setDoc(doc(customerADb, pathFor(collectionName, `${seededId}-customer-create`)), {
+        id: `${seededId}-customer-create`,
+        companyId: companyA,
+        customerId: customerA
+      }));
+      await assertFails(updateDoc(employeeRef, { status: 'paid' }));
+      await assertFails(updateDoc(customerRef, { status: 'paid' }));
+      await assertFails(deleteDoc(employeeRef));
+      await assertFails(deleteDoc(customerRef));
+    }
   });
 
   await test('customers can create only their own order requests', async () => {
