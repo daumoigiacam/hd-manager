@@ -185,27 +185,43 @@ const normalizeCustomerDebtPaymentOrderIds = (orderIds = []) => {
     .slice(0, MAX_CUSTOMER_DEBT_PAYMENT_ORDERS);
 };
 
+const normalizeCustomerDebtPaymentCode = (value = '') => `${value || ''}`
+  .replace(/^\s*TT\s*/i, '')
+  .toUpperCase()
+  .replace(/[^A-Z0-9]/g, '');
+
+const normalizeCustomerDebtPaymentLookupTokens = (tokens = []) => [...new Set(
+  (Array.isArray(tokens) ? tokens : [])
+    .map(normalizeCustomerDebtPaymentCode)
+    .filter(token => /^HD[A-Z0-9]{4,20}$/.test(token))
+)];
+
 const buildCustomerDebtPaymentFingerprint = ({
   companyId = '',
   customerId = '',
   items = [],
   receivingProfile = {}
 } = {}) => {
-  const normalizedItems = (Array.isArray(items) ? items : [])
+  const sourceItems = Array.isArray(items) ? items : [];
+  const normalizedItems = sourceItems
     .map(item => ({
       orderId: `${item?.orderId || ''}`.trim(),
       amount: Math.max(0, Math.round(Number(item?.amount) || 0))
     }))
     .filter(item => item.orderId && item.amount > 0)
     .sort((left, right) => left.orderId.localeCompare(right.orderId));
-  const source = JSON.stringify({
+  const fingerprintPayload = {
     companyId: `${companyId || ''}`.trim(),
     customerId: `${customerId || ''}`.trim(),
     receivingBankCode: `${receivingProfile.bankQrCode || receivingProfile.bankCode || receivingProfile.bankName || ''}`.trim().toUpperCase(),
     receivingAccountNumber: `${receivingProfile.accountNumber || ''}`.replace(/[^\dA-Za-z]/g, '').toUpperCase(),
     receivingAccountName: `${receivingProfile.accountName || ''}`.trim().toUpperCase(),
     items: normalizedItems
-  });
+  };
+  if (normalizedItems.length === 1) {
+    fingerprintPayload.singleInvoiceCode = normalizeCustomerDebtPaymentCode(sourceItems[0]?.orderCode);
+  }
+  const source = JSON.stringify(fingerprintPayload);
   return crypto.createHash('sha256').update(source).digest('hex');
 };
 
@@ -213,6 +229,15 @@ const buildCustomerDebtPaymentCode = (fingerprint = '') => {
   const safeFingerprint = `${fingerprint || ''}`.replace(/[^a-fA-F0-9]/g, '');
   if (!safeFingerprint) return '';
   return `HDP${safeFingerprint.slice(0, 12).toUpperCase()}`;
+};
+
+const resolveCustomerDebtPaymentCode = ({ fingerprint = '', items = [] } = {}) => {
+  const normalizedItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (normalizedItems.length === 1) {
+    const invoiceCode = normalizeCustomerDebtPaymentCode(normalizedItems[0]?.orderCode);
+    if (/^HD[A-Z0-9]{4,20}$/.test(invoiceCode)) return invoiceCode;
+  }
+  return buildCustomerDebtPaymentCode(fingerprint);
 };
 
 const buildCustomerDebtPaymentIntentId = (fingerprint = '') => {
@@ -263,5 +288,7 @@ module.exports = {
   buildCustomerDebtPaymentCode,
   buildCustomerDebtPaymentFingerprint,
   buildCustomerDebtPaymentIntentId,
-  normalizeCustomerDebtPaymentOrderIds
+  normalizeCustomerDebtPaymentOrderIds,
+  normalizeCustomerDebtPaymentLookupTokens,
+  resolveCustomerDebtPaymentCode
 };

@@ -1,3 +1,5 @@
+import { calculateBillableAmount } from '../services/customerProductBilling.js';
+
 export const DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT = 3;
 
 const toFiniteNumber = (value) => {
@@ -82,4 +84,31 @@ export function getVisibleDeliveryReconciliationGroups(
 ) {
   if (expanded) return groups;
   return (groups || []).slice(0, Math.max(0, limit));
+}
+
+export function calculateDeliveryActualCollectionTotal(rows = []) {
+  return Math.round((rows || []).reduce((total, row) => {
+    const billing = calculateBillableAmount({
+      configuration: {
+        billingUnit: row?.billingUnit || row?.pricingUnit || '',
+        pricingUnit: row?.pricingUnit || row?.billingUnit || '',
+        unitPrice: row?.unitPrice || 0,
+      },
+      actualQuantity: row?.actualQuantity ?? row?.actualQuantityValue ?? 0,
+      actualUnit: row?.actualUnit || row?.actualQuantityUnit || '',
+      actualWeightKg: row?.actualWeightKg ?? row?.actualWeight ?? 0,
+    });
+    return total + (billing.isValid ? billing.amount : 0);
+  }, 0));
+}
+
+export function resolveDeliveryCollectionDraftAmount({
+  suggestedAmount = 0,
+  currentAmount = '',
+  incomePanelOpen = false,
+  manuallyEdited = false,
+} = {}) {
+  if (!incomePanelOpen || manuallyEdited) return currentAmount;
+  const normalizedSuggestion = toFiniteNumber(suggestedAmount);
+  return normalizedSuggestion > 0 ? Math.round(normalizedSuggestion) : '';
 }

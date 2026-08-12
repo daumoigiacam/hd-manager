@@ -8,7 +8,9 @@ const {
   buildCustomerDebtPaymentCode,
   buildCustomerDebtPaymentFingerprint,
   buildCustomerDebtPaymentIntentId,
-  normalizeCustomerDebtPaymentOrderIds
+  normalizeCustomerDebtPaymentOrderIds,
+  normalizeCustomerDebtPaymentLookupTokens,
+  resolveCustomerDebtPaymentCode
 } = require('../functions/customerDebtPayment');
 
 const orderIds = normalizeCustomerDebtPaymentOrderIds(['order-b', 'order-a', 'order-b', '', null]);
@@ -38,6 +40,66 @@ const reorderedFingerprint = buildCustomerDebtPaymentFingerprint({
 assert.strictEqual(firstFingerprint, reorderedFingerprint, 'The same invoices and amounts must reuse one idempotency key.');
 assert.match(buildCustomerDebtPaymentCode(firstFingerprint), /^HDP[A-F0-9]{12}$/, 'Transfer content must be recognized by the SePay HD token parser.');
 assert.match(buildCustomerDebtPaymentIntentId(firstFingerprint), /^customer_debt_[a-f0-9]{32}$/, 'Intent ID must be deterministic.');
+
+const reorderedFingerprintWithCodes = buildCustomerDebtPaymentFingerprint({
+  companyId: 'company-1',
+  customerId: 'customer-1',
+  items: [
+    { orderId: 'order-a', orderCode: 'HDVIC1A2', amount: 100000 },
+    { orderId: 'order-b', orderCode: 'HDVIC2B3', amount: 200000 }
+  ]
+});
+assert.strictEqual(
+  reorderedFingerprintWithCodes,
+  reorderedFingerprint,
+  'Aggregate payment fingerprints must remain backward compatible after adding single-invoice codes.'
+);
+
+const singleInvoiceFingerprint = buildCustomerDebtPaymentFingerprint({
+  companyId: 'company-1',
+  customerId: 'customer-1',
+  items: [{ orderId: 'order-a', orderCode: 'HDVIC1A2', amount: 100000 }]
+});
+assert.strictEqual(
+  resolveCustomerDebtPaymentCode({
+    fingerprint: singleInvoiceFingerprint,
+    items: [{ orderId: 'order-a', orderCode: 'HDVIC1A2', amount: 100000 }]
+  }),
+  'HDVIC1A2',
+  'One selected invoice must keep its own invoice code for SePay reconciliation.'
+);
+assert.strictEqual(
+  resolveCustomerDebtPaymentCode({
+    fingerprint: singleInvoiceFingerprint,
+    items: [{ orderId: 'order-a', orderCode: 'TT HD-VIC1A2', amount: 100000 }]
+  }),
+  'HDVIC1A2',
+  'The invoice code must be normalized without changing its identity.'
+);
+assert.match(
+  resolveCustomerDebtPaymentCode({
+    fingerprint: firstFingerprint,
+    items: [
+      { orderId: 'order-a', orderCode: 'HDVIC1A2', amount: 100000 },
+      { orderId: 'order-b', orderCode: 'HDVIC2B3', amount: 200000 }
+    ]
+  }),
+  /^HDP[A-F0-9]{12}$/,
+  'Two or more selected invoices must receive a new aggregate reconciliation code.'
+);
+assert.match(
+  resolveCustomerDebtPaymentCode({
+    fingerprint: singleInvoiceFingerprint,
+    items: [{ orderId: 'order-a', orderCode: '', amount: 100000 }]
+  }),
+  /^HDP[A-F0-9]{12}$/,
+  'A legacy invoice without a safe code must fall back to an aggregate reconciliation code.'
+);
+assert.deepStrictEqual(
+  normalizeCustomerDebtPaymentLookupTokens(['TT HD-VIC1A2', 'hdpabcdef1234', 'HDVIC1A2', 'INVALID']),
+  ['HDVIC1A2', 'HDPABCDEF1234'],
+  'Webhook lookup must accept unique HD invoice and HDP aggregate reconciliation codes only.'
+);
 
 const firstBankFingerprint = buildCustomerDebtPaymentFingerprint({
   companyId: 'company-1',
@@ -163,6 +225,20 @@ assert.strictEqual(
 );
 
 const firestoreRules = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
+const functionsSource = fs.readFileSync(path.join(__dirname, '..', 'functions', 'index.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
+assert.ok(
+  functionsSource.includes('normalizeCustomerDebtPaymentLookupTokens(tokens)'),
+  'The webhook intent lookup must accept both a single HD invoice code and an HDP aggregate code.'
+);
+assert.ok(
+  functionsSource.includes('resolveCustomerDebtPaymentCode({ fingerprint, items })'),
+  'The payment endpoint must resolve its reconciliation code from the selected invoice count.'
+);
+assert.ok(
+  !appSource.includes('Thanh toán bằng QR SePay'),
+  'The redundant QR SePay instruction must not remain below the payment selection.'
+);
 for (const collectionName of [
   'customer_payment_intents',
   'customer_payment_intent_lookup',

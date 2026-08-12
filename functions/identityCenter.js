@@ -315,12 +315,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
   };
 
-  const issueSession = async ({ identityId, identity, device }) => {
+  const issueSession = async ({ identityId, identity, device, loginRateRef = null }) => {
     const now = new Date();
     const cleanDevice = sanitizeDevice(device);
     const deviceRef = getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId);
-    const deviceSnap = await deviceRef.get();
-    const currentDevice = deviceSnap.exists ? deviceSnap.data() : {};
+    const deviceSnapshotPromise = deviceRef.get();
     const claims = {
       identityId,
       companyId: identity.companyId || '',
@@ -348,8 +347,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       }
       await admin.auth().setCustomUserClaims(firebaseUid, claims);
     }
-    const customToken = await admin.auth().createCustomToken(firebaseUid, claims);
-    await deviceRef.set({
+    const customTokenPromise = admin.auth().createCustomToken(firebaseUid, claims);
+    const deviceSnap = await deviceSnapshotPromise;
+    const currentDevice = deviceSnap.exists ? deviceSnap.data() : {};
+    const batch = db.batch();
+    batch.set(deviceRef, {
       ...cleanDevice,
       trusted: Boolean(currentDevice.trusted),
       revokedAt: null,
@@ -360,8 +362,31 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       updatedAt: now,
       updatedAtIso: now.toISOString()
     }, { merge: true });
-    await getIdentityRef(identityId).set({ updatedAt: now, updatedAtIso: now.toISOString(), lastLoginAt: now, lastLoginAtIso: now.toISOString() }, { merge: true });
-    await logAudit(identityId, 'login', { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform });
+    batch.set(getIdentityRef(identityId), {
+      updatedAt: now,
+      updatedAtIso: now.toISOString(),
+      lastLoginAt: now,
+      lastLoginAtIso: now.toISOString()
+    }, { merge: true });
+    batch.set(db.collection(IDENTITY_AUDIT_COLLECTION).doc(), {
+      accountId: identityId,
+      action: 'login',
+      metadata: { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform },
+      createdAt: now,
+      createdAtIso: now.toISOString(),
+      immutable: true
+    });
+    if (loginRateRef) {
+      batch.set(loginRateRef, {
+        attempts: 0,
+        blockedUntil: null,
+        updatedAt: now
+      }, { merge: true });
+    }
+    const [customToken] = await Promise.all([
+      customTokenPromise,
+      batch.commit()
+    ]);
     return {
       customToken,
       identityKey: identityId,
@@ -499,14 +524,12 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     const key = hashOpaqueSecret(`${normalizePhone(identifier) || normalizeUsername(identifier)}|login`);
     const ref = db.collection(IDENTITY_RATE_LIMIT_COLLECTION).doc(key);
     const now = Date.now();
-    const result = await db.runTransaction(async transaction => {
-      const snapshot = await transaction.get(ref);
-      const data = snapshot.exists ? snapshot.data() : {};
-      const blockedUntil = data.blockedUntil?.toMillis?.() || 0;
-      if (blockedUntil > now) return { blocked: true, waitMs: blockedUntil - now };
-      return { blocked: false };
-    });
-    return { ...result, ref };
+    const snapshot = await ref.get();
+    const data = snapshot.exists ? snapshot.data() : {};
+    const blockedUntil = data.blockedUntil?.toMillis?.() || 0;
+    return blockedUntil > now
+      ? { blocked: true, waitMs: blockedUntil - now, ref }
+      : { blocked: false, ref };
   };
 
   const recordLoginAttempt = async (ref, success) => {
@@ -568,8 +591,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       await recordLoginAttempt(rate.ref, false);
       return { success: false, statusCode: 401, message: 'Tên đăng nhập hoặc mật khẩu không đúng.' };
     }
-    await recordLoginAttempt(rate.ref, true);
-    return { success: true, ...(await issueSession({ identityId, identity, device })) };
+    const session = await issueSession({ identityId, identity, device, loginRateRef: rate.ref });
+    return { success: true, ...session };
   };
 
   const completeSetup = async ({ authorization, device, password, username, pin, biometricEnabled, trustDevice = false }) => {

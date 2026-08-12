@@ -105,6 +105,7 @@ for (const expectedPath of [
 }
 assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.cloudfunctions\.net/);
 assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
+assert.match(identityClientSource, /export const warmIdentityLoginService/);
 assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identityRegisterCompany'/);
 assert.match(identityClientSource, /export const identityRegisterCompany/);
 assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
@@ -160,6 +161,8 @@ assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWith
 assert.match(identitySessionSource, /auth\.identity_login\.custom_token_completed/);
 assert.match(identitySessionSource, /auth\.identity_login\.shell_released/);
 assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
+assert.match(identityFunctionSource, /const \[customToken\] = await Promise\.all\([\s\S]*?batch\.commit\(\)/);
+assert.match(identityFunctionSource, /loginRateRef: rate\.ref/);
 assert.match(identityFunctionSource, /const registerCompany = async/);
 assert.match(identityFunctionSource, /await db\.runTransaction/);
 assert.match(identityFunctionSource, /transaction\.create\(companyRef, company\)/);
@@ -209,6 +212,7 @@ assert.match(
   'Login submit action must be hidden while password recovery is open'
 );
 assert.match(loginViewSource, /<form onSubmit=\{handleAuthFormSubmit\}/);
+assert.match(loginViewSource, /void warmIdentityLoginService\(\)/);
 assert.match(loginViewSource, /if \(!showForgotPassword\) return handleLoginSubmit\(event\)/);
 assert.match(loginViewSource, /if \(!recoveryToken\) return handleForgotPasswordSubmit\(event\)/);
 assert.match(loginViewSource, />Quay lại đăng nhập<\/button>/);

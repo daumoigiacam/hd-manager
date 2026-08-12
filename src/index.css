@@ -611,12 +611,7 @@ svg {
 }
 
 .customer-payment-sheet {
-  padding-bottom: calc(var(--hd-customer-footer-space) + 1.5rem);
-}
-
-.customer-payment-action-bar {
-  bottom: var(--hd-customer-system-nav-gap);
-  padding-bottom: 0.85rem !important;
+  padding-bottom: max(var(--hd-safe-bottom), 1.5rem);
 }
 
 .mobile-order-action-bar {

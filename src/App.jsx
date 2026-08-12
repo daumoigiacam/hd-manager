@@ -35,8 +35,10 @@ import {
 import {
   DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT,
   buildPendingDeliveryReconciliationGroups,
+  calculateDeliveryActualCollectionTotal,
   countPendingDeliveryReconciliationDispatches,
-  getVisibleDeliveryReconciliationGroups
+  getVisibleDeliveryReconciliationGroups,
+  resolveDeliveryCollectionDraftAmount
 } from './utils/deliveryReconciliationUx.js';
 import {
   applyEvaluationBonusToSalaryDetails,
@@ -103,6 +105,13 @@ import {
   getWorkflowDataReadiness,
   shouldShowMissingWorkflowSetup
 } from './utils/workflowDataReadiness.js';
+import {
+  buildVietQrBankAppDeeplink,
+  isMobileBankAppEnvironment,
+  isVietQrBankAppSupported,
+  launchBankPaymentAndCopyReference,
+  resolveVietQrBankAppId
+} from './utils/bankAppDeeplink.js';
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
@@ -236,6 +245,7 @@ import {
   identitySetBiometric,
   identityVerifyPin,
   shouldInvalidateIdentitySession,
+  warmIdentityLoginService,
   customerPortalBootstrap,
   customerRedeemPoints,
   customerCreateDebtPayment,
@@ -3070,34 +3080,8 @@ const BANK_ID_OPTIONS = [
   { value: 'VNPTMONEY', label: 'VNPT Money' }
 ];
 
-const BANK_APP_OPEN_URLS = {
-  BIDV: ['bidvsmartbanking://', 'bidv://'],
-  VCB: ['vietcombank://', 'vcb://'],
-  ICB: ['vietinbank://', 'vietinbankipay://'],
-  VBA: ['agribank://', 'agribankplus://'],
-  TCB: ['techcombank://', 'fmbank://'],
-  MB: ['mbbank://', 'mbbankplus://'],
-  ACB: ['acb://', 'acbone://'],
-  VPB: ['vpbank://', 'vpbankneo://'],
-  VIB: ['vib://', 'myvib://'],
-  STB: ['sacombank://', 'sacombankpay://'],
-  TPB: ['tpbank://', 'tpb://'],
-  HDB: ['hdbank://', 'hdbankmobile://'],
-  SHB: ['shb://', 'shbmobile://'],
-  MSB: ['msb://', 'tnex://'],
-  EIB: ['eximbank://'],
-  OCB: ['ocb://', 'omni://'],
-  VTLMONEY: ['viettelmoney://'],
-  VNPTMONEY: ['vnptmoney://']
-};
-
 const getBankOptionLabel = (bankId = '') => BANK_ID_OPTIONS.find(option => option.value === bankId)?.label || bankId || 'Ngân hàng';
-const buildBankAppOpenUrls = (bankId = '') => {
-  const value = BANK_APP_OPEN_URLS[`${bankId || ''}`.toUpperCase()];
-  if (!value) return [];
-  return Array.isArray(value) ? value.filter(Boolean) : [value].filter(Boolean);
-};
-const buildBankAppOpenUrl = (bankId = '') => buildBankAppOpenUrls(bankId)[0] || '';
+const BANK_APP_OPEN_OPTIONS = BANK_ID_OPTIONS.filter(option => isVietQrBankAppSupported(option.value));
 
 const VIETNAM_BANK_BINS = {
   BIDV: '970418',
@@ -3328,7 +3312,7 @@ const buildCustomerPaymentReference = (customer = null) => {
   return `TT ${rawId || 'KH'} ${getTodayString().replaceAll('-', '')}`;
 };
 
-const openExternalPaymentUrl = async (url = '', fallbackUrl = '') => {
+const openExternalPaymentUrl = async (url = '', fallbackUrl = '', { preferSameWindow = false } = {}) => {
   const safeUrl = `${url || ''}`.trim();
   if (!safeUrl) return false;
   const safeFallbackUrl = `${fallbackUrl || ''}`.trim();
@@ -3340,9 +3324,22 @@ const openExternalPaymentUrl = async (url = '', fallbackUrl = '') => {
       console.warn('Khong mo duoc bang native launcher, thu cach web.', error);
     }
   }
+  const isMobileWeb = typeof navigator !== 'undefined' && isMobileBankAppEnvironment(navigator.userAgent);
+  if ((preferSameWindow || isMobileWeb) && typeof window !== 'undefined') {
+    try {
+      window.location.assign(safeUrl);
+      return true;
+    } catch (error) {
+      console.warn('Khong dieu huong duoc link thanh toan tren dien thoai.', error);
+    }
+  }
   try {
-    const opened = window.open(safeUrl, '_blank', 'noopener,noreferrer');
-    if (opened) return true;
+    const opened = window.open('about:blank', '_blank');
+    if (opened) {
+      opened.opener = null;
+      opened.location.replace(safeUrl);
+      return true;
+    }
   } catch (error) {
     console.warn('Khong mo duoc cua so thanh toan moi, thu dieu huong truc tiep.', error);
   }
@@ -48387,6 +48384,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const [note, setNote] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
   const [collectedAmount, setCollectedAmount] = useState('');
+  const [collectedAmountManuallyEdited, setCollectedAmountManuallyEdited] = useState(false);
   const [collectedMethod, setCollectedMethod] = useState('Tiền mặt');
   const [deliveryExpenseAmount, setDeliveryExpenseAmount] = useState('');
   const [deliveryExpenseCategory, setDeliveryExpenseCategory] = useState('');
@@ -49226,15 +49224,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       return changed ? next : current;
     });
   }, [latestReportByDispatch]);
-  const selectedCustomerCollectionHint = useMemo(() => {
-    if (!selectedCustomerId) return 0;
-    const selectedCustomerName = normalizeLookupText(customerLookup.get(selectedCustomerId)?.name || customerSearch || '');
-    const matchedGroup = dispatchReconciliationGroups.find(group => (
-      (group.customerId && group.customerId === selectedCustomerId)
-      || (selectedCustomerName && normalizeLookupText(group.customerName) === selectedCustomerName)
-    ));
-    return parseLooseMoneyValue(matchedGroup?.paymentSummaryTotal || 0);
-  }, [customerLookup, customerSearch, dispatchReconciliationGroups, selectedCustomerId]);
   const selectedReportCustomerGroup = reportCustomerGroups.find(group => group.key === selectedReportCustomerKey) || null;
   const groupedDeliveryCollectedTotal = useMemo(() => (
     reportCustomerGroups.reduce((sum, group) => sum + parseInputCurrency(group.totalCollectedAmount), 0)
@@ -49411,6 +49400,49 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     };
   };
 
+  const selectedCustomerCollectionHint = useMemo(() => {
+    if (!selectedCustomerId || actualRows.length === 0) return 0;
+    const billingRows = actualRows.map((row) => {
+      const product = findProductForActualRow(row);
+      const pricingMeta = resolveActualRowPricingMeta(row, product);
+      const actualWeightKg = row.actualWeight
+        ? parseLooseQuantityValue(row.actualWeight)
+        : parseLooseQuantityValue(row.expectedWeightKg);
+      const actualQuantity = row.actualQuantity
+        ? parseLooseQuantityValue(row.actualQuantity)
+        : parseLooseQuantityValue(row.expectedQuantity);
+      return {
+        pricingUnit: pricingMeta.pricingUnit,
+        billingUnit: pricingMeta.pricingUnit,
+        unitPrice: pricingMeta.unitPrice,
+        actualWeightKg,
+        actualQuantity,
+        actualQuantityUnit: pricingMeta.usesWeightPricing
+          ? (row.actualQuantityUnit || row.expectedQuantityUnit || product?.unit || 'Con')
+          : pricingMeta.pricingUnit,
+      };
+    });
+    return calculateDeliveryActualCollectionTotal(billingRows);
+  }, [
+    actualRows,
+    customerLookup,
+    dayDispatches,
+    productLookup,
+    products,
+    resolveDispatchOrderRequestPrice,
+    selectedCustomer,
+    selectedCustomerId,
+  ]);
+
+  useEffect(() => {
+    setCollectedAmount((currentAmount) => resolveDeliveryCollectionDraftAmount({
+      suggestedAmount: selectedCustomerCollectionHint,
+      currentAmount,
+      incomePanelOpen: showIncomeReportSection,
+      manuallyEdited: collectedAmountManuallyEdited,
+    }));
+  }, [collectedAmountManuallyEdited, selectedCustomerCollectionHint, showIncomeReportSection]);
+
   const normalizeActualRowsForSave = () => actualRows
     .map((row) => {
       const product = findProductForActualRow(row);
@@ -49508,6 +49540,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setSelectedCustomerId(customer.id);
     setCustomerSearch(customer.name || '');
     setShowCustomerList(false);
+    setCollectedAmount('');
+    setCollectedAmountManuallyEdited(false);
     const rows = buildActualRowsForCustomer(customer.id);
     setActualRows(rows);
     setSelectedDispatchId(rows.find(row => row.dispatchId)?.dispatchId || '');
@@ -49614,6 +49648,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setNote('');
     setPhotoUrl('');
     setCollectedAmount('');
+    setCollectedAmountManuallyEdited(false);
     setDeliveryExpenseAmount('');
     setDeliveryExpenseCategory('');
     setDeliveryExpenseAssetTouched(false);
@@ -49648,6 +49683,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setNote(report.note || '');
     setPhotoUrl(report.photoUrl || '');
     setCollectedAmount(report.collectedAmount || '');
+    setCollectedAmountManuallyEdited(Boolean(parseLooseMoneyValue(report.collectedAmount)));
     setCollectedMethod(report.collectedMethod || 'Tiền mặt');
     const linkedAssetCostLog = assetCostLogs.find(log => log.id === report.assetCostLogId || log.relatedDeliveryReportId === report.id);
     const existingExpenseAssetId = report.deliveryExpenseAssetId || linkedAssetCostLog?.assetId || '';
@@ -49686,7 +49722,16 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       actualQuantity: report.actualQuantity,
       actualPackageCount: report.actualPackageCount,
       actualQuantityUnit: report.actualQuantityUnit || report.expectedQuantityUnit || 'Con',
-      actualPackageUnit: report.actualPackageUnit || 'Bọc'
+      actualPackageUnit: report.actualPackageUnit || 'Bọc',
+      configurationId: report.configurationId || '',
+      pricingUnit: report.pricingUnit || report.billingUnit || '',
+      billingUnit: report.billingUnit || report.pricingUnit || '',
+      unitPrice: report.unitPrice || 0,
+      billingQuantity: report.billingQuantity || report.pricingQuantity || 0,
+      amount: report.amount || report.pricingAmount || 0,
+      pricingAmount: report.pricingAmount || report.amount || 0,
+      billingSnapshotVersion: report.billingSnapshotVersion || '',
+      pricingConfigVersion: report.pricingConfigVersion || ''
     })]);
     setShowCustomerList(false);
     setStatusTone('emerald');
@@ -50374,6 +50419,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   };
 
   const toggleDeliveryReportPanel = (panel) => {
+    const willOpenIncomePanel = panel === 'income' && !showIncomeReportSection;
+    if (!editingReportId && !willOpenIncomePanel) {
+      setCollectedAmount('');
+      setCollectedAmountManuallyEdited(false);
+    }
     setShowIncomeReportSection(prev => (panel === 'income' ? !prev : false));
     setShowExpenseReportSection(prev => (panel === 'expense' ? !prev : false));
     setShowReturnReportSection(prev => (panel === 'return' ? !prev : false));
@@ -50620,6 +50670,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                   setSelectedCustomerId('');
                   setSelectedDispatchId('');
                   setActualRows([]);
+                  setCollectedAmount('');
+                  setCollectedAmountManuallyEdited(false);
                 }
               }}
               placeholder="Chọn hoặc tìm khách hàng"
@@ -50711,7 +50763,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                   <span>Loại</span>
                   <span>Kg</span>
                   <span>Con</span>
-                  <span>Bọc</span>
+                  <span>Giá</span>
                 </div>
                 {actualRows.map((row) => {
                   const isManualRow = !row.dispatchId;
@@ -50767,18 +50819,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                           className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                         />
                       </label>
-                      <label className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50/20 px-1.5 text-center">
-                        <input
-                          type="tel"
-                          value={row.actualPackageCount}
-                          onChange={(event) => updateActualRow(row.rowKey, { actualPackageCount: event.target.value.replace(',', '.') })}
-                          onKeyDown={handleDeliveryEnterNext}
-                          data-delivery-enter="true"
-                          placeholder="Bọc"
-                          aria-label="Số lượng bao bọc túi"
-                          className="h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center text-xs font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
-                        />
-                      </label>
+                      <output
+                        className="flex h-11 min-w-0 items-center justify-center rounded-2xl border border-emerald-100 bg-emerald-50/40 px-1 text-center text-[11px] font-bold leading-tight text-emerald-700"
+                        aria-label={`Giá bán ${formatCurrency(pricingMeta.unitPrice)} đồng theo ${pricingMeta.pricingUnit}`}
+                        title={`Giá bán theo ${pricingMeta.pricingUnit}`}
+                      >
+                        <span className="truncate">{pricingMeta.unitPrice > 0 ? formatCurrency(pricingMeta.unitPrice) : '-'}</span>
+                      </output>
                     </div>
                   );
                 })}
@@ -50824,7 +50871,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
               <input
                 type="tel"
                  value={formatInputCurrency(collectedAmount)}
-                 onChange={(event) => setCollectedAmount(parseInputCurrency(event.target.value))}
+                 onChange={(event) => {
+                   setCollectedAmountManuallyEdited(true);
+                   setCollectedAmount(parseInputCurrency(event.target.value));
+                 }}
                  placeholder={selectedCustomerCollectionHint > 0 ? `Gợi ý ${formatCurrency(selectedCustomerCollectionHint)} đ` : 'Tiền thu'}
                  className="h-full w-full appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-emerald-700 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                />
@@ -79132,7 +79182,7 @@ function CustomerPortalView({
   }, [currentUser?.customerId, customerProfile?.id, safeBankAccounts]);
   useEffect(() => {
     const bankCode = `${customerDefaultBankAccount?.bankCode || customerDefaultBankAccount?.bankId || ''}`.trim().toUpperCase();
-    if (bankCode && BANK_ID_OPTIONS.some(option => option.value.toUpperCase() === bankCode)) {
+    if (bankCode && isVietQrBankAppSupported(bankCode)) {
       setSelectedPaymentBankId(bankCode);
     }
   }, [customerDefaultBankAccount?.bankCode, customerDefaultBankAccount?.bankId]);
@@ -79762,6 +79812,27 @@ function CustomerPortalView({
       || '';
     return source ? buildPayosPaymentQrImageSource(source) : '';
   }, [debtPaymentIntent]);
+  const selectedPaymentBankAppId = resolveVietQrBankAppId(selectedPaymentBankId);
+  const selectedPaymentBankName = getBankOptionLabel(selectedPaymentBankId);
+  const debtPaymentBankAppUrl = useMemo(() => buildVietQrBankAppDeeplink({
+    selectedBankId: selectedPaymentBankId,
+    receivingBankCode: debtPaymentIntent?.receivingBankCode || debtPaymentIntent?.receivingBankName || '',
+    receivingAccountNumber: debtPaymentIntent?.receivingBankAccountNumber || '',
+    amount: activeDebtPaymentAmount,
+    transferContent: debtPaymentReference,
+    receivingAccountName: debtPaymentIntent?.receivingBankAccountName || '',
+    returnUrl: typeof window !== 'undefined'
+      ? `${window.location.origin}${window.location.pathname}`
+      : ''
+  }), [
+    activeDebtPaymentAmount,
+    debtPaymentIntent?.receivingBankAccountName,
+    debtPaymentIntent?.receivingBankAccountNumber,
+    debtPaymentIntent?.receivingBankCode,
+    debtPaymentIntent?.receivingBankName,
+    debtPaymentReference,
+    selectedPaymentBankId
+  ]);
 
   const getCustomerPortalOrderCode = (item = {}) => {
     if (item.type === 'order') return formatOrderCode(item.id || item.orderId || item.code || item.orderCode || '');
@@ -80170,16 +80241,23 @@ function CustomerPortalView({
 
   const handleConfirmPaymentTransfer = async () => {
     if (!debtPaymentReference) return;
-    const copied = await copyTextToClipboard(debtPaymentReference);
-    const bankAppUrl = buildBankAppOpenUrl(selectedPaymentBankId);
+    if (!selectedPaymentBankAppId || !debtPaymentBankAppUrl) {
+      const copied = await copyTextToClipboard(debtPaymentReference);
+      setDebtPaymentActionMessage(
+        `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}${selectedPaymentBankName} chưa hỗ trợ mở trực tiếp; vui lòng quét QR.`
+      );
+      return;
+    }
+
     const paymentFallbackUrl = debtPaymentCheckoutUrl || debtPaymentQrUrl;
-    const opened = bankAppUrl
-      ? await openExternalPaymentUrl(bankAppUrl, paymentFallbackUrl)
-      : await openExternalPaymentUrl(paymentFallbackUrl, debtPaymentQrUrl);
+    const { opened, copied } = await launchBankPaymentAndCopyReference({
+      openPayment: () => openExternalPaymentUrl(debtPaymentBankAppUrl, paymentFallbackUrl),
+      copyReference: () => copyTextToClipboard(debtPaymentReference)
+    });
 
     setDebtPaymentActionMessage(opened
-      ? `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Đã mở ứng dụng thanh toán.`
-      : `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Chưa mở được ứng dụng ngân hàng; vui lòng quét QR.`
+      ? `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Đã mở liên kết thanh toán ${selectedPaymentBankName}.`
+      : `${copied ? 'Đã sao chép nội dung chuyển khoản. ' : ''}Chưa mở được ${selectedPaymentBankName}; vui lòng quét QR.`
     );
   };
 
@@ -80687,7 +80765,7 @@ function CustomerPortalView({
     if (!isPaymentSheetOpen) return null;
     return (
       <div className="fixed inset-0 z-[90] bg-white text-slate-950">
-        <div className="customer-payment-sheet mx-auto flex min-h-screen w-full max-w-md flex-col overflow-y-auto px-5 pb-36 pt-6">
+        <div className="customer-payment-sheet mx-auto flex min-h-screen w-full max-w-md flex-col overflow-y-auto px-5 pt-6">
           <button
             type="button"
             onClick={() => setIsPaymentSheetOpen(false)}
@@ -80737,7 +80815,7 @@ function CustomerPortalView({
               </div>
             </section>
 
-            <section>
+            <section className="rounded-3xl border border-slate-100 bg-slate-50/70 p-3">
               <label htmlFor="customer-payment-bank" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
                 Chọn app ngân hàng muốn mở
               </label>
@@ -80747,28 +80825,26 @@ function CustomerPortalView({
                 onChange={event => setSelectedPaymentBankId(event.target.value)}
                 className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               >
-                {BANK_ID_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {BANK_APP_OPEN_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
+
+              {debtPaymentActionMessage && (
+                <p className="mt-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">{debtPaymentActionMessage}</p>
+              )}
+
+              <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl bg-white p-3 shadow-sm">
+                <p className="min-w-0 text-xs font-semibold leading-5 text-slate-500">
+                  App sẽ sao chép mã <strong>{debtPaymentReference}</strong> và mở {selectedPaymentBankName} trên điện thoại.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleConfirmPaymentTransfer}
+                  className="min-h-11 whitespace-nowrap rounded-[1.2rem] bg-blue-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-blue-100"
+                >
+                  Mở {selectedPaymentBankName}
+                </button>
+              </div>
             </section>
-
-            {debtPaymentActionMessage && (
-              <p className="rounded-2xl bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">{debtPaymentActionMessage}</p>
-            )}
-          </div>
-        </div>
-
-        <div className="customer-payment-action-bar fixed inset-x-0 z-[91] border-t border-slate-100 bg-white/95 px-5 pt-4 shadow-[0_-10px_30px_rgba(15,23,42,0.06)]">
-          <div className="mx-auto grid max-w-md grid-cols-[1fr_auto] items-center gap-3">
-            <p className="min-w-0 text-xs font-semibold leading-5 text-slate-500">
-              App sẽ sao chép mã <strong>{debtPaymentReference}</strong> trước khi mở ngân hàng.
-            </p>
-            <button
-              type="button"
-              onClick={handleConfirmPaymentTransfer}
-              className="rounded-[1.4rem] bg-blue-600 px-5 py-3 text-base font-bold text-white shadow-lg shadow-blue-100"
-            >
-              Mở ngân hàng
-            </button>
           </div>
         </div>
       </div>
@@ -81703,12 +81779,6 @@ function CustomerPortalView({
         {debtPaymentActionMessage && !isPaymentSheetOpen && (
           <p className="mt-3 rounded-2xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{debtPaymentActionMessage}</p>
         )}
-        {debtPaymentAmount > 0 && (
-          <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-xs text-emerald-800">
-            <p className="font-bold">Thanh toán bằng QR SePay</p>
-            <p className="mt-1 text-emerald-700">Chọn hóa đơn rồi bấm Thanh toán. App sẽ tạo đúng số tiền và nội dung chuyển khoản để tự đối soát.</p>
-          </div>
-        )}
       </div>
       <div className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm">
         <h3 className="font-extrabold mb-3">Lịch sử công nợ</h3>
@@ -82042,12 +82112,6 @@ function CustomerPortalView({
           <div key={item.id} className="flex justify-between py-2 border-b border-gray-50 last:border-0"><span className="font-semibold text-sm">{item.name || item.title}</span><span className="text-xs font-bold text-emerald-600">{formatNumber(item.points || item.requiredPoints || 0)} điểm</span></div>
         )) : <p className="text-sm text-gray-400">Chưa có quà đổi điểm.</p>}
       </div>
-      <div className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm">
-        <h3 className="font-extrabold mb-3">Thông báo</h3>
-        {customerNotifications.length > 0 ? customerNotifications.map(item => (
-          <div key={item.id} className="py-2 border-b border-gray-50 last:border-0"><p className="font-semibold text-sm">{item.title || item.type || 'Thông báo'}</p><p className="text-xs text-gray-500 mt-1">{item.message || item.body || item.note}</p></div>
-        )) : <p className="text-sm text-gray-400">Chưa có thông báo mới.</p>}
-      </div>
       <div id="customer-profile-editor" className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm scroll-mt-24">
         <div className="flex items-center justify-between gap-3">
           <button
@@ -82351,6 +82415,12 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
   const [identitySetupContext, setIdentitySetupContext] = useState(null);
+
+  useEffect(() => {
+    // Warm the auth Function while the user is entering credentials so the
+    // secure password request does not have to pay the server cold-start cost.
+    void warmIdentityLoginService();
+  }, []);
 
   const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
   const registrationPasswordsMatch = hasRegistrationPasswordConfirmation && regPassword === regPasswordConfirm;

@@ -7,6 +7,8 @@ const WEB_SECRET_PREFIX = 'hd-identity-device-secret-v1:';
 const NATIVE_SECRET_PREFIX = 'hd.identity.device.v1.';
 const DEVICE_ACCOUNT_INDEX_KEY = 'hd-identity-device-accounts-v2';
 const IDENTITY_REQUEST_TIMEOUT_MS = 30000;
+const IDENTITY_WARMUP_TIMEOUT_MS = 8000;
+const IDENTITY_WARMUP_TTL_MS = 60 * 1000;
 const AI_REQUEST_TIMEOUT_MS = 55000;
 // Identity routes are served by Cloud Functions. Do not fall back to Firebase
 // Hosting: an unknown Hosting path responds with the SPA HTML, which browsers
@@ -28,6 +30,9 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/customer/create-debt-payment': 'createCustomerDebtPaymentRequest',
   '/api/ai/generate-content': 'geminiGenerateContent',
 };
+
+let identityLoginWarmupPromise = null;
+let identityLoginWarmupStartedAt = 0;
 
 const getRuntimePlatform = () => {
   try {
@@ -184,6 +189,21 @@ const getIdentityApiUrl = (path) => {
     return `${baseUrl}/${functionName}`;
   }
   return `${baseUrl}${path}`;
+};
+
+export const warmIdentityLoginService = () => {
+  if (typeof fetch !== 'function') return Promise.resolve(false);
+  const now = Date.now();
+  if (!identityLoginWarmupPromise || now - identityLoginWarmupStartedAt > IDENTITY_WARMUP_TTL_MS) {
+    identityLoginWarmupStartedAt = now;
+    identityLoginWarmupPromise = fetchWithTimeout(getIdentityApiUrl('/api/identity/login'), {
+      method: 'OPTIONS',
+      cache: 'no-store',
+    }, IDENTITY_WARMUP_TIMEOUT_MS)
+      .then(response => response.ok)
+      .catch(() => false);
+  }
+  return identityLoginWarmupPromise;
 };
 
 const getSecretAccountSuffix = (accountScope = '') => accountScope

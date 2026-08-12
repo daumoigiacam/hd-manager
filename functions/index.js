@@ -17,7 +17,9 @@ const {
   buildCustomerDebtPaymentCode,
   buildCustomerDebtPaymentFingerprint,
   buildCustomerDebtPaymentIntentId,
-  normalizeCustomerDebtPaymentOrderIds
+  normalizeCustomerDebtPaymentOrderIds,
+  normalizeCustomerDebtPaymentLookupTokens,
+  resolveCustomerDebtPaymentCode
 } = require('./customerDebtPayment');
 const {
   buildPointRedemptionId,
@@ -3229,9 +3231,7 @@ const buildCustomerDebtPaymentSelectionState = ({
 };
 
 const findCustomerDebtPaymentIntentByTokens = async (appId, tokens = []) => {
-  const normalizedTokens = [...new Set((Array.isArray(tokens) ? tokens : [])
-    .map(normalizeTransferCode)
-    .filter(token => /^HDP[A-Z0-9]{4,20}$/.test(token)))];
+  const normalizedTokens = normalizeCustomerDebtPaymentLookupTokens(tokens);
   if (!normalizedTokens.length) return null;
   const lookupRef = db.collection(collectionPath(appId, 'customer_payment_intent_lookup'));
   const intentRef = db.collection(collectionPath(appId, 'customer_payment_intents'));
@@ -3647,7 +3647,7 @@ exports.createCustomerDebtPaymentRequest = functions.https.onRequest(runProtecte
       receivingProfile
     });
     const intentId = buildCustomerDebtPaymentIntentId(fingerprint);
-    const paymentCode = buildCustomerDebtPaymentCode(fingerprint);
+    const paymentCode = resolveCustomerDebtPaymentCode({ fingerprint, items });
     const intentRef = db.collection(collectionPath(appId, 'customer_payment_intents')).doc(intentId);
     const lookupRef = db.collection(collectionPath(appId, 'customer_payment_intent_lookup')).doc(safeDocIdPart(paymentCode));
     const existingIntentSnap = await transaction.get(intentRef);

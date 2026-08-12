@@ -5,8 +5,10 @@ import { readFile } from 'node:fs/promises';
 import {
   DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT,
   buildPendingDeliveryReconciliationGroups,
+  calculateDeliveryActualCollectionTotal,
   countPendingDeliveryReconciliationDispatches,
   getVisibleDeliveryReconciliationGroups,
+  resolveDeliveryCollectionDraftAmount,
 } from '../src/utils/deliveryReconciliationUx.js';
 
 const test = (name, callback) => {
@@ -86,6 +88,46 @@ test('groups and totals quantity-priced products without treating them as Kg', (
   assert.equal(pending[0].paymentSummaryTotal, 800_000);
 });
 
+test('recalculates collection total from actual Kg or Con using the configured pricing unit', () => {
+  const weightPricedRows = [{
+    pricingUnit: 'Kg',
+    unitPrice: 55_000,
+    actualWeightKg: 33.5,
+    actualQuantity: 20,
+    actualQuantityUnit: 'Con',
+  }];
+  assert.equal(calculateDeliveryActualCollectionTotal(weightPricedRows), 1_842_500);
+
+  weightPricedRows[0].actualWeightKg = 32.5;
+  assert.equal(calculateDeliveryActualCollectionTotal(weightPricedRows), 1_787_500);
+  assert.equal(calculateDeliveryActualCollectionTotal([{
+    pricingUnit: 'Con',
+    unitPrice: 100_000,
+    actualWeightKg: 33.5,
+    actualQuantity: 20,
+    actualQuantityUnit: 'Con',
+  }]), 2_000_000);
+});
+
+test('keeps collection amount live until the user intentionally enters a partial payment', () => {
+  assert.equal(resolveDeliveryCollectionDraftAmount({
+    suggestedAmount: 1_842_500,
+    currentAmount: '',
+    incomePanelOpen: true,
+  }), 1_842_500);
+  assert.equal(resolveDeliveryCollectionDraftAmount({
+    suggestedAmount: 1_787_500,
+    currentAmount: 1_842_500,
+    incomePanelOpen: true,
+  }), 1_787_500);
+  assert.equal(resolveDeliveryCollectionDraftAmount({
+    suggestedAmount: 1_787_500,
+    currentAmount: 1_000_000,
+    incomePanelOpen: true,
+    manuallyEdited: true,
+  }), 1_000_000);
+});
+
 test('shows three customers by default and all customers when expanded', () => {
   const groups = Array.from({ length: 8 }, (_, index) => (
     createGroup(index + 1, [createRow(`dispatch-${index + 1}`)])
@@ -119,7 +161,23 @@ test('delivery report screen uses the memoized pending-only reconciliation secti
   assert.match(appSource, /const deliveryReconciliationSection = \(/);
   assert.match(appSource, /stageReportedReconciliationRows\(rowsToSave\.map\(row => row\.dispatchId\)\)/);
   assert.match(appSource, /sessionStorage\.setItem\(reconciliationExpandedSessionKey/);
+  assert.match(appSource, /calculateDeliveryActualCollectionTotal\(billingRows\)/);
+  assert.match(appSource, /resolveDeliveryCollectionDraftAmount\(\{/);
   assert.doesNotMatch(appSource, />Danh sách đối chiếu<\/h3>/);
 });
 
-console.log('\n6 delivery reconciliation UX tests passed.');
+test('delivery actual rows show the frozen dispatched-order selling price instead of package input', () => {
+  const deliveryReportSource = appSource.slice(
+    appSource.indexOf('function DeliveryReportView'),
+    appSource.indexOf('function WarehouseImportView'),
+  );
+
+  assert.match(deliveryReportSource, /<span>Giá<\/span>/);
+  assert.match(deliveryReportSource, /formatCurrency\(pricingMeta\.unitPrice\)/);
+  assert.doesNotMatch(deliveryReportSource, /placeholder="Bọc"/);
+  assert.match(deliveryReportSource, /source: 'dispatch_snapshot'/);
+  assert.match(deliveryReportSource, /source: requestSnapshot\.hasFrozenPricing \? 'order_snapshot' : 'legacy_order'/);
+  assert.match(deliveryReportSource, /b\.requestDateMs - a\.requestDateMs/);
+});
+
+console.log('\n9 delivery reconciliation UX tests passed.');
