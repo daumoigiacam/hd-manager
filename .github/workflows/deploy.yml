@@ -106,14 +106,14 @@ jobs:
           test -s hd-manager-dist.zip
           ls -lh hd-manager-dist.zip
 
-        - name: Calculate build SHA
-          if: github.event_name == 'push'
-          id: build-sha
-          run: |
-            set -euo pipefail
-            INDEX_SHA="$(sha256sum dist/index.html | cut -d" " -f1)"
-            echo "index_sha=${INDEX_SHA}" >> "$GITHUB_OUTPUT"
-            echo "Build index SHA: ${INDEX_SHA}"
+      - name: Calculate build SHA
+        if: github.event_name == 'push'
+        id: build-sha
+        run: |
+          set -euo pipefail
+          INDEX_SHA="$(sha256sum dist/index.html | cut -d" " -f1)"
+          echo "index_sha=${INDEX_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Build index SHA: ${INDEX_SHA}"
 
       - name: Upload frontend to VPS
         if: github.event_name == 'push'
@@ -126,41 +126,39 @@ jobs:
           target: "/tmp/"
           overwrite: true
 
-        - name: Deploy frontend to VPS
-          if: github.event_name == 'push'
-          uses: appleboy/ssh-action@v1.2.2
-          env:
-            EXPECTED_INDEX_SHA: ${{ steps.build-sha.outputs.index_sha }}
-          with:
-            host: ${{ secrets.VPS_HOST }}
-            username: ${{ secrets.VPS_USER }}
-            key: ${{ secrets.VPS_SSH_KEY }}
-            envs: EXPECTED_INDEX_SHA
-            script: |
-              set -euo pipefail
-              chmod 750 /home/hdmanager/deploy.sh
-              EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
-
-        - name: Verify production serves this release
-          if: github.event_name == 'push'
-          run: |
+      - name: Deploy frontend to VPS
+        if: github.event_name == 'push'
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          EXPECTED_INDEX_SHA: ${{ steps.build-sha.outputs.index_sha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: EXPECTED_INDEX_SHA
+          script: |
             set -euo pipefail
+            chmod 750 /home/hdmanager/deploy.sh
+            EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
 
-            LOCAL_INDEX_SHA="$(sha256sum dist/index.html | cut -d' ' -f1)"
+      - name: Verify production serves this release
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
 
-            PRODUCTION_INDEX_SHA="$(
-              curl --fail --silent --show-error \
-                --retry 3 \
-                --retry-delay 2 \
-                --header "Cache-Control: no-cache" \
-                "https://app.hdconnect.net/index.html?release=${GITHUB_SHA}" |
-                sha256sum |
-                cut -d' ' -f1
-            )"
+          LOCAL_INDEX_SHA="$(sha256sum dist/index.html | cut -d" " -f1)"
 
-            echo "Local index SHA:       ${LOCAL_INDEX_SHA}"
-            echo "Production index SHA:  ${PRODUCTION_INDEX_SHA}"
+          PRODUCTION_INDEX_SHA="$(curl --fail --silent --show-error \
+            --retry 3 \
+            --retry-delay 2 \
+            --header "Cache-Control: no-cache" \
+            "https://app.hdconnect.net/index.html?release=${GITHUB_SHA}" |
+            sha256sum |
+            cut -d" " -f1
+          )"
 
-            test "${LOCAL_INDEX_SHA}" = "${PRODUCTION_INDEX_SHA}"
+          echo "Local index SHA:       ${LOCAL_INDEX_SHA}"
+          echo "Production index SHA:  ${PRODUCTION_INDEX_SHA}"
 
-            echo "Production verification successful"
+          test "${LOCAL_INDEX_SHA}" = "${PRODUCTION_INDEX_SHA}"
+          echo "Production verification successful"
