@@ -228,6 +228,7 @@ import {
   resolveCustomerProductActualUnit,
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
+  mergeWarehouseDispatchOrderBillingItems,
 } from './services/customerProductBilling.js';
 import {
   findIdentitySessionOwner,
@@ -64679,7 +64680,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const submitOrderDraft = async (draft, { allowDescriptionOnly = false } = {}) => {
-    const validItems = normalizeOrderItemsForSubmit(draft.items, { allowDescriptionOnly });
+    const preparedItems = draft.sourceType === 'warehouse_dispatch'
+      ? mergeWarehouseDispatchOrderBillingItems(draft.items)
+      : draft.items;
+    const validItems = normalizeOrderItemsForSubmit(preparedItems, { allowDescriptionOnly });
     if (validItems.length === 0) {
       throw new Error(allowDescriptionOnly
         ? 'Mỗi đơn nháp cần ít nhất 1 dòng hàng có tên/mặt hàng, số lượng và đơn giá.'
@@ -65006,7 +65010,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           branchAddress,
           dispatchIds: [],
           upfrontPayment: orderRequestDepositByCustomer.get(customerKey) || 0,
-          items: new Map()
+          items: []
         });
       }
 
@@ -65037,55 +65041,35 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const actualWeightKg = resolvedDispatchBilling.actualWeightKg;
       const billingQuantity = resolvedDispatchBilling.billingQuantity;
       const amount = resolvedDispatchBilling.amount;
-      const productKey = [
-        dispatch.productId || normalizeLookupText(productName),
-        resolvedDispatchBilling.configurationId || dispatch.configurationId || 'default',
-        normalizeLookupText(actualUnit),
-        normalizeLookupText(billingUnit),
-        unitPrice,
-      ].join('__');
       group.dispatchIds.push(dispatch.id);
-
-      if (!group.items.has(productKey)) {
-        group.items.set(productKey, {
-          productId: product?.id || dispatch.productId || '',
-          description: product?.name || productName,
-          productName: product?.name || productName,
-          productNameSnapshot: productName,
-          configurationId: resolvedDispatchBilling.configurationId || dispatch.configurationId || '',
-          sizeLabel: dispatch.sizeLabel || dispatch.size || '',
-          attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
-          actualQuantity: 0,
-          actualUnit,
-          actualWeightKg: 0,
-          billingQuantity: 0,
-          billingUnit,
-          unitPrice,
-          amount: 0,
-          quantity: 0,
-          quantityUnit: actualUnit,
-          pricingQuantity: 0,
-          pricingUnit: billingUnit,
-          pricingAmount: 0,
-          lineTotal: 0,
-          billingSnapshotVersion: 1,
-          billingSnapshotSource: resolvedDispatchBilling.billingSnapshotSource || 'warehouse_dispatch_order_snapshot',
-          sourceDispatchIds: []
-        });
-      }
-
-      const item = group.items.get(productKey);
-      item.actualQuantity += actualQuantity;
-      item.actualWeightKg += actualWeightKg;
-      item.billingQuantity += billingQuantity;
-      item.amount += amount;
-      item.quantity = item.billingQuantity;
-      item.quantityCount = item.actualQuantity;
-      item.weightKg = item.actualWeightKg;
-      item.pricingQuantity = item.billingQuantity;
-      item.pricingAmount = item.amount;
-      item.lineTotal = item.amount;
-      item.sourceDispatchIds.push(dispatch.id);
+      group.items.push({
+        ...resolvedDispatchBilling,
+        productId: product?.id || dispatch.productId || '',
+        description: product?.name || productName,
+        productName: product?.name || productName,
+        productNameSnapshot: productName,
+        configurationId: resolvedDispatchBilling.configurationId || dispatch.configurationId || '',
+        sizeLabel: dispatch.sizeLabel || dispatch.size || '',
+        attributeLabel: dispatch.attributeLabel || dispatch.productAttribute || '',
+        actualQuantity,
+        actualUnit,
+        actualWeightKg,
+        billingQuantity,
+        billingUnit,
+        unitPrice,
+        amount,
+        quantity: billingQuantity,
+        quantityCount: actualQuantity,
+        quantityUnit: actualUnit,
+        weightKg: actualWeightKg,
+        pricingQuantity: billingQuantity,
+        pricingUnit: billingUnit,
+        pricingAmount: amount,
+        lineTotal: amount,
+        billingSnapshotVersion: 1,
+        billingSnapshotSource: resolvedDispatchBilling.billingSnapshotSource || 'warehouse_dispatch_order_snapshot',
+        sourceDispatchIds: [dispatch.id]
+      });
       return groupMap;
     }, new Map());
 
@@ -65107,7 +65091,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       sourceType: 'warehouse_dispatch',
       sourceDispatchIds: group.dispatchIds,
       sourceDispatchDate: dispatchDate,
-      items: Array.from(group.items.values()).map(item => ({
+      items: mergeWarehouseDispatchOrderBillingItems(group.items).map(item => ({
         ...item,
         actualQuantity: item.actualQuantity > 0 ? Number(item.actualQuantity.toFixed(2)) : 0,
         actualWeightKg: item.actualWeightKg > 0 ? Number(item.actualWeightKg.toFixed(2)) : 0,
@@ -65123,8 +65107,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       }))
     }));
 
+    const mergedLineCount = mappedDrafts.reduce((sum, draft) => sum + draft.items.length, 0);
+    const consolidatedLineCount = Math.max(0, pendingWarehouseDispatches.length - mergedLineCount);
     setBulkOrderDrafts(mappedDrafts);
-    setBulkOrderStatus(`Đã lấy ${pendingWarehouseDispatches.length} dòng phiếu xuất kho ngày ${formatDateLabel(dispatchDate)} thành ${mappedDrafts.length} đơn nháp.`);
+    setBulkOrderStatus(`Đã lấy ${pendingWarehouseDispatches.length} dòng phiếu xuất kho ngày ${formatDateLabel(dispatchDate)} thành ${mappedDrafts.length} đơn nháp.${consolidatedLineCount > 0 ? ` Đã gộp ${consolidatedLineCount} dòng sản phẩm trùng.` : ''}`);
   };
 
   const handleBulkDraftChange = (draftId, field, value) => {

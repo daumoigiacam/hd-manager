@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import {
   buildWarehouseDispatchOrderBillingSnapshot,
   isWarehouseDispatchActualUnitCompatible,
+  mergeWarehouseDispatchOrderBillingItems,
 } from '../src/services/customerProductBilling.js';
 
 const duckProduct = {
@@ -104,11 +105,84 @@ assert.equal(isWarehouseDispatchActualUnitCompatible({
   actualWeightKg: kilogramBilling.actualWeightKg,
 }), true, 'a count plus measured Kg is accepted for a Kg-priced customer product');
 
+const mergedSamePriceRows = mergeWarehouseDispatchOrderBillingItems([
+  {
+    ...kilogramBilling,
+    sourceDispatchIds: ['dispatch-a'],
+    billingQuantity: 30.8,
+    actualWeightKg: 30.8,
+    unitPrice: 60000,
+    amount: 1848000,
+  },
+  {
+    ...kilogramBilling,
+    sourceDispatchIds: ['dispatch-b'],
+    billingQuantity: 28.3,
+    actualWeightKg: 28.3,
+    unitPrice: 60000,
+    amount: 1698000,
+  },
+]);
+assert.equal(mergedSamePriceRows.length, 1, 'duplicate product dispatches become one order line');
+assert.equal(mergedSamePriceRows[0].billingQuantity, 59.1, 'duplicate Kg quantities are summed');
+assert.equal(mergedSamePriceRows[0].amount, 3546000, 'same-price line totals are preserved exactly');
+assert.equal(mergedSamePriceRows[0].unitPrice, 60000, 'same price remains unchanged after consolidation');
+assert.deepEqual(mergedSamePriceRows[0].sourceDispatchIds, ['dispatch-a', 'dispatch-b'], 'all source dispatch ids remain traceable');
+
+const mergedMixedPriceRows = mergeWarehouseDispatchOrderBillingItems([
+  {
+    ...kilogramBilling,
+    configurationId: 'size-small',
+    sourceDispatchIds: ['dispatch-c'],
+    billingQuantity: 30.8,
+    actualWeightKg: 30.8,
+    unitPrice: 60000,
+    amount: 1848000,
+  },
+  {
+    ...kilogramBilling,
+    configurationId: 'size-large',
+    sourceDispatchIds: ['dispatch-d'],
+    billingQuantity: 28.3,
+    actualWeightKg: 28.3,
+    unitPrice: 63000,
+    amount: 1782900,
+  },
+]);
+assert.equal(mergedMixedPriceRows.length, 1, 'same product and pricing unit merge even when source prices differ');
+assert.equal(mergedMixedPriceRows[0].billingQuantity, 59.1, 'mixed-price quantities are summed');
+assert.equal(mergedMixedPriceRows[0].amount, 3630900, 'mixed-price source amounts remain exact');
+assert.equal(mergedMixedPriceRows[0].unitPrice, 61437, 'display price uses the weighted average rounded to a whole VND');
+assert.ok(Math.abs(mergedMixedPriceRows[0].weightedUnitPrice - (3630900 / 59.1)) < 0.000001, 'the exact weighted average remains available for audit');
+assert.equal(mergedMixedPriceRows[0].configurationId, '', 'a mixed configuration is not mislabeled as one source configuration');
+assert.deepEqual(mergedMixedPriceRows[0].sourceConfigurationIds, ['size-small', 'size-large'], 'source configurations remain auditable');
+
+const separateBillingUnits = mergeWarehouseDispatchOrderBillingItems([
+  { ...kilogramBilling, sourceDispatchIds: ['dispatch-e'] },
+  { ...countBilling, sourceDispatchIds: ['dispatch-f'] },
+]);
+assert.equal(separateBillingUnits.length, 2, 'incompatible billing units remain separate to avoid invalid arithmetic');
+
+const separateActualUnits = mergeWarehouseDispatchOrderBillingItems([
+  { ...kilogramBilling, actualUnit: 'Con', sourceDispatchIds: ['dispatch-e-count'] },
+  { ...kilogramBilling, actualUnit: 'Kg', sourceDispatchIds: ['dispatch-e-weight'] },
+]);
+assert.equal(separateActualUnits.length, 2, 'incompatible physical units remain separate to preserve warehouse quantities');
+
+const duplicateListenerRows = mergeWarehouseDispatchOrderBillingItems([
+  { ...kilogramBilling, sourceDispatchIds: ['dispatch-g'] },
+  { ...kilogramBilling, sourceDispatchIds: ['dispatch-g'] },
+]);
+assert.equal(duplicateListenerRows[0].billingQuantity, kilogramBilling.billingQuantity, 'a repeated realtime dispatch snapshot is not counted twice');
+assert.equal(duplicateListenerRows[0].amount, kilogramBilling.amount, 'a repeated realtime dispatch snapshot cannot inflate revenue');
+
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 assert.match(appSource, /buildWarehouseDispatchOrderBillingSnapshot\(/, 'bulk conversion uses the dispatch-to-order billing resolver');
+assert.match(appSource, /mergeWarehouseDispatchOrderBillingItems\(group\.items\)/, 'bulk conversion consolidates duplicate product rows before review');
+assert.match(appSource, /draft\.sourceType === 'warehouse_dispatch'[\s\S]*mergeWarehouseDispatchOrderBillingItems\(draft\.items\)/, 'warehouse drafts are consolidated again immediately before persistence');
 assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchId, activeProducts\)/, 'bulk conversion reads the customer product pricing configuration');
 assert.match(appSource, /quantity: item\.billingQuantity > 0/, 'draft quantity is the billing quantity rather than the physical count');
 assert.match(appSource, /'billingQuantity', e\.target\.value/, 'editing the visible quantity recalculates the billing quantity');
 assert.match(appSource, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
 
-console.log('Warehouse dispatch bulk order billing tests: PASS (7 scenarios, 23 assertions)');
+console.log('Warehouse dispatch bulk order billing tests: PASS (12 scenarios, 41 assertions)');

@@ -440,3 +440,146 @@ export const buildWarehouseDispatchOrderBillingSnapshot = ({
     unitPrice,
   });
 };
+
+const uniqueNonEmptyValues = (values = []) => [...new Set(
+  values.map(value => `${value || ''}`.trim()).filter(Boolean)
+)];
+
+// Keep one readable order line per product and billing unit. Every source
+// dispatch remains traceable, and mixed prices use an exact weighted average.
+export const mergeWarehouseDispatchOrderBillingItems = (items = []) => {
+  const groupedItems = new Map();
+
+  (Array.isArray(items) ? items : []).forEach((source, sourceIndex) => {
+    const productId = `${source?.productId || ''}`.trim();
+    const productName = `${source?.productName || source?.productNameSnapshot || source?.description || ''}`.trim();
+    const productKey = productId || normalizeText(productName) || `source-${sourceIndex}`;
+    const billingUnit = normalizeProductPricingUnit(source?.billingUnit || source?.pricingUnit || '');
+    const actualUnit = normalizeProductPricingUnit(
+      source?.actualUnit || source?.actualQuantityUnit || source?.quantityUnit || billingUnit
+    );
+    const mergeKey = [
+      productKey,
+      normalizeText(billingUnit) || 'unknown-billing-unit',
+      normalizeText(actualUnit) || 'unknown-actual-unit',
+    ].join('__');
+    const sourceDispatchIds = uniqueNonEmptyValues([
+      ...(Array.isArray(source?.sourceDispatchIds) ? source.sourceDispatchIds : []),
+      source?.sourceDispatchId,
+      source?.dispatchId,
+    ]);
+
+    let group = groupedItems.get(mergeKey);
+    if (!group) {
+      group = {
+        template: { ...source },
+        sourceDispatchIds: [],
+        sourceDispatchIdSet: new Set(),
+        sourceConfigurationIds: [],
+        sourceSizeLabels: [],
+        sourceAttributeLabels: [],
+        sourceActualUnits: [],
+        actualQuantity: 0,
+        actualWeightKg: 0,
+        billingQuantity: 0,
+        amount: 0,
+        sourceCount: 0,
+      };
+      groupedItems.set(mergeKey, group);
+    }
+
+    // Realtime listeners may briefly repeat the same dispatch snapshot.
+    if (sourceDispatchIds.length > 0 && sourceDispatchIds.every(id => group.sourceDispatchIdSet.has(id))) {
+      return;
+    }
+
+    sourceDispatchIds.forEach((id) => {
+      group.sourceDispatchIdSet.add(id);
+      group.sourceDispatchIds.push(id);
+    });
+    group.sourceConfigurationIds.push(
+      ...(Array.isArray(source?.sourceConfigurationIds) ? source.sourceConfigurationIds : []),
+      source?.configurationId,
+    );
+    group.sourceSizeLabels.push(
+      ...(Array.isArray(source?.sourceSizeLabels) ? source.sourceSizeLabels : []),
+      source?.sizeLabel || source?.size,
+    );
+    group.sourceAttributeLabels.push(
+      ...(Array.isArray(source?.sourceAttributeLabels) ? source.sourceAttributeLabels : []),
+      source?.attributeLabel || source?.productAttribute,
+    );
+    group.sourceActualUnits.push(actualUnit);
+
+    const actualQuantity = parsePositiveNumber(source?.actualQuantity ?? source?.quantityCount ?? source?.quantity);
+    const actualWeightKg = parsePositiveNumber(source?.actualWeightKg ?? source?.weightKg ?? source?.totalKg ?? source?.kg);
+    const billingQuantity = parsePositiveNumber(source?.billingQuantity ?? source?.pricingQuantity ?? source?.quantity);
+    const unitPrice = parseMoney(source?.unitPrice);
+    const storedAmount = parseMoney(source?.amount ?? source?.pricingAmount ?? source?.lineTotal);
+
+    group.actualQuantity += actualQuantity;
+    group.actualWeightKg += actualWeightKg;
+    group.billingQuantity += billingQuantity;
+    group.amount += storedAmount > 0 ? storedAmount : Math.round(billingQuantity * unitPrice);
+    group.sourceCount += Math.max(
+      1,
+      sourceDispatchIds.length,
+      Math.floor(parsePositiveNumber(source?.mergedDispatchCount))
+    );
+  });
+
+  return Array.from(groupedItems.values()).map((group) => {
+    const sourceConfigurationIds = uniqueNonEmptyValues(group.sourceConfigurationIds);
+    const sourceSizeLabels = uniqueNonEmptyValues(group.sourceSizeLabels);
+    const sourceAttributeLabels = uniqueNonEmptyValues(group.sourceAttributeLabels);
+    const sourceActualUnits = uniqueNonEmptyValues(
+      group.sourceActualUnits.map(unit => normalizeProductPricingUnit(unit))
+    );
+    const billingUnit = normalizeProductPricingUnit(
+      group.template.billingUnit || group.template.pricingUnit || ''
+    );
+    const hasCompatibleActualUnits = sourceActualUnits.length <= 1;
+    const actualUnit = hasCompatibleActualUnits
+      ? (sourceActualUnits[0] || normalizeProductPricingUnit(group.template.actualUnit || group.template.quantityUnit || billingUnit))
+      : billingUnit;
+    const actualQuantity = hasCompatibleActualUnits ? group.actualQuantity : group.billingQuantity;
+    const weightedUnitPrice = group.billingQuantity > 0
+      ? group.amount / group.billingQuantity
+      : parseMoney(group.template.unitPrice);
+    const displayUnitPrice = Math.round(weightedUnitPrice);
+    const roundedAmount = Math.round(group.amount);
+
+    return {
+      ...group.template,
+      configurationId: sourceConfigurationIds.length === 1 ? sourceConfigurationIds[0] : '',
+      sizeLabel: sourceSizeLabels.length === 1 ? sourceSizeLabels[0] : '',
+      attributeLabel: sourceAttributeLabels.length === 1 ? sourceAttributeLabels[0] : '',
+      actualQuantity,
+      actualUnit,
+      actualWeightKg: group.actualWeightKg,
+      billingQuantity: group.billingQuantity,
+      billingUnit,
+      unitPrice: displayUnitPrice,
+      weightedUnitPrice,
+      amount: roundedAmount,
+      quantity: group.billingQuantity,
+      quantityCount: actualQuantity,
+      quantityUnit: actualUnit,
+      weightKg: group.actualWeightKg,
+      pricingQuantity: group.billingQuantity,
+      pricingUnit: billingUnit,
+      pricingAmount: roundedAmount,
+      lineTotal: roundedAmount,
+      billingSnapshotVersion: 1,
+      billingSnapshotSource: group.sourceCount > 1
+        ? 'warehouse_dispatch_merged_snapshot'
+        : (group.template.billingSnapshotSource || 'warehouse_dispatch_order_snapshot'),
+      sourceDispatchIds: uniqueNonEmptyValues(group.sourceDispatchIds),
+      sourceConfigurationIds,
+      sourceSizeLabels,
+      sourceAttributeLabels,
+      sourceActualUnits,
+      mergedDispatchCount: group.sourceCount,
+    };
+  });
+};
