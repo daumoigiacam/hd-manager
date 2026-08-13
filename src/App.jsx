@@ -232,6 +232,7 @@ import {
   resolveCustomerProductActualUnit,
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
+  summarizeOrderBillingItems,
   mergeWarehouseDispatchOrderBillingItems,
 } from './services/customerProductBilling.js';
 import {
@@ -66079,21 +66080,27 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           const statusMeta = getOrderStatusMeta(order);
           const reviewMeta = getOrderReviewMeta(order);
           const zaloMeta = getOrderZaloSendMeta(order);
-          const itemCount = (order.items || []).reduce((sum, item) => sum + (parseFloat(item.quantity) || 0), 0);
           const primaryItem = (order.items || [])[0] || null;
           const extraItemCount = Math.max(0, (order.items || []).length - 1);
-          const priceValues = (order.items || [])
-            .map(item => parseFloat(item.unitPrice) || 0)
-            .filter(value => value > 0);
-          const uniquePriceValues = [...new Set(priceValues)];
+          const billingSummaries = summarizeOrderBillingItems(order.items || []);
+          const hasSingleBillingUnit = billingSummaries.length === 1;
+          const singleBillingUnit = hasSingleBillingUnit ? billingSummaries[0].unit : '';
+          const quantityHeading = hasSingleBillingUnit
+            ? `Số ${singleBillingUnit.toLocaleLowerCase('vi-VN')}`
+            : 'Số lượng';
+          const quantityLabel = billingSummaries.length > 0
+            ? billingSummaries.map(summary => `${formatNumber(summary.quantity)} ${summary.unit}`).join(' • ')
+            : 'Chưa có';
           const itemTypeLabel = primaryItem
             ? `${primaryItem.description || 'Mặt hàng'}${extraItemCount > 0 ? ` +${extraItemCount} loại` : ''}`
             : 'Chưa có mặt hàng';
-          const unitPriceLabel = uniquePriceValues.length === 0
+          const unitPriceLabel = billingSummaries.length === 0
             ? 'Chưa có'
-            : uniquePriceValues.length === 1
-              ? `${formatCurrency(uniquePriceValues[0])} đ/kg`
-              : `${formatCurrency(Math.min(...uniquePriceValues))} - ${formatCurrency(Math.max(...uniquePriceValues))} đ/kg`;
+            : billingSummaries.map((summary) => {
+              if (summary.unitPrices.length === 0) return `Chưa có đ/${summary.unit}`;
+              if (summary.unitPrices.length === 1) return `${formatCurrency(summary.unitPrices[0])} đ/${summary.unit}`;
+              return `${formatCurrency(summary.unitPrices[0])} - ${formatCurrency(summary.unitPrices.at(-1))} đ/${summary.unit}`;
+            }).join(' • ');
           const deliveryReportIssues = order.deliveryReportIssues || [];
 
           return (
@@ -66147,7 +66154,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                       </div>
                       <div>
                         <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Số kg</p>
-                        <p className="font-semibold text-gray-700 leading-5">{formatNumber(itemCount || 0)} kg</p>
+                        <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">{quantityHeading}</p>
+                        <p className="font-semibold text-gray-700 leading-5">{quantityLabel}</p>
                       </div>
                       <div>
                         <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Đơn giá</p>

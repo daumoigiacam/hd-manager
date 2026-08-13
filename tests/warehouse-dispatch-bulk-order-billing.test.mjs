@@ -4,6 +4,7 @@ import {
   buildWarehouseDispatchOrderBillingSnapshot,
   isWarehouseDispatchActualUnitCompatible,
   mergeWarehouseDispatchOrderBillingItems,
+  summarizeOrderBillingItems,
 } from '../src/services/customerProductBilling.js';
 
 const duckProduct = {
@@ -41,6 +42,21 @@ const countBilling = buildWarehouseDispatchOrderBillingSnapshot({
 assert.equal(countBilling.billingUnit, 'Con', 'count configuration remains a count sale');
 assert.equal(countBilling.billingQuantity, 50, 'count billing uses exported duck count');
 assert.equal(countBilling.amount, 5000000, '50 ducks x 100,000 is billed correctly');
+
+const orderListCountSummary = summarizeOrderBillingItems([countBilling]);
+assert.deepEqual(orderListCountSummary, [{
+  unit: 'Con',
+  quantity: 50,
+  unitPrices: [100000],
+}], 'order lists retain the count pricing unit from the frozen billing snapshot');
+
+const orderListMixedSummary = summarizeOrderBillingItems([kilogramBilling, countBilling]);
+assert.equal(orderListMixedSummary.length, 2, 'order lists never merge Kg and count quantities into one display value');
+assert.deepEqual(orderListMixedSummary.find(summary => summary.unit === 'Kg'), {
+  unit: 'Kg',
+  quantity: 125.4,
+  unitPrices: [65000],
+}, 'order lists retain the Kg billing quantity independently');
 
 const legacyCountSnapshot = buildWarehouseDispatchOrderBillingSnapshot({
   dispatch: {
@@ -184,5 +200,6 @@ assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchI
 assert.match(appSource, /quantity: item\.billingQuantity > 0/, 'draft quantity is the billing quantity rather than the physical count');
 assert.match(appSource, /'billingQuantity', e\.target\.value/, 'editing the visible quantity recalculates the billing quantity');
 assert.match(appSource, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
+assert.match(appSource, /summarizeOrderBillingItems\(order\.items \|\| \[\]\)/, 'order list uses frozen billing units instead of a hard-coded Kg summary');
 
-console.log('Warehouse dispatch bulk order billing tests: PASS (12 scenarios, 41 assertions)');
+console.log('Warehouse dispatch bulk order billing tests: PASS (14 scenarios, 45 assertions)');

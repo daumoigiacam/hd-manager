@@ -343,6 +343,74 @@ export const resolveTransactionBillingSnapshot = ({
   };
 };
 
+// Keep order-list summaries aligned with the frozen billing snapshot used by
+// invoices. Never add physical counts and Kg together under a hard-coded unit.
+export const summarizeOrderBillingItems = (items = []) => {
+  const summariesByUnit = new Map();
+
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const source = item || {};
+    const snapshot = resolveTransactionBillingSnapshot({ record: source });
+    const billingUnit = normalizeProductPricingUnit(
+      snapshot.billingUnit
+      || source.billingUnit
+      || source.pricingUnit
+      || source.quantityUnit
+      || source.unit
+      || ''
+    );
+    const actualUnit = normalizeProductPricingUnit(
+      snapshot.actualUnit
+      || source.actualUnit
+      || source.actualQuantityUnit
+      || source.quantityUnit
+      || source.unit
+      || billingUnit
+    );
+    const usesWeightPricing = isSameBillingUnit(billingUnit, 'Kg');
+    const fallbackQuantity = usesWeightPricing
+      ? parsePositiveNumber(
+        snapshot.actualWeightKg
+        ?? source.actualWeightKg
+        ?? source.weightKg
+        ?? source.totalKg
+        ?? source.kg
+      )
+      : parsePositiveNumber(
+        snapshot.actualQuantity
+        ?? source.actualQuantity
+        ?? source.quantity
+        ?? source.quantityCount
+        ?? source.pieceCount
+      );
+    const quantity = parsePositiveNumber(snapshot.billingQuantity) || fallbackQuantity;
+    const unit = billingUnit || actualUnit || 'Đơn vị';
+    const unitKey = normalizeText(unit) || 'don-vi';
+    const unitPrice = parseMoney(
+      snapshot.unitPrice
+      ?? source.unitPrice
+      ?? source.price
+      ?? source.sellingPrice
+      ?? source.unitPriceVnd
+      ?? source.unit_price_vnd
+    );
+    const current = summariesByUnit.get(unitKey) || {
+      unit,
+      quantity: 0,
+      unitPrices: [],
+    };
+
+    current.quantity += quantity;
+    if (unitPrice > 0) current.unitPrices.push(unitPrice);
+    summariesByUnit.set(unitKey, current);
+  });
+
+  return [...summariesByUnit.values()].map((summary) => ({
+    ...summary,
+    unitPrices: [...new Set(summary.unitPrices)].sort((left, right) => left - right),
+  }));
+};
+
 // A warehouse dispatch records what physically left the warehouse.  A sales
 // order created from that dispatch must always bill by the customer's pricing
 // unit, never by whichever quantity field happened to be entered first.
