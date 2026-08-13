@@ -96,6 +96,7 @@
         "nsis"
       ],
       "artifactName": "HD-Manager-Setup.${ext}",
+      "icon": "electron/assets/hd-manager-icon.ico",
       "signAndEditExecutable": false
     },
     "nsis": {

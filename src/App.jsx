@@ -23694,7 +23694,12 @@ function MainAppView({
         <HDSidebar className={`hd-sidebar-navigation desktop-sidebar-nav ${isSidebarCollapsed ? 'hd-sidebar-collapsed' : ''}`} aria-label="Điều hướng chức năng">
           <div className="hd-sidebar-brand">
             <div className="hd-sidebar-brand-copy">
-              <span className="hd-sidebar-brand-mark" aria-hidden="true">HD</span>
+              <img
+                src="/brand/hd-manager-icon-512.png"
+                alt=""
+                className="hd-sidebar-brand-mark hd-sidebar-brand-icon"
+                aria-hidden="true"
+              />
               {!isSidebarCollapsed && (
                 <span className="hd-sidebar-brand-text">
                   <strong>HD MANAGER</strong>
@@ -82865,18 +82870,12 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
       <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
         
         {/* --- KHU VUC LOGO & THUONG HIEU --- */}
-        <div className="flex flex-col items-center justify-center mb-6 space-y-2.5">
-          <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden border border-gray-50 p-2">
-            <img 
-              src="https://api.dicebear.com/7.x/shapes/svg?seed=HDManager&backgroundColor=10b981" 
-              alt="App Logo" 
-              className="w-full h-full object-contain rounded-xl" 
-            />
-          </div>
-          <h1 className="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 tracking-tight uppercase">
-            HD MANAGER
-          </h1>
-          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em]">NỀN TẢNG QUẢN LÝ SỐ</p>
+        <div className="flex flex-col items-center justify-center mb-6">
+          <img
+            src="/brand/hd-manager-logo-compact.png"
+            alt="HD Manager - Quản lý toàn diện, vận hành hiệu quả"
+            className="hd-login-brand-logo"
+          />
         </div>
         
         {isLogin ? (

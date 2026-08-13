@@ -997,6 +997,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#f4f6f8',
     title: 'HD Manager',
+    icon: path.join(__dirname, 'assets', 'hd-manager-icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

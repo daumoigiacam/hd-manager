@@ -1,0 +1,23 @@
+{
+  "name": "HD Manager",
+  "short_name": "HD Manager",
+  "description": "Quản lý toàn diện - vận hành hiệu quả",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0b3b9e",
+  "icons": [
+    {
+      "src": "/brand/hd-manager-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/brand/hd-manager-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
