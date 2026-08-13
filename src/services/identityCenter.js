@@ -20,6 +20,7 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/complete-setup': 'identityCompleteSetup',
   '/api/identity/request-recovery': 'identityRequestRecovery',
   '/api/identity/complete-recovery': 'identityCompleteRecovery',
+  '/api/identity/owner-reset-password': 'identityOwnerResetPassword',
   '/api/identity/verify-pin': 'identityVerifyPin',
   '/api/identity/devices': 'identityDevices',
   '/api/identity/revoke-devices': 'identityRevokeDevices',
@@ -439,6 +440,12 @@ export const identityCompleteRecovery = ({ resetToken, password, identifier }) =
   identifier,
   device: getIdentityDevice(),
 });
+
+export const identityOwnerResetPassword = ({ idToken, employeeId, appId }) => requestIdentityApi(
+  '/api/identity/owner-reset-password',
+  { employeeId, appId },
+  { idToken },
+);
 
 export const identityVerifyPin = ({ idToken, pin }) => requestIdentityApi('/api/identity/verify-pin', { pin }, { idToken });
 export const identityListDevices = ({ idToken }) => requestIdentityApi('/api/identity/devices', {}, { idToken });

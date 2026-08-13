@@ -39,6 +39,10 @@
         "function": "identityCompleteRecovery"
       },
       {
+        "source": "/api/identity/owner-reset-password",
+        "function": "identityOwnerResetPassword"
+      },
+      {
         "source": "/api/identity/verify-pin",
         "function": "identityVerifyPin"
       },

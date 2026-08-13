@@ -30,7 +30,10 @@ test('queued writes remain isolated while a user changes tenant', () => {
 });
 
 test('each tenant flushes independently without duplicate retry work', () => {
-  const section = getSection('const flushPendingWrites = async', 'useEffect(() => {\n    saveAppSession');
+  const section = getSection(
+    'const flushPendingWrites = async',
+    '}, [firebaseUser?.uid, currentUser?.companyId, pendingFirebaseWriteCount]);'
+  );
 
   assert.match(section, /pendingFirebaseFlushInFlightRef\.current\.has\(companyId\)/);
   assert.match(section, /pendingFirebaseFlushInFlightRef\.current\.add\(companyId\)/);

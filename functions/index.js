@@ -977,6 +977,12 @@ exports.identityCompleteRecovery = functions.https.onRequest(runIdentityRequest(
   identifier: req.body?.identifier
 })));
 
+exports.identityOwnerResetPassword = functions.https.onRequest(runIdentityRequest((req) => identityCenter.ownerResetEmployeePassword({
+  authorization: req.headers.authorization,
+  employeeId: req.body?.employeeId,
+  appId: req.body?.appId
+})));
+
 exports.identityVerifyPin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.verifyPin({
   authorization: req.headers.authorization,
   pin: req.body?.pin

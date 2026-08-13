@@ -27,7 +27,11 @@ export default defineConfig(({ mode }) => {
     .replace(/[^a-zA-Z0-9._-]/g, '-');
   const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
   const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
-  const useCloudData = !usePreviewData;
+  const useVpsStagingData = env.VITE_DATA_MODE === 'vps-staging';
+  const useCloudData = !usePreviewData && !useVpsStagingData;
+  if (useVpsStagingData && !`${env.VITE_API_BASE_URL || ''}`.trim()) {
+    throw new Error('VITE_API_BASE_URL is required when VITE_DATA_MODE=vps-staging.');
+  }
   const cloudFirebaseConfig = {
     apiKey: env.VITE_FIREBASE_API_KEY || defaultCloudFirebaseConfig.apiKey,
     authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultCloudFirebaseConfig.authDomain,
@@ -37,17 +41,36 @@ export default defineConfig(({ mode }) => {
     appId: env.VITE_FIREBASE_APP_ID || defaultCloudFirebaseConfig.appId,
     measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || defaultCloudFirebaseConfig.measurementId
   };
-  const firebaseConfig = useCloudData ? cloudFirebaseConfig : previewFirebaseConfig;
+  const firebaseConfig = useCloudData
+    ? cloudFirebaseConfig
+    : (usePreviewData ? previewFirebaseConfig : {});
   const dataAppId = usePreviewData
     ? (env.VITE_HD_APP_ID || 'preview-app')
-    : (env.VITE_HD_APP_ID || defaultProductionAppId);
+    : (useVpsStagingData ? 'hd-manager-vps-staging' : (env.VITE_HD_APP_ID || defaultProductionAppId));
   const firebaseAliases = useCloudData
     ? {}
     : {
         'firebase/app': fileURLToPath(new URL('./src/mocks/firebase-app.js', import.meta.url)),
         'firebase/auth': fileURLToPath(new URL('./src/mocks/firebase-auth.js', import.meta.url)),
-        'firebase/firestore': fileURLToPath(new URL('./src/mocks/firebase-firestore.js', import.meta.url))
+        'firebase/firestore': fileURLToPath(new URL('./src/mocks/firebase-firestore.js', import.meta.url)),
+        'firebase/performance': fileURLToPath(new URL('./src/mocks/firebase-performance.js', import.meta.url)),
+        './services/identityCenter.js': fileURLToPath(new URL('./src/mocks/identity-center-vps.js', import.meta.url))
       };
+  const runtimeAliases = {
+    ...firebaseAliases,
+    '@hd/firebase-runtime': fileURLToPath(new URL(
+      useVpsStagingData ? './src/mocks/firebase-runtime-vps.js' : './src/config/firebase-runtime.js',
+      import.meta.url,
+    )),
+    '@hd/client-runtime': fileURLToPath(new URL(
+      useVpsStagingData ? './src/mocks/client-runtime-vps.js' : './src/config/client-runtime.js',
+      import.meta.url,
+    )),
+    '@hd/firebase-rest-runtime': fileURLToPath(new URL(
+      useVpsStagingData ? './src/mocks/firebase-rest-runtime-vps.js' : './src/config/firebase-rest-runtime.js',
+      import.meta.url,
+    )),
+  };
   const releaseManifestPlugin = {
     name: 'hd-manager-release-manifest',
     transformIndexHtml(html) {
@@ -71,7 +94,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_HD_BUILD_ID': JSON.stringify(buildId)
     },
     resolve: {
-      alias: firebaseAliases
+      alias: runtimeAliases
     },
     build: {
       chunkSizeWarningLimit: 3200,

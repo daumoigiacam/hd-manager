@@ -10,7 +10,7 @@ import {
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
-  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff
+  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -240,6 +240,7 @@ import {
   getIdentityDevice,
   identityCompleteRecovery,
   identityCompleteSetup,
+  identityOwnerResetPassword,
   identityLogin,
   identityRegisterCompany,
   identityLogout,
@@ -256,6 +257,22 @@ import {
   customerCreateDebtPayment,
   requestAiGenerateContent,
 } from './services/identityCenter.js';
+import {
+  getHdConnectStagingApi,
+  isVpsStagingMode,
+} from './api/hdConnectStaging.js';
+import {
+  resolveDataAppId,
+  resolveFirebaseRuntimeConfig,
+} from '@hd/firebase-runtime';
+import {
+  resolveClientRuntime,
+  resolveLegacyPaymentApiBaseUrl,
+} from '@hd/client-runtime';
+import {
+  buildFirebaseRestCollectionQueryUrl,
+  buildFirebaseRestDocumentUrl,
+} from '@hd/firebase-rest-runtime';
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -268,10 +285,11 @@ const getCapacitorPlugin = (name) => {
 };
 
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
-const GOOGLE_MAPS_API_KEY = `${import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''}`.trim();
-const GOOGLE_MAPS_MAP_ID = `${import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || ''}`.trim();
-const GOONG_MAPTILES_API_KEY = `${import.meta.env.VITE_GOONG_MAPTILES_KEY || import.meta.env.VITE_GOONG_MAP_KEY || ''}`.trim();
-const GOONG_REST_API_KEY = `${import.meta.env.VITE_GOONG_REST_API_KEY || import.meta.env.VITE_GOONG_API_KEY || import.meta.env.VITE_GOONG_MAP_KEY || ''}`.trim();
+const clientRuntime = resolveClientRuntime();
+const GOOGLE_MAPS_API_KEY = clientRuntime.googleMapsApiKey;
+const GOOGLE_MAPS_MAP_ID = clientRuntime.googleMapsMapId;
+const GOONG_MAPTILES_API_KEY = clientRuntime.goongMapTilesApiKey;
+const GOONG_REST_API_KEY = clientRuntime.goongRestApiKey;
 const GOONG_JS_URL = 'https://cdn.jsdelivr.net/npm/@goongmaps/goong-js@1.0.9/dist/goong-js.js';
 const GOONG_CSS_URL = 'https://cdn.jsdelivr.net/npm/@goongmaps/goong-js@1.0.9/dist/goong-js.css';
 const GOONG_STYLE_URL = 'https://tiles.goong.io/assets/goong_map_web.json';
@@ -567,20 +585,7 @@ const configureFirebaseAuthPersistence = async (firebaseAuth) => {
 };
 
 try {
-  const envFirebaseConfig = {
-    apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
-    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
-    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
-    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
-    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-    appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
-    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '',
-  };
-  const firebaseConfig = typeof __firebase_config !== 'undefined'
-    ? JSON.parse(__firebase_config)
-    : Object.fromEntries(
-        Object.entries(envFirebaseConfig).filter(([, value]) => `${value || ''}`.trim())
-      );
+  const firebaseConfig = resolveFirebaseRuntimeConfig();
   activeFirebaseConfig = firebaseConfig;
   logLoginStep('Firebase initialize', {
     configured: Boolean(firebaseConfig?.apiKey),
@@ -622,14 +627,24 @@ try {
   isFirebaseConfigured = false;
 }
 
-const appId = typeof __app_id !== 'undefined'
-  ? __app_id
-  : (import.meta.env.VITE_HD_APP_ID || import.meta.env.VITE_FIREBASE_PROJECT_ID || 'hd-manager-production');
+const appId = resolveDataAppId();
 logLoginStep('Data app id', { appId, projectId: activeFirebaseConfig?.projectId || '' });
 
 const FIRESTORE_WRITE_EVENT = 'hd-manager:firestore-write';
 const ACTIVITY_LOG_COLLECTION_NAME = 'activityLogs';
 const ACTIVITY_LOG_IGNORED_COLLECTIONS = new Set([ACTIVITY_LOG_COLLECTION_NAME]);
+const createVpsStagingFirebaseWriteError = (operation) => {
+  const error = new Error(
+    `Firebase write (${operation}) is disabled in VPS staging. Use a migrated VPS API contract instead.`,
+  );
+  error.code = 'firebase-writer-disabled-in-vps-staging';
+  return error;
+};
+
+const assertFirebaseWriteAllowed = (operation) => {
+  if (isVpsStagingMode) throw createVpsStagingFirebaseWriteError(operation);
+};
+
 const runNonBlockingStateUpdate = (callback) => {
   if (typeof startTransition === 'function') {
     startTransition(callback);
@@ -724,6 +739,7 @@ const buildActivityAuditLogPayload = ({ documentRef, action, payload = {}, optio
 };
 
 const writeActivityAuditLog = async (logPayload) => {
+  if (isVpsStagingMode) return;
   if (!db || !logPayload || activityAuditSuppressionDepth > 0) return;
   try {
     await firebaseSetDoc(
@@ -803,6 +819,7 @@ const sanitizeFirestoreWritePayload = (payload) => {
 };
 
 const setDoc = async (documentRef, payload, options) => {
+  assertFirebaseWriteAllowed('setDoc');
   const sanitizedPayload = sanitizeFirestoreWritePayload(payload);
   const result = await recordFirestoreOperation('setDoc', {
     path: getDocumentPathFromDocRef(documentRef),
@@ -815,6 +832,7 @@ const setDoc = async (documentRef, payload, options) => {
 };
 
 const deleteDoc = async (documentRef) => {
+  assertFirebaseWriteAllowed('deleteDoc');
   const result = await recordFirestoreOperation('deleteDoc', {
     path: getDocumentPathFromDocRef(documentRef),
     id: documentRef?.id || '',
@@ -843,9 +861,12 @@ const getDoc = async (documentRef) => recordFirestoreOperation('getDoc', {
   id: documentRef?.id || '',
 }, () => firebaseGetDoc(documentRef));
 
-const runTransaction = async (database, updateFunction, options) => recordFirestoreOperation('runTransaction', {
-  appName: database?.app?.name || '',
-}, () => firebaseRunTransaction(database, updateFunction, options));
+const runTransaction = async (database, updateFunction, options) => {
+  assertFirebaseWriteAllowed('runTransaction');
+  return recordFirestoreOperation('runTransaction', {
+    appName: database?.app?.name || '',
+  }, () => firebaseRunTransaction(database, updateFunction, options));
+};
 
 const onSnapshot = (targetRef, ...snapshotArgs) => {
   const path = getFirestoreTargetPath(targetRef);
@@ -3764,18 +3785,21 @@ const buildPayosPaymentQrImageSource = (value = '') => {
   return buildCodeOnlyPaymentQrImageSource(buildQrImageSource(payload));
 };
 
-const DEFAULT_PAYOS_API_BASE_URL = 'https://hd-manager-c5839.web.app';
 const getPayosApiBaseUrl = () => {
-  const envBaseUrl = `${import.meta.env.VITE_SEPAY_API_BASE_URL || import.meta.env.VITE_PAYOS_API_BASE_URL || ''}`.trim();
-  if (envBaseUrl) return envBaseUrl.replace(/\/+$/, '');
+  if (isVpsStagingMode) return '';
+  const configuredBaseUrl = resolveLegacyPaymentApiBaseUrl();
+  if (configuredBaseUrl) return configuredBaseUrl;
   // The VPS may host another API at /api. Use the Firebase Hosting rewrite
   // explicitly so payment requests cannot be routed to an unrelated backend.
-  return DEFAULT_PAYOS_API_BASE_URL;
+  return '';
 };
 const PAYOS_API_BASE_URL = getPayosApiBaseUrl();
 const buildPayosApiUrl = (path = '') => `${PAYOS_API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 const requestPayosPaymentLink = async ({ firebaseUser, appId, orderId, receivingProfile = null, amount = 0 }) => {
+  if (isVpsStagingMode) {
+    throw new Error('Legacy Firebase payment requests are disabled in VPS staging.');
+  }
   if (!firebaseUser || !orderId) {
     throw new Error('Thiếu phiên đăng nhập hoặc mã đơn để tạo thanh toán SePay.');
   }
@@ -3816,6 +3840,9 @@ const requestPayosPaymentLink = async ({ firebaseUser, appId, orderId, receiving
 };
 
 const requestCustomerDebtPaymentIntent = async ({ firebaseUser, appId, orderIds = [] }) => {
+  if (isVpsStagingMode) {
+    throw new Error('Legacy Firebase debt payments are disabled in VPS staging.');
+  }
   if (!firebaseUser || !Array.isArray(orderIds) || orderIds.length === 0) {
     throw new Error('Thiếu phiên đăng nhập hoặc danh sách hóa đơn cần thanh toán.');
   }
@@ -4521,17 +4548,9 @@ const fromFirestoreRestFields = (fields = {}) => Object.entries(fields || {}).re
 }, {});
 
 const buildFirestoreRestDocumentUrl = (collectionName, documentId, { merge = false, fieldPaths = [] } = {}) => {
+  if (isVpsStagingMode) return '';
   const projectId = activeFirebaseConfig?.projectId || '';
-  if (!projectId || !collectionName || !documentId) return '';
-  const encodedAppId = encodeURIComponent(appId);
-  const encodedCollection = encodeURIComponent(collectionName);
-  const encodedDocument = encodeURIComponent(documentId);
-  const baseUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/artifacts/${encodedAppId}/public/data/${encodedCollection}/${encodedDocument}`;
-  if (!merge || fieldPaths.length === 0) return baseUrl;
-  const query = fieldPaths
-    .map(field => `updateMask.fieldPaths=${encodeURIComponent(field)}`)
-    .join('&');
-  return `${baseUrl}?${query}`;
+  return buildFirebaseRestDocumentUrl(projectId, appId, collectionName, documentId, { merge, fieldPaths });
 };
 
 const saveBlobFile = async (filename, blob) => {
@@ -11630,12 +11649,17 @@ const useAutoDismissMessage = (message, setMessage, { delay = 5200, disabled = f
 export default function App() {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
-  const persistedSession = useMemo(() => loadAppSession(), []);
+  const persistedSession = useMemo(() => (
+    isVpsStagingMode
+      ? { currentUser: null, currentCompany: null, activeTab: 'home' }
+      : loadAppSession()
+  ), []);
   const [firebaseUser, setFirebaseUser] = useState(null);
   // Firebase must finish restoring its persisted credential before Login is
   // considered. The app-session cache only improves restoration context; it
   // never grants authenticated access on its own.
   const [isFirebaseLoading, setIsFirebaseLoading] = useState(() => Boolean(isFirebaseConfigured && auth));
+  const [isVpsSessionLoading, setIsVpsSessionLoading] = useState(() => isVpsStagingMode);
   const [sessionRecoveryTimedOut, setSessionRecoveryTimedOut] = useState(false);
 
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
@@ -12127,6 +12151,7 @@ export default function App() {
   };
 
   const writeFirestoreDocumentViaRest = async (collectionName, documentId, payload, options = {}) => {
+    assertFirebaseWriteAllowed('rest-patch');
     const authenticatedUser = firebaseUser || auth?.currentUser;
     if (!authenticatedUser?.getIdToken) {
       const authError = new Error('Phiên đăng nhập Firebase chưa sẵn sàng để lưu dữ liệu.');
@@ -12177,6 +12202,7 @@ export default function App() {
   };
 
   const flushPendingFirebaseWriteNow = (collectionName, documentId, timeoutMs = 12000, expectedCompanyId = activeTenantScopeRef.current) => {
+    if (isVpsStagingMode) return Promise.reject(createVpsStagingFirebaseWriteError('pending-write-flush'));
     const companyId = `${expectedCompanyId || ''}`.trim();
     if (!companyId) {
       const error = new Error('Khong the dong bo du lieu khi chua xac dinh cong ty.');
@@ -12305,6 +12331,7 @@ export default function App() {
   };
 
   const saveDataDocument = async (collectionName, documentId, payload, options = {}, timeoutMs = 4500, timeoutMessage = 'Firebase SDK phản hồi chậm') => {
+    assertFirebaseWriteAllowed(`saveDataDocument:${collectionName || 'unknown'}`);
     const activeCompanyId = currentUser?.companyId || currentCompany?.id || '';
     const isCompanyScopedCollection = COMPANY_SCOPED_DATA_COLLECTION_NAMES.has(collectionName);
     const sanitizedPayload = sanitizeFirestoreWritePayload(payload || {});
@@ -12427,7 +12454,7 @@ export default function App() {
 
   useEffect(() => {
     const companyId = `${currentUser?.companyId || ''}`.trim();
-    if (!firebaseUser || !isFirebaseConfigured || !companyId || pendingFirebaseWriteCount === 0) return;
+    if (isVpsStagingMode || !firebaseUser || !isFirebaseConfigured || !companyId || pendingFirebaseWriteCount === 0) return;
     let cancelled = false;
 
     const flushPendingWrites = async () => {
@@ -12460,6 +12487,7 @@ export default function App() {
   }, [firebaseUser?.uid, currentUser?.companyId, pendingFirebaseWriteCount]);
 
   useEffect(() => {
+    if (isVpsStagingMode) return;
     saveAppSession({ currentUser, currentCompany, activeTab });
   }, [currentUser, currentCompany, activeTab]);
 
@@ -12637,8 +12665,121 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isVpsStagingMode) {
+      setIsVpsSessionLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    clearAppSession();
+
+    const restoreVpsSession = async () => {
+      try {
+        const session = await getHdConnectStagingApi().restoreSession();
+        if (cancelled || !session) return;
+
+        const company = session.company || {
+          id: session.user.companyId,
+          name: '',
+        };
+        setCurrentUser(session.user);
+        setCurrentCompany(company);
+        setRawCompanies([company]);
+        setRawEmployees([{ ...session.user, isArchived: false }]);
+        setActiveTab('home');
+        setRealtimeStatus({
+          state: 'polling',
+          collection: '',
+          lastAt: new Date().toISOString(),
+          error: '',
+        });
+      } catch {
+        // The transport clears invalid refresh state itself. The login screen is
+        // the safe recovery path and must not receive token diagnostics.
+      } finally {
+        if (!cancelled) setIsVpsSessionLoading(false);
+      }
+    };
+
+    restoreVpsSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isVpsStagingMode || !currentUser?.companyId) return undefined;
+
+    let cancelled = false;
+    let loading = false;
+    const api = getHdConnectStagingApi();
+    const loadCoreVpsData = async () => {
+      if (loading) return;
+      loading = true;
+
+      try {
+        const [customersResult, productsResult, unitsResult, ordersResult] = await Promise.allSettled([
+          api.listCustomers({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listProducts({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listUnits({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listOrders({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
+        ]);
+        if (cancelled) return;
+
+        const failedDomains = [];
+        if (customersResult.status === 'fulfilled') setRawCustomers(customersResult.value.items);
+        else failedDomains.push('customers');
+        if (productsResult.status === 'fulfilled') setRawProducts(productsResult.value.items);
+        else failedDomains.push('products');
+        if (unitsResult.status === 'fulfilled') {
+          setRawProducts((previous) => previous.map((product) => ({
+            ...product,
+            availableUnits: unitsResult.value.items,
+          })));
+        } else {
+          failedDomains.push('units');
+        }
+        if (ordersResult.status === 'fulfilled') setRawOrders(ordersResult.value.items);
+        else failedDomains.push('orders');
+
+        // The available CX payment endpoint is customer-portal scoped, not an
+        // internal finance ledger. Do not substitute it for operator payments.
+        setRawPayments([]);
+        setLoadedCollections((previous) => ({
+          ...previous,
+          companies: true,
+          employees: true,
+          customers: customersResult.status === 'fulfilled',
+          products: productsResult.status === 'fulfilled',
+          orders: ordersResult.status === 'fulfilled',
+        }));
+        setRealtimeStatus({
+          state: failedDomains.length > 0 ? 'degraded' : 'polling',
+          collection: failedDomains[0] || 'vps-api',
+          lastAt: new Date().toISOString(),
+          error: failedDomains.length > 0
+            ? `VPS staging data unavailable: ${failedDomains.join(', ')}.`
+            : '',
+        });
+      } finally {
+        loading = false;
+      }
+    };
+
+    void loadCoreVpsData();
+    const intervalId = window.setInterval(() => {
+      void loadCoreVpsData();
+    }, 30_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser?.companyId]);
+
+  useEffect(() => {
     const tenantCompanyId = `${currentUser?.companyId || ''}`.trim();
-    if (!firebaseUser || !isFirebaseConfigured || !tenantCompanyId) return;
+    if (isVpsStagingMode || !firebaseUser || !isFirebaseConfigured || !tenantCompanyId) return;
     const customerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
     const sessionCustomerId = `${currentUser?.customerId || ''}`.trim();
     const customerOwnedCollections = new Set([
@@ -12720,7 +12861,7 @@ export default function App() {
       const directUrl = directDocumentId
         ? buildFirestoreRestDocumentUrl(colName, directDocumentId)
         : '';
-      const queryUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data:runQuery`;
+      const queryUrl = buildFirebaseRestCollectionQueryUrl(projectId, appId);
       const fieldFilters = [{
         fieldFilter: {
           field: { fieldPath: 'companyId' },
@@ -14259,6 +14400,40 @@ export default function App() {
 
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
+    if (isVpsStagingMode) {
+      const email = `${identifier || ''}`.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || `${password || ''}`.length < 8) {
+        return { success: false, message: 'Enter a valid email address and a password with at least 8 characters.' };
+      }
+
+      try {
+        const session = await getHdConnectStagingApi().login({ email, password });
+        const company = session.company || { id: session.user.companyId, name: '' };
+        setFirebaseUser(null);
+        setCurrentUser(session.user);
+        setCurrentCompany(company);
+        setRawCompanies([company]);
+        setRawEmployees([{ ...session.user, isArchived: false }]);
+        setActiveTab('home');
+        setRealtimeStatus({
+          state: 'polling',
+          collection: '',
+          lastAt: new Date().toISOString(),
+          error: '',
+        });
+        recordStartupEvent('auth.vps_staging_login.completed', {
+          durationMs: Date.now() - loginStartedAt,
+        });
+        return { success: true, identity: session.user };
+      } catch (error) {
+        recordStartupEvent('auth.vps_staging_login.failed', {
+          durationMs: Date.now() - loginStartedAt,
+          code: `${error?.code || ''}`,
+        }, 'error');
+        return { success: false, message: error?.message || 'Unable to sign in to the VPS staging API.' };
+      }
+    }
+
     const normalizedIdentifier = normalizeEmployeeLoginPhone(identifier);
     if (normalizedIdentifier.length < 9 || normalizedIdentifier.length > 11 || `${password || ''}`.length < 8) {
       return { success: false, message: 'Nhập số điện thoại hợp lệ và mật khẩu tối thiểu 8 ký tự.' };
@@ -14329,6 +14504,14 @@ export default function App() {
   };
 
   const handleIdentityRecovery = async ({ identifier, pin }) => {
+    if (isVpsStagingMode) {
+      try {
+        return await getHdConnectStagingApi().requestPasswordReset(identifier);
+      } catch (error) {
+        return { success: false, message: error?.message || 'Unable to request a password reset.' };
+      }
+    }
+
     try {
       return await identityRequestRecovery({ identifier, pin });
     } catch (error) {
@@ -14337,11 +14520,34 @@ export default function App() {
   };
 
   const handleIdentityCompleteRecovery = async ({ resetToken, password, identifier }) => {
+    if (isVpsStagingMode) {
+      return {
+        success: false,
+        message: 'Complete the VPS password reset only through the approved reset link or invitation flow.',
+      };
+    }
+
     try {
       const result = await identityCompleteRecovery({ resetToken, password, identifier });
       return { success: true, message: result.message || 'Đổi mật khẩu thành công.' };
     } catch (error) {
       return { success: false, message: getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại mật khẩu. Vui lòng xác minh lại rồi thử lần nữa.') };
+    }
+  };
+
+  const handleOwnerResetEmployeePassword = async (employeeId) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'Chức năng đặt lại tài khoản nhân sự chưa được bật trong VPS staging.' };
+    }
+    try {
+      const idToken = await auth?.currentUser?.getIdToken?.();
+      if (!idToken) return { success: false, message: 'Phiên xác thực đã hết hạn. Vui lòng đăng nhập lại.' };
+      return await identityOwnerResetPassword({ idToken, employeeId, appId });
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại đăng nhập cho nhân sự.'),
+      };
     }
   };
 
@@ -14747,7 +14953,20 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (isVpsStagingMode) {
+      try {
+        await getHdConnectStagingApi().logout();
+      } finally {
+        clearAppSession();
+        setFirebaseUser(null);
+        setCurrentUser(null);
+        setCurrentCompany(null);
+        setActiveTab('home');
+      }
+      return;
+    }
+
     const logoutAuditPromise = startIdentityLogoutAudit(auth?.currentUser);
     const firebaseSignOutPromise = auth
       ? signOut(auth).catch(() => undefined)
@@ -14761,7 +14980,12 @@ export default function App() {
     void Promise.allSettled([firebaseSignOutPromise, logoutAuditPromise]);
   };
 
-  const handleSwitchToCustomerLogin = () => {
+  const handleSwitchToCustomerLogin = async () => {
+    if (isVpsStagingMode) {
+      await handleLogout();
+      return;
+    }
+
     const logoutAuditPromise = startIdentityLogoutAudit(auth?.currentUser);
     const firebaseSignOutPromise = auth
       ? signOut(auth).catch(() => undefined)
@@ -15830,6 +16054,9 @@ export default function App() {
   };
 
   const handleAddPayment = async (paymentData) => {
+    if (isVpsStagingMode) {
+      throw new Error('Payment posting is blocked in VPS staging until the finance payment contract is approved.');
+    }
     if (!firebaseUser) return;
     const id = `p_${Date.now()}`;
     const matchedOrder = resolveMatchedOrderFromTransfer({ paymentData, orders, company: currentCompany });
@@ -16992,6 +17219,35 @@ export default function App() {
   };
 
   const handleAddCustomer = async (empId, customerData = {}) => {
+    if (isVpsStagingMode) {
+      const assignedEmpId = empId || customerData?.empId || currentUser?.id || '';
+      if (!assignedEmpId) {
+        throw new Error('Select a responsible employee before saving a customer.');
+      }
+      const customerName = toTitleCase(stripCustomerHonorificPrefix(customerData?.name || '')).trim();
+      const normalizedPhone = buildCustomerPhoneDuplicateKey(customerData?.phone);
+      if (!normalizedPhone) {
+        throw new Error('Enter a customer phone number to prevent duplicates.');
+      }
+      const duplicatedCustomer = rawCustomers.find((customer) => (
+        customer.companyId === myCompanyId
+        && !customer.isArchived
+        && buildCustomerPhoneDuplicateKey(customer.phone) === normalizedPhone
+      ));
+      if (duplicatedCustomer) {
+        throw new Error(`This phone number already belongs to ${duplicatedCustomer.name || 'an existing customer'}.`);
+      }
+
+      const savedCustomer = await getHdConnectStagingApi().createCustomer({
+        ...customerData,
+        name: customerName,
+        empId: assignedEmpId,
+        clientMutationId: customerData.clientMutationId || `customer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      });
+      upsertLocalListRecord(setRawCustomers, savedCustomer);
+      return savedCustomer.id;
+    }
+
     if (!firebaseUser) throw new Error('Chưa kết nối dữ liệu. Vui lòng tải lại app rồi thử lại.');
     const assignedEmpId = empId || customerData?.empId || currentUser?.id || '';
     if (!assignedEmpId) {
@@ -17042,6 +17298,37 @@ export default function App() {
   };
 
   const handleEditCustomer = async (customerId, updatedData) => {
+    if (isVpsStagingMode) {
+      const currentCustomer = rawCustomers.find((customer) => customer.id === customerId);
+      if (!currentCustomer) throw new Error('The customer was not found in the current tenant.');
+      const nextPhone = `${updatedData?.phone ?? currentCustomer?.phone ?? ''}`.trim();
+      const normalizedPhone = buildCustomerPhoneDuplicateKey(nextPhone);
+      if (!normalizedPhone) {
+        throw new Error('Enter a customer phone number to prevent duplicates.');
+      }
+      const duplicatedCustomer = rawCustomers.find((customer) => (
+        customer.companyId === myCompanyId
+        && !customer.isArchived
+        && customer.id !== customerId
+        && buildCustomerPhoneDuplicateKey(customer.phone) === normalizedPhone
+      ));
+      if (duplicatedCustomer) {
+        throw new Error(`This phone number already belongs to ${duplicatedCustomer.name || 'an existing customer'}.`);
+      }
+
+      const savedCustomer = await getHdConnectStagingApi().updateCustomer(customerId, {
+        ...currentCustomer,
+        ...updatedData,
+        name: updatedData?.name === undefined
+          ? currentCustomer.name
+          : toTitleCase(stripCustomerHonorificPrefix(updatedData.name || '')).trim(),
+        phone: nextPhone,
+        clientMutationId: updatedData?.clientMutationId || `customer-${customerId}-${Date.now()}`,
+      });
+      upsertLocalListRecord(setRawCustomers, savedCustomer);
+      return savedCustomer;
+    }
+
     if (!firebaseUser) return;
     const currentCustomer = rawCustomers.find(customer => customer.id === customerId);
     const nextName = updatedData?.name !== undefined
@@ -17091,6 +17378,16 @@ export default function App() {
   };
 
   const handleDeleteCustomer = async (customerId) => {
+    if (isVpsStagingMode) {
+      await getHdConnectStagingApi().deleteCustomer(customerId);
+      setRawCustomers((previous) => previous.map((customer) => (
+        customer?.id === customerId
+          ? { ...customer, isArchived: true, archivedAt: new Date().toISOString() }
+          : customer
+      )));
+      return { success: true, mode: 'soft-deleted' };
+    }
+
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', customerId), {
       isArchived: true,
@@ -17163,6 +17460,15 @@ export default function App() {
   };
 
   const handleAddProduct = async (productData) => {
+    if (isVpsStagingMode) {
+      const savedProduct = await getHdConnectStagingApi().createProduct({
+        ...productData,
+        clientMutationId: productData?.clientMutationId || `product-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      });
+      upsertLocalListRecord(setRawProducts, savedProduct);
+      return savedProduct.id;
+    }
+
     if (!firebaseUser) return;
     const id = `prod_${Date.now()}`;
     await saveDataDocument('products', id, {
@@ -17175,11 +17481,33 @@ export default function App() {
   };
 
   const handleEditProduct = async (prodId, updatedData) => {
+    if (isVpsStagingMode) {
+      const currentProduct = rawProducts.find((product) => product.id === prodId);
+      if (!currentProduct) throw new Error('The product was not found in the current tenant.');
+      const savedProduct = await getHdConnectStagingApi().updateProduct(prodId, {
+        ...currentProduct,
+        ...updatedData,
+        clientMutationId: updatedData?.clientMutationId || `product-${prodId}-${Date.now()}`,
+      });
+      upsertLocalListRecord(setRawProducts, savedProduct);
+      return savedProduct;
+    }
+
     if (!firebaseUser) return;
     return saveDataDocument('products', prodId, updatedData, { merge: true }, 4500, 'Firebase phản hồi chậm khi cập nhật sản phẩm.');
   };
 
   const handleDeleteProduct = async (prodId) => {
+    if (isVpsStagingMode) {
+      await getHdConnectStagingApi().deleteProduct(prodId);
+      setRawProducts((previous) => previous.map((product) => (
+        product?.id === prodId
+          ? { ...product, isArchived: true, archivedAt: new Date().toISOString() }
+          : product
+      )));
+      return { success: true, mode: 'soft-deleted' };
+    }
+
     if (!firebaseUser) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', prodId), {
       isArchived: true,
@@ -17189,6 +17517,41 @@ export default function App() {
   };
 
   const handleAddOrder = async (empId, orderData) => {
+    if (isVpsStagingMode) {
+      const customer = customers.find((item) => item.id === orderData.customerId);
+      const salesEmpId = orderData.salesEmpId || empId || customer?.empId || currentUser?.id || '';
+      const orderDateTime = buildDateTimeFromDateKey(orderData.date, new Date());
+      const orderDateKey = getDateKeyFromDateTime(orderDateTime);
+      const duplicateSignature = buildOrderDuplicateSignature({
+        ...orderData,
+        date: orderDateKey || getTodayString(),
+      });
+      const duplicatedOrder = duplicateSignature
+        ? (orders || []).find((order) => !order?.isArchived && buildOrderDuplicateSignature(order) === duplicateSignature)
+        : null;
+      if (duplicatedOrder) {
+        throw new Error(`This order already exists (${duplicatedOrder.code || duplicatedOrder.id || 'existing order'}).`);
+      }
+      if (duplicateSignature && orderCreateInFlightRef.current.has(duplicateSignature)) {
+        throw new Error('This order is already being saved. Duplicate submission was blocked.');
+      }
+
+      if (duplicateSignature) orderCreateInFlightRef.current.add(duplicateSignature);
+      try {
+        const savedOrder = await getHdConnectStagingApi().createOrder({
+          ...orderData,
+          date: orderDateTime,
+          orderDate: orderData.orderDate || orderDateKey,
+          salesEmpId,
+          clientMutationId: orderData.clientMutationId || `order-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        });
+        upsertLocalListRecord(setRawOrders, savedOrder);
+        return savedOrder.id;
+      } finally {
+        if (duplicateSignature) orderCreateInFlightRef.current.delete(duplicateSignature);
+      }
+    }
+
     if (!firebaseUser) return;
     const customer = customers.find(c => c.id === orderData.customerId);
     const salesEmpId = orderData.salesEmpId || empId || customer?.empId || '';
@@ -18516,6 +18879,21 @@ export default function App() {
   };
 
   const handleEditOrder = async (orderId, orderData, collectedPaymentData = null) => {
+    if (isVpsStagingMode) {
+      if (collectedPaymentData) {
+        throw new Error('Payment collection is not enabled in the VPS staging order flow.');
+      }
+      const existingOrder = rawOrders.find((order) => order.companyId === myCompanyId && order.id === orderId);
+      if (!existingOrder) return { success: false, message: 'The order was not found in the current tenant.' };
+      const savedOrder = await getHdConnectStagingApi().updateOrder(orderId, {
+        ...orderData,
+        salesEmpId: orderData.salesEmpId || existingOrder.salesEmpId || currentUser?.id || '',
+        clientMutationId: orderData.clientMutationId || `order-${orderId}-${Date.now()}`,
+      });
+      upsertLocalListRecord(setRawOrders, savedOrder);
+      return { success: true, order: savedOrder };
+    }
+
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
     const customer = customers.find(c => c.id === orderData.customerId);
@@ -19235,6 +19613,13 @@ export default function App() {
   };
 
   const handleDeleteOrder = async (orderId) => {
+    if (isVpsStagingMode) {
+      return {
+        success: false,
+        message: 'Order deletion is not mapped to VPS staging. Use an approved cancel workflow with a reason.',
+      };
+    }
+
     if (!firebaseUser) return;
     const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
     const archivedPayload = {
@@ -20265,10 +20650,10 @@ export default function App() {
     return () => window.clearTimeout(timerId);
   }, [recoverableSyncNotice?.id]);
 
-  if (!isFirebaseConfigured) return <MissingFirebaseError />;
-  if (isFirebaseLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
+  if (!isFirebaseConfigured && !isVpsStagingMode) return <MissingFirebaseError />;
+  if (isFirebaseLoading || isVpsSessionLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
 
-  if (!firebaseUser && currentUser) {
+  if (!isVpsStagingMode && !firebaseUser && currentUser) {
     return (
       <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-6 text-center border border-emerald-100">
@@ -20299,6 +20684,7 @@ export default function App() {
           onForgotPassword={handleIdentityRecovery}
           onCompleteRecovery={handleIdentityCompleteRecovery}
           onCompleteIdentitySetup={handleIdentitySetup}
+          vpsStagingMode={isVpsStagingMode}
         />
       </>
     );
@@ -20306,7 +20692,7 @@ export default function App() {
 
   // Firebase Auth is authoritative; cached session data may render the shell while
   // core collections revalidate in the background. Only block if Auth itself is loading.
-  if (isSessionRecovering && isFirebaseLoading) {
+  if (isSessionRecovering && (isFirebaseLoading || isVpsSessionLoading)) {
     return (
       <>
         <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
@@ -20390,7 +20776,7 @@ export default function App() {
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
-        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => auth?.currentUser?.getIdToken?.() || Promise.resolve('')} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
+        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
@@ -20865,7 +21251,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -22519,6 +22905,8 @@ function MainAppView({
           canCreateEmployeeReview={canRoleAction('employees', 'create_employee_review')}
           canViewAllEmployeeReviews={isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews')}
           canManageHolidayConfig={isOwnerAccount || canRoleAction('employees', 'edit_employee_salary_policy') || canRoleAction('payroll', 'configure_salary_advance_limit')}
+          canResetEmployeePassword={isOwnerAccount}
+          onResetEmployeePassword={onResetEmployeePassword}
         />
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
@@ -73958,7 +74346,9 @@ function EmployeeView({
   canViewEmployeeReviews = false,
   canCreateEmployeeReview = false,
   canViewAllEmployeeReviews = false,
-  canManageHolidayConfig = false
+  canManageHolidayConfig = false,
+  canResetEmployeePassword = false,
+  onResetEmployeePassword
 }) {
   const employeeAvatarInputRef = useRef(null);
   const employeeDocumentInputRef = useRef(null);
@@ -73966,6 +74356,7 @@ function EmployeeView({
   const [editingEmp, setEditingEmp] = useState(null);
   const [empData, setEmpData] = useState(createEmployeeFormState());
   const [employeeStatus, setEmployeeStatus] = useState('');
+  const [resettingEmployeeId, setResettingEmployeeId] = useState('');
   const [avatarUploadEmp, setAvatarUploadEmp] = useState(null);
   const [documentUploadEmp, setDocumentUploadEmp] = useState(null);
   const [documentUploadType, setDocumentUploadType] = useState('id_card');
@@ -74533,6 +74924,32 @@ function EmployeeView({
     }
   };
 
+  const handleResetEmployeePassword = async (emp) => {
+    if (!emp?.id || !canResetEmployeePassword || !onResetEmployeePassword) return;
+    if (emp.role === 'super_admin' || isOwnerPosition(emp.position)) {
+      setEmployeeStatus('Không thể đặt lại tài khoản chủ doanh nghiệp từ hồ sơ nhân sự.');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Đặt lại đăng nhập của "${emp.name || 'nhân sự này'}" về mật khẩu mặc định 12345678?\n\n`
+      + 'Toàn bộ phiên đăng nhập, PIN, Face ID/vân tay và thiết bị tin cậy cũ sẽ bị thu hồi. Nhân sự phải đổi mật khẩu và tạo PIN mới ở lần đăng nhập tiếp theo.'
+    );
+    if (!confirmed) return;
+
+    setResettingEmployeeId(emp.id);
+    setEmployeeStatus('Đang đặt lại đăng nhập và thu hồi các phiên cũ...');
+    try {
+      const result = await onResetEmployeePassword(emp.id);
+      setEmployeeStatus(result?.success
+        ? `Đã đặt lại tài khoản. Mật khẩu mặc định: ${result.temporaryPassword || '12345678'}. Nhân sự phải đổi mật khẩu và PIN khi đăng nhập.`
+        : (result?.message || 'Không thể đặt lại đăng nhập cho nhân sự.'));
+    } catch (error) {
+      setEmployeeStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại đăng nhập cho nhân sự.'));
+    } finally {
+      setResettingEmployeeId('');
+    }
+  };
+
   const handleOpenAvatarPicker = (emp) => {
     if (!emp?.id || !canEditEmployee) return;
     setAvatarUploadEmp(emp);
@@ -75086,6 +75503,26 @@ function EmployeeView({
                 )}
               </div>
               <p className="text-[11px] text-gray-500 leading-relaxed">{isEditingOwner ? 'Tài khoản chủ doanh nghiệp là tài khoản gốc của công ty và không tạo thêm từ màn này.' : 'Bộ phận được chọn sẽ quyết định quyền truy cập và màn hình mặc định của tài khoản này.'}</p>
+              {editingEmp && !isEditingOwner && canResetEmployeePassword && (
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs font-black text-amber-800">
+                      <KeyRound size={15} /> Khôi phục đăng nhập
+                    </div>
+                    <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
+                      Dùng khi nhân sự quên cả mật khẩu và PIN. Phiên cũ sẽ bị thu hồi an toàn.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleResetEmployeePassword(editingEmp)}
+                    disabled={resettingEmployeeId === editingEmp.id}
+                    className="shrink-0 rounded-xl bg-amber-500 px-3 py-2 text-[11px] font-black text-white hover:bg-amber-600 disabled:bg-amber-300"
+                  >
+                    {resettingEmployeeId === editingEmp.id ? 'Đang đặt lại...' : 'Đặt lại'}
+                  </button>
+                </div>
+              )}
               {!isEditingOwner && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3 space-y-3">
                   <div className="flex items-start justify-between gap-2">
@@ -82335,7 +82772,7 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup }) {
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -82391,7 +82828,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
   const handleForgotPasswordSubmit = async (e) => {
     e.preventDefault();
     if (!forgotPhone.trim()) {
-      setForgotError('Vui lòng nhập số điện thoại cần khôi phục.');
+      setForgotError(vpsStagingMode ? 'Enter the email address for password reset.' : 'Vui lòng nhập số điện thoại cần khôi phục.');
       return;
     }
     setIsRequestingRecovery(true);
@@ -82415,7 +82852,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    if (!loginPhone.trim()) { setLoginError('Vui lòng nhập số điện thoại'); return; }
+    if (!loginPhone.trim()) { setLoginError(vpsStagingMode ? 'Enter your email address.' : 'Vui lòng nhập số điện thoại'); return; }
     if (`${loginPassword || ''}`.length < 8) { setLoginError('Mật khẩu cần ít nhất 8 ký tự.'); return; }
     setIsLoggingIn(true);
     setLoginError('');
@@ -82480,6 +82917,10 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
+    if (vpsStagingMode) {
+      setRegError('VPS staging accounts are provisioned through the identity invitation flow.');
+      return;
+    }
     if (!regCompanyName.trim() || !regPhone.trim()) { setRegError('Vui lòng điền đủ thông tin'); return; }
     const passwordError = validateAccountPasswordInput(regPassword, regPasswordConfirm);
     if (passwordError) { setRegError(passwordError); return; }
@@ -82525,7 +82966,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
             <form onSubmit={handleAuthFormSubmit} className="space-y-4">
               {!showForgotPassword && <>
                 <div className="hd-login-3d-field">
-                  <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Số điện thoại" autoComplete="username" inputMode="tel" />
+                  <input type={vpsStagingMode ? 'email' : 'tel'} value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'username'} inputMode={vpsStagingMode ? 'email' : 'tel'} />
                 </div>
                 <div className="hd-login-3d-field relative">
                   <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
@@ -82548,17 +82989,22 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                   </button>
                 </div>
                 <div className="-mt-2 flex items-center justify-between gap-3 px-1">
-                  <p className="text-[11px] leading-relaxed text-gray-400">Tối thiểu 8 ký tự, gồm chữ và số.</p>
+                  <p className="text-[11px] leading-relaxed text-gray-400">{vpsStagingMode ? 'VPS staging uses the HD CONNECT identity service.' : 'Tối thiểu 8 ký tự, gồm chữ và số.'}</p>
                   <button type="button" onClick={openForgotPassword} className="shrink-0 text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
                 </div>
               </>}
               {showForgotPassword && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
-                  <p className="mb-3 text-[11px] leading-relaxed text-gray-500">Dùng thiết bị tin cậy và PIN hoặc sinh trắc học để tự xác minh. Không gửi OTP hoặc mật khẩu tạm.</p>
+                  <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Request a password reset from the HD CONNECT identity service. The frontend never receives or stores a reset token.' : 'App ưu tiên Face ID/vân tay trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
+                  {!vpsStagingMode && !recoveryToken && (
+                    <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-[10px] font-semibold leading-relaxed text-amber-700">
+                      Quên cả PIN? Hãy nhờ chủ doanh nghiệp đặt lại tài khoản về mật khẩu mặc định 12345678. Lần đăng nhập sau bạn sẽ tạo lại mật khẩu và PIN.
+                    </p>
+                  )}
                   <div className="space-y-2.5">
-                    <input type="tel" value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Số điện thoại" autoComplete="tel" />
-                    {!recoveryToken && <input type="password" inputMode="numeric" maxLength={6} value={forgotPin} onChange={(e) => { setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm tracking-[0.35em] outline-none focus:border-emerald-500" placeholder="PIN 6 số (nếu không dùng sinh trắc học)" autoComplete="one-time-code" />}
+                    <input type={vpsStagingMode ? 'email' : 'tel'} value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'tel'} />
+                    {!vpsStagingMode && !recoveryToken && <input type="password" inputMode="numeric" maxLength={6} value={forgotPin} onChange={(e) => { setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm tracking-[0.35em] outline-none focus:border-emerald-500" placeholder="PIN 6 số (nếu không dùng sinh trắc học)" autoComplete="one-time-code" />}
                     {recoveryToken && <>
                       <input type="password" value={recoveryPassword} onChange={(e) => { setRecoveryPassword(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" />
                       <input type="password" value={recoveryPasswordConfirm} onChange={(e) => { setRecoveryPasswordConfirm(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" />
@@ -82567,7 +83013,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                     {forgotMessage && <p className="text-[11px] font-semibold leading-relaxed text-emerald-700" role="status">{forgotMessage}</p>}
                     <div className="flex gap-2">
                       <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Quay lại đăng nhập</button>
-                      <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : 'Xác minh thiết bị'}</button>
+                      <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : (vpsStagingMode ? 'Gửi yêu cầu' : 'Xác minh thiết bị')}</button>
                     </div>
                   </div>
                 </div>
@@ -82578,7 +83024,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                 </button>
               )}
             </form>
-            {!showForgotPassword && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
+            {!showForgotPassword && !vpsStagingMode && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
           </div>
         ) : (
           <div>

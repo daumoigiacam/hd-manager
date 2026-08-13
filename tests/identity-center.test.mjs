@@ -17,6 +17,7 @@ const {
   buildPhoneVariants,
   createRecoveryToken,
   getRecoveryIdentityIdFromToken,
+  isOwnerIdentity,
   normalizePhone,
   normalizeUsername,
   validatePassword,
@@ -30,6 +31,10 @@ const legacyHash = (password, salt = 'identity-test-salt') => {
 };
 
 assert.equal(DEFAULT_FIRST_LOGIN_PASSWORD, '12345678');
+assert.equal(isOwnerIdentity({ role: 'super_admin' }), true);
+assert.equal(isOwnerIdentity({ role: 'owner' }), true);
+assert.equal(isOwnerIdentity({ role: 'Chủ doanh nghiệp' }), true);
+assert.equal(isOwnerIdentity({ role: 'employee' }), false);
 assert.equal(normalizePhone('84 978 194 836'), '0978194836');
 assert.equal(normalizePhone('0978.194.836'), '0978194836');
 assert.ok(buildPhoneVariants('0978194836').includes('84978194836'));
@@ -95,6 +100,7 @@ for (const expectedPath of [
   '/api/identity/complete-setup',
   '/api/identity/request-recovery',
   '/api/identity/complete-recovery',
+  '/api/identity/owner-reset-password',
   '/api/identity/verify-pin',
   '/api/identity/devices',
   '/api/identity/revoke-devices',
@@ -110,6 +116,8 @@ assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identi
 assert.match(identityClientSource, /export const identityRegisterCompany/);
 assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
 assert.match(identityClientSource, /identityCompleteRecovery = \(\{ resetToken, password, identifier \}\)/);
+assert.match(identityClientSource, /'\/api\/identity\/owner-reset-password': 'identityOwnerResetPassword'/);
+assert.match(identityClientSource, /export const identityOwnerResetPassword/);
 assert.match(identityClientSource, /accountScope/);
 assert.match(identityClientSource, /rememberIdentitySessionAccount\(result\)/);
 assert.match(identityClientSource, /resetToken,\s*password,\s*identifier,\s*device:/);
@@ -136,10 +144,14 @@ const authTimeoutEnd = appSource.indexOf('const restoreIdentityFromClaims', auth
 const authTimeoutSource = appSource.slice(authTimeoutStart, authTimeoutEnd);
 assert.ok(authTimeoutStart >= 0 && authTimeoutEnd > authTimeoutStart, 'Auth restore timeout guard must exist');
 assert.doesNotMatch(authTimeoutSource, /clearAppSession|setCurrentUser\(null\)/, 'Slow Auth restoration must not delete a valid cached session');
-assert.match(appSource, /if \(!firebaseUser && currentUser\)/, 'Cached app state must be protected until Firebase Auth confirms the user');
+assert.match(
+  appSource,
+  /if \(!isVpsStagingMode && !firebaseUser && currentUser\)/,
+  'Cached app state must be protected until Firebase Auth confirms the user'
+);
 
-const logoutHandlerStart = appSource.indexOf('const handleLogout = () =>');
-const logoutHandlerEnd = appSource.indexOf('const handleSwitchToCustomerLogin = () =>', logoutHandlerStart);
+const logoutHandlerStart = appSource.indexOf('const handleLogout = async () =>');
+const logoutHandlerEnd = appSource.indexOf('const handleSwitchToCustomerLogin = async () =>', logoutHandlerStart);
 const logoutHandlerSource = appSource.slice(logoutHandlerStart, logoutHandlerEnd);
 assert.ok(logoutHandlerStart >= 0 && logoutHandlerEnd > logoutHandlerStart, 'Fast logout handler must exist');
 assert.match(logoutHandlerSource, /startIdentityLogoutAudit\(auth\?\.currentUser\)/);
@@ -147,7 +159,11 @@ assert.match(logoutHandlerSource, /signOut\(auth\)\.catch/);
 assert.match(logoutHandlerSource, /setFirebaseUser\(null\)/);
 assert.match(logoutHandlerSource, /clearAppSession\(\)/);
 assert.match(logoutHandlerSource, /void Promise\.allSettled/);
-assert.doesNotMatch(logoutHandlerSource, /await identityLogout|await signOut/, 'Network audit and Firebase sign-out must not block the logout UI');
+assert.doesNotMatch(
+  logoutHandlerSource.slice(logoutHandlerSource.indexOf("if (isVpsStagingMode)") + 1),
+  /await identityLogout|await signOut/,
+  'Firebase network audit and sign-out must not block the production logout UI'
+);
 
 assert.doesNotMatch(appSource, /isCompanyDashboardServerReady/);
 assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
@@ -198,27 +214,48 @@ const recoveryUiHandlerSource = appSource.slice(recoveryUiHandlerStart, recovery
 assert.doesNotMatch(recoveryUiHandlerSource, /establishIdentitySession/);
 assert.match(recoveryUiHandlerSource, /identityCompleteRecovery\(\{ resetToken, password, identifier \}\)/);
 
+const ownerResetStart = identityFunctionSource.indexOf('const ownerResetEmployeePassword = async');
+const ownerResetEnd = identityFunctionSource.indexOf('const verifyPin = async', ownerResetStart);
+const ownerResetSource = identityFunctionSource.slice(ownerResetStart, ownerResetEnd);
+assert.ok(ownerResetStart >= 0 && ownerResetEnd > ownerResetStart, 'Owner password-reset handler must exist');
+assert.match(ownerResetSource, /ownerIdentity\.accountType !== 'employee' \|\| !isOwnerIdentity\(ownerIdentity\)/);
+assert.match(ownerResetSource, /employeeCompanyId !== `\$\{ownerIdentity\.companyId \|\| ''\}`/);
+assert.match(ownerResetSource, /existingIdentity && isOwnerIdentity\(existingIdentity\)/);
+assert.match(ownerResetSource, /hashPassword\(DEFAULT_FIRST_LOGIN_PASSWORD\)/);
+assert.match(ownerResetSource, /requiresPasswordChange: true/);
+assert.match(ownerResetSource, /pinHash: admin\.firestore\.FieldValue\.delete\(\)/);
+assert.match(ownerResetSource, /trusted: false/);
+assert.match(ownerResetSource, /biometricEnabled: false/);
+assert.match(ownerResetSource, /revokedReason: 'owner_reset'/);
+assert.match(ownerResetSource, /action: 'password_reset_by_owner'/);
+assert.match(ownerResetSource, /action: 'employee_password_reset'/);
+assert.match(ownerResetSource, /revokeRefreshTokens/);
+assert.match(functionsIndexSource, /exports\.identityOwnerResetPassword/);
+assert.match(appSource, /const handleOwnerResetEmployeePassword = async/);
+assert.match(appSource, /canResetEmployeePassword=\{isOwnerAccount\}/);
+assert.match(appSource, /Quên cả PIN\?/);
+
 const loginViewStart = appSource.indexOf('function LoginRegisterView');
 const loginViewSource = appSource.slice(loginViewStart, loginViewStart + 25000);
 assert.ok(loginViewStart >= 0, 'LoginRegisterView must exist');
 assert.match(
   loginViewSource,
-  /\{!showForgotPassword && <>[\s\S]*?placeholder="Số điện thoại"[\s\S]*?placeholder="Mật khẩu"[\s\S]*?<\/>,?\}/,
+  /\{!showForgotPassword && <>[\s\S]*?autoComplete=\{vpsStagingMode \? 'email' : 'username'\}[\s\S]*?autoComplete="current-password"[\s\S]*?<\/>,?\}/,
   'Login credentials must be hidden while password recovery is open'
 );
 assert.match(
   loginViewSource,
-  /\{!showForgotPassword && \([\s\S]*?type="submit"[\s\S]*?Vào Ứng Dụng[\s\S]*?\)\}/,
+  /\{!showForgotPassword && \([\s\S]*?<button[\s\S]*?type="submit"[\s\S]*?disabled=\{isLoggingIn\}[\s\S]*?<\/button>[\s\S]*?\)\}/,
   'Login submit action must be hidden while password recovery is open'
 );
 assert.match(loginViewSource, /<form onSubmit=\{handleAuthFormSubmit\}/);
 assert.match(loginViewSource, /void warmIdentityLoginService\(\)/);
 assert.match(loginViewSource, /if \(!showForgotPassword\) return handleLoginSubmit\(event\)/);
 assert.match(loginViewSource, /if \(!recoveryToken\) return handleForgotPasswordSubmit\(event\)/);
-assert.match(loginViewSource, />Quay lại đăng nhập<\/button>/);
+assert.match(loginViewSource, /onClick=\{\(\) => setShowForgotPassword\(false\)\}/);
 assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
 assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
-assert.match(loginViewSource, /Đổi mật khẩu thành công\. Bạn có thể đăng nhập bằng mật khẩu mới\./);
+assert.match(loginViewSource, /setShowForgotPassword\(false\)/);
 
 const identitySetupStart = appSource.indexOf('function IdentitySetupWizard');
 const identitySetupEnd = appSource.indexOf('function LoginRegisterView', identitySetupStart);

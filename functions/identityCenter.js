@@ -49,6 +49,19 @@ const buildPhoneVariants = (value = '') => {
 };
 
 const normalizeUsername = (value = '') => `${value || ''}`.trim().toLowerCase().replace(/\s+/g, '');
+const normalizeRoleKey = (value = '') => `${value || ''}`
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/[\s-]+/g, '_');
+const isOwnerIdentity = (identity = {}) => [
+  'super_admin',
+  'owner',
+  'business_owner',
+  'chu_doanh_nghiep'
+].includes(normalizeRoleKey(identity.role));
 const isPhoneIdentifier = (value = '') => {
   const raw = `${value || ''}`.trim();
   return /^[+\d\s().-]+$/.test(raw) && normalizePhone(raw).length >= 9;
@@ -768,6 +781,164 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { success: true, message: 'Đổi mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.' };
   };
 
+  const ownerResetEmployeePassword = async ({ authorization, employeeId, appId }) => {
+    const { identityId: ownerIdentityId, identity: ownerIdentity } = await getVerifiedIdentity(authorization);
+    if (ownerIdentity.accountType !== 'employee' || !isOwnerIdentity(ownerIdentity)) {
+      throw Object.assign(new Error('Chỉ chủ doanh nghiệp được đặt lại đăng nhập cho nhân sự.'), { statusCode: 403 });
+    }
+
+    const targetEmployeeId = safeIdPart(employeeId);
+    if (!targetEmployeeId || targetEmployeeId !== `${employeeId || ''}`) {
+      throw Object.assign(new Error('Nhân sự cần đặt lại không hợp lệ.'), { statusCode: 400 });
+    }
+
+    const resolvedAppId = getAppId(appId);
+    const employeeRef = db.doc(publicPath(resolvedAppId, 'employees', targetEmployeeId));
+    const targetIdentityId = identityIdForPublicAccount('employee', targetEmployeeId);
+    if (targetIdentityId === ownerIdentityId) {
+      throw Object.assign(new Error('Không thể dùng chức năng này để đặt lại tài khoản chủ doanh nghiệp.'), { statusCode: 400 });
+    }
+
+    const targetIdentityRef = getIdentityRef(targetIdentityId);
+    const [employeeSnap, targetIdentitySnap, devicesSnap, resetTokensSnap] = await Promise.all([
+      employeeRef.get(),
+      targetIdentityRef.get(),
+      targetIdentityRef.collection('devices').get(),
+      targetIdentityRef.collection('reset_tokens').get()
+    ]);
+    if (!employeeSnap.exists) {
+      throw Object.assign(new Error('Không tìm thấy nhân sự cần đặt lại.'), { statusCode: 404 });
+    }
+
+    const employee = employeeSnap.data() || {};
+    const employeeCompanyId = `${employee.companyId || employee.company_id || ''}`;
+    if (!employeeCompanyId || employeeCompanyId !== `${ownerIdentity.companyId || ''}`) {
+      throw Object.assign(new Error('Không được đặt lại tài khoản ngoài doanh nghiệp.'), { statusCode: 403 });
+    }
+    if (employee.isArchived || `${employee.status || 'active'}` === 'blocked') {
+      throw Object.assign(new Error('Tài khoản nhân sự đang bị khóa hoặc đã lưu trữ.'), { statusCode: 409 });
+    }
+    if (isOwnerIdentity(employee)) {
+      throw Object.assign(new Error('Không thể đặt lại tài khoản chủ doanh nghiệp từ hồ sơ nhân sự.'), { statusCode: 400 });
+    }
+
+    const existingIdentity = targetIdentitySnap.exists ? targetIdentitySnap.data() : null;
+    if (existingIdentity && `${existingIdentity.companyId || ''}` !== employeeCompanyId) {
+      throw Object.assign(new Error('Tài khoản xác thực không thuộc doanh nghiệp hiện tại.'), { statusCode: 403 });
+    }
+    if (existingIdentity && isOwnerIdentity(existingIdentity)) {
+      throw Object.assign(new Error('Không thể đặt lại một tài khoản chủ doanh nghiệp.'), { statusCode: 400 });
+    }
+    if (existingIdentity?.status === 'blocked' || existingIdentity?.lockedAt) {
+      throw Object.assign(new Error('Tài khoản đang bị khóa. Hãy mở khóa trước khi đặt lại mật khẩu.'), { statusCode: 409 });
+    }
+
+    const now = new Date();
+    const normalizedPhone = normalizePhone(employee.phone || existingIdentity?.phone || '');
+    if (!normalizedPhone) {
+      throw Object.assign(new Error('Nhân sự chưa có số điện thoại đăng nhập hợp lệ.'), { statusCode: 400 });
+    }
+    const defaultPasswordHash = await hashPassword(DEFAULT_FIRST_LOGIN_PASSWORD);
+    const nextSetup = {
+      ...(existingIdentity?.setup || {}),
+      passwordChanged: false,
+      pinSet: false,
+      biometricEnabled: false,
+      trustedDevice: false
+    };
+    const identityPayload = {
+      id: targetIdentityId,
+      accountType: 'employee',
+      publicCollection: 'employees',
+      publicId: targetEmployeeId,
+      appUserId: targetEmployeeId,
+      customerId: null,
+      companyId: employeeCompanyId,
+      role: employee.role || existingIdentity?.role || 'employee',
+      name: employee.name || existingIdentity?.name || '',
+      phone: employee.phone || existingIdentity?.phone || normalizedPhone,
+      phoneNormalized: normalizedPhone,
+      username: existingIdentity?.username || normalizeUsername(employee.username || ''),
+      usernameNormalized: existingIdentity?.usernameNormalized || normalizeUsername(employee.username || ''),
+      passwordHash: defaultPasswordHash,
+      requiresPasswordChange: true,
+      setup: nextSetup,
+      status: existingIdentity?.status || 'active',
+      updatedAt: now,
+      updatedAtIso: now.toISOString(),
+      ownerResetAt: now,
+      ownerResetAtIso: now.toISOString(),
+      ownerResetBy: ownerIdentityId,
+      ...(existingIdentity ? {} : {
+        createdAt: now,
+        createdAtIso: now.toISOString(),
+        initializedByOwnerReset: true
+      })
+    };
+
+    const batch = db.batch();
+    if (existingIdentity) {
+      batch.set(targetIdentityRef, {
+        ...identityPayload,
+        pinHash: admin.firestore.FieldValue.delete()
+      }, { merge: true });
+    } else {
+      batch.create(targetIdentityRef, identityPayload);
+    }
+    batch.set(employeeRef, {
+      identityId: targetIdentityId,
+      password_hash: admin.firestore.FieldValue.delete(),
+      passwordHash: admin.firestore.FieldValue.delete(),
+      identityResetAt: now.toISOString()
+    }, { merge: true });
+    devicesSnap.docs.forEach(deviceDoc => batch.set(deviceDoc.ref, {
+      trusted: false,
+      biometricEnabled: false,
+      revokedAt: now,
+      revokedAtIso: now.toISOString(),
+      deviceSecretHash: admin.firestore.FieldValue.delete(),
+      updatedAt: now,
+      updatedAtIso: now.toISOString()
+    }, { merge: true }));
+    resetTokensSnap.docs.forEach(resetDoc => {
+      if (resetDoc.data()?.usedAt) return;
+      batch.set(resetDoc.ref, {
+        usedAt: now,
+        usedAtIso: now.toISOString(),
+        revokedReason: 'owner_reset'
+      }, { merge: true });
+    });
+    batch.set(db.collection(IDENTITY_AUDIT_COLLECTION).doc(), {
+      accountId: targetIdentityId,
+      action: 'password_reset_by_owner',
+      metadata: { ownerIdentityId, ownerName: ownerIdentity.name || '' },
+      createdAt: now,
+      createdAtIso: now.toISOString(),
+      immutable: true
+    });
+    batch.set(db.collection(IDENTITY_AUDIT_COLLECTION).doc(), {
+      accountId: ownerIdentityId,
+      action: 'employee_password_reset',
+      metadata: { targetIdentityId, employeeId: targetEmployeeId, employeeName: employee.name || '' },
+      createdAt: now,
+      createdAtIso: now.toISOString(),
+      immutable: true
+    });
+    try {
+      await admin.auth().revokeRefreshTokens(`identity_${safeIdPart(targetIdentityId)}`);
+    } catch (error) {
+      if (error?.code !== 'auth/user-not-found') throw error;
+    }
+    await batch.commit();
+
+    return {
+      success: true,
+      temporaryPassword: DEFAULT_FIRST_LOGIN_PASSWORD,
+      requiresPasswordChange: true,
+      message: 'Đã đặt lại đăng nhập. Nhân sự phải đổi mật khẩu và tạo PIN mới ở lần đăng nhập tiếp theo.'
+    };
+  };
+
   const verifyPin = async ({ authorization, pin }) => {
     const { identityId, identity } = await getVerifiedIdentity(authorization);
     if (!identity.pinHash || !(await verifyPassword(pin, identity.pinHash))) return { success: false, statusCode: 401, message: 'PIN không đúng.' };
@@ -822,6 +993,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     completeSetup,
     requestRecovery,
     completeRecovery,
+    ownerResetEmployeePassword,
     verifyPin,
     listDevices,
     revokeDevices,
@@ -842,6 +1014,7 @@ module.exports = {
   getRecoveryIdentityIdFromToken,
   normalizePhone,
   normalizeUsername,
+  isOwnerIdentity,
   validatePassword,
   validatePin,
   verifyLegacyPassword,
