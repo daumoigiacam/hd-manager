@@ -66337,7 +66337,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                           <p className="truncate text-[15px] font-extrabold leading-5 text-slate-900">{item.description || `Sản phẩm ${index + 1}`}</p>
                           <div className="mt-2 grid grid-cols-[0.8fr_1fr_1.25fr] items-center gap-2 text-[12px] font-semibold leading-5 text-slate-500">
                             <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
-                              {formatNumber(billing.actualQuantity)} {billing.actualUnit}
+                              {formatNumber(billing.billingQuantity)} {billing.billingUnit}
                             </button>
                             <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
                               {formatCurrency(billing.unitPrice)} đ/{billing.billingUnit}

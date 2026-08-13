@@ -62,6 +62,11 @@ assert.equal(warehouseDuck.actualUnit, 'Con', '11. actual duck unit is preserved
 assert.equal(warehouseDuck.billingQuantity, 20, '12. weight is the billing quantity');
 assert.equal(warehouseDuck.billingUnit, 'Kg', '13. Kg remains the billing unit');
 assert.equal(warehouseDuck.amount, 1200000, '14. 20 Kg x 60,000 = 1,200,000');
+assert.equal(
+  `${warehouseDuck.billingQuantity} ${warehouseDuck.billingUnit}`,
+  '20 Kg',
+  '14a. invoice details must display the frozen billing quantity and unit that match the billed amount'
+);
 
 const pendingDuckOrder = buildCustomerProductBillingSnapshot({
   configuration: duckResolved,
