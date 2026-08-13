@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import {
+  getRealtimeDataChangeCount,
   getRealtimeSnapshotSource,
   isRealtimeWriteConfirmed,
   isServerConfirmedRealtimeSnapshot,
@@ -50,6 +51,34 @@ test('cached snapshots never replace business data and pending snapshots are not
   assert.equal(shouldApplyRealtimeSnapshot(localPending), true);
   assert.equal(isServerConfirmedRealtimeSnapshot(localPending), false);
   assert.equal(isServerConfirmedRealtimeSnapshot(confirmed), true);
+});
+
+test('metadata-only realtime snapshots are detected without counting metadata changes as data', () => {
+  let receivedOptions = null;
+  const metadataOnlySnapshot = {
+    docChanges: (options) => {
+      receivedOptions = options;
+      return [];
+    }
+  };
+  const changedSnapshot = {
+    docChanges: () => [{ type: 'modified' }]
+  };
+
+  assert.equal(getRealtimeDataChangeCount(metadataOnlySnapshot), 0);
+  assert.deepEqual(receivedOptions, { includeMetadataChanges: false });
+  assert.equal(getRealtimeDataChangeCount(changedSnapshot), 1);
+  assert.equal(getRealtimeDataChangeCount({}), null);
+});
+
+test('realtime rendering skips repeated metadata-only snapshots but preserves the first payload', () => {
+  assert.match(appSource, /let hasAppliedDataSnapshot = false;/);
+  assert.match(appSource, /let hasLocalMutationForCollection = false;/);
+  assert.match(appSource, /for \(const write of recentLocalWritesRef\.current\.values\(\)\)/);
+  assert.match(appSource, /for \(const entry of recentLocalDeletesRef\.current\.values\(\)\)/);
+  assert.match(appSource, /if \(hasAppliedDataSnapshot && dataChangeCount === 0 && !hasLocalMutationForCollection\)/);
+  assert.match(appSource, /hasAppliedDataSnapshot = true;\s*applyCollectionItems/);
+  assert.match(appSource, /if \(isPerformanceMonitorEnabled\(\)\)/);
 });
 
 test('an older order snapshot cannot confirm and overwrite a freshly edited amount', () => {

@@ -144,6 +144,7 @@ import {
   where as firebaseWhere,
 } from 'firebase/firestore';
 import {
+  getRealtimeDataChangeCount,
   isRealtimeWriteConfirmed,
   isServerConfirmedRealtimeSnapshot,
   isServerSnapshotFresh,
@@ -189,6 +190,7 @@ import {
 } from './services/mapEngineService.js';
 import {
   createPerformanceSpan,
+  isPerformanceMonitorEnabled,
   recordFirestoreOperation,
   recordPerformanceEvent,
 } from './services/performanceMonitor.js';
@@ -260,6 +262,7 @@ import {
 } from './services/identityCenter.js';
 import {
   getHdConnectStagingApi,
+  inventoryVpsEnabled,
   isVpsStagingMode,
 } from './api/hdConnectStaging.js';
 import {
@@ -274,6 +277,20 @@ import {
   buildFirebaseRestCollectionQueryUrl,
   buildFirebaseRestDocumentUrl,
 } from '@hd/firebase-rest-runtime';
+
+const LazyIdentitySecurityCenter = React.lazy(
+  () => import('./features/identity/IdentitySecurityCenter.jsx'),
+);
+
+const identitySecurityApi = {
+  getIdentityDevice,
+  identityCompleteSetup,
+  identityListAudit,
+  identityListDevices,
+  identityRevokeDevices,
+  identitySetBiometric,
+  identityVerifyPin,
+};
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -634,16 +651,45 @@ logLoginStep('Data app id', { appId, projectId: activeFirebaseConfig?.projectId 
 const FIRESTORE_WRITE_EVENT = 'hd-manager:firestore-write';
 const ACTIVITY_LOG_COLLECTION_NAME = 'activityLogs';
 const ACTIVITY_LOG_IGNORED_COLLECTIONS = new Set([ACTIVITY_LOG_COLLECTION_NAME]);
-const createVpsStagingFirebaseWriteError = (operation) => {
+const resolveFirebaseWriterDomain = (operation = '', collectionName = '') => {
+  const value = `${operation} ${collectionName}`.toLowerCase();
+  if (/(order|payment|payos|sepay|bank|debt)/.test(value)) return 'ORDER_PAYMENT_DEBT';
+  if (/(warehouse|inventory|stock|dispatch|delivery)/.test(value)) return 'WAREHOUSE_INVENTORY';
+  if (/(employee|attendance|payroll|salary|leave|asset)/.test(value)) return 'EMPLOYEE_HR';
+  if (/(product|price|unit)/.test(value)) return 'PRODUCT';
+  if (/(customer|company|branch)/.test(value)) return 'CUSTOMER';
+  if (/(identity|auth|session|device)/.test(value)) return 'AUTH_IDENTITY';
+  return 'PLATFORM_OTHER';
+};
+
+const buildFirebaseWriterContext = (operation, context = {}) => ({
+  file: context.file || 'src/App.jsx',
+  functionName: context.functionName || operation,
+  domain: context.domain || resolveFirebaseWriterDomain(operation, context.collection),
+  operation,
+  collection: context.collection || '',
+  mode: isVpsStagingMode ? 'vps-staging' : 'legacy',
+});
+
+const createVpsStagingFirebaseWriteError = (operation, context = {}) => {
+  const writerContext = buildFirebaseWriterContext(operation, context);
   const error = new Error(
-    `Firebase write (${operation}) is disabled in VPS staging. Use a migrated VPS API contract instead.`,
+    writerContext.domain === 'WAREHOUSE_INVENTORY' && !inventoryVpsEnabled
+      ? 'Inventory VPS API is disabled until the Warehouse/StockLedger contract is approved.'
+      : `Firebase write (${operation}) is disabled in VPS staging for ${writerContext.domain}. `
+        + `Use the approved VPS API contract instead.`,
   );
   error.code = 'firebase-writer-disabled-in-vps-staging';
+  error.writerContext = writerContext;
+  recordStartupEvent('firebase.writer.blocked', writerContext, 'error');
+  if (typeof console !== 'undefined' && typeof console.error === 'function') {
+    console.error('[firebase-writer-blocked]', writerContext);
+  }
   return error;
 };
 
-const assertFirebaseWriteAllowed = (operation) => {
-  if (isVpsStagingMode) throw createVpsStagingFirebaseWriteError(operation);
+const assertFirebaseWriteAllowed = (operation, context = {}) => {
+  if (isVpsStagingMode) throw createVpsStagingFirebaseWriteError(operation, context);
 };
 
 const runNonBlockingStateUpdate = (callback) => {
@@ -820,7 +866,11 @@ const sanitizeFirestoreWritePayload = (payload) => {
 };
 
 const setDoc = async (documentRef, payload, options) => {
-  assertFirebaseWriteAllowed('setDoc');
+  const collectionName = getCollectionNameFromDocRef(documentRef);
+  assertFirebaseWriteAllowed('setDoc', {
+    functionName: 'setDoc',
+    collection: collectionName,
+  });
   const sanitizedPayload = sanitizeFirestoreWritePayload(payload);
   const result = await recordFirestoreOperation('setDoc', {
     path: getDocumentPathFromDocRef(documentRef),
@@ -833,7 +883,11 @@ const setDoc = async (documentRef, payload, options) => {
 };
 
 const deleteDoc = async (documentRef) => {
-  assertFirebaseWriteAllowed('deleteDoc');
+  const collectionName = getCollectionNameFromDocRef(documentRef);
+  assertFirebaseWriteAllowed('deleteDoc', {
+    functionName: 'deleteDoc',
+    collection: collectionName,
+  });
   const result = await recordFirestoreOperation('deleteDoc', {
     path: getDocumentPathFromDocRef(documentRef),
     id: documentRef?.id || '',
@@ -863,7 +917,9 @@ const getDoc = async (documentRef) => recordFirestoreOperation('getDoc', {
 }, () => firebaseGetDoc(documentRef));
 
 const runTransaction = async (database, updateFunction, options) => {
-  assertFirebaseWriteAllowed('runTransaction');
+  assertFirebaseWriteAllowed('runTransaction', {
+    functionName: 'runTransaction',
+  });
   return recordFirestoreOperation('runTransaction', {
     appName: database?.app?.name || '',
   }, () => firebaseRunTransaction(database, updateFunction, options));
@@ -882,14 +938,16 @@ const onSnapshot = (targetRef, ...snapshotArgs) => {
 
   if (typeof nextHandler === 'function') {
     wrappedArgs[nextIndex] = (snapshot) => {
-      recordPerformanceEvent('realtime.snapshot', {
-        provider: 'firestore',
-        path,
-        docs: typeof snapshot?.size === 'number' ? snapshot.size : undefined,
-        changes: typeof snapshot?.docChanges === 'function' ? snapshot.docChanges().length : undefined,
-        fromCache: snapshot?.metadata?.fromCache,
-        hasPendingWrites: snapshot?.metadata?.hasPendingWrites,
-      });
+      if (isPerformanceMonitorEnabled()) {
+        recordPerformanceEvent('realtime.snapshot', {
+          provider: 'firestore',
+          path,
+          docs: typeof snapshot?.size === 'number' ? snapshot.size : undefined,
+          changes: getRealtimeDataChangeCount(snapshot) ?? undefined,
+          fromCache: snapshot?.metadata?.fromCache,
+          hasPendingWrites: snapshot?.metadata?.hasPendingWrites,
+        });
+      }
       return nextHandler(snapshot);
     };
   }
@@ -950,25 +1008,38 @@ const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'pay
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
-// Native WebViews keep a limited listener set to stay stable on low-memory devices.
-// Supplementary data becomes realtime only while the related workspace is open.
-const NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
-  home: ['performance', 'holidays', 'assets', 'assetCostLogs'],
-  executive_dashboard: ['performance', 'holidays', 'assets', 'assetCostLogs'],
-  customers: ['customerLoans', 'customer_points', 'reward_catalog', 'promotions'],
-  debt: ['customerLoans'],
+// Keep only identity/notification state live for the whole signed-in session.
+// Business data subscribes when its workspace is open, preventing every client
+// from opening dozens of tenant-wide collection listeners at startup.
+const BASELINE_REALTIME_COLLECTION_NAMES = ['companies', 'employees', 'notifications'];
+const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
+  home: ['customers', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches'],
+  executive_dashboard: ['customers', 'products', 'orders', 'orderRequests', 'payments', 'expenses', 'financials', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'assets', 'assetCostLogs', 'deliveryReports', 'attendance', 'performance'],
+  order_requests: ['customers', 'products', 'orderRequests', 'warehouseDispatches', 'employees'],
+  orders: ['customers', 'products', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'zalo_send_queue'],
+  warehouse_import: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts'],
+  warehouse_dispatch: ['customers', 'products', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'employees'],
+  delivery_reports: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'assets', 'assetCostLogs'],
+  maps: ['customers', 'orders', 'orderRequests', 'warehouseDispatches', 'employees'],
+  customers: ['customers', 'orders', 'payments', 'payment_reconciliations', 'customer_points', 'customerLoans', 'products', 'warehouseImports', 'warehouseDispatches'],
+  debt: ['customers', 'orders', 'payments', 'warehouseImports', 'employees'],
   points: ['customer_points', 'reward_catalog'],
-  employees: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance'],
-  employee_reviews: ['employeeReviews', 'performance'],
-  payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance'],
-  asset_management: ['assets', 'assetCostLogs'],
-  finance: ['assetCostLogs', 'customerLoans'],
-  pricing: ['pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
-  report: ['performance', 'holidays', 'assets', 'assetCostLogs', 'pricingInputs'],
-  messages: ['zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
+  finance: ['expenses', 'payments', 'orders', 'assets', 'deliveryReports', 'employees', 'customers'],
+  bank_payments: ['customers', 'orders', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations'],
+  employees: ['employeeReviews', 'attendance', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance', 'advances'],
+  employee_reviews: ['employees', 'employeeReviews', 'performance'],
+  company_attendance: ['employees', 'attendance', 'holidays'],
+  payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
+  asset_management: ['assets', 'assetCostLogs', 'employees'],
+  pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
+  price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
+  report: ['employees', 'attendance', 'financials', 'performance', 'customers', 'orders', 'payments', 'expenses', 'holidays', 'products', 'warehouseImports'],
+  messages: ['employees', 'customers', 'orders', 'orderRequests', 'payments', 'expenses', 'products', 'messages', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
   settings: ['reward_catalog', 'promotions', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'ai_reply_rules'],
-  customer_home: ['customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions']
+  customer_home: ['customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'messages', 'bankAccounts', 'products', 'pricingInputs', 'pricingRules'],
+  order: ['products', 'customer_cart', 'orders', 'orderRequests']
 });
+const WEB_FOREGROUND_REALTIME_LISTENER_LIMIT = 12;
 const NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT = 8;
 const decodeFirestoreRestValue = (value = {}) => {
   if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
@@ -11738,7 +11809,7 @@ export default function App() {
   const lastFirestoreInternalRefreshAtRef = useRef(0);
   const autoBackupInFlightRef = useRef(new Set());
   const forceRefreshCollectionRef = useRef(() => Promise.resolve(false));
-  const activateNativeForegroundRealtimeRef = useRef(() => () => {});
+  const activateForegroundRealtimeRef = useRef(() => () => {});
   const collectionRefreshTimersRef = useRef(new Map());
   const collectionRefreshLastScheduledAtRef = useRef(new Map());
   const realtimeUnsubscribersRef = useRef([]);
@@ -12152,7 +12223,10 @@ export default function App() {
   };
 
   const writeFirestoreDocumentViaRest = async (collectionName, documentId, payload, options = {}) => {
-    assertFirebaseWriteAllowed('rest-patch');
+    assertFirebaseWriteAllowed('rest-patch', {
+      functionName: 'writeFirestoreDocumentViaRest',
+      collection: collectionName,
+    });
     const authenticatedUser = firebaseUser || auth?.currentUser;
     if (!authenticatedUser?.getIdToken) {
       const authError = new Error('Phiên đăng nhập Firebase chưa sẵn sàng để lưu dữ liệu.');
@@ -12203,7 +12277,12 @@ export default function App() {
   };
 
   const flushPendingFirebaseWriteNow = (collectionName, documentId, timeoutMs = 12000, expectedCompanyId = activeTenantScopeRef.current) => {
-    if (isVpsStagingMode) return Promise.reject(createVpsStagingFirebaseWriteError('pending-write-flush'));
+    if (isVpsStagingMode) {
+      return Promise.reject(createVpsStagingFirebaseWriteError('pending-write-flush', {
+        functionName: 'flushPendingFirebaseWriteNow',
+        collection: collectionName,
+      }));
+    }
     const companyId = `${expectedCompanyId || ''}`.trim();
     if (!companyId) {
       const error = new Error('Khong the dong bo du lieu khi chua xac dinh cong ty.');
@@ -12332,7 +12411,10 @@ export default function App() {
   };
 
   const saveDataDocument = async (collectionName, documentId, payload, options = {}, timeoutMs = 4500, timeoutMessage = 'Firebase SDK phản hồi chậm') => {
-    assertFirebaseWriteAllowed(`saveDataDocument:${collectionName || 'unknown'}`);
+    assertFirebaseWriteAllowed(`saveDataDocument:${collectionName || 'unknown'}`, {
+      functionName: 'saveDataDocument',
+      collection: collectionName,
+    });
     const activeCompanyId = currentUser?.companyId || currentCompany?.id || '';
     const isCompanyScopedCollection = COMPANY_SCOPED_DATA_COLLECTION_NAMES.has(collectionName);
     const sanitizedPayload = sanitizeFirestoreWritePayload(payload || {});
@@ -12720,10 +12802,10 @@ export default function App() {
 
       try {
         const [customersResult, productsResult, unitsResult, ordersResult] = await Promise.allSettled([
-          api.listCustomers({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listProducts({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listUnits({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listOrders({ page: 1, limit: 250, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listCustomers({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listProducts({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listUnits({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listOrders({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
         ]);
         if (cancelled) return;
 
@@ -13146,9 +13228,6 @@ export default function App() {
             if (hasCollectionValue(prevValue, isObject)) return prevValue;
             if (hasCollectionValue(stableValue, isObject)) return stableValue;
           }
-          if (nextHasData || !shouldKeepPreviousOnEmpty) {
-            rememberStableCollectionValue(colName, nextValue, isObject, { allowEmpty: !nextHasData });
-          }
           return nextValue;
         });
 
@@ -13218,6 +13297,11 @@ export default function App() {
 
     const readCollection = async (colName, setFn, isObject = false, parser = null, options = {}) => {
       const force = Boolean(options.force);
+      if (!force && hasActiveRealtimeListener(activeRealtimeCollectionsRef.current, colName)) {
+        // A healthy listener owns this collection. A second REST read is both
+        // redundant and unsafe because it can race the Firestore WebChannel.
+        return;
+      }
       const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(colName) || 0;
       if (!force && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
         // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
@@ -13358,13 +13442,14 @@ export default function App() {
       return true;
     };
 
-    const refreshAllCollections = async () => {
+    const refreshActiveRealtimeCollections = async () => {
       if (refreshCollectionsInFlightRef.current) return;
       refreshCollectionsInFlightRef.current = true;
       try {
         await Promise.allSettled(
-          collectionBindings
-            .filter(([colName]) => !hasActiveRealtimeListener(activeRealtimeCollectionsRef.current, colName))
+          Array.from(activeRealtimeCollectionsRef.current)
+            .map(colName => collectionBindingMap.get(colName))
+            .filter(Boolean)
             .map(([colName, setFn, isObject, parser]) => (
               cancelled ? Promise.resolve() : readCollection(colName, setFn, isObject, parser)
             ))
@@ -13405,6 +13490,7 @@ export default function App() {
     const startCollectionListener = ([colName, setFn, isObject, parser]) => {
       const existingListener = activeRealtimeCollectionListeners.get(colName);
       if (existingListener) return existingListener;
+      let hasAppliedDataSnapshot = false;
       try {
         const collectionRef = getTenantCollectionSource(colName);
         if (!collectionRef) {
@@ -13433,7 +13519,34 @@ export default function App() {
               });
               return;
             }
+            const dataChangeCount = getRealtimeDataChangeCount(snapshot);
+            let hasLocalMutationForCollection = false;
+            for (const write of recentLocalWritesRef.current.values()) {
+              if (write?.collectionName === colName) {
+                hasLocalMutationForCollection = true;
+                break;
+              }
+            }
+            if (!hasLocalMutationForCollection) {
+              for (const entry of recentLocalDeletesRef.current.values()) {
+                if (entry?.collectionName === colName) {
+                  hasLocalMutationForCollection = true;
+                  break;
+                }
+              }
+            }
+            if (hasAppliedDataSnapshot && dataChangeCount === 0 && !hasLocalMutationForCollection) {
+              markCollectionLoaded(colName);
+              updateRealtimeStatusLightly({
+                state: hasPendingWrites ? 'connecting' : 'online',
+                collection: colName,
+                lastAt: new Date().toISOString(),
+                error: ''
+              });
+              return;
+            }
             const docs = getSnapshotItems(snapshot);
+            hasAppliedDataSnapshot = true;
             applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
               fromCache,
@@ -13491,120 +13604,97 @@ export default function App() {
     };
 
     const nativeRealtimeStartup = isNativeRuntime();
-    const webInitialRealtimePriority = new Set([
-      'customers',
-      'customer_points',
-      'products',
-      'orders',
-      'orderRequests',
-      'warehouseImports',
-      'warehouseDispatches',
-      'warehouseStockCounts',
-      'deliveryReports',
-      'payments',
-      'expenses',
-      'financials',
-      'bankAccounts',
-      'bankTransactions',
-      'payment_reconciliations',
-      'notifications',
-      'messages',
-      'attendance',
-      'assets',
-      'assetCostLogs',
-      'advances',
-      'pricingInputs',
-      'pricingRules'
-    ]);
-    const nativeInitialRealtimePriority = new Set([
-      'companies',
-      'employees',
-      'customers',
-      'products',
-      'orders',
-      'orderRequests',
-      'warehouseImports',
-      'warehouseDispatches',
-      'warehouseStockCounts',
-      'deliveryReports',
-      'payments',
-      'bankAccounts',
-      'bankTransactions',
-      'payment_reconciliations',
-      'expenses',
-      'financials',
-      'notifications',
-      'messages',
-      'advances',
-      'attendance'
-    ]);
-    const initialRealtimePriority = nativeRealtimeStartup ? nativeInitialRealtimePriority : webInitialRealtimePriority;
-    const nativeForegroundCollectionNames = new Set();
-    const activateNativeForegroundRealtimeCollections = (collectionNames = []) => {
-      if (!nativeRealtimeStartup) return () => {};
-      const requested = Array.isArray(collectionNames) ? collectionNames : [];
-      const nextCollectionNames = new Set(
-        requested
-          .filter(colName => collectionBindingMap.has(colName) && !nativeInitialRealtimePriority.has(colName))
-          .slice(0, NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT)
-      );
+    const baselineCollectionNames = new Set(BASELINE_REALTIME_COLLECTION_NAMES);
+    const foregroundListenerLimit = nativeRealtimeStartup
+      ? NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT
+      : WEB_FOREGROUND_REALTIME_LISTENER_LIMIT;
+    const foregroundRealtimeCollectionNames = new Set();
+    const foregroundReadOnlyTimers = new Map();
+    const foregroundReadOnlyCollectionNames = new Set();
+    let baselineListenerIndex = 0;
 
-      Array.from(nativeForegroundCollectionNames).forEach((colName) => {
+    const cancelForegroundReadOnlyCollection = (colName) => {
+      const timerId = foregroundReadOnlyTimers.get(colName);
+      if (timerId) window.clearTimeout(timerId);
+      foregroundReadOnlyTimers.delete(colName);
+      foregroundReadOnlyCollectionNames.delete(colName);
+    };
+
+    const scheduleForegroundReadOnlyCollection = (binding, index = 0) => {
+      const [colName, setFn, isObject, parser] = binding || [];
+      if (
+        !colName
+        || baselineCollectionNames.has(colName)
+        || foregroundRealtimeCollectionNames.has(colName)
+        || foregroundReadOnlyCollectionNames.has(colName)
+        || foregroundReadOnlyTimers.has(colName)
+      ) {
+        return;
+      }
+
+      foregroundReadOnlyCollectionNames.add(colName);
+      const timerId = window.setTimeout(() => {
+        foregroundReadOnlyTimers.delete(colName);
+        if (cancelled || !foregroundReadOnlyCollectionNames.has(colName)) return;
+        readCollection(colName, setFn, isObject, parser).catch(() => {});
+      }, 160 + Math.min(index * 100, 1200));
+      foregroundReadOnlyTimers.set(colName, timerId);
+    };
+
+    const activateForegroundRealtimeCollections = (collectionNames = []) => {
+      const requested = Array.isArray(collectionNames) ? collectionNames : [];
+      const requestedNames = Array.from(new Set(
+        requested.filter(colName => collectionBindingMap.has(colName) && !baselineCollectionNames.has(colName))
+      ));
+      const nextCollectionNames = new Set(
+        requestedNames.slice(0, foregroundListenerLimit)
+      );
+      const overflowCollectionNames = requestedNames.slice(foregroundListenerLimit);
+
+      Array.from(foregroundRealtimeCollectionNames).forEach((colName) => {
         if (nextCollectionNames.has(colName)) return;
-        nativeForegroundCollectionNames.delete(colName);
+        foregroundRealtimeCollectionNames.delete(colName);
         stopCollectionListener(colName);
+      });
+
+      Array.from(foregroundReadOnlyCollectionNames).forEach((colName) => {
+        if (overflowCollectionNames.includes(colName)) return;
+        cancelForegroundReadOnlyCollection(colName);
       });
 
       nextCollectionNames.forEach((colName) => {
         const binding = collectionBindingMap.get(colName);
         if (!binding) return;
-        nativeForegroundCollectionNames.add(colName);
+        foregroundRealtimeCollectionNames.add(colName);
         startCollectionListener(binding);
+      });
+
+      overflowCollectionNames.forEach((colName, index) => {
+        const binding = collectionBindingMap.get(colName);
+        if (binding) scheduleForegroundReadOnlyCollection(binding, index);
       });
 
       return () => {
         Array.from(nextCollectionNames).forEach((colName) => {
-          if (!nativeForegroundCollectionNames.has(colName)) return;
-          nativeForegroundCollectionNames.delete(colName);
+          if (!foregroundRealtimeCollectionNames.has(colName)) return;
+          foregroundRealtimeCollectionNames.delete(colName);
           stopCollectionListener(colName);
         });
+        overflowCollectionNames.forEach(cancelForegroundReadOnlyCollection);
       };
     };
-    activateNativeForegroundRealtimeRef.current = activateNativeForegroundRealtimeCollections;
-    let priorityListenerIndex = 0;
-    let deferredListenerIndex = 0;
-    let readOnlyCollectionIndex = 0;
+    activateForegroundRealtimeRef.current = activateForegroundRealtimeCollections;
 
-    const scheduleNativeReadOnlyCollection = (binding) => {
-      const [colName, setFn, isObject, parser] = binding;
-      const delay = 9000 + Math.min(readOnlyCollectionIndex++ * 380, 16000);
-      const timerId = window.setTimeout(() => {
-        if (cancelled) return;
-        // Native WebView dễ bị kill khi giữ quá nhiều listener. Collection phụ vẫn được tải
-        // một lần để có dữ liệu, còn realtime chỉ giữ cho dữ liệu vận hành cốt lõi.
-        readCollection(colName, setFn, isObject, parser).catch(() => {});
-      }, delay);
-      listenerStartTimers.push(timerId);
-    };
-
-    collectionBindings.forEach((binding) => {
+    BASELINE_REALTIME_COLLECTION_NAMES.forEach((baselineCollectionName) => {
+      const binding = collectionBindingMap.get(baselineCollectionName);
+      if (!binding) return;
       const [colName] = binding;
       const isCoreCollection = CORE_DATA_COLLECTION_NAMES.includes(colName);
-      const isPriority = isCoreCollection || initialRealtimePriority.has(colName);
-      if (nativeRealtimeStartup && !isPriority) {
-        scheduleNativeReadOnlyCollection(binding);
-        return;
-      }
-      const priorityStepMs = nativeRealtimeStartup ? 180 : 32;
-      const priorityMaxMs = nativeRealtimeStartup ? 4200 : 900;
-      const deferredBaseMs = nativeRealtimeStartup ? 5200 : 1200;
-      const deferredStepMs = nativeRealtimeStartup ? 260 : 110;
-      const deferredMaxMs = nativeRealtimeStartup ? 12000 : 5200;
+      const priorityStepMs = nativeRealtimeStartup ? 80 : 32;
+      const priorityMaxMs = nativeRealtimeStartup ? 240 : 96;
       const delay = isCoreCollection
         ? 0
-        : isPriority
-        ? Math.min(priorityListenerIndex++ * priorityStepMs, priorityMaxMs)
-        : deferredBaseMs + Math.min(deferredListenerIndex++ * deferredStepMs, deferredMaxMs);
+        : Math.min(baselineListenerIndex++ * priorityStepMs, priorityMaxMs);
       const timerId = window.setTimeout(() => {
         if (cancelled) return;
         startCollectionListener(binding);
@@ -13618,12 +13708,12 @@ export default function App() {
     refreshTimer = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-      refreshAllCollections();
+      refreshActiveRealtimeCollections();
     }, (nativeRealtimeStartup ? 12 : 5) * 60 * 1000);
 
     return () => {
       cancelled = true;
-      activateNativeForegroundRealtimeRef.current = () => () => {};
+      activateForegroundRealtimeRef.current = () => () => {};
       if (loadedCollectionMarkTimer) {
         window.clearTimeout(loadedCollectionMarkTimer);
         loadedCollectionMarkTimer = null;
@@ -13643,6 +13733,9 @@ export default function App() {
       });
       realtimeUnsubscribersRef.current = [];
       activeRealtimeCollectionsRef.current.clear();
+      foregroundReadOnlyTimers.forEach(timerId => window.clearTimeout(timerId));
+      foregroundReadOnlyTimers.clear();
+      foregroundReadOnlyCollectionNames.clear();
       realtimeListenerStartTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
       realtimeListenerStartTimersRef.current = [];
       if (refreshTimer) window.clearInterval(refreshTimer);
@@ -13664,9 +13757,9 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!isNativeRuntime() || !firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
-    const collectionNames = NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || [];
-    return activateNativeForegroundRealtimeRef.current(collectionNames);
+    if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
+    const collectionNames = FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || [];
+    return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     activeTab,
     firebaseUser?.uid,
@@ -13679,31 +13772,11 @@ export default function App() {
     if (!firebaseUser || !isFirebaseConfigured || typeof window === 'undefined') return undefined;
     let disposed = false;
     let nativeAppStateHandle = null;
-    const criticalCollections = [
-      'orders',
-      'orderRequests',
-      'warehouseDispatches',
-      'warehouseImports',
-      'warehouseStockCounts',
-      'deliveryReports',
-      'payments',
-      'expenses',
-      'customers',
-      'customer_points',
-      'messages',
-      'notifications',
-      'products',
-      'pricingInputs',
-      'pricingRules',
-      'pricingScenarios',
-      'pricingChangeLogs'
-    ];
-
-    const refreshCriticalCollections = () => {
+    const refreshForegroundCollections = () => {
       const now = Date.now();
       if (now - lastCriticalRefreshAtRef.current < 12000) return;
       lastCriticalRefreshAtRef.current = now;
-      criticalCollections.forEach(collectionName => {
+      Array.from(activeRealtimeCollectionsRef.current).forEach(collectionName => {
         scheduleCollectionRefresh(collectionName, [900, 3200]);
       });
     };
@@ -13724,16 +13797,16 @@ export default function App() {
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') refreshCriticalCollections('visibility-visible');
+      if (document.visibilityState === 'visible') refreshForegroundCollections('visibility-visible');
     };
 
     window.addEventListener(FIRESTORE_WRITE_EVENT, handleFirestoreWrite);
-    window.addEventListener('focus', refreshCriticalCollections);
-    window.addEventListener('online', refreshCriticalCollections);
+    window.addEventListener('focus', refreshForegroundCollections);
+    window.addEventListener('online', refreshForegroundCollections);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     if (isNativeRuntime()) {
       CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) refreshCriticalCollections('native-app-active');
+        if (isActive) refreshForegroundCollections('native-app-active');
       }).then((handle) => {
         if (disposed) {
           handle?.remove?.();
@@ -13748,8 +13821,8 @@ export default function App() {
     return () => {
       disposed = true;
       window.removeEventListener(FIRESTORE_WRITE_EVENT, handleFirestoreWrite);
-      window.removeEventListener('focus', refreshCriticalCollections);
-      window.removeEventListener('online', refreshCriticalCollections);
+      window.removeEventListener('focus', refreshForegroundCollections);
+      window.removeEventListener('online', refreshForegroundCollections);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       nativeAppStateHandle?.remove?.();
     };
@@ -25121,7 +25194,14 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
         </div>
       </div>
 
-      <IdentitySecurityCenter identityUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />
+      <React.Suspense fallback={<section className="min-h-16 rounded-2xl border border-slate-100 bg-white shadow-sm" aria-busy="true" />}>
+        <LazyIdentitySecurityCenter
+          identityApi={identitySecurityApi}
+          identityUser={currentUser}
+          onGetIdentityToken={onGetIdentityToken}
+          onLogout={onLogout}
+        />
+      </React.Suspense>
 
       <form onSubmit={handlePersonalSubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
@@ -25924,173 +26004,6 @@ function ZaloDispatcherRuntime({
   ]);
 
   return null;
-}
-
-function IdentitySecurityCenter({ identityUser, onGetIdentityToken, onLogout }) {
-  const [expanded, setExpanded] = useState(false);
-  const [devices, setDevices] = useState([]);
-  const [auditEntries, setAuditEntries] = useState([]);
-  const [securityStatus, setSecurityStatus] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [activeEditor, setActiveEditor] = useState('');
-  const [currentPin, setCurrentPin] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
-  const [newPin, setNewPin] = useState('');
-  const [newPinConfirm, setNewPinConfirm] = useState('');
-  const [biometricEnabled, setBiometricEnabled] = useState(false);
-  const device = useMemo(() => getIdentityDevice(), []);
-  const identityReady = Boolean(identityUser?.phone || identityUser?.id);
-
-  const refreshSecurityData = useCallback(async () => {
-    if (!identityReady) return;
-    setIsLoading(true);
-    setSecurityStatus('');
-    try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      const [deviceResult, auditResult] = await Promise.all([
-        identityListDevices({ idToken }),
-        identityListAudit({ idToken })
-      ]);
-      setDevices(deviceResult?.devices || []);
-      setAuditEntries(auditResult?.entries || []);
-      const currentDevice = (deviceResult?.devices || []).find(item => item.deviceId === device.deviceId);
-      setBiometricEnabled(Boolean(currentDevice?.biometricEnabled));
-    } catch (error) {
-      setSecurityStatus(error?.message || 'Không thể tải thông tin bảo mật.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [device.deviceId, identityReady, onGetIdentityToken]);
-
-  useEffect(() => {
-    if (expanded) refreshSecurityData();
-  }, [expanded, refreshSecurityData]);
-
-  const runSensitiveUpdate = async (event) => {
-    event.preventDefault();
-    if (!identityReady) return;
-    if (!/^\d{6}$/.test(currentPin)) {
-      setSecurityStatus('Nhập PIN hiện tại gồm 6 số để xác nhận thay đổi.');
-      return;
-    }
-    if (activeEditor === 'password' && (!newPassword || newPassword !== newPasswordConfirm)) {
-      setSecurityStatus('Mật khẩu mới chưa khớp.');
-      return;
-    }
-    if (activeEditor === 'pin' && (!/^\d{6}$/.test(newPin) || newPin !== newPinConfirm)) {
-      setSecurityStatus('PIN mới phải gồm 6 số và khớp xác nhận.');
-      return;
-    }
-    setIsLoading(true);
-    setSecurityStatus('');
-    try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      await identityVerifyPin({ idToken, pin: currentPin });
-      const result = await identityCompleteSetup({
-        idToken,
-        password: activeEditor === 'password' ? newPassword : undefined,
-        pin: activeEditor === 'pin' ? newPin : undefined,
-      });
-      setSecurityStatus(activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
-      setActiveEditor('');
-      setCurrentPin('');
-      setNewPassword('');
-      setNewPasswordConfirm('');
-      setNewPin('');
-      setNewPinConfirm('');
-      if (result?.setup) setBiometricEnabled(Boolean(result.setup.biometricEnabled));
-      await refreshSecurityData();
-    } catch (error) {
-      setSecurityStatus(error?.message || 'Không thể cập nhật thông tin bảo mật.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const toggleBiometric = async () => {
-    if (!identityReady) return;
-    setIsLoading(true);
-    setSecurityStatus('');
-    try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      const result = await identitySetBiometric({ idToken, enabled: !biometricEnabled, identity: identityUser });
-      setBiometricEnabled(Boolean(result?.setup?.biometricEnabled));
-      setSecurityStatus(!biometricEnabled ? 'Đã bật Face ID / vân tay trên thiết bị này.' : 'Đã tắt yêu cầu Face ID / vân tay trên thiết bị này.');
-      await refreshSecurityData();
-    } catch (error) {
-      setSecurityStatus(error?.message || 'Không thể cập nhật Face ID / vân tay.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const revokeDevice = async (deviceId, all = false) => {
-    if (!identityReady || !window.confirm(all ? 'Đăng xuất khỏi tất cả thiết bị tin cậy?' : 'Thu hồi thiết bị này?')) return;
-    setIsLoading(true);
-    setSecurityStatus('');
-    try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      await identityRevokeDevices({ idToken, deviceId, all, identity: identityUser });
-      if (all || deviceId === device.deviceId) {
-        await onLogout?.();
-        return;
-      }
-      setSecurityStatus('Đã thu hồi thiết bị.');
-      await refreshSecurityData();
-    } catch (error) {
-      setSecurityStatus(error?.message || 'Không thể thu hồi thiết bị.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const formatAuditTime = (value) => {
-    try { return new Date(value).toLocaleString('vi-VN'); } catch { return ''; }
-  };
-
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <button type="button" onClick={() => setExpanded(value => !value)} className="flex w-full items-center justify-between gap-3 p-4 text-left">
-        <span className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white"><Lock size={18} /></span><span><strong className="block text-sm text-slate-900">Bảo mật tài khoản</strong><span className="mt-0.5 block text-xs text-slate-500">Thiết bị tin cậy, PIN và lịch sử đăng nhập</span></span></span>
-        {expanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
-      </button>
-      {expanded && (
-        <div className="border-t border-slate-100 p-4 space-y-4">
-          {!identityReady ? (
-            <div className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">Tài khoản này chưa hoàn tất Identity Center. Hãy đăng xuất và đăng nhập lại để thiết lập PIN và thiết bị tin cậy.</div>
-          ) : <>
-            <div className="grid gap-2">
-              <div className="rounded-xl bg-slate-50 p-3 text-xs"><span className="block text-slate-500">Số điện thoại</span><strong className="mt-1 block text-slate-800">{identityUser.phone || 'Chưa cập nhật'}</strong></div>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
-              <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>
-              <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>
-            </div>
-            {activeEditor && (
-              <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                {activeEditor === 'password' && <><input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" /><input type="password" value={newPasswordConfirm} onChange={event => setNewPasswordConfirm(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" /></>}
-                {activeEditor === 'pin' && <><input type="password" inputMode="numeric" maxLength={6} value={newPin} onChange={event => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN mới" /><input type="password" inputMode="numeric" maxLength={6} value={newPinConfirm} onChange={event => setNewPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="Xác nhận PIN mới" /></>}
-                <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
-                <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang lưu...' : 'Xác nhận thay đổi'}</button>
-              </form>
-            )}
-            <div className="space-y-2"><div className="flex items-center justify-between"><h4 className="text-sm font-bold text-slate-900">Thiết bị tin cậy</h4><button type="button" onClick={refreshSecurityData} disabled={isLoading} className="text-xs font-semibold text-emerald-700">Làm mới</button></div>
-              {(devices || []).map(item => <div key={item.deviceId} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2.5 text-xs"><span className="min-w-0"><strong className="block truncate text-slate-800">{item.name || 'Thiết bị'}</strong><span className="block truncate text-slate-500">{item.platform} · Lần cuối {formatAuditTime(item.lastLoginAt)}</span></span>{item.revokedAt ? <span className="text-slate-400">Đã thu hồi</span> : <button type="button" onClick={() => revokeDevice(item.deviceId)} className="shrink-0 font-semibold text-red-600">Thu hồi</button>}</div>)}
-              <button type="button" onClick={() => revokeDevice('', true)} disabled={isLoading || devices.length === 0} className="w-full rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-700 disabled:opacity-50">Đăng xuất tất cả thiết bị</button>
-            </div>
-            <div className="space-y-2"><h4 className="text-sm font-bold text-slate-900">Lịch sử bảo mật</h4>{auditEntries.length ? auditEntries.slice(0, 8).map(entry => <div key={entry.id} className="flex items-start justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-medium text-slate-700">{`${entry.action || ''}`.replace(/_/g, ' ')}</span><time className="shrink-0 text-slate-400">{formatAuditTime(entry.createdAt)}</time></div>) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}</div>
-          </>}
-          {securityStatus && <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs font-medium text-slate-700" role="status">{securityStatus}</p>}
-        </div>
-      )}
-    </section>
-  );
 }
 
 function ZaloDispatcherPanel({
@@ -66153,7 +66066,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                         <p className="font-semibold text-gray-700 leading-5">{itemTypeLabel}</p>
                       </div>
                       <div>
-                        <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">Số kg</p>
                         <p className="uppercase tracking-wide text-[10px] text-gray-400 font-bold mb-1">{quantityHeading}</p>
                         <p className="font-semibold text-gray-700 leading-5">{quantityLabel}</p>
                       </div>

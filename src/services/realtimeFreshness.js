@@ -20,6 +20,22 @@ export const shouldApplyRealtimeSnapshot = (snapshot) => (
   !Boolean(snapshot?.metadata?.fromCache)
 );
 
+export const getRealtimeDataChangeCount = (snapshot) => {
+  if (typeof snapshot?.docChanges !== 'function') return null;
+
+  try {
+    const changes = snapshot.docChanges({ includeMetadataChanges: false });
+    return Number.isFinite(Number(changes?.length)) ? Number(changes.length) : null;
+  } catch {
+    try {
+      const changes = snapshot.docChanges();
+      return Number.isFinite(Number(changes?.length)) ? Number(changes.length) : null;
+    } catch {
+      return null;
+    }
+  }
+};
+
 export const isServerConfirmedRealtimeSnapshot = (snapshot) => (
   !Boolean(snapshot?.metadata?.fromCache)
   && !Boolean(snapshot?.metadata?.hasPendingWrites)

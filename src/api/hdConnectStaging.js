@@ -5,6 +5,7 @@ const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
   : {};
 
 export const isVpsStagingMode = runtimeEnv.VITE_DATA_MODE === 'vps-staging';
+export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -316,6 +317,7 @@ const toSalesOrderPayload = (record = {}) => {
   return omitUndefined({
     customerId,
     warehouseId,
+    clientMutationId: stringValue(record.clientMutationId) || undefined,
     branchId: toTargetId(record.branchId),
     salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
     priceListId: toTargetId(record.priceListId),
@@ -345,6 +347,7 @@ const toSalesOrderUpdatePayload = (record = {}) => {
   }
 
   return omitUndefined({
+    clientMutationId: stringValue(record.clientMutationId) || undefined,
     branchId: toTargetId(record.branchId),
     salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
     deliveryRouteId: toTargetId(record.deliveryRouteId),

@@ -41,15 +41,17 @@ test('each tenant flushes independently without duplicate retry work', () => {
   assert.match(section, /flushPendingFirebaseWriteNow\(write\.collectionName, write\.documentId, 8000, companyId\)/);
 });
 
-test('native keeps only the active workspace supplementary data realtime', () => {
-  assert.match(appSource, /const NATIVE_FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object\.freeze\(/);
-  assert.match(appSource, /debt: \['customerLoans'\]/);
-  assert.match(appSource, /points: \['customer_points', 'reward_catalog'\]/);
-  assert.match(appSource, /payroll: \['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance'\]/);
+test('realtime keeps only baseline data at startup and scopes business listeners to the active workspace', () => {
+  assert.match(appSource, /const BASELINE_REALTIME_COLLECTION_NAMES = \['companies', 'employees', 'notifications'\]/);
+  assert.match(appSource, /const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object\.freeze\(/);
+  assert.match(appSource, /const WEB_FOREGROUND_REALTIME_LISTENER_LIMIT = 12/);
   assert.match(appSource, /const NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT = 8/);
-  assert.match(appSource, /const activateNativeForegroundRealtimeCollections = \(collectionNames = \[\]\) =>/);
-  assert.match(appSource, /\.slice\(0, NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT\)/);
-  assert.match(appSource, /stopCollectionListener\(colName\)/);
-  assert.match(appSource, /startCollectionListener\(binding\)/);
-  assert.match(appSource, /return activateNativeForegroundRealtimeRef\.current\(collectionNames\)/);
+  assert.match(appSource, /const activateForegroundRealtimeCollections = \(collectionNames = \[\]\) =>/);
+  assert.match(appSource, /requestedNames\.slice\(0, foregroundListenerLimit\)/);
+  assert.match(appSource, /const overflowCollectionNames = requestedNames\.slice\(foregroundListenerLimit\)/);
+  assert.match(appSource, /BASELINE_REALTIME_COLLECTION_NAMES\.forEach/);
+  assert.match(appSource, /return activateForegroundRealtimeRef\.current\(collectionNames\)/);
+  assert.match(appSource, /if \(!force && hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, colName\)\)/);
+  assert.doesNotMatch(appSource, /const refreshAllCollections = async/);
+  assert.doesNotMatch(appSource, /collectionBindings\.forEach\(\(binding\) =>/);
 });

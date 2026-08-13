@@ -20,6 +20,7 @@ const COLLECTION_PROFILE = [
   ['deliveryReports', 3.5, 380],
   ['payments', 4, 360],
   ['expenses', 2.4, 260],
+  ['financials', 0.3, 80],
   ['messages', 16, 620],
   ['notifications', 10, 300],
   ['assets', 0.15, 50],
@@ -30,7 +31,24 @@ const COLLECTION_PROFILE = [
 ];
 
 const FULL_REALTIME_COLLECTIONS = 41;
-const OPTIMIZED_REALTIME_COLLECTIONS = 8;
+const BASELINE_REALTIME_COLLECTIONS = ['companies', 'employees', 'notifications'];
+const HOME_FOREGROUND_REALTIME_COLLECTIONS = [
+  'customers',
+  'products',
+  'orders',
+  'payments',
+  'expenses',
+  'financials',
+  'attendance',
+  'performance',
+  'warehouseImports',
+  'warehouseDispatches'
+];
+const WEB_FOREGROUND_REALTIME_LISTENER_LIMIT = 12;
+const ROUTE_SCOPED_REALTIME_COLLECTIONS = [
+  ...BASELINE_REALTIME_COLLECTIONS,
+  ...HOME_FOREGROUND_REALTIME_COLLECTIONS.slice(0, WEB_FOREGROUND_REALTIME_LISTENER_LIMIT)
+];
 const MAX_CPU_SAMPLE_ROWS = 180_000;
 const BYTES_PER_DOC_IN_MEMORY = 980;
 const FIRESTORE_READ_SOFT_LIMIT_PER_SESSION = 5000;
@@ -50,6 +68,11 @@ const estimateDocs = (users) => {
   docs.total = Object.values(docs).reduce((sum, value) => sum + value, 0);
   return docs;
 };
+
+const estimateDocsForCollections = (docs, collectionNames) => collectionNames.reduce(
+  (sum, collectionName) => sum + Number(docs[collectionName] || 0),
+  0
+);
 
 const runCpuGroupingBenchmark = (users, totalDocs) => {
   global.gc?.();
@@ -82,21 +105,21 @@ const runCpuGroupingBenchmark = (users, totalDocs) => {
 const evaluateScale = (users) => {
   const docs = estimateDocs(users);
   const currentInitialReadsPerSession = docs.total;
-  const optimizedInitialReadsPerSession = Math.min(1600, Math.round(180 + users * 0.12));
+  const routeScopedInitialReadsPerSession = estimateDocsForCollections(docs, ROUTE_SCOPED_REALTIME_COLLECTIONS);
   const currentRealtimeChannels = users * FULL_REALTIME_COLLECTIONS;
-  const optimizedRealtimeChannels = users * OPTIMIZED_REALTIME_COLLECTIONS;
+  const routeScopedRealtimeChannels = users * ROUTE_SCOPED_REALTIME_COLLECTIONS.length;
   const currentInitialReadsAllUsers = currentInitialReadsPerSession * users;
-  const optimizedInitialReadsAllUsers = optimizedInitialReadsPerSession * users;
+  const routeScopedInitialReadsAllUsers = routeScopedInitialReadsPerSession * users;
   const currentRamPerSessionBytes = docs.total * BYTES_PER_DOC_IN_MEMORY;
-  const optimizedRamPerSessionBytes = optimizedInitialReadsPerSession * BYTES_PER_DOC_IN_MEMORY;
+  const routeScopedRamPerSessionBytes = routeScopedInitialReadsPerSession * BYTES_PER_DOC_IN_MEMORY;
   const uploadMbPerDay = users * 0.18 * 0.35;
   const downloadMbPerDayCurrent = users * Math.max(4, docs.total * 0.0012);
-  const downloadMbPerDayOptimized = users * 3.2;
+  const downloadMbPerDayRouteScoped = users * Math.max(2.4, routeScopedInitialReadsPerSession * 0.0009);
   const cpu = runCpuGroupingBenchmark(users, Math.max(docs.orders + docs.warehouseDispatches + docs.payments, 1000));
   const currentOpenMs = Math.max(350, cpu.cpuMs * 0.55 + currentInitialReadsPerSession * 0.16);
-  const optimizedOpenMs = Math.max(350, cpu.cpuMs * 0.08 + optimizedInitialReadsPerSession * 0.08);
+  const routeScopedOpenMs = Math.max(350, cpu.cpuMs * 0.2 + routeScopedInitialReadsPerSession * 0.1);
   const currentApiWebhookReads = 6 + 2000; // indexed checks + legacy fallback scan in worst case.
-  const optimizedApiWebhookReads = 3;
+  const routeScopedApiWebhookReads = 3;
 
   const currentStatus = currentInitialReadsPerSession > FIRESTORE_READ_HARD_LIMIT_PER_SESSION
     || currentOpenMs > TARGET_OPEN_MS
@@ -105,10 +128,13 @@ const evaluateScale = (users) => {
       : currentInitialReadsPerSession > FIRESTORE_READ_SOFT_LIMIT_PER_SESSION
         ? 'WARN'
         : 'PASS';
-  const optimizedStatus = optimizedOpenMs > TARGET_OPEN_MS
-    || optimizedRamPerSessionBytes > TARGET_RAM_MB_ON_3GB_PHONE * 1024 * 1024
-      ? 'WARN'
-      : 'PASS';
+  const routeScopedStatus = routeScopedInitialReadsPerSession > FIRESTORE_READ_HARD_LIMIT_PER_SESSION
+    || routeScopedOpenMs > TARGET_OPEN_MS
+    || routeScopedRamPerSessionBytes > TARGET_RAM_MB_ON_3GB_PHONE * 1024 * 1024
+      ? 'FAIL'
+      : routeScopedInitialReadsPerSession > FIRESTORE_READ_SOFT_LIMIT_PER_SESSION
+        ? 'WARN'
+        : 'PASS';
 
   return {
     users,
@@ -125,16 +151,16 @@ const evaluateScale = (users) => {
       uploadMbPerDay,
       downloadMbPerDay: downloadMbPerDayCurrent
     },
-    optimizedTarget: {
-      status: optimizedStatus,
-      openMs: optimizedOpenMs,
-      ramPerSessionBytes: optimizedRamPerSessionBytes,
-      initialReadsPerSession: optimizedInitialReadsPerSession,
-      initialReadsAllUsers: optimizedInitialReadsAllUsers,
-      realtimeChannels: optimizedRealtimeChannels,
-      webhookReadsWorstCase: optimizedApiWebhookReads,
+    routeScoped: {
+      status: routeScopedStatus,
+      openMs: routeScopedOpenMs,
+      ramPerSessionBytes: routeScopedRamPerSessionBytes,
+      initialReadsPerSession: routeScopedInitialReadsPerSession,
+      initialReadsAllUsers: routeScopedInitialReadsAllUsers,
+      realtimeChannels: routeScopedRealtimeChannels,
+      webhookReadsWorstCase: routeScopedApiWebhookReads,
       uploadMbPerDay,
-      downloadMbPerDay: downloadMbPerDayOptimized
+      downloadMbPerDay: downloadMbPerDayRouteScoped
     }
   };
 };
@@ -147,6 +173,11 @@ const detectSourceBottlenecks = () => {
   const functionsCode = fs.existsSync(functionsPath) ? fs.readFileSync(functionsPath, 'utf8') : '';
   const hasFullCollectionListener = /onSnapshot\s*\(\s*collectionRef\s*,/m.test(app)
     || /onSnapshot\s*\(\s*collection\s*\(/m.test(app);
+  const hasStartupAllCollectionListeners = /collectionBindings\.forEach\(\(binding\) =>/m.test(app);
+  const hasRouteScopedListenerLifecycle = app.includes('FOREGROUND_REALTIME_COLLECTIONS_BY_TAB')
+    && app.includes('BASELINE_REALTIME_COLLECTION_NAMES')
+    && app.includes('activateForegroundRealtimeCollections');
+  const hasPeriodicFullRestRefresh = /const refreshAllCollections = async/m.test(app);
   const hasRestFallbackFullPagination = /readCollection/.test(app)
     && /pageSize\s*[=:]\s*['"]?1000['"]?/.test(app);
   const hasLegacyOrderScan = /ordersRef\s*\.\s*limit\s*\(\s*2000\s*\)\s*\.\s*get\s*\(/.test(functionsCode);
@@ -154,7 +185,11 @@ const detectSourceBottlenecks = () => {
   return [
     {
       name: 'Realtime full-collection listeners',
-      severity: hasFullCollectionListener ? 'HIGH' : 'OK',
+      severity: hasStartupAllCollectionListeners
+        ? 'HIGH'
+        : hasFullCollectionListener
+          ? (hasRouteScopedListenerLifecycle ? 'MEDIUM' : 'HIGH')
+          : 'OK',
       evidence: hasFullCollectionListener
         ? 'App.jsx đang mở onSnapshot cho nhiều collection đầy đủ.'
         : 'Không phát hiện listener toàn collection trong App.jsx.',
@@ -162,7 +197,11 @@ const detectSourceBottlenecks = () => {
     },
     {
       name: 'REST fallback full pagination',
-      severity: hasRestFallbackFullPagination ? 'MEDIUM' : 'OK',
+      severity: hasPeriodicFullRestRefresh
+        ? 'HIGH'
+        : hasRestFallbackFullPagination
+          ? 'MEDIUM'
+          : 'OK',
       evidence: app.includes('readCollection') ? 'Có REST fallback đọc theo pageSize=1000 cho từng collection.' : 'Không phát hiện REST fallback.',
       recommendation: 'Chỉ fallback collection quan trọng khi app foreground; tránh đọc nền và tránh refresh toàn bộ nếu listener đang khỏe.'
     },
@@ -196,7 +235,7 @@ const makeMarkdown = (results, bottlenecks, startedAt) => {
   lines.push('| User đồng thời | Trạng thái hiện tại | Mở màn hình hiện tại | RAM/session hiện tại | Firestore reads/session | Realtime channels | Trạng thái mục tiêu sau tối ưu | Reads/session mục tiêu |');
   lines.push('|---:|---|---:|---:|---:|---:|---|---:|');
   for (const result of results) {
-    lines.push(`| ${formatNumber(result.users)} | ${result.current.status} | ${formatMs(result.current.openMs)} | ${formatMb(result.current.ramPerSessionBytes)} | ${formatNumber(result.current.initialReadsPerSession)} | ${formatNumber(result.current.realtimeChannels)} | ${result.optimizedTarget.status} | ${formatNumber(result.optimizedTarget.initialReadsPerSession)} |`);
+    lines.push(`| ${formatNumber(result.users)} | ${result.current.status} | ${formatMs(result.current.openMs)} | ${formatMb(result.current.ramPerSessionBytes)} | ${formatNumber(result.current.initialReadsPerSession)} | ${formatNumber(result.current.realtimeChannels)} | ${result.routeScoped.status} | ${formatNumber(result.routeScoped.initialReadsPerSession)} |`);
   }
   lines.push('');
   lines.push('## CPU / RAM / API / Storage');
@@ -204,7 +243,7 @@ const makeMarkdown = (results, bottlenecks, startedAt) => {
   lines.push('| User | CPU gom nhóm dữ liệu | RAM benchmark | API webhook worst-case hiện tại | API webhook mục tiêu | Upload/ngày | Download/ngày hiện tại | Download/ngày mục tiêu |');
   lines.push('|---:|---:|---:|---:|---:|---:|---:|---:|');
   for (const result of results) {
-    lines.push(`| ${formatNumber(result.users)} | ${formatMs(result.cpu.cpuMs)} | ${formatMb(result.cpu.heapDeltaBytes)} | ${formatNumber(result.current.webhookReadsWorstCase)} reads | ${formatNumber(result.optimizedTarget.webhookReadsWorstCase)} reads | ${formatNumber(result.current.uploadMbPerDay)} MB | ${formatNumber(result.current.downloadMbPerDay)} MB | ${formatNumber(result.optimizedTarget.downloadMbPerDay)} MB |`);
+    lines.push(`| ${formatNumber(result.users)} | ${formatMs(result.cpu.cpuMs)} | ${formatMb(result.cpu.heapDeltaBytes)} | ${formatNumber(result.current.webhookReadsWorstCase)} reads | ${formatNumber(result.routeScoped.webhookReadsWorstCase)} reads | ${formatNumber(result.current.uploadMbPerDay)} MB | ${formatNumber(result.current.downloadMbPerDay)} MB | ${formatNumber(result.routeScoped.downloadMbPerDay)} MB |`);
   }
   lines.push('');
   lines.push('## Bottleneck phát hiện');
@@ -237,7 +276,10 @@ const main = () => {
   const hardFailures = results.filter((result) => result.current.status === 'FAIL').length;
   console.log(`Performance report written:\n- ${mdPath}\n- ${jsonPath}`);
   console.log(`Detected bottlenecks: ${bottlenecks.filter((item) => item.severity !== 'OK').length}`);
-  console.log(`Current architecture failed at ${hardFailures}/${results.length} scale points. Optimized target is reported for migration planning.`);
+  const routeScopedFailures = results.filter((result) => result.routeScoped.status === 'FAIL').length;
+  const routeScopedWarnings = results.filter((result) => result.routeScoped.status === 'WARN').length;
+  console.log(`Current architecture failed at ${hardFailures}/${results.length} scale points.`);
+  console.log(`Route-scoped architecture failed at ${routeScopedFailures}/${results.length} scale points with ${routeScopedWarnings} warnings.`);
 };
 
 main();
