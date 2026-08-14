@@ -1,28 +1,28 @@
 export const LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS = Object.freeze([
   {
+    id: 'notOverdue',
+    label: 'Không quá hạn',
+    customerDescription: 'Công nợ của đơn hàng không được quá 23:59 trong ngày.'
+  },
+  {
+    id: 'withinCreditLimit',
+    label: 'Trong hạn mức công nợ',
+    customerDescription: 'Công nợ hiện tại không vượt hạn mức công ty đã cho phép.'
+  },
+  {
+    id: 'orderedViaHdManager',
+    label: 'Đặt hàng qua HD Manager',
+    customerDescription: 'Khách hàng cần sử dụng app HD Manager để đặt hàng.'
+  },
+  {
     id: 'delivered',
     label: 'Đã giao hàng',
     customerDescription: 'Đơn hàng cần được xác nhận đã giao.'
   },
   {
-    id: 'fullyPaid',
-    label: 'Đã thanh toán đủ',
-    customerDescription: 'Đơn hàng cần thanh toán đủ trước khi nhận điểm.'
-  },
-  {
-    id: 'noReturn',
-    label: 'Không trả hàng',
-    customerDescription: 'Đơn hàng không có phần trả hàng hoặc hủy.'
-  },
-  {
-    id: 'notOverdue',
-    label: 'Không quá hạn',
-    customerDescription: 'Công nợ của đơn hàng chưa quá hạn thanh toán.'
-  },
-  {
-    id: 'withinCreditLimit',
-    label: 'Trong hạn mức công nợ',
-    customerDescription: 'Công nợ hiện tại không vượt hạn mức công ty đã cấu hình.'
+    id: 'afterFifteenOrders',
+    label: 'Áp dụng sau 15 đơn hàng',
+    customerDescription: 'Điểm được áp dụng từ đơn thứ 16 của khách hàng.'
   }
 ]);
 
@@ -74,11 +74,19 @@ const getOrderStatus = (order = {}) => normalizeText(
 );
 
 const isCancelled = (order = {}) => {
-  const status = getOrderStatus(order);
+  const statuses = [
+    order.deliveryStatus,
+    order.fulfillmentStatus,
+    order.status,
+    order.orderStatus,
+    order.reviewStatus
+  ].map(normalizeText);
   return order.isCancelled === true
     || order.isArchived === true
-    || ['cancelled', 'canceled', 'cancel', 'deleted', 'da huy', 'huy'].includes(status);
+    || statuses.some(status => ['cancelled', 'canceled', 'cancel', 'deleted', 'da huy', 'huy'].includes(status));
 };
+
+export const isActiveCustomerLoyaltyOrder = (order = {}) => !isCancelled(order);
 
 const isDelivered = (order = {}) => {
   const status = getOrderStatus(order);
@@ -87,36 +95,84 @@ const isDelivered = (order = {}) => {
     || ['delivered', 'completed', 'complete', 'da giao', 'hoan thanh'].includes(status);
 };
 
-const hasReturn = (order = {}) => {
-  const status = normalizeText(order.returnStatus ?? order.returnedStatus ?? '');
-  return order.hasReturn === true
-    || order.isReturned === true
-    || parseMoney(order.returnAmount ?? order.returnedAmount ?? 0) > 0
-    || ['returned', 'partial_return', 'da tra', 'tra hang'].includes(status);
-};
-
-const isPaid = (order = {}, ledgerOrder = null) => {
-  if (ledgerOrder && parseMoney(ledgerOrder.outstandingAmount) <= 0) return true;
-  const paymentStatus = normalizeText(order.paymentStatus ?? order.payment_state ?? '');
-  if (['paid', 'fully_paid', 'da thanh toan'].includes(paymentStatus)) return true;
-  const total = parseMoney(order.finalTotal ?? order.totalAmount ?? order.total ?? order.amount ?? 0);
-  const paid = parseMoney(order.paidAmount ?? order.amountPaid ?? order.collectedAmount ?? 0);
-  return total > 0 && paid >= total;
-};
-
 const getDateKey = (value) => {
   if (!value) return '';
-  if (typeof value === 'string') return value.slice(0, 10);
-  if (value?.toDate) return value.toDate().toISOString().slice(0, 10);
+  if (typeof value === 'string') {
+    const isoDate = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoDate) return isoDate[1];
+    const vietnameseDate = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (vietnameseDate) {
+      const [, day, month, year] = vietnameseDate;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    return '';
+  }
+  if (value?.toDate) return getDateKey(value.toDate());
+  if (typeof value?.seconds === 'number') return getDateKey(new Date(value.seconds * 1000));
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
   return '';
 };
 
+const getOrderOutstandingAmount = (order = {}, ledgerOrder = null) => {
+  const ledgerOutstanding = ledgerOrder?.outstandingAmount
+    ?? ledgerOrder?.remainingAmount
+    ?? ledgerOrder?.remainingDebt;
+  if (ledgerOutstanding !== undefined && ledgerOutstanding !== null) {
+    return parseMoney(ledgerOutstanding);
+  }
+  const directOutstanding = order.outstandingAmount
+    ?? order.remainingAmount
+    ?? order.remainingDebt;
+  if (directOutstanding !== undefined && directOutstanding !== null) {
+    return parseMoney(directOutstanding);
+  }
+  const total = parseMoney(order.finalTotal ?? order.totalAmount ?? order.total ?? order.amount ?? order.totalDue ?? 0);
+  const paid = parseMoney(order.paidAmount ?? order.amountPaid ?? order.collectedAmount ?? order.paid ?? 0);
+  return Math.max(0, total - paid);
+};
+
 const isOverdue = (order = {}, ledgerOrder = null, today = '') => {
-  const dueDate = getDateKey(order.dueDate ?? order.paymentDueDate ?? order.due_at);
-  if (!dueDate) return false;
-  const outstanding = ledgerOrder ? parseMoney(ledgerOrder.outstandingAmount) : 1;
-  return outstanding > 0 && dueDate < today;
+  // Debt expires at 23:59 on its order/due date; missing legacy dates do not fail by assumption.
+  const dueDate = getDateKey(
+    order.dueDate
+    ?? order.paymentDueDate
+    ?? order.due_at
+    ?? order.date
+    ?? order.orderDate
+    ?? order.orderDateKey
+    ?? order.createdAt
+  );
+  if (!dueDate || !today) return false;
+  return getOrderOutstandingAmount(order, ledgerOrder) > 0 && dueDate < today;
+};
+
+const isOrderedViaHdManager = (order = {}) => {
+  if (
+    order.placedViaHdManager === true
+    || order.isCustomerPortalOrder === true
+    || order.submittedViaHdManager === true
+    || Boolean(order.createdByCustomerId)
+    || normalizeText(order.createdByRole) === 'customer'
+  ) {
+    return true;
+  }
+
+  const source = normalizeText(
+    order.orderSource
+    ?? order.source
+    ?? order.sourceType
+    ?? order.createdFrom
+    ?? order.origin
+    ?? ''
+  );
+  return [
+    'customer_portal',
+    'customer portal',
+    'customer_app',
+    'customer app',
+    'hd_manager_customer',
+    'hd manager customer'
+  ].some((candidate) => source.includes(candidate));
 };
 
 export const evaluateCustomerLoyaltyOrder = ({
@@ -124,10 +180,11 @@ export const evaluateCustomerLoyaltyOrder = ({
   ledgerOrder = null,
   customerDebtLimitStatus = {},
   conditions = {},
+  completedOrderCountBefore = 0,
   today = new Date().toISOString().slice(0, 10)
 } = {}) => {
   const normalizedConditions = normalizeLoyaltyEligibilityConditions(conditions);
-  if (isCancelled(order)) {
+  if (!isActiveCustomerLoyaltyOrder(order)) {
     return {
       eligible: false,
       failedConditionIds: ['orderActive'],
@@ -136,12 +193,20 @@ export const evaluateCustomerLoyaltyOrder = ({
   }
 
   const failedConditionIds = [];
-  if (normalizedConditions.delivered && !isDelivered(order)) failedConditionIds.push('delivered');
-  if (normalizedConditions.fullyPaid && !isPaid(order, ledgerOrder)) failedConditionIds.push('fullyPaid');
-  if (normalizedConditions.noReturn && hasReturn(order)) failedConditionIds.push('noReturn');
-  if (normalizedConditions.notOverdue && isOverdue(order, ledgerOrder, today)) failedConditionIds.push('notOverdue');
+  if (normalizedConditions.notOverdue && isOverdue(order, ledgerOrder, today)) {
+    failedConditionIds.push('notOverdue');
+  }
   if (normalizedConditions.withinCreditLimit && customerDebtLimitStatus?.exceeded === true) {
     failedConditionIds.push('withinCreditLimit');
+  }
+  if (normalizedConditions.orderedViaHdManager && !isOrderedViaHdManager(order)) {
+    failedConditionIds.push('orderedViaHdManager');
+  }
+  if (normalizedConditions.delivered && !isDelivered(order)) {
+    failedConditionIds.push('delivered');
+  }
+  if (normalizedConditions.afterFifteenOrders && Number(completedOrderCountBefore) < 15) {
+    failedConditionIds.push('afterFifteenOrders');
   }
 
   return {

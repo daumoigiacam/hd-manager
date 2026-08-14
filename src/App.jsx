@@ -109,6 +109,7 @@ import {
   DEFAULT_LOYALTY_ELIGIBILITY_CONDITIONS,
   evaluateCustomerLoyaltyOrder,
   getEnabledLoyaltyEligibilityConditions,
+  isActiveCustomerLoyaltyOrder,
   LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS,
   normalizeLoyaltyEligibilityConditions
 } from './utils/customerLoyaltyEligibility.js';
@@ -14289,18 +14290,100 @@ export default function App() {
     const customerLedger = buildCustomerLedger(customer, customerOrders, payments);
     const ledgerOrdersById = new Map((customerLedger.orders || []).map(order => [order.id, order]));
     const debtLimitStatus = buildCustomerDebtLimitStatus(customer, customerLedger);
+    const customerPortalRequestsById = new Map(
+      (orderRequests || [])
+        .filter(request => (
+          request?.id
+          && request.customerId === customerId
+          && !request.isArchived
+          && (
+            request.source === 'customer_portal'
+            || request.createdByRole === 'customer'
+            || Boolean(request.createdByCustomerId)
+          )
+        ))
+        .map(request => [request.id, request])
+    );
+    const requestIdsByDispatchId = new Map(
+      (warehouseDispatches || [])
+        .filter(dispatch => dispatch?.id && dispatch.customerId === customerId && !dispatch.isArchived)
+        .map(dispatch => {
+          const requestIds = [
+            dispatch.sourceOrderRequestId,
+            dispatch.orderRequestId,
+            dispatch.requestId,
+            dispatch.sourceRequestId,
+            ...(Array.isArray(dispatch.sourceOrderRequestIds) ? dispatch.sourceOrderRequestIds : [])
+          ]
+            .map(value => `${value || ''}`.trim())
+            .filter(Boolean);
+          return [dispatch.id, requestIds];
+        })
+    );
+    const withCustomerPortalOrderSource = (order = {}) => {
+      if (
+        order.placedViaHdManager === true
+        || order.isCustomerPortalOrder === true
+        || order.submittedViaHdManager === true
+        || Boolean(order.createdByCustomerId)
+        || order.createdByRole === 'customer'
+      ) {
+        return order;
+      }
+
+      const requestIds = new Set([
+        order.sourceOrderRequestId,
+        order.orderRequestId,
+        order.requestId,
+        order.sourceRequestId,
+        order.sourceCustomerRequestId
+      ].map(value => `${value || ''}`.trim()).filter(Boolean));
+      const dispatchIds = [
+        order.sourceDispatchId,
+        ...(Array.isArray(order.sourceDispatchIds) ? order.sourceDispatchIds : [])
+      ].map(value => `${value || ''}`.trim()).filter(Boolean);
+      dispatchIds.forEach(dispatchId => {
+        (requestIdsByDispatchId.get(dispatchId) || []).forEach(requestId => requestIds.add(requestId));
+      });
+
+      const sourceRequest = [...requestIds]
+        .map(requestId => customerPortalRequestsById.get(requestId))
+        .find(Boolean);
+      return sourceRequest ? {
+        ...order,
+        placedViaHdManager: true,
+        sourceOrderRequestId: sourceRequest.id
+      } : order;
+    };
+    const completedOrderCountBeforeById = new Map();
+    (customerLedger.orders || []).forEach(ledgerOrder => {
+      const sourceOrder = orderMap.get(ledgerOrder?.id) || ledgerOrder;
+      if (
+        !sourceOrder?.id
+        || sourceOrder.isOpeningDebt
+        || sourceOrder.isArchived
+        || !isActiveCustomerLoyaltyOrder(sourceOrder)
+      ) {
+        return;
+      }
+      completedOrderCountBeforeById.set(sourceOrder.id, completedOrderCountBeforeById.size);
+    });
     const eligibilityEvaluations = customerOrders
       .filter(order => order && !order.isArchived)
-      .map(order => ({
-        order,
+      .map(order => {
+        const loyaltyOrder = withCustomerPortalOrderSource(order);
+        return {
+          order: loyaltyOrder,
         eligibility: evaluateCustomerLoyaltyOrder({
-          order,
+          order: loyaltyOrder,
           ledgerOrder: ledgerOrdersById.get(order.id),
           customerDebtLimitStatus: debtLimitStatus,
           conditions: loyaltySettings.eligibilityConditions,
+          completedOrderCountBefore: completedOrderCountBeforeById.get(order.id) || 0,
           today: getTodayString()
         })
-      }));
+        };
+      });
     const eligibleOrders = eligibilityEvaluations
       .filter(({ eligibility }) => eligibility.eligible)
       .map(({ order }) => order);
@@ -14418,7 +14501,7 @@ export default function App() {
       console.error('Không thể đồng bộ tích điểm khách hàng:', error);
       return false;
     });
-  }, [firebaseUser, myCompanyId, customers, currentCompany, customerPoints, orders, payments, currentUser?.id]);
+  }, [firebaseUser, myCompanyId, customers, currentCompany, customerPoints, orders, payments, orderRequests, warehouseDispatches, currentUser?.id]);
 
   useEffect(() => {
     const loyaltySettings = getCustomerLoyaltySettings(currentCompany);
@@ -14440,6 +14523,12 @@ export default function App() {
         order?.status || order?.deliveryStatus || '',
         order?.paymentStatus || '',
         order?.returnStatus || '',
+        order?.source || order?.orderSource || order?.sourceType || '',
+        order?.createdByRole || '',
+        order?.createdByCustomerId || '',
+        order?.sourceOrderRequestId || order?.orderRequestId || order?.requestId || '',
+        order?.sourceDispatchId || '',
+        Array.isArray(order?.sourceDispatchIds) ? order.sourceDispatchIds.join(',') : '',
         order?.dueDate || order?.paymentDueDate || order?.due_at || '',
         order?.finalTotal ?? order?.totalAmount ?? order?.amount ?? '',
         order?.paidAmount ?? order?.amountPaid ?? '',
@@ -14458,6 +14547,32 @@ export default function App() {
         payment?.isArchived ? 'archived' : 'active'
       ].join('|');
       nextFingerprints.set(customerId, `${nextFingerprints.get(customerId) || ''};p:${paymentSignature}`);
+    });
+    (orderRequests || []).forEach(request => {
+      const customerId = request?.customerId || request?.customer_id;
+      if (!customerId || !nextFingerprints.has(customerId)) return;
+      const requestSignature = [
+        request?.id,
+        request?.updatedAt || request?.createdAt || '',
+        request?.source || '',
+        request?.createdByRole || '',
+        request?.createdByCustomerId || '',
+        request?.isArchived ? 'archived' : 'active'
+      ].join('|');
+      nextFingerprints.set(customerId, `${nextFingerprints.get(customerId)};r:${requestSignature}`);
+    });
+    (warehouseDispatches || []).forEach(dispatch => {
+      const customerId = dispatch?.customerId || dispatch?.customer_id;
+      if (!customerId || !nextFingerprints.has(customerId)) return;
+      const dispatchSignature = [
+        dispatch?.id,
+        dispatch?.updatedAt || dispatch?.createdAt || '',
+        dispatch?.sourceOrderRequestId || dispatch?.orderRequestId || dispatch?.requestId || '',
+        dispatch?.sourceRequestId || '',
+        Array.isArray(dispatch?.sourceOrderRequestIds) ? dispatch.sourceOrderRequestIds.join(',') : '',
+        dispatch?.isArchived ? 'archived' : 'active'
+      ].join('|');
+      nextFingerprints.set(customerId, `${nextFingerprints.get(customerId)};d:${dispatchSignature}`);
     });
     (customers || []).forEach(customer => {
       const customerId = customer?.id;
@@ -14489,7 +14604,7 @@ export default function App() {
         void syncCustomerLoyaltyPoints(customerId, { reason: 'eligibility_sync' });
       }
     });
-  }, [currentCompany, customers, firebaseUser, myCompanyId, orders, payments, syncCustomerLoyaltyPoints]);
+  }, [currentCompany, customers, firebaseUser, myCompanyId, orders, payments, orderRequests, warehouseDispatches, syncCustomerLoyaltyPoints]);
   const zaloOrderRequests = useMemo(() => rawZaloOrderRequests.filter(item => item.companyId === myCompanyId), [rawZaloOrderRequests, myCompanyId]);
   const aiReplyRules = useMemo(() => rawAiReplyRules.filter(item => item.companyId === myCompanyId), [rawAiReplyRules, myCompanyId]);
   const pricingInputs = useMemo(() => rawPricingInputs.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPricingInputs, myCompanyId]);
