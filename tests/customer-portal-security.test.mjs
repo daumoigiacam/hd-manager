@@ -23,11 +23,17 @@ test('customer company payload excludes backend secrets', () => {
   const payload = sanitizeCompanyForCustomer({
     name: 'HD Test',
     address: 'Vietnam',
+    loyaltyEligibilityConditions: { delivered: true, fullyPaid: true },
     sepayApiKey: 'must-not-leak',
     payosClientSecret: 'must-not-leak',
     goongMapKey: 'must-not-leak'
   }, 'company-a');
-  assert.deepEqual(payload, { id: 'company-a', name: 'HD Test', address: 'Vietnam' });
+  assert.deepEqual(payload, {
+    id: 'company-a',
+    name: 'HD Test',
+    address: 'Vietnam',
+    loyaltyEligibilityConditions: { delivered: true, fullyPaid: true }
+  });
 });
 
 test('customer product payload excludes cost and sanitizes nested variants', () => {
@@ -87,9 +93,9 @@ test('point redemption uses server point value and caps amount to debt', () => {
     outstandingDebt: 60_000
   });
   assert.equal(result.amount, 60_000);
-  assert.equal(result.pointsToUse, 100);
-  assert.equal(result.nextAvailablePoints, 0);
-  assert.equal(result.nextUsedPoints, 120);
+  assert.equal(result.pointsToUse, 60);
+  assert.equal(result.nextAvailablePoints, 40);
+  assert.equal(result.nextUsedPoints, 80);
 });
 
 test('point redemption cannot exceed available points', () => {

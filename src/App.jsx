@@ -105,6 +105,13 @@ import {
 } from './utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
+import {
+  DEFAULT_LOYALTY_ELIGIBILITY_CONDITIONS,
+  evaluateCustomerLoyaltyOrder,
+  getEnabledLoyaltyEligibilityConditions,
+  LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS,
+  normalizeLoyaltyEligibilityConditions
+} from './utils/customerLoyaltyEligibility.js';
 import { buildCustomerDirectionsUrl } from './utils/customerLocationDirections.js';
 import {
   canPickCustomerContact as canUseCustomerContactPicker,
@@ -10855,7 +10862,8 @@ const shouldCollectCustomerDebtImmediately = (debtLimitStatus = {}) => (
 const DEFAULT_CUSTOMER_LOYALTY_SETTINGS = {
   enabled: false,
   earnAmountPerPoint: 100000,
-  redeemValuePerPoint: 1000
+  redeemValuePerPoint: 1000,
+  eligibilityConditions: DEFAULT_LOYALTY_ELIGIBILITY_CONDITIONS
 };
 
 const getCustomerLoyaltySettings = (company = null) => {
@@ -10865,7 +10873,8 @@ const getCustomerLoyaltySettings = (company = null) => {
   return {
     enabled: company?.customerLoyaltyEnabled === true,
     earnAmountPerPoint: earnAmountPerPoint > 0 ? earnAmountPerPoint : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
-    redeemValuePerPoint: redeemValuePerPoint > 0 ? redeemValuePerPoint : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint
+    redeemValuePerPoint: redeemValuePerPoint > 0 ? redeemValuePerPoint : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
+    eligibilityConditions: normalizeLoyaltyEligibilityConditions(company?.loyaltyEligibilityConditions)
   };
 };
 
@@ -14240,6 +14249,9 @@ export default function App() {
   const zaloInboxMessages = useMemo(() => rawZaloInboxMessages.filter(item => item.companyId === myCompanyId), [rawZaloInboxMessages, myCompanyId]);
   const zaloInboxBridgeLogs = useMemo(() => rawZaloInboxBridgeLogs.filter(item => item.companyId === myCompanyId), [rawZaloInboxBridgeLogs, myCompanyId]);
 
+  const loyaltyEligibilitySyncFingerprintRef = useRef(new Map());
+  const loyaltyEligibilitySyncPrimedRef = useRef(false);
+
   const syncCustomerLoyaltyPoints = useCallback((customerId, {
     extraOrders = [],
     archivedOrderIds = [],
@@ -14273,11 +14285,25 @@ export default function App() {
       if (order) orderMap.set(orderId, { ...order, isArchived: true });
     });
 
-    const eligibleOrders = [...orderMap.values()].filter(order => {
-      if (!order || order.isArchived) return false;
-      const status = normalizeLookupText(order.status || order.orderStatus || order.reviewStatus || '');
-      return !['cancelled', 'canceled', 'cancel', 'deleted', 'da huy', 'huy'].includes(status);
-    });
+    const customerOrders = [...orderMap.values()];
+    const customerLedger = buildCustomerLedger(customer, customerOrders, payments);
+    const ledgerOrdersById = new Map((customerLedger.orders || []).map(order => [order.id, order]));
+    const debtLimitStatus = buildCustomerDebtLimitStatus(customer, customerLedger);
+    const eligibilityEvaluations = customerOrders
+      .filter(order => order && !order.isArchived)
+      .map(order => ({
+        order,
+        eligibility: evaluateCustomerLoyaltyOrder({
+          order,
+          ledgerOrder: ledgerOrdersById.get(order.id),
+          customerDebtLimitStatus: debtLimitStatus,
+          conditions: loyaltySettings.eligibilityConditions,
+          today: getTodayString()
+        })
+      }));
+    const eligibleOrders = eligibilityEvaluations
+      .filter(({ eligibility }) => eligibility.eligible)
+      .map(({ order }) => order);
     const eligibleAmount = roundMoneyValue(eligibleOrders.reduce((sum, order) => {
       const total = order.finalTotal
         ?? order.totalAmount
@@ -14325,6 +14351,12 @@ export default function App() {
       date: getTodayString(),
       createdAt: now
     }] : [];
+    const unmetEligibilityConditionCounts = eligibilityEvaluations.reduce((counts, { eligibility }) => {
+      (eligibility.failedConditionIds || []).forEach(conditionId => {
+        counts[conditionId] = (counts[conditionId] || 0) + 1;
+      });
+      return counts;
+    }, {});
     const payload = {
       ...existingPointDoc,
       id: pointDocId,
@@ -14334,6 +14366,7 @@ export default function App() {
       customerName: customer.name || existingPointDoc.customerName || existingPointDoc.customer_name || '',
       earnAmountPerPoint: loyaltySettings.earnAmountPerPoint,
       redeemValuePerPoint: loyaltySettings.redeemValuePerPoint,
+      loyaltyEligibilityConditions: loyaltySettings.eligibilityConditions,
       eligible_amount: eligibleAmount,
       eligibleAmount,
       earned_points: earnedPoints,
@@ -14350,6 +14383,10 @@ export default function App() {
       redeemValue: roundMoneyValue(availablePoints * loyaltySettings.redeemValuePerPoint),
       source: 'orders',
       sourceOrderCount: eligibleOrders.length,
+      candidateOrderCount: eligibilityEvaluations.length,
+      ineligibleOrderCount: Math.max(0, eligibilityEvaluations.length - eligibleOrders.length),
+      eligibleOrderIds: eligibleOrders.map(order => order.id).filter(Boolean).slice(-200),
+      unmetEligibilityConditionCounts,
       lastSyncedAt: now,
       updatedAt: now,
       updatedBy: currentUser?.id || 'system',
@@ -14381,7 +14418,78 @@ export default function App() {
       console.error('Không thể đồng bộ tích điểm khách hàng:', error);
       return false;
     });
-  }, [firebaseUser, myCompanyId, customers, currentCompany, customerPoints, orders, currentUser?.id]);
+  }, [firebaseUser, myCompanyId, customers, currentCompany, customerPoints, orders, payments, currentUser?.id]);
+
+  useEffect(() => {
+    const loyaltySettings = getCustomerLoyaltySettings(currentCompany);
+    const enabledConditions = getEnabledLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions);
+    if (!firebaseUser || !myCompanyId || !loyaltySettings.enabled || enabledConditions.length === 0) {
+      loyaltyEligibilitySyncFingerprintRef.current = new Map();
+      loyaltyEligibilitySyncPrimedRef.current = false;
+      return;
+    }
+
+    const conditionsSignature = JSON.stringify(loyaltySettings.eligibilityConditions);
+    const nextFingerprints = new Map();
+    (orders || []).forEach(order => {
+      const customerId = order?.customerId || order?.customer_id;
+      if (!customerId) return;
+      const orderSignature = [
+        order?.id,
+        order?.updatedAt || order?.createdAt || '',
+        order?.status || order?.deliveryStatus || '',
+        order?.paymentStatus || '',
+        order?.returnStatus || '',
+        order?.dueDate || order?.paymentDueDate || order?.due_at || '',
+        order?.finalTotal ?? order?.totalAmount ?? order?.amount ?? '',
+        order?.paidAmount ?? order?.amountPaid ?? '',
+        order?.isArchived ? 'archived' : 'active'
+      ].join('|');
+      nextFingerprints.set(customerId, `${nextFingerprints.get(customerId) || ''};o:${orderSignature}`);
+    });
+    (payments || []).forEach(payment => {
+      const customerId = payment?.customerId || payment?.customer_id;
+      if (!customerId) return;
+      const paymentSignature = [
+        payment?.id,
+        payment?.updatedAt || payment?.createdAt || '',
+        payment?.amount ?? payment?.paymentAmount ?? '',
+        payment?.status || payment?.approvalStatus || '',
+        payment?.isArchived ? 'archived' : 'active'
+      ].join('|');
+      nextFingerprints.set(customerId, `${nextFingerprints.get(customerId) || ''};p:${paymentSignature}`);
+    });
+    (customers || []).forEach(customer => {
+      const customerId = customer?.id;
+      if (!customerId || !nextFingerprints.has(customerId)) return;
+      const customerSignature = [
+        customer?.updatedAt || customer?.createdAt || '',
+        customer?.debtLimit ?? customer?.debtLimitAmount ?? customer?.creditLimit ?? '',
+        customer?.debtPolicy ?? customer?.debtLimitMode ?? '',
+        customer?.allowDebt ?? ''
+      ].join('|');
+      nextFingerprints.set(customerId, `${nextFingerprints.get(customerId)};c:${customerSignature}`);
+    });
+    nextFingerprints.forEach((value, customerId) => {
+      nextFingerprints.set(customerId, `${conditionsSignature}|${value}`);
+    });
+
+    const previousFingerprints = loyaltyEligibilitySyncFingerprintRef.current;
+    loyaltyEligibilitySyncFingerprintRef.current = nextFingerprints;
+    if (!loyaltyEligibilitySyncPrimedRef.current) {
+      loyaltyEligibilitySyncPrimedRef.current = true;
+      nextFingerprints.forEach((_fingerprint, customerId) => {
+        void syncCustomerLoyaltyPoints(customerId, { reason: 'eligibility_policy_sync' });
+      });
+      return;
+    }
+
+    nextFingerprints.forEach((fingerprint, customerId) => {
+      if (previousFingerprints.get(customerId) !== fingerprint) {
+        void syncCustomerLoyaltyPoints(customerId, { reason: 'eligibility_sync' });
+      }
+    });
+  }, [currentCompany, customers, firebaseUser, myCompanyId, orders, payments, syncCustomerLoyaltyPoints]);
   const zaloOrderRequests = useMemo(() => rawZaloOrderRequests.filter(item => item.companyId === myCompanyId), [rawZaloOrderRequests, myCompanyId]);
   const aiReplyRules = useMemo(() => rawAiReplyRules.filter(item => item.companyId === myCompanyId), [rawAiReplyRules, myCompanyId]);
   const pricingInputs = useMemo(() => rawPricingInputs.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPricingInputs, myCompanyId]);
@@ -14524,6 +14632,7 @@ export default function App() {
       customerLoyaltyEnabled: DEFAULT_CUSTOMER_LOYALTY_SETTINGS.enabled,
       loyaltyEarnAmountPerPoint: DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
       loyaltyRedeemValuePerPoint: DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
+      loyaltyEligibilityConditions: DEFAULT_CUSTOMER_LOYALTY_SETTINGS.eligibilityConditions,
       customerCareReminderEnabled: DEFAULT_CUSTOMER_CARE_SETTINGS.enabled,
       customerCareInactiveDays: DEFAULT_CUSTOMER_CARE_SETTINGS.inactiveDays,
       salaryAdvancePercent: DEFAULT_SALARY_ADVANCE_PERCENT,
@@ -15662,6 +15771,9 @@ export default function App() {
       customerLoyaltyEnabled: settingsData.customerLoyaltyEnabled ?? currentLoyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: normalizedLoyaltyEarnAmount > 0 ? normalizedLoyaltyEarnAmount : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
       loyaltyRedeemValuePerPoint: normalizedLoyaltyRedeemValue > 0 ? normalizedLoyaltyRedeemValue : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
+      loyaltyEligibilityConditions: settingsData.loyaltyEligibilityConditions !== undefined
+        ? normalizeLoyaltyEligibilityConditions(settingsData.loyaltyEligibilityConditions)
+        : normalizeLoyaltyEligibilityConditions(currentLoyaltySettings.eligibilityConditions),
       customerCareReminderEnabled: settingsData.customerCareReminderEnabled ?? currentCustomerCareSettings.enabled,
       customerCareInactiveDays: normalizedCustomerCareInactiveDays > 0 ? normalizedCustomerCareInactiveDays : DEFAULT_CUSTOMER_CARE_SETTINGS.inactiveDays,
       warehouseOrderAutoCancelDays: normalizedWarehouseAutoCancelDays,
@@ -29953,7 +30065,8 @@ function SettingsView({
     return {
       customerLoyaltyEnabled: loyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
-      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint)
+      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
     };
   });
   const [customerCareForm, setCustomerCareForm] = useState(() => {
@@ -29993,7 +30106,8 @@ function SettingsView({
     setLoyaltyForm({
       customerLoyaltyEnabled: loyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
-      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint)
+      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
     });
     setCustomerCareForm({
       customerCareReminderEnabled: customerCareSettings.enabled,
@@ -30141,7 +30255,8 @@ function SettingsView({
     const result = await onUpdateCompanySettings?.({
       customerLoyaltyEnabled: Boolean(loyaltyForm.customerLoyaltyEnabled),
       loyaltyEarnAmountPerPoint: parseInputCurrency(loyaltyForm.loyaltyEarnAmountPerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
-      loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint
+      loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions)
     });
     setLoyaltySaveStatus(result?.success ? 'Đã lưu cài đặt tích điểm khách hàng.' : (result?.message || 'Không thể lưu cài đặt tích điểm.'));
   };
@@ -30731,6 +30846,54 @@ function SettingsView({
                   placeholder="1.000"
                 />
               </label>
+            </div>
+
+            <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-3">
+              <div>
+                <p className="text-sm font-bold text-amber-950">Điều kiện nhận tích điểm</p>
+                <p className="mt-1 text-xs leading-5 text-amber-800">
+                  Chỉ cộng điểm cho đơn đáp ứng toàn bộ điều kiện đang chọn. Không chọn điều kiện nào sẽ giữ cách tích điểm hiện tại.
+                </p>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS.map((condition) => {
+                  const conditions = normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions);
+                  const selected = conditions[condition.id] === true;
+                  return (
+                    <button
+                      key={condition.id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => {
+                        setLoyaltyForm((previous) => {
+                          const previousConditions = normalizeLoyaltyEligibilityConditions(previous.loyaltyEligibilityConditions);
+                          return {
+                            ...previous,
+                            loyaltyEligibilityConditions: {
+                              ...previousConditions,
+                              [condition.id]: !previousConditions[condition.id]
+                            }
+                          };
+                        });
+                      }}
+                      className={`flex min-h-12 items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors ${selected
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
+                        : 'border-white bg-white/80 text-slate-700 hover:border-emerald-200'}`}
+                    >
+                      <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-xs font-black ${selected
+                        ? 'border-emerald-600 bg-emerald-600 text-white'
+                        : 'border-slate-300 bg-white text-transparent'}`}
+                      >
+                        ✓
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-bold">{condition.label}</span>
+                        <span className="mt-0.5 block text-xs leading-4 opacity-75">{condition.customerDescription}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {loyaltySaveStatus && (
@@ -31890,7 +32053,8 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
     return {
       customerLoyaltyEnabled: loyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
-      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint)
+      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
     };
   });
   const [loyaltySaveStatus, setLoyaltySaveStatus] = useState('');
@@ -31911,7 +32075,8 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
     setLoyaltyForm({
       customerLoyaltyEnabled: loyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
-      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint)
+      loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
     });
   }, [currentCompany]);
 
@@ -31939,7 +32104,8 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
     const result = await onUpdateCompanySettings?.({
       customerLoyaltyEnabled: loyaltyForm.customerLoyaltyEnabled,
       loyaltyEarnAmountPerPoint: parseInputCurrency(loyaltyForm.loyaltyEarnAmountPerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
-      loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint
+      loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions)
     });
     setLoyaltySaveStatus(result?.success ? 'Đã lưu cài đặt tích điểm khách hàng.' : (result?.message || 'Không thể lưu cài đặt tích điểm.'));
   };
@@ -32207,6 +32373,35 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
                   className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-amber-500 font-bold text-amber-700"
                   placeholder="VD: 1.000"
                 />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+              <p className="text-xs font-bold text-gray-800">Điều kiện nhận điểm</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-gray-600">Khách chỉ được cộng điểm khi đáp ứng toàn bộ điều kiện đã chọn.</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS.map((condition) => {
+                  const conditions = normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions);
+                  const selected = conditions[condition.id];
+                  return (
+                    <button
+                      key={condition.id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setLoyaltyForm((previous) => ({
+                        ...previous,
+                        loyaltyEligibilityConditions: {
+                          ...normalizeLoyaltyEligibilityConditions(previous.loyaltyEligibilityConditions),
+                          [condition.id]: !normalizeLoyaltyEligibilityConditions(previous.loyaltyEligibilityConditions)[condition.id]
+                        }
+                      }))}
+                      className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${selected ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-white text-gray-600 hover:border-emerald-200'}`}
+                    >
+                      <span className="block font-bold">{selected ? '✓ ' : ''}{condition.label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-snug opacity-80">{condition.description}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -80861,16 +81056,22 @@ function CustomerPortalView({
   )));
   const redeemablePointMoney = Math.max(0, roundMoneyValue(loyaltySummary.redeemValue ?? (availableCustomerPoints * loyaltyPointValue)));
   const redeemPointsNumber = Math.max(0, Math.floor(parseLooseMoneyValue(redeemPointsInput)));
-  const redeemPointsMoney = Math.min(debtPaymentAmount, redeemPointsNumber * loyaltyPointValue);
-  const maxRedeemPointsForDebt = debtPaymentAmount > 0
-    ? Math.min(availableCustomerPoints, Math.ceil(debtPaymentAmount / loyaltyPointValue))
+  const maxRedeemPointsForDebt = debtPaymentAmount > 0 && loyaltyPointValue > 0
+    ? Math.min(availableCustomerPoints, Math.floor(debtPaymentAmount / loyaltyPointValue))
     : 0;
+  const redeemPointsToUse = Math.min(availableCustomerPoints, redeemPointsNumber, maxRedeemPointsForDebt);
+  const redeemPointsMoney = redeemPointsToUse * loyaltyPointValue;
   const activeRewardCatalog = useMemo(
     () => safeRewardCatalog.filter(item => !item.isArchived && !['inactive', 'archived', 'disabled'].includes(`${item.status || ''}`.toLowerCase())),
     [safeRewardCatalog]
   );
   const pointWithdrawPointsNumber = Math.max(0, Math.floor(parseLooseMoneyValue(pointWithdrawInput)));
-  const pointWithdrawDebtAmount = Math.min(debtPaymentAmount, pointWithdrawPointsNumber * loyaltyPointValue);
+  const pointWithdrawPointsToUse = Math.min(availableCustomerPoints, pointWithdrawPointsNumber, maxRedeemPointsForDebt);
+  const pointWithdrawDebtAmount = pointWithdrawPointsToUse * loyaltyPointValue;
+  const enabledLoyaltyEligibilityConditions = useMemo(
+    () => getEnabledLoyaltyEligibilityConditions(loyaltySummary.eligibilityConditions),
+    [loyaltySummary.eligibilityConditions]
+  );
   const selectedPointReward = useMemo(
     () => activeRewardCatalog.find(item => item.id === selectedPointRewardId) || null,
     [activeRewardCatalog, selectedPointRewardId]
@@ -81462,8 +81663,8 @@ function CustomerPortalView({
       setRedeemPointsMessage('Hiện tại bạn không có công nợ cần trừ điểm.');
       return;
     }
-    const pointsToUse = Math.min(availableCustomerPoints, redeemPointsNumber);
-    const amount = Math.min(debtPaymentAmount, pointsToUse * loyaltyPointValue);
+    const pointsToUse = redeemPointsToUse;
+    const amount = redeemPointsMoney;
     if (pointsToUse <= 0 || amount <= 0) {
       setRedeemPointsMessage('Vui lòng nhập số điểm muốn dùng.');
       return;
@@ -81505,8 +81706,8 @@ function CustomerPortalView({
         setPointWithdrawMessage('Hiện tại bạn không có công nợ cần trừ điểm.');
         return;
       }
-      const pointsToUse = Math.min(availableCustomerPoints, pointWithdrawPointsNumber);
-      const amount = Math.min(debtPaymentAmount, pointsToUse * loyaltyPointValue);
+      const pointsToUse = pointWithdrawPointsToUse;
+      const amount = pointWithdrawDebtAmount;
       if (pointsToUse <= 0 || amount <= 0) {
         setPointWithdrawMessage('Vui lòng nhập số điểm muốn rút.');
         return;
@@ -83338,6 +83539,26 @@ function CustomerPortalView({
           Rút điểm
         </button>
       </div>
+
+      {enabledLoyaltyEligibilityConditions.length > 0 && (
+        <section className="rounded-3xl border border-emerald-100 bg-emerald-50/40 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-base font-black text-white">+</span>
+            <div className="min-w-0">
+              <h3 className="text-sm font-extrabold text-emerald-950">Điều kiện nhận điểm</h3>
+              <p className="mt-1 text-xs leading-5 text-emerald-800">Đơn hàng sẽ được cộng điểm khi đáp ứng toàn bộ điều kiện công ty đang áp dụng.</p>
+            </div>
+          </div>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {enabledLoyaltyEligibilityConditions.map((condition) => (
+              <li key={condition.id} className="flex items-center gap-2 rounded-xl bg-white/85 px-3 py-2 text-sm font-semibold text-emerald-950">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-xs text-white">✓</span>
+                {condition.label}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <div className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm">
         <div className="flex items-start justify-between gap-3">

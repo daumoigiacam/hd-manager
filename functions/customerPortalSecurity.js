@@ -33,7 +33,8 @@ const COMPANY_PUBLIC_FIELDS = [
   'sepayUseVirtualAccount',
   'customerLoyaltyEnabled',
   'loyaltyEarnAmountPerPoint',
-  'loyaltyRedeemValuePerPoint'
+  'loyaltyRedeemValuePerPoint',
+  'loyaltyEligibilityConditions'
 ];
 
 const PRODUCT_PUBLIC_FIELDS = [
@@ -283,12 +284,15 @@ const calculatePointRedemption = ({
   outstandingDebt = 0
 } = {}) => {
   const availablePoints = getAvailablePoints(pointsRecord);
-  const pointsToUse = Math.min(availablePoints, parsePositiveInteger(requestedPoints));
+  const requestedPointCount = Math.min(availablePoints, parsePositiveInteger(requestedPoints));
   const pointValue = getCompanyPointValue(company);
   const debt = parseMoney(outstandingDebt);
   const requested = parseMoney(requestedAmount);
   const amountCap = requested > 0 ? Math.min(requested, debt) : debt;
-  const amount = Math.min(amountCap, pointsToUse * pointValue);
+  const pointsToUse = pointValue > 0
+    ? Math.min(requestedPointCount, Math.floor(Math.max(0, amountCap) / pointValue))
+    : 0;
+  const amount = pointsToUse * pointValue;
   return {
     availablePoints,
     pointsToUse,
