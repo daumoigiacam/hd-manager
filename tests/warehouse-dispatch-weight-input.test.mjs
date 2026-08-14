@@ -41,6 +41,7 @@ test('chan chuoi IME bi phat lai tren Android WebView', () => {
 test('chuẩn hóa và cộng đúng các lần cân', () => {
   assert.deepEqual(normalizeWarehouseWeightEntries(['12.5', '10,25', '', '0']), [12.5, 10.25]);
   assert.equal(getWarehouseWeightEntryTotal(['12.5', '10,25']), 22.75);
+  assert.equal(getWarehouseWeightEntryTotal(['10', '13', '30', '', '']), 53);
 });
 
 test('mỗi hàng có đúng năm ô và chỉ thêm hàng khi hàng cuối đầy', () => {
@@ -144,7 +145,7 @@ test('danh sách phiếu xuất mở đúng editor theo từng ô', () => {
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'customerId', event\)/);
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'productId', event\)/);
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'pieceCount', event\)/);
-  assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'weightKg', event\)/);
+  assert.match(warehouseModuleSource, /openDispatchListWeightEditor\(row, event\)/);
   assert.match(warehouseModuleSource, /onDelete=\{deleteDispatchCellEditorRow\}/);
 });
 
@@ -154,9 +155,11 @@ test('ô người giao thuộc đúng từng dòng phiếu xuất của khách h
   assert.match(warehouseModuleSource, /<span className="mt-1 block font-medium text-slate-900">\{rowDriverName\}<\/span>/);
 });
 
-test('sửa ô kg thay thế cả tổng kg và snapshot các lần cân', () => {
-  assert.match(warehouseModuleSource, /field === 'weightKg' \? \{ weightEntries: nextValue === '' \? \[\] : \[nextValue\] \} : \{\}/);
-  assert.match(warehouseModuleSource, /weightEntries: normalizeWarehouseWeightEntries\(inlineEditingDispatchDraft\.weightEntries \|\| \[\]\)/);
+test('sửa ô kg giữ từng lần cân và tự cộng lại tổng', () => {
+  assert.match(warehouseModuleSource, /initialEntries: ensureWarehouseWeightEntryRows\(editableWeightEntries\.map/);
+  assert.match(warehouseModuleSource, /const nextSourceWeight = normalizedEntries\.reduce\(\(sum, value\) => sum \+ value, 0\)/);
+  assert.match(warehouseModuleSource, /weightEntries: normalizedEntries/);
+  assert.doesNotMatch(warehouseModuleSource, /weightEntries: nextValue === '' \? \[\] : \[nextValue\]/);
 });
 
 test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => {

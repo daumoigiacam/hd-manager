@@ -57440,8 +57440,7 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     }
     setInlineEditingDispatchDraft(previous => ({
       ...previous,
-      [field]: nextValue,
-      ...(field === 'weightKg' ? { weightEntries: nextValue === '' ? [] : [nextValue] } : {})
+      [field]: nextValue
     }));
     setDispatchError('');
   };
@@ -57502,14 +57501,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
         suffix: inlineEditingDispatchDraft.quantityUnit || 'đơn vị',
         placeholder: 'Nhập số lượng'
       },
-      weightKg: {
-        label: 'Số kg',
-        title: 'Sửa số kg',
-        type: 'number',
-        value: inlineEditingDispatchDraft.weightKg,
-        suffix: 'kg',
-        placeholder: 'Nhập tổng số kg'
-      }
     };
     return fieldConfigs[dispatchCellEditor.field] || null;
   };
@@ -58366,10 +58357,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
                       <td className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
                         <button
                           type="button"
-                          onClick={(event) => openDispatchCellEditor(row, 'weightKg', event)}
-                          disabled={!canEditDispatchCellField('weightKg') && !canDelete}
+                          onClick={(event) => openDispatchListWeightEditor(row, event)}
+                          disabled={!canEditDispatchCellField('weightKg')}
                           className="mx-auto inline-flex min-h-9 w-full items-center justify-center rounded-xl px-1 text-center text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-default disabled:text-slate-700 disabled:hover:bg-transparent"
-                          title={canEditDispatchCellField('weightKg') || canDelete ? 'Bấm để sửa số kg' : undefined}
+                          title={canEditDispatchCellField('weightKg') ? 'Bấm để sửa từng lần cân' : undefined}
                         >
                           {row.weightKg ? formatNumber(row.weightKg) : '--'}
                         </button>
