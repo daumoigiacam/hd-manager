@@ -124,6 +124,17 @@ import {
   isCustomerScopedNotification
 } from './utils/customerMessaging.js';
 import {
+  CUSTOMER_RECONCILIATION_FILTERS,
+  buildCustomerReconciliationExportFileName,
+  buildCustomerReconciliationWorkbook,
+  downloadCustomerReconciliationWorkbook,
+  filterCustomerReconciliationRows,
+  getCustomerReconciliationDirectionLabel,
+  getCustomerReconciliationFilterLabel,
+  paginateCustomerReconciliationRows,
+  summarizeCustomerReconciliationRows
+} from './utils/customerReconciliationExport.js';
+import {
   getWorkflowDataReadiness,
   shouldShowMissingWorkflowSetup
 } from './utils/workflowDataReadiness.js';
@@ -68755,12 +68766,16 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const [isSavingCustomerLoyalty, setIsSavingCustomerLoyalty] = useState(false);
   const [customerDetailOpenSections, setCustomerDetailOpenSections] = useState({});
   const [showCustomerDebtList, setShowCustomerDebtList] = useState(false);
+  const [customerReconciliationFilter, setCustomerReconciliationFilter] = useState(CUSTOMER_RECONCILIATION_FILTERS.ALL);
+  const [customerReconciliationExportStatus, setCustomerReconciliationExportStatus] = useState('');
+  const [isExportingCustomerReconciliation, setIsExportingCustomerReconciliation] = useState(false);
   const customerImportInputRef = useRef(null);
   const customerContactPickerInFlightRef = useRef(false);
   const customerPriceAutoSaveTimerRef = useRef(null);
   const customerOrderHistoryRef = useRef(null);
   const customerPaymentHistoryRef = useRef(null);
   const customerLoansRef = useRef(null);
+  const customerReconciliationReportRef = useRef(null);
   const selectedCustomerSnapshotRef = useRef(null);
   const showCustomerEditFormRef = useRef(false);
   const selectedCustomerDraftSourceIdRef = useRef(null);
@@ -69256,6 +69271,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
     if (openingPayableAmount > 0) {
       addRow({
         id: `opening_payable_${customerId}`,
+        direction: CUSTOMER_RECONCILIATION_FILTERS.COMPANY_PURCHASE,
         title: 'Nợ cũ công ty với khách',
         detail: selectedCustomer.openingPayableNote || 'Số dư công ty nợ khách từ trước khi dùng app.',
         reference: 'Nợ cũ',
@@ -69272,6 +69288,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const amount = parseLooseMoneyValue(item.amount ?? item.totalAmount ?? item.value ?? item.total);
       addRow({
         id: `purchase_${item.id || item.code || getEntityTimestamp(item) || rows.length}`,
+        direction: CUSTOMER_RECONCILIATION_FILTERS.COMPANY_PURCHASE,
         title: 'Công ty mua hàng từ khách',
         detail: item.note || item.description || item.productName || item.supplierName || 'Phiếu nhập hàng',
         reference: item.code || item.invoiceCode || item.referenceCode || item.id || '',
@@ -69293,6 +69310,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         .filter(Boolean);
       addRow({
         id: `sale_order_${order.id || formatOrderCode(order.id) || rows.length}`,
+        direction: CUSTOMER_RECONCILIATION_FILTERS.CUSTOMER_PURCHASE,
         title: 'Hóa đơn bán hàng',
         detail: productNames.length > 0 ? productNames.slice(0, 2).join(', ') : 'Hóa đơn bán cho khách',
         reference: order.code || order.orderCode || order.invoiceCode || formatOrderCode(order.id),
@@ -69311,6 +69329,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const linkedOrder = findLinkedCustomerOrder(payment);
       addRow({
         id: `payment_${payment.id || getPaymentTimestamp(payment) || rows.length}`,
+        direction: 'payment',
         title: appliedAmount > 0 ? 'Khách thanh toán và cấn trừ' : 'Khách thanh toán',
         detail: payment.note || getPaymentSourceLabel(payment) || 'Khoản thu từ khách hàng',
         reference: payment.orderCode || payment.invoiceCode || payment.orderId || payment.referenceCode || '',
@@ -69353,6 +69372,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const linkedOrder = findLinkedCustomerOrder(item);
       addRow({
         id: `pending_${item.id || item.transactionId || item.sepayReferenceCode || rows.length}`,
+        direction: 'pending',
         title: 'Giao dịch chờ đối soát',
         detail: item.reason || item.description || 'Cần ghép thủ công trước khi cấn trừ công nợ.',
         reference: item.sepayReferenceCode || item.transactionId || item.referenceCode || '',
@@ -69367,6 +69387,111 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
 
     return rows.sort((left, right) => (right.time || 0) - (left.time || 0));
   }, [paymentReconciliations, selectedCustomer]);
+  const filteredCustomerReconciliationRows = useMemo(
+    () => filterCustomerReconciliationRows(selectedCustomerReconciliationRows, customerReconciliationFilter),
+    [customerReconciliationFilter, selectedCustomerReconciliationRows]
+  );
+  const customerReconciliationSummary = useMemo(
+    () => summarizeCustomerReconciliationRows(filteredCustomerReconciliationRows),
+    [filteredCustomerReconciliationRows]
+  );
+  const customerReconciliationReportPages = useMemo(
+    () => paginateCustomerReconciliationRows(filteredCustomerReconciliationRows, 14),
+    [filteredCustomerReconciliationRows]
+  );
+  const customerReconciliationFilterCounts = useMemo(() => ({
+    [CUSTOMER_RECONCILIATION_FILTERS.ALL]: selectedCustomerReconciliationRows.length,
+    [CUSTOMER_RECONCILIATION_FILTERS.COMPANY_PURCHASE]: filterCustomerReconciliationRows(
+      selectedCustomerReconciliationRows,
+      CUSTOMER_RECONCILIATION_FILTERS.COMPANY_PURCHASE
+    ).length,
+    [CUSTOMER_RECONCILIATION_FILTERS.CUSTOMER_PURCHASE]: filterCustomerReconciliationRows(
+      selectedCustomerReconciliationRows,
+      CUSTOMER_RECONCILIATION_FILTERS.CUSTOMER_PURCHASE
+    ).length
+  }), [selectedCustomerReconciliationRows]);
+
+  useEffect(() => {
+    setCustomerReconciliationFilter(CUSTOMER_RECONCILIATION_FILTERS.ALL);
+    setCustomerReconciliationExportStatus('');
+    setIsExportingCustomerReconciliation(false);
+  }, [selectedCustomerId]);
+
+  const getCustomerReconciliationExportContext = () => ({
+    companyName: currentCompany?.name || currentCompany?.companyName || currentCompany?.displayName || 'HD Manager',
+    customerName: getCustomerDisplayName(selectedCustomer) || selectedCustomer?.name || 'Khách hàng',
+    filter: customerReconciliationFilter,
+    generatedAt: new Date().toLocaleString('vi-VN'),
+    rows: filteredCustomerReconciliationRows
+  });
+
+  const handleExportCustomerReconciliationExcel = () => {
+    if (filteredCustomerReconciliationRows.length === 0) {
+      setCustomerReconciliationExportStatus('Không có dữ liệu trong bộ lọc để xuất Excel.');
+      return;
+    }
+    setIsExportingCustomerReconciliation(true);
+    setCustomerReconciliationExportStatus('Đang tạo file Excel...');
+    try {
+      const context = getCustomerReconciliationExportContext();
+      const bytes = buildCustomerReconciliationWorkbook(context);
+      const fileName = buildCustomerReconciliationExportFileName({
+        customerName: context.customerName,
+        filter: context.filter,
+        extension: 'xlsx',
+        dateKey: getTodayString()
+      });
+      downloadCustomerReconciliationWorkbook({ bytes, fileName });
+      setCustomerReconciliationExportStatus(`Đã tải file Excel: ${fileName}`);
+    } catch (error) {
+      console.error('Không thể tạo file Excel đối soát khách hàng:', error);
+      setCustomerReconciliationExportStatus('Không thể tạo file Excel. Vui lòng thử lại.');
+    } finally {
+      setIsExportingCustomerReconciliation(false);
+    }
+  };
+
+  const handleExportCustomerReconciliationPdf = async () => {
+    const reportNode = customerReconciliationReportRef.current;
+    const pageNodes = reportNode ? [...reportNode.querySelectorAll('[data-reconciliation-pdf-page]')] : [];
+    if (filteredCustomerReconciliationRows.length === 0 || pageNodes.length === 0) {
+      setCustomerReconciliationExportStatus('Không có dữ liệu trong bộ lọc để xuất PDF.');
+      return;
+    }
+    setIsExportingCustomerReconciliation(true);
+    setCustomerReconciliationExportStatus('Đang tạo file PDF...');
+    try {
+      const [{ toPng }, { jsPDF }] = await Promise.all([
+        import('html-to-image'),
+        import('jspdf')
+      ]);
+      if (document.fonts?.ready) await document.fonts.ready;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      for (let index = 0; index < pageNodes.length; index += 1) {
+        const dataUrl = await toPng(pageNodes[index], {
+          cacheBust: true,
+          pixelRatio: 1.5,
+          backgroundColor: '#ffffff'
+        });
+        if (index > 0) pdf.addPage('a4', 'portrait');
+        pdf.addImage(dataUrl, 'PNG', 0, 0, 210, 297);
+      }
+      const context = getCustomerReconciliationExportContext();
+      const fileName = buildCustomerReconciliationExportFileName({
+        customerName: context.customerName,
+        filter: context.filter,
+        extension: 'pdf',
+        dateKey: getTodayString()
+      });
+      pdf.save(fileName);
+      setCustomerReconciliationExportStatus(`Đã tải file PDF: ${fileName}`);
+    } catch (error) {
+      console.error('Không thể tạo file PDF đối soát khách hàng:', error);
+      setCustomerReconciliationExportStatus('Không thể tạo file PDF. Vui lòng thử lại.');
+    } finally {
+      setIsExportingCustomerReconciliation(false);
+    }
+  };
   const customerEditPhoneDuplicate = useMemo(() => {
     const phoneKey = buildCustomerPhoneDuplicateKey(customerEditForm.phone);
     if (!phoneKey || !selectedCustomer) return null;
@@ -71965,7 +72090,9 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
             </div>
             <span className="flex shrink-0 items-center gap-2">
               <span className="rounded-full border border-cyan-100 bg-cyan-50 px-2.5 py-1 text-[11px] font-black text-cyan-700">
-                {selectedCustomerReconciliationRows.length} lần
+                {isCustomerDetailSectionOpen('reconciliation')
+                  ? `${filteredCustomerReconciliationRows.length}/${selectedCustomerReconciliationRows.length} lần`
+                  : `${selectedCustomerReconciliationRows.length} lần`}
               </span>
               {isCustomerDetailSectionOpen('reconciliation') ? <ChevronUp size={17} className="text-cyan-600" /> : <ChevronDown size={17} className="text-cyan-600" />}
             </span>
@@ -71985,10 +72112,68 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
               <div className="rounded-xl border border-rose-100 bg-rose-50/60 px-3 py-2"><p className="text-[10px] font-bold uppercase text-rose-500">Số dư còn lại</p><p className="mt-1 text-sm font-black text-rose-700">{formatCurrency(selectedCustomer.currentDebt || 0)} đ</p></div>
             </div>
             <p className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2 text-xs leading-5 text-cyan-800">Các dòng dưới đây là nguồn dữ liệu dùng để đối soát. Giao dịch chờ xử lý chưa được tính là đã cấn trừ.</p>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap gap-1.5" role="group" aria-label="Lọc lịch sử đối soát">
+                  {[
+                    { id: CUSTOMER_RECONCILIATION_FILTERS.ALL, label: 'Tất cả' },
+                    { id: CUSTOMER_RECONCILIATION_FILTERS.COMPANY_PURCHASE, label: 'Công ty mua' },
+                    { id: CUSTOMER_RECONCILIATION_FILTERS.CUSTOMER_PURCHASE, label: 'Khách mua' }
+                  ].map(option => {
+                    const isActive = customerReconciliationFilter === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setCustomerReconciliationFilter(option.id);
+                          setCustomerReconciliationExportStatus('');
+                        }}
+                        aria-pressed={isActive}
+                        className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-black transition-colors ${
+                          isActive
+                            ? 'border-emerald-500 bg-emerald-500 text-white shadow-sm'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-300 hover:text-emerald-700'
+                        }`}
+                      >
+                        {option.label} ({customerReconciliationFilterCounts[option.id] || 0})
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleExportCustomerReconciliationExcel}
+                    disabled={isExportingCustomerReconciliation || filteredCustomerReconciliationRows.length === 0}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Download size={14} /> Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportCustomerReconciliationPdf}
+                    disabled={isExportingCustomerReconciliation || filteredCustomerReconciliationRows.length === 0}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isExportingCustomerReconciliation ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} PDF
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                <div className="rounded-lg bg-indigo-50 px-2 py-1.5"><p className="text-[9px] font-bold uppercase text-indigo-500">Công ty mua</p><p className="text-[11px] font-black text-indigo-700">{formatCurrency(customerReconciliationSummary.companyPurchaseAmount)} đ</p></div>
+                <div className="rounded-lg bg-emerald-50 px-2 py-1.5"><p className="text-[9px] font-bold uppercase text-emerald-500">Khách mua</p><p className="text-[11px] font-black text-emerald-700">{formatCurrency(customerReconciliationSummary.customerPurchaseAmount)} đ</p></div>
+                <div className="rounded-lg bg-cyan-50 px-2 py-1.5"><p className="text-[9px] font-bold uppercase text-cyan-500">Đã thu / cấn</p><p className="text-[11px] font-black text-cyan-700">{formatCurrency(customerReconciliationSummary.paymentAmount)} đ</p></div>
+                <div className="rounded-lg bg-amber-50 px-2 py-1.5"><p className="text-[9px] font-bold uppercase text-amber-500">Chờ đối soát</p><p className="text-[11px] font-black text-amber-700">{formatCurrency(customerReconciliationSummary.pendingAmount)} đ</p></div>
+              </div>
+              {customerReconciliationExportStatus && (
+                <p className="text-[11px] font-semibold text-slate-600" role="status">{customerReconciliationExportStatus}</p>
+              )}
+            </div>
             <div className="space-y-2">
-              {selectedCustomerReconciliationRows.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">Chưa có lần đối soát nào được ghi nhận.</div>
-              ) : selectedCustomerReconciliationRows.map(row => {
+              {filteredCustomerReconciliationRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">Không có giao dịch phù hợp với bộ lọc đang chọn.</div>
+              ) : filteredCustomerReconciliationRows.map(row => {
                 const toneClass = row.tone === 'emerald'
                   ? 'border-emerald-100 bg-emerald-50/40'
                   : row.tone === 'amber'
@@ -72037,6 +72222,72 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                   </RowContainer>
                 );
               })}
+            </div>
+            <div
+              ref={customerReconciliationReportRef}
+              aria-hidden="true"
+              className="pointer-events-none fixed left-[-12000px] top-0 z-[-1]"
+            >
+              {customerReconciliationReportPages.map((pageRows, pageIndex) => (
+                <section
+                  key={`reconciliation-report-page-${pageIndex}`}
+                  data-reconciliation-pdf-page
+                  className="relative flex flex-col bg-white p-9 text-slate-900"
+                  style={{ width: '794px', minHeight: '1123px' }}
+                >
+                  <div className="border-b-2 border-emerald-600 pb-4 text-center">
+                    <p className="text-[24px] font-black uppercase tracking-[0.08em] text-emerald-800">Báo cáo đối chiếu công nợ</p>
+                    <p className="mt-1 text-[13px] font-semibold text-slate-500">{currentCompany?.name || currentCompany?.companyName || currentCompany?.displayName || 'HD Manager'}</p>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-1.5 rounded-xl bg-slate-50 px-4 py-3 text-[12px]">
+                    <p><span className="font-bold">Khách hàng:</span> {getCustomerDisplayName(selectedCustomer) || selectedCustomer?.name || 'Khách hàng'}</p>
+                    <p><span className="font-bold">Phạm vi:</span> {getCustomerReconciliationFilterLabel(customerReconciliationFilter)}</p>
+                    <p><span className="font-bold">Ngày xuất:</span> {new Date().toLocaleString('vi-VN')}</p>
+                    <p><span className="font-bold">Số giao dịch:</span> {filteredCustomerReconciliationRows.length}</p>
+                  </div>
+                  {pageIndex === 0 && (
+                    <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+                      <div className="rounded-lg bg-indigo-50 px-2 py-2"><p className="text-[9px] font-bold uppercase text-indigo-500">Công ty mua</p><p className="mt-1 text-[12px] font-black text-indigo-700">{formatCurrency(customerReconciliationSummary.companyPurchaseAmount)} đ</p></div>
+                      <div className="rounded-lg bg-emerald-50 px-2 py-2"><p className="text-[9px] font-bold uppercase text-emerald-500">Khách mua</p><p className="mt-1 text-[12px] font-black text-emerald-700">{formatCurrency(customerReconciliationSummary.customerPurchaseAmount)} đ</p></div>
+                      <div className="rounded-lg bg-cyan-50 px-2 py-2"><p className="text-[9px] font-bold uppercase text-cyan-500">Đã thu / cấn</p><p className="mt-1 text-[12px] font-black text-cyan-700">{formatCurrency(customerReconciliationSummary.paymentAmount)} đ</p></div>
+                      <div className="rounded-lg bg-amber-50 px-2 py-2"><p className="text-[9px] font-bold uppercase text-amber-500">Chờ đối soát</p><p className="mt-1 text-[12px] font-black text-amber-700">{formatCurrency(customerReconciliationSummary.pendingAmount)} đ</p></div>
+                    </div>
+                  )}
+                  <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
+                    <div
+                      className="grid bg-emerald-700 px-2 py-2 text-[9px] font-black uppercase text-white"
+                      style={{ gridTemplateColumns: '34px 72px 92px 96px minmax(0,1fr) 88px 102px' }}
+                    >
+                      <span>STT</span><span>Ngày</span><span>Phân loại</span><span>Chứng từ</span><span>Nội dung</span><span>Số lượng</span><span className="text-right">Số tiền</span>
+                    </div>
+                    {pageRows.map((row, rowIndex) => {
+                      const quantityParts = [
+                        row.metrics?.weightKg > 0 ? `${formatNumber(row.metrics.weightKg)} kg` : '',
+                        row.metrics?.pieces > 0 ? `${formatNumber(row.metrics.pieces)} con` : ''
+                      ].filter(Boolean);
+                      return (
+                        <div
+                          key={`pdf-${row.id}-${rowIndex}`}
+                          className="grid min-h-[52px] items-start border-t border-slate-100 px-2 py-2 text-[10px] leading-4"
+                          style={{ gridTemplateColumns: '34px 72px 92px 96px minmax(0,1fr) 88px 102px' }}
+                        >
+                          <span>{(pageIndex * 14) + rowIndex + 1}</span>
+                          <span>{row.dateLabel}</span>
+                          <span className="font-bold">{getCustomerReconciliationDirectionLabel(row.direction)}</span>
+                          <span className="break-all">{row.reference || '-'}</span>
+                          <span className="min-w-0 pr-2"><strong>{row.title}</strong><br />{row.detail}<br /><em className="text-slate-500">{row.amountLabel}</em></span>
+                          <span>{quantityParts.join(' / ') || '-'}{row.metrics?.priceLabel ? <><br />{row.metrics.priceLabel}</> : null}</span>
+                          <span className="text-right font-black">{formatCurrency(row.amount)} đ</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-auto flex items-center justify-between border-t border-slate-200 pt-3 text-[10px] text-slate-400">
+                    <span>Dữ liệu xuất trực tiếp từ lịch sử đối soát HD Manager</span>
+                    <span>Trang {pageIndex + 1}/{customerReconciliationReportPages.length}</span>
+                  </div>
+                </section>
+              ))}
             </div>
           </>
           )}
