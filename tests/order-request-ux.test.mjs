@@ -167,7 +167,8 @@ test('order search results are sorted by order recency after relevance filtering
     appSource.indexOf('const displayOrders = useMemo'),
     appSource.indexOf('const selectedRevenueDate ='),
   );
-  assert.match(displayOrdersSource, /searchOrderRecords\(source, orderSearchKeyword/);
+  assert.match(appSource, /const deferredOrderSearchKeyword = useDeferredValue\(orderSearchKeyword\)/);
+  assert.match(displayOrdersSource, /searchOrderRecords\(source, deferredOrderSearchKeyword/);
   assert.match(displayOrdersSource, /return sortOrdersByNewest\(rankedSource\);/);
 });
 

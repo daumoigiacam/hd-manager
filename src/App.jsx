@@ -193,6 +193,7 @@ import { Share as CapacitorShare } from '@capacitor/share';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { useChunkedList, useDebouncedValue } from './services/renderOptimization';
+import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
 import {
   hasSearchQuery as hasTokenSearchQuery,
   rankCustomerSearchResults,
@@ -10620,6 +10621,35 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
   };
 };
 
+const buildCustomerLedgerMap = (customers = [], orders = [], payments = []) => {
+  const ordersByCustomerId = new Map();
+  const paymentsByCustomerId = new Map();
+
+  (Array.isArray(orders) ? orders : []).forEach((order) => {
+    const customerId = `${order?.customerId || ''}`.trim();
+    if (!customerId) return;
+    const customerOrders = ordersByCustomerId.get(customerId) || [];
+    customerOrders.push(order);
+    ordersByCustomerId.set(customerId, customerOrders);
+  });
+  (Array.isArray(payments) ? payments : []).forEach((payment) => {
+    const customerId = `${payment?.customerId || ''}`.trim();
+    if (!customerId) return;
+    const customerPayments = paymentsByCustomerId.get(customerId) || [];
+    customerPayments.push(payment);
+    paymentsByCustomerId.set(customerId, customerPayments);
+  });
+
+  return Object.fromEntries((Array.isArray(customers) ? customers : []).map((customer) => [
+    customer.id,
+    buildCustomerLedger(
+      customer,
+      ordersByCustomerId.get(`${customer.id || ''}`.trim()) || [],
+      paymentsByCustomerId.get(`${customer.id || ''}`.trim()) || []
+    )
+  ]));
+};
+
 const buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []) => {
   const customerRecord = typeof customerOrId === 'object' && customerOrId !== null ? customerOrId : null;
   const customerId = `${customerRecord?.id || (typeof customerOrId === 'string' ? customerOrId : '') || ''}`.trim();
@@ -13749,6 +13779,7 @@ export default function App() {
       ? NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT
       : WEB_FOREGROUND_REALTIME_LISTENER_LIMIT;
     const foregroundRealtimeCollectionNames = new Set();
+    let foregroundCollectionRecency = [];
     const foregroundReadOnlyTimers = new Map();
     const foregroundReadOnlyCollectionNames = new Set();
     let baselineListenerIndex = 0;
@@ -13776,23 +13807,31 @@ export default function App() {
       const timerId = window.setTimeout(() => {
         foregroundReadOnlyTimers.delete(colName);
         if (cancelled || !foregroundReadOnlyCollectionNames.has(colName)) return;
-        readCollection(colName, setFn, isObject, parser).catch(() => {});
-      }, 160 + Math.min(index * 100, 1200));
+        readCollection(colName, setFn, isObject, parser)
+          .catch(() => {})
+          .finally(() => {
+            // A one-time overflow read must not block a fresh read when the
+            // user revisits this module later in the same session.
+            foregroundReadOnlyCollectionNames.delete(colName);
+          });
+      }, 40 + Math.min(index * 30, 140));
       foregroundReadOnlyTimers.set(colName, timerId);
     };
 
     const activateForegroundRealtimeCollections = (collectionNames = []) => {
-      const requested = Array.isArray(collectionNames) ? collectionNames : [];
-      const requestedNames = Array.from(new Set(
-        requested.filter(colName => collectionBindingMap.has(colName) && !baselineCollectionNames.has(colName))
-      ));
-      const nextCollectionNames = new Set(
-        requestedNames.slice(0, foregroundListenerLimit)
-      );
-      const overflowCollectionNames = requestedNames.slice(foregroundListenerLimit);
+      const activationPlan = planForegroundRealtimeActivation({
+        requestedNames: collectionNames,
+        activeNames: Array.from(foregroundRealtimeCollectionNames),
+        recentNames: foregroundCollectionRecency,
+        availableNames: Array.from(collectionBindingMap.keys()),
+        baselineNames: Array.from(baselineCollectionNames),
+        limit: foregroundListenerLimit,
+      });
+      foregroundCollectionRecency = activationPlan.recentNames;
+      const nextCollectionNames = new Set(activationPlan.liveNames);
+      const overflowCollectionNames = activationPlan.overflowNames;
 
-      Array.from(foregroundRealtimeCollectionNames).forEach((colName) => {
-        if (nextCollectionNames.has(colName)) return;
+      activationPlan.evictedNames.forEach((colName) => {
         foregroundRealtimeCollectionNames.delete(colName);
         stopCollectionListener(colName);
       });
@@ -13814,14 +13853,9 @@ export default function App() {
         if (binding) scheduleForegroundReadOnlyCollection(binding, index);
       });
 
-      return () => {
-        Array.from(nextCollectionNames).forEach((colName) => {
-          if (!foregroundRealtimeCollectionNames.has(colName)) return;
-          foregroundRealtimeCollectionNames.delete(colName);
-          stopCollectionListener(colName);
-        });
-        overflowCollectionNames.forEach(cancelForegroundReadOnlyCollection);
-      };
+      // Route changes keep a bounded LRU listener set warm. The session cleanup
+      // below remains the single owner that tears every listener down.
+      return () => {};
     };
     activateForegroundRealtimeRef.current = activateForegroundRealtimeCollections;
 
@@ -13876,6 +13910,7 @@ export default function App() {
       foregroundReadOnlyTimers.forEach(timerId => window.clearTimeout(timerId));
       foregroundReadOnlyTimers.clear();
       foregroundReadOnlyCollectionNames.clear();
+      foregroundCollectionRecency = [];
       realtimeListenerStartTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
       realtimeListenerStartTimersRef.current = [];
       if (refreshTimer) window.clearInterval(refreshTimer);
@@ -47810,9 +47845,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     [periodType, periodRange]
   );
 
-  const customerLedgerMap = useMemo(() => Object.fromEntries(
-    customers.map(customer => [customer.id, buildCustomerLedger(customer, orders, payments)])
-  ), [customers, orders, payments]);
+  const customerLedgerMap = useMemo(
+    () => buildCustomerLedgerMap(customers, orders, payments),
+    [customers, orders, payments]
+  );
   const paymentCustomerOptions = useMemo(() => {
     const keyword = normalizeLookupText(paymentCustomerSearch);
     return customers
@@ -63799,15 +63835,56 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   
   const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: isSales ? employee?.id || '' : '' });
 
-  const activeOrders = orders.filter(o => !o.isArchived);
-  const customerLedgerMap = useMemo(() => Object.fromEntries(
-    customers.map(customer => [customer.id, buildCustomerLedger(customer, orders, payments)])
-  ), [customers, orders, payments]);
+  const activeOrders = useMemo(() => orders.filter(order => !order.isArchived), [orders]);
+  const customerLedgerMap = useMemo(
+    () => buildCustomerLedgerMap(customers, orders, payments),
+    [customers, orders, payments]
+  );
   const filteredCustomers = useMemo(
     () => searchCustomerRecords(customers, searchCus),
     [customers, searchCus]
   );
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
+  const customerLookup = useMemo(
+    () => new Map(customers.map(customer => [customer.id, customer])),
+    [customers]
+  );
+  const employeeLookup = useMemo(
+    () => new Map(employees.map(employeeRecord => [employeeRecord.id, employeeRecord])),
+    [employees]
+  );
+  const activeProductLookup = useMemo(
+    () => new Map(activeProducts.map(product => [product.id, product])),
+    [activeProducts]
+  );
+  const ledgerOrderById = useMemo(() => {
+    const orderLookup = new Map();
+    Object.values(customerLedgerMap).forEach((ledger) => {
+      (ledger?.orders || []).forEach(order => orderLookup.set(order.id, order));
+    });
+    return orderLookup;
+  }, [customerLedgerMap]);
+  const paymentHistoryByOrderId = useMemo(() => {
+    const historyLookup = new Map();
+    Object.values(customerLedgerMap).forEach((ledger) => {
+      (ledger?.payments || []).forEach((payment) => {
+        const allocatedByOrder = new Map();
+        (payment.allocations || []).forEach((allocation) => {
+          if (!allocation.orderId) return;
+          allocatedByOrder.set(
+            allocation.orderId,
+            (allocatedByOrder.get(allocation.orderId) || 0) + (allocation.amount || 0)
+          );
+        });
+        allocatedByOrder.forEach((allocatedToOrder, orderId) => {
+          const history = historyLookup.get(orderId) || [];
+          history.push({ ...payment, allocatedToOrder });
+          historyLookup.set(orderId, history);
+        });
+      });
+    });
+    return historyLookup;
+  }, [customerLedgerMap]);
   const deliveryReportIssueByDispatch = useMemo(() => {
     const dispatchLookup = new Map((warehouseDispatches || []).map(dispatch => [dispatch.id, dispatch]));
     const productLookup = new Map((products || []).map(product => [product.id, product]));
@@ -63867,19 +63944,12 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     .filter(dispatch => !importedWarehouseDispatchIds.has(dispatch.id)), [todayWarehouseDispatches, importedWarehouseDispatchIds]);
   const orderViewModels = useMemo(() => Object.fromEntries(
     activeOrders.map(order => {
-      const customer = customers.find(c => c.id === order.customerId);
-      const ledger = customerLedgerMap[order.customerId];
-      const ledgerOrder = ledger?.orders.find(item => item.id === order.id);
-      const createdBy = employees.find(e => e.id === (order.createdByEmpId || order.empId));
-      const salesOwner = employees.find(e => e.id === getOrderSalesEmpId(order, customers));
-      const paymentHistory = (ledger?.payments || [])
-        .filter(payment => (payment.allocations || []).some(allocation => allocation.orderId === order.id))
-        .map(payment => ({
-          ...payment,
-          allocatedToOrder: (payment.allocations || [])
-            .filter(allocation => allocation.orderId === order.id)
-            .reduce((sum, allocation) => sum + (allocation.amount || 0), 0)
-        }));
+      const customer = customerLookup.get(order.customerId);
+      const ledgerOrder = ledgerOrderById.get(order.id);
+      const createdBy = employeeLookup.get(order.createdByEmpId || order.empId);
+      const salesEmpId = order.salesEmpId || customer?.empId || order.createdByEmpId || order.empId || null;
+      const salesOwner = employeeLookup.get(salesEmpId);
+      const paymentHistory = paymentHistoryByOrderId.get(order.id) || [];
       const sourceDispatchIds = Array.isArray(order.sourceDispatchIds) ? order.sourceDispatchIds : [];
       const deliveryReportIssues = sourceDispatchIds
         .map(dispatchId => deliveryReportIssueByDispatch.get(dispatchId))
@@ -63904,7 +63974,15 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         status: ledgerOrder?.status || ((ledgerOrder?.outstandingAmount ?? order.amount ?? 0) <= 0 ? 'paid' : 'unpaid')
       }];
     })
-  ), [activeOrders, customers, customerLedgerMap, deliveryReportIssueByDispatch, employees, zaloQueueByOrderId]);
+  ), [
+    activeOrders,
+    customerLookup,
+    deliveryReportIssueByDispatch,
+    employeeLookup,
+    ledgerOrderById,
+    paymentHistoryByOrderId,
+    zaloQueueByOrderId
+  ]);
   const getOrderOutstandingBalance = (order = {}) => {
     const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? 0);
     const allocatedFromHistory = Array.isArray(order.paymentHistory)
@@ -63970,9 +64048,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     };
   };
 
+  const deferredOrderSearchKeyword = useDeferredValue(orderSearchKeyword);
   const displayOrders = useMemo(() => {
-    const hasKeyword = hasTokenSearchQuery(orderSearchKeyword);
-    const selectedProduct = orderProductFilter ? activeProducts.find(product => product.id === orderProductFilter) : null;
+    const hasKeyword = hasTokenSearchQuery(deferredOrderSearchKeyword);
+    const selectedProduct = orderProductFilter ? activeProductLookup.get(orderProductFilter) : null;
     const selectedProductName = normalizeLookupText(selectedProduct?.name || '');
     const source = activeOrders
       .map(order => normalizeOrderPaymentSnapshot(orderViewModels[order.id] || order))
@@ -63980,7 +64059,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       .filter(order => tab === 'pending' ? getOrderOutstandingBalance(order) > 0 : true)
       .filter(order => {
         if (orderDateFilter && resolveEntityDateKey(order, '') !== orderDateFilter) return false;
-        if (orderSalesEmpFilter && (order.salesEmpId || getOrderSalesEmpId(order, customers) || '') !== orderSalesEmpFilter) return false;
+        const customer = customerLookup.get(order.customerId);
+        const salesEmpId = order.salesEmpId || customer?.empId || order.createdByEmpId || order.empId || '';
+        if (orderSalesEmpFilter && salesEmpId !== orderSalesEmpFilter) return false;
         if (orderPaymentFilter) {
           const outstandingAmount = getOrderOutstandingBalance(order);
           if (orderPaymentFilter === 'paid' && outstandingAmount > 0) return false;
@@ -63988,7 +64069,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         }
         if (orderProductFilter) {
           return (order.items || []).some((item) => {
-            const product = item.productId ? activeProducts.find(activeProduct => activeProduct.id === item.productId) : null;
+            const product = item.productId ? activeProductLookup.get(item.productId) : null;
             const itemName = normalizeLookupText(item.description || product?.name || '');
             return item.productId === orderProductFilter || (selectedProductName && itemName === selectedProductName);
           });
@@ -63997,14 +64078,35 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       })
       ;
     const rankedSource = hasKeyword
-      ? searchOrderRecords(source, orderSearchKeyword, {
+      ? searchOrderRecords(source, deferredOrderSearchKeyword, {
         getItemText: (order) => (order.items || [])
           .map(item => buildLineItemProductSearchText(item, products))
           .join(' '),
       })
       : source;
     return sortOrdersByNewest(rankedSource);
-  }, [activeOrders, activeProducts, customers, orderDateFilter, orderPaymentFilter, orderProductFilter, orderSalesEmpFilter, orderSearchKeyword, orderViewModels, products, tab]);
+  }, [
+    activeOrders,
+    activeProductLookup,
+    customerLookup,
+    deferredOrderSearchKeyword,
+    orderDateFilter,
+    orderPaymentFilter,
+    orderProductFilter,
+    orderSalesEmpFilter,
+    orderViewModels,
+    products,
+    tab
+  ]);
+  const displayOrderRenderKey = [
+    tab,
+    orderDateFilter,
+    orderProductFilter,
+    orderPaymentFilter,
+    orderSalesEmpFilter,
+    normalizeLookupText(deferredOrderSearchKeyword)
+  ].join('|');
+  const visibleDisplayOrders = useChunkedList(displayOrders, 32, 40, displayOrderRenderKey);
   const selectedRevenueDate = orderDateFilter || getTodayString();
   const dailyOrderRevenueSummary = useMemo(() => {
     const ordersForDate = activeOrders
@@ -66188,7 +66290,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           </div>
         )}
 
-        {displayOrders.map((order, orderIndex) => {
+        {visibleDisplayOrders.map((order, orderIndex) => {
           const statusMeta = getOrderStatusMeta(order);
           const reviewMeta = getOrderReviewMeta(order);
           const zaloMeta = getOrderZaloSendMeta(order);
@@ -66218,7 +66320,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           return (
             <div
               key={`detail_${order.id || order._id || order.orderId || 'legacy'}_${orderIndex}`}
-              className="relative"
+              className="hd-render-contained relative"
             >
               {canDeleteOrder && (
                 <button

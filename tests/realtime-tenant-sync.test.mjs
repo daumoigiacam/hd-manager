@@ -47,8 +47,15 @@ test('realtime keeps only baseline data at startup and scopes business listeners
   assert.match(appSource, /const WEB_FOREGROUND_REALTIME_LISTENER_LIMIT = 12/);
   assert.match(appSource, /const NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT = 8/);
   assert.match(appSource, /const activateForegroundRealtimeCollections = \(collectionNames = \[\]\) =>/);
-  assert.match(appSource, /requestedNames\.slice\(0, foregroundListenerLimit\)/);
-  assert.match(appSource, /const overflowCollectionNames = requestedNames\.slice\(foregroundListenerLimit\)/);
+  assert.match(appSource, /planForegroundRealtimeActivation\(\{/);
+  assert.match(appSource, /activeNames: Array\.from\(foregroundRealtimeCollectionNames\)/);
+  assert.match(appSource, /limit: foregroundListenerLimit/);
+  assert.match(appSource, /activationPlan\.evictedNames\.forEach/);
+  assert.match(
+    appSource,
+    /readCollection\(colName, setFn, isObject, parser\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?foregroundReadOnlyCollectionNames\.delete\(colName\)/
+  );
+  assert.match(appSource, /return \(\) => \{\};/);
   assert.match(
     appSource,
     /const baselineRealtimeCollectionNames = customerSession\s*\? \['notifications', 'messages'\]\s*:\s*BASELINE_REALTIME_COLLECTION_NAMES/
