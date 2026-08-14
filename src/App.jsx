@@ -105,6 +105,19 @@ import {
 } from './utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
+import { buildCustomerDirectionsUrl } from './utils/customerLocationDirections.js';
+import {
+  filterCustomerVisibleProducts,
+  isCustomerVisibleProduct,
+} from './utils/customerProductVisibility.js';
+import {
+  buildCustomerInboxConversations,
+  createCustomerInboxReadPatch,
+  getCustomerInboxItemTimestamp,
+  getUnreadCustomerInboxItems,
+  isCustomerScopedMessage,
+  isCustomerScopedNotification
+} from './utils/customerMessaging.js';
 import {
   getWorkflowDataReadiness,
   shouldShowMissingWorkflowSetup
@@ -142,6 +155,8 @@ import {
   onSnapshot as firebaseOnSnapshot,
   query as firebaseQuery,
   where as firebaseWhere,
+  orderBy as firebaseOrderBy,
+  limit as firebaseLimit,
 } from 'firebase/firestore';
 import {
   getRealtimeDataChangeCount,
@@ -238,15 +253,24 @@ import {
   mergeWarehouseDispatchOrderBillingItems,
 } from './services/customerProductBilling.js';
 import {
+  getCustomerPortalLineConversion,
+  getCustomerPortalOrderLines as mapCustomerPortalOrderLines,
+  getCustomerPortalOrderSelection,
+  getCustomerPortalOrderTotal as getMappedCustomerPortalOrderTotal,
+  resolveCustomerPortalOrderSelection,
+} from './utils/customerPortalOrderDetail.js';
+import {
   findIdentitySessionOwner,
   getBiometricAvailability,
   getIdentityDevice,
+  identityApproveOwnerReset,
   identityCompleteRecovery,
   identityCompleteSetup,
   identityOwnerResetPassword,
   identityLogin,
   identityRegisterCompany,
   identityLogout,
+  identityRequestOwnerReset,
   identityRequestRecovery,
   identityRevokeDevices,
   identityListAudit,
@@ -263,7 +287,9 @@ import {
 import {
   getHdConnectStagingApi,
   inventoryVpsEnabled,
+  isVpsMode,
   isVpsStagingMode,
+  vpsDataMode,
 } from './api/hdConnectStaging.js';
 import {
   resolveDataAppId,
@@ -602,47 +628,54 @@ const configureFirebaseAuthPersistence = async (firebaseAuth) => {
   }
 };
 
-try {
-  const firebaseConfig = resolveFirebaseRuntimeConfig();
-  activeFirebaseConfig = firebaseConfig;
-  logLoginStep('Firebase initialize', {
-    configured: Boolean(firebaseConfig?.apiKey),
-    projectId: firebaseConfig?.projectId || '',
-    authDomain: firebaseConfig?.authDomain || '',
-    dataMode: import.meta.env.VITE_DATA_MODE || 'cloud'
-  });
-
-  if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
-    isFirebaseConfigured = false; 
-    logLoginStep('Firebase initialize missing config', { configured: false }, 'warn');
-  } else {
-    app = initializeApp(firebaseConfig);
-    recordStartupEvent('firebase.initialized', {
+if (isVpsMode) {
+  // VPS modes must not initialize Firebase or let a core request fall back to it.
+  isFirebaseConfigured = false;
+  recordStartupEvent('firebase.initialization.skipped', { dataMode: vpsDataMode });
+  logLoginStep('Firebase initialization skipped for VPS mode', { dataMode: vpsDataMode });
+} else {
+  try {
+    const firebaseConfig = resolveFirebaseRuntimeConfig();
+    activeFirebaseConfig = firebaseConfig;
+    logLoginStep('Firebase initialize', {
+      configured: Boolean(firebaseConfig?.apiKey),
       projectId: firebaseConfig?.projectId || '',
       authDomain: firebaseConfig?.authDomain || '',
+      dataMode: import.meta.env.VITE_DATA_MODE || 'cloud'
     });
-    initFirebaseObservability(app, {
-      appName: 'HD Manager',
-      projectId: firebaseConfig?.projectId || '',
-    });
-    auth = getAuth(app);
-    try {
-      db = initializeFirestore(app, {
-        // Auto-detect can overlap watch target teardown with short-lived reads
-        // in WebKit/WebView and poison Firestore's internal AsyncQueue (ca9/b815).
-        experimentalAutoDetectLongPolling: false,
-        useFetchStreams: false,
+
+    if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
+      isFirebaseConfigured = false;
+      logLoginStep('Firebase initialize missing config', { configured: false }, 'warn');
+    } else {
+      app = initializeApp(firebaseConfig);
+      recordStartupEvent('firebase.initialized', {
+        projectId: firebaseConfig?.projectId || '',
+        authDomain: firebaseConfig?.authDomain || '',
       });
-    } catch (firestoreInitError) {
-      console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
-      db = getFirestore(app);
+      initFirebaseObservability(app, {
+        appName: 'HD Manager',
+        projectId: firebaseConfig?.projectId || '',
+      });
+      auth = getAuth(app);
+      try {
+        db = initializeFirestore(app, {
+          // Auto-detect can overlap watch target teardown with short-lived reads
+          // in WebKit/WebView and poison Firestore's internal AsyncQueue (ca9/b815).
+          experimentalAutoDetectLongPolling: false,
+          useFetchStreams: false,
+        });
+      } catch (firestoreInitError) {
+        console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
+        db = getFirestore(app);
+      }
+      firebaseAuthPersistencePromise = configureFirebaseAuthPersistence(auth);
     }
-    firebaseAuthPersistencePromise = configureFirebaseAuthPersistence(auth);
+  } catch (error) {
+    console.error("Lỗi khởi tạo Firebase:", error);
+    logLoginStep('Firebase initialize error', { error }, 'error');
+    isFirebaseConfigured = false;
   }
-} catch (error) {
-  console.error("Lỗi khởi tạo Firebase:", error);
-  logLoginStep('Firebase initialize error', { error }, 'error');
-  isFirebaseConfigured = false;
 }
 
 const appId = resolveDataAppId();
@@ -668,7 +701,7 @@ const buildFirebaseWriterContext = (operation, context = {}) => ({
   domain: context.domain || resolveFirebaseWriterDomain(operation, context.collection),
   operation,
   collection: context.collection || '',
-  mode: isVpsStagingMode ? 'vps-staging' : 'legacy',
+  mode: isVpsMode ? vpsDataMode : 'legacy',
 });
 
 const createVpsStagingFirebaseWriteError = (operation, context = {}) => {
@@ -676,7 +709,7 @@ const createVpsStagingFirebaseWriteError = (operation, context = {}) => {
   const error = new Error(
     writerContext.domain === 'WAREHOUSE_INVENTORY' && !inventoryVpsEnabled
       ? 'Inventory VPS API is disabled until the Warehouse/StockLedger contract is approved.'
-      : `Firebase write (${operation}) is disabled in VPS staging for ${writerContext.domain}. `
+      : `Firebase write (${operation}) is disabled in VPS mode for ${writerContext.domain}. `
         + `Use the approved VPS API contract instead.`,
   );
   error.code = 'firebase-writer-disabled-in-vps-staging';
@@ -689,7 +722,7 @@ const createVpsStagingFirebaseWriteError = (operation, context = {}) => {
 };
 
 const assertFirebaseWriteAllowed = (operation, context = {}) => {
-  if (isVpsStagingMode) throw createVpsStagingFirebaseWriteError(operation, context);
+  if (isVpsMode) throw createVpsStagingFirebaseWriteError(operation, context);
 };
 
 const runNonBlockingStateUpdate = (callback) => {
@@ -786,7 +819,7 @@ const buildActivityAuditLogPayload = ({ documentRef, action, payload = {}, optio
 };
 
 const writeActivityAuditLog = async (logPayload) => {
-  if (isVpsStagingMode) return;
+  if (isVpsMode) return;
   if (!db || !logPayload || activityAuditSuppressionDepth > 0) return;
   try {
     await firebaseSetDoc(
@@ -4620,7 +4653,7 @@ const fromFirestoreRestFields = (fields = {}) => Object.entries(fields || {}).re
 }, {});
 
 const buildFirestoreRestDocumentUrl = (collectionName, documentId, { merge = false, fieldPaths = [] } = {}) => {
-  if (isVpsStagingMode) return '';
+  if (isVpsMode) return '';
   const projectId = activeFirebaseConfig?.projectId || '';
   return buildFirebaseRestDocumentUrl(projectId, appId, collectionName, documentId, { merge, fieldPaths });
 };
@@ -5525,7 +5558,7 @@ const drawSalesInvoiceShareImage = async ({
   customers = [],
   orders = [],
   payments = []
-} = {}) => {
+    } = {}) => {
   if (!order) throw new Error('Chưa chọn hóa đơn để chia sẻ.');
 
   const customer = order.customer || customers.find(item => item.id === order.customerId) || {};
@@ -6899,6 +6932,12 @@ const getCustomerLocationShareText = (customer = {}) => (
   || ''
 );
 
+const hasCustomerOrderConfigurationValue = (value) => {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return Boolean(`${value || ''}`.trim());
+};
+
 const normalizeCustomerPriceOverrides = (source = {}) => {
   const rawOverrides = source?.priceOverrides || source?.customPrices || {};
   const entries = Array.isArray(rawOverrides)
@@ -6912,7 +6951,21 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const attributeLabel = `${variant.attributeLabel ?? variant.productAttribute ?? variant.attribute ?? variant.variant ?? ''}`.trim();
     const pricingUnit = normalizeProductPricingUnit(variant.pricingUnit ?? variant.defaultUnit ?? variant.quantityUnit ?? variant.unit ?? '');
     const unitPrices = normalizeUnitPriceMap(variant.unitPrices ?? variant.pricesByUnit ?? variant.priceByUnit ?? {});
-    if (price <= 0 && !size && !attributeLabel && !pricingUnit && Object.keys(unitPrices).length === 0) return null;
+    const orderUnits = variant.orderUnits ?? variant.allowedOrderUnits ?? variant.inputUnits ?? '';
+    const defaultOrderUnit = normalizeProductPricingUnit(
+      variant.defaultOrderUnit ?? variant.orderUnit ?? variant.preferredOrderUnit ?? ''
+    );
+    const unitConversions = variant.unitConversions ?? variant.conversions ?? variant.conversion ?? '';
+    if (
+      price <= 0
+      && !size
+      && !attributeLabel
+      && !pricingUnit
+      && Object.keys(unitPrices).length === 0
+      && !hasCustomerOrderConfigurationValue(orderUnits)
+      && !defaultOrderUnit
+      && !hasCustomerOrderConfigurationValue(unitConversions)
+    ) return null;
     return {
       id: `${variant.id || variant.localId || `variant_${index + 1}`}`,
       price,
@@ -6920,7 +6973,10 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
       attributeLabel,
       unit: pricingUnit,
       pricingUnit,
-      unitPrices
+      unitPrices,
+      orderUnits,
+      defaultOrderUnit,
+      unitConversions
     };
   };
 
@@ -6942,10 +6998,29 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
     const unitPrices = typeof config === 'object' && config !== null
       ? normalizeUnitPriceMap(config.unitPrices ?? config.pricesByUnit ?? config.priceByUnit ?? {})
       : {};
+    const orderUnits = typeof config === 'object' && config !== null
+      ? config.orderUnits ?? config.allowedOrderUnits ?? config.inputUnits ?? ''
+      : '';
+    const defaultOrderUnit = typeof config === 'object' && config !== null
+      ? normalizeProductPricingUnit(config.defaultOrderUnit ?? config.orderUnit ?? config.preferredOrderUnit ?? '')
+      : '';
+    const unitConversions = typeof config === 'object' && config !== null
+      ? config.unitConversions ?? config.conversions ?? config.conversion ?? ''
+      : '';
     const variants = typeof config === 'object' && config !== null && Array.isArray(config.variants)
       ? config.variants.map(normalizeVariantConfig).filter(Boolean)
       : [];
-    if (cleanProductId && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || pricingUnit || Object.keys(unitPrices).length > 0 || variants.length > 0)) {
+    if (cleanProductId && (
+      cleanPrice > 0
+      || cleanSize
+      || cleanAttributeLabel
+      || pricingUnit
+      || Object.keys(unitPrices).length > 0
+      || hasCustomerOrderConfigurationValue(orderUnits)
+      || defaultOrderUnit
+      || hasCustomerOrderConfigurationValue(unitConversions)
+      || variants.length > 0
+    )) {
       acc[cleanProductId] = {
         price: cleanPrice,
         size: cleanSize,
@@ -6953,6 +7028,9 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
         pricingUnit,
         defaultUnit: pricingUnit,
         unitPrices,
+        orderUnits,
+        defaultOrderUnit,
+        unitConversions,
         variants
       };
     }
@@ -7152,7 +7230,18 @@ const hasCustomerProductPrice = (customer = null, productId = '') => {
 const hasCustomerProductConfig = (customer = null, productId = '') => {
   const customerPrices = normalizeCustomerPriceOverrides(customer || {});
   const config = productId ? customerPrices[productId] : null;
-  return Boolean(config && (config.price > 0 || config.pricingUnit || config.defaultUnit || Object.keys(config.unitPrices || {}).length > 0 || config.size || config.attributeLabel || (Array.isArray(config.variants) && config.variants.length > 0)));
+  return Boolean(config && (
+    config.price > 0
+    || config.pricingUnit
+    || config.defaultUnit
+    || Object.keys(config.unitPrices || {}).length > 0
+    || config.size
+    || config.attributeLabel
+    || hasCustomerOrderConfigurationValue(config.orderUnits)
+    || config.defaultOrderUnit
+    || hasCustomerOrderConfigurationValue(config.unitConversions)
+    || (Array.isArray(config.variants) && config.variants.length > 0)
+  ));
 };
 
 const getQuoteCustomerHonorificLabel = (customer = null) => {
@@ -12879,6 +12968,7 @@ export default function App() {
       'messages',
       'order_requests',
     ]);
+    const customerInboxCollectionNames = new Set(['notifications', 'messages']);
     const customerVisibleCollections = new Set([
       'customers',
       ...customerOwnedCollections,
@@ -12922,10 +13012,27 @@ export default function App() {
         return doc(db, 'artifacts', appId, 'public', 'data', 'customers', sessionCustomerId);
       }
       if (customerOwnedCollections.has(colName) && sessionCustomerId) {
+        const constraints = [
+          firebaseWhere('companyId', '==', tenantCompanyId),
+          firebaseWhere('customerId', '==', sessionCustomerId),
+        ];
+        if (colName === 'notifications') {
+          constraints.push(
+            firebaseWhere('recipientType', '==', 'customer'),
+            firebaseOrderBy('createdAt', 'desc'),
+            firebaseLimit(100)
+          );
+        }
+        if (colName === 'messages') {
+          constraints.push(
+            firebaseWhere('conversationType', '==', 'customer_support'),
+            firebaseOrderBy('createdAt', 'desc'),
+            firebaseLimit(100)
+          );
+        }
         return firebaseQuery(
           collection(db, 'artifacts', appId, 'public', 'data', colName),
-          firebaseWhere('companyId', '==', tenantCompanyId),
-          firebaseWhere('customerId', '==', sessionCustomerId)
+          ...constraints
         );
       }
       return null;
@@ -12961,12 +13068,28 @@ export default function App() {
           }
         });
       }
+      const isCustomerInboxCollection = customerSession
+        && sessionCustomerId
+        && customerInboxCollectionNames.has(colName);
+      if (isCustomerInboxCollection) {
+        fieldFilters.push({
+          fieldFilter: {
+            field: { fieldPath: colName === 'notifications' ? 'recipientType' : 'conversationType' },
+            op: 'EQUAL',
+            value: { stringValue: colName === 'notifications' ? 'customer' : 'customer_support' }
+          }
+        });
+      }
       const queryBody = directUrl ? null : {
         structuredQuery: {
           from: [{ collectionId: colName }],
           where: fieldFilters.length === 1
             ? fieldFilters[0]
-            : { compositeFilter: { op: 'AND', filters: fieldFilters } }
+            : { compositeFilter: { op: 'AND', filters: fieldFilters } },
+          ...(isCustomerInboxCollection ? {
+            orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }],
+            limit: 100
+          } : {})
         }
       };
 
@@ -13604,7 +13727,10 @@ export default function App() {
     };
 
     const nativeRealtimeStartup = isNativeRuntime();
-    const baselineCollectionNames = new Set(BASELINE_REALTIME_COLLECTION_NAMES);
+    const baselineRealtimeCollectionNames = customerSession
+      ? ['notifications', 'messages']
+      : BASELINE_REALTIME_COLLECTION_NAMES;
+    const baselineCollectionNames = new Set(baselineRealtimeCollectionNames);
     const foregroundListenerLimit = nativeRealtimeStartup
       ? NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT
       : WEB_FOREGROUND_REALTIME_LISTENER_LIMIT;
@@ -13685,7 +13811,7 @@ export default function App() {
     };
     activateForegroundRealtimeRef.current = activateForegroundRealtimeCollections;
 
-    BASELINE_REALTIME_COLLECTION_NAMES.forEach((baselineCollectionName) => {
+    baselineRealtimeCollectionNames.forEach((baselineCollectionName) => {
       const binding = collectionBindingMap.get(baselineCollectionName);
       if (!binding) return;
       const [colName] = binding;
@@ -14504,7 +14630,7 @@ export default function App() {
           durationMs: Date.now() - loginStartedAt,
           code: `${error?.code || ''}`,
         }, 'error');
-        return { success: false, message: error?.message || 'Unable to sign in to the VPS staging API.' };
+        return { success: false, message: error?.message || 'Unable to sign in to the VPS API.' };
       }
     }
 
@@ -14611,7 +14737,7 @@ export default function App() {
 
   const handleOwnerResetEmployeePassword = async (employeeId) => {
     if (isVpsStagingMode) {
-      return { success: false, message: 'Chức năng đặt lại tài khoản nhân sự chưa được bật trong VPS staging.' };
+      return { success: false, message: 'Chức năng đặt lại tài khoản nhân sự chưa được bật trong VPS mode.' };
     }
     try {
       const idToken = await auth?.currentUser?.getIdToken?.();
@@ -14621,6 +14747,36 @@ export default function App() {
       return {
         success: false,
         message: getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại đăng nhập cho nhân sự.'),
+      };
+    }
+  };
+
+  const handleIdentityOwnerResetRequest = async ({ identifier }) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'Chức năng cấp lại tài khoản chưa được bật trong VPS mode.' };
+    }
+    try {
+      return await identityRequestOwnerReset({ identifier, appId });
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không thể gửi yêu cầu cấp lại tài khoản.'),
+      };
+    }
+  };
+
+  const handleIdentityOwnerResetApproval = async (requestId) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'Chức năng cấp lại tài khoản chưa được bật trong VPS mode.' };
+    }
+    try {
+      const idToken = await auth?.currentUser?.getIdToken?.();
+      if (!idToken) return { success: false, message: 'Phiên xác thực đã hết hạn. Vui lòng đăng nhập lại.' };
+      return await identityApproveOwnerReset({ idToken, requestId, appId });
+    } catch (error) {
+      return {
+        success: false,
+        message: getFriendlyFirebaseErrorMessage(error, 'Không thể xác nhận cấp lại tài khoản.'),
       };
     }
   };
@@ -20574,24 +20730,34 @@ export default function App() {
   };
 
   const handleAddMessage = async (messageData = {}) => {
-    const resolvedCompanyId = messageData.companyId
-      || myCompanyId
-      || currentUser?.companyId
-      || currentCustomerInfo?.companyId
-      || currentCompany?.id
-      || '';
+    const isCustomerPortalMessage = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
+    const trustedCustomerId = `${currentUser?.customerId || currentCustomerInfo?.id || currentCustomerInfo?.customerId || ''}`.trim();
+    const trustedCustomerCompanyId = `${currentUser?.companyId || currentCustomerInfo?.companyId || myCompanyId || ''}`.trim();
+    const resolvedCompanyId = isCustomerPortalMessage
+      ? trustedCustomerCompanyId
+      : (messageData.companyId
+        || myCompanyId
+        || currentUser?.companyId
+        || currentCompany?.id
+        || '');
     if (!firebaseUser) throw new Error('Chưa kết nối Firebase để gửi tin nhắn.');
     if (!resolvedCompanyId) throw new Error('Chưa xác định được công ty để lưu tin nhắn.');
+    if (isCustomerPortalMessage && !trustedCustomerId) {
+      throw new Error('Unable to determine the signed-in customer profile.');
+    }
     const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const isCustomerPortalMessage = messageData.source === 'customer_portal' || messageData.senderType === 'customer';
     const createdAt = Date.now();
     const messagePayload = {
       ...messageData,
       id,
       companyId: resolvedCompanyId,
-      senderEmpId: isCustomerPortalMessage ? (messageData.senderEmpId || '') : (messageData.senderEmpId || currentUser?.id || ''),
-      senderCustomerId: messageData.senderCustomerId || (isCustomerPortalMessage ? (currentUser?.customerId || currentUser?.id || '') : ''),
-      senderType: messageData.senderType || (isCustomerPortalMessage ? 'customer' : 'employee'),
+      customerId: isCustomerPortalMessage ? trustedCustomerId : `${messageData.customerId || ''}`.trim(),
+      conversationType: isCustomerPortalMessage ? 'customer_support' : messageData.conversationType,
+      source: isCustomerPortalMessage ? 'customer_portal' : messageData.source,
+      type: isCustomerPortalMessage ? (messageData.type || 'customer_to_employee') : messageData.type,
+      senderEmpId: isCustomerPortalMessage ? '' : (messageData.senderEmpId || currentUser?.id || ''),
+      senderCustomerId: isCustomerPortalMessage ? trustedCustomerId : `${messageData.senderCustomerId || ''}`.trim(),
+      senderType: isCustomerPortalMessage ? 'customer' : (messageData.senderType || 'employee'),
       senderName: messageData.senderName || (
         isCustomerPortalMessage
           ? (currentUser?.name || currentUser?.phone || 'Khách hàng')
@@ -20612,7 +20778,7 @@ export default function App() {
     return id;
   };
 
-  const isCustomerSession = currentUser?.role === 'customer';
+  const isCustomerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
   const currentCustomerInfo = isCustomerSession
     ? (() => {
       const sessionAccount = rawCustomerAccounts.find(account =>
@@ -20649,6 +20815,30 @@ export default function App() {
       } : null;
     })()
     : null;
+  const handleMarkCustomerInboxItemsRead = async (items = []) => {
+    const trustedCustomerId = `${currentUser?.customerId || currentCustomerInfo?.id || currentCustomerInfo?.customerId || ''}`.trim();
+    if (!trustedCustomerId || !Array.isArray(items) || items.length === 0) return;
+
+    const uniqueItems = Array.from(new Map(
+      items
+        .filter(item => item?.id && item?.__inboxKind)
+        .map(item => [`${item.__inboxKind}:${item.id}`, item])
+    ).values());
+
+    await Promise.all(uniqueItems.map(async (item) => {
+      const patch = createCustomerInboxReadPatch(item, trustedCustomerId);
+      if (!patch) return;
+      const collectionName = item.__inboxKind === 'notification' ? 'notifications' : 'messages';
+      await saveDataDocument(
+        collectionName,
+        item.id,
+        patch,
+        { merge: true },
+        4500,
+        'Unable to update the read state.'
+      );
+    }));
+  };
   const effectiveSessionCompanyId = isCustomerSession
     ? (currentUser?.companyId || currentCustomerInfo?.companyId || currentCompany?.id || '')
     : (currentUser?.companyId || '');
@@ -20758,6 +20948,7 @@ export default function App() {
           onForgotPassword={handleIdentityRecovery}
           onCompleteRecovery={handleIdentityCompleteRecovery}
           onCompleteIdentitySetup={handleIdentitySetup}
+          onRequestOwnerReset={handleIdentityOwnerResetRequest}
           vpsStagingMode={isVpsStagingMode}
         />
       </>
@@ -20834,6 +21025,7 @@ export default function App() {
           onEditOrderRequest={handleEditOrderRequest}
           onEditCustomer={handleEditCustomer}
           onAddMessage={handleAddMessage}
+          onMarkCustomerInboxItemsRead={handleMarkCustomerInboxItemsRead}
           onRedeemCustomerPoints={handleRedeemCustomerPoints}
           onLinkCustomerBankAccount={handleLinkCustomerBankAccount}
           onLogout={handleLogout}
@@ -20850,7 +21042,7 @@ export default function App() {
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
-        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
+        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
@@ -21315,6 +21507,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
   const allowedContexts = getNotificationContextsForActiveTab(activeTab);
   if (!allowedContexts) return items;
   return items.filter((item) => {
+    if (item?.isGlobal || item?.sourceNotification?.isGlobal) return true;
     const itemContexts = getNotificationContextKeys(item);
     return [...itemContexts].some((context) => allowedContexts.has(context));
   });
@@ -21325,7 +21518,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -48913,9 +49106,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const selectedCustomer = selectedCustomerId ? customerLookup.get(selectedCustomerId) : null;
   const selectedCustomerPhone = `${selectedCustomer?.phone || selectedCustomer?.phoneNumber || ''}`.trim();
   const selectedCustomerPhoneHref = selectedCustomerPhone ? `tel:${selectedCustomerPhone.replace(/[^\d+]/g, '')}` : '';
-  const selectedCustomerLocationUrl = selectedCustomer
-    ? (buildCustomerMapsUrlFromLocation(selectedCustomer.location, selectedCustomer.address) || selectedCustomer.locationUrl || '')
-    : '';
+  const selectedCustomerLocationUrl = selectedCustomer ? buildCustomerDirectionsUrl(selectedCustomer) : '';
   const selectedCustomerLocationLabel = (() => {
     if (!selectedCustomer) return '';
     const rawText = getCustomerLocationDisplayText(selectedCustomer);
@@ -68900,7 +69091,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   };
   const selectedCustomerLocationText = selectedCustomer ? getCustomerLocationDisplayText(selectedCustomer) : '';
   const selectedCustomerLocationShareText = selectedCustomer ? getCustomerLocationShareText(selectedCustomer) : '';
-  const selectedCustomerMapsUrl = selectedCustomer ? buildCustomerMapsUrlFromLocation(selectedCustomer.location, selectedCustomer.address) : '';
+  const selectedCustomerDirectionsUrl = selectedCustomer ? buildCustomerDirectionsUrl(selectedCustomer) : '';
   const selectedCustomerNeedsImmediateCollection = shouldCollectCustomerDebtImmediately(selectedCustomer?.debtLimitStatus);
   const selectedCustomerDebtOrders = useMemo(
     () => sortLedgerOrdersNewestFirst((selectedCustomer?.debtOrders || []).filter(order => Math.max(0, parseLooseMoneyValue(order.outstandingAmount)) > 0)),
@@ -69862,8 +70053,19 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   };
 
   const handleOpenCustomerMaps = () => {
-    if (!selectedCustomerMapsUrl) return;
-    window.open(selectedCustomerMapsUrl, '_blank', 'noopener,noreferrer');
+    if (!selectedCustomerDirectionsUrl || typeof window === 'undefined') {
+      setCustomerLocationStatus('Khách hàng chưa có GPS hoặc địa chỉ để mở chỉ đường.');
+      return;
+    }
+
+    const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    if (isMobileDevice) {
+      window.location.assign(selectedCustomerDirectionsUrl);
+      return;
+    }
+
+    const opened = window.open(selectedCustomerDirectionsUrl, '_blank', 'noopener,noreferrer');
+    if (!opened) window.location.assign(selectedCustomerDirectionsUrl);
   };
 
   const updateCustomerLoanDraft = (field, value) => {
@@ -70336,8 +70538,10 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         ? parseInputCurrency(value)
         : field === 'attributeLabel'
           ? `${value || ''}`.trim()
-          : field === 'pricingUnit'
+          : field === 'pricingUnit' || field === 'defaultOrderUnit'
             ? normalizeProductPricingUnit(value)
+            : field === 'orderUnits' || field === 'unitConversions'
+              ? `${value || ''}`.trim()
             : capitalizeFirstPreservingSpacing(value);
       const updated = {
         ...current,
@@ -70347,8 +70551,16 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const cleanSize = `${updated.size || ''}`.trim();
       const cleanAttributeLabel = `${updated.attributeLabel || ''}`.trim();
       const pricingUnit = normalizeProductPricingUnit(updated.pricingUnit || updated.defaultUnit || '');
+      const orderUnits = updated.orderUnits ?? updated.allowedOrderUnits ?? updated.inputUnits ?? '';
+      const defaultOrderUnit = normalizeProductPricingUnit(
+        updated.defaultOrderUnit || updated.orderUnit || updated.preferredOrderUnit || ''
+      );
+      const unitConversions = updated.unitConversions ?? updated.conversions ?? updated.conversion ?? '';
+      const hasOrderConfiguration = hasCustomerOrderConfigurationValue(orderUnits)
+        || Boolean(defaultOrderUnit)
+        || hasCustomerOrderConfigurationValue(unitConversions);
       const cleanVariants = Array.isArray(updated.variants) ? updated.variants : [];
-      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && !pricingUnit && cleanVariants.length === 0) delete next[productId];
+      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && !pricingUnit && !hasOrderConfiguration && cleanVariants.length === 0) delete next[productId];
       else next[productId] = {
         ...current,
         price: cleanPrice,
@@ -70356,6 +70568,9 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         attributeLabel: cleanAttributeLabel,
         pricingUnit,
         defaultUnit: pricingUnit,
+        orderUnits,
+        defaultOrderUnit,
+        unitConversions,
         variants: cleanVariants
       };
       return next;
@@ -70411,9 +70626,26 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const cleanPrice = parseLooseMoneyValue(current.price);
       const cleanSize = `${current.size || ''}`.trim();
       const cleanAttributeLabel = `${current.attributeLabel || ''}`.trim();
+      const orderUnits = current.orderUnits ?? current.allowedOrderUnits ?? current.inputUnits ?? '';
+      const defaultOrderUnit = normalizeProductPricingUnit(
+        current.defaultOrderUnit || current.orderUnit || current.preferredOrderUnit || ''
+      );
+      const unitConversions = current.unitConversions ?? current.conversions ?? current.conversion ?? '';
+      const hasOrderConfiguration = hasCustomerOrderConfigurationValue(orderUnits)
+        || Boolean(defaultOrderUnit)
+        || hasCustomerOrderConfigurationValue(unitConversions);
       const next = { ...prev };
-      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && variants.length === 0) delete next[productId];
-      else next[productId] = { ...current, price: cleanPrice, size: cleanSize, attributeLabel: cleanAttributeLabel, variants };
+      if (cleanPrice <= 0 && !cleanSize && !cleanAttributeLabel && !hasOrderConfiguration && variants.length === 0) delete next[productId];
+      else next[productId] = {
+        ...current,
+        price: cleanPrice,
+        size: cleanSize,
+        attributeLabel: cleanAttributeLabel,
+        orderUnits,
+        defaultOrderUnit,
+        unitConversions,
+        variants
+      };
       return next;
     });
     setCustomerPriceDirty(true);
@@ -70447,6 +70679,18 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const unitPrices = cleanPrice > 0
         ? putUnitPriceIntoMap(savedUnitPrices, pricingUnit, cleanPrice)
         : savedUnitPrices;
+      const rawOrderUnits = typeof config === 'object' && config !== null
+        ? config.orderUnits ?? config.allowedOrderUnits ?? config.inputUnits ?? ''
+        : '';
+      const defaultOrderUnit = typeof config === 'object' && config !== null
+        ? normalizeProductPricingUnit(config.defaultOrderUnit || config.orderUnit || config.preferredOrderUnit || '')
+        : '';
+      const unitConversions = typeof config === 'object' && config !== null
+        ? config.unitConversions ?? config.conversions ?? config.conversion ?? ''
+        : '';
+      const hasOrderConfiguration = hasCustomerOrderConfigurationValue(rawOrderUnits)
+        || Boolean(defaultOrderUnit)
+        || hasCustomerOrderConfigurationValue(unitConversions);
       const productAttributes = getProductAttributes(product);
       const rawAttributeLabel = typeof config === 'object' && config !== null
         ? `${config.attributeLabel || config.productAttribute || config.attribute || ''}`.trim()
@@ -70460,18 +70704,44 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           const variantAttributeLabel = productAttributes.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(rawVariantAttribute)) || '';
           const variantUnit = normalizeProductPricingUnit(variant.pricingUnit || variant.defaultUnit || variant.quantityUnit || variant.unit || pricingUnit);
           const variantUnitPrices = normalizeUnitPriceMap(variant.unitPrices || variant.pricesByUnit || variant.priceByUnit || {});
-          if (variantPrice <= 0 && !variantSize && !variantAttributeLabel && !variantUnit && Object.keys(variantUnitPrices).length === 0) return null;
+          const variantOrderUnits = variant.orderUnits ?? variant.allowedOrderUnits ?? variant.inputUnits ?? '';
+          const variantDefaultOrderUnit = normalizeProductPricingUnit(
+            variant.defaultOrderUnit || variant.orderUnit || variant.preferredOrderUnit || ''
+          );
+          const variantUnitConversions = variant.unitConversions ?? variant.conversions ?? variant.conversion ?? '';
+          const hasVariantOrderConfiguration = hasCustomerOrderConfigurationValue(variantOrderUnits)
+            || Boolean(variantDefaultOrderUnit)
+            || hasCustomerOrderConfigurationValue(variantUnitConversions);
+          if (
+            variantPrice <= 0
+            && !variantSize
+            && !variantAttributeLabel
+            && !variantUnit
+            && Object.keys(variantUnitPrices).length === 0
+            && !hasVariantOrderConfiguration
+          ) return null;
           return {
             id: `${variant.id || `variant_${index + 1}`}`,
             price: variantPrice,
             size: variantSize,
             attributeLabel: variantAttributeLabel,
             ...(variantUnit ? { pricingUnit: variantUnit, defaultUnit: variantUnit } : {}),
-            ...(Object.keys(variantUnitPrices).length > 0 ? { unitPrices: variantUnitPrices } : {})
+            ...(Object.keys(variantUnitPrices).length > 0 ? { unitPrices: variantUnitPrices } : {}),
+            ...(hasCustomerOrderConfigurationValue(variantOrderUnits) ? { orderUnits: variantOrderUnits } : {}),
+            ...(variantDefaultOrderUnit ? { defaultOrderUnit: variantDefaultOrderUnit } : {}),
+            ...(hasCustomerOrderConfigurationValue(variantUnitConversions) ? { unitConversions: variantUnitConversions } : {})
           };
         }).filter(Boolean)
         : [];
-      if (validProductIds.has(productId) && (cleanPrice > 0 || cleanSize || cleanAttributeLabel || pricingUnit || Object.keys(unitPrices).length > 0 || cleanVariants.length > 0)) {
+      if (validProductIds.has(productId) && (
+        cleanPrice > 0
+        || cleanSize
+        || cleanAttributeLabel
+        || pricingUnit
+        || Object.keys(unitPrices).length > 0
+        || hasOrderConfiguration
+        || cleanVariants.length > 0
+      )) {
         acc[productId] = {
           price: cleanPrice,
           size: cleanSize,
@@ -70479,6 +70749,9 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           pricingUnit,
           defaultUnit: pricingUnit,
           unitPrices,
+          ...(hasCustomerOrderConfigurationValue(rawOrderUnits) ? { orderUnits: rawOrderUnits } : {}),
+          ...(defaultOrderUnit ? { defaultOrderUnit } : {}),
+          ...(hasCustomerOrderConfigurationValue(unitConversions) ? { unitConversions } : {}),
           variants: cleanVariants
         };
       }
@@ -70795,7 +71068,18 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                   <p className="flex min-w-0 items-center gap-2 rounded-2xl border border-gray-100 bg-white px-2.5 py-2 text-sm text-gray-400"><Phone size={14} className="shrink-0"/> <span className="truncate">SĐT ẩn</span></p>
                 )}
                 {canSeeCustomerLocation ? (
-                  <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-gray-100 bg-white px-2.5 py-2 text-sm text-gray-600">
+                  <button
+                    type="button"
+                    onClick={handleOpenCustomerMaps}
+                    disabled={!selectedCustomerDirectionsUrl}
+                    aria-label={selectedCustomerDirectionsUrl ? `Mở chỉ đường đến ${selectedCustomer.address || selectedCustomerLocationText || 'khách hàng'}` : 'Khách hàng chưa có vị trí để chỉ đường'}
+                    title={selectedCustomerDirectionsUrl ? 'Mở Google Maps để chỉ đường' : 'Khách hàng chưa có GPS hoặc địa chỉ'}
+                    className={`flex min-w-0 items-center gap-2 rounded-2xl border px-2.5 py-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-60 ${
+                      selectedCustomerDirectionsUrl
+                        ? 'border-blue-100 bg-white text-gray-600 hover:border-blue-300 hover:bg-blue-50 active:scale-[0.99]'
+                        : 'border-gray-100 bg-white text-gray-400'
+                    }`}
+                  >
                     <MapPin size={14} className="shrink-0 text-blue-600"/>
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-black text-slate-700">{selectedCustomer.address || 'Chưa có địa chỉ'}</p>
@@ -70803,7 +71087,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                         <p className="truncate text-[10px] font-bold text-blue-700">GPS: {selectedCustomerLocationText}</p>
                       )}
                     </div>
-                  </div>
+                  </button>
                 ) : (
                   <p className="flex min-w-0 items-center gap-2 rounded-2xl border border-gray-100 bg-white px-2.5 py-2 text-sm text-gray-400"><MapPin size={14} className="shrink-0"/> <span className="truncate">Vị trí ẩn</span></p>
                 )}
@@ -71193,9 +71477,23 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                 const customPricingUnit = normalizeProductPricingUnit(
                   customConfig.pricingUnit || customConfig.defaultUnit || getProductPrimaryPricingUnit(product, 'Con')
                 );
+                const customOrderUnits = Array.isArray(customConfig.orderUnits)
+                  ? customConfig.orderUnits.join(', ')
+                  : `${customConfig.orderUnits ?? customConfig.allowedOrderUnits ?? customConfig.inputUnits ?? ''}`.trim();
+                const customDefaultOrderUnit = normalizeProductPricingUnit(
+                  customConfig.defaultOrderUnit || customConfig.orderUnit || customConfig.preferredOrderUnit || ''
+                );
+                const customUnitConversions = Array.isArray(customConfig.unitConversions)
+                  ? customConfig.unitConversions.join('; ')
+                  : `${customConfig.unitConversions ?? customConfig.conversions ?? customConfig.conversion ?? ''}`.trim();
                 const pricingUnitOptions = PRODUCT_PRICING_UNIT_OPTIONS.includes(customPricingUnit)
                   ? PRODUCT_PRICING_UNIT_OPTIONS
                   : [customPricingUnit, ...PRODUCT_PRICING_UNIT_OPTIONS].filter(Boolean);
+                const configuredOrderUnitOptions = [...new Set([
+                  customDefaultOrderUnit,
+                  ...`${customOrderUnits}`.split(/[;,/&+|]/).map(normalizeProductPricingUnit),
+                  ...pricingUnitOptions,
+                ].filter(Boolean))];
                 const productAttributeOptions = getProductAttributes(product);
                 const customAttributeLabel = productAttributeOptions.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(customConfig.attributeLabel || '')) || '';
                 const customVariants = (Array.isArray(customConfig.variants) ? customConfig.variants : []).map((variant, index) => ({
@@ -71205,7 +71503,14 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                   price: variant.price || ''
                 }));
                 const hasProductAttributes = productAttributeOptions.length > 0;
-                const hasCustomConfig = parseLooseMoneyValue(customPrice) > 0 || `${customSize || ''}`.trim() !== '' || customAttributeLabel || customPricingUnit || customVariants.length > 0;
+                const hasCustomConfig = parseLooseMoneyValue(customPrice) > 0
+                  || `${customSize || ''}`.trim() !== ''
+                  || customAttributeLabel
+                  || customPricingUnit
+                  || hasCustomerOrderConfigurationValue(customOrderUnits)
+                  || customDefaultOrderUnit
+                  || hasCustomerOrderConfigurationValue(customUnitConversions)
+                  || customVariants.length > 0;
                 const usageStats = customerProductUsageStats.get(product.id);
                 return (
                   <div key={product.id} className={`rounded-2xl border p-3 ${hasCustomConfig ? 'border-emerald-100 bg-emerald-50/60' : 'border-gray-100 bg-gray-50'}`}>
@@ -71276,6 +71581,46 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                         <span className="text-xs font-bold text-gray-400">đ/{customPricingUnit || 'đv'}</span>
                       </div>
                     </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <label className="min-w-0 space-y-1">
+                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị khách đặt</span>
+                        <input
+                          type="text"
+                          value={customOrderUnits}
+                          onChange={(e) => updateCustomerPriceDraft(product.id, 'orderUnits', e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
+                          placeholder="VD: Kg, Con, Thùng"
+                        />
+                      </label>
+                      <label className="min-w-0 space-y-1">
+                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị đặt mặc định</span>
+                        <select
+                          value={customDefaultOrderUnit}
+                          onChange={(e) => updateCustomerPriceDraft(product.id, 'defaultOrderUnit', e.target.value)}
+                          className="w-full rounded-xl border border-emerald-100 bg-white px-2.5 py-2.5 text-sm font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        >
+                          <option value="">Theo đơn vị đầu tiên</option>
+                          {configuredOrderUnitOptions.map(unit => (
+                            <option key={unit} value={unit}>{unit}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="min-w-0 space-y-1 sm:col-span-2">
+                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">
+                          Quy đổi sang {customPricingUnit || 'đơn vị tính giá'}
+                        </span>
+                        <input
+                          type="text"
+                          value={customUnitConversions}
+                          onChange={(e) => updateCustomerPriceDraft(product.id, 'unitConversions', e.target.value)}
+                          className="w-full rounded-xl border border-amber-100 bg-amber-50/40 px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          placeholder="VD: Con=2,5; Thùng=10"
+                        />
+                      </label>
+                    </div>
+                    <p className="mt-2 text-[10px] font-semibold leading-relaxed text-amber-700">
+                      Ví dụ: giá theo Kg, 1 Con = 2,5 Kg thì nhập Con=2,5. Không có quy đổi, app sẽ chặn gửi đơn để tránh tính sai tiền.
+                    </p>
                     <div className="mt-3 rounded-2xl border border-white/70 bg-white/75 p-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
@@ -79393,6 +79738,7 @@ function CustomerPortalView({
   onEditOrderRequest,
   onEditCustomer,
   onAddMessage,
+  onMarkCustomerInboxItemsRead,
   onRedeemCustomerPoints,
   onLinkCustomerBankAccount,
   onLogout
@@ -79423,7 +79769,8 @@ function CustomerPortalView({
   });
   const [isLinkingBankAccount, setIsLinkingBankAccount] = useState(false);
   const [bankLinkMessage, setBankLinkMessage] = useState('');
-  const [selectedCustomerOrderItem, setSelectedCustomerOrderItem] = useState(null);
+  const [selectedCustomerOrderSelection, setSelectedCustomerOrderSelection] = useState(null);
+  const customerOrderListScrollTopRef = useRef(0);
   const [selectedBranchId, setSelectedBranchId] = useState('');
   const [redeemPointsInput, setRedeemPointsInput] = useState('');
   const [isRedeemingPoints, setIsRedeemingPoints] = useState(false);
@@ -79435,13 +79782,36 @@ function CustomerPortalView({
   const [pointWithdrawNote, setPointWithdrawNote] = useState('');
   const [isSubmittingPointWithdraw, setIsSubmittingPointWithdraw] = useState(false);
   const [pointWithdrawMessage, setPointWithdrawMessage] = useState('');
-  const [isCustomerMessageSheetOpen, setIsCustomerMessageSheetOpen] = useState(false);
+  const [selectedCustomerConversationId, setSelectedCustomerConversationId] = useState('');
   const [customerMessageText, setCustomerMessageText] = useState('');
   const [isSendingCustomerMessage, setIsSendingCustomerMessage] = useState(false);
-  const [customerMessageLastOpenedAt, setCustomerMessageLastOpenedAt] = useState(0);
+  const customerInboxReadInFlightRef = useRef(new Set());
   const [confirmingReceivedTrackingId, setConfirmingReceivedTrackingId] = useState('');
   const [isCustomerProfileEditorOpen, setIsCustomerProfileEditorOpen] = useState(false);
   const safeProducts = useMemo(() => Array.isArray(products) ? products : [], [products]);
+  const customerVisibleProducts = useMemo(
+    () => filterCustomerVisibleProducts(safeProducts),
+    [safeProducts]
+  );
+  const customerVisibleProductIds = useMemo(
+    () => new Set(customerVisibleProducts.map(product => `${product?.id || ''}`).filter(Boolean)),
+    [customerVisibleProducts]
+  );
+  useEffect(() => {
+    // Do not clear a draft while the product stream is still empty during startup.
+    if (safeProducts.length === 0 || cart.length === 0) return;
+    const unavailableItems = cart.filter(item => (
+      item?.productId && !customerVisibleProductIds.has(`${item.productId}`)
+    ));
+    if (unavailableItems.length === 0) return;
+
+    setCart(previous => previous.filter(item => (
+      !item?.productId || customerVisibleProductIds.has(`${item.productId}`)
+    )));
+    setSubmitMessage(unavailableItems.length === 1
+      ? 'Một sản phẩm đã được công ty ẩn nên đã được bỏ khỏi giỏ hàng.'
+      : `${unavailableItems.length} sản phẩm đã được công ty ẩn nên đã được bỏ khỏi giỏ hàng.`);
+  }, [cart, customerVisibleProductIds, safeProducts.length]);
   const safeOrders = useMemo(() => Array.isArray(orders) ? orders : [], [orders]);
   const safeOrderRequests = useMemo(() => Array.isArray(orderRequests) ? orderRequests : [], [orderRequests]);
   const safeWarehouseImports = useMemo(() => Array.isArray(warehouseImports) ? warehouseImports : [], [warehouseImports]);
@@ -79477,9 +79847,10 @@ function CustomerPortalView({
     name: currentUser?.name || '',
     phone: currentUser?.phone || ''
   }, [customer, currentUser?.customerId, currentUser?.companyId, currentUser?.name, currentUser?.phone]);
+  const customerInboxCustomerId = `${customerProfile?.id || currentUser?.customerId || ''}`.trim();
   const customerBranches = useMemo(
-    () => normalizeCustomerBranches(customerProfile || {}, safeProducts),
-    [customerProfile, safeProducts]
+    () => normalizeCustomerBranches(customerProfile || {}, customerVisibleProducts),
+    [customerProfile, customerVisibleProducts]
   );
   const customerDefaultBankAccount = useMemo(() => {
     const customerId = customerProfile?.id || currentUser?.customerId || '';
@@ -79505,8 +79876,8 @@ function CustomerPortalView({
     unlinked: 'Chưa liên kết'
   }[customerBankStatus] || 'Chưa liên kết';
   const selectedCustomerBranch = useMemo(
-    () => getCustomerBranchById(customerProfile || {}, selectedBranchId, safeProducts),
-    [customerProfile, safeProducts, selectedBranchId]
+    () => getCustomerBranchById(customerProfile || {}, selectedBranchId, customerVisibleProducts),
+    [customerProfile, customerVisibleProducts, selectedBranchId]
   );
   const responsibleEmployee = useMemo(() => {
     const managerId = customerProfile?.empId || customerProfile?.salesEmpId || customerProfile?.managerEmpId || '';
@@ -79557,41 +79928,12 @@ function CustomerPortalView({
     () => `customer_${customerProfile?.id || 'unknown'}__employee_${responsibleEmployeeConversationKey}`,
     [customerProfile?.id, responsibleEmployeeConversationKey]
   );
-  const customerResponsibleMessages = useMemo(() => {
-    if (!customerProfile?.id) return [];
-    return safeMessages
-      .filter((message) => {
-        if (message?.isArchived) return false;
-        if (message.conversationId === customerResponsibleConversationId) return true;
-        const sameCustomer = message.customerId === customerProfile.id || message.senderCustomerId === customerProfile.id;
-        const expectedEmployeePhone = normalizeCustomerPhone(responsibleEmployeePhone);
-        const expectedEmployeeName = collapseLookupText(responsibleEmployeeName);
-        const messageEmployeePhones = [
-          message.receiverPhone,
-          message.recipientPhone,
-          message.targetEmpPhone,
-          message.senderPhone,
-          message.senderEmpPhone
-        ].map(normalizeCustomerPhone).filter(Boolean);
-        const messageEmployeeNames = [
-          message.receiverName,
-          message.recipientName,
-          message.targetEmpName,
-          message.senderName,
-          message.senderEmpName
-        ].map(collapseLookupText).filter(Boolean);
-        const sameEmployee = !responsibleEmployeeId
-          || message.receiverEmpId === responsibleEmployeeId
-          || message.recipientEmpId === responsibleEmployeeId
-          || message.targetEmpId === responsibleEmployeeId
-          || message.senderEmpId === responsibleEmployeeId
-          || (expectedEmployeePhone && messageEmployeePhones.includes(expectedEmployeePhone))
-          || (expectedEmployeeName && messageEmployeeNames.includes(expectedEmployeeName));
-        return sameCustomer && sameEmployee && (message.conversationType === 'customer_support' || message.type === 'customer_to_employee');
-      })
-      .sort((a, b) => (getEntityTimestamp(a) || a.createdAt || 0) - (getEntityTimestamp(b) || b.createdAt || 0))
-      .slice(-30);
-  }, [customerProfile?.id, customerResponsibleConversationId, responsibleEmployeeId, responsibleEmployeeName, responsibleEmployeePhone, safeMessages]);
+  const customerResponsibleMessages = useMemo(() => (
+    safeMessages
+      .filter(message => isCustomerScopedMessage(message, customerInboxCustomerId))
+      .sort((left, right) => getCustomerInboxItemTimestamp(left) - getCustomerInboxItemTimestamp(right))
+      .slice(-100)
+  ), [customerInboxCustomerId, safeMessages]);
 
   useEffect(() => {
     if (customerBranches.length === 0) {
@@ -79686,6 +80028,45 @@ function CustomerPortalView({
     addItems(customerOrders, 'order');
     return map;
   }, [customerOrders, customerRequests]);
+  const customerPortalDetailItems = useMemo(
+    () => [
+      ...customerRequests.map(item => ({ ...item, type: 'request' })),
+      ...customerOrders.map(item => ({ ...item, type: 'order' })),
+    ],
+    [customerOrders, customerRequests]
+  );
+  const selectedCustomerOrderItem = useMemo(
+    () => resolveCustomerPortalOrderSelection(customerPortalDetailItems, selectedCustomerOrderSelection),
+    [customerPortalDetailItems, selectedCustomerOrderSelection]
+  );
+  const openCustomerOrderDetail = useCallback((item) => {
+    const selection = getCustomerPortalOrderSelection(item);
+    if (!selection) return;
+    if (typeof window !== 'undefined') {
+      customerOrderListScrollTopRef.current = window.scrollY || document.documentElement.scrollTop || 0;
+    }
+    setSelectedCustomerOrderSelection(selection);
+  }, []);
+  const closeCustomerOrderDetail = useCallback(() => {
+    const scrollTop = customerOrderListScrollTopRef.current;
+    setSelectedCustomerOrderSelection(null);
+    if (typeof window !== 'undefined' && Number.isFinite(scrollTop)) {
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollTop, behavior: 'auto' }));
+    }
+  }, []);
+  useEffect(() => {
+    if (!selectedCustomerOrderSelection || typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeCustomerOrderDetail();
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [closeCustomerOrderDetail, selectedCustomerOrderSelection]);
   const editingOrderRequest = useMemo(
     () => safeOrderRequests.find(request => request.id === editingOrderRequestId) || null,
     [safeOrderRequests, editingOrderRequestId]
@@ -79718,7 +80099,7 @@ function CustomerPortalView({
   const monthlyOrders = useMemo(() => customerOrders.filter(order => `${order.date || order.createdAt || ''}`.slice(0, 7) === monthKey), [customerOrders, monthKey]);
   const monthlySales = useMemo(() => monthlyOrders.reduce((sum, order) => sum + parseLooseMoneyValue(order.total || order.totalAmount || order.finalTotal || order.amount), 0), [monthlyOrders]);
   const resolveCustomerPortalProductConfiguration = (product, branchId = '', criteria = {}) => {
-    const configSource = getCustomerBranchProductConfigSource(customerProfile, branchId, safeProducts);
+    const configSource = getCustomerBranchProductConfigSource(customerProfile, branchId, customerVisibleProducts);
     return resolveCustomerProductBillingConfiguration(configSource, product, criteria);
   };
   const buildCustomerPortalBillingSnapshot = ({
@@ -79736,7 +80117,9 @@ function CustomerPortalView({
           attributeLabel: item.attributeLabel || item.productAttribute || '',
         });
     const savedSnapshot = resolveTransactionBillingSnapshot({ record: item, configuration: currentConfiguration, product });
-    const shouldUseSavedSnapshot = savedSnapshot.hasFrozenPricing && !forceCurrentConfiguration;
+    const shouldUseSavedSnapshot = savedSnapshot.hasFrozenPricing
+      && !forceCurrentConfiguration
+      && !item.isDraftCartLine;
     const billingConfiguration = shouldUseSavedSnapshot
       ? {
           ...currentConfiguration,
@@ -79744,12 +80127,23 @@ function CustomerPortalView({
           billingUnit: savedSnapshot.billingUnit,
           pricingUnit: savedSnapshot.billingUnit,
           unitPrice: savedSnapshot.unitPrice,
+          unitConversions: savedSnapshot.unitConversions || currentConfiguration.unitConversions || '',
           source: 'customer_order_snapshot',
         }
       : currentConfiguration;
+    const orderUnit = normalizeProductPricingUnit(
+      item.orderUnit
+      || item.inputUnit
+      || item.quantityUnit
+      || item.actualUnit
+      || item.unit
+      || (shouldUseSavedSnapshot ? savedSnapshot.orderUnit || savedSnapshot.actualUnit : '')
+      || billingConfiguration.defaultOrderUnit
+      || resolveCustomerProductActualUnit(billingConfiguration, product)
+    );
     const actualUnit = shouldUseSavedSnapshot
       ? savedSnapshot.actualUnit
-      : resolveCustomerProductActualUnit(billingConfiguration, product);
+      : orderUnit;
     if (preserveSavedSnapshot && shouldUseSavedSnapshot) return savedSnapshot;
     return buildCustomerProductBillingSnapshot({
       configuration: billingConfiguration,
@@ -79764,19 +80158,22 @@ function CustomerPortalView({
         : (item.attributeLabel || item.productAttribute || billingConfiguration.attributeLabel || ''),
       actualQuantity: item.actualQuantity ?? item.quantity ?? 0,
       actualUnit,
+      orderUnit,
       actualWeightKg: item.actualWeightKg ?? item.weightKg ?? 0,
+      conversionFactor: item.conversionFactor ?? item.unitConversionFactor ?? (shouldUseSavedSnapshot ? savedSnapshot.conversionFactor : 0),
+      unitConversions: item.unitConversions ?? item.conversions ?? billingConfiguration.unitConversions ?? '',
     });
   };
   const availableProducts = useMemo(() => {
     const fixedIds = selectedBranchId
-      ? getCustomerBranchFixedProductIds(customerProfile, selectedBranchId, safeProducts)
-      : getCustomerFixedProductIds(customerProfile, safeProducts);
-    const source = fixedIds.length > 0 ? safeProducts.filter(product => fixedIds.includes(product.id)) : [];
+      ? getCustomerBranchFixedProductIds(customerProfile, selectedBranchId, customerVisibleProducts)
+      : getCustomerFixedProductIds(customerProfile, customerVisibleProducts);
+    const source = fixedIds.length > 0 ? customerVisibleProducts.filter(product => fixedIds.includes(product.id)) : [];
     const keyword = normalizeLookupText(searchTerm);
     return source
       .filter(product => !keyword || normalizeLookupText(`${product.name || ''} ${product.shortName || ''} ${product.code || ''}`).includes(keyword))
       .slice(0, 80);
-  }, [customerProfile, safeProducts, searchTerm, selectedBranchId]);
+  }, [customerProfile, customerVisibleProducts, searchTerm, selectedBranchId]);
   const activePromotions = useMemo(() => safePromotions.filter(item => !item.status || ['active', 'published'].includes(item.status)), [safePromotions]);
   const customerPricingRules = useMemo(
     () => normalizePricingRuleDraft(safePricingRules.find(rule => rule?.id === 'pricing_engine_rules') || safePricingRules[0] || {}),
@@ -79790,9 +80187,9 @@ function CustomerPortalView({
     () => buildPricingSalesGroupsByActivity({
       orders: safeOrders,
       orderRequests: safeOrderRequests,
-      products: safeProducts,
+      products: customerVisibleProducts,
     }),
-    [safeOrders, safeOrderRequests, safeProducts]
+    [safeOrders, safeOrderRequests, customerVisibleProducts]
   );
   const customerPricingGroupRows = useMemo(
     () => buildPricingGroupRowsFromInputs(customerLatestWarehouseInputsByGroup, customerSalesPricingGroupsByGroup),
@@ -79806,7 +80203,7 @@ function CustomerPortalView({
   }, [customerPricingGroupRows, customerPricingRules.hiddenTodayPriceGroupKeys]);
   const customerPricingSnapshot = useMemo(() => buildPricingEngineSnapshot({
     currentCompany,
-    products: safeProducts,
+    products: customerVisibleProducts,
     orders: safeOrders,
     orderRequests: safeOrderRequests,
     warehouseImports: safeWarehouseImports,
@@ -79815,7 +80212,7 @@ function CustomerPortalView({
     pricingRules: [customerPricingRules],
   }), [
     currentCompany,
-    safeProducts,
+    customerVisibleProducts,
     safeOrders,
     safeOrderRequests,
     safeWarehouseImports,
@@ -79887,7 +80284,7 @@ function CustomerPortalView({
     groupPresets: customerVisiblePricingGroupRows,
     typeColumns: PRICING_TODAY_PRICE_COLUMNS,
     lossStageGroups: customerPricingRules.lossStageGroups,
-    products: safeProducts,
+    products: customerVisibleProducts,
     focusedSuggestions: customerFocusedPricingSuggestions,
     pricingCostPerKg: customerPricingCostPerKg,
     latestInputsByGroup: customerEffectiveLatestInputsByGroup,
@@ -79902,7 +80299,7 @@ function CustomerPortalView({
     customerPricingRules.targetMargin,
     customerPricingRules.cutParts,
     customerPricingRules.cutPartGroups,
-    safeProducts,
+    customerVisibleProducts,
     customerFocusedPricingSuggestions,
     customerPricingCostPerKg,
     customerEffectiveLatestInputsByGroup,
@@ -79936,52 +80333,86 @@ function CustomerPortalView({
   };
   const customerTodayPriceTableMinWidth = Math.max(300, 86 + customerTodayPriceGroups.length * 78);
   const hasCustomerTodayPriceTable = customerTodayPriceGroups.length > 0 && customerTodayPriceRows.length > 0;
-  const customerNotificationItems = useMemo(() => {
-    const customerId = customerProfile?.id || currentUser?.customerId || '';
-    const customerPhone = normalizeCustomerPhone(customerProfile?.phone || currentUser?.phone || '');
-    return safeNotifications
-      .filter((item) => {
-        if (!item || item.isArchived) return false;
-        const status = `${item.status || ''}`.toLowerCase();
-        if (['cancelled', 'canceled', 'archived', 'deleted'].includes(status)) return false;
-        const targetCustomerId = item.customerId || item.targetCustomerId || item.recipientCustomerId || item.customer_id || '';
-        const targetPhone = normalizeCustomerPhone(item.customerPhone || item.targetCustomerPhone || item.recipientPhone || item.phone || '');
-        const audience = `${item.audience || item.targetAudience || item.scope || ''}`.toLowerCase();
-        const hasDirectCustomerTarget = Boolean(targetCustomerId || targetPhone);
-        return (
-          (customerId && targetCustomerId === customerId) ||
-          (customerPhone && targetPhone && targetPhone === customerPhone) ||
-          (!hasDirectCustomerTarget && ['all', 'customer', 'customers'].includes(audience))
-        );
-      })
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 20);
-  }, [customerProfile?.id, customerProfile?.phone, currentUser?.customerId, currentUser?.phone, safeNotifications]);
-  const customerNotifications = useMemo(() => customerNotificationItems.slice(0, 8), [customerNotificationItems]);
-  const customerMessageFeed = useMemo(() => {
-    const notificationEntries = customerNotificationItems.map((item) => ({
-      ...item,
-      __kind: 'notification',
-      text: item.message || item.body || item.note || item.description || item.title || 'Bạn có thông báo mới từ công ty.',
-      createdAt: getEntityTimestamp(item) || item.createdAt || item.updatedAt || Date.now()
-    }));
-    return [...notificationEntries, ...customerResponsibleMessages]
-      .sort((a, b) => (getEntityTimestamp(a) || a.createdAt || 0) - (getEntityTimestamp(b) || b.createdAt || 0))
-      .slice(-50);
-  }, [customerNotificationItems, customerResponsibleMessages]);
-  const customerMessageBadgeCount = useMemo(() => customerMessageFeed.filter((item) => {
-    const timestamp = getEntityTimestamp(item) || item.createdAt || 0;
-    if (!timestamp || timestamp <= customerMessageLastOpenedAt) return false;
-    if (item.__kind === 'notification') return true;
-    return !(item.senderType === 'customer' || item.senderCustomerId === customerProfile.id);
-  }).length, [customerMessageFeed, customerMessageLastOpenedAt, customerProfile?.id]);
-  const openCustomerMessageSheet = () => {
-    setCustomerMessageLastOpenedAt(Date.now());
-    setIsCustomerMessageSheetOpen(true);
+  const customerNotificationItems = useMemo(() => (
+    safeNotifications
+      .filter(notification => isCustomerScopedNotification(notification, customerInboxCustomerId))
+      .sort((left, right) => getCustomerInboxItemTimestamp(right) - getCustomerInboxItemTimestamp(left))
+      .slice(0, 100)
+  ), [customerInboxCustomerId, safeNotifications]);
+  const customerInboxConversations = useMemo(() => buildCustomerInboxConversations({
+    messages: customerResponsibleMessages,
+    notifications: customerNotificationItems,
+    customerId: customerInboxCustomerId,
+    responsibleConversationId: hasResponsibleEmployeeContact ? customerResponsibleConversationId : '',
+    responsibleName: responsibleEmployeeName
+  }), [
+    customerInboxCustomerId,
+    customerNotificationItems,
+    customerResponsibleMessages,
+    customerResponsibleConversationId,
+    hasResponsibleEmployeeContact,
+    responsibleEmployeeName
+  ]);
+  const selectedCustomerConversation = useMemo(
+    () => customerInboxConversations.find(conversation => conversation.id === selectedCustomerConversationId) || null,
+    [customerInboxConversations, selectedCustomerConversationId]
+  );
+  useEffect(() => {
+    if (selectedCustomerConversationId && !selectedCustomerConversation) {
+      setSelectedCustomerConversationId('');
+    }
+  }, [selectedCustomerConversation, selectedCustomerConversationId]);
+  const customerMessageBadgeCount = useMemo(() => customerInboxConversations.reduce(
+    (total, conversation) => total + getUnreadCustomerInboxItems(conversation, customerInboxCustomerId).length,
+    0
+  ), [customerInboxConversations, customerInboxCustomerId]);
+  const markCustomerConversationAsRead = async (conversation) => {
+    if (typeof onMarkCustomerInboxItemsRead !== 'function') return;
+    const unreadItems = getUnreadCustomerInboxItems(conversation, customerInboxCustomerId);
+    const pendingItems = unreadItems.filter(item => {
+      const key = `${item.__inboxKind}:${item.id}`;
+      if (customerInboxReadInFlightRef.current.has(key)) return false;
+      customerInboxReadInFlightRef.current.add(key);
+      return true;
+    });
+    if (!pendingItems.length) return;
+    try {
+      await onMarkCustomerInboxItemsRead(pendingItems);
+    } catch (error) {
+      console.warn('Cannot mark customer inbox items as read:', error);
+    } finally {
+      pendingItems.forEach(item => {
+        customerInboxReadInFlightRef.current.delete(`${item.__inboxKind}:${item.id}`);
+      });
+    }
+  };
+  const openCustomerInbox = () => {
+    setSelectedCustomerConversationId('');
+    setActiveTab('messages');
+  };
+  const openCustomerConversation = (conversation) => {
+    setSelectedCustomerConversationId(conversation.id);
+    setActiveTab('messages');
+    void markCustomerConversationAsRead(conversation);
+  };
+  const openCustomerSalesConversation = () => {
+    const salesConversation = customerInboxConversations.find(conversation => conversation.kind === 'sales_chat');
+    if (salesConversation) {
+      openCustomerConversation(salesConversation);
+      return;
+    }
+    if (hasResponsibleEmployeeContact) {
+      setSelectedCustomerConversationId(`sales:${customerResponsibleConversationId}`);
+      setActiveTab('messages');
+    }
   };
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + parseLooseMoneyValue(
     item.amount ?? item.pricingAmount ?? item.lineTotal ?? item.total ?? 0
   ), 0), [cart]);
+  const cartHasUnresolvedPricing = useMemo(
+    () => cart.some(item => item.billingSnapshotValid === false || item.pricingPendingActual),
+    [cart]
+  );
   const cartItemCount = useMemo(() => cart.reduce((sum, item) => sum + Math.max(1, Math.floor(parseFloat(item.quantity) || 0)), 0), [cart]);
   const debtLimit = parseLooseMoneyValue(customerProfile?.debtLimit || customerProfile?.debtLimitAmount || customerProfile?.creditLimit || 0);
   const noDebtAllowed = customerProfile?.debtPolicy === 'no_debt' || customerProfile?.debtLimitMode === 'no_debt' || customerProfile?.allowDebt === false || debtLimit <= 0;
@@ -80165,35 +80596,9 @@ function CustomerPortalView({
     return displayNumber ? `Đơn hàng ${displayNumber} - ${orderCode}` : `Đơn hàng - ${orderCode}`;
   };
 
-  const getCustomerPortalOrderLines = (item = {}) => {
-    const sourceLines = Array.isArray(item.items) && item.items.length
-      ? item.items
-      : [item.primaryItem || item].filter(Boolean);
+  const getCustomerPortalOrderLines = (item = {}) => mapCustomerPortalOrderLines(item);
 
-    return sourceLines.filter(Boolean).map((line) => {
-      const billing = getTransactionBillingPresentation({ ...item, ...line });
-
-      return {
-        productName: line.productName || line.name || line.product?.name || item.productName || item.name || 'Sản phẩm',
-        quantity: billing.actualQuantity,
-        unit: billing.actualUnit,
-        billingQuantity: billing.billingQuantity,
-        billingUnit: billing.billingUnit,
-        unitPrice: billing.unitPrice,
-        lineTotal: billing.amount,
-        size: line.size || line.attributeLabel || line.attribute || '',
-        branchId: line.branchId || line.customerBranchId || item.branchId || item.customerBranchId || '',
-        branchName: line.branchName || line.customerBranchName || item.branchName || item.customerBranchName || '',
-        branchAddress: line.branchAddress || line.customerBranchAddress || item.branchAddress || item.customerBranchAddress || ''
-      };
-    });
-  };
-
-  const getCustomerPortalOrderTotal = (item = {}) => {
-    const explicitTotal = parseLooseMoneyValue(item.totalAmount ?? item.finalTotal ?? item.total ?? item.amount ?? 0);
-    if (explicitTotal > 0) return explicitTotal;
-    return getCustomerPortalOrderLines(item).reduce((sum, line) => sum + (line.lineTotal || 0), 0);
-  };
+  const getCustomerPortalOrderTotal = (item = {}) => getMappedCustomerPortalOrderTotal(item);
 
   const formatCustomerQuantityLabel = (line = {}) => {
     if (!line.quantity) return '--';
@@ -80204,6 +80609,14 @@ function CustomerPortalView({
     );
     if (!hasSeparateBilling) return actualLabel;
     return `${actualLabel} • tính tiền ${formatNumber(line.billingQuantity)} ${line.billingUnit}`;
+  };
+
+  const formatCustomerUnitPriceLabel = (line = {}) => `${formatCurrency(line.unitPrice)} đ${line.billingUnit ? `/${line.billingUnit}` : ''}`;
+
+  const formatCustomerConversionLabel = (line = {}) => {
+    const conversion = getCustomerPortalLineConversion(line);
+    if (!conversion?.fromUnit || !conversion?.toUnit) return '';
+    return `Quy đổi: 1 ${conversion.fromUnit} = ${formatNumber(conversion.factor)} ${conversion.toUnit}`;
   };
 
   const customerOrderTrackingSteps = ['Lên đơn', 'Nhận đơn', 'Đang giao', 'Đã giao'];
@@ -80450,7 +80863,7 @@ function CustomerPortalView({
   );
 
   const normalizeCustomerCartItem = (item = {}, { forceCurrentConfiguration = false } = {}) => {
-    const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
+    const product = item.productId ? customerVisibleProducts.find(productItem => productItem.id === item.productId) : null;
     if (!product) return item;
     const snapshot = buildCustomerPortalBillingSnapshot({
       item,
@@ -80461,8 +80874,10 @@ function CustomerPortalView({
     return {
       ...item,
       ...snapshot,
-      unit: snapshot.actualUnit,
-      quantityUnit: snapshot.actualUnit,
+      orderUnit: snapshot.orderUnit || item.orderUnit || item.quantityUnit || item.actualUnit || item.unit || '',
+      unit: snapshot.orderUnit || snapshot.actualUnit,
+      quantityUnit: snapshot.orderUnit || snapshot.actualUnit,
+      actualUnit: snapshot.actualUnit,
       price: snapshot.unitPrice,
       total: snapshot.amount,
       size: snapshot.sizeLabel,
@@ -80471,11 +80886,16 @@ function CustomerPortalView({
   };
 
   const addToCart = (product) => {
-    if (!product?.id) return;
+    if (!product?.id || !isCustomerVisibleProduct(product) || !customerVisibleProductIds.has(`${product.id}`)) {
+      setSubmitMessage('Sản phẩm này hiện không được công ty hiển thị cho tài khoản khách hàng.');
+      return;
+    }
     const branchId = selectedCustomerBranch?.id || '';
     const branchName = selectedCustomerBranch ? getCustomerBranchDisplayName(selectedCustomerBranch) : '';
     const configuration = resolveCustomerPortalProductConfiguration(product, branchId);
-    const quantityUnit = resolveCustomerProductActualUnit(configuration, product);
+    const orderUnit = normalizeProductPricingUnit(
+      configuration.defaultOrderUnit || resolveCustomerProductActualUnit(configuration, product)
+    );
     const baseItem = {
       productId: product.id,
       productName: product.name || product.shortName || 'Sản phẩm',
@@ -80486,7 +80906,11 @@ function CustomerPortalView({
       branchAddress: selectedCustomerBranch?.address || '',
       quantity: 1,
       actualQuantity: 1,
-      actualUnit: quantityUnit,
+      actualUnit: orderUnit,
+      orderUnit,
+      quantityUnit: orderUnit,
+      unit: orderUnit,
+      isDraftCartLine: true,
       size: configuration.sizeLabel || getCustomerProductSize(customerProfile, product),
       sizeLabel: configuration.sizeLabel || getCustomerProductSize(customerProfile, product),
       attributeLabel: configuration.attributeLabel || getCustomerProductAttribute(customerProfile, product),
@@ -80509,6 +80933,21 @@ function CustomerPortalView({
     const nextPatch = typeof patch === 'function' ? patch(item) : patch;
     const nextItem = { ...item, ...nextPatch };
     if (Object.prototype.hasOwnProperty.call(nextPatch || {}, 'quantity')) nextItem.actualQuantity = nextItem.quantity;
+    const hasOrderUnitPatch = ['orderUnit', 'quantityUnit', 'actualUnit', 'unit']
+      .some(field => Object.prototype.hasOwnProperty.call(nextPatch || {}, field));
+    if (hasOrderUnitPatch) {
+      const orderUnit = normalizeProductPricingUnit(
+        nextPatch?.orderUnit || nextPatch?.quantityUnit || nextPatch?.actualUnit || nextPatch?.unit
+      );
+      nextItem.orderUnit = orderUnit;
+      nextItem.quantityUnit = orderUnit;
+      nextItem.actualUnit = orderUnit;
+      nextItem.unit = orderUnit;
+      nextItem.actualWeightKg = 0;
+      nextItem.billingQuantity = 0;
+      nextItem.pricingQuantity = 0;
+      nextItem.conversionFactor = 0;
+    }
     const branchChanged = Object.prototype.hasOwnProperty.call(nextPatch || {}, 'branchId')
       && `${nextItem.branchId || ''}` !== `${item.branchId || ''}`;
     return normalizeCustomerCartItem(nextItem, { forceCurrentConfiguration: branchChanged });
@@ -80975,96 +81414,155 @@ function CustomerPortalView({
     );
   };
 
-  const renderCustomerMessageSheet = () => {
-    if (!isCustomerMessageSheetOpen) return null;
-    return (
-      <div
-        className="fixed inset-0 z-[92] flex items-end justify-center bg-black/45 p-4 sm:items-center"
-        onClick={() => setIsCustomerMessageSheetOpen(false)}
-      >
-        <div
-          className="w-full max-w-md overflow-hidden rounded-[30px] bg-white shadow-2xl"
-          onClick={event => event.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-3 border-b border-gray-100 p-5">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-black text-emerald-700">{responsibleEmployeeChatTitle || 'Tin nhắn - NVKD'}</p>
-            </div>
+  const renderCustomerMessages = () => {
+    if (selectedCustomerConversation) {
+      const conversation = selectedCustomerConversation;
+      const conversationItems = Array.isArray(conversation.items) ? conversation.items : [];
+      const isSalesConversation = conversation.kind === 'sales_chat';
+      return (
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+          <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => setIsCustomerMessageSheetOpen(false)}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gray-50 text-gray-500"
-              aria-label="Đóng nhắn tin"
+              onClick={() => setSelectedCustomerConversationId('')}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-gray-600 shadow-sm ring-1 ring-gray-100"
+              aria-label="Quay lại danh sách tin nhắn"
             >
-              <X size={20} />
+              <ChevronLeft size={22} />
             </button>
+            <div className="min-w-0">
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">
+                {isSalesConversation ? 'Trao đổi' : 'Thông báo'}
+              </p>
+              <h2 className="truncate text-xl font-extrabold text-gray-950">{conversation.label}</h2>
+            </div>
           </div>
 
-          <div className="max-h-[66vh] space-y-3 overflow-y-auto bg-gray-50/70 p-4">
-            {customerMessageFeed.length > 0 ? customerMessageFeed.map((message) => {
-              if (message.__kind === 'notification') {
-                const noticeText = message.text || message.message || message.body || '';
-                return (
-                  <div key={`notice-${message.id || message.createdAt || noticeText}`} className="flex justify-start">
-                    <div className="max-w-[88%] rounded-[22px] border border-sky-100 bg-white px-4 py-3 text-gray-800 shadow-sm">
-                      <div className="mb-1 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.14em] text-sky-600">
-                        <Megaphone size={14} />
-                        <span>{message.title || 'Thông báo công ty'}</span>
+          <section className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm">
+            <div className="max-h-[min(62vh,680px)] space-y-3 overflow-y-auto bg-gray-50/70 p-4">
+              {conversationItems.length > 0 ? conversationItems.map((item, index) => {
+                const isNotification = item.__inboxKind === 'notification';
+                const isMine = !isNotification && (
+                  item.senderType === 'customer' || item.senderCustomerId === customerInboxCustomerId
+                );
+                const itemText = item.text || item.message || item.body || item.note || item.description || item.title || 'Có thông báo mới.';
+                const itemKey = `${item.__inboxKind || 'message'}-${item.id || getCustomerInboxItemTimestamp(item) || index}`;
+                if (isNotification) {
+                  return (
+                    <div key={itemKey} className="flex justify-start">
+                      <div className="max-w-[88%] rounded-[22px] border border-sky-100 bg-white px-4 py-3 text-gray-800 shadow-sm">
+                        <div className="mb-1 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.14em] text-sky-600">
+                          <Megaphone size={14} />
+                          <span>{item.title || conversation.label}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap text-sm font-semibold leading-5">{itemText}</p>
+                        <p className="mt-1 text-[10px] font-bold text-gray-400">
+                          {formatDateTimeLabel(item.createdAt || getCustomerInboxItemTimestamp(item))}
+                        </p>
                       </div>
-                      <p className="whitespace-pre-wrap text-sm font-semibold leading-5">{noticeText}</p>
-                      <p className="mt-1 text-[10px] font-bold text-gray-400">
-                        {formatDateTimeLabel(message.createdAt || getEntityTimestamp(message))}
+                    </div>
+                  );
+                }
+                return (
+                  <div key={itemKey} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[78%] rounded-[22px] px-4 py-2.5 shadow-sm ${isMine ? 'bg-emerald-500 text-white' : 'border border-gray-100 bg-white text-gray-800'}`}>
+                      <p className="whitespace-pre-wrap text-sm font-semibold leading-5">{itemText}</p>
+                      <p className={`mt-1 text-[10px] font-bold ${isMine ? 'text-emerald-50/80' : 'text-gray-400'}`}>
+                        {formatDateTimeLabel(item.createdAt || getCustomerInboxItemTimestamp(item))}
                       </p>
                     </div>
                   </div>
                 );
-              }
-              const isMine = message.senderType === 'customer' || message.senderCustomerId === customerProfile.id;
-              const messageText = message.text || message.message || message.body || '';
-              return (
-                <div key={message.id || `${message.createdAt}_${messageText}`} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[78%] rounded-[22px] px-4 py-2.5 shadow-sm ${isMine ? 'bg-emerald-500 text-white' : 'border border-gray-100 bg-white text-gray-800'}`}>
-                    <p className="whitespace-pre-wrap text-sm font-semibold leading-5">{messageText}</p>
-                    <p className={`mt-1 text-[10px] font-bold ${isMine ? 'text-emerald-50/80' : 'text-gray-400'}`}>
-                      {formatDateTimeLabel(message.createdAt || getEntityTimestamp(message))}
-                    </p>
-                  </div>
+              }) : (
+                <div className="rounded-3xl border border-dashed border-emerald-100 bg-white p-5 text-center">
+                  <MessageCircle className="mx-auto mb-2 text-emerald-500" size={24} />
+                  <p className="text-sm font-bold text-gray-700">
+                    {isSalesConversation ? 'Chưa có tin nhắn nào.' : 'Chưa có thông báo nào.'}
+                  </p>
+                  {isSalesConversation && (
+                    <p className="mt-1 text-xs text-gray-500">Bạn có thể nhắn trực tiếp cho nhân viên phụ trách tại đây.</p>
+                  )}
                 </div>
-              );
-            }) : (
-              <div className="rounded-3xl border border-dashed border-emerald-100 bg-white p-4 text-center">
-                <MessageCircle className="mx-auto mb-2 text-emerald-500" size={24} />
-                <p className="text-sm font-bold text-gray-700">Chưa có tin nhắn nào.</p>
-                <p className="mt-1 text-xs text-gray-500">Bạn có thể nhắn trực tiếp cho nhân viên phụ trách tại đây.</p>
+              )}
+            </div>
+
+            {isSalesConversation && (
+              <div className="border-t border-gray-100 bg-white p-4">
+                <div className="flex items-end gap-2">
+                  <textarea
+                    value={customerMessageText}
+                    onChange={event => setCustomerMessageText(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
+                        event.preventDefault();
+                        handleSendCustomerMessage();
+                      }
+                    }}
+                    enterKeyHint="send"
+                    rows={2}
+                    placeholder="Nhập nội dung cần trao đổi..."
+                    className="min-h-[72px] flex-1 resize-none rounded-3xl border border-emerald-100 bg-emerald-50/40 p-3 text-sm font-semibold outline-none focus:border-emerald-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendCustomerMessage}
+                    disabled={isSendingCustomerMessage || !customerMessageText.trim() || !hasResponsibleEmployeeContact}
+                    className="flex min-h-[48px] shrink-0 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 text-sm font-extrabold text-white shadow-lg shadow-emerald-100 disabled:from-gray-300 disabled:to-gray-300"
+                    aria-label="Gửi tin nhắn"
+                  >
+                    <Send size={18} />
+                    <span className="hidden sm:inline">{isSendingCustomerMessage ? 'Đang gửi' : 'Gửi'}</span>
+                  </button>
+                </div>
               </div>
             )}
-          </div>
-
-          <div className="border-t border-gray-100 bg-white p-4">
-            <textarea
-              value={customerMessageText}
-              onChange={event => setCustomerMessageText(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
-                  event.preventDefault();
-                  handleSendCustomerMessage();
-                }
-              }}
-              enterKeyHint="send"
-              rows={3}
-              placeholder="Nhập nội dung cần trao đổi..."
-              className="w-full rounded-3xl border border-emerald-100 bg-emerald-50/40 p-3 text-sm font-semibold outline-none focus:border-emerald-300"
-            />
-            <button
-              type="button"
-              onClick={handleSendCustomerMessage}
-              disabled={isSendingCustomerMessage || !customerMessageText.trim() || !hasResponsibleEmployeeContact}
-              className="mt-3 w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-100 disabled:from-gray-300 disabled:to-gray-300"
-            >
-              {isSendingCustomerMessage ? 'Đang gửi...' : 'Gửi tin nhắn'}
-            </button>
-          </div>
+          </section>
         </div>
+      );
+    }
+
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-4">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Hộp thư của tôi</p>
+          <h2 className="mt-1 text-2xl font-extrabold text-gray-950">Tin nhắn</h2>
+          <p className="mt-1 text-sm font-medium text-gray-500">Thông báo và trao đổi được cập nhật ngay khi có dữ liệu mới.</p>
+        </div>
+        <section className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm">
+          {customerInboxConversations.length > 0 ? customerInboxConversations.map(conversation => {
+            const unreadCount = getUnreadCustomerInboxItems(conversation, customerInboxCustomerId).length;
+            const isSalesConversation = conversation.kind === 'sales_chat';
+            return (
+              <button
+                key={conversation.id}
+                type="button"
+                onClick={() => openCustomerConversation(conversation)}
+                className="flex w-full items-center gap-3 border-b border-gray-100 px-4 py-4 text-left transition last:border-b-0 hover:bg-emerald-50/40 active:bg-emerald-50"
+              >
+                <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${isSalesConversation ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'}`}>
+                  {isSalesConversation ? <MessageCircle size={20} /> : <Megaphone size={20} />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className={`truncate text-sm ${unreadCount > 0 ? 'font-extrabold text-gray-950' : 'font-bold text-gray-800'}`}>{conversation.label}</span>
+                    {unreadCount > 0 && (
+                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black text-white">{unreadCount > 99 ? '99+' : unreadCount}</span>
+                    )}
+                  </span>
+                  <span className={`mt-1 block truncate text-sm ${unreadCount > 0 ? 'font-semibold text-gray-700' : 'text-gray-500'}`}>{conversation.preview}</span>
+                </span>
+                <span className="shrink-0 text-[10px] font-bold text-gray-400">
+                  {conversation.latestTimestamp ? formatDateTimeLabel(conversation.latestTimestamp) : ''}
+                </span>
+              </button>
+            );
+          }) : (
+            <div className="p-6 text-center">
+              <MessageCircle className="mx-auto mb-2 text-emerald-500" size={26} />
+              <p className="text-sm font-bold text-gray-700">Chưa có tin nhắn hoặc thông báo.</p>
+            </div>
+          )}
+        </section>
       </div>
     );
   };
@@ -81169,10 +81667,17 @@ function CustomerPortalView({
     const requestItems = (Array.isArray(request.items) && request.items.length > 0)
       ? request.items
       : (request.primaryItem ? [request.primaryItem] : []);
+    const unavailableItem = requestItems.find(item => (
+      item?.productId && !customerVisibleProductIds.has(`${item.productId}`)
+    ));
+    if (unavailableItem) {
+      setSubmitMessage(`${unavailableItem.productName || 'Sản phẩm này'} hiện đã được công ty ẩn nên không thể chỉnh sửa trong tài khoản khách hàng.`);
+      return;
+    }
     const nextCart = requestItems.map((item, index) => {
-      const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
+      const product = item.productId ? customerVisibleProducts.find(productItem => productItem.id === item.productId) : null;
       const branchId = item.branchId || item.customerBranchId || '';
-      const branch = getCustomerBranchById(customerProfile || {}, branchId, safeProducts);
+      const branch = getCustomerBranchById(customerProfile || {}, branchId, customerVisibleProducts);
       const snapshot = buildCustomerPortalBillingSnapshot({
         item,
         product,
@@ -81189,8 +81694,11 @@ function CustomerPortalView({
         branchId,
         branchName: item.branchName || item.customerBranchName || (branch ? getCustomerBranchDisplayName(branch) : ''),
         branchAddress: item.branchAddress || item.customerBranchAddress || branch?.address || '',
-        unit: snapshot.actualUnit,
-        quantityUnit: snapshot.actualUnit,
+        isDraftCartLine: true,
+        orderUnit: snapshot.orderUnit || item.orderUnit || item.quantityUnit || item.actualUnit || item.unit || '',
+        unit: snapshot.orderUnit || snapshot.actualUnit,
+        quantityUnit: snapshot.orderUnit || snapshot.actualUnit,
+        actualUnit: snapshot.actualUnit,
         quantity: snapshot.actualQuantity || item.quantity || 1,
         price: snapshot.unitPrice,
         total: snapshot.amount,
@@ -81208,27 +81716,39 @@ function CustomerPortalView({
 
   const submitOrderRequest = async () => {
     if (!customerProfile?.id || cart.length === 0 || isSubmittingOrder || isOrderingLocked) return;
+    if (cartHasUnresolvedPricing) {
+      setSubmitMessage('Chưa thể gửi đơn vì có sản phẩm chưa có quy đổi hợp lệ sang đơn vị tính giá.');
+      return;
+    }
     setIsSubmittingOrder(true);
     setSubmitMessage('');
     try {
       const normalizedItems = cart
         .filter(item => (parseFloat(item.quantity) || 0) > 0)
         .map(item => {
-          const product = item.productId ? safeProducts.find(productItem => productItem.id === item.productId) : null;
-          const branch = getCustomerBranchById(customerProfile || {}, item.branchId, safeProducts);
+          const product = item.productId ? customerVisibleProducts.find(productItem => productItem.id === item.productId) : null;
+          const branch = getCustomerBranchById(customerProfile || {}, item.branchId, customerVisibleProducts);
           const branchId = item.branchId || branch?.id || '';
           const branchName = item.branchName || (branch ? getCustomerBranchDisplayName(branch) : '');
           const branchAddress = item.branchAddress || branch?.address || '';
           const fixedProductIds = branchId
-            ? getCustomerBranchFixedProductIds(customerProfile, branchId, safeProducts)
-            : getCustomerFixedProductIds(customerProfile, safeProducts);
+            ? getCustomerBranchFixedProductIds(customerProfile, branchId, customerVisibleProducts)
+            : getCustomerFixedProductIds(customerProfile, customerVisibleProducts);
           const existingSnapshot = resolveTransactionBillingSnapshot({ record: item, product });
-          if (!product || (!fixedProductIds.includes(product.id) && !existingSnapshot.hasFrozenPricing)) {
+          if (!product) {
+            throw new Error(`Sản phẩm ${item.productName || ''} hiện đã được công ty ẩn và không thể gửi đơn.`);
+          }
+          if (!fixedProductIds.includes(product.id) && !existingSnapshot.hasFrozenPricing) {
             throw new Error(`Sản phẩm ${item.productName || ''} không còn trong danh sách cố định của khách hàng.`);
           }
           const snapshot = buildCustomerPortalBillingSnapshot({ item, product, branchId });
-          if (!snapshot.billingSnapshotValid && !snapshot.pricingPendingActual) {
-            throw new Error(`Cấu hình tính tiền của ${product.name || item.productName || 'sản phẩm'} chưa hợp lệ.`);
+          if (!snapshot.billingSnapshotValid || snapshot.pricingPendingActual) {
+            const orderUnit = snapshot.orderUnit || item.orderUnit || item.quantityUnit || 'đơn vị đặt';
+            const billingUnit = snapshot.basePriceUnit || snapshot.billingUnit || snapshot.pricingUnit || 'đơn vị tính giá';
+            const reason = ['MISSING_BILLING_QUANTITY', 'ACTUAL_UNIT_NOT_ALLOWED'].includes(snapshot.billingSnapshotError)
+              ? `Chưa có quy đổi hợp lệ từ ${orderUnit} sang ${billingUnit}`
+              : 'Cấu hình tính tiền chưa hợp lệ';
+            throw new Error(`${reason} cho ${product.name || item.productName || 'sản phẩm'}.`);
           }
           return {
             ...item,
@@ -81243,8 +81763,13 @@ function CustomerPortalView({
             customerBranchId: branchId,
             customerBranchName: branchName,
             customerBranchAddress: branchAddress,
-            unit: snapshot.actualUnit,
-            quantityUnit: snapshot.actualUnit,
+            orderUnit: snapshot.orderUnit || item.orderUnit || item.quantityUnit || item.actualUnit || item.unit || '',
+            unit: snapshot.orderUnit || snapshot.actualUnit,
+            quantityUnit: snapshot.orderUnit || snapshot.actualUnit,
+            actualUnit: snapshot.actualUnit,
+            basePriceUnit: snapshot.basePriceUnit || snapshot.billingUnit || snapshot.pricingUnit || '',
+            conversionFactor: snapshot.conversionFactor || 0,
+            unitConversions: snapshot.unitConversions || '',
             price: snapshot.unitPrice,
             total: snapshot.amount,
             size: item.size || '',
@@ -81296,6 +81821,9 @@ function CustomerPortalView({
         productName: primaryItem.productName,
         quantity: primaryItem.quantity,
         unit: primaryItem.unit,
+        orderUnit: primaryItem.orderUnit || primaryItem.quantityUnit || primaryItem.unit,
+        basePriceUnit: primaryItem.basePriceUnit || primaryItem.billingUnit || primaryItem.pricingUnit || '',
+        conversionFactor: primaryItem.conversionFactor || 0,
         unitPrice: primaryItem.unitPrice,
         totalAmount: normalizedItems.reduce((sum, item) => sum + parseLooseMoneyValue(item.amount), 0),
         createdByRole: 'customer',
@@ -81684,25 +82212,58 @@ function CustomerPortalView({
           <div className="space-y-2 mt-3">
             {cart.map((item, index) => {
               const lineId = item.lineId || `${item.productId || 'item'}_${item.branchId || 'main'}_${index}`;
+              const cartProduct = item.productId
+                ? customerVisibleProducts.find(productItem => productItem.id === item.productId)
+                : null;
+              const cartConfiguration = resolveCustomerPortalProductConfiguration(cartProduct, item.branchId || '');
+              const selectedOrderUnit = normalizeProductPricingUnit(
+                item.orderUnit
+                || item.quantityUnit
+                || item.actualUnit
+                || item.unit
+                || cartConfiguration.defaultOrderUnit
+                || resolveCustomerProductActualUnit(cartConfiguration, cartProduct)
+              );
+              const orderUnitOptions = getOrderInputUnitOptions({
+                product: cartProduct,
+                pricingUnit: item.basePriceUnit || item.billingUnit || item.pricingUnit || cartConfiguration.billingUnit,
+                currentUnit: selectedOrderUnit,
+                catalogUnits: cartConfiguration.orderUnits,
+                fallback: cartConfiguration.defaultOrderUnit || resolveCustomerProductActualUnit(cartConfiguration, cartProduct),
+              });
+              const isMissingUnitConversion = ['MISSING_BILLING_QUANTITY', 'ACTUAL_UNIT_NOT_ALLOWED']
+                .includes(item.billingSnapshotError);
               return (
               <div key={lineId} className="rounded-2xl bg-gray-50 p-2">
-                <div className="grid grid-cols-[1fr_64px_78px_32px] gap-2 items-center">
+                <div className="grid grid-cols-[1fr_64px_84px_32px] gap-2 items-center">
                   <div>
                     <p className="font-bold text-sm">{item.shortName || item.productName}</p>
                     <p className="text-xs text-gray-500">{formatCurrency(item.unitPrice)} / {item.billingUnit || item.pricingUnit}</p>
                     {item.branchName && <p className="mt-0.5 truncate text-[11px] font-bold text-sky-700">{item.branchName}</p>}
                   </div>
                 <input type="number" value={item.quantity} onChange={e => updateCartItem(lineId, { quantity: e.target.value })} className="w-full rounded-xl border border-gray-200 p-2 text-center outline-none" />
-                <div className="w-full rounded-xl border border-emerald-100 bg-emerald-50 p-2 text-center text-xs font-bold text-emerald-700">
-                  {item.actualUnit || item.quantityUnit || item.unit}
-                </div>
+                <select
+                  aria-label={`Đơn vị đặt của ${item.shortName || item.productName || 'sản phẩm'}`}
+                  value={selectedOrderUnit}
+                  onChange={event => updateCartItem(lineId, { orderUnit: event.target.value })}
+                  className="w-full rounded-xl border border-emerald-100 bg-emerald-50 p-2 text-center text-xs font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-400"
+                >
+                  {orderUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+                </select>
                 <button onClick={() => removeCartItem(lineId)} className="text-red-400"><X size={18} /></button>
                 </div>
+                {(item.billingSnapshotValid === false || item.pricingPendingActual) && (
+                  <p className="mt-2 rounded-xl bg-amber-50 px-2 py-1.5 text-[11px] font-semibold text-amber-700">
+                    {isMissingUnitConversion
+                      ? `Chưa có quy đổi từ ${selectedOrderUnit || 'đơn vị đặt'} sang ${item.basePriceUnit || item.billingUnit || item.pricingUnit || 'đơn vị tính giá'}; chưa thể gửi đơn.`
+                      : `Chưa thể tính tiền cho ${item.shortName || item.productName || 'sản phẩm'}; hãy kiểm tra giá và đơn vị tính giá.`}
+                  </p>
+                )}
                 {customerBranches.length > 0 && (
                   <select
                     value={item.branchId || ''}
                     onChange={e => {
-                      const branch = getCustomerBranchById(customerProfile || {}, e.target.value, safeProducts);
+                      const branch = getCustomerBranchById(customerProfile || {}, e.target.value, customerVisibleProducts);
                       updateCartItem(lineId, {
                         branchId: branch?.id || '',
                         branchName: branch ? getCustomerBranchDisplayName(branch) : '',
@@ -81725,7 +82286,7 @@ function CustomerPortalView({
               <input value={orderNote} onChange={e => setOrderNote(e.target.value)} placeholder="Ghi chú" className="rounded-2xl border border-gray-200 p-3 text-sm outline-none" />
             </div>
             <div className="grid grid-cols-1 gap-2">
-              <button disabled={isSubmittingOrder || isOrderingLocked} onClick={submitOrderRequest} className="w-full bg-emerald-500 text-white font-extrabold py-3 rounded-2xl disabled:bg-gray-300">{isSubmittingOrder ? 'Đang gửi...' : (editingOrderRequestId ? 'Cập nhật đơn' : 'Gửi đơn đặt')}</button>
+              <button disabled={isSubmittingOrder || isOrderingLocked || cartHasUnresolvedPricing} onClick={submitOrderRequest} className="w-full bg-emerald-500 text-white font-extrabold py-3 rounded-2xl disabled:bg-gray-300">{isSubmittingOrder ? 'Đang gửi...' : (editingOrderRequestId ? 'Cập nhật đơn' : 'Gửi đơn đặt')}</button>
               {editingOrderRequestId && (
                 <button
                   type="button"
@@ -81763,11 +82324,11 @@ function CustomerPortalView({
                   key={`request_history_${item.id}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setSelectedCustomerOrderItem(requestItem)}
+                  onClick={() => openCustomerOrderDetail(requestItem)}
                   onKeyDown={event => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
-                      setSelectedCustomerOrderItem(requestItem);
+                      openCustomerOrderDetail(requestItem);
                     }
                   }}
                   className="relative overflow-hidden rounded-3xl border border-rose-100 bg-white p-4 shadow-[0_10px_26px_rgba(244,63,94,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-rose-50/80 cursor-pointer active:scale-[0.99] transition hover:border-rose-200"
@@ -81789,7 +82350,7 @@ function CustomerPortalView({
                         </div>
                         <div className="mt-1 grid grid-cols-3 gap-1 text-[11px] font-bold text-gray-500">
                           <span>SL: {formatCustomerQuantityLabel(line)}</span>
-                          <span>Giá: {formatCurrency(line.unitPrice)} đ</span>
+                          <span>Giá: {formatCustomerUnitPriceLabel(line)}</span>
                           <span className="text-right">TT: {formatCurrency(line.lineTotal)} đ</span>
                         </div>
                       </div>
@@ -81837,11 +82398,11 @@ function CustomerPortalView({
               key={`${item.type}_${item.id}`}
               role="button"
               tabIndex={0}
-              onClick={() => setSelectedCustomerOrderItem(item)}
+              onClick={() => openCustomerOrderDetail(item)}
               onKeyDown={event => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
-                  setSelectedCustomerOrderItem(item);
+                  openCustomerOrderDetail(item);
                 }
               }}
               className="relative overflow-hidden rounded-3xl border border-rose-100 bg-white p-4 shadow-[0_10px_26px_rgba(244,63,94,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-rose-50/80 cursor-pointer active:scale-[0.99] transition hover:border-rose-200 hover:shadow-[0_14px_30px_rgba(244,63,94,0.12),inset_0_1px_0_rgba(255,255,255,0.95)]"
@@ -81869,7 +82430,7 @@ function CustomerPortalView({
                     </div>
                     <div className="mt-1 grid grid-cols-3 gap-1 text-[11px] font-bold text-gray-500">
                       <span>SL: {formatCustomerQuantityLabel(line)}</span>
-                      <span>Giá: {formatCurrency(line.unitPrice)} đ</span>
+                      <span>Giá: {formatCustomerUnitPriceLabel(line)}</span>
                       <span className="text-right">TT: {formatCurrency(line.lineTotal)} đ</span>
                     </div>
                   </div>
@@ -81890,52 +82451,147 @@ function CustomerPortalView({
   };
 
   const renderCustomerOrderDetailSheet = () => {
-    if (!selectedCustomerOrderItem) return null;
+    if (!selectedCustomerOrderSelection) return null;
+    if (!selectedCustomerOrderItem) {
+      return (
+        <div className="fixed inset-0 z-[80] bg-slate-50" role="dialog" aria-modal="true" aria-label="Chi tiết đơn hàng">
+          <div className="flex h-[100dvh] min-h-0 flex-col" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
+              <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
+                <p className="font-extrabold text-slate-900">Chi tiết đơn hàng</p>
+                <button type="button" onClick={closeCustomerOrderDetail} className="rounded-2xl bg-slate-100 px-4 py-2 text-sm font-extrabold text-slate-700">
+                  Quay lại
+                </button>
+              </div>
+            </header>
+            <main className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
+              <div className="max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                <p className="font-extrabold text-slate-900">Đơn hàng không còn khả dụng</p>
+                <p className="mt-2 text-sm font-medium text-slate-500">Dữ liệu đơn vừa được cập nhật hoặc không còn trong danh sách của bạn.</p>
+              </div>
+            </main>
+          </div>
+        </div>
+      );
+    }
+
     const item = selectedCustomerOrderItem;
     const lines = getCustomerPortalOrderLines(item);
     const total = getCustomerPortalOrderTotal(item);
     const orderCode = getCustomerPortalDisplayOrderCode(item);
+    const customerName = item.customerName || item.customerNameSnapshot || customerProfile?.name || 'Khách hàng';
+    const customerPhone = item.customerPhone || item.phone || customerProfile?.phone || '';
+    const orderStatus = statusLabel(item.status || item.reviewStatus);
+    const statusHistory = [item.statusHistory, item.orderStatusHistory, item.statusTimeline, item.timeline]
+      .find(value => Array.isArray(value)) || [];
 
     return (
-      <div className="fixed inset-0 z-50 bg-black/45 p-4 flex items-end sm:items-center justify-center" onClick={() => setSelectedCustomerOrderItem(null)}>
-        <div className="w-full max-w-md rounded-[28px] bg-white shadow-2xl overflow-hidden" onClick={event => event.stopPropagation()}>
-          <div className="p-5 border-b border-gray-100 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-600">{item.type === 'request' ? 'Chi tiết đơn đặt' : 'Chi tiết hóa đơn'}</p>
-              <h3 className="mt-1 text-xl font-black text-gray-900">{orderCode}</h3>
-              <p className="mt-1 text-xs font-semibold text-gray-400">{getOrderPlacedAtLabel(item)} • {statusLabel(item.status || item.reviewStatus)}</p>
+      <div className="fixed inset-0 z-[80] bg-slate-50" role="dialog" aria-modal="true" aria-label={`Chi tiết ${orderCode}`} data-view-only="true">
+        <div className="flex h-[100dvh] min-h-0 flex-col" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+          <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <div className="mx-auto flex max-w-5xl items-center gap-3">
+              <button
+                type="button"
+                onClick={closeCustomerOrderDetail}
+                className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-2xl bg-slate-100 px-3 text-sm font-extrabold text-slate-700 transition hover:bg-slate-200"
+                aria-label="Quay lại danh sách đơn hàng"
+              >
+                <ChevronLeft size={20} />
+                <span className="hidden sm:inline">Quay lại đơn hàng</span>
+              </button>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[11px] font-black uppercase tracking-[0.18em] text-emerald-700">{item.type === 'request' ? 'Chi tiết đơn đặt' : 'Chi tiết hóa đơn'}</p>
+                <h3 className="mt-0.5 truncate text-lg font-black text-slate-950 sm:text-xl">{orderCode}</h3>
+                <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{getOrderPlacedAtLabel(item)}</p>
+              </div>
+              <span className="hidden shrink-0 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-extrabold text-emerald-700 sm:inline-flex">{orderStatus}</span>
+              <button
+                type="button"
+                onClick={closeCustomerOrderDetail}
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-500 transition hover:bg-slate-200"
+                aria-label="Đóng chi tiết đơn hàng"
+              >
+                <X size={20} />
+              </button>
             </div>
-            <button type="button" onClick={() => setSelectedCustomerOrderItem(null)} className="shrink-0 w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center text-gray-500">
-              <X size={20} />
-            </button>
-          </div>
-          <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
-            <div className="grid grid-cols-[1fr_64px_82px_92px] gap-2 px-3 text-[10px] font-black uppercase tracking-wide text-gray-400">
-              <span>Sản phẩm</span>
-              <span className="text-center">SL/kg</span>
-              <span className="text-right">Đơn giá</span>
-              <span className="text-right">Thành tiền</span>
-            </div>
-            <div className="space-y-2">
-              {lines.map((line, index) => (
-                <div key={index} className="grid grid-cols-[1fr_64px_82px_92px] gap-2 rounded-2xl border border-emerald-50 bg-emerald-50/35 px-3 py-3 text-sm">
+          </header>
+          <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50 px-4 py-4 pb-6">
+            <div className="mx-auto w-full max-w-5xl space-y-4">
+              <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="font-extrabold text-gray-900 leading-snug">{line.productName}</p>
-                    {line.branchName && <p className="mt-1 text-[11px] font-bold text-sky-700">Chi nhánh: {line.branchName}</p>}
-                    {line.size && <p className="mt-1 text-[11px] font-semibold text-gray-400">Size/thuộc tính: {line.size}</p>}
+                    <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Khách hàng</p>
+                    <p className="mt-1 truncate text-lg font-extrabold text-slate-950">{customerName}</p>
+                    {customerPhone && <p className="mt-1 text-sm font-semibold text-slate-500">{customerPhone}</p>}
                   </div>
-                  <p className="text-center font-black text-emerald-700">{formatCustomerQuantityLabel(line)}</p>
-                  <p className="text-right font-bold text-gray-700">{formatCurrency(line.unitPrice)} đ</p>
-                  <p className="text-right font-black text-gray-900">{formatCurrency(line.lineTotal)} đ</p>
+                  <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-extrabold text-emerald-700 sm:hidden">{orderStatus}</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-600">Chỉ xem</span>
                 </div>
-              ))}
-              {lines.length === 0 && <p className="rounded-2xl bg-gray-50 p-4 text-center text-sm font-semibold text-gray-400">Đơn này chưa có dòng sản phẩm.</p>}
+              </section>
+
+              <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Sản phẩm</p>
+                    <h4 className="mt-1 text-lg font-extrabold text-slate-950">Chi tiết đơn hàng</h4>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-600">{lines.length} dòng</span>
+                </div>
+                <div className="space-y-3">
+                  {lines.map((line, index) => (
+                    <article key={line.id || index} className="rounded-3xl border border-emerald-100 bg-emerald-50/35 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="break-words font-extrabold leading-snug text-slate-950">{line.productName}</p>
+                          {line.branchName && <p className="mt-1 text-xs font-bold text-sky-700">Chi nhánh: {line.branchName}</p>}
+                          {line.size && <p className="mt-1 text-xs font-semibold text-slate-500">Size/thuộc tính: {line.size}</p>}
+                          {formatCustomerConversionLabel(line) && <p className="mt-1 text-xs font-semibold text-emerald-700">{formatCustomerConversionLabel(line)}</p>}
+                        </div>
+                        <p className="shrink-0 text-right text-sm font-black text-slate-950">{formatCurrency(line.lineTotal)} đ</p>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        <div className="rounded-2xl bg-white/90 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Số lượng thực tế</p>
+                          <p className="mt-1 break-words text-sm font-extrabold text-emerald-700">{formatCustomerQuantityLabel(line)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-white/90 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn giá</p>
+                          <p className="mt-1 break-words text-sm font-extrabold text-slate-800">{formatCustomerUnitPriceLabel(line)}</p>
+                        </div>
+                        <div className="col-span-2 rounded-2xl bg-white/90 p-3 sm:col-span-1">
+                          <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Thành tiền</p>
+                          <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(line.lineTotal)} đ</p>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                  {lines.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">Đơn này chưa có dòng sản phẩm.</p>}
+                </div>
+              </section>
+
+              {statusHistory.length > 0 && (
+                <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Lịch sử trạng thái</p>
+                  <div className="mt-3 space-y-2">
+                    {statusHistory.slice(-10).reverse().map((historyItem, index) => (
+                      <div key={`${historyItem?.id || historyItem?.at || historyItem?.createdAt || index}`} className="flex items-start justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-3">
+                        <p className="text-sm font-bold text-slate-800">{statusLabel(historyItem?.status || historyItem?.label || historyItem?.state)}</p>
+                        <p className="shrink-0 text-xs font-semibold text-slate-500">{getOrderPlacedAtLabel(historyItem)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="flex items-center justify-between gap-4 rounded-3xl bg-slate-950 px-5 py-4 text-white shadow-lg">
+                <div>
+                  <p className="text-sm font-bold text-white/70">Tổng tiền</p>
+                  <p className="mt-1 text-xs font-semibold text-white/60">Thông tin được lấy từ hóa đơn đã lưu.</p>
+                </div>
+                <p className="shrink-0 text-right text-xl font-black sm:text-2xl">{formatCurrency(total)} đ</p>
+              </section>
             </div>
-            <div className="rounded-3xl bg-gray-900 px-4 py-4 text-white flex items-center justify-between">
-              <span className="text-sm font-bold text-white/70">Tổng tiền</span>
-              <span className="text-xl font-black">{formatCurrency(total)} đ</span>
-            </div>
-          </div>
+          </main>
         </div>
       </div>
     );
@@ -82405,7 +83061,7 @@ function CustomerPortalView({
             )}
             <button
               type="button"
-              onClick={openCustomerMessageSheet}
+              onClick={openCustomerSalesConversation}
               disabled={!hasResponsibleEmployeeContact}
               className="rounded-2xl bg-sky-50 px-3 py-2 text-xs font-extrabold text-sky-700 disabled:opacity-50"
             >
@@ -82508,6 +83164,7 @@ function CustomerPortalView({
   const renderContent = () => {
     if (activeTab === 'order') return renderOrder();
     if (activeTab === 'orders') return renderOrders();
+    if (activeTab === 'messages') return renderCustomerMessages();
     if (activeTab === 'debt') return renderDebt();
     if (activeTab === 'payments') return renderPayments();
     if (activeTab === 'bank') return renderBank();
@@ -82521,7 +83178,6 @@ function CustomerPortalView({
       {renderPaymentSheet()}
       {renderCustomerOrderDetailSheet()}
       {renderPointWithdrawSheet()}
-      {renderCustomerMessageSheet()}
       <HDHeader className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-4 py-3 flex items-center justify-between">
         <button
           type="button"
@@ -82551,11 +83207,10 @@ function CustomerPortalView({
           </button>
           <button
             type="button"
-            onClick={openCustomerMessageSheet}
-            disabled={!hasResponsibleEmployeeContact && customerNotificationItems.length === 0}
-            className="relative w-10 h-10 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center disabled:opacity-45"
-            aria-label="Nhắn tin nhân viên phụ trách"
-            title="Nhắn tin nhân viên phụ trách"
+            onClick={openCustomerInbox}
+            className="relative w-10 h-10 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center"
+            aria-label="Mở hộp thư"
+            title="Hộp thư"
           >
             <MessageCircle size={21} />
             {customerMessageBadgeCount > 0 && (
@@ -82908,7 +83563,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                   </button>
                 </div>
                 <div className="-mt-2 flex items-center justify-between gap-3 px-1">
-                  <p className="text-[11px] leading-relaxed text-gray-400">{vpsStagingMode ? 'VPS staging uses the HD CONNECT identity service.' : 'Tối thiểu 8 ký tự, gồm chữ và số.'}</p>
+                  <p className="text-[11px] leading-relaxed text-gray-400">{vpsStagingMode ? 'HD CONNECT VPS uses the platform identity service.' : 'Tối thiểu 8 ký tự, gồm chữ và số.'}</p>
                   <button type="button" onClick={openForgotPassword} className="shrink-0 text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
                 </div>
               </>}

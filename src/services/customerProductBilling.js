@@ -1,10 +1,12 @@
 import {
+  getProductPricingUnits,
   getProductPrimaryPricingUnit,
   getUnitPriceFromMap,
   normalizeProductPricingUnit,
   normalizeUnitPriceMap,
   resolveProductUnitPrice,
 } from './productPricingUnits.js';
+import { resolveUnitConversionFactor } from './smartCustomerOrdering.js';
 
 const normalizeText = (value = '') => `${value || ''}`
   .normalize('NFD')
@@ -34,6 +36,18 @@ export const isSameBillingUnit = (left = '', right = '') => {
   return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 };
 
+const normalizeOrderUnits = (...sources) => {
+  const units = [];
+  sources
+    .flatMap((source) => Array.isArray(source) ? source : `${source || ''}`.split(/[;,/&+|]/))
+    .map(normalizeProductPricingUnit)
+    .filter(Boolean)
+    .forEach((unit) => {
+      if (!units.some(existingUnit => isSameBillingUnit(existingUnit, unit))) units.push(unit);
+    });
+  return units;
+};
+
 const normalizeConfigurationVariant = (source = {}, fallbackId = '') => ({
   id: `${source?.id || source?.configurationId || source?.variantId || fallbackId || ''}`.trim(),
   sizeLabel: `${source?.sizeLabel ?? source?.size ?? source?.weightKg ?? ''}`.trim(),
@@ -43,6 +57,11 @@ const normalizeConfigurationVariant = (source = {}, fallbackId = '') => ({
   ),
   unitPrice: parseMoney(source?.unitPrice ?? source?.price ?? source?.sellingPrice),
   unitPrices: normalizeUnitPriceMap(source?.unitPrices ?? source?.pricesByUnit ?? source?.priceByUnit ?? {}),
+  orderUnits: source?.orderUnits ?? source?.allowedOrderUnits ?? source?.inputUnits ?? '',
+  defaultOrderUnit: normalizeProductPricingUnit(
+    source?.defaultOrderUnit || source?.orderUnit || source?.preferredOrderUnit || ''
+  ),
+  unitConversions: source?.unitConversions ?? source?.conversions ?? source?.conversion ?? '',
 });
 
 const configurationVariantMatches = (variant = {}, criteria = {}) => {
@@ -97,6 +116,9 @@ export const resolveCustomerProductConfiguration = ({
           ...baseVariant.unitPrices,
           ...matchedVariant.unitPrices,
         },
+        orderUnits: matchedVariant.orderUnits || baseVariant.orderUnits,
+        defaultOrderUnit: matchedVariant.defaultOrderUnit || baseVariant.defaultOrderUnit,
+        unitConversions: matchedVariant.unitConversions || baseVariant.unitConversions,
       }
     : baseVariant;
 
@@ -122,6 +144,16 @@ export const resolveCustomerProductConfiguration = ({
     && !baseVariant.pricingUnit
     && baseVariant.unitPrice <= 0;
   const source = hasCustomerConfig ? 'customer_fixed_product' : 'legacy_product';
+  const productOrderUnits = getProductPricingUnits(resolvedProduct, '');
+  const orderUnits = normalizeOrderUnits(
+    selectedVariant.orderUnits,
+    selectedVariant.defaultOrderUnit,
+    productOrderUnits,
+    pricingUnit,
+  );
+  const defaultOrderUnit = normalizeProductPricingUnit(
+    selectedVariant.defaultOrderUnit || orderUnits[0] || pricingUnit
+  );
 
   return {
     productId: resolvedProductId,
@@ -132,6 +164,9 @@ export const resolveCustomerProductConfiguration = ({
     pricingUnit,
     billingUnit: pricingUnit,
     unitPrice: parseMoney(unitPrice),
+    orderUnits,
+    defaultOrderUnit,
+    unitConversions: selectedVariant.unitConversions || '',
     allowedUnits: pricingUnit ? [pricingUnit] : [],
     source,
     isCustomerConfigured: hasCustomerConfig,
@@ -177,50 +212,71 @@ export const calculateBillableAmount = ({
   configuration = null,
   actualQuantity = 0,
   actualUnit = '',
+  orderUnit = '',
   actualWeightKg = 0,
   billingQuantity = 0,
   billingUnit = '',
   unitPrice = 0,
+  conversionFactor = 0,
+  unitConversions = null,
+  conversions = null,
 } = {}) => {
   const resolvedBillingUnit = normalizeProductPricingUnit(
     billingUnit || configuration?.billingUnit || configuration?.pricingUnit || ''
   );
-  const resolvedActualUnit = normalizeProductPricingUnit(actualUnit || resolvedBillingUnit);
+  const resolvedOrderUnit = normalizeProductPricingUnit(orderUnit || actualUnit || resolvedBillingUnit);
+  const resolvedActualUnit = normalizeProductPricingUnit(actualUnit || resolvedOrderUnit || resolvedBillingUnit);
   const resolvedUnitPrice = parseMoney(unitPrice || configuration?.unitPrice);
   const parsedActualQuantity = parsePositiveNumber(actualQuantity);
   const parsedActualWeightKg = parsePositiveNumber(actualWeightKg);
   const explicitBillingQuantity = parsePositiveNumber(billingQuantity);
   const usesWeightPricing = isSameBillingUnit(resolvedBillingUnit, 'Kg');
   const unitMismatch = Boolean(
-    !usesWeightPricing
-    && resolvedActualUnit
+    resolvedOrderUnit
     && resolvedBillingUnit
-    && !isSameBillingUnit(resolvedActualUnit, resolvedBillingUnit)
+    && !isSameBillingUnit(resolvedOrderUnit, resolvedBillingUnit)
   );
+  const conversion = unitMismatch
+    ? resolveUnitConversionFactor({
+        fromUnit: resolvedOrderUnit,
+        toUnit: resolvedBillingUnit,
+        conversionFactor,
+        unitConversions: unitConversions ?? configuration?.unitConversions,
+        conversions: conversions ?? configuration?.conversions,
+      })
+    : { factor: 0, isConfigured: false, source: '' };
+  const hasConfiguredConversion = conversion.isConfigured && conversion.factor > 0;
+  const convertedQuantity = hasConfiguredConversion && parsedActualQuantity > 0
+    ? parsedActualQuantity * conversion.factor
+    : 0;
   const resolvedBillingQuantity = explicitBillingQuantity > 0
     ? explicitBillingQuantity
     : (usesWeightPricing
       ? (parsedActualWeightKg > 0
         ? parsedActualWeightKg
-        : (isSameBillingUnit(resolvedActualUnit, resolvedBillingUnit) ? parsedActualQuantity : 0))
-      : (unitMismatch ? 0 : parsedActualQuantity));
+        : (isSameBillingUnit(resolvedOrderUnit, resolvedBillingUnit) ? parsedActualQuantity : convertedQuantity))
+      : (isSameBillingUnit(resolvedOrderUnit, resolvedBillingUnit) ? parsedActualQuantity : convertedQuantity));
+  const hasUnresolvedNonWeightMismatch = !usesWeightPricing && unitMismatch && !hasConfiguredConversion;
   const errorCode = !resolvedBillingUnit
     ? 'MISSING_BILLING_UNIT'
     : (resolvedUnitPrice <= 0
       ? 'MISSING_UNIT_PRICE'
-      : (unitMismatch
+      : (hasUnresolvedNonWeightMismatch
         ? 'ACTUAL_UNIT_NOT_ALLOWED'
         : (resolvedBillingQuantity <= 0 ? 'MISSING_BILLING_QUANTITY' : '')));
 
   return {
     actualQuantity: parsedActualQuantity,
     actualUnit: resolvedActualUnit,
+    orderUnit: resolvedOrderUnit,
     actualWeightKg: parsedActualWeightKg,
     billingQuantity: resolvedBillingQuantity,
     billingUnit: resolvedBillingUnit,
     unitPrice: resolvedUnitPrice,
     amount: errorCode ? 0 : Math.round(resolvedBillingQuantity * resolvedUnitPrice),
     usesWeightPricing,
+    conversionFactor: hasConfiguredConversion ? conversion.factor : 0,
+    conversionSource: hasConfiguredConversion ? conversion.source : '',
     isPending: errorCode === 'MISSING_BILLING_QUANTITY',
     isValid: !errorCode,
     errorCode,
@@ -251,10 +307,19 @@ export const buildCustomerProductBillingSnapshot = ({
     attributeLabel: resolvedAttribute,
     actualQuantity: calculation.actualQuantity,
     actualUnit: calculation.actualUnit,
+    orderUnit: calculation.orderUnit,
     actualWeightKg: calculation.actualWeightKg,
     billingQuantity: calculation.billingQuantity,
     billingUnit: calculation.billingUnit,
+    basePriceUnit: calculation.billingUnit,
     unitPrice: calculation.unitPrice,
+    conversionFactor: calculation.conversionFactor || 0,
+    conversionSource: calculation.conversionSource || '',
+    unitConversions: quantityInput.unitConversions
+      ?? quantityInput.conversions
+      ?? configuration?.unitConversions
+      ?? configuration?.conversions
+      ?? '',
     amount: calculation.amount,
     quantity: calculation.actualQuantity,
     quantityCount: calculation.actualQuantity,
@@ -314,6 +379,7 @@ export const resolveTransactionBillingSnapshot = ({
         billingUnit: savedBillingUnit,
         pricingUnit: savedBillingUnit,
         unitPrice: savedUnitPrice,
+        unitConversions: source.unitConversions ?? source.conversions ?? configuration?.unitConversions ?? '',
         source: 'transaction_snapshot',
       }
     : configuration;
@@ -326,10 +392,13 @@ export const resolveTransactionBillingSnapshot = ({
     attributeLabel: source.attributeLabel,
     actualQuantity: source.actualQuantity ?? source.quantity ?? source.pieceCount ?? source.quantityCount,
     actualUnit: source.actualUnit || source.actualQuantityUnit || source.quantityUnit || source.unit,
+    orderUnit: source.orderUnit || source.inputUnit || source.quantityUnit || source.actualUnit || source.unit,
     actualWeightKg: source.actualWeightKg ?? source.weightKg ?? source.totalKg ?? source.kg,
     billingQuantity: savedBillingQuantity,
     billingUnit: savedBillingUnit,
     unitPrice: savedUnitPrice,
+    conversionFactor: source.conversionFactor ?? source.unitConversionFactor,
+    unitConversions: source.unitConversions ?? source.conversions,
   });
   const savedAmount = legacyAmount;
   return {
@@ -458,6 +527,7 @@ export const buildWarehouseDispatchOrderBillingSnapshot = ({
     billingUnit,
     pricingUnit: billingUnit,
     unitPrice,
+    unitConversions: configuration?.unitConversions || source.unitConversions || frozenSnapshot.unitConversions || '',
     source: configuredBillingUnit ? 'customer_fixed_product' : 'warehouse_dispatch_fallback',
   };
   const configuredActualUnit = resolveCustomerProductActualUnit(effectiveConfiguration, product);
@@ -502,10 +572,13 @@ export const buildWarehouseDispatchOrderBillingSnapshot = ({
     attributeLabel: source.attributeLabel || source.productAttribute || '',
     actualQuantity,
     actualUnit,
+    orderUnit: source.orderUnit || frozenSnapshot.orderUnit || actualUnit,
     actualWeightKg,
     billingQuantity,
     billingUnit,
     unitPrice,
+    conversionFactor: source.conversionFactor ?? frozenSnapshot.conversionFactor ?? 0,
+    unitConversions: effectiveConfiguration.unitConversions,
   });
 };
 

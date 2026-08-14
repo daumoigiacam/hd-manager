@@ -56,6 +56,64 @@ service cloud.firestore {
         );
     }
 
+    function customerOwnsInboxDocument(data) {
+      return isCustomerIdentity()
+        && data.companyId is string
+        && data.companyId == request.auth.token.companyId
+        && data.customerId is string
+        && data.customerId == request.auth.token.customerId;
+    }
+
+    function canCustomerReadNotification(data) {
+      return customerOwnsInboxDocument(data)
+        && data.recipientType is string
+        && data.recipientType == 'customer';
+    }
+
+    function canCustomerReadMessage(data) {
+      return customerOwnsInboxDocument(data)
+        && data.conversationType is string
+        && data.conversationType == 'customer_support';
+    }
+
+    function canCustomerCreateMessage(data) {
+      return canCustomerReadMessage(data)
+        && data.senderCustomerId is string
+        && data.senderCustomerId == request.auth.token.customerId
+        && data.senderType is string
+        && data.senderType == 'customer'
+        && data.source is string
+        && data.source == 'customer_portal'
+        && data.type is string
+        && data.type in ['customer_to_employee', 'loyalty_point_withdraw_request'];
+    }
+
+    function canCustomerMarkNotificationRead(oldData, newData) {
+      return canCustomerReadNotification(oldData)
+        && canCustomerReadNotification(newData)
+        && newData.companyId == oldData.companyId
+        && newData.readStatus == 'read'
+        && newData.readByCustomerId == request.auth.token.customerId
+        && newData.diff(oldData).affectedKeys().hasOnly([
+          'readStatus',
+          'readAt',
+          'readByCustomerId',
+          'updatedAt'
+        ]);
+    }
+
+    function canCustomerMarkMessageRead(oldData, newData) {
+      return canCustomerReadMessage(oldData)
+        && canCustomerReadMessage(newData)
+        && newData.companyId == oldData.companyId
+        && newData.customerReadById == request.auth.token.customerId
+        && newData.diff(oldData).affectedKeys().hasOnly([
+          'customerReadAt',
+          'customerReadById',
+          'updatedAt'
+        ]);
+    }
+
     function canCustomerReadDocument(collectionId, docId, data) {
       return isCustomerIdentity()
         && !(collectionId in [
@@ -68,7 +126,15 @@ service cloud.firestore {
           'customer_payment_intent_lookup',
           'customer_payment_intent_transactions'
         ])
-        && customerOwnsDocument(collectionId, docId, data);
+        && (
+          (collectionId == 'notifications' && canCustomerReadNotification(data))
+          || (collectionId == 'messages' && canCustomerReadMessage(data))
+          || (
+            collectionId != 'notifications'
+            && collectionId != 'messages'
+            && customerOwnsDocument(collectionId, docId, data)
+          )
+        );
     }
 
     function isServerManagedCustomerPaymentCollection(collectionId) {
@@ -84,47 +150,56 @@ service cloud.firestore {
         'customers',
         'bankAccounts',
         'customer_cart',
-        'notifications',
         'orderRequests',
-        'order_requests',
-        'messages'
+        'order_requests'
       ];
     }
 
     function canCustomerCreateDocument(collectionId, docId, data) {
-      return isCustomerWritableCollection(collectionId)
-        && customerOwnsDocument(collectionId, docId, data);
+      return (collectionId == 'messages' && canCustomerCreateMessage(data))
+        || (
+          collectionId != 'messages'
+          && collectionId != 'notifications'
+          && isCustomerWritableCollection(collectionId)
+          && customerOwnsDocument(collectionId, docId, data)
+        );
     }
 
     function canCustomerUpdateDocument(collectionId, docId, oldData, newData) {
-      return isCustomerWritableCollection(collectionId)
-        && customerOwnsDocument(collectionId, docId, oldData)
-        && customerOwnsDocument(collectionId, docId, newData)
-        && newData.companyId == oldData.companyId
-        && (
-          collectionId != 'customers'
-          || newData.diff(oldData).affectedKeys().hasOnly([
-            'name',
-            'customerHonorific',
-            'phone',
-            'avatarUrl',
-            'avatar',
-            'address',
-            'location',
-            'locationUrl',
-            'locationInput',
-            'locationLat',
-            'locationLng',
-            'mapLocation',
-            'locationUpdatedAt',
-            'locationSource',
-            'birthday',
-            'dateOfBirth',
-            'email',
-            'zaloGroupLink',
-            'zaloLink',
-            'updatedAt'
-          ])
+      return (collectionId == 'notifications' && canCustomerMarkNotificationRead(oldData, newData))
+        || (collectionId == 'messages' && canCustomerMarkMessageRead(oldData, newData))
+        || (
+          collectionId != 'messages'
+          && collectionId != 'notifications'
+          && isCustomerWritableCollection(collectionId)
+          && customerOwnsDocument(collectionId, docId, oldData)
+          && customerOwnsDocument(collectionId, docId, newData)
+          && newData.companyId == oldData.companyId
+          && (
+            collectionId != 'customers'
+            || newData.diff(oldData).affectedKeys().hasOnly([
+              'name',
+              'customerHonorific',
+              'phone',
+              'avatarUrl',
+              'avatar',
+              'address',
+              'location',
+              'locationUrl',
+              'locationInput',
+              'locationLat',
+              'locationLng',
+              'mapLocation',
+              'locationUpdatedAt',
+              'locationSource',
+              'birthday',
+              'dateOfBirth',
+              'email',
+              'zaloGroupLink',
+              'zaloLink',
+              'updatedAt'
+            ])
+          )
         );
     }
 

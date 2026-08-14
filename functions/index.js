@@ -983,6 +983,17 @@ exports.identityOwnerResetPassword = functions.https.onRequest(runIdentityReques
   appId: req.body?.appId
 })));
 
+exports.identityRequestOwnerReset = functions.https.onRequest(runIdentityRequest((req) => identityCenter.requestOwnerPasswordReset({
+  identifier: req.body?.identifier,
+  appId: req.body?.appId
+})));
+
+exports.identityApproveOwnerReset = functions.https.onRequest(runIdentityRequest((req) => identityCenter.approveOwnerPasswordReset({
+  authorization: req.headers.authorization,
+  requestId: req.body?.requestId,
+  appId: req.body?.appId
+})));
+
 exports.identityVerifyPin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.verifyPin({
   authorization: req.headers.authorization,
   pin: req.body?.pin

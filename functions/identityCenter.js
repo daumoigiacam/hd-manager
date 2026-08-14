@@ -3,11 +3,14 @@ const crypto = require('crypto');
 const IDENTITY_ACCOUNT_COLLECTION = 'identity_accounts';
 const IDENTITY_AUDIT_COLLECTION = 'identity_audit_logs';
 const IDENTITY_RATE_LIMIT_COLLECTION = 'identity_rate_limits';
+const IDENTITY_OWNER_RESET_REQUEST_COLLECTION = 'identity_owner_reset_requests';
 const LEGACY_HASH_SCHEME = 'pbkdf2-sha256-v1';
 const LEGACY_HASH_ITERATIONS = 120000;
 const PASSWORD_HASH_SCHEME = 'scrypt-v1';
 const DEFAULT_FIRST_LOGIN_PASSWORD = '12345678';
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
+const OWNER_RESET_REQUEST_COOLDOWN_MS = 10 * 60 * 1000;
+const OWNER_RESET_APPROVAL_LEASE_MS = 2 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_MS = 10 * 60 * 1000;
 const COMPANY_REGISTRATION_SETTING_KEYS = new Set([
@@ -781,7 +784,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { success: true, message: 'Đổi mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.' };
   };
 
-  const ownerResetEmployeePassword = async ({ authorization, employeeId, appId }) => {
+  const ownerResetEmployeePassword = async ({ authorization, employeeId, appId, approvalRequestId = '' }) => {
     const { identityId: ownerIdentityId, identity: ownerIdentity } = await getVerifiedIdentity(authorization);
     if (ownerIdentity.accountType !== 'employee' || !isOwnerIdentity(ownerIdentity)) {
       throw Object.assign(new Error('Chỉ chủ doanh nghiệp được đặt lại đăng nhập cho nhân sự.'), { statusCode: 403 });
@@ -833,6 +836,21 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       throw Object.assign(new Error('Tài khoản đang bị khóa. Hãy mở khóa trước khi đặt lại mật khẩu.'), { statusCode: 409 });
     }
 
+    const safeApprovalRequestId = safeIdPart(approvalRequestId);
+    if (approvalRequestId && safeApprovalRequestId !== `${approvalRequestId}`) {
+      throw Object.assign(new Error('Yêu cầu cấp lại tài khoản không hợp lệ.'), { statusCode: 400 });
+    }
+    // A retry after the password was already reset must not revoke sessions or
+    // create duplicate audit records a second time.
+    if (safeApprovalRequestId && existingIdentity?.ownerResetRequestId === safeApprovalRequestId) {
+      return {
+        success: true,
+        requiresPasswordChange: true,
+        idempotent: true,
+        message: 'Tài khoản này đã được cấp lại. Nhân sự cần tạo mật khẩu và PIN mới khi đăng nhập.'
+      };
+    }
+
     const now = new Date();
     const normalizedPhone = normalizePhone(employee.phone || existingIdentity?.phone || '');
     if (!normalizedPhone) {
@@ -869,6 +887,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       ownerResetAt: now,
       ownerResetAtIso: now.toISOString(),
       ownerResetBy: ownerIdentityId,
+      ...(safeApprovalRequestId ? {
+        ownerResetRequestId: safeApprovalRequestId,
+        ownerResetRequestApprovedAt: now,
+        ownerResetRequestApprovedAtIso: now.toISOString()
+      } : {}),
       ...(existingIdentity ? {} : {
         createdAt: now,
         createdAtIso: now.toISOString(),
@@ -939,6 +962,233 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     };
   };
 
+  const requestOwnerPasswordReset = async ({ identifier, appId }) => {
+    const genericSuccess = {
+      success: true,
+      message: 'Nếu tài khoản hợp lệ, yêu cầu đã được gửi tới chủ doanh nghiệp.'
+    };
+    const identity = await findIdentity(identifier);
+    if (!identity || identity.accountType !== 'employee' || identity.status !== 'active' || identity.lockedAt || isOwnerIdentity(identity)) {
+      return genericSuccess;
+    }
+
+    const targetEmployeeId = safeIdPart(identity.appUserId || identity.publicId || '');
+    if (!targetEmployeeId || targetEmployeeId !== `${identity.appUserId || identity.publicId || ''}`) return genericSuccess;
+    const resolvedAppId = getAppId(appId);
+    const employeeRef = db.doc(publicPath(resolvedAppId, 'employees', targetEmployeeId));
+    const [employeeSnap, companyIdentitySnap] = await Promise.all([
+      employeeRef.get(),
+      db.collection(IDENTITY_ACCOUNT_COLLECTION).where('companyId', '==', `${identity.companyId || ''}`).get()
+    ]);
+    if (!employeeSnap.exists) return genericSuccess;
+
+    const employee = employeeSnap.data() || {};
+    const companyId = `${employee.companyId || employee.company_id || ''}`;
+    if (!companyId || companyId !== `${identity.companyId || ''}` || employee.isArchived || `${employee.status || 'active'}` === 'blocked') {
+      return genericSuccess;
+    }
+
+    const ownerIdentities = companyIdentitySnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((item) => item.accountType === 'employee' && item.status === 'active' && !item.lockedAt && isOwnerIdentity(item));
+    const ownerIdentityIds = [...new Set(ownerIdentities.map((item) => item.id).filter(Boolean))];
+    const ownerEmployeeIds = [...new Set(ownerIdentities.map((item) => `${item.appUserId || item.publicId || ''}`).filter(Boolean))];
+    if (!ownerIdentityIds.length || !ownerEmployeeIds.length) {
+      return {
+        success: false,
+        statusCode: 409,
+        message: 'Chưa tìm thấy chủ doanh nghiệp có thể xác nhận yêu cầu này.'
+      };
+    }
+
+    const requestId = safeIdPart(identity.id);
+    const requestRef = db.collection(IDENTITY_OWNER_RESET_REQUEST_COLLECTION).doc(requestId);
+    const now = new Date();
+    const transactionResult = await db.runTransaction(async (transaction) => {
+      const existingSnap = await transaction.get(requestRef);
+      const existing = existingSnap.exists ? (existingSnap.data() || {}) : {};
+      const requestedAtMs = typeof existing.requestedAt?.toMillis === 'function'
+        ? existing.requestedAt.toMillis()
+        : new Date(existing.requestedAt || existing.requestedAtIso || 0).getTime();
+      const isRecentPending = existing.status === 'pending'
+        && Number.isFinite(requestedAtMs)
+        && now.getTime() - requestedAtMs < OWNER_RESET_REQUEST_COOLDOWN_MS;
+      if (isRecentPending) return { alreadyPending: true };
+
+      const requestCount = Math.max(0, Number(existing.requestCount || 0)) + 1;
+      transaction.set(requestRef, {
+        id: requestId,
+        identityId: identity.id,
+        employeeId: targetEmployeeId,
+        companyId,
+        appId: resolvedAppId,
+        status: 'pending',
+        requestCount,
+        ownerIdentityIds,
+        ownerEmployeeIds,
+        requesterName: identity.name || employee.name || '',
+        requesterPhone: identity.phone || employee.phone || '',
+        requestedAt: now,
+        requestedAtIso: now.toISOString(),
+        updatedAt: now,
+        updatedAtIso: now.toISOString(),
+        processingBy: admin.firestore.FieldValue.delete(),
+        processingStartedAt: admin.firestore.FieldValue.delete(),
+        processingStartedAtIso: admin.firestore.FieldValue.delete(),
+        lastFailureCode: admin.firestore.FieldValue.delete(),
+        ...(existing.createdAt ? {} : { createdAt: now, createdAtIso: now.toISOString() })
+      }, { merge: true });
+
+      ownerEmployeeIds.forEach((ownerEmployeeId) => {
+        const notificationId = `identity_owner_reset_${requestId}_${safeIdPart(ownerEmployeeId)}`;
+        transaction.set(db.doc(publicPath(resolvedAppId, 'notifications', notificationId)), {
+          id: notificationId,
+          companyId,
+          type: 'identity_owner_reset_request',
+          actionType: 'identity_owner_reset_request',
+          identityResetRequestId: requestId,
+          targetEmployeeId: ownerEmployeeId,
+          targetEmployeeIds: [ownerEmployeeId],
+          audience: 'employee',
+          isGlobal: true,
+          tone: 'amber',
+          title: 'Yêu cầu cấp lại mã PIN và mật khẩu',
+          message: `${identity.name || employee.name || 'Một nhân sự'} yêu cầu chủ doanh nghiệp cấp lại mã PIN và mật khẩu.`,
+          requesterName: identity.name || employee.name || '',
+          requesterPhone: identity.phone || employee.phone || '',
+          status: 'unread',
+          isArchived: false,
+          createdAt: now,
+          createdAtIso: now.toISOString(),
+          updatedAt: now,
+          updatedAtIso: now.toISOString()
+        }, { merge: true });
+      });
+      return { alreadyPending: false };
+    });
+
+    if (!transactionResult?.alreadyPending) {
+      await logAudit(identity.id, 'owner_password_reset_requested', { companyId, employeeId: targetEmployeeId });
+    }
+    return {
+      ...genericSuccess,
+      alreadyPending: Boolean(transactionResult?.alreadyPending)
+    };
+  };
+
+  const approveOwnerPasswordReset = async ({ authorization, requestId, appId }) => {
+    const { identityId: ownerIdentityId, identity: ownerIdentity } = await getVerifiedIdentity(authorization);
+    if (ownerIdentity.accountType !== 'employee' || !isOwnerIdentity(ownerIdentity)) {
+      throw Object.assign(new Error('Chỉ chủ doanh nghiệp được xác nhận cấp lại tài khoản.'), { statusCode: 403 });
+    }
+
+    const safeRequestId = safeIdPart(requestId);
+    if (!safeRequestId || safeRequestId !== `${requestId || ''}`) {
+      throw Object.assign(new Error('Yêu cầu cấp lại tài khoản không hợp lệ.'), { statusCode: 400 });
+    }
+    const requestRef = db.collection(IDENTITY_OWNER_RESET_REQUEST_COLLECTION).doc(safeRequestId);
+    const now = new Date();
+    const reservation = await db.runTransaction(async (transaction) => {
+      const requestSnap = await transaction.get(requestRef);
+      if (!requestSnap.exists) return { error: 'Không tìm thấy yêu cầu cấp lại tài khoản.' };
+      const request = requestSnap.data() || {};
+      if (!request.companyId || request.companyId !== `${ownerIdentity.companyId || ''}`) {
+        return { error: 'Bạn không có quyền xác nhận yêu cầu của doanh nghiệp khác.' };
+      }
+      if (!request.employeeId || !request.identityId) return { error: 'Yêu cầu cấp lại tài khoản thiếu thông tin cần thiết.' };
+      if (request.status === 'approved') return { alreadyApproved: true, request };
+      if (request.status !== 'pending' && request.status !== 'processing') {
+        return { error: 'Yêu cầu này không còn ở trạng thái chờ xác nhận.' };
+      }
+      const processingStartedAtMs = typeof request.processingStartedAt?.toMillis === 'function'
+        ? request.processingStartedAt.toMillis()
+        : new Date(request.processingStartedAt || request.processingStartedAtIso || 0).getTime();
+      const hasActiveLease = request.status === 'processing'
+        && Number.isFinite(processingStartedAtMs)
+        && now.getTime() - processingStartedAtMs < OWNER_RESET_APPROVAL_LEASE_MS;
+      if (hasActiveLease && request.processingBy !== ownerIdentityId) {
+        return { error: 'Yêu cầu đang được một chủ doanh nghiệp khác xử lý.' };
+      }
+
+      transaction.set(requestRef, {
+        status: 'processing',
+        processingBy: ownerIdentityId,
+        processingStartedAt: now,
+        processingStartedAtIso: now.toISOString(),
+        updatedAt: now,
+        updatedAtIso: now.toISOString()
+      }, { merge: true });
+      return { request };
+    });
+    if (reservation?.error) throw Object.assign(new Error(reservation.error), { statusCode: 409 });
+    if (reservation?.alreadyApproved) {
+      return { success: true, idempotent: true, message: 'Yêu cầu này đã được cấp lại trước đó.' };
+    }
+
+    const request = reservation?.request || {};
+    const resolvedAppId = getAppId(request.appId || appId);
+    try {
+      const resetResult = await ownerResetEmployeePassword({
+        authorization,
+        employeeId: request.employeeId,
+        appId: resolvedAppId,
+        approvalRequestId: safeRequestId
+      });
+      if (!resetResult?.success) throw new Error(resetResult?.message || 'Không thể cấp lại tài khoản.');
+
+      const completedAt = new Date();
+      await db.runTransaction(async (transaction) => {
+        const latestRequestSnap = await transaction.get(requestRef);
+        if (!latestRequestSnap.exists) throw new Error('Yêu cầu cấp lại tài khoản không còn tồn tại.');
+        const latestRequest = latestRequestSnap.data() || {};
+        if (latestRequest.status === 'approved') return;
+        if (latestRequest.processingBy !== ownerIdentityId) {
+          throw new Error('Yêu cầu đang được xử lý bởi phiên khác.');
+        }
+        transaction.set(requestRef, {
+          status: 'approved',
+          approvedBy: ownerIdentityId,
+          approvedAt: completedAt,
+          approvedAtIso: completedAt.toISOString(),
+          updatedAt: completedAt,
+          updatedAtIso: completedAt.toISOString()
+        }, { merge: true });
+        (Array.isArray(latestRequest.ownerEmployeeIds) ? latestRequest.ownerEmployeeIds : []).forEach((ownerEmployeeId) => {
+          const notificationId = `identity_owner_reset_${safeRequestId}_${safeIdPart(ownerEmployeeId)}`;
+          transaction.set(db.doc(publicPath(resolvedAppId, 'notifications', notificationId)), {
+            status: 'resolved',
+            isArchived: true,
+            resolvedAt: completedAt,
+            resolvedAtIso: completedAt.toISOString(),
+            updatedAt: completedAt,
+            updatedAtIso: completedAt.toISOString()
+          }, { merge: true });
+        });
+      });
+      await logAudit(ownerIdentityId, 'owner_password_reset_approved', {
+        requestId: safeRequestId,
+        employeeId: request.employeeId,
+        targetIdentityId: request.identityId
+      });
+      return {
+        success: true,
+        message: 'Đã cấp lại tài khoản. Mật khẩu mặc định là 12345678 và PIN cũ đã được hủy.'
+      };
+    } catch (error) {
+      const failedAt = new Date();
+      await requestRef.set({
+        status: 'pending',
+        processingBy: admin.firestore.FieldValue.delete(),
+        processingStartedAt: admin.firestore.FieldValue.delete(),
+        processingStartedAtIso: admin.firestore.FieldValue.delete(),
+        lastFailureCode: 'owner_reset_failed',
+        updatedAt: failedAt,
+        updatedAtIso: failedAt.toISOString()
+      }, { merge: true }).catch(() => undefined);
+      throw error;
+    }
+  };
+
   const verifyPin = async ({ authorization, pin }) => {
     const { identityId, identity } = await getVerifiedIdentity(authorization);
     if (!identity.pinHash || !(await verifyPassword(pin, identity.pinHash))) return { success: false, statusCode: 401, message: 'PIN không đúng.' };
@@ -994,6 +1244,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     requestRecovery,
     completeRecovery,
     ownerResetEmployeePassword,
+    requestOwnerPasswordReset,
+    approveOwnerPasswordReset,
     verifyPin,
     listDevices,
     revokeDevices,
@@ -1009,6 +1261,7 @@ module.exports = {
   DEFAULT_FIRST_LOGIN_PASSWORD,
   IDENTITY_ACCOUNT_COLLECTION,
   IDENTITY_AUDIT_COLLECTION,
+  IDENTITY_OWNER_RESET_REQUEST_COLLECTION,
   buildPhoneVariants,
   createRecoveryToken,
   getRecoveryIdentityIdFromToken,

@@ -4,7 +4,12 @@ const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
   ? import.meta.env
   : {};
 
-export const isVpsStagingMode = runtimeEnv.VITE_DATA_MODE === 'vps-staging';
+export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ''}`.trim();
+export const isVpsProductionMode = vpsDataMode === 'vps-production';
+export const isVpsMode = vpsDataMode === 'vps-staging' || isVpsProductionMode;
+// Existing HD Manager renderer checks use this export. Keep it as a VPS-mode
+// compatibility alias while production and staging share the same safe API path.
+export const isVpsStagingMode = isVpsMode;
 export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -511,23 +516,28 @@ export class HdConnectStagingApi {
   }
 }
 
-let stagingApi;
+let vpsApi;
 
-export const getHdConnectStagingApi = () => {
-  if (!isVpsStagingMode) {
-    throw new HdApiError('The VPS API client is only available in vps-staging mode.', {
-      code: 'VPS_STAGING_MODE_REQUIRED',
+export const getHdConnectApi = () => {
+  if (!isVpsMode) {
+    throw new HdApiError('The VPS API client is only available in a VPS data mode.', {
+      code: 'VPS_MODE_REQUIRED',
     });
   }
 
-  if (!stagingApi) {
-    stagingApi = new HdConnectStagingApi(new HdApiClient({
+  if (!vpsApi) {
+    vpsApi = new HdConnectStagingApi(new HdApiClient({
       baseUrl: runtimeEnv.VITE_API_BASE_URL,
-      deviceName: runtimeEnv.VITE_HD_DEVICE_NAME || 'HD Manager web staging',
+      deviceName: runtimeEnv.VITE_HD_DEVICE_NAME || `HD Manager web ${isVpsProductionMode ? 'production' : 'staging'}`,
+      tokenStorageNamespace: isVpsProductionMode ? 'vps-production' : 'vps-staging',
     }));
   }
 
-  return stagingApi;
+  return vpsApi;
 };
 
+// Compatibility exports keep the approved staging contract stable while both
+// VPS modes share one API adapter and never fall back to Firebase core paths.
+export const getHdConnectStagingApi = getHdConnectApi;
+export const createHdConnectApi = (client) => new HdConnectStagingApi(client);
 export const createHdConnectStagingApi = (client) => new HdConnectStagingApi(client);

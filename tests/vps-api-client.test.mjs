@@ -49,6 +49,23 @@ test('stores an access and refresh token pair after VPS login', async () => {
   assert.equal(requests[0].init.headers.Authorization, undefined);
 });
 
+test('isolates production VPS tokens from staging browser sessions', () => {
+  const storage = createStorage();
+  const client = new HdApiClient({
+    baseUrl: 'https://api.example.test/api/v1',
+    storage,
+    tokenStorageNamespace: 'vps-production',
+    fetchImpl: async () => envelope({}),
+  });
+
+  client.setSession({ accessToken: 'production-access', refreshToken: 'production-refresh' });
+
+  assert.equal(storage.getItem('hdconnect.vps-production.access-token'), 'production-access');
+  assert.equal(storage.getItem('hdconnect.vps-production.refresh-token'), 'production-refresh');
+  assert.equal(storage.getItem('hdconnect.vps-staging.access-token'), null);
+  assert.equal(storage.getItem('hdconnect.vps-staging.refresh-token'), null);
+});
+
 test('refreshes once and retries an authenticated read after HTTP 401', async () => {
   const storage = createStorage();
   storage.setItem('hdconnect.vps-staging.access-token', 'expired-access');

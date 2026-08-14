@@ -126,6 +126,14 @@ test('Kg pricing keeps order input units independent from the billing unit', () 
   assert.ok(units.includes('Thùng'));
 });
 
+test('delimited customer configuration is parsed into the same order unit suggestions', () => {
+  assert.deepEqual(getOrderInputUnitOptions({
+    product: { unit: 'Con' },
+    pricingUnit: 'Kg',
+    catalogUnits: 'Con, Kg; Thùng',
+  }), ['Con', 'Kg', 'Thùng']);
+});
+
 test('order unit suggestions exclude standard units unused by the product catalog', () => {
   const units = getOrderInputUnitOptions({
     product: { unit: 'Con' },

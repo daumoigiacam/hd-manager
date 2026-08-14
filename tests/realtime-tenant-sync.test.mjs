@@ -49,7 +49,11 @@ test('realtime keeps only baseline data at startup and scopes business listeners
   assert.match(appSource, /const activateForegroundRealtimeCollections = \(collectionNames = \[\]\) =>/);
   assert.match(appSource, /requestedNames\.slice\(0, foregroundListenerLimit\)/);
   assert.match(appSource, /const overflowCollectionNames = requestedNames\.slice\(foregroundListenerLimit\)/);
-  assert.match(appSource, /BASELINE_REALTIME_COLLECTION_NAMES\.forEach/);
+  assert.match(
+    appSource,
+    /const baselineRealtimeCollectionNames = customerSession\s*\? \['notifications', 'messages'\]\s*:\s*BASELINE_REALTIME_COLLECTION_NAMES/
+  );
+  assert.match(appSource, /baselineRealtimeCollectionNames\.forEach/);
   assert.match(appSource, /return activateForegroundRealtimeRef\.current\(collectionNames\)/);
   assert.match(appSource, /if \(!force && hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, colName\)\)/);
   assert.doesNotMatch(appSource, /const refreshAllCollections = async/);

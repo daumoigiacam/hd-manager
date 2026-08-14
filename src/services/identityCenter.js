@@ -21,6 +21,8 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/request-recovery': 'identityRequestRecovery',
   '/api/identity/complete-recovery': 'identityCompleteRecovery',
   '/api/identity/owner-reset-password': 'identityOwnerResetPassword',
+  '/api/identity/request-owner-reset': 'identityRequestOwnerReset',
+  '/api/identity/approve-owner-reset': 'identityApproveOwnerReset',
   '/api/identity/verify-pin': 'identityVerifyPin',
   '/api/identity/devices': 'identityDevices',
   '/api/identity/revoke-devices': 'identityRevokeDevices',
@@ -444,6 +446,17 @@ export const identityCompleteRecovery = ({ resetToken, password, identifier }) =
 export const identityOwnerResetPassword = ({ idToken, employeeId, appId }) => requestIdentityApi(
   '/api/identity/owner-reset-password',
   { employeeId, appId },
+  { idToken },
+);
+
+export const identityRequestOwnerReset = ({ identifier, appId }) => requestIdentityApi(
+  '/api/identity/request-owner-reset',
+  { identifier, appId },
+);
+
+export const identityApproveOwnerReset = ({ idToken, requestId, appId }) => requestIdentityApi(
+  '/api/identity/approve-owner-reset',
+  { requestId, appId },
   { idToken },
 );
 

@@ -1,10 +1,21 @@
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_RETRY_COUNT = 1;
 
-const TOKEN_STORAGE_KEYS = Object.freeze({
-  accessToken: 'hdconnect.vps-staging.access-token',
-  refreshToken: 'hdconnect.vps-staging.refresh-token',
-});
+const DEFAULT_TOKEN_STORAGE_NAMESPACE = 'vps-staging';
+
+export const createTokenStorageKeys = (namespace = DEFAULT_TOKEN_STORAGE_NAMESPACE) => {
+  const normalizedNamespace = `${namespace || ''}`.trim();
+  if (!/^[a-z0-9-]+$/i.test(normalizedNamespace)) {
+    throw new HdApiError('The VPS token storage namespace is invalid.', {
+      code: 'TOKEN_STORAGE_NAMESPACE_INVALID',
+    });
+  }
+
+  return Object.freeze({
+    accessToken: `hdconnect.${normalizedNamespace}.access-token`,
+    refreshToken: `hdconnect.${normalizedNamespace}.refresh-token`,
+  });
+};
 
 const RETRYABLE_METHODS = new Set(['GET', 'HEAD']);
 
@@ -54,7 +65,7 @@ export const createRequestId = () => {
 export const normalizeApiBaseUrl = (baseUrl) => {
   const normalized = `${baseUrl || ''}`.trim().replace(/\/+$/, '');
   if (!normalized) {
-    throw new HdApiError('VITE_API_BASE_URL is required for VPS staging.', {
+    throw new HdApiError('VITE_API_BASE_URL is required for VPS mode.', {
       code: 'API_BASE_URL_MISSING',
     });
   }
@@ -62,7 +73,7 @@ export const normalizeApiBaseUrl = (baseUrl) => {
   try {
     return new URL(normalized).toString().replace(/\/+$/, '');
   } catch {
-    throw new HdApiError('VITE_API_BASE_URL must be a valid absolute URL.', {
+    throw new HdApiError('VITE_API_BASE_URL must be a valid absolute URL for VPS mode.', {
       code: 'API_BASE_URL_INVALID',
     });
   }
@@ -146,6 +157,7 @@ export class HdApiClient {
     retryCount = DEFAULT_RETRY_COUNT,
     deviceName = '',
     platform = 'hd-manager-web',
+    tokenStorageNamespace = DEFAULT_TOKEN_STORAGE_NAMESPACE,
   } = {}) {
     this.baseUrl = normalizeApiBaseUrl(baseUrl);
     this.fetchImpl = fetchImpl;
@@ -154,6 +166,7 @@ export class HdApiClient {
     this.retryCount = retryCount;
     this.deviceName = deviceName;
     this.platform = platform;
+    this.tokenStorageKeys = createTokenStorageKeys(tokenStorageNamespace);
     this.refreshPromise = null;
 
     if (typeof this.fetchImpl !== 'function') {
@@ -164,11 +177,11 @@ export class HdApiClient {
   }
 
   getAccessToken() {
-    return this.storage.getItem(TOKEN_STORAGE_KEYS.accessToken) || '';
+    return this.storage.getItem(this.tokenStorageKeys.accessToken) || '';
   }
 
   getRefreshToken() {
-    return this.storage.getItem(TOKEN_STORAGE_KEYS.refreshToken) || '';
+    return this.storage.getItem(this.tokenStorageKeys.refreshToken) || '';
   }
 
   hasSession() {
@@ -176,8 +189,8 @@ export class HdApiClient {
   }
 
   clearSession() {
-    this.storage.removeItem(TOKEN_STORAGE_KEYS.accessToken);
-    this.storage.removeItem(TOKEN_STORAGE_KEYS.refreshToken);
+    this.storage.removeItem(this.tokenStorageKeys.accessToken);
+    this.storage.removeItem(this.tokenStorageKeys.refreshToken);
   }
 
   setSession({ accessToken, refreshToken } = {}) {
@@ -187,8 +200,8 @@ export class HdApiClient {
       });
     }
 
-    this.storage.setItem(TOKEN_STORAGE_KEYS.accessToken, accessToken);
-    this.storage.setItem(TOKEN_STORAGE_KEYS.refreshToken, refreshToken);
+    this.storage.setItem(this.tokenStorageKeys.accessToken, accessToken);
+    this.storage.setItem(this.tokenStorageKeys.refreshToken, refreshToken);
   }
 
   async login({ email, password, deviceName = this.deviceName } = {}) {

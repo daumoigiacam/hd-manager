@@ -199,6 +199,83 @@ const decimalWeight = buildCustomerProductBillingSnapshot({
 });
 assert.equal(decimalWeight.amount, 125000, '38. decimal Kg billing is rounded and calculated correctly');
 
+const duckOrderUnitConfig = resolveCustomerProductConfiguration({
+  customerConfig: {
+    pricingUnit: 'Kg',
+    price: 57000,
+    orderUnits: 'Kg, Con',
+    defaultOrderUnit: 'Con',
+    unitConversions: 'Con=2.5',
+  },
+  product: duckProduct,
+});
+assert.deepEqual(duckOrderUnitConfig.orderUnits, ['Kg', 'Con'], '39. customer configuration exposes allowed order units');
+assert.equal(duckOrderUnitConfig.defaultOrderUnit, 'Con', '40. customer configuration preserves its default order unit');
+
+const oneKgCustomerOrder = buildCustomerProductBillingSnapshot({
+  configuration: duckOrderUnitConfig,
+  product: duckProduct,
+  actualQuantity: 1,
+  actualUnit: 'Kg',
+  orderUnit: 'Kg',
+});
+assert.equal(oneKgCustomerOrder.amount, 57000, '41. 1 Kg x 57,000 = 57,000');
+assert.equal(oneKgCustomerOrder.orderUnit, 'Kg', '42. the chosen Kg order unit is persisted');
+
+const oneDuckCustomerOrder = buildCustomerProductBillingSnapshot({
+  configuration: duckOrderUnitConfig,
+  product: duckProduct,
+  actualQuantity: 1,
+  actualUnit: 'Con',
+  orderUnit: 'Con',
+});
+assert.equal(oneDuckCustomerOrder.billingQuantity, 2.5, '43. 1 Con converts to 2.5 Kg when configured');
+assert.equal(oneDuckCustomerOrder.conversionFactor, 2.5, '44. the snapshot stores the configured conversion factor');
+assert.equal(oneDuckCustomerOrder.amount, 142500, '45. 1 Con x 2.5 Kg x 57,000 = 142,500');
+assert.equal(oneDuckCustomerOrder.basePriceUnit, 'Kg', '46. the base price unit remains Kg');
+
+const threeDuckCustomerOrder = buildCustomerProductBillingSnapshot({
+  configuration: duckOrderUnitConfig,
+  product: duckProduct,
+  actualQuantity: 3,
+  actualUnit: 'Con',
+  orderUnit: 'Con',
+});
+assert.equal(threeDuckCustomerOrder.amount, 427500, '47. 3 Con x 2.5 Kg x 57,000 = 427,500');
+
+const commaDecimalConversionOrder = buildCustomerProductBillingSnapshot({
+  configuration: resolveCustomerProductConfiguration({
+    customerConfig: {
+      pricingUnit: 'Kg',
+      price: 57000,
+      orderUnits: 'Kg, Con',
+      defaultOrderUnit: 'Con',
+      unitConversions: 'Con=2,5',
+    },
+    product: duckProduct,
+  }),
+  product: duckProduct,
+  actualQuantity: 1,
+  actualUnit: 'Con',
+  orderUnit: 'Con',
+});
+assert.equal(commaDecimalConversionOrder.amount, 142500, '48. Vietnamese comma conversion preserves the exact amount');
+assert.equal(commaDecimalConversionOrder.conversionFactor, 2.5, '49. Vietnamese comma conversion is saved in the snapshot');
+
+const missingConversionOrder = buildCustomerProductBillingSnapshot({
+  configuration: resolveCustomerProductConfiguration({
+    customerConfig: { pricingUnit: 'Kg', price: 57000, orderUnits: 'Kg, Con' },
+    product: duckProduct,
+  }),
+  product: duckProduct,
+  actualQuantity: 1,
+  actualUnit: 'Con',
+  orderUnit: 'Con',
+});
+assert.equal(missingConversionOrder.amount, 0, '50. missing conversion never assumes 1 Con equals 1 Kg');
+assert.equal(missingConversionOrder.billingSnapshotValid, false, '51. missing conversion leaves the cart line invalid');
+assert.equal(missingConversionOrder.pricingPendingActual, true, '52. missing conversion is explicitly marked as unresolved');
+
 const lo47Configuration = resolveCustomerProductConfiguration({
   customerConfig: { pricingUnit: 'Kg', price: 52000 },
   product: { id: 'unplucked-chicken', name: 'Ga Khong Moc', unit: 'Kg', sellingPrice: 57000 },
@@ -264,4 +341,4 @@ assert.equal(
   '40. pricing analytics uses the same frozen billing amount as the order and debt flow'
 );
 
-console.log('Customer product billing tests: PASS (18 scenarios, 46 assertions)');
+console.log('Customer product billing tests: PASS (22 scenarios, 60 assertions)');

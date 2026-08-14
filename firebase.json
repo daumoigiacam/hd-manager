@@ -43,6 +43,14 @@
         "function": "identityOwnerResetPassword"
       },
       {
+        "source": "/api/identity/request-owner-reset",
+        "function": "identityRequestOwnerReset"
+      },
+      {
+        "source": "/api/identity/approve-owner-reset",
+        "function": "identityApproveOwnerReset"
+      },
+      {
         "source": "/api/identity/verify-pin",
         "function": "identityVerifyPin"
       },

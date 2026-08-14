@@ -33,6 +33,143 @@ const sameUnit = (left = '', right = '') => (
   normalizeText(normalizeProductPricingUnit(left)) === normalizeText(normalizeProductPricingUnit(right))
 );
 
+const parseConfiguredConversion = (value = 0) => parsePositiveQuantity(value);
+
+const normalizeConversionKey = (value = '') => normalizeText(normalizeProductPricingUnit(value));
+
+const buildConversionResult = (factor = 0, source = '') => ({
+  factor: parseConfiguredConversion(factor),
+  isConfigured: parseConfiguredConversion(factor) > 0,
+  source,
+});
+
+const findConversionInText = ({ text = '', fromUnit = '', toUnit = '' } = {}) => {
+  const normalizedFrom = normalizeConversionKey(fromUnit);
+  const normalizedTo = normalizeConversionKey(toUnit);
+  if (!normalizedFrom || !normalizedTo) return null;
+
+  return `${text || ''}`
+    .split(/[;\n|]+/)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const explicitTarget = entry.match(/^(.+?)\s*(?:->|to)\s*(.+?)\s*=\s*([0-9][0-9.,]*)\s*$/i);
+      if (explicitTarget) {
+        return {
+          from: explicitTarget[1],
+          to: explicitTarget[2],
+          factor: explicitTarget[3],
+          source: 'configured_text_target',
+        };
+      }
+      const implicitTarget = entry.match(/^(.+?)\s*(?:=|:)\s*([0-9][0-9.,]*)\s*$/);
+      if (implicitTarget) {
+        return {
+          from: implicitTarget[1],
+          to: '',
+          factor: implicitTarget[2],
+          source: 'configured_text',
+        };
+      }
+      return null;
+    })
+    .find((entry) => entry
+      && normalizeConversionKey(entry.from) === normalizedFrom
+      && (!entry.to || normalizeConversionKey(entry.to) === normalizedTo));
+};
+
+const findConversionInObject = ({ source = null, fromUnit = '', toUnit = '' } = {}) => {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  const normalizedFrom = normalizeConversionKey(fromUnit);
+  const normalizedTo = normalizeConversionKey(toUnit);
+  if (!normalizedFrom || !normalizedTo) return null;
+
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const normalizedKey = normalizeText(rawKey);
+    const arrowMatch = `${rawKey}`.match(/^(.+?)\s*(?:->|to)\s*(.+?)$/i);
+    if (arrowMatch) {
+      if (
+        normalizeConversionKey(arrowMatch[1]) === normalizedFrom
+        && normalizeConversionKey(arrowMatch[2]) === normalizedTo
+      ) {
+        const factor = parseConfiguredConversion(rawValue?.factor ?? rawValue?.value ?? rawValue);
+        if (factor > 0) return { factor, source: 'configured_object_target' };
+      }
+      continue;
+    }
+
+    if (normalizedKey !== normalizedFrom) continue;
+    if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+      const targetValue = rawValue[toUnit] ?? rawValue[normalizedTo] ?? rawValue.factor ?? rawValue.value;
+      const factor = parseConfiguredConversion(targetValue);
+      if (factor > 0) return { factor, source: 'configured_object_nested' };
+      continue;
+    }
+    const factor = parseConfiguredConversion(rawValue);
+    if (factor > 0) return { factor, source: 'configured_object' };
+  }
+  return null;
+};
+
+const findConfiguredConversion = ({ source = null, fromUnit = '', toUnit = '' } = {}) => {
+  if (Array.isArray(source)) {
+    for (const entry of source) {
+      if (!entry || typeof entry !== 'object') continue;
+      const entryFrom = entry.fromUnit || entry.from || entry.orderUnit || entry.unit || '';
+      const entryTo = entry.toUnit || entry.to || entry.pricingUnit || entry.billingUnit || '';
+      if (
+        normalizeConversionKey(entryFrom) === normalizeConversionKey(fromUnit)
+        && (!entryTo || normalizeConversionKey(entryTo) === normalizeConversionKey(toUnit))
+      ) {
+        const factor = parseConfiguredConversion(entry.factor ?? entry.conversionFactor ?? entry.value);
+        if (factor > 0) return { factor, source: 'configured_list' };
+      }
+    }
+    return null;
+  }
+  if (typeof source === 'string') return findConversionInText({ text: source, fromUnit, toUnit });
+  return findConversionInObject({ source, fromUnit, toUnit });
+};
+
+// A conversion is valid only when it is expressly configured. This prevents
+// a count (for example Con) from ever being silently treated as Kg.
+export const resolveUnitConversionFactor = ({
+  fromUnit = '',
+  toUnit = '',
+  conversionFactor = 0,
+  unitConversions = null,
+  conversions = null,
+} = {}) => {
+  const normalizedFrom = normalizeProductPricingUnit(fromUnit);
+  const normalizedTo = normalizeProductPricingUnit(toUnit);
+  if (!normalizedFrom || !normalizedTo || sameUnit(normalizedFrom, normalizedTo)) {
+    return buildConversionResult(0, '');
+  }
+
+  const directFactor = parseConfiguredConversion(conversionFactor);
+  if (directFactor > 0) return buildConversionResult(directFactor, 'explicit_line_factor');
+
+  const configured = findConfiguredConversion({
+    source: unitConversions ?? conversions,
+    fromUnit: normalizedFrom,
+    toUnit: normalizedTo,
+  });
+  const configuredFactor = parseConfiguredConversion(configured?.factor);
+  if (configuredFactor > 0) return buildConversionResult(configuredFactor, configured.source);
+
+  if (unitConversions == null && conversions != null) {
+    const fallbackConfigured = findConfiguredConversion({
+      source: conversions,
+      fromUnit: normalizedFrom,
+      toUnit: normalizedTo,
+    });
+    const fallbackFactor = parseConfiguredConversion(fallbackConfigured?.factor);
+    if (fallbackFactor > 0) return buildConversionResult(fallbackFactor, fallbackConfigured.source);
+  }
+
+  return buildConversionResult(0, '');
+};
+
 const stableHash = (value = '') => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -136,11 +273,14 @@ export const getOrderInputUnitOptions = ({
 } = {}) => {
   const normalizedPricingUnit = normalizeProductPricingUnit(pricingUnit);
   const productUnits = getProductPricingUnits(product || {}, '');
+  const normalizedCatalogUnits = Array.isArray(catalogUnits)
+    ? catalogUnits
+    : `${catalogUnits || ''}`.split(/[;,/&+|]/);
   const candidates = [
     currentUnit,
     rememberedUnit,
     ...productUnits,
-    ...(Array.isArray(catalogUnits) ? catalogUnits : []),
+    ...normalizedCatalogUnits,
     normalizedPricingUnit,
     fallback,
   ];
@@ -165,6 +305,9 @@ export const resolvePricingQuantity = ({
   actualWeightKg = 0,
   actualQuantity = 0,
   actualQuantityUnit = '',
+  conversionFactor = 0,
+  unitConversions = null,
+  conversions = null,
 } = {}) => {
   const normalizedPricingUnit = normalizeProductPricingUnit(pricingUnit);
   const normalizedInputUnit = normalizeProductPricingUnit(inputUnit);
@@ -172,11 +315,32 @@ export const resolvePricingQuantity = ({
   const weight = parsePositiveQuantity(actualWeightKg);
   const actual = parsePositiveQuantity(actualQuantity);
   const entered = parsePositiveQuantity(inputQuantity);
+  const conversionInputUnit = normalizedInputUnit || normalizedActualUnit;
+  const conversionInputQuantity = entered > 0 ? entered : actual;
+  const conversion = resolveUnitConversionFactor({
+    fromUnit: conversionInputUnit,
+    toUnit: normalizedPricingUnit,
+    conversionFactor,
+    unitConversions,
+    conversions,
+  });
+  const convertedQuantity = conversion.isConfigured && conversionInputQuantity > 0
+    ? conversionInputQuantity * conversion.factor
+    : 0;
 
   if (sameUnit(normalizedPricingUnit, 'Kg')) {
     if (weight > 0) return { quantity: weight, source: 'actualWeightKg', isPending: false };
     if (sameUnit(normalizedInputUnit, 'Kg') && entered > 0) {
       return { quantity: entered, source: 'inputQuantity', isPending: false };
+    }
+    if (convertedQuantity > 0) {
+      return {
+        quantity: convertedQuantity,
+        source: 'configuredUnitConversion',
+        isPending: false,
+        conversionFactor: conversion.factor,
+        conversionSource: conversion.source,
+      };
     }
     return { quantity: 0, source: 'missingActualWeightKg', isPending: true };
   }
@@ -186,6 +350,15 @@ export const resolvePricingQuantity = ({
   }
   if (sameUnit(normalizedInputUnit, normalizedPricingUnit) && entered > 0) {
     return { quantity: entered, source: 'inputQuantity', isPending: false };
+  }
+  if (convertedQuantity > 0) {
+    return {
+      quantity: convertedQuantity,
+      source: 'configuredUnitConversion',
+      isPending: false,
+      conversionFactor: conversion.factor,
+      conversionSource: conversion.source,
+    };
   }
   return { quantity: 0, source: 'missingActualQuantity', isPending: true };
 };
