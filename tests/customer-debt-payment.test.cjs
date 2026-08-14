@@ -184,6 +184,45 @@ const approvalLedger = buildCustomerDebtLedger({
 });
 assert.strictEqual(approvalLedger.orderOutstandingById.get('order-c'), 60000, 'Only official payments may reduce customer debt.');
 
+const pendingPaymentIntentLedger = buildCustomerDebtLedger({
+  customer: { id: 'customer-pending-intent' },
+  orders: [{ id: 'order-pending-intent', customerId: 'customer-pending-intent', amount: 100000, date: '2026-07-01' }],
+  payments: [{
+    id: 'payment-intent-only',
+    customerId: 'customer-pending-intent',
+    amount: 100000,
+    sourceType: 'customer_debt_payment_intent',
+    status: 'pending',
+    date: '2026-07-02'
+  }]
+});
+assert.strictEqual(
+  pendingPaymentIntentLedger.currentDebt,
+  100000,
+  'Opening a QR payment intent must not reduce customer debt before payment confirmation.'
+);
+
+const confirmedWebhookLedger = buildCustomerDebtLedger({
+  customer: { id: 'customer-webhook-confirmed' },
+  orders: [{ id: 'order-webhook-confirmed', customerId: 'customer-webhook-confirmed', amount: 100000, date: '2026-07-01' }],
+  payments: [{
+    id: 'payment-webhook-confirmed',
+    customerId: 'customer-webhook-confirmed',
+    amount: 100000,
+    sourceType: 'sepay_customer_debt_webhook',
+    status: 'paid',
+    approvalStatus: 'approved',
+    handoverStatus: 'confirmed',
+    isConfirmed: true,
+    date: '2026-07-02'
+  }]
+});
+assert.strictEqual(
+  confirmedWebhookLedger.currentDebt,
+  0,
+  'A payment confirmed by the SePay webhook must reduce customer debt.'
+);
+
 const canonicalAmountLedger = buildCustomerDebtLedger({
   customer: { id: 'customer-1' },
   orders: [{
@@ -227,6 +266,10 @@ assert.strictEqual(
 const firestoreRules = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
 const functionsSource = fs.readFileSync(path.join(__dirname, '..', 'functions', 'index.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
+assert.ok(
+  appSource.includes('isUnconfirmedPaymentIntent'),
+  'The customer portal must exclude pending payment intents from its payment history and debt summary.'
+);
 assert.ok(
   functionsSource.includes('normalizeCustomerDebtPaymentLookupTokens(tokens)'),
   'The webhook intent lookup must accept both a single HD invoice code and an HDP aggregate code.'

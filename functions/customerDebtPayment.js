@@ -42,6 +42,47 @@ const compareLedgerItems = (left = {}, right = {}) => {
   return `${left.id || ''}`.localeCompare(`${right.id || ''}`);
 };
 
+const UNCONFIRMED_PAYMENT_STATUSES = new Set([
+  'pending',
+  'created',
+  'initiated',
+  'processing',
+  'awaiting_payment',
+  'awaiting_transfer',
+  'unpaid',
+  'failed',
+  'cancelled',
+  'canceled',
+  'expired'
+]);
+const PAYMENT_INTENT_SOURCE_TYPES = new Set([
+  'customer_debt_payment_intent',
+  'customer_payment_intent',
+  'sepay_customer_debt_intent',
+  'sepay_payment_intent',
+  'bank_qr_payment_intent'
+]);
+
+const isUnconfirmedPaymentIntent = (payment = {}) => {
+  const sourceType = String(payment.sourceType || payment.type || '').trim().toLowerCase();
+  const statuses = [
+    payment.status,
+    payment.paymentStatus,
+    payment.settlementStatus,
+    payment.reconciliationStatus
+  ]
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  return Boolean(
+    payment.isPaymentIntent === true
+    || payment.paymentIntent === true
+    || payment.isCustomerDebtPaymentIntent === true
+    || PAYMENT_INTENT_SOURCE_TYPES.has(sourceType)
+    || statuses.some(status => UNCONFIRMED_PAYMENT_STATUSES.has(status))
+  );
+};
+
 const isOfficialPayment = (payment = {}) => {
   const requiresApproval = Boolean(
     payment.requiresApproval
@@ -50,7 +91,8 @@ const isOfficialPayment = (payment = {}) => {
     || ['driver_delivery_expense', 'employee_reported_expense', 'employee_reported_income'].includes(payment.sourceType)
     || (payment.sourceType === 'driver_cash' && payment.createdByRole === 'driver')
   );
-  return !requiresApproval || payment.approvalStatus === 'approved';
+  return !isUnconfirmedPaymentIntent(payment)
+    && (!requiresApproval || payment.approvalStatus === 'approved');
 };
 
 const getCustomerId = (record = {}) => `${

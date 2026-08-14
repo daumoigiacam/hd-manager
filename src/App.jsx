@@ -7615,6 +7615,45 @@ const CASHFLOW_APPROVAL_STATUS = {
   approved: 'approved',
   rejected: 'rejected'
 };
+const UNCONFIRMED_PAYMENT_STATUSES = new Set([
+  'pending',
+  'created',
+  'initiated',
+  'processing',
+  'awaiting_payment',
+  'awaiting_transfer',
+  'unpaid',
+  'failed',
+  'cancelled',
+  'canceled',
+  'expired'
+]);
+const PAYMENT_INTENT_SOURCE_TYPES = new Set([
+  'customer_debt_payment_intent',
+  'customer_payment_intent',
+  'sepay_customer_debt_intent',
+  'sepay_payment_intent',
+  'bank_qr_payment_intent'
+]);
+const isUnconfirmedPaymentIntent = (item = {}) => {
+  const sourceType = `${item.sourceType || item.type || ''}`.trim().toLowerCase();
+  const statuses = [
+    item.status,
+    item.paymentStatus,
+    item.settlementStatus,
+    item.reconciliationStatus
+  ]
+    .map(value => `${value || ''}`.trim().toLowerCase())
+    .filter(Boolean);
+
+  return Boolean(
+    item.isPaymentIntent === true
+    || item.paymentIntent === true
+    || item.isCustomerDebtPaymentIntent === true
+    || PAYMENT_INTENT_SOURCE_TYPES.has(sourceType)
+    || statuses.some(status => UNCONFIRMED_PAYMENT_STATUSES.has(status))
+  );
+};
 const requiresCashflowApproval = (item = {}) => Boolean(
   item.requiresApproval ||
   item.approvalStatus === CASHFLOW_APPROVAL_STATUS.pending ||
@@ -7627,8 +7666,8 @@ const requiresCashflowApproval = (item = {}) => Boolean(
   (item.sourceType === 'driver_cash' && item.createdByRole === 'driver')
 );
 const isCashflowOfficial = (item = {}) => (
-  !requiresCashflowApproval(item) ||
-  item.approvalStatus === CASHFLOW_APPROVAL_STATUS.approved
+  !isUnconfirmedPaymentIntent(item)
+  && (!requiresCashflowApproval(item) || item.approvalStatus === CASHFLOW_APPROVAL_STATUS.approved)
 );
 const getCashflowApprovalMeta = (item = {}) => {
   if (!requiresCashflowApproval(item)) {
@@ -80425,7 +80464,9 @@ function CustomerPortalView({
     [safeOrderRequests, editingOrderRequestId]
   );
   const customerPayments = useMemo(
-    () => safePayments.filter(payment => payment.customerId === customerProfile?.id).sort((a, b) => `${b.createdAt || b.date || ''}`.localeCompare(`${a.createdAt || a.date || ''}`)),
+    () => safePayments
+      .filter(payment => payment.customerId === customerProfile?.id && isCashflowOfficial(payment))
+      .sort((a, b) => `${b.createdAt || b.date || ''}`.localeCompare(`${a.createdAt || a.date || ''}`)),
     [safePayments, customerProfile?.id]
   );
   const ledger = useMemo(() => customerProfile?.id ? buildCustomerLedger(customerProfile, safeOrders, safePayments) : buildCustomerLedger('', [], []), [customerProfile, safeOrders, safePayments]);
