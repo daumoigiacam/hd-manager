@@ -107,6 +107,11 @@ import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { buildCustomerDirectionsUrl } from './utils/customerLocationDirections.js';
 import {
+  canPickCustomerContact as canUseCustomerContactPicker,
+  normalizePickedCustomerContact,
+  pickWebCustomerContact,
+} from './utils/customerContactPicker.js';
+import {
   filterCustomerVisibleProducts,
   isCustomerVisibleProduct,
 } from './utils/customerProductVisibility.js';
@@ -5247,16 +5252,13 @@ const resolveCustomerImportFixedProducts = (value = '', products = []) => {
 
 const pickCustomerContactFromDevice = async () => {
   if (Capacitor.getPlatform() !== 'android') {
-    return {
-      ok: false,
-      supported: false,
-      message: ''
-    };
+    return pickWebCustomerContact();
   }
 
   try {
     const result = await ContactPicker.pickContact();
-    return result || { ok: false, supported: true, cancelled: true, message: 'Bạn chưa chọn liên hệ nào.' };
+    if (!result) return { ok: false, supported: true, cancelled: true, message: 'Bạn chưa chọn liên hệ nào.' };
+    return { ...result, ...normalizePickedCustomerContact(result) };
   } catch (error) {
     return {
       ok: false,
@@ -68608,7 +68610,6 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
           <div className="bg-white rounded-2xl p-5 w-full max-w-md max-h-[88vh] overflow-y-auto animate-in zoom-in-95">
             <h3 className="font-bold text-lg mb-4">Thêm Khách Hàng</h3>
             <form onSubmit={handleAddCustomerSubmit} className="space-y-4">
-              {canPickCustomerContact && (
               <button
                 type="button"
                 onClick={handlePickCustomerContact}
@@ -68618,7 +68619,6 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
                 <Phone size={16} />
                 {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
               </button>
-              )}
               {customerContactStatus && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700">
                   {customerContactStatus}
@@ -68756,6 +68756,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const [customerDetailOpenSections, setCustomerDetailOpenSections] = useState({});
   const [showCustomerDebtList, setShowCustomerDebtList] = useState(false);
   const customerImportInputRef = useRef(null);
+  const customerContactPickerInFlightRef = useRef(false);
   const customerPriceAutoSaveTimerRef = useRef(null);
   const customerOrderHistoryRef = useRef(null);
   const customerPaymentHistoryRef = useRef(null);
@@ -68772,6 +68773,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const canDeleteCustomer = Boolean(canDeleteCustomerPermission);
   const canReassignCustomerManager = Boolean(canReassignCustomerManagerPermission);
   const canAddCustomer = Boolean(canAddCustomerPermission);
+  const canPickCustomerContact = canUseCustomerContactPicker({ platform: Capacitor.getPlatform() });
   const canBulkImportCustomers = Boolean(canBulkImportCustomersPermission);
   const canEditCustomerProfile = Boolean(canEditCustomer || canEditCustomerPhoneAddress || canEditCustomerLocation);
   const canSeeCustomerPhone = Boolean(isOwnerCustomerAccount || canViewCustomerPhone);
@@ -69952,24 +69954,30 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   };
 
   const handlePickCustomerContact = async () => {
+    if (customerContactPickerInFlightRef.current) return;
+    customerContactPickerInFlightRef.current = true;
     setIsPickingCustomerContact(true);
     setCustomerContactStatus('');
-    const result = await pickCustomerContactFromDevice();
 
-    if (result?.ok) {
-      setNewCus((prev) => ({
-        ...prev,
-        customerHonorific: prev.customerHonorific || inferCustomerHonorificFromName(result.name || ''),
-        name: toTitleCase(stripCustomerHonorificPrefix(`${result.name || prev.name || ''}`.trim())),
-        phone: `${result.phone || prev.phone || ''}`.trim(),
-        address: capitalizeFirst(`${result.address || prev.address || ''}`.trim())
-      }));
-      setCustomerContactStatus(`Đã lấy liên hệ: ${result.name || 'Khách hàng'}${result.phone ? ` • ${result.phone}` : ''}`);
-    } else {
-      setCustomerContactStatus(result?.message || 'Không thể lấy dữ liệu từ danh bạ điện thoại.');
+    try {
+      const result = await pickCustomerContactFromDevice();
+      if (result?.ok) {
+        setNewCus((prev) => ({
+          ...prev,
+          customerHonorific: prev.customerHonorific || inferCustomerHonorificFromName(result.name || ''),
+          name: toTitleCase(stripCustomerHonorificPrefix(`${result.name || prev.name || ''}`.trim())),
+          phone: `${result.phone || prev.phone || ''}`.trim(),
+          address: capitalizeFirst(`${result.address || prev.address || ''}`.trim())
+        }));
+        const missingPhoneNotice = result.phone ? '' : '. Liên hệ này chưa có số điện thoại, hãy bổ sung trước khi lưu';
+        setCustomerContactStatus(`Đã lấy liên hệ: ${result.name || 'Khách hàng'}${result.phone ? ` • ${result.phone}` : ''}${missingPhoneNotice}`);
+      } else {
+        setCustomerContactStatus(result?.message || 'Không thể lấy dữ liệu từ danh bạ điện thoại.');
+      }
+    } finally {
+      customerContactPickerInFlightRef.current = false;
+      setIsPickingCustomerContact(false);
     }
-
-    setIsPickingCustomerContact(false);
   };
 
   const handleApplyNewCustomerLocationInput = () => {
@@ -72987,15 +72995,17 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           <div className="bg-white rounded-3xl p-4 w-full max-w-sm max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain animate-in zoom-in-95 sm:p-5">
             <h3 className="font-bold text-lg mb-4">Thêm Khách Hàng</h3>
             <form onSubmit={handleAddCustomerSubmit} className="space-y-3 text-[14px] sm:space-y-4">
-              <button
-                type="button"
-                onClick={handlePickCustomerContact}
-                disabled={isPickingCustomerContact}
-                className="w-full border border-sky-200 bg-sky-50 text-sky-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <Phone size={16} />
-                {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
-              </button>
+              {canPickCustomerContact && (
+                <button
+                  type="button"
+                  onClick={handlePickCustomerContact}
+                  disabled={isPickingCustomerContact}
+                  className="w-full border border-sky-200 bg-sky-50 text-sky-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <Phone size={16} />
+                  {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
+                </button>
+              )}
               {customerContactStatus && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700">
                   {customerContactStatus}
