@@ -308,15 +308,36 @@ export const removeTrustedDeviceSecret = async (deviceId, accountScope = '') => 
   window.localStorage.removeItem(getWebSecretKey(deviceId, accountScope));
 };
 
+export const getIdentityNetworkErrorMessage = (error, path = '') => {
+  const sourceMessage = `${error?.message || ''}`.toLowerCase();
+  if (error?.name === 'AbortError' || /timeout|timed out/.test(sourceMessage)) {
+    return 'Máy chủ tài khoản phản hồi chậm. Vui lòng kiểm tra mạng và thử lại.';
+  }
+  if (/failed to fetch|load failed|networkerror|network request failed/.test(sourceMessage)) {
+    const target = path === '/api/identity/register-company' ? 'tạo tài khoản mới' : 'xác thực tài khoản';
+    return `Không thể kết nối máy chủ để ${target}. Vui lòng kiểm tra mạng và thử lại.`;
+  }
+  return '';
+};
+
 const requestIdentityApi = async (path, payload = {}, { idToken = '' } = {}) => {
-  const response = await fetchWithTimeout(getIdentityApiUrl(path), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-    },
-    body: JSON.stringify(payload),
-  }, IDENTITY_REQUEST_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetchWithTimeout(getIdentityApiUrl(path), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    }, IDENTITY_REQUEST_TIMEOUT_MS);
+  } catch (error) {
+    const friendlyMessage = getIdentityNetworkErrorMessage(error, path);
+    if (!friendlyMessage) throw error;
+    const friendlyError = new Error(friendlyMessage);
+    friendlyError.cause = error;
+    throw friendlyError;
+  }
   let body = {};
   try {
     body = await response.json();

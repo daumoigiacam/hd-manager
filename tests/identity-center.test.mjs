@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   findIdentitySessionOwner,
   getIdentityAccountScope,
+  getIdentityNetworkErrorMessage,
   isIdentityTenantValidationReady,
   readTrustedDeviceSecret,
   removeTrustedDeviceSecret,
@@ -67,6 +68,15 @@ assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, owne
 assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: false, ownerRecord: { isArchived: true } }), false);
 assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, ownerRecord: { isArchived: true } }), true);
 assert.equal(shouldInvalidateIdentitySession({ firebaseAuthenticated: true, companyRecord: { status: 'blocked' } }), true);
+assert.equal(
+  getIdentityNetworkErrorMessage(new TypeError('Load failed'), '/api/identity/register-company'),
+  'Không thể kết nối máy chủ để tạo tài khoản mới. Vui lòng kiểm tra mạng và thử lại.',
+);
+assert.equal(
+  getIdentityNetworkErrorMessage(new DOMException('Aborted', 'AbortError'), '/api/identity/login'),
+  'Máy chủ tài khoản phản hồi chậm. Vui lòng kiểm tra mạng và thử lại.',
+);
+assert.equal(getIdentityNetworkErrorMessage(new Error('Invalid password'), '/api/identity/login'), '');
 
 const localSecretStore = new Map();
 globalThis.window = {
