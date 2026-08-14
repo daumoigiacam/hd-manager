@@ -162,6 +162,15 @@ test('product column content is centered consistently', () => {
   assert.match(appSource, /className="flex flex-wrap items-center justify-center gap-1\.5"/);
 });
 
+test('order search results are sorted by order recency after relevance filtering', () => {
+  const displayOrdersSource = appSource.slice(
+    appSource.indexOf('const displayOrders = useMemo'),
+    appSource.indexOf('const selectedRevenueDate ='),
+  );
+  assert.match(displayOrdersSource, /searchOrderRecords\(source, orderSearchKeyword/);
+  assert.match(displayOrdersSource, /return sortOrdersByNewest\(rankedSource\);/);
+});
+
 test('order unit editor suggests catalog units and accepts a new custom unit', () => {
   assert.match(appSource, /getProductCatalogUnitSuggestions\(activeProducts\)/);
   assert.match(appSource, /openDraftItemUnitEditor\(draft, item\)/);

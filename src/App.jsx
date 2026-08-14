@@ -115,6 +115,7 @@ import {
   filterCustomerVisibleProducts,
   isCustomerVisibleProduct,
 } from './utils/customerProductVisibility.js';
+import { sortOrdersByNewest } from './utils/orderRecency.js';
 import {
   buildCustomerInboxConversations,
   createCustomerInboxReadPatch,
@@ -64002,9 +64003,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           .join(' '),
       })
       : source;
-    return hasKeyword
-      ? rankedSource
-      : rankedSource.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    return sortOrdersByNewest(rankedSource);
   }, [activeOrders, activeProducts, customers, orderDateFilter, orderPaymentFilter, orderProductFilter, orderSalesEmpFilter, orderSearchKeyword, orderViewModels, products, tab]);
   const selectedRevenueDate = orderDateFilter || getTodayString();
   const dailyOrderRevenueSummary = useMemo(() => {
@@ -69623,11 +69622,11 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
     });
 
     if (hasKeyword) {
-      return searchOrderRecords(list, orderSearch, {
+      return sortOrdersByNewest(searchOrderRecords(list, orderSearch, {
         getItemText: (order) => (order.items || [])
           .map(item => buildLineItemProductSearchText(item, activeProductsForPricing))
           .join(' '),
-      });
+      }));
     }
     return list.sort((a, b) => {
       if (orderSort === 'oldest') return new Date(a.date) - new Date(b.date);
