@@ -28,6 +28,7 @@ const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/revoke-devices': 'identityRevokeDevices',
   '/api/identity/logout': 'identityLogout',
   '/api/identity/audit': 'identityAudit',
+  '/api/identity/delete-account': 'identityDeleteAccount',
   '/api/customer/bootstrap': 'customerPortalBootstrap',
   '/api/customer/redeem-points': 'customerRedeemPoints',
   '/api/customer/create-debt-payment': 'createCustomerDebtPaymentRequest',
@@ -179,7 +180,9 @@ const resolveIdentityAccountScope = (identifier = '') => {
 };
 
 const getIdentityApiBaseUrl = () => {
-  const configured = `${import.meta.env.VITE_IDENTITY_API_BASE_URL || import.meta.env.VITE_SEPAY_API_BASE_URL || ''}`.trim();
+  // Identity calls must never inherit the payment API base URL. The two
+  // services have different auth, routing, and deployment contracts.
+  const configured = `${import.meta.env.VITE_IDENTITY_API_BASE_URL || ''}`.trim();
   if (configured) return configured.replace(/\/$/, '');
   return DEFAULT_IDENTITY_API_BASE_URL;
 };
@@ -495,6 +498,21 @@ export const identityRevokeDevices = async ({ idToken, deviceId = '', all = fals
 };
 export const identityLogout = ({ idToken }) => requestIdentityApi('/api/identity/logout', { device: getIdentityDevice() }, { idToken });
 export const identityListAudit = ({ idToken }) => requestIdentityApi('/api/identity/audit', {}, { idToken });
+export const identityDeleteAccount = async ({ idToken, currentPassword, confirmation, identity = {} }) => {
+  const result = await requestIdentityApi('/api/identity/delete-account', {
+    currentPassword,
+    confirmation,
+  }, { idToken });
+  const device = getIdentityDevice();
+  const accountScope = getIdentityAccountScope(identity);
+  await removeTrustedDeviceSecret(device.deviceId, accountScope);
+  if (typeof window !== 'undefined') {
+    const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
+    getIdentityAliases(identity).forEach(alias => delete index[alias]);
+    writeJson(DEVICE_ACCOUNT_INDEX_KEY, index);
+  }
+  return result;
+};
 
 export const customerPortalBootstrap = ({ idToken, appId }) => requestIdentityApi('/api/customer/bootstrap', {
   appId,

@@ -111,6 +111,8 @@ for (const expectedPath of [
   '/api/identity/request-recovery',
   '/api/identity/complete-recovery',
   '/api/identity/owner-reset-password',
+  '/api/identity/request-owner-reset',
+  '/api/identity/approve-owner-reset',
   '/api/identity/verify-pin',
   '/api/identity/devices',
   '/api/identity/revoke-devices',
@@ -120,6 +122,8 @@ for (const expectedPath of [
   assert.ok(identityRewriteSources.includes(expectedPath), `Missing hosting rewrite: ${expectedPath}`);
 }
 assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.cloudfunctions\.net/);
+assert.match(identityClientSource, /VITE_IDENTITY_API_BASE_URL/);
+assert.doesNotMatch(identityClientSource, /VITE_SEPAY_API_BASE_URL/);
 assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
 assert.match(identityClientSource, /export const warmIdentityLoginService/);
 assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identityRegisterCompany'/);
@@ -128,6 +132,8 @@ assert.match(identityClientSource, /getIdentityApiUrl\(path\)/);
 assert.match(identityClientSource, /identityCompleteRecovery = \(\{ resetToken, password, identifier \}\)/);
 assert.match(identityClientSource, /'\/api\/identity\/owner-reset-password': 'identityOwnerResetPassword'/);
 assert.match(identityClientSource, /export const identityOwnerResetPassword/);
+assert.match(identityClientSource, /export const identityRequestOwnerReset/);
+assert.match(identityClientSource, /export const identityApproveOwnerReset/);
 assert.match(identityClientSource, /accountScope/);
 assert.match(identityClientSource, /rememberIdentitySessionAccount\(result\)/);
 assert.match(identityClientSource, /resetToken,\s*password,\s*identifier,\s*device:/);
@@ -241,9 +247,16 @@ assert.match(ownerResetSource, /action: 'password_reset_by_owner'/);
 assert.match(ownerResetSource, /action: 'employee_password_reset'/);
 assert.match(ownerResetSource, /revokeRefreshTokens/);
 assert.match(functionsIndexSource, /exports\.identityOwnerResetPassword/);
+assert.match(functionsIndexSource, /approvalRequestId: req\.body\?\.approvalRequestId/);
+assert.match(identityFunctionSource, /const requestOwnerPasswordReset = async/);
+assert.match(identityFunctionSource, /const approveOwnerPasswordReset = async/);
+assert.match(identityFunctionSource, /identity_owner_reset_request/);
+assert.match(identityFunctionSource, /ownerResetRequestId: safeApprovalRequestId/);
+assert.match(identityFunctionSource, /temporaryPassword: DEFAULT_FIRST_LOGIN_PASSWORD/);
 assert.match(appSource, /const handleOwnerResetEmployeePassword = async/);
 assert.match(appSource, /canResetEmployeePassword=\{isOwnerAccount\}/);
-assert.match(appSource, /Quên cả PIN\?/);
+assert.match(appSource, /handleIdentityOwnerResetRequest/);
+assert.match(appSource, /identityResetRequestId/);
 
 const loginViewStart = appSource.indexOf('function LoginRegisterView');
 const loginViewSource = appSource.slice(loginViewStart, loginViewStart + 25000);
@@ -262,7 +275,10 @@ assert.match(loginViewSource, /<form onSubmit=\{handleAuthFormSubmit\}/);
 assert.match(loginViewSource, /void warmIdentityLoginService\(\)/);
 assert.match(loginViewSource, /if \(!showForgotPassword\) return handleLoginSubmit\(event\)/);
 assert.match(loginViewSource, /if \(!recoveryToken\) return handleForgotPasswordSubmit\(event\)/);
-assert.match(loginViewSource, /onClick=\{\(\) => setShowForgotPassword\(false\)\}/);
+assert.match(loginViewSource, /setRequestOwnerReset\(false\)/);
+assert.match(loginViewSource, /checked=\{requestOwnerReset\}/);
+assert.match(loginViewSource, /onRequestOwnerReset/);
+assert.match(loginViewSource, /Xin lại mật khẩu/);
 assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
 assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
 assert.match(loginViewSource, /setShowForgotPassword\(false\)/);

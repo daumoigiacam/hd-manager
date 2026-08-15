@@ -62,8 +62,8 @@ if (contactForm instanceof HTMLFormElement) {
       message
     ].join("\n");
 
-    const mailto = new URL("mailto:support@hdconnect.net");
-    mailto.searchParams.set("subject", `Liên hệ HD CONNECT - ${name || "Khách hàng"}`);
+    const mailto = new URL("mailto:hotro.hdconnect@gmail.com");
+    mailto.searchParams.set("subject", `Liên hệ HD Manager Support - ${name || "Khách hàng"}`);
     mailto.searchParams.set("body", body);
 
     if (formNote) {

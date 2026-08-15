@@ -10,6 +10,7 @@ export default function IdentitySecurityCenter({
   const {
     getIdentityDevice,
     identityCompleteSetup,
+    identityDeleteAccount,
     identityListAudit,
     identityListDevices,
     identityRevokeDevices,
@@ -27,6 +28,8 @@ export default function IdentitySecurityCenter({
   const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
   const [newPin, setNewPin] = useState('');
   const [newPinConfirm, setNewPinConfirm] = useState('');
+  const [deletionPassword, setDeletionPassword] = useState('');
+  const [deletionConfirmation, setDeletionConfirmation] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const device = useMemo(() => getIdentityDevice(), [getIdentityDevice]);
   const identityReady = Boolean(identityUser?.phone || identityUser?.id);
@@ -138,6 +141,39 @@ export default function IdentitySecurityCenter({
     }
   };
 
+  const handleDeleteAccount = async (event) => {
+    event.preventDefault();
+    if (!identityReady || !window.confirm('Xóa phiên đăng nhập và dữ liệu xác thực của tài khoản này? Dữ liệu đơn hàng, công nợ và hồ sơ nghiệp vụ sẽ được giữ lại theo chính sách lưu trữ.')) return;
+    if (!deletionPassword) {
+      setSecurityStatus('Nhập mật khẩu hiện tại để xác nhận xóa tài khoản.');
+      return;
+    }
+    if (deletionConfirmation.trim() !== 'XOA TAI KHOAN') {
+      setSecurityStatus('Nhập đúng cụm từ XOA TAI KHOAN để xác nhận.');
+      return;
+    }
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const idToken = await onGetIdentityToken?.();
+      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      await identityDeleteAccount({
+        idToken,
+        currentPassword: deletionPassword,
+        confirmation: deletionConfirmation.trim(),
+        identity: identityUser,
+      });
+      setSecurityStatus('Tài khoản đã được xóa.');
+      setDeletionPassword('');
+      setDeletionConfirmation('');
+      await onLogout?.();
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể xóa tài khoản.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const formatAuditTime = (value) => {
     try {
       return new Date(value).toLocaleString('vi-VN');
@@ -218,6 +254,18 @@ export default function IdentitySecurityCenter({
                   </div>
                 )) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}
               </div>
+              <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
+                <div>
+                  <h4 className="text-sm font-bold text-red-800">Xóa tài khoản</h4>
+                  <p className="mt-1 text-xs leading-5 text-red-700">Thao tác này xóa phiên đăng nhập, mật khẩu, PIN và dữ liệu xác thực. Đơn hàng, công nợ, bảng lương và hồ sơ nghiệp vụ được giữ lại theo chính sách lưu trữ.</p>
+                </div>
+                <form onSubmit={handleDeleteAccount} className="space-y-2">
+                  <input type="password" value={deletionPassword} onChange={event => setDeletionPassword(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm outline-none focus:border-red-500" placeholder="Mật khẩu hiện tại" autoComplete="current-password" />
+                  <input type="text" value={deletionConfirmation} onChange={event => setDeletionConfirmation(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm uppercase outline-none focus:border-red-500" placeholder="Nhập XOA TAI KHOAN để xác nhận" autoComplete="off" />
+                  <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-red-600 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang xử lý...' : 'Xóa tài khoản'}</button>
+                </form>
+                <a className="block text-xs font-semibold text-red-700 underline" href="https://hdconnect.net/xoa-tai-khoan.html" target="_blank" rel="noreferrer">Xem chính sách xóa dữ liệu</a>
+              </section>
             </>
           )}
           {securityStatus && <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs font-medium text-slate-700" role="status">{securityStatus}</p>}

@@ -299,6 +299,7 @@ import {
   identityRequestOwnerReset,
   identityRequestRecovery,
   identityRevokeDevices,
+  identityDeleteAccount,
   identityListAudit,
   identityListDevices,
   identitySetBiometric,
@@ -339,6 +340,7 @@ const identitySecurityApi = {
   identityCompleteSetup,
   identityListAudit,
   identityListDevices,
+  identityDeleteAccount,
   identityRevokeDevices,
   identitySetBiometric,
   identityVerifyPin,
@@ -22352,6 +22354,10 @@ function MainAppView({
           tone: isPayosPaymentNotice ? 'emerald' : (notice.tone || notice.level || (notice.type === 'customer_order_request_submitted' ? 'orange' : 'sky')),
           customerId: notice.customerId || '',
           searchKeyword: notice.searchKeyword || notice.customerName || '',
+          actionType: notice.actionType || notice.type || '',
+          identityResetRequestId: notice.identityResetRequestId || notice.requestId || notice.metadata?.requestId || notice.data?.requestId || '',
+          requesterName: notice.requesterName || notice.employeeName || '',
+          requesterPhone: notice.requesterPhone || notice.phone || '',
           sourceNotification: notice
         });
       });
@@ -22906,10 +22912,32 @@ function MainAppView({
     setShowNotificationCenter(true);
   };
   const handleCloseNotifications = () => setShowNotificationCenter(false);
-  const handleNotificationClick = (item) => {
+  const handleNotificationClick = async (item) => {
     const latestNotificationAt = notificationItems.reduce((latest, notice) => Math.max(latest, getEntityTimestamp(notice) || 0), 0);
     markNotificationsAsSeen(Math.max(Date.now(), latestNotificationAt));
     setShowNotificationCenter(false);
+    if (item?.actionType === 'identity_owner_reset_request' && item?.identityResetRequestId) {
+      const requesterLabel = item.requesterName || item.requesterPhone || 'nhân sự';
+      const shouldApprove = typeof window === 'undefined' || typeof window.confirm !== 'function'
+        ? true
+        : window.confirm(`Xác nhận cấp lại mật khẩu và PIN cho ${requesterLabel}?`);
+      if (!shouldApprove) return;
+      if (!onApproveOwnerResetRequest) {
+        window.alert?.('Chức năng phê duyệt cấp lại tài khoản chưa sẵn sàng.');
+        return;
+      }
+      try {
+        const result = await onApproveOwnerResetRequest(item.identityResetRequestId);
+        if (!result?.success) {
+          window.alert?.(result?.message || 'Không thể cấp lại tài khoản. Vui lòng thử lại.');
+          return;
+        }
+        window.alert?.(result.message || `Đã cấp lại tài khoản. Mật khẩu mặc định: ${result.temporaryPassword || '12345678'}.`);
+      } catch (error) {
+        window.alert?.(error?.message || 'Không thể cấp lại tài khoản. Vui lòng thử lại.');
+      }
+      return;
+    }
     if (item?.tab === 'customers' && item?.searchKeyword) {
       setCustomerSearchKeyword(item.searchKeyword);
       setCustomerSearchOpen(true);
@@ -24134,6 +24162,9 @@ function MainAppView({
                           {isUnread && <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-500 shrink-0"></span>}
                         </div>
                         <p className="mt-1 text-xs leading-5 opacity-90">{item.message}</p>
+                        {item.actionType === 'identity_owner_reset_request' && item.identityResetRequestId && (
+                          <p className="mt-2 text-[11px] font-bold opacity-90">Bấm để xác nhận cấp lại mật khẩu và PIN</p>
+                        )}
                         <p className="mt-2 text-[11px] font-semibold opacity-70">{formatDateTimeLabel(itemTimestamp || item.createdAt)}</p>
                       </div>
                       <ChevronRight size={16} className="shrink-0 opacity-60" />
@@ -84082,7 +84113,7 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRecovery, onCompleteIdentitySetup, vpsStagingMode = false }) {
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -84092,6 +84123,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotPhone, setForgotPhone] = useState('');
   const [forgotPin, setForgotPin] = useState('');
+  const [requestOwnerReset, setRequestOwnerReset] = useState(false);
   const [recoveryToken, setRecoveryToken] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
   const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState('');
@@ -84126,6 +84158,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
   const openForgotPassword = () => {
     setForgotPhone(loginPhone);
     setForgotPin('');
+    setRequestOwnerReset(false);
     setRecoveryToken('');
     setRecoveryPassword('');
     setRecoveryPasswordConfirm('');
@@ -84145,7 +84178,11 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
     setForgotError('');
     setForgotMessage('');
     try {
-      const result = await onForgotPassword?.({ identifier: forgotPhone, pin: forgotPin });
+      const result = requestOwnerReset
+        ? (onRequestOwnerReset
+          ? await onRequestOwnerReset({ identifier: forgotPhone })
+          : { success: false, message: 'Không thể gửi yêu cầu tới chủ doanh nghiệp.' })
+        : await onForgotPassword?.({ identifier: forgotPhone, pin: forgotPin });
       if (result?.success) {
         setRecoveryToken(result.resetToken || '');
         setForgotMessage(result.message || 'Yêu cầu đã được ghi nhận.');
@@ -84301,14 +84338,25 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
                   <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Request a password reset from the HD CONNECT identity service. The frontend never receives or stores a reset token.' : 'App ưu tiên Face ID/vân tay trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
-                  {!vpsStagingMode && !recoveryToken && (
-                    <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-[10px] font-semibold leading-relaxed text-amber-700">
-                      Quên cả PIN? Hãy nhờ chủ doanh nghiệp đặt lại tài khoản về mật khẩu mặc định 12345678. Lần đăng nhập sau bạn sẽ tạo lại mật khẩu và PIN.
-                    </p>
-                  )}
                   <div className="space-y-2.5">
                     <input type={vpsStagingMode ? 'email' : 'tel'} value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'tel'} />
-                    {!vpsStagingMode && !recoveryToken && <input type="password" inputMode="numeric" maxLength={6} value={forgotPin} onChange={(e) => { setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm tracking-[0.35em] outline-none focus:border-emerald-500" placeholder="PIN 6 số (nếu không dùng sinh trắc học)" autoComplete="one-time-code" />}
+                    {!vpsStagingMode && !recoveryToken && (
+                      <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-xs font-semibold text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={requestOwnerReset}
+                          onChange={(e) => {
+                            setRequestOwnerReset(e.target.checked);
+                            setForgotError('');
+                            setForgotMessage('');
+                          }}
+                          className="h-4 w-4 accent-emerald-600"
+                        />
+                        <span>Xin lại mật khẩu</span>
+                      </label>
+                    )}
+                    {!vpsStagingMode && !recoveryToken && !requestOwnerReset && <input type="password" inputMode="numeric" maxLength={6} value={forgotPin} onChange={(e) => { setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm tracking-[0.35em] outline-none focus:border-emerald-500" placeholder="PIN 6 số (nếu không dùng sinh trắc học)" autoComplete="one-time-code" />}
+                    {requestOwnerReset && !recoveryToken && <p className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-relaxed text-amber-700">Chủ doanh nghiệp sẽ nhận thông báo và đặt lại tài khoản về mật khẩu mặc định.</p>}
                     {recoveryToken && <>
                       <input type="password" value={recoveryPassword} onChange={(e) => { setRecoveryPassword(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" />
                       <input type="password" value={recoveryPasswordConfirm} onChange={(e) => { setRecoveryPasswordConfirm(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Xác nhận mật khẩu mới" autoComplete="new-password" />
@@ -84316,8 +84364,8 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onCompleteRe
                     {forgotError && <p className="text-[11px] font-semibold text-red-600" role="alert">{forgotError}</p>}
                     {forgotMessage && <p className="text-[11px] font-semibold leading-relaxed text-emerald-700" role="status">{forgotMessage}</p>}
                     <div className="flex gap-2">
-                      <button type="button" onClick={() => setShowForgotPassword(false)} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Quay lại đăng nhập</button>
-                      <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : (vpsStagingMode ? 'Gửi yêu cầu' : 'Xác minh thiết bị')}</button>
+                      <button type="button" onClick={() => { setShowForgotPassword(false); setRequestOwnerReset(false); }} className="flex-1 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-gray-500">Quay lại đăng nhập</button>
+                      <button type="button" onClick={recoveryToken ? handleCompleteRecoverySubmit : handleForgotPasswordSubmit} disabled={isRequestingRecovery} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white disabled:bg-emerald-300">{isRequestingRecovery ? 'Đang xử lý...' : recoveryToken ? 'Đặt mật khẩu mới' : (requestOwnerReset || vpsStagingMode ? 'Gửi yêu cầu' : 'Xác minh thiết bị')}</button>
                     </div>
                   </div>
                 </div>

@@ -579,6 +579,25 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { identityId, identity, decoded };
   };
 
+  // Account deletion is deliberately separate from normal authenticated reads.
+  // A retry after the auth user has been revoked must still be able to finish
+  // scrubbing the auth-only fields, while a deleted tombstone remains idempotent.
+  const getDeletionIdentity = async (authorization = '') => {
+    const token = `${authorization || ''}`.replace(/^Bearer\s+/i, '').trim();
+    if (!token) throw Object.assign(new Error('Phiên đăng nhập không hợp lệ.'), { statusCode: 401 });
+    const decoded = await admin.auth().verifyIdToken(token, false);
+    const identityId = `${decoded.identityId || ''}`;
+    if (!identityId) throw Object.assign(new Error('Phiên đăng nhập không thuộc Identity Center.'), { statusCode: 401 });
+    const identitySnap = await getIdentityRef(identityId).get();
+    if (!identitySnap.exists) throw Object.assign(new Error('Không tìm thấy tài khoản xác thực.'), { statusCode: 401 });
+    const identity = identitySnap.data();
+    if (identity.status === 'deleted') return { identityId, identity, decoded, alreadyDeleted: true };
+    if (!['active', 'deleting'].includes(`${identity.status || ''}`) || identity.lockedAt) {
+      throw Object.assign(new Error('Tài khoản không thể xóa ở trạng thái hiện tại.'), { statusCode: 403 });
+    }
+    return { identityId, identity, decoded, alreadyDeleted: false };
+  };
+
   const login = async ({ identifier, password, device, appId }) => {
     const rate = await enforceLoginRateLimit(identifier);
     if (rate.blocked) return { success: false, statusCode: 429, message: `Đăng nhập bị tạm khóa. Vui lòng thử lại sau ${Math.ceil(rate.waitMs / 60000)} phút.` };
@@ -845,6 +864,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (safeApprovalRequestId && existingIdentity?.ownerResetRequestId === safeApprovalRequestId) {
       return {
         success: true,
+        temporaryPassword: DEFAULT_FIRST_LOGIN_PASSWORD,
         requiresPasswordChange: true,
         idempotent: true,
         message: 'Tài khoản này đã được cấp lại. Nhân sự cần tạo mật khẩu và PIN mới khi đăng nhập.'
@@ -1122,7 +1142,13 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     });
     if (reservation?.error) throw Object.assign(new Error(reservation.error), { statusCode: 409 });
     if (reservation?.alreadyApproved) {
-      return { success: true, idempotent: true, message: 'Yêu cầu này đã được cấp lại trước đó.' };
+      return {
+        success: true,
+        temporaryPassword: DEFAULT_FIRST_LOGIN_PASSWORD,
+        requiresPasswordChange: true,
+        idempotent: true,
+        message: 'Yêu cầu này đã được cấp lại trước đó.'
+      };
     }
 
     const request = reservation?.request || {};
@@ -1172,6 +1198,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       });
       return {
         success: true,
+        temporaryPassword: resetResult.temporaryPassword || DEFAULT_FIRST_LOGIN_PASSWORD,
+        requiresPasswordChange: true,
         message: 'Đã cấp lại tài khoản. Mật khẩu mặc định là 12345678 và PIN cũ đã được hủy.'
       };
     } catch (error) {
@@ -1237,6 +1265,121 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { success: true, entries: snapshot.docs.map(doc => ({ id: doc.id, action: doc.data().action, metadata: doc.data().metadata || {}, createdAt: asIso(doc.data().createdAt) })) };
   };
 
+  const deleteAccount = async ({ authorization, currentPassword = '', confirmation = '' }) => {
+    if (`${confirmation || ''}`.trim() !== 'XOA TAI KHOAN') {
+      throw Object.assign(new Error('Nhập đúng cụm từ XOA TAI KHOAN để xác nhận.'), { statusCode: 400 });
+    }
+
+    const deletion = await getDeletionIdentity(authorization);
+    if (deletion.alreadyDeleted) return { success: true, alreadyDeleted: true };
+    const { identityId, identity } = deletion;
+    if (!identity.passwordHash || !(await verifyPassword(currentPassword, identity.passwordHash))) {
+      throw Object.assign(new Error('Mật khẩu hiện tại không đúng.'), { statusCode: 401 });
+    }
+
+    const identityRef = getIdentityRef(identityId);
+    const startedAt = new Date();
+    const shouldLogStart = `${identity.status || ''}` === 'active';
+    await db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(identityRef);
+      const current = snapshot.exists ? snapshot.data() : {};
+      if (current.status === 'deleted') return;
+      if (!['active', 'deleting'].includes(`${current.status || ''}`)) {
+        throw Object.assign(new Error('Tài khoản không thể xóa ở trạng thái hiện tại.'), { statusCode: 403 });
+      }
+      transaction.set(identityRef, {
+        status: 'deleting',
+        deletionRequestedAt: current.deletionRequestedAt || startedAt,
+        deletionRequestedAtIso: current.deletionRequestedAtIso || startedAt.toISOString(),
+        updatedAt: startedAt,
+        updatedAtIso: startedAt.toISOString()
+      }, { merge: true });
+    });
+    if (shouldLogStart) await logAudit(identityId, 'account_deletion_requested');
+
+    const firebaseUid = `identity_${safeIdPart(identityId)}`;
+    try {
+      await admin.auth().revokeRefreshTokens(firebaseUid);
+    } catch (error) {
+      if (error?.code !== 'auth/user-not-found') throw error;
+    }
+    try {
+      await admin.auth().deleteUser(firebaseUid);
+    } catch (error) {
+      if (error?.code !== 'auth/user-not-found') throw error;
+    }
+
+    const appId = getAppId();
+    const authFieldDeletes = {
+      password_hash: admin.firestore.FieldValue.delete(),
+      passwordHash: admin.firestore.FieldValue.delete(),
+      pinHash: admin.firestore.FieldValue.delete(),
+      username: admin.firestore.FieldValue.delete(),
+      usernameNormalized: admin.firestore.FieldValue.delete(),
+      identityId: admin.firestore.FieldValue.delete(),
+      authUid: admin.firestore.FieldValue.delete(),
+      firebaseUid: admin.firestore.FieldValue.delete(),
+      deviceSecretHash: admin.firestore.FieldValue.delete(),
+      requiresPasswordChange: admin.firestore.FieldValue.delete(),
+      setup: admin.firestore.FieldValue.delete(),
+      accountStatus: 'deleted',
+      authDisabled: true,
+      accountDeletedAt: startedAt,
+      accountDeletedAtIso: startedAt.toISOString()
+    };
+    const publicRefs = [];
+    const publicRefPaths = new Set();
+    const addPublicRef = (collection, id) => {
+      if (!collection || !id) return;
+      const ref = db.doc(publicPath(appId, collection, id));
+      if (publicRefPaths.has(ref.path)) return;
+      publicRefPaths.add(ref.path);
+      publicRefs.push(ref);
+    };
+    if (identity.publicCollection && identity.publicId) {
+      addPublicRef(identity.publicCollection, identity.publicId);
+    }
+    if (identity.accountType === 'customer' && identity.customerId) {
+      addPublicRef('customers', identity.customerId);
+    }
+    if (publicRefs.length) {
+      const batch = db.batch();
+      publicRefs.forEach(ref => batch.set(ref, authFieldDeletes, { merge: true }));
+      await batch.commit();
+    }
+
+    const devicesRef = identityRef.collection('devices');
+    let devicesSnapshot = await devicesRef.limit(400).get();
+    while (!devicesSnapshot.empty) {
+      const batch = db.batch();
+      devicesSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+      if (devicesSnapshot.size < 400) break;
+      devicesSnapshot = await devicesRef.limit(400).get();
+    }
+
+    const completedAt = new Date();
+    await identityRef.set({
+      id: identityId,
+      accountType: identity.accountType || 'account',
+      publicCollection: identity.publicCollection || null,
+      publicId: identity.publicId || null,
+      companyId: identity.companyId || null,
+      role: identity.role || null,
+      status: 'deleted',
+      deletionCompletedAt: completedAt,
+      deletionCompletedAtIso: completedAt.toISOString(),
+      updatedAt: completedAt,
+      updatedAtIso: completedAt.toISOString()
+    });
+    await logAudit(identityId, 'account_deleted', {
+      retainedBusinessData: true,
+      publicCollection: identity.publicCollection || null,
+      publicId: identity.publicId || null
+    });
+    return { success: true, deleted: true };
+  };
+
   return {
     registerCompany,
     login,
@@ -1251,6 +1394,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     revokeDevices,
     logout,
     listAudit,
+    deleteAccount,
     getVerifiedIdentity,
     validatePassword,
     validatePin

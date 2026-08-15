@@ -279,6 +279,14 @@ export function where(field, operator, value) {
   return { kind: 'where', field, operator, value };
 }
 
+export function orderBy(field, direction = 'asc') {
+  return { kind: 'orderBy', field, direction };
+}
+
+export function limit(count) {
+  return { kind: 'limit', count };
+}
+
 export function query(collectionRef, ...constraints) {
   return {
     ...collectionRef,

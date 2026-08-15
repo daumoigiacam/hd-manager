@@ -980,7 +980,8 @@ exports.identityCompleteRecovery = functions.https.onRequest(runIdentityRequest(
 exports.identityOwnerResetPassword = functions.https.onRequest(runIdentityRequest((req) => identityCenter.ownerResetEmployeePassword({
   authorization: req.headers.authorization,
   employeeId: req.body?.employeeId,
-  appId: req.body?.appId
+  appId: req.body?.appId,
+  approvalRequestId: req.body?.approvalRequestId
 })));
 
 exports.identityRequestOwnerReset = functions.https.onRequest(runIdentityRequest((req) => identityCenter.requestOwnerPasswordReset({
@@ -1016,6 +1017,12 @@ exports.identityLogout = functions.https.onRequest(runIdentityRequest((req) => i
 
 exports.identityAudit = functions.https.onRequest(runIdentityRequest((req) => identityCenter.listAudit({
   authorization: req.headers.authorization
+})));
+
+exports.identityDeleteAccount = functions.https.onRequest(runIdentityRequest((req) => identityCenter.deleteAccount({
+  authorization: req.headers.authorization,
+  currentPassword: req.body?.currentPassword,
+  confirmation: req.body?.confirmation
 })));
 
 const normalizeTransferCode = (value = '') => `${value ?? ''}`.toUpperCase().replace(/[^A-Z0-9]/g, '');

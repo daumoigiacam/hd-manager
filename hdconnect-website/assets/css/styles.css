@@ -809,9 +809,15 @@ select {
 .contact-card a,
 .legal-content a,
 .step-card a,
-.support-card a {
+.support-card a,
+.text-link {
   color: var(--brand-strong);
   font-weight: 800;
+}
+
+.text-link {
+  display: inline-flex;
+  margin-top: 14px;
 }
 
 .social-actions {

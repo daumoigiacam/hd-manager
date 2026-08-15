@@ -34,6 +34,8 @@ export const identityRegisterCompany = () => blocked('Legacy Firebase registrati
 export const identityCompleteSetup = () => blocked('Legacy Firebase identity setup');
 export const identityRequestRecovery = () => blocked('Legacy Firebase password recovery');
 export const identityCompleteRecovery = () => blocked('Legacy Firebase password recovery');
+export const identityRequestOwnerReset = () => blocked('Legacy Firebase owner password reset');
+export const identityApproveOwnerReset = () => blocked('Legacy Firebase owner password reset');
 export const identityOwnerResetPassword = () => blocked('Legacy Firebase owner password reset');
 export const identityVerifyPin = () => blocked('Legacy Firebase PIN verification');
 export const identityListDevices = () => blocked('Legacy Firebase session management');

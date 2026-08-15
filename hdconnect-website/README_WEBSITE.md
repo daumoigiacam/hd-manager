@@ -1,6 +1,6 @@
 # HD CONNECT Website
 
-Website tĩnh chính thức cho HD CONNECT, có thể upload trực tiếp lên Hosting TH-2/cPanel. Source nằm riêng trong thư mục `hdconnect-website` để không ảnh hưởng mã nguồn hoặc dữ liệu của ứng dụng HD Manager.
+Website tĩnh chính thức cho HD CONNECT/HD Manager, có thể upload trực tiếp lên Hosting TH-2/cPanel. Source nằm riêng trong thư mục `hdconnect-website` để không ảnh hưởng mã nguồn, database hoặc package Android của ứng dụng HD Manager.
 
 ## Cấu trúc thư mục
 
@@ -8,17 +8,36 @@ Website tĩnh chính thức cho HD CONNECT, có thể upload trực tiếp lên 
 - `gioi-thieu.html`: Trang giới thiệu.
 - `tinh-nang.html`: Trang tính năng.
 - `bang-gia.html`: Trang bảng giá.
-- `ho-tro.html`: Trung tâm hỗ trợ.
-- `lien-he.html`: Trang liên hệ và form email tĩnh.
-- `chinh-sach-bao-mat.html`: Chính sách bảo mật cho Google Play.
+- `ho-tro.html`: Trung tâm hỗ trợ HD Manager.
+- `lien-he.html`: Trang liên hệ HD Manager Support và form email tĩnh.
+- `chinh-sach-bao-mat.html`: Chính sách quyền riêng tư cho Google Play.
+- `xoa-tai-khoan.html`: URL công khai để yêu cầu xóa tài khoản/dữ liệu.
+- `xoa-du-lieu.html`: Trang tương thích cho liên kết cũ, trỏ về `xoa-tai-khoan.html`.
 - `dieu-khoan-su-dung.html`: Điều khoản sử dụng.
-- `xoa-du-lieu.html`: Hướng dẫn xóa tài khoản và dữ liệu.
-- `tai-ung-dung.html`: Trang tải ứng dụng.
-- `assets/css/styles.css`: Toàn bộ giao diện, responsive, màu thương hiệu.
+- `tai-ung-dung.html`: Trang tải ứng dụng, hiện giữ trạng thái sắp phát hành.
+- `assets/css/styles.css`: Giao diện, responsive, màu thương hiệu.
 - `assets/js/main.js`: Menu mobile, animation nhẹ và form liên hệ tĩnh.
 - `assets/img/`: Favicon, logo, ảnh Open Graph và dashboard placeholder.
 - `robots.txt`, `sitemap.xml`: SEO crawler.
 - `.htaccess`: HTTPS, bảo mật và cache cho cPanel/Apache.
+
+## Thông tin hỗ trợ chính thức
+
+- Email hỗ trợ/quyền riêng tư: `hotro.hdconnect@gmail.com`
+- Điện thoại hỗ trợ: `0978194836`
+- Địa chỉ: `xã Bàu Bàng, Hồ Chí Minh`
+- Zalo: `https://zalo.me/0978194836`
+
+Không dùng email hỗ trợ cũ của domain `hdconnect.net` làm thông tin hỗ trợ công khai cho HD Manager nếu chưa có quyết định riêng.
+
+## URL dùng cho Google Play Console
+
+- Privacy Policy: `https://hdconnect.net/chinh-sach-bao-mat.html`
+- Account deletion / Data deletion: `https://hdconnect.net/xoa-tai-khoan.html`
+- Support contact: `https://hdconnect.net/lien-he.html`
+- Help center: `https://hdconnect.net/ho-tro.html`
+
+Sau khi upload, kiểm tra các URL trên bằng HTTPS trước khi khai báo trong Play Console.
 
 ## Hướng dẫn upload lên cPanel
 
@@ -28,17 +47,13 @@ Website tĩnh chính thức cho HD CONNECT, có thể upload trực tiếp lên 
 4. Sau khi upload, `index.html`, `.htaccess`, `robots.txt`, `sitemap.xml` và thư mục `assets` phải nằm trực tiếp trong `public_html`.
 5. Bật SSL/AutoSSL cho `hdconnect.net` trong cPanel.
 6. Truy cập `https://hdconnect.net/`, `https://hdconnect.net/robots.txt` và `https://hdconnect.net/sitemap.xml` để kiểm tra.
-7. Dùng URL chính sách cho Google Play:
-   - Chính sách bảo mật: `https://hdconnect.net/chinh-sach-bao-mat.html`
-   - Xóa dữ liệu: `https://hdconnect.net/xoa-du-lieu.html`
-   - Điều khoản sử dụng: `https://hdconnect.net/dieu-khoan-su-dung.html`
 
 ## Cập nhật nội dung
 
 - Mở file `.html` tương ứng và sửa phần chữ trong thẻ nội dung.
-- Khi đổi số điện thoại, email, Zalo hoặc Facebook, tìm toàn bộ các chuỗi `support@hdconnect.net`, `0900 000 000`, `0900000000`, `facebook.com/hdconnect`.
+- Khi đổi số điện thoại, email, Zalo hoặc Facebook, tìm các chuỗi `hotro.hdconnect@gmail.com`, `0978194836`, `zalo.me/0978194836`, `facebook.com/hdconnect`.
 - Khi bảng giá chính thức có dữ liệu, sửa `bang-gia.html`, thay trạng thái `Sắp cập nhật` và giá trong từng `plan-card`.
-- Khi app phát hành, sửa `tai-ung-dung.html`, đổi các nút `button disabled` thành thẻ `a` trỏ đến APK, Google Play hoặc App Store.
+- Khi app phát hành, sửa `tai-ung-dung.html`, đổi các nút `button disabled` thành thẻ `a` trỏ đến APK, Google Play hoặc App Store. Không tạo URL Google Play giả.
 
 ## Thay logo
 
@@ -77,7 +92,7 @@ Sau khi đổi màu, kiểm tra lại độ tương phản chữ trên nền xan
 
 ## Bảo mật và vận hành
 
-- Không đưa API key, token, secret hoặc thông tin đăng nhập vào HTML, CSS, JS.
+- Không đưa API key, token, secret, private key, keystore, Google Play upload key hoặc thông tin đăng nhập vào HTML, CSS, JS.
 - Form liên hệ hiện là form tĩnh mở email, không cần backend và không lưu dữ liệu trên website.
 - Nếu sau này cần form gửi về server, hãy dùng backend riêng và cấu hình secret trong môi trường server, không hardcode vào website.
 - `.htaccess` đã thêm HTTPS redirect, tắt directory listing, header bảo mật và cache tĩnh. Nếu hosting không hỗ trợ một directive nào đó, có thể comment riêng directive gây lỗi.
@@ -85,6 +100,7 @@ Sau khi đổi màu, kiểm tra lại độ tương phản chữ trên nền xan
 ## Kiểm tra trước khi công bố
 
 - Mở đủ các trang trên desktop và mobile.
-- Kiểm tra các link footer, chính sách, xóa dữ liệu và tải ứng dụng.
+- Kiểm tra các link footer, Privacy Policy, xóa tài khoản và tải ứng dụng.
 - Chạy công cụ SEO để xác nhận title, description, canonical, Open Graph.
 - Gửi `sitemap.xml` lên Google Search Console sau khi DNS/SSL ổn định.
+- Trong Play Console, khai báo Privacy Policy và Account deletion URL chính xác như mục URL bên trên.

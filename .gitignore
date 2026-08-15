@@ -15,6 +15,10 @@ stable-apk-web/
 *.exe
 *.msi
 *.idsig
+*.jks
+*.keystore
+*.p12
+*.pfx
 
 # One-off export and local validation artifacts
 /hdconnect-website-upload*.zip
