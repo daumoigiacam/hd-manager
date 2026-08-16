@@ -54,6 +54,9 @@ const {
   normalizePayrollAutoLockStatus,
   runPayrollAutoLockPlanStateMachine
 } = require('./payrollAutoLock');
+const {
+  runEmployeeEvaluationAggregation
+} = require('./employeeEvaluation');
 
 admin.initializeApp();
 
@@ -2117,6 +2120,36 @@ exports.autoLockPayrollPeriods = onSchedule({
     console.info('autoLockPayrollPeriods completed', { outcomes });
   }
   return null;
+});
+
+exports.autoAggregateEmployeeEvaluations = onSchedule({
+  schedule: 'every 5 minutes',
+  timeZone: 'Asia/Ho_Chi_Minh',
+  region: 'asia-southeast1',
+  timeoutSeconds: 120
+}, async () => {
+  const outcomes = [];
+  for (const appId of getPayrollAutoLockAppIds()) {
+    try {
+      outcomes.push({
+        appId,
+        ...(await runEmployeeEvaluationAggregation({
+          db,
+          appId,
+          now: new Date(),
+          pathBuilder: collectionPath
+        }))
+      });
+    } catch (error) {
+      console.error('autoAggregateEmployeeEvaluations failed', {
+        appId,
+        message: error?.message || String(error)
+      });
+      outcomes.push({ appId, status: 'failed' });
+    }
+  }
+  if (outcomes.length) console.info('autoAggregateEmployeeEvaluations completed', { outcomes });
+  return outcomes;
 });
 
 const getPaymentLookupTokens = (...values) => {

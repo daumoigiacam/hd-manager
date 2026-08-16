@@ -180,4 +180,19 @@ test('delivery actual rows show the frozen dispatched-order selling price instea
   assert.match(deliveryReportSource, /b\.requestDateMs - a\.requestDateMs/);
 });
 
-console.log('\n9 delivery reconciliation UX tests passed.');
+test('shared delivery report keeps product codes separate from Kg and Con, without a package column', () => {
+  const shareTableStart = appSource.indexOf('const handleShareDeliveryReportTable = async () => {');
+  const shareTableSource = appSource.slice(
+    shareTableStart,
+    appSource.indexOf('const handleSaveStandaloneDeliveryExpense = async () => {', shareTableStart),
+  );
+
+  assert.match(appSource, /const shortProductSummary = productRows\.length > 0/);
+  assert.match(shareTableSource, /productSummary: group\.shortProductSummary \|\| group\.productSummary \|\| '-'/);
+  assert.match(shareTableSource, /\{ title: 'Kg', key: 'weightKg'/);
+  assert.match(shareTableSource, /\{ title: 'Con', key: 'quantity'/);
+  assert.doesNotMatch(shareTableSource, /title: 'Bọc'/);
+  assert.doesNotMatch(shareTableSource, /packageCount:/);
+});
+
+console.log('\n11 delivery reconciliation UX tests passed.');

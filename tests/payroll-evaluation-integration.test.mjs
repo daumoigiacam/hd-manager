@@ -18,6 +18,19 @@ const baseSummary = {
   finalScore: 98,
   bonus: 850000
 };
+const summary13 = {
+  schemaVersion: 1,
+  employeeId: employee.id,
+  monthKey,
+  status: 'complete',
+  criterionCount: 13,
+  exactAverage: 4.5384615385,
+  displayAverage: 4.54,
+  stars: 4.5,
+  reward: 80000,
+  missingData: [],
+  source: 'manual_and_automatic'
+};
 
 const tests = [
   ['1. Missing evaluation returns zero bonus', () => {
@@ -98,6 +111,37 @@ const tests = [
     applyEvaluationBonusToSalaryDetails(salarySource, result);
     assert.deepEqual(baseSummary, summarySnapshot);
     assert.deepEqual(salarySource, salarySnapshot);
+  }],
+  ['11. Complete 13-criterion summary is copied read-only into payroll', () => {
+    const result = projectEvaluationSummaryToPayroll({
+      employee,
+      monthKey,
+      evaluationSummary13: summary13,
+      bonus: 999999999
+    }, { employeeId: employee.id, monthKey });
+    assert.equal(result.hasEvaluation, true);
+    assert.equal(result.criterionCount, 13);
+    assert.equal(result.averageScore, summary13.exactAverage);
+    assert.equal(result.stars, summary13.stars);
+    assert.equal(result.bonus, summary13.reward);
+    assert.equal(result.status, 'complete');
+  }],
+  ['12. Incomplete 13-criterion summary cannot add payroll bonus', () => {
+    const result = projectEvaluationSummaryToPayroll({
+      employee,
+      monthKey,
+      evaluationSummary13: {
+        ...summary13,
+        status: 'needs_review',
+        reward: null,
+        criterionCount: 12,
+        missingData: ['attendance']
+      }
+    }, { employeeId: employee.id, monthKey });
+    assert.equal(result.hasEvaluation, false);
+    assert.equal(result.bonus, 0);
+    assert.equal(result.status, 'needs_review');
+    assert.deepEqual(result.missingData, ['attendance']);
   }]
 ];
 

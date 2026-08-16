@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Capacitor } from '@capacitor/core';
 import App from './App.jsx';
+import AdminConsolePage from './features/platform-admin/AdminConsolePage.jsx';
 import './index.css';
 import '@fontsource-variable/inter';
 import '@fontsource-variable/roboto-flex';
@@ -527,7 +528,7 @@ recordStartupEvent('first.ui.render.requested');
 ReactDOM.createRoot(document.getElementById('root')).render(
   <AppErrorBoundary>
     <React.Profiler id="HDManagerRoot" onRender={recordReactRender}>
-      <App />
+      {/^\/platform-admin(?:\/|$)/.test(window.location.pathname) ? <AdminConsolePage /> : <App />}
     </React.Profiler>
   </AppErrorBoundary>
 );

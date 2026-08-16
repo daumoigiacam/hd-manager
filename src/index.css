@@ -158,6 +158,162 @@ svg {
   min-height: 0;
 }
 
+.platform-admin-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  background: #f4f7f6;
+  color: #172033;
+}
+
+.platform-admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 1.25rem 0.75rem;
+  background: #172033;
+  color: #e5edf0;
+}
+
+.platform-admin-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0 0.65rem 1.5rem;
+}
+
+.platform-admin-brand__mark {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #062e27;
+  background: #6ee7b7;
+}
+
+.platform-admin-brand strong,
+.platform-admin-brand span {
+  display: block;
+}
+
+.platform-admin-brand strong { font-size: 0.95rem; }
+.platform-admin-brand span { margin-top: 0.2rem; color: #9fb3b8; font-size: 0.72rem; }
+
+.platform-admin-nav { display: grid; gap: 0.25rem; }
+
+.platform-admin-nav button {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr auto;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.65rem;
+  padding: 0 0.7rem;
+  border: 0;
+  border-radius: 7px;
+  color: #b8c7ca;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.platform-admin-nav button:hover,
+.platform-admin-nav button.is-active { color: #ffffff; background: #263746; }
+.platform-admin-nav button.is-active { box-shadow: inset 3px 0 0 #34d399; }
+.platform-admin-sidebar__footer { margin-top: auto; display: flex; gap: 0.5rem; align-items: flex-start; padding: 1rem 0.65rem 0; color: #8ea5a9; font-size: 0.7rem; line-height: 1.4; }
+
+.platform-admin-main { min-width: 0; }
+.platform-admin-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding: 1.45rem clamp(1rem, 3vw, 2.5rem); border-bottom: 1px solid #dce8e4; background: #ffffff; }
+.platform-admin-header h1 { margin: 0.2rem 0 0; font-size: clamp(1.35rem, 2vw, 1.8rem); letter-spacing: 0; }
+.platform-admin-eyebrow { margin: 0; color: #0f766e; font-size: 0.7rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+.platform-admin-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
+.platform-admin-last-updated { color: #64748b; font-size: 0.72rem; }
+.platform-admin-content { display: grid; gap: 1rem; max-width: 1440px; padding: clamp(1rem, 3vw, 2rem); }
+.platform-admin-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; }
+.platform-admin-metric, .platform-admin-panel { border: 1px solid #dce8e4; border-radius: 8px; background: #ffffff; box-shadow: 0 3px 12px rgb(15 23 42 / 0.045); }
+.platform-admin-metric { min-width: 0; padding: 1rem; }
+.platform-admin-metric__topline { display: flex; justify-content: space-between; gap: 0.5rem; color: #64748b; font-size: 0.75rem; }
+.platform-admin-metric__topline svg { color: #0f766e; }
+.platform-admin-metric strong { display: block; margin: 0.65rem 0 0.45rem; overflow: hidden; color: #172033; font-size: 1.25rem; text-overflow: ellipsis; white-space: nowrap; }
+.platform-admin-metric small { color: #64748b; font-size: 0.72rem; }
+.platform-admin-grid { display: grid; gap: 1rem; }
+.platform-admin-grid--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.platform-admin-panel { min-width: 0; padding: 1rem; }
+.platform-admin-panel__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+.platform-admin-panel h2 { margin: 0.25rem 0 0; color: #172033; font-size: 1rem; letter-spacing: 0; }
+.platform-admin-key-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+.platform-admin-key { min-width: 0; padding: 0.7rem; border: 1px solid #e6efec; border-radius: 7px; background: #f8fbfa; }
+.platform-admin-key span, .platform-admin-key strong { display: block; overflow: hidden; text-overflow: ellipsis; }
+.platform-admin-key span { color: #64748b; font-size: 0.7rem; }
+.platform-admin-key strong { margin-top: 0.3rem; color: #172033; font-size: 0.82rem; white-space: nowrap; }
+.platform-admin-status { display: inline-flex; align-items: center; gap: 0.3rem; width: fit-content; max-width: 100%; padding: 0.22rem 0.48rem; border-radius: 999px; font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+.platform-admin-status--success { color: #047857; background: #ecfdf5; }
+.platform-admin-status--danger { color: #b91c1c; background: #fef2f2; }
+.platform-admin-status--warning { color: #a16207; background: #fffbeb; }
+.platform-admin-status--neutral { color: #475569; background: #f1f5f9; }
+.platform-admin-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; min-height: 2.45rem; padding: 0 0.7rem; border: 1px solid transparent; border-radius: 7px; font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+.platform-admin-button:disabled { cursor: wait; opacity: 0.6; }
+.platform-admin-button--quiet { color: #245b57; border-color: #cfe2dc; background: #f8fbfa; }
+.platform-admin-button--primary { color: #ffffff; background: #0f766e; }
+.platform-admin-button--icon { width: 2.45rem; padding: 0; color: #475569; border-color: #dce8e4; background: #ffffff; }
+.platform-admin-table-wrap { width: 100%; overflow-x: auto; }
+.platform-admin-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.78rem; }
+.platform-admin-table th { color: #64748b; font-size: 0.68rem; font-weight: 750; text-align: left; text-transform: uppercase; }
+.platform-admin-table th, .platform-admin-table td { padding: 0.72rem 0.55rem; border-bottom: 1px solid #edf2f0; vertical-align: top; }
+.platform-admin-table td { color: #475569; }
+.platform-admin-table td strong { color: #172033; }
+.platform-admin-mono { font-family: var(--hd-font-mono); font-size: 0.68rem; }
+.platform-admin-empty, .platform-admin-loading { display: flex; align-items: center; justify-content: center; gap: 0.55rem; min-height: 7rem; color: #64748b; font-size: 0.82rem; }
+.platform-admin-alert { display: flex; align-items: center; gap: 0.6rem; margin: 1rem clamp(1rem, 3vw, 2.5rem) 0; padding: 0.75rem 0.9rem; border: 1px solid #fecaca; border-radius: 8px; color: #991b1b; background: #fef2f2; font-size: 0.78rem; }
+.platform-admin-alert span { flex: 1; }
+.platform-admin-alert button { padding: 0.25rem 0.45rem; border: 0; border-radius: 5px; color: #991b1b; background: transparent; font-weight: 750; cursor: pointer; }
+.platform-admin-footnote, .platform-admin-footer { display: flex; align-items: center; gap: 0.4rem; color: #64748b; font-size: 0.72rem; line-height: 1.45; }
+.platform-admin-footnote { margin: 1rem 0 0; }
+.platform-admin-footer { justify-content: center; padding: 0.5rem 0 0.25rem; }
+.platform-admin-spin { animation: platform-admin-spin 0.9s linear infinite; }
+@keyframes platform-admin-spin { to { transform: rotate(360deg); } }
+.platform-admin-cutover-callout { display: flex; gap: 0.7rem; align-items: flex-start; padding: 0.85rem; border: 1px solid #bae6fd; border-radius: 8px; color: #075985; background: #f0f9ff; font-size: 0.78rem; line-height: 1.45; }
+.platform-admin-cutover-callout svg { flex: 0 0 auto; margin-top: 0.08rem; }
+.platform-admin-cutover-callout strong { display: block; color: #0c4a6e; }
+.platform-admin-cutover-callout p { margin: 0.25rem 0 0; }
+.platform-admin-cutover-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+.platform-admin-cutover-card { min-width: 0; padding: 0.85rem; border: 1px solid #e6efec; border-radius: 8px; background: #fbfefd; }
+.platform-admin-cutover-card__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.platform-admin-cutover-card__header > div { display: flex; min-width: 0; align-items: center; gap: 0.45rem; color: #0f766e; }
+.platform-admin-cutover-card h3 { margin: 0; overflow: hidden; color: #172033; font-size: 0.82rem; text-overflow: ellipsis; white-space: nowrap; }
+.platform-admin-cutover-card p { min-height: 2.7rem; margin: 0.55rem 0 0.75rem; color: #64748b; font-size: 0.72rem; line-height: 1.45; }
+.platform-admin-file-input { display: flex; min-width: 0; align-items: center; gap: 0.45rem; padding: 0.55rem 0.65rem; border: 1px dashed #99c7bb; border-radius: 7px; color: #245b57; background: #f8fbfa; font-size: 0.72rem; font-weight: 750; cursor: pointer; }
+.platform-admin-file-input span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.platform-admin-file-input input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.platform-admin-cutover-card__meta { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.55rem; color: #64748b; font-size: 0.68rem; }
+.platform-admin-cutover-error-count { color: #b91c1c; font-weight: 750; }
+.platform-admin-cutover-errors { margin: 0.55rem 0 0; padding-inline-start: 1.1rem; color: #b91c1c; font-size: 0.68rem; line-height: 1.45; }
+.platform-admin-cutover-summary { display: grid; gap: 0.85rem; margin-top: 1rem; }
+.platform-admin-cutover-summary .platform-admin-button { justify-self: start; }
+.platform-admin-cutover-preview { min-width: 900px; }
+.platform-admin-cutover-workflow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.65rem; }
+.platform-admin-cutover-workflow__step { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.65rem 0.7rem; border: 1px solid #e6efec; border-radius: 7px; background: #fbfefd; font-size: 0.74rem; }
+.platform-admin-cutover-workflow__step > span { min-width: 0; overflow: hidden; color: #475569; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 980px) {
+  .platform-admin-shell { grid-template-columns: 1fr; }
+  .platform-admin-sidebar { min-height: auto; padding: 0.75rem; }
+  .platform-admin-brand { padding-bottom: 0.75rem; }
+  .platform-admin-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .platform-admin-nav button { grid-template-columns: 1.1rem 1fr; }
+  .platform-admin-nav button svg:last-child, .platform-admin-sidebar__footer { display: none; }
+}
+
+@media (max-width: 700px) {
+  .platform-admin-header { display: block; }
+  .platform-admin-header__actions { justify-content: flex-start; margin-top: 1rem; }
+  .platform-admin-last-updated { width: 100%; }
+  .platform-admin-metrics, .platform-admin-grid--two, .platform-admin-key-grid { grid-template-columns: 1fr; }
+  .platform-admin-cutover-grid { grid-template-columns: 1fr; }
+  .platform-admin-cutover-workflow { grid-template-columns: 1fr; }
+  .platform-admin-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* The customer picker owns its single visible outline. Global mobile input
  * sizing would otherwise add a second inset frame and waste vertical space. */
 .hd-order-request-customer-search .hd-order-request-customer-search-input,

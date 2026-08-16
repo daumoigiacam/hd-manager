@@ -40,6 +40,7 @@ export const identityOwnerResetPassword = () => blocked('Legacy Firebase owner p
 export const identityVerifyPin = () => blocked('Legacy Firebase PIN verification');
 export const identityListDevices = () => blocked('Legacy Firebase session management');
 export const identityRevokeDevices = () => blocked('Legacy Firebase session management');
+export const identityDeleteAccount = () => blocked('Legacy Firebase account deletion');
 export const identitySetBiometric = () => blocked('Legacy Firebase biometric setup');
 export const identityLogout = () => blocked('Legacy Firebase logout');
 export const identityListAudit = () => blocked('Legacy Firebase audit lookup');

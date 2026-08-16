@@ -106,6 +106,12 @@ import {
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import {
+  AUTOMATIC_EVALUATION_CRITERIA,
+  AUTOMATIC_EVALUATION_SCHEMA_VERSION,
+  buildEvaluationSummary13,
+  calculateEmployeeAutomaticEvaluation
+} from './utils/employeeEvaluationAutomation.js';
+import {
   DEFAULT_LOYALTY_ELIGIBILITY_CONDITIONS,
   evaluateCustomerLoyaltyOrder,
   getEnabledLoyaltyEligibilityConditions,
@@ -1065,7 +1071,7 @@ const dispatchScreenBackRequest = () => {
   window.dispatchEvent(event);
   return isAppBackHandled(event);
 };
-const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
+const DATA_COLLECTION_NAMES = ['companies', 'employees', 'employeeReviews', 'payrollPeriods', 'payrollSnapshots', 'payrollAdjustments', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'customers', 'customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'notifications', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'deliveryReports', 'customerComplaints', 'assets', 'assetCostLogs', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations', 'advances', 'financials', 'expenses', 'holidays', 'performance', 'attendance', 'messages', 'activityLogs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'order_requests', 'ai_reply_rules', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'];
 const COMPANY_SCOPED_DATA_COLLECTION_NAMES = new Set(DATA_COLLECTION_NAMES.filter(name => name !== 'companies'));
 // Only identity data should block startup. Business data continues loading in the background.
 const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
@@ -1087,10 +1093,10 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   points: ['customer_points', 'reward_catalog'],
   finance: ['expenses', 'payments', 'orders', 'assets', 'deliveryReports', 'employees', 'customers'],
   bank_payments: ['customers', 'orders', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations'],
-  employees: ['employeeReviews', 'attendance', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance', 'advances'],
-  employee_reviews: ['employees', 'employeeReviews', 'performance'],
+  employees: ['employeeReviews', 'attendance', 'customerComplaints', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'performance', 'advances'],
+  employee_reviews: ['employees', 'employeeReviews', 'attendance', 'customerComplaints', 'performance'],
   company_attendance: ['employees', 'attendance', 'holidays'],
-  payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
+  payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'customerComplaints', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
   asset_management: ['assets', 'assetCostLogs', 'employees'],
   pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
   price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
@@ -11936,6 +11942,8 @@ export default function App() {
   const [rawAdvanceRequests, setRawAdvanceRequests] = useState([]); 
   const [rawPerformance, setRawPerformance] = useState({});
   const [rawCustomers, setRawCustomers] = useState([]);
+  // null means the tenant-scoped complaint source has not completed its first load.
+  const [rawCustomerComplaints, setRawCustomerComplaints] = useState(null);
   const [rawCustomerAccounts, setRawCustomerAccounts] = useState([]);
   const [rawCustomerCart, setRawCustomerCart] = useState([]);
   const [rawCustomerPoints, setRawCustomerPoints] = useState([]);
@@ -12254,6 +12262,7 @@ export default function App() {
       advances: [setRawAdvanceRequests],
       performance: [setRawPerformance, true],
       customers: [setRawCustomers],
+      customerComplaints: [setRawCustomerComplaints],
       customer_cart: [setRawCustomerCart],
       customer_points: [setRawCustomerPoints],
       customerLoans: [setRawCustomerLoans],
@@ -13590,6 +13599,7 @@ export default function App() {
       ['payrollDebtCarryovers', setRawPayrollDebtCarryovers],
       ['payrollAutoLockPlans', setRawPayrollAutoLockPlans],
       ['customers', setRawCustomers],
+      ['customerComplaints', setRawCustomerComplaints],
       ['customer_cart', setRawCustomerCart],
       ['customer_points', setRawCustomerPoints],
       ['customerLoans', setRawCustomerLoans],
@@ -14169,6 +14179,12 @@ export default function App() {
   const payrollDebtCarryovers = useMemo(() => rawPayrollDebtCarryovers.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPayrollDebtCarryovers, myCompanyId]);
   const payrollAutoLockPlans = useMemo(() => rawPayrollAutoLockPlans.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPayrollAutoLockPlans, myCompanyId]);
   const customers = useMemo(() => rawCustomers.filter(c => c.companyId === myCompanyId && !c.isArchived), [rawCustomers, myCompanyId]);
+  const customerComplaints = useMemo(() => {
+    if (rawCustomerComplaints === null || !myCompanyId) return null;
+    return rawCustomerComplaints.filter(item => (
+      `${item?.companyId || item?.appId || item?.tenantId || ''}` === `${myCompanyId}` && !item?.isArchived
+    ));
+  }, [rawCustomerComplaints, myCompanyId]);
   const customerAccounts = useMemo(() => rawCustomerAccounts.filter(account => account.companyId === myCompanyId && !account.isArchived), [rawCustomerAccounts, myCompanyId]);
   const customerCart = useMemo(() => rawCustomerCart.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawCustomerCart, myCompanyId]);
   const customerPoints = useMemo(() => rawCustomerPoints.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawCustomerPoints, myCompanyId]);
@@ -21358,7 +21374,7 @@ export default function App() {
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
-        customers={customers} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
+        customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
@@ -21832,7 +21848,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
-  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
+  currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
@@ -23455,6 +23471,9 @@ function MainAppView({
           currentCompany={currentCompany}
           employees={employees}
           attendance={attendance}
+          complaints={customerComplaints}
+          attendanceLoaded={attendanceLoaded}
+          complaintsLoaded={complaintsLoaded}
           orders={orders}
           deliveryReports={deliveryReports}
           employeeReviews={employeeReviews}
@@ -23484,8 +23503,12 @@ function MainAppView({
       case 'employees': return (
         <EmployeeView
           currentEmployee={employee}
+          currentCompany={currentCompany}
           employees={employees}
           customers={customers}
+          complaints={customerComplaints}
+          attendanceLoaded={attendanceLoaded}
+          complaintsLoaded={complaintsLoaded}
           employeeReviews={employeeReviews}
           attendance={attendance}
           orders={orders}
@@ -23616,6 +23639,9 @@ function MainAppView({
           financials={financials}
           performance={performance}
           customers={customers}
+          customerComplaints={customerComplaints}
+          attendanceLoaded={attendanceLoaded}
+          complaintsLoaded={complaintsLoaded}
           orders={orders}
           payments={payments}
           holidays={holidays}
@@ -49891,10 +49917,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
               return metrics ? `${row.productLabel}: ${metrics}` : row.productLabel;
             }).join(' | ')
           : Array.from(group.productLabels).slice(0, 4).join(', ');
+        // The shared delivery table has dedicated Kg and Con columns, so keep this column to product codes only.
+        const shortProductSummary = productRows.length > 0
+          ? productRows.slice(0, 5).map((row) => row.productLabel).filter(Boolean).join(' | ')
+          : Array.from(group.productLabels).slice(0, 4).join(', ');
         const sortedReports = group.reports.sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
         return {
           ...group,
           productSummary,
+          shortProductSummary,
           tableProductRows: productRows,
           totalCollectedAmount: sumUniqueMoneyValues(group.collectedAmounts),
           totalExpenseAmount: sumUniqueMoneyValues(group.expenseAmounts),
@@ -50730,10 +50761,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     const tableRows = reportCustomerGroups.map((group, index) => ({
       stt: `${index + 1}`,
       customerName: group.customerName || 'Khách hàng',
-      productSummary: group.productSummary || '-',
+      productSummary: group.shortProductSummary || group.productSummary || '-',
       weightKg: `${formatNumber(group.totalWeightKg || 0)}kg`,
       quantity: `${formatNumber(group.totalQuantity || 0)} ${group.quantityUnit || ''}`.trim() || '0',
-      packageCount: group.totalPackageCount > 0 ? `${formatNumber(group.totalPackageCount)} ${group.packageUnit || 'Bọc'}` : '-',
       collected: `${formatCurrency(group.totalCollectedAmount || 0)} đ`,
       expense: `${formatCurrency(group.totalExpenseAmount || 0)} đ`
     }));
@@ -50752,13 +50782,12 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       const lineHeight = 29;
       const columns = [
         { title: 'STT', key: 'stt', width: 62, align: 'center' },
-        { title: 'Tên khách', key: 'customerName', width: 255, align: 'center' },
-        { title: 'Loại hàng', key: 'productSummary', width: 218, align: 'left' },
-        { title: 'Kg', key: 'weightKg', width: 128, align: 'center' },
-        { title: 'Con', key: 'quantity', width: 130, align: 'center' },
-        { title: 'Bọc', key: 'packageCount', width: 120, align: 'center' },
-        { title: 'Thu', key: 'collected', width: 155, align: 'right', color: '#047857' },
-        { title: 'Chi', key: 'expense', width: 100, align: 'right', color: '#c2410c' }
+        { title: 'Tên khách', key: 'customerName', width: 260, align: 'center' },
+        { title: 'Loại hàng', key: 'productSummary', width: 235, align: 'left' },
+        { title: 'Kg', key: 'weightKg', width: 125, align: 'center' },
+        { title: 'Con', key: 'quantity', width: 125, align: 'center' },
+        { title: 'Thu', key: 'collected', width: 200, align: 'right', color: '#047857' },
+        { title: 'Chi', key: 'expense', width: 161, align: 'right', color: '#c2410c' }
       ];
       const remainingWidth = tableWidth - columns.reduce((sum, column) => sum + column.width, 0);
       columns[columns.length - 1].width += Math.max(0, remainingWidth);
@@ -74181,10 +74210,11 @@ const getEmployeeReviewStars = (score = 0) => {
   return 1;
 };
 
-const getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = '', monthKey = '') => (
+const getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = '', monthKey = '', companyId = '') => (
   Object.values(attendance || {}).filter(record => (
     `${record?.empId || record?.employeeId || ''}` === `${empId || ''}` &&
-    normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)) === monthKey
+    normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)) === monthKey &&
+    (!companyId || `${record?.companyId || record?.appId || record?.tenantId || ''}` === `${companyId}`)
   ))
 );
 
@@ -74350,9 +74380,15 @@ const summarizeEmployeeReviews = (reviews = [], empId = '', monthKey = '', sourc
   };
 };
 
-const calculateEmployeeSystemReview = (emp = {}, { attendance = {}, orders = [], deliveryReports = [], monthKey = '' } = {}) => {
+const calculateEmployeeSystemReview = (emp = {}, {
+  attendance = {},
+  orders = [],
+  deliveryReports = [],
+  monthKey = '',
+  companyId = ''
+} = {}) => {
   const employeeId = emp?.id || '';
-  const attendanceEntries = getEmployeeAttendanceEntriesForMonth(attendance, employeeId, monthKey);
+  const attendanceEntries = getEmployeeAttendanceEntriesForMonth(attendance, employeeId, monthKey, companyId);
   const shiftPolicy = resolveEmployeeShiftPolicy(emp);
   const shiftStartMinutes = getMinutesFromTimeString(shiftPolicy.shiftStart || '07:00');
   const graceMinutes = Number(shiftPolicy.graceMinutes || 0);
@@ -74365,12 +74401,14 @@ const calculateEmployeeSystemReview = (emp = {}, { attendance = {}, orders = [],
   const missingCheckOut = attendanceEntries.filter(record => (record?.checkIn || record?.checkInAt) && !(record?.checkOut || record?.checkOutAt)).length;
   const monthOrders = (orders || []).filter(order => (
     isOrderRelatedToEmployeeReview(order, employeeId) &&
-    normalizeEmployeeReviewMonthKey(order.date || order.createdAt || getEntityTimestamp(order)) === monthKey
+    normalizeEmployeeReviewMonthKey(order.date || order.createdAt || getEntityTimestamp(order)) === monthKey &&
+    (!companyId || `${order?.companyId || order?.appId || order?.tenantId || ''}` === `${companyId}`)
   ));
   const revenue = monthOrders.reduce((sum, order) => sum + getEmployeeReviewOrderAmount(order), 0);
   const monthReports = (deliveryReports || []).filter(report => (
     isDeliveryReportRelatedToEmployeeReview(report, employeeId) &&
-    normalizeEmployeeReviewMonthKey(report.date || report.createdAt || getEntityTimestamp(report)) === monthKey
+    normalizeEmployeeReviewMonthKey(report.date || report.createdAt || getEntityTimestamp(report)) === monthKey &&
+    (!companyId || `${report?.companyId || report?.appId || report?.tenantId || ''}` === `${companyId}`)
   ));
   const deliveryCount = monthReports.length;
   const attendanceScore = Math.max(0, 40 - (lateCount * 2) - (missingCheckOut * 3) - leaveDays);
@@ -74401,7 +74439,8 @@ const calculateEmployeeSystemReview = (emp = {}, { attendance = {}, orders = [],
 
 const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
   const monthKey = normalizeEmployeeReviewMonthKey(context.monthKey || getTodayString());
-  const system = calculateEmployeeSystemReview(emp, { ...context, monthKey });
+  const companyId = context.companyId || context.currentCompany?.id || context.currentCompany?.companyId || emp?.companyId || '';
+  const system = calculateEmployeeSystemReview(emp, { ...context, monthKey, companyId });
   const peer = summarizeEmployeeReviews(context.reviews || [], emp.id, monthKey, 'peer');
   const customer = summarizeEmployeeReviews(context.reviews || [], emp.id, monthKey, 'customer');
   const systemCriteriaScores = buildEmployeeSystemReviewCriteriaScores(system);
@@ -74419,6 +74458,33 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
   const finalCriteriaAverage = getEmployeeReviewCriteriaAverage(finalCriteriaScores);
   const finalScore = Math.round(finalCriteriaAverage * 20);
   const stars = getEmployeeReviewStars(finalScore);
+  const attendanceSource = Array.isArray(context.attendance)
+    ? context.attendance
+    : Object.values(context.attendance || {});
+  const attendanceLoaded = context.attendanceLoaded !== undefined
+    ? context.attendanceLoaded
+    : context.attendance !== null && context.attendance !== undefined;
+  const complaintsLoaded = context.complaintsLoaded !== undefined
+    ? context.complaintsLoaded
+    : context.complaints !== null && context.complaints !== undefined;
+  const automaticEvaluation = emp?.id ? calculateEmployeeAutomaticEvaluation({
+    employeeId: emp.id,
+    companyId,
+    monthKey,
+    attendanceEntries: attendanceLoaded
+      ? getEmployeeAttendanceEntriesForMonth(attendanceSource, emp.id, monthKey, companyId)
+      : null,
+    complaints: complaintsLoaded ? context.complaints : null,
+    shiftPolicy: context.shiftPolicy || emp?.shiftPolicy || context.currentCompany?.shiftPolicy || context.currentCompany?.evaluationSettings?.shiftPolicy || {}
+  }) : null;
+  const evaluationSummary13 = emp?.id ? buildEvaluationSummary13({
+    employeeId: emp.id,
+    companyId,
+    monthKey,
+    manualCriteria: context.criteriaList || getEmployeeReviewCriteriaList(context.currentCompany || {}),
+    manualCriteriaScores: finalCriteriaScores,
+    automaticEvaluation
+  }) : null;
   return {
     employee: emp,
     monthKey,
@@ -74431,7 +74497,8 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
     finalCriteriaAverage,
     finalScore,
     stars,
-    bonus: getEmployeeReviewCriteriaBonusTotal(finalCriteriaScores)
+    bonus: getEmployeeReviewCriteriaBonusTotal(finalCriteriaScores),
+    evaluationSummary13
   };
 };
 
@@ -74715,6 +74782,9 @@ function EmployeeReviewModuleView({
   currentCompany = {},
   employees = [],
   attendance = {},
+  complaints = null,
+  attendanceLoaded = false,
+  complaintsLoaded = false,
   orders = [],
   deliveryReports = [],
   employeeReviews = [],
@@ -74771,7 +74841,23 @@ function EmployeeReviewModuleView({
   ));
   const peerReviews = monthReviews.filter(review => `${review?.source || 'peer'}` === 'peer');
   const customerReviews = monthReviews.filter(review => `${review?.source || ''}` === 'customer');
-  const systemReview = calculateEmployeeSystemReview(selectedEmployee, { attendance, orders, deliveryReports, monthKey });
+  const companyId = currentCompany?.id || currentCompany?.companyId || selectedEmployee?.companyId || '';
+  const systemReview = calculateEmployeeSystemReview(selectedEmployee, { attendance, orders, deliveryReports, monthKey, companyId });
+  const automaticEvaluation = calculateEmployeeAutomaticEvaluation({
+    employeeId: selectedEmployee?.id,
+    companyId,
+    monthKey,
+    attendanceEntries: attendanceLoaded
+      ? getEmployeeAttendanceEntriesForMonth(
+        Array.isArray(attendance) ? attendance : Object.values(attendance || {}),
+        selectedEmployee?.id,
+        monthKey,
+        companyId
+      )
+      : null,
+    complaints: complaintsLoaded ? complaints : null,
+    shiftPolicy: selectedEmployee?.shiftPolicy || currentCompany?.shiftPolicy || currentCompany?.evaluationSettings?.shiftPolicy || {}
+  });
   const systemScores = buildEmployeeSystemReviewCriteriaScores(systemReview);
   const peerScores = summarizeEmployeeReviewCriteriaScores(peerReviews, criteriaList);
   const customerScores = summarizeEmployeeReviewCriteriaScores(customerReviews, criteriaList);
@@ -74784,6 +74870,14 @@ function EmployeeReviewModuleView({
   });
   const finalAverage = getEmployeeReviewCriteriaAverage(finalScores);
   const finalStars = getEmployeeReviewStars(finalAverage * 20);
+  const evaluationSummary13 = buildEvaluationSummary13({
+    employeeId: selectedEmployee?.id,
+    companyId,
+    monthKey,
+    manualCriteria: criteriaList,
+    manualCriteriaScores: finalScores,
+    automaticEvaluation
+  });
   const peerReviewBonus = peerReviews.length ? getEmployeeReviewCriteriaBonusTotal(peerScores, criteriaList) : 0;
   const peerReviewerCount = new Set(
     peerReviews
@@ -75319,9 +75413,13 @@ function HolidayConfigCard({
 
 function EmployeeView({
   currentEmployee = null,
+  currentCompany = {},
   employees,
   customers = [],
   attendance = {},
+  complaints = null,
+  attendanceLoaded = false,
+  complaintsLoaded = false,
   orders = [],
   deliveryReports = [],
   employeeReviews = [],
@@ -75520,6 +75618,12 @@ function EmployeeView({
         attendance,
         orders,
         deliveryReports,
+        complaints,
+        attendanceLoaded,
+        complaintsLoaded,
+        companyId: currentCompany?.id || currentCompany?.companyId || emp?.companyId || '',
+        currentCompany,
+        criteriaList: getEmployeeReviewCriteriaList(currentCompany),
         reviews: visibleEmployeeReviews,
         monthKey: reviewMonth
       }))
@@ -75527,7 +75631,7 @@ function EmployeeView({
         if ((b.finalScore || 0) !== (a.finalScore || 0)) return (b.finalScore || 0) - (a.finalScore || 0);
         return (a.employee?.name || '').localeCompare(b.employee?.name || '', 'vi');
       })
-  ), [employees, attendance, orders, deliveryReports, visibleEmployeeReviews, reviewMonth]);
+  ), [attendance, attendanceLoaded, complaints, complaintsLoaded, currentCompany, deliveryReports, employees, orders, reviewMonth, visibleEmployeeReviews]);
 
   const employeeEvaluationOverview = useMemo(() => {
     const total = employeeEvaluationRows.length;
@@ -76123,7 +76227,7 @@ function EmployeeView({
           </div>
         </div>
       )}
-      {false && canUseEmployeeReviews && (
+      {canUseEmployeeReviews && (
         <div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -76159,9 +76263,14 @@ function EmployeeView({
           <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
             <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Tiêu chí đánh giá</p>
             <div className="mt-2 flex flex-wrap gap-2">
-              {EMPLOYEE_PEER_REVIEW_CRITERIA.map(criteria => (
+              {getEmployeeReviewCriteriaList(currentCompany).map(criteria => (
                 <span key={criteria.id} className="rounded-full border border-emerald-100 bg-white px-3 py-1 text-[11px] font-bold text-emerald-700">
                   {criteria.label}
+                </span>
+              ))}
+              {AUTOMATIC_EVALUATION_CRITERIA.map(criteria => (
+                <span key={criteria.id} className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] font-bold text-blue-700">
+                  Tự động: {criteria.label}
                 </span>
               ))}
             </div>
@@ -77307,6 +77416,9 @@ function SalaryView({
   payments,
   holidays,
   deliveryReports = [],
+  customerComplaints = null,
+  attendanceLoaded = false,
+  complaintsLoaded = false,
   onAddFinancial,
   onEditFinancial,
   onDeleteFinancial,
@@ -77572,6 +77684,15 @@ function SalaryView({
     const deliveryReportsForMonth = (deliveryReports || []).filter(report => (
       normalizeEmployeeReviewMonthKey(report?.date || report?.createdAt || getEntityTimestamp(report)) === currentMonth
     ));
+    const complaintsForMonth = complaintsLoaded && Array.isArray(customerComplaints)
+      ? customerComplaints.filter(complaint => {
+        const complaintCompanyId = complaint?.companyId || complaint?.appId || complaint?.tenantId || '';
+        return (!payrollCompanyId || `${complaintCompanyId}` === `${payrollCompanyId}`)
+          && normalizeEmployeeReviewMonthKey(
+            complaint?.monthKey || complaint?.date || complaint?.createdAt || complaint?.updatedAt || getEntityTimestamp(complaint)
+          ) === currentMonth;
+      })
+      : null;
     const attendanceForMonth = Object.fromEntries(
       Object.entries(attendance || {}).filter(([key, record]) => (
         `${key || ''}`.startsWith(currentMonth)
@@ -77583,9 +77704,15 @@ function SalaryView({
       orders: ordersForMonth,
       deliveryReports: deliveryReportsForMonth,
       reviews: reviewsForMonth,
+      complaints: complaintsForMonth,
+      attendanceLoaded: Boolean(attendanceLoaded),
+      complaintsLoaded: Boolean(complaintsLoaded && Array.isArray(customerComplaints)),
+      companyId: payrollCompanyId,
+      currentCompany,
+      criteriaList: getEmployeeReviewCriteriaList(currentCompany),
       monthKey: currentMonth
     };
-  }, [attendance, deliveryReports, employeeReviews, orders, currentMonth, isPayrollLocked]);
+  }, [attendance, attendanceLoaded, complaintsLoaded, currentCompany, customerComplaints, deliveryReports, employeeReviews, orders, currentMonth, isPayrollLocked, payrollCompanyId]);
 
   const payrollEvaluationResultsByEmployee = useMemo(() => {
     const results = new Map();

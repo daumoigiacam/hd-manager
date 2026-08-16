@@ -270,7 +270,15 @@ service cloud.firestore {
     }
 
     function isImmutablePayrollCollection(collectionId) {
-      return collectionId == 'payrollSnapshots' || collectionId == 'payrollAdjustments';
+      return collectionId in [
+        'payrollSnapshots',
+        'payrollAdjustments',
+        'automaticEvaluations',
+        'automaticEvaluationDetails',
+        'employeeEvaluationSummaries',
+        'evaluationRewards',
+        'evaluationAuditLogs'
+      ];
     }
 
     function isProtectedPayrollCollection(collectionId) {
@@ -280,7 +288,13 @@ service cloud.firestore {
         'payrollAdjustments',
         'payrollDebtCarryovers',
         'payrollAutoLockPlans',
-        'payrollAutoLockPlanSnapshots'
+        'payrollAutoLockPlanSnapshots',
+        'evaluationPeriods',
+        'automaticEvaluations',
+        'automaticEvaluationDetails',
+        'employeeEvaluationSummaries',
+        'evaluationRewards',
+        'evaluationAuditLogs'
       ];
     }
 

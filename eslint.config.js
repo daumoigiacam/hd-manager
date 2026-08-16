@@ -17,6 +17,21 @@ export default [
     }
   },
   {
+    files: ['src/features/platform-admin/**/*.{jsx,js}', 'src/platform/sdk/**/*.js', 'tests/platform-sdk.test.mjs', 'tests/platform-admin-cutover.test.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: {
+        console: 'readonly',
+        window: 'readonly',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+    },
+  },
+  {
     files: ['src/utils/payroll*.js', 'tests/payroll*.test.mjs'],
     languageOptions: {
       ecmaVersion: 'latest',

@@ -89,6 +89,12 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), releaseManifestPlugin],
     base: './',
+    // VPS bundles must not expose legacy Firebase/provider credentials through
+    // Vite's import.meta.env serialization. Cloud builds retain the legacy env
+    // surface until their migration is completed.
+    envPrefix: useVpsData
+      ? ['VITE_API_BASE_URL', 'VITE_DATA_MODE', 'VITE_HD_BUILD_ID']
+      : 'VITE_',
     define: {
       __firebase_config: JSON.stringify(JSON.stringify(firebaseConfig)),
       __app_id: JSON.stringify(dataAppId),
