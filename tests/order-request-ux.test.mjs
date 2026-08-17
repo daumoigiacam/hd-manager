@@ -113,6 +113,182 @@ test('branch memory preserves inherited products and stays scoped to that branch
   assert.deepEqual(result.addedProductIds, ['product-b']);
 });
 
+test('saved order updates fixed-product price and order unit without changing pricing unit', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['duck'],
+      priceOverrides: {
+        duck: {
+          price: 50000,
+          unitPrice: 50000,
+          billingUnit: 'Kg',
+          pricingUnit: 'Kg',
+          unitPrices: { Kg: 50000 },
+          orderUnits: ['Con'],
+          defaultOrderUnit: 'Con',
+          orderUnit: 'Con',
+        },
+      },
+    },
+    requests: [{
+      customerId: 'customer-a',
+      createdAt: '2026-08-17T10:00:00.000Z',
+      items: [{
+        productId: 'duck',
+        billingUnit: 'Kg',
+        pricingUnit: 'Kg',
+        unitPrice: 62000,
+        orderUnit: 'Bộ',
+      }],
+    }],
+    validProductIds: ['duck'],
+  });
+
+  const config = result.patch.priceOverrides.duck;
+  assert.equal(config.price, 62000);
+  assert.equal(config.unitPrice, 62000);
+  assert.deepEqual(config.unitPrices, { Kg: 62000 });
+  assert.equal(config.billingUnit, 'Kg');
+  assert.equal(config.pricingUnit, 'Kg');
+  assert.equal(config.defaultOrderUnit, 'Bộ');
+  assert.equal(config.orderUnit, 'Bộ');
+  assert.deepEqual(config.orderUnits, ['Con', 'Bộ']);
+});
+
+test('order-unit-only changes preserve a fixed price and pricing unit', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      priceOverrides: {
+        duck: {
+          price: 62000,
+          unitPrice: 62000,
+          billingUnit: 'Kg',
+          pricingUnit: 'Kg',
+          unitPrices: { Kg: 62000 },
+        },
+      },
+    },
+    requests: [{
+      customerId: 'customer-a',
+      items: [{ productId: 'duck', quantityUnit: 'Con' }],
+    }],
+    validProductIds: ['duck'],
+  });
+
+  const config = result.patch.priceOverrides.duck;
+  assert.equal(config.price, 62000);
+  assert.equal(config.unitPrice, 62000);
+  assert.equal(config.billingUnit, 'Kg');
+  assert.equal(config.pricingUnit, 'Kg');
+  assert.deepEqual(config.unitPrices, { Kg: 62000 });
+  assert.equal(config.defaultOrderUnit, 'Con');
+  assert.equal(config.orderUnit, 'Con');
+});
+
+test('a new saved product learns price and ordering unit once and is idempotent on retry', () => {
+  const input = {
+    customer: { id: 'customer-a', customerProductIds: [] },
+    requests: [{
+      customerId: 'customer-a',
+      items: [{
+        productId: 'duck',
+        billingUnit: 'Kg',
+        unitPrice: 65000,
+        orderUnit: 'Con',
+      }],
+    }],
+    validProductIds: ['duck'],
+  };
+  const first = buildCustomerFixedProductMemoryPatch(input);
+  const config = first.patch.priceOverrides.duck;
+  assert.deepEqual(first.patch.customerProductIds, ['duck']);
+  assert.deepEqual(first.addedProductIds, ['duck']);
+  assert.equal(config.price, 65000);
+  assert.equal(config.billingUnit, 'Kg');
+  assert.equal(config.pricingUnit, 'Kg');
+  assert.equal(config.defaultOrderUnit, 'Con');
+
+  const retry = buildCustomerFixedProductMemoryPatch({
+    ...input,
+    customer: { ...input.customer, ...first.patch },
+  });
+  assert.equal(retry.patch, null);
+  assert.deepEqual(retry.addedProductIds, []);
+  assert.deepEqual(retry.updatedProductIds, []);
+});
+
+test('legacy numeric prices and historical products are retained when order memory is added', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['retired-duck', 'legacy-duck', 'active-duck'],
+      priceOverrides: { 'legacy-duck': 60000 },
+    },
+    requests: [{
+      customerId: 'customer-a',
+      items: [
+        { productId: 'legacy-duck', billingUnit: 'Kg', quantityUnit: 'Con' },
+        { productId: 'new-duck', billingUnit: 'Kg', unitPrice: 65000, quantityUnit: 'Con' },
+      ],
+    }],
+    validProductIds: ['legacy-duck', 'active-duck', 'new-duck'],
+  });
+
+  const legacyConfig = result.patch.priceOverrides['legacy-duck'];
+  assert.deepEqual(result.patch.customerProductIds, ['retired-duck', 'legacy-duck', 'active-duck', 'new-duck']);
+  assert.equal(legacyConfig.price, 60000);
+  assert.equal(legacyConfig.unitPrice, 60000);
+  assert.equal(legacyConfig.billingUnit, 'Kg');
+  assert.equal(legacyConfig.pricingUnit, 'Kg');
+  assert.equal(legacyConfig.defaultOrderUnit, 'Con');
+});
+
+test('branch saved defaults remain isolated from the root customer configuration', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['duck'],
+      priceOverrides: {
+        duck: {
+          price: 50000,
+          unitPrice: 50000,
+          billingUnit: 'Kg',
+          pricingUnit: 'Kg',
+          unitPrices: { Kg: 50000 },
+        },
+      },
+      branches: [{ id: 'branch-a', customerProductIds: [] }],
+    },
+    requests: [{
+      customerId: 'customer-a',
+      branchId: 'branch-a',
+      items: [{ productId: 'duck', billingUnit: 'Kg', unitPrice: 60000, orderUnit: 'Bộ' }],
+    }],
+    validProductIds: ['duck'],
+  });
+
+  const branchConfig = result.patch.branches[0].priceOverrides.duck;
+  assert.equal(result.patch.priceOverrides, undefined);
+  assert.deepEqual(result.patch.branches[0].customerProductIds, ['duck']);
+  assert.equal(branchConfig.price, 60000);
+  assert.equal(branchConfig.billingUnit, 'Kg');
+  assert.equal(branchConfig.pricingUnit, 'Kg');
+  assert.equal(branchConfig.defaultOrderUnit, 'Bộ');
+});
+
+test('saved request synchronizes customer defaults atomically only after the request save succeeds', () => {
+  assert.match(appSource, /const handleSyncCustomerFixedProductDefaults = async/);
+  assert.match(appSource, /await runTransaction\(db, async \(transaction\) =>/);
+  assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{handleSyncCustomerFixedProductDefaults\}/);
+  assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{onSyncCustomerFixedProductDefaults\}/);
+  assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, customerRequests\)/);
+  assert.match(appSource, /await persistOrderRequestMemories\(normalizedRequests\);/);
+  assert.match(appSource, /orderUnit: quantityUnit,/);
+  assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
+});
+
 test('order submit keeps both state and ref duplicate guards', () => {
   assert.match(appSource, /if \(isRequestSubmitting \|\| requestSubmittingRef\.current\) return;/);
   assert.match(appSource, /requestSubmittingRef\.current = true;/);
@@ -129,6 +305,15 @@ test('existing order rows edit one selected cell and keep delete inside the edit
   assert.match(appSource, /onDelete=\{deleteOrderCellEditorRow\}/);
   assert.match(appSource, /Nút xóa nằm trong bảng sửa của ô đã chọn/);
   assert.doesNotMatch(appSource, /title="Xoa toan bo don dat hang"/);
+});
+
+test('summary quantity editor can change order unit without replacing pricing unit', () => {
+  assert.match(appSource, /const handleOrderCellQuantityUnitChange = \(nextValue\) =>/);
+  assert.match(appSource, /label: 'Đơn vị đặt'/);
+  assert.match(appSource, /getDraftItemUnitOptions\(quantityEditorDraft, quantityEditorItem\)/);
+  assert.match(appSource, /orderUnit: selectedOrderUnit \|\| effectiveActualUnit/);
+  assert.match(appSource, /billingUnit: inlineEditingDraft\.billingUnit \|\| inlineEditingDraft\.pricingUnit/);
+  assert.match(appSource, /secondaryField=\{orderCellEditorConfig\.secondaryField \|\| null\}/);
 });
 
 test('saved size overrides stale billing snapshot and is displayed before the old attribute', () => {

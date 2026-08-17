@@ -122,6 +122,7 @@ import {
 import { buildCustomerDirectionsUrl } from './utils/customerLocationDirections.js';
 import {
   canPickCustomerContact as canUseCustomerContactPicker,
+  getCustomerContactPickerUnavailableMessage,
   normalizePickedCustomerContact,
   pickWebCustomerContact,
 } from './utils/customerContactPicker.js';
@@ -17940,6 +17941,84 @@ export default function App() {
     }
   };
 
+  const handleSyncCustomerFixedProductDefaults = async (customerId, savedRequests = []) => {
+    const normalizedCustomerId = `${customerId || ''}`.trim();
+    if (!normalizedCustomerId) {
+      return {
+        patch: null,
+        addedProductIds: [],
+        updatedProductIds: [],
+        skippedBranchIds: [],
+      };
+    }
+
+    const validProductIds = rawProducts
+      .filter((product) => product?.companyId === myCompanyId && !product?.isArchived)
+      .map((product) => product.id)
+      .filter(Boolean);
+    const buildMemoryPatch = (customer) => buildCustomerFixedProductMemoryPatch({
+      customer,
+      requests: savedRequests,
+      validProductIds,
+    });
+
+    if (isVpsStagingMode) {
+      const currentCustomer = rawCustomers.find((customer) => customer.id === normalizedCustomerId);
+      if (!currentCustomer) throw new Error('Không tìm thấy khách hàng để đồng bộ sản phẩm cố định.');
+
+      const memoryUpdate = buildMemoryPatch(currentCustomer);
+      if (!memoryUpdate.patch) return memoryUpdate;
+
+      const savedCustomer = await getHdConnectStagingApi().updateCustomer(normalizedCustomerId, {
+        ...currentCustomer,
+        ...memoryUpdate.patch,
+        clientMutationId: `customer-order-defaults-${normalizedCustomerId}-${Date.now()}`,
+      });
+      upsertLocalListRecord(setRawCustomers, savedCustomer);
+      return memoryUpdate;
+    }
+
+    if (!firebaseUser || !myCompanyId) {
+      throw new Error('Phiên làm việc không hợp lệ.');
+    }
+
+    const customerRef = doc(db, 'artifacts', appId, 'public', 'data', 'customers', normalizedCustomerId);
+    const result = await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(customerRef);
+      if (!snapshot.exists()) {
+        throw new Error('Không tìm thấy khách hàng để đồng bộ sản phẩm cố định.');
+      }
+
+      const customer = { id: snapshot.id, ...snapshot.data() };
+      if (`${customer.companyId || ''}` !== `${myCompanyId || ''}`) {
+        throw new Error('Bạn không có quyền cập nhật cấu hình khách hàng này.');
+      }
+
+      const memoryUpdate = buildMemoryPatch(customer);
+      if (!memoryUpdate.patch) {
+        return { memoryUpdate, savedCustomer: customer };
+      }
+
+      const updatedAt = new Date().toISOString();
+      transaction.set(customerRef, {
+        ...memoryUpdate.patch,
+        updatedAt,
+      }, { merge: true });
+
+      return {
+        memoryUpdate,
+        savedCustomer: { ...customer, ...memoryUpdate.patch, updatedAt },
+      };
+    });
+
+    if (result.memoryUpdate.patch) {
+      upsertLocalListRecord(setRawCustomers, result.savedCustomer);
+      rememberRecentLocalWrite('customers', normalizedCustomerId, result.savedCustomer);
+    }
+
+    return result.memoryUpdate;
+  };
+
   const handleDeleteCustomer = async (customerId) => {
     if (isVpsStagingMode) {
       await getHdConnectStagingApi().deleteCustomer(customerId);
@@ -21379,7 +21458,7 @@ export default function App() {
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
-        onGetCustomerProductPreference={handleGetCustomerProductPreference} onSaveCustomerProductPreference={handleSaveCustomerProductPreference}
+        onGetCustomerProductPreference={handleGetCustomerProductPreference} onSaveCustomerProductPreference={handleSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={handleSyncCustomerFixedProductDefaults}
         onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
@@ -21851,7 +21930,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -23544,7 +23623,7 @@ function MainAppView({
       );
       case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
-      case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (shouldShowMissingWorkflowSetup({ canCreate: isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'), dataReady: workflowDataReadiness.products, hasProducts: hasWorkflowProductData, requiresCustomers: false })) {
           return renderWorkflowGuide({
@@ -54925,6 +55004,7 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
   fieldType = 'text',
   value = '',
   options = [],
+  secondaryField = null,
   suffix = '',
   placeholder = '',
   canSave = true,
@@ -55015,6 +55095,38 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
               <span className="pointer-events-none absolute inset-y-0 right-4 inline-flex items-center text-xs font-black text-emerald-700">{suffix}</span>
             )}
           </div>
+          {secondaryField && (
+            <div className="mt-4">
+              <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
+                {secondaryField.label || 'Đơn vị'}
+              </label>
+              {secondaryField.type === 'select' ? (
+                <select
+                  value={`${secondaryField.value ?? ''}`}
+                  onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
+                  disabled={!canSave || isBusy || secondaryField.disabled}
+                  className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+                >
+                  {(secondaryField.options || []).map(option => (
+                    <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type={secondaryField.type === 'number' ? 'number' : 'text'}
+                  inputMode={secondaryField.type === 'number' ? 'decimal' : undefined}
+                  value={`${secondaryField.value ?? ''}`}
+                  onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
+                  disabled={!canSave || isBusy || secondaryField.disabled}
+                  placeholder={secondaryField.placeholder || ''}
+                  className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              )}
+              {secondaryField.helpText && (
+                <p className="mt-2 text-xs font-medium text-slate-400">{secondaryField.helpText}</p>
+              )}
+            </div>
+          )}
           <p className="mt-2 text-xs font-medium text-slate-400">
             {canSave ? 'Chỉ ô này được cập nhật khi bấm Lưu.' : 'Bạn chỉ có quyền xóa dòng này.'}
           </p>
@@ -59098,7 +59210,7 @@ const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelect
   );
 });
 
-function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -59414,7 +59526,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
   };
   const persistAdditionalCustomerFixedProducts = async (savedRequests = []) => {
-    if (typeof onEditCustomer !== 'function') return { rememberedCount: 0, failedCustomerIds: [] };
+    const canSyncFixedProducts = typeof onSyncCustomerFixedProductDefaults === 'function';
+    if (!canSyncFixedProducts && typeof onEditCustomer !== 'function') return { rememberedCount: 0, failedCustomerIds: [] };
 
     const requestsByCustomer = new Map();
     (Array.isArray(savedRequests) ? savedRequests : []).forEach((request) => {
@@ -59430,6 +59543,23 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const validProductIds = activeProducts.map(product => product.id).filter(Boolean);
 
     for (const [customerId, customerRequests] of requestsByCustomer.entries()) {
+      if (canSyncFixedProducts) {
+        try {
+          const memoryUpdate = await onSyncCustomerFixedProductDefaults(customerId, customerRequests);
+          if (memoryUpdate?.skippedBranchIds?.length > 0) {
+            console.warn('Khong ghi nho san pham cho chi nhanh khong con ton tai.', {
+              customerId,
+              branchIds: memoryUpdate.skippedBranchIds,
+            });
+          }
+          rememberedCount += memoryUpdate?.addedProductIds?.length || 0;
+        } catch (error) {
+          failedCustomerIds.push(customerId);
+          console.warn('Don da luu nhung chua dong bo duoc gia va don vi dat mac dinh cua khach.', error);
+        }
+        continue;
+      }
+
       const customer = customerLookup.get(customerId);
       if (!customer) continue;
       const canonicalCustomer = {
@@ -60616,6 +60746,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setInlineEditingRowKey(row.rowKey);
     setInlineEditingDraft({
       customerId: row.customerId || '',
+      branchId: row.branchId || row.item?.branchId || '',
       productId: row.productId || '',
       attributeLabel: row.attributeLabel || '',
       sizeLabel: row.sizeLabel || '',
@@ -60674,6 +60805,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const actualUnit = existingSnapshot.hasFrozenPricing
       ? existingSnapshot.actualUnit
       : resolveCustomerProductActualUnit(billingConfiguration, product);
+    const selectedOrderUnit = normalizeProductPricingUnit(
+      inlineEditingDraft.quantityUnit || inlineEditingDraft.actualUnit || actualUnit || ''
+    );
+    const effectiveActualUnit = selectedOrderUnit || actualUnit;
     const snapshot = buildCustomerProductBillingSnapshot({
       configuration: billingConfiguration,
       product,
@@ -60682,7 +60817,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       sizeLabel,
       attributeLabel,
       actualQuantity: quantity,
-      actualUnit,
+      actualUnit: effectiveActualUnit,
+      orderUnit: selectedOrderUnit || effectiveActualUnit,
       actualWeightKg: existingSnapshot.actualWeightKg || 0,
     });
 
@@ -60703,6 +60839,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       customerBranchName: branchRef.branchName,
       customerBranchAddress: branchRef.branchAddress,
       ...snapshot,
+      quantityUnit: snapshot.quantityUnit || selectedOrderUnit || effectiveActualUnit,
+      orderUnit: snapshot.orderUnit || selectedOrderUnit || effectiveActualUnit,
+      actualUnit: snapshot.actualUnit || effectiveActualUnit,
       unit: snapshot.actualUnit,
       price: snapshot.unitPrice,
       total: snapshot.amount,
@@ -60860,6 +60999,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }));
   };
 
+  const handleOrderCellQuantityUnitChange = (nextValue) => {
+    if (orderCellEditor?.field !== 'quantity') return;
+    setInlineEditingDraft(previous => ({
+      ...previous,
+      quantityUnit: nextValue,
+      actualUnit: nextValue,
+    }));
+  };
+
   const saveOrderCellEditor = async () => {
     if (!orderCellEditor?.row || !canEditOrderCellField(orderCellEditor.field) || isSavingOrderCell) return;
     setIsSavingOrderCell(true);
@@ -60882,6 +61030,25 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const getOrderCellEditorConfig = () => {
     if (!orderCellEditor?.field) return null;
+    const quantityEditorDraft = {
+      customerId: inlineEditingDraft.customerId,
+      branchId: inlineEditingDraft.branchId || orderCellEditor.row?.branchId || '',
+    };
+    const quantityEditorItem = {
+      productId: inlineEditingDraft.productId || orderCellEditor.row?.productId || '',
+      configurationId: inlineEditingDraft.configurationId || '',
+      quantityUnit: inlineEditingDraft.quantityUnit || inlineEditingDraft.actualUnit || '',
+      actualUnit: inlineEditingDraft.actualUnit || '',
+      billingUnit: inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || '',
+      pricingUnit: inlineEditingDraft.pricingUnit || '',
+      attributeLabel: inlineEditingDraft.attributeLabel || '',
+      weightKg: inlineEditingDraft.sizeLabel || '',
+      sizeLabel: inlineEditingDraft.sizeLabel || '',
+    };
+    const quantityEditorUnitOptions = getDraftItemUnitOptions(quantityEditorDraft, quantityEditorItem);
+    const selectedQuantityUnit = quantityEditorUnitOptions.find(unit => (
+      isSameBillingUnit(unit, inlineEditingDraft.quantityUnit || inlineEditingDraft.actualUnit)
+    )) || quantityEditorUnitOptions[0] || defaultQuantityUnit;
     const fieldConfigs = {
       customerId: {
         label: 'Khách hàng',
@@ -60902,7 +61069,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         title: 'Sửa số lượng',
         type: 'number',
         value: inlineEditingDraft.quantity,
-        suffix: inlineEditingDraft.actualUnit || inlineEditingDraft.quantityUnit || defaultQuantityUnit,
+        secondaryField: {
+          label: 'Đơn vị đặt',
+          type: 'select',
+          value: selectedQuantityUnit,
+          options: quantityEditorUnitOptions.map(unit => ({ value: unit, label: unit })),
+          helpText: `Đơn giá vẫn tính theo ${inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || 'đơn vị tính giá'} của sản phẩm.`,
+          onValueChange: handleOrderCellQuantityUnitChange,
+        },
         placeholder: 'Nhập số lượng'
       },
       sizeLabel: {
@@ -62459,6 +62633,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           description: product.name || 'Hàng hóa',
           quantity,
           quantityUnit,
+          orderUnit: quantityUnit,
+          defaultOrderUnit: quantityUnit,
+          billingUnit: billingSnapshot.billingUnit,
           pricingUnit: billingSnapshot.billingUnit,
           unitPrice: billingSnapshot.unitPrice,
           pricingQuantity: billingSnapshot.billingQuantity,
@@ -62932,6 +63109,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           fieldType={orderCellEditorConfig.type}
           value={orderCellEditorConfig.value}
           options={orderCellEditorConfig.options || []}
+          secondaryField={orderCellEditorConfig.secondaryField || null}
           suffix={orderCellEditorConfig.suffix || ''}
           placeholder={orderCellEditorConfig.placeholder || ''}
           canSave={canEditOrderCellField(orderCellEditor.field)}
@@ -70581,6 +70759,10 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
 
   const handlePickCustomerContact = async () => {
     if (customerContactPickerInFlightRef.current) return;
+    if (!canPickCustomerContact) {
+      setCustomerContactStatus(getCustomerContactPickerUnavailableMessage());
+      return;
+    }
     customerContactPickerInFlightRef.current = true;
     setIsPickingCustomerContact(true);
     setCustomerContactStatus('');
@@ -73747,17 +73929,16 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
           <div className="bg-white rounded-3xl p-4 w-full max-w-sm max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain animate-in zoom-in-95 sm:p-5">
             <h3 className="font-bold text-lg mb-4">Thêm Khách Hàng</h3>
             <form onSubmit={handleAddCustomerSubmit} className="space-y-3 text-[14px] sm:space-y-4">
-              {canPickCustomerContact && (
-                <button
-                  type="button"
-                  onClick={handlePickCustomerContact}
-                  disabled={isPickingCustomerContact}
-                  className="w-full border border-sky-200 bg-sky-50 text-sky-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <Phone size={16} />
-                  {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handlePickCustomerContact}
+                disabled={isPickingCustomerContact}
+                title={canPickCustomerContact ? undefined : 'Mở bằng ứng dụng HD Manager trên Android để chọn danh bạ'}
+                className="w-full border border-sky-200 bg-sky-50 text-sky-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Phone size={16} />
+                {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
+              </button>
               {customerContactStatus && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700">
                   {customerContactStatus}

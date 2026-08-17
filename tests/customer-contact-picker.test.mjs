@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   canPickCustomerContact,
+  getCustomerContactPickerUnavailableMessage,
   isWebContactPickerSupported,
   normalizePickedCustomerContact,
   pickWebCustomerContact,
@@ -20,6 +21,7 @@ assert.equal(isWebContactPickerSupported(webContacts), true);
 assert.equal(canPickCustomerContact({ platform: 'web', navigatorLike: webContacts }), true);
 assert.equal(canPickCustomerContact({ platform: 'android', navigatorLike: {} }), true);
 assert.equal(canPickCustomerContact({ platform: 'web', navigatorLike: {} }), false);
+assert.match(getCustomerContactPickerUnavailableMessage(), /Android/);
 
 assert.deepEqual(
   normalizePickedCustomerContact({
@@ -52,5 +54,9 @@ const cancelled = await pickWebCustomerContact({
 });
 assert.equal(cancelled.cancelled, true);
 assert.equal(cancelled.ok, false);
+
+const unsupported = await pickWebCustomerContact({});
+assert.equal(unsupported.supported, false);
+assert.equal(unsupported.message, getCustomerContactPickerUnavailableMessage());
 
 console.log('customer contact picker tests: PASS');
