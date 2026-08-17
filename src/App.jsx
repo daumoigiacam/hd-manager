@@ -55028,6 +55028,8 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
 
   if (!open) return null;
 
+  const hasInlineSecondaryField = Boolean(secondaryField?.inline);
+
   return (
     <div
       className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/55 px-3 py-6 backdrop-blur-[2px]"
@@ -55063,69 +55065,76 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
         </div>
 
         <div className="px-5 py-5">
-          <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">{fieldLabel}</label>
-          <div className="relative mt-2">
-            {fieldType === 'select' ? (
-              <select
-                autoFocus
-                value={`${value ?? ''}`}
-                onChange={(event) => onValueChange?.(event.target.value)}
-                disabled={!canSave || isBusy}
-                className="h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
-              >
-                {options.map(option => (
-                  <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                autoFocus
-                type={fieldType === 'number' ? 'number' : 'text'}
-                inputMode={fieldType === 'currency' ? 'numeric' : fieldType === 'number' ? 'decimal' : undefined}
-                min={fieldType === 'number' ? '0' : undefined}
-                step={fieldType === 'number' ? '0.01' : undefined}
-                value={`${value ?? ''}`}
-                onChange={(event) => onValueChange?.(event.target.value)}
-                disabled={!canSave || isBusy}
-                placeholder={placeholder}
-                className={`h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500 ${suffix ? 'pr-20' : ''}`}
-              />
-            )}
-            {suffix && fieldType !== 'select' && (
-              <span className="pointer-events-none absolute inset-y-0 right-4 inline-flex items-center text-xs font-black text-emerald-700">{suffix}</span>
+          <div className={hasInlineSecondaryField ? 'grid grid-cols-[minmax(0,1fr)_minmax(7rem,0.58fr)] gap-3' : ''}>
+            <div className="min-w-0">
+              <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">{fieldLabel}</label>
+              <div className="relative mt-2">
+                {fieldType === 'select' ? (
+                  <select
+                    autoFocus
+                    value={`${value ?? ''}`}
+                    onChange={(event) => onValueChange?.(event.target.value)}
+                    disabled={!canSave || isBusy}
+                    className="h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+                  >
+                    {options.map(option => (
+                      <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    autoFocus
+                    type={fieldType === 'number' ? 'number' : 'text'}
+                    inputMode={fieldType === 'currency' ? 'numeric' : fieldType === 'number' ? 'decimal' : undefined}
+                    min={fieldType === 'number' ? '0' : undefined}
+                    step={fieldType === 'number' ? '0.01' : undefined}
+                    value={`${value ?? ''}`}
+                    onChange={(event) => onValueChange?.(event.target.value)}
+                    disabled={!canSave || isBusy}
+                    placeholder={placeholder}
+                    className={`h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500 ${suffix ? 'pr-20' : ''}`}
+                  />
+                )}
+                {suffix && fieldType !== 'select' && (
+                  <span className="pointer-events-none absolute inset-y-0 right-4 inline-flex items-center text-xs font-black text-emerald-700">{suffix}</span>
+                )}
+              </div>
+            </div>
+            {secondaryField && (
+              <div className={hasInlineSecondaryField ? 'min-w-0' : 'mt-4'}>
+                <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
+                  {secondaryField.label || 'Đơn vị'}
+                </label>
+                {secondaryField.type === 'select' ? (
+                  <select
+                    value={`${secondaryField.value ?? ''}`}
+                    onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
+                    disabled={!canSave || isBusy || secondaryField.disabled}
+                    className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+                  >
+                    {(secondaryField.options || []).map(option => (
+                      <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type={secondaryField.type === 'number' ? 'number' : 'text'}
+                    inputMode={secondaryField.type === 'number' ? 'decimal' : undefined}
+                    value={`${secondaryField.value ?? ''}`}
+                    onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
+                    disabled={!canSave || isBusy || secondaryField.disabled}
+                    placeholder={secondaryField.placeholder || ''}
+                    className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                )}
+                {!hasInlineSecondaryField && secondaryField.helpText && (
+                  <p className="mt-2 text-xs font-medium text-slate-400">{secondaryField.helpText}</p>
+                )}
+              </div>
             )}
           </div>
-          {secondaryField && (
-            <div className="mt-4">
-              <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
-                {secondaryField.label || 'Đơn vị'}
-              </label>
-              {secondaryField.type === 'select' ? (
-                <select
-                  value={`${secondaryField.value ?? ''}`}
-                  onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
-                  disabled={!canSave || isBusy || secondaryField.disabled}
-                  className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
-                >
-                  {(secondaryField.options || []).map(option => (
-                    <option key={`${option.value}`} value={`${option.value}`}>{option.label}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type={secondaryField.type === 'number' ? 'number' : 'text'}
-                  inputMode={secondaryField.type === 'number' ? 'decimal' : undefined}
-                  value={`${secondaryField.value ?? ''}`}
-                  onChange={(event) => secondaryField.onValueChange?.(event.target.value)}
-                  disabled={!canSave || isBusy || secondaryField.disabled}
-                  placeholder={secondaryField.placeholder || ''}
-                  className="mt-2 h-12 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500"
-                />
-              )}
-              {secondaryField.helpText && (
-                <p className="mt-2 text-xs font-medium text-slate-400">{secondaryField.helpText}</p>
-              )}
-            </div>
+          {hasInlineSecondaryField && secondaryField?.helpText && (
+            <p className="mt-2 text-xs font-medium text-slate-400">{secondaryField.helpText}</p>
           )}
           <p className="mt-2 text-xs font-medium text-slate-400">
             {canSave ? 'Chỉ ô này được cập nhật khi bấm Lưu.' : 'Bạn chỉ có quyền xóa dòng này.'}
@@ -61102,6 +61111,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         secondaryField: {
           label: 'Đơn vị đặt',
           type: 'select',
+          inline: true,
           value: selectedQuantityUnit,
           options: quantityEditorUnitOptions.map(unit => ({ value: unit, label: unit })),
           helpText: `Đơn giá vẫn tính theo ${inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit || 'đơn vị tính giá'} của sản phẩm.`,

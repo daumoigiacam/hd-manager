@@ -310,6 +310,9 @@ test('existing order rows edit one selected cell and keep delete inside the edit
 test('summary quantity editor can change order unit without replacing pricing unit', () => {
   assert.match(appSource, /const handleOrderCellQuantityUnitChange = \(nextValue\) =>/);
   assert.match(appSource, /label: 'Đơn vị đặt'/);
+  assert.match(appSource, /const hasInlineSecondaryField = Boolean\(secondaryField\?\.inline\);/);
+  assert.match(appSource, /grid-cols-\[minmax\(0,1fr\)_minmax\(7rem,0\.58fr\)\]/);
+  assert.match(appSource, /label: 'Đơn vị đặt',\s*type: 'select',\s*inline: true,/);
   assert.match(appSource, /getDraftItemUnitOptions\(quantityEditorDraft, quantityEditorItem\)/);
   assert.match(appSource, /orderUnit: selectedOrderUnit \|\| effectiveActualUnit/);
   assert.match(appSource, /billingUnit: inlineEditingDraft\.billingUnit \|\| inlineEditingDraft\.pricingUnit/);
