@@ -43,6 +43,57 @@ assert.equal(countBilling.billingUnit, 'Con', 'count configuration remains a cou
 assert.equal(countBilling.billingQuantity, 50, 'count billing uses exported duck count');
 assert.equal(countBilling.amount, 5000000, '50 ducks x 100,000 is billed correctly');
 
+const fiveDuckDispatch = {
+  ...fiftyDuckDispatch,
+  id: 'dispatch-duck-005',
+  quantity: 5,
+  weightKg: 10,
+};
+
+const fiveDuckKilogramBilling = buildWarehouseDispatchOrderBillingSnapshot({
+  dispatch: fiveDuckDispatch,
+  product: duckProduct,
+  configuration: { configurationId: 'customer-duck-kg-five', pricingUnit: 'Kg', unitPrice: 60000 },
+});
+assert.equal(fiveDuckKilogramBilling.quantity, 5, 'Kg pricing keeps the customer ordered count in quantity');
+assert.equal(fiveDuckKilogramBilling.quantityCount, 5, 'Kg pricing keeps the customer ordered count in quantityCount');
+assert.equal(fiveDuckKilogramBilling.actualWeightKg, 10, 'Kg pricing keeps the actual dispatch weight in actualWeightKg');
+assert.equal(fiveDuckKilogramBilling.billingQuantity, 10, '5 ducks and 10 Kg bill by the measured Kg');
+assert.equal(fiveDuckKilogramBilling.amount, 600000, '5 ducks + 10 Kg x 60,000/Kg = 600,000');
+
+const fiveDuckCountBilling = buildWarehouseDispatchOrderBillingSnapshot({
+  dispatch: fiveDuckDispatch,
+  product: duckProduct,
+  configuration: { configurationId: 'customer-duck-count-five', pricingUnit: 'Con', unitPrice: 100000 },
+});
+assert.equal(fiveDuckCountBilling.quantity, 5, 'count pricing keeps the customer ordered count in quantity');
+assert.equal(fiveDuckCountBilling.quantityCount, 5, 'count pricing keeps the customer ordered count in quantityCount');
+assert.equal(fiveDuckCountBilling.actualWeightKg, 10, 'count pricing keeps the actual dispatch weight in actualWeightKg');
+assert.equal(fiveDuckCountBilling.billingQuantity, 5, 'count pricing does not use the measured Kg');
+assert.equal(fiveDuckCountBilling.amount, 500000, '5 ducks x 100,000/Con = 500,000');
+
+const fiveDuckKilogramDraftLine = mergeWarehouseDispatchOrderBillingItems([fiveDuckKilogramBilling])[0];
+assert.equal(fiveDuckKilogramDraftLine.quantity, 5, 'the merged bulk draft line preserves quantity as customer count');
+assert.equal(fiveDuckKilogramDraftLine.weightKg, 10, 'the merged bulk draft line preserves actual Kg');
+assert.equal(fiveDuckKilogramDraftLine.billingQuantity, 10, 'the merged bulk draft line keeps Kg billing quantity separate');
+assert.equal(fiveDuckKilogramDraftLine.amount, 600000, 'the merged bulk draft line preserves Kg billing amount');
+
+const explicitCountDispatch = {
+  ...fiveDuckDispatch,
+  id: 'dispatch-duck-explicit-count',
+  quantity: 10,
+  pieceCount: 5,
+  quantityCount: 5,
+};
+const explicitCountKilogramBilling = buildWarehouseDispatchOrderBillingSnapshot({
+  dispatch: explicitCountDispatch,
+  product: duckProduct,
+  configuration: { configurationId: 'customer-duck-kg-explicit-count', pricingUnit: 'Kg', unitPrice: 60000 },
+});
+assert.equal(explicitCountKilogramBilling.actualQuantity, 5, 'explicit piece-count fields override an ambiguous legacy quantity');
+assert.equal(explicitCountKilogramBilling.billingQuantity, 10, 'explicit piece-count dispatch still bills by measured Kg');
+assert.equal(explicitCountKilogramBilling.amount, 600000, 'legacy quantity ambiguity cannot change the Kg amount');
+
 const orderListCountSummary = summarizeOrderBillingItems([countBilling]);
 assert.deepEqual(orderListCountSummary, [{
   unit: 'Con',
@@ -197,9 +248,10 @@ assert.match(appSource, /buildWarehouseDispatchOrderBillingSnapshot\(/, 'bulk co
 assert.match(appSource, /mergeWarehouseDispatchOrderBillingItems\(group\.items\)/, 'bulk conversion consolidates duplicate product rows before review');
 assert.match(appSource, /draft\.sourceType === 'warehouse_dispatch'[\s\S]*mergeWarehouseDispatchOrderBillingItems\(draft\.items\)/, 'warehouse drafts are consolidated again immediately before persistence');
 assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchId, activeProducts\)/, 'bulk conversion reads the customer product pricing configuration');
-assert.match(appSource, /quantity: item\.billingQuantity > 0/, 'draft quantity is the billing quantity rather than the physical count');
+assert.match(appSource, /quantity: item\.actualQuantity > 0/, 'draft quantity preserves the customer ordered count');
+assert.match(appSource, /quantity: snapshot\.actualQuantity/, 'editing a warehouse draft keeps quantity separate from billing quantity');
 assert.match(appSource, /'billingQuantity', e\.target\.value/, 'editing the visible quantity recalculates the billing quantity');
 assert.match(appSource, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
 assert.match(appSource, /summarizeOrderBillingItems\(order\.items \|\| \[\]\)/, 'order list uses frozen billing units instead of a hard-coded Kg summary');
 
-console.log('Warehouse dispatch bulk order billing tests: PASS (14 scenarios, 45 assertions)');
+console.log('Warehouse dispatch bulk order billing tests: PASS (18 scenarios, 62 assertions)');

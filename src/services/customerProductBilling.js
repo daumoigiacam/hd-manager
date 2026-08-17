@@ -540,13 +540,15 @@ export const buildWarehouseDispatchOrderBillingSnapshot = ({
     || configuredActualUnit
     || billingUnit
   );
-  const actualQuantity = parsePositiveNumber(
-    source.actualQuantity
-    ?? source.quantity
-    ?? source.pieceCount
-    ?? source.quantityCount
-    ?? frozenSnapshot.actualQuantity
-  );
+  const actualQuantity = [
+    source.actualQuantity,
+    source.quantityCount,
+    source.pieceCount,
+    source.quantity,
+    frozenSnapshot.actualQuantity,
+  ]
+    .map(parsePositiveNumber)
+    .find(value => value > 0) || 0;
   const actualWeightKg = parsePositiveNumber(
     source.actualWeightKg
     ?? source.weightKg
@@ -703,7 +705,7 @@ export const mergeWarehouseDispatchOrderBillingItems = (items = []) => {
       unitPrice: displayUnitPrice,
       weightedUnitPrice,
       amount: roundedAmount,
-      quantity: group.billingQuantity,
+      quantity: actualQuantity,
       quantityCount: actualQuantity,
       quantityUnit: actualUnit,
       weightKg: group.actualWeightKg,
