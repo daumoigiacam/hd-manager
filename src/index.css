@@ -1582,7 +1582,8 @@ html.hd-low-power-ui .hd-soft-red-outline {
 /* A fullscreen detail opens from inside the scrollable content region. Let it
    escape that region so its header can cover, rather than sit behind, AppShell. */
 .mobile-app-shell > main:has(.hd-order-detail-layer),
-.mobile-app-shell > main:has(.hd-order-request-modal-layer) {
+.mobile-app-shell > main:has(.hd-order-request-modal-layer),
+.mobile-app-shell > main:has(.hd-order-create-layer) {
   position: relative;
   z-index: 60;
   overflow: visible !important;
@@ -1614,7 +1615,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 /* Older Android WebViews without :has() keep the detail below AppShell header
    instead of clipping its title and invoice code. */
 @supports not selector(main:has(.hd-order-detail-layer)) {
-  .mobile-app-shell .hd-order-detail-layer {
+  .mobile-app-shell :where(.hd-order-detail-layer, .hd-order-create-layer) {
     top: calc(var(--hd-header-height) + var(--hd-safe-top)) !important;
     min-block-size: calc(var(--hd-viewport-height) - var(--hd-header-height) - var(--hd-safe-top));
     max-block-size: calc(var(--hd-viewport-height) - var(--hd-header-height) - var(--hd-safe-top));
@@ -1626,6 +1627,21 @@ html.hd-low-power-ui .hd-soft-red-outline {
 }
 
 .mobile-app-shell .hd-order-detail-content {
+  position: relative;
+  z-index: 1;
+  min-block-size: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-app-shell .hd-order-create-layer {
+  min-block-size: var(--hd-viewport-height);
+  max-block-size: var(--hd-viewport-height);
+}
+
+.mobile-app-shell .hd-order-create-content {
   position: relative;
   z-index: 1;
   min-block-size: 0;

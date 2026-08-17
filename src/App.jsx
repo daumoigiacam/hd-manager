@@ -64370,6 +64370,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const [orderSalesEmpFilter, setOrderSalesEmpFilter] = useState('');
   const [feeEditorOrderId, setFeeEditorOrderId] = useState('');
   const [feeDraft, setFeeDraft] = useState({ name: '', amount: '', payer: 'buyer' });
+  const [bulkFeeEditorDraftId, setBulkFeeEditorDraftId] = useState('');
+  const [bulkFeeDraft, setBulkFeeDraft] = useState({ name: '', amount: '', payer: 'buyer' });
   const [returnEditorOrderId, setReturnEditorOrderId] = useState('');
   const [returnDraft, setReturnDraft] = useState({ pieces: '', weightKg: '', reason: '', status: 'pending_pickup', discountAmount: '' });
   const [returnEditorError, setReturnEditorError] = useState('');
@@ -66436,33 +66438,38 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     handleBulkDraftChange(draftId, 'date', dateValue);
   };
 
-  const promptEditBulkDraftPayment = (draftId, currentValue) => {
-    const rawValue = window.prompt('Nhập số tiền đã thanh toán / cọc trước', formatInputCurrency(currentValue));
-    if (rawValue === null) return;
-    handleBulkDraftChange(draftId, 'upfrontPayment', parseLooseMoneyValue(rawValue));
+  const openBulkDraftFeeEditor = (draft) => {
+    if (!draft?.localId) return;
+    setBulkFeeEditorDraftId(draft.localId);
+    setBulkFeeDraft({
+      name: draft.extraExpenseName || 'Vận chuyển',
+      amount: draft.extraExpenseAmount || '',
+      payer: draft.extraExpensePayer || 'buyer'
+    });
   };
 
-  const promptEditBulkDraftFee = (draft) => {
-    if (!draft?.localId) return;
-    const currentName = draft.extraExpenseName || 'Vận chuyển';
-    const feeName = window.prompt('Tên phí (ví dụ: Vận chuyển, thùng xốp)', currentName);
-    if (feeName === null) return;
-    const feeAmountRaw = window.prompt('Số tiền phí', formatInputCurrency(draft.extraExpenseAmount));
-    if (feeAmountRaw === null) return;
-    const feeAmount = parseLooseMoneyValue(feeAmountRaw);
+  const closeBulkDraftFeeEditor = () => {
+    setBulkFeeEditorDraftId('');
+    setBulkFeeDraft({ name: '', amount: '', payer: 'buyer' });
+  };
+
+  const saveBulkDraftFeeEditor = (overrideAmount = null) => {
+    if (!bulkFeeEditorDraftId) return;
+    const feeAmount = overrideAmount === null
+      ? parseLooseMoneyValue(bulkFeeDraft.amount)
+      : parseLooseMoneyValue(overrideAmount);
     if (feeAmount < 0) {
-      window.alert('Số tiền phí không hợp lệ.');
+      setBulkOrderStatus('Số tiền phí không hợp lệ.');
       return;
     }
-    const payerRaw = window.prompt('Ai chịu phí? Nhập 1 = Khách, 2 = Chia đôi, 3 = Công ty', draft.extraExpensePayer === 'shared' ? '2' : draft.extraExpensePayer === 'seller' ? '3' : '1');
-    if (payerRaw === null) return;
-    const payer = `${payerRaw}`.trim() === '2' ? 'shared' : `${payerRaw}`.trim() === '3' ? 'seller' : 'buyer';
-    setBulkOrderDrafts((prev) => prev.map((item) => item.localId === draft.localId ? {
-      ...item,
-      extraExpenseName: capitalizeFirst(feeName || 'Phụ phí'),
+    const payer = bulkFeeDraft.payer || 'buyer';
+    setBulkOrderDrafts((prev) => prev.map((draft) => draft.localId === bulkFeeEditorDraftId ? {
+      ...draft,
+      extraExpenseName: feeAmount > 0 ? capitalizeFirst(bulkFeeDraft.name || 'Phụ phí') : '',
       extraExpenseAmount: feeAmount,
       extraExpensePayer: payer
-    } : item));
+    } : draft));
+    closeBulkDraftFeeEditor();
   };
 
   const buildOrderDuplicateSignature = (entry = {}) => {
@@ -66672,6 +66679,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       setShowAddOrder(false);
       setShowOrderSourcePicker(false);
       setOrderCreationSource('');
+      closeBulkDraftFeeEditor();
       const sourceLabel = isWarehouseBulkReview ? 'phiếu xuất kho' : bulkOrderSource === 'notebook_image' ? 'ảnh sổ sách' : 'đơn nháp';
       setBulkOrderStatus(`Đã tạo ${createdCount} đơn hàng từ ${sourceLabel}.${postSaveWarnings.length > 0 ? ` Có ${postSaveWarnings.length} cảnh báo phụ cần kiểm tra.` : ''}`);
     } catch (error) {
@@ -66725,6 +66733,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setErrorMsg('');
     setBulkOrderStatus('');
     setBulkOrderDrafts([]);
+    closeBulkDraftFeeEditor();
     setOrderCreationSource('');
     setShowOrderSourcePicker(true);
   };
@@ -66740,6 +66749,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setErrorMsg('');
     setBulkOrderStatus('');
     setBulkOrderDrafts([]);
+    closeBulkDraftFeeEditor();
 
     if (source === 'manual') {
       setSearchCus('');
@@ -66767,6 +66777,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setErrorMsg('');
     setBulkOrderStatus('');
     setBulkOrderDrafts([]);
+    closeBulkDraftFeeEditor();
   };
 
   useEffect(() => {
@@ -67901,7 +67912,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       )}
 
       {showAddOrder && (
-         <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-bottom">
+         <div className="hd-fullscreen-layer hd-order-create-layer fixed inset-0 z-[70] flex flex-col bg-gray-50 animate-in slide-in-from-bottom">
             <HDHeader className="hd-safe-header bg-blue-600 text-white p-4 flex items-center justify-between shrink-0 shadow-sm">
                <div>
                  <h2 className="font-bold text-lg">
@@ -67921,21 +67932,21 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                <button onClick={closeAddOrderModal} className="hover:bg-blue-700 p-1 rounded-full"><X size={24}/></button>
             </HDHeader>
             
-            <div className="p-4 flex-1 overflow-y-auto">
-               <form id="order-form" onSubmit={handleAddSubmit} className="space-y-4 max-w-lg mx-auto pb-44 sm:pb-6">
+             <div className="hd-order-create-content min-h-0 flex-1 overflow-y-auto px-3 pt-2 pb-3 sm:px-4">
+                <form id="order-form" onSubmit={handleAddSubmit} className="mx-auto max-w-lg space-y-3 pb-44 sm:pb-6">
                 {errorMsg && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 font-medium border border-red-100">{errorMsg}</div>}
                 <input ref={bulkOrderImageInputRef} type="file" accept="image/*" capture="environment" onChange={handleNotebookImageUpload} className="hidden" />
 
                 {orderCreationSource !== 'manual' && (
-                <div className="bg-gradient-to-br from-indigo-50 via-white to-emerald-50 p-4 rounded-2xl shadow-sm border border-indigo-100 space-y-4">
+                <div className="space-y-3 rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-emerald-50 p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-extrabold tracking-[0.22em] uppercase text-indigo-600">
                         {orderCreationSource === 'warehouse' ? 'Phiếu xuất kho' : 'AI đọc ảnh'}
                       </p>
-                      <h3 className="text-base font-bold text-slate-900 mt-1">
-                        {orderCreationSource === 'warehouse' ? 'Lấy dữ liệu từ phiếu xuất kho' : 'Tạo đơn hàng loạt từ ảnh sổ sách'}
-                      </h3>
+                       {orderCreationSource !== 'warehouse' && (
+                         <h3 className="mt-1 text-base font-bold text-slate-900">Tạo đơn hàng loạt từ ảnh sổ sách</h3>
+                       )}
                       <p className="text-xs text-slate-500 mt-1 leading-5">
                         {orderCreationSource === 'warehouse'
                           ? 'Chọn ngày phiếu xuất kho, app sẽ gom theo khách và tạo đơn nháp để kế toán rà soát trước khi lưu.'
@@ -68058,23 +68069,21 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
                             <div className="px-3 py-3">
                               <div className="overflow-hidden rounded-2xl border border-slate-200">
-                                <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(76px,.72fr)_minmax(68px,.66fr)_minmax(84px,.78fr)] bg-slate-50 text-center text-[10px] font-black uppercase tracking-wide text-slate-500">
-                                  <div className="border-r border-slate-200 px-2 py-2">Sản phẩm</div>
-                                  <div className="border-r border-slate-200 px-1.5 py-2">SL tính tiền</div>
-                                  <div className="border-r border-slate-200 px-1.5 py-2">Đơn giá</div>
-                                  <div className="px-1.5 py-2">Thành tiền</div>
+                                <div className="grid min-w-full grid-cols-[minmax(0,1.45fr)_minmax(5.5rem,.85fr)_minmax(5.5rem,.8fr)] items-stretch bg-slate-50 text-center text-[10px] font-black uppercase tracking-wide leading-4 text-slate-500">
+                                  <div className="flex min-h-12 items-center justify-center border-r border-slate-200 px-2 py-2">Sản phẩm</div>
+                                  <div className="flex min-h-12 items-center justify-center border-r border-slate-200 px-1.5 py-2">SL tính tiền</div>
+                                  <div className="flex min-h-12 items-center justify-center px-1.5 py-2">Đơn giá</div>
                                 </div>
 
                                 {(draft.items || []).map((item, itemIndex) => {
                                   const billingPresentation = getOrderItemBillingPresentation(item);
-                                  const lineTotal = billingPresentation.amount;
                                   return (
-                                    <div key={`${draft.localId}_${itemIndex}`} className="grid grid-cols-[minmax(0,1.35fr)_minmax(76px,.72fr)_minmax(68px,.66fr)_minmax(84px,.78fr)] border-t border-slate-200 text-[12px]">
-                                      <div className="relative min-w-0 border-r border-slate-200 p-1.5">
+                                    <div key={`${draft.localId}_${itemIndex}`} className="grid min-w-full grid-cols-[minmax(0,1.45fr)_minmax(5.5rem,.85fr)_minmax(5.5rem,.8fr)] items-stretch border-t border-slate-200 text-[12px] leading-4">
+                                      <div className="relative flex min-h-[4.75rem] min-w-0 items-end border-r border-slate-200 px-1.5 pb-1.5 pt-5">
                                         <select
                                           value={item.productId || ''}
                                           onChange={(e) => handleBulkDraftItemProductChange(draft.localId, itemIndex, e.target.value)}
-                                          className="h-10 w-full min-w-0 rounded-xl border border-transparent bg-white px-2 pr-6 text-[12px] font-semibold text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
+                                          className="h-10 w-full min-w-0 rounded-xl border border-slate-100 bg-white px-2 pr-6 text-[12px] font-semibold leading-4 text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
                                           aria-label="Tên sản phẩm"
                                         >
                                           <option value="">{item.description || 'Sản phẩm'}</option>
@@ -68086,15 +68095,15 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                           <button
                                             type="button"
                                             onClick={() => handleRemoveBulkDraftItem(draft.localId, itemIndex)}
-                                            className="absolute -right-1 -top-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-rose-100 text-rose-500 shadow-sm"
+                                            className="absolute right-0.5 top-0.5 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full bg-rose-100 text-rose-500 shadow-sm"
                                             aria-label="Xóa dòng hàng"
                                           >
                                             <X size={11} />
                                           </button>
                                         )}
                                       </div>
-                                      <div className="border-r border-slate-200 p-1.5">
-                                        <span className="mb-0.5 block text-center text-[10px] font-bold text-slate-400">
+                                      <div className="relative flex min-h-[4.75rem] items-end border-r border-slate-200 px-1.5 pb-1.5 pt-5">
+                                        <span className="pointer-events-none absolute inset-x-0 top-1 text-center text-[10px] font-bold text-slate-400">
                                           {billingPresentation.billingUnit || 'ĐV'}
                                         </span>
                                         <input
@@ -68102,23 +68111,20 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                           step="0.01"
                                           value={item.billingQuantity ?? item.pricingQuantity ?? item.quantity}
                                           onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'billingQuantity', e.target.value)}
-                                          className="weight-entry-input h-10 w-full min-w-0 rounded-xl border border-transparent bg-white px-1 text-center text-[12px] font-semibold tabular-nums text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
+                                          className="weight-entry-input h-10 w-full min-w-0 rounded-xl border border-slate-100 bg-white px-1 text-center text-[12px] font-semibold leading-4 tabular-nums text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
                                           placeholder="0"
                                           aria-label={`Số lượng tính tiền (${billingPresentation.billingUnit || 'đơn vị'})`}
                                         />
                                       </div>
-                                      <div className="border-r border-slate-200 p-1.5">
+                                      <div className="flex min-h-[4.75rem] items-end px-1.5 pb-1.5 pt-5">
                                         <input
                                           type="tel"
                                           value={formatInputCurrency(item.unitPrice)}
                                           onChange={(e) => handleBulkDraftItemChange(draft.localId, itemIndex, 'unitPrice', parseInputCurrency(e.target.value))}
-                                          className="h-10 w-full min-w-0 rounded-xl border border-transparent bg-white px-1.5 text-center text-[12px] font-semibold text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
+                                          className="h-10 w-full min-w-0 rounded-xl border border-slate-100 bg-white px-1.5 text-center text-[12px] font-semibold leading-4 tabular-nums text-slate-900 outline-none focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500"
                                           placeholder="Giá"
                                           aria-label="Đơn giá"
                                         />
-                                      </div>
-                                      <div className="flex min-w-0 items-center justify-end px-2 py-1.5 text-right font-black text-slate-900">
-                                        {formatCurrency(lineTotal)}
                                       </div>
                                     </div>
                                   );
@@ -68141,26 +68147,37 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                                   <span className="text-[12px] font-black uppercase tracking-wide text-slate-500">Tổng tiền</span>
                                   <strong className="text-lg font-black text-slate-950">{formatCurrency(reviewTotal)} đ</strong>
                                 </div>
-                                <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] font-bold">
+                                <div
+                                  className="mt-2 grid grid-cols-3 items-stretch gap-2 text-center text-[12px] font-bold"
+                                  style={{ fontFamily: '"Times New Roman", Times, serif', fontSize: '12px' }}
+                                >
+                                  <label className="flex min-h-16 cursor-text flex-col items-center justify-center rounded-2xl border border-emerald-100 bg-white px-2 py-2 text-slate-600">
+                                    <span className="block text-[12px] uppercase tracking-wide text-slate-400">Cọc</span>
+                                    <input
+                                      type="tel"
+                                      inputMode="numeric"
+                                      aria-label="Tiền cọc"
+                                      value={formatInputCurrency(paidAmount)}
+                                      onChange={(e) => handleBulkDraftChange(draft.localId, 'upfrontPayment', parseInputCurrency(e.target.value))}
+                                      className="mt-1 block h-5 w-full min-w-0 bg-transparent text-center text-[12px] font-black tabular-nums text-emerald-700 outline-none placeholder:text-emerald-300"
+                                      placeholder="0"
+                                    />
+                                  </label>
                                   <button
                                     type="button"
-                                    onClick={() => promptEditBulkDraftPayment(draft.localId, draft.upfrontPayment)}
-                                    className="rounded-2xl border border-emerald-100 bg-white px-2 py-2 text-left text-slate-600"
+                                    onClick={() => openBulkDraftFeeEditor(draft)}
+                                    className="flex min-h-16 flex-col items-center justify-center rounded-2xl border border-amber-100 bg-white px-2 py-2 text-center text-slate-600"
+                                    style={{ fontFamily: '"Times New Roman", Times, serif', fontSize: '12px' }}
                                   >
-                                    <span className="block text-[10px] uppercase tracking-wide text-slate-400">Cọc</span>
-                                    <span className="mt-0.5 block truncate text-emerald-700">{formatCurrency(paidAmount)} đ</span>
+                                    <span className="block text-[12px] uppercase tracking-wide text-slate-400">{feeLabel}</span>
+                                    <span className="mt-1 block w-full truncate text-[12px] text-amber-700">{feeAmount > 0 ? `${formatCurrency(feeAmount)} đ` : 'Thêm phí'}</span>
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => promptEditBulkDraftFee(draft)}
-                                    className="rounded-2xl border border-amber-100 bg-white px-2 py-2 text-left text-slate-600"
+                                  <div
+                                    className="flex min-h-16 flex-col items-center justify-center rounded-2xl border border-slate-100 bg-white px-2 py-2 text-center text-slate-600"
+                                    style={{ fontFamily: '"Times New Roman", Times, serif', fontSize: '12px' }}
                                   >
-                                    <span className="block text-[10px] uppercase tracking-wide text-slate-400">{feeLabel}</span>
-                                    <span className="mt-0.5 block truncate text-amber-700">{feeAmount > 0 ? `${formatCurrency(feeAmount)} đ` : 'Thêm phí'}</span>
-                                  </button>
-                                  <div className="rounded-2xl border border-slate-100 bg-white px-2 py-2 text-left text-slate-600">
-                                    <span className="block text-[10px] uppercase tracking-wide text-slate-400">Còn lại</span>
-                                    <span className="mt-0.5 block truncate text-slate-950">{formatCurrency(remainingAmount)} đ</span>
+                                    <span className="block text-[12px] uppercase tracking-wide text-slate-400">Còn lại</span>
+                                    <span className="mt-1 block w-full truncate text-[12px] text-slate-950">{formatCurrency(remainingAmount)} đ</span>
                                   </div>
                                 </div>
                               </div>
@@ -68443,10 +68460,112 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                     <input required type="date" value={newOrder.date} onChange={e=>setNewOrder({...newOrder, date: e.target.value})} className="w-full border border-gray-300 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
                   </div>
                 </div>
-                </>
-                )}
-               </form>
+               </>
+               )}
+              </form>
             </div>
+
+            {bulkFeeEditorDraftId && (() => {
+              const editingDraft = bulkOrderDrafts.find((draft) => draft.localId === bulkFeeEditorDraftId);
+              if (!editingDraft) return null;
+              const draftFeeAmount = parseLooseMoneyValue(bulkFeeDraft.amount);
+              const draftCustomerFee = bulkFeeDraft.payer === 'buyer' ? draftFeeAmount : bulkFeeDraft.payer === 'shared' ? draftFeeAmount / 2 : 0;
+              const draftSellerFee = bulkFeeDraft.payer === 'seller' ? draftFeeAmount : bulkFeeDraft.payer === 'shared' ? draftFeeAmount / 2 : 0;
+              const payerOptions = [
+                { id: 'buyer', title: 'Khách chịu', desc: 'Cộng vào hóa đơn', tone: 'emerald' },
+                { id: 'shared', title: 'Chia đôi', desc: 'Khách và DN cùng chịu', tone: 'sky' },
+                { id: 'seller', title: 'Công ty chịu', desc: 'Ghi vào chi phí', tone: 'rose' }
+              ];
+
+              return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 px-3 py-5 pb-[calc(96px+env(safe-area-inset-bottom))] sm:p-4" role="dialog" aria-modal="true" aria-labelledby="bulk-fee-editor-title">
+                  <form
+                    onSubmit={(event) => { event.preventDefault(); saveBulkDraftFeeEditor(); }}
+                    onClick={(event) => event.stopPropagation()}
+                    className="max-h-[calc(100dvh-150px)] w-full max-w-md overflow-y-auto rounded-[32px] bg-white p-5 shadow-2xl"
+                  >
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-black uppercase tracking-[0.22em] text-amber-600">Chi phí khác</p>
+                        <h3 id="bulk-fee-editor-title" className="mt-1 text-xl font-black text-slate-950">Thêm phí cho đơn nháp</h3>
+                        <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">Nhập tên phí, số tiền và người chịu phí. Thay đổi chỉ áp dụng cho đơn nháp đang rà soát.</p>
+                      </div>
+                      <button type="button" onClick={closeBulkDraftFeeEditor} className="shrink-0 rounded-full bg-slate-100 p-2 text-slate-500" aria-label="Đóng bảng thêm phí">
+                        <X size={18} />
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Tên phí</label>
+                        <input
+                          autoFocus
+                          value={bulkFeeDraft.name}
+                          onChange={(event) => setBulkFeeDraft(prev => ({ ...prev, name: capitalizeFirst(event.target.value) }))}
+                          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                          placeholder="Ví dụ: Vận chuyển, thùng xốp..."
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Số tiền phí</label>
+                        <input
+                          inputMode="numeric"
+                          value={formatInputCurrency(bulkFeeDraft.amount)}
+                          onChange={(event) => setBulkFeeDraft(prev => ({ ...prev, amount: parseInputCurrency(event.target.value) }))}
+                          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-lg font-black text-slate-950 outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                          placeholder="0 đ"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-[11px] font-black uppercase tracking-wide text-slate-500">Ai chịu phí?</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {payerOptions.map(option => {
+                            const active = bulkFeeDraft.payer === option.id;
+                            const activeClasses = option.tone === 'emerald'
+                              ? 'border-emerald-400 bg-emerald-50 text-emerald-700'
+                              : option.tone === 'rose'
+                                ? 'border-rose-400 bg-rose-50 text-rose-700'
+                                : 'border-sky-400 bg-sky-50 text-sky-700';
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => setBulkFeeDraft(prev => ({ ...prev, payer: option.id }))}
+                                className={`rounded-2xl border px-2 py-3 text-center transition-all ${active ? activeClasses : 'border-slate-200 bg-white text-slate-500'}`}
+                              >
+                                <span className="block text-[11px] font-black">{option.title}</span>
+                                <span className="mt-1 block text-[9px] font-bold opacity-80">{option.desc}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 rounded-3xl bg-slate-50 p-2">
+                        <div className="rounded-2xl bg-white px-3 py-2 text-center shadow-sm">
+                          <p className="text-[10px] font-black uppercase text-slate-400">Cộng hóa đơn</p>
+                          <p className="mt-1 text-sm font-black text-emerald-700">{formatCurrency(draftCustomerFee)} đ</p>
+                        </div>
+                        <div className="rounded-2xl bg-white px-3 py-2 text-center shadow-sm">
+                          <p className="text-[10px] font-black uppercase text-slate-400">Chi phí DN</p>
+                          <p className="mt-1 text-sm font-black text-rose-600">{formatCurrency(draftSellerFee)} đ</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-[0.9fr_1.2fr] gap-3">
+                      <button type="button" onClick={closeBulkDraftFeeEditor} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-600">Hủy</button>
+                      <button type="submit" className="rounded-2xl bg-gradient-to-r from-amber-500 to-emerald-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-amber-200">Lưu phí</button>
+                    </div>
+                    {parseLooseMoneyValue(editingDraft.extraExpenseAmount) > 0 && (
+                      <button type="button" onClick={() => saveBulkDraftFeeEditor(0)} className="mt-3 w-full rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-black text-rose-600">Xóa phí khỏi đơn nháp</button>
+                    )}
+                  </form>
+                </div>
+              );
+            })()}
 
             {orderCreationSource === 'manual' && (
             <div className="mobile-order-action-bar bg-white px-4 pt-3 border-t border-gray-100 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] shrink-0">
