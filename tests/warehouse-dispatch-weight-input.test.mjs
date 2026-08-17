@@ -85,30 +85,37 @@ test('khach chua co don dat duoc chon loai hang trong danh muc dang hoat dong', 
     orderedProducts: [orderedProduct],
     fixedProducts: [fixedProduct, orderedProduct],
     catalogProducts: [catalogProduct, archivedProduct, fixedProduct],
-    hasOrderRequest: false,
+    canBrowseCatalog: false,
     canCreateWithoutOrderRequest: true,
   });
 
   assert.deepEqual(options.map(product => product.id), ['ordered', 'fixed', 'catalog']);
 });
 
-test('khong mo danh muc ngoai don neu khach co don hoac tai khoan thieu quyen', () => {
+test('danh muc chi mo khi co quyen duyet danh muc hoac tao phieu ngoai don', () => {
   const orderedProduct = { id: 'ordered', name: 'Hang da dat' };
   const catalogProduct = { id: 'catalog', name: 'Hang trong danh muc' };
-  const withOrder = buildWarehouseDispatchProductOptions({
+  const withManualBrowse = buildWarehouseDispatchProductOptions({
     orderedProducts: [orderedProduct],
     catalogProducts: [catalogProduct],
-    hasOrderRequest: true,
+    canBrowseCatalog: true,
+    canCreateWithoutOrderRequest: false,
+  });
+  const withCreateOutsidePermission = buildWarehouseDispatchProductOptions({
+    orderedProducts: [orderedProduct],
+    catalogProducts: [catalogProduct],
+    canBrowseCatalog: false,
     canCreateWithoutOrderRequest: true,
   });
   const withoutPermission = buildWarehouseDispatchProductOptions({
     orderedProducts: [],
     catalogProducts: [catalogProduct],
-    hasOrderRequest: false,
+    canBrowseCatalog: false,
     canCreateWithoutOrderRequest: false,
   });
 
-  assert.deepEqual(withOrder.map(product => product.id), ['ordered']);
+  assert.deepEqual(withManualBrowse.map(product => product.id), ['ordered', 'catalog']);
+  assert.deepEqual(withCreateOutsidePermission.map(product => product.id), ['ordered', 'catalog']);
   assert.deepEqual(withoutPermission, []);
 });
 
@@ -164,9 +171,10 @@ test('sửa ô kg giữ từng lần cân và tự cộng lại tổng', () => {
 
 test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => {
   assert.match(warehouseModuleSource, /buildWarehouseDispatchProductOptions\(\{/);
-  assert.match(warehouseModuleSource, /hasOrderRequest: dispatchCustomerOrderRows\.length > 0/);
+  assert.match(appSource, /canManualSearchDispatchProduct=\{canRoleAction\('warehouse_dispatch', 'manual_search_dispatch_product'\)\}/);
+  assert.match(warehouseModuleSource, /canBrowseCatalog: canBrowseDispatchCatalog/);
   assert.match(warehouseModuleSource, /canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest/);
-  assert.match(warehouseModuleSource, /hasOrderRequest: customerOrderRows\.length > 0/);
+  assert.doesNotMatch(warehouseModuleSource, /hasOrderRequest:/);
 });
 
 console.log('Warehouse dispatch weight input regression suite passed.');

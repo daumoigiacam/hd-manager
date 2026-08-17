@@ -14,7 +14,7 @@ export const buildWarehouseDispatchProductOptions = ({
   orderedProducts = [],
   fixedProducts = [],
   catalogProducts = [],
-  hasOrderRequest = false,
+  canBrowseCatalog = false,
   canCreateWithoutOrderRequest = false,
 } = {}) => {
   const preferredProducts = dedupeActiveProducts([
@@ -22,7 +22,7 @@ export const buildWarehouseDispatchProductOptions = ({
     ...fixedProducts,
   ]);
 
-  if (hasOrderRequest || !canCreateWithoutOrderRequest) {
+  if (!(canBrowseCatalog || canCreateWithoutOrderRequest)) {
     return preferredProducts;
   }
 

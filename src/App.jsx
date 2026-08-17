@@ -23645,7 +23645,7 @@ function MainAppView({
           });
         }
         return <WarehouseImportView employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
@@ -55347,12 +55347,15 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 });
 
-function WarehouseDispatchView({ employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
+function WarehouseDispatchView({ employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
   const canCreate = Boolean(canCreateWarehouseDispatch || canCreateDispatchWithoutOrderRequest);
+  const canBrowseDispatchCatalog = Boolean(
+    canManualSearchDispatchProduct || canCreateDispatchWithoutOrderRequest
+  );
   const canEdit = Boolean(canEditWarehouseDispatch);
   const canShare = Boolean(canShareWarehouseDispatch);
   const canAssignDriver = Boolean(canAssignDispatchDriver || canCreate || canEdit);
@@ -55630,6 +55633,16 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       };
     }).filter(row => row.customerName || row.productName);
   }), [todayOrderRequests, customerLookup, productLookup, products]);
+  const hasDispatchOrderRequestForCustomer = (customerId = '') => {
+    const normalizedCustomerId = `${customerId || ''}`.trim();
+    return Boolean(normalizedCustomerId && warehouseVoiceOrderRows.some(
+      row => `${row.customerId || ''}`.trim() === normalizedCustomerId
+    ));
+  };
+  const canUseManualDispatchProductOverride = (customerId = '') => Boolean(
+    canManualSearchDispatchProduct
+    && hasDispatchOrderRequestForCustomer(customerId)
+  );
   const warehouseVoiceOrderCustomers = useMemo(() => {
     const grouped = new Map();
     warehouseVoiceOrderRows.forEach((row) => {
@@ -56065,14 +56078,14 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       orderedProducts: dispatchCustomerOrderedProducts,
       fixedProducts: dispatchCustomerFixedProducts,
       catalogProducts: activeDispatchCatalogProducts,
-      hasOrderRequest: dispatchCustomerOrderRows.length > 0,
+      canBrowseCatalog: canBrowseDispatchCatalog,
       canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest,
     });
   }, [
     activeDispatchCatalogProducts,
+    canBrowseDispatchCatalog,
     canCreateDispatchWithoutOrderRequest,
     dispatchCustomerFixedProducts,
-    dispatchCustomerOrderRows.length,
     dispatchCustomerOrderedProducts,
     selectedDispatchCustomer,
   ]);
@@ -56080,6 +56093,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     selectedDispatchCustomer
     && dispatchCustomerOrderRows.length === 0
     && canCreateDispatchWithoutOrderRequest
+  );
+  const isDispatchManualCatalogActive = Boolean(
+    selectedDispatchCustomer
+    && dispatchCustomerOrderRows.length > 0
+    && canManualSearchDispatchProduct
   );
   const filteredDispatchProducts = useMemo(() => rankDispatchPickerOptions(
     dispatchProductPickerOptions,
@@ -56111,11 +56129,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       orderedProducts,
       fixedProducts,
       catalogProducts: activeDispatchCatalogProducts,
-      hasOrderRequest: customerOrderRows.length > 0,
+      canBrowseCatalog: canBrowseDispatchCatalog,
       canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest,
     });
   }, [
     activeDispatchCatalogProducts,
+    canBrowseDispatchCatalog,
     canCreateDispatchWithoutOrderRequest,
     inlineEditingCustomer,
     productLookup,
@@ -56830,6 +56849,9 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     if (dispatchPickerOpen !== 'customer' && dispatchPickerOpen !== 'product') return undefined;
+    const supportsPrecisePointer = typeof window.matchMedia !== 'function'
+      || window.matchMedia('(pointer: fine)').matches;
+    if (!supportsPrecisePointer) return undefined;
     const inputRef = dispatchPickerOpen === 'customer' ? dispatchCustomerSearchInputRef : dispatchProductSearchInputRef;
     const focusTimer = window.setTimeout(() => {
       inputRef.current?.focus?.({ preventScroll: true });
@@ -57755,7 +57777,6 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const fallbackUnit = normalizeDispatchQuantityUnit(
       resolveCustomerProductActualUnit(configuration, selectedProduct)
       || selectedProduct?.unit
-      || dispatchDraft.quantityUnit
       || 'Con'
     );
     setDispatchDraft(prev => ({
@@ -57763,9 +57784,10 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       ...orderDefaults,
       productId,
       productSearch: selectedProduct?.name || orderDefaults.productSearch || '',
-      pieceCount: orderDefaults.pieceCount || prev.pieceCount,
+      pieceCount: matchedOrderRow ? (orderDefaults.pieceCount || '') : '',
       quantityUnit: orderDefaults.quantityUnit || fallbackUnit,
-      weightKg: orderDefaults.weightKg || prev.weightKg || ''
+      weightKg: matchedOrderRow ? (orderDefaults.weightKg || '') : '',
+      weightEntries: [],
     }));
     setDispatchError('');
     setDispatchPickerOpen('');
@@ -57894,8 +57916,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const nextDriverId = canAssignDriver ? `${inlineEditingDispatchDraft.assignedDriverId || ''}`.trim() : getDispatchDriverId(row);
     const nextDriver = nextDriverId ? employeeLookup.get(nextDriverId) : null;
     const nextDriverName = nextDriver?.name || (nextDriverId ? getDispatchDriverName(row) : '');
-    if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
-      setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
+    const canSaveOutsideMatchedOrder = Boolean(
+      canCreateDispatchWithoutOrderRequest
+      || canUseManualDispatchProductOverride(customer.id)
+    );
+    if (isOutsideOrderRequest && !canSaveOutsideMatchedOrder) {
+      setDispatchError('Loại hàng này không có trong đơn đặt. Tài khoản cần quyền chọn loại hàng hoặc quyền tạo phiếu ngoài đơn để lưu.');
       return false;
     }
     if (!billingSnapshot.billingSnapshotValid) {
@@ -58144,8 +58170,12 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
     const assignedDriverId = effectiveDispatchDriverId;
     const assignedDriver = assignedDriverId ? employeeLookup.get(assignedDriverId) : null;
     const assignedDriverName = assignedDriver?.name || '';
-    if (isOutsideOrderRequest && !canCreateDispatchWithoutOrderRequest) {
-      setDispatchError('Khach hang hoac loai hang nay chua co trong don dat. Can bat quyen tao phieu xuat ngoai don dat de luu.');
+    const canSaveOutsideMatchedOrder = Boolean(
+      canCreateDispatchWithoutOrderRequest
+      || canUseManualDispatchProductOverride(customer.id)
+    );
+    if (isOutsideOrderRequest && !canSaveOutsideMatchedOrder) {
+      setDispatchError('Loại hàng này không có trong đơn đặt. Tài khoản cần quyền chọn loại hàng hoặc quyền tạo phiếu ngoài đơn để lưu.');
       return;
     }
     if (!billingSnapshot.billingSnapshotValid) {
