@@ -60926,6 +60926,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setRequestStatus(`Đang cập nhật đơn đặt hàng của ${customer.name}...`);
     try {
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
+      if (orderCellEditor?.field === 'unitPrice') {
+        await persistAdditionalCustomerFixedProducts([{
+          ...normalizedRequest,
+          items: [requestItems[row.itemIndex]],
+        }]);
+      }
       resetInlineEditing();
       setRequestStatus(`Đã cập nhật đơn đặt hàng của ${customer.name}.`);
       return true;

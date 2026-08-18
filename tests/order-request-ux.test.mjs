@@ -156,6 +156,50 @@ test('saved order updates fixed-product price and order unit without changing pr
   assert.deepEqual(config.orderUnits, ['Con', 'Bộ']);
 });
 
+test('saved order price decrease replaces the matching fixed-product variant price', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'hien-chao-goi',
+      customerProductIds: ['duck'],
+      priceOverrides: {
+        duck: {
+          billingUnit: 'Kg',
+          pricingUnit: 'Kg',
+          variants: [{
+            id: 'duck-2.8-3-to',
+            sizeLabel: '2.8-3kg',
+            attributeLabel: 'To',
+            price: 57000,
+            unitPrice: 57000,
+            unitPrices: { Kg: 57000 },
+          }],
+        },
+      },
+    },
+    requests: [{
+      customerId: 'hien-chao-goi',
+      items: [{
+        productId: 'duck',
+        configurationId: 'duck-2.8-3-to',
+        sizeLabel: '2.8-3kg',
+        attributeLabel: 'To',
+        billingUnit: 'Kg',
+        pricingUnit: 'Kg',
+        unitPrice: 55000,
+        orderUnit: 'Con',
+      }],
+    }],
+    validProductIds: ['duck'],
+  });
+
+  const variant = result.patch.priceOverrides.duck.variants[0];
+  assert.equal(variant.price, 55000);
+  assert.equal(variant.unitPrice, 55000);
+  assert.deepEqual(variant.unitPrices, { Kg: 55000 });
+  assert.equal(variant.billingUnit, 'Kg');
+  assert.equal(variant.pricingUnit, 'Kg');
+});
+
 test('order-unit-only changes preserve a fixed price and pricing unit', () => {
   const result = buildCustomerFixedProductMemoryPatch({
     customer: {
@@ -287,6 +331,11 @@ test('saved request synchronizes customer defaults atomically only after the req
   assert.match(appSource, /await persistOrderRequestMemories\(normalizedRequests\);/);
   assert.match(appSource, /orderUnit: quantityUnit,/);
   assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
+  assert.match(
+    appSource,
+    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin'\);\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*await persistAdditionalCustomerFixedProducts\(\[\{\s*\.\.\.normalizedRequest,\s*items: \[requestItems\[row\.itemIndex\]\],\s*\}\]\);\s*\}/,
+    'saving an inline-edited order line must update only that fixed-product memory after the order save succeeds'
+  );
 });
 
 test('order submit keeps both state and ref duplicate guards', () => {
