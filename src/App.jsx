@@ -19361,25 +19361,43 @@ export default function App() {
     }
   };
 
-  const handleEditWarehouseDispatch = async (dispatchId, updatedData, empId = '') => {
+  const handleEditWarehouseDispatch = async (dispatchId, updatedData = {}, empId = '') => {
     if (!firebaseUser || !dispatchId) return;
-    const customer = customers.find(c => c.id === updatedData.customerId);
-    const product = products.find(p => p.id === updatedData.productId);
-    const quantity = parseLooseQuantityValue(updatedData.quantity ?? updatedData.pieceCount ?? updatedData.quantityCount);
-    const weightKg = parseLooseQuantityValue(updatedData.weightKg ?? updatedData.totalKg);
-    const quantityUnit = normalizeLeadingLabel(updatedData.quantityUnit || updatedData.unit || (quantity > 0 ? 'Con' : ''));
     const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
+    const mergedData = { ...(previousDispatch || {}), ...(updatedData || {}) };
+    const customer = customers.find(c => c.id === mergedData.customerId);
+    const product = products.find(p => p.id === mergedData.productId);
+    const quantity = parseLooseQuantityValue(mergedData.quantity ?? mergedData.pieceCount ?? mergedData.quantityCount);
+    const weightKg = parseLooseQuantityValue(mergedData.weightKg ?? mergedData.totalKg);
+    const quantityUnit = normalizeLeadingLabel(mergedData.quantityUnit || mergedData.unit || (quantity > 0 ? 'Con' : ''));
+    const hasWeightPatch = Object.prototype.hasOwnProperty.call(updatedData || {}, 'weightKg')
+      || Object.prototype.hasOwnProperty.call(updatedData || {}, 'totalKg');
+    const billingUnit = normalizeProductPricingUnit(mergedData.billingUnit || mergedData.pricingUnit || '');
+    const unitPrice = parseLooseMoneyValue(mergedData.unitPrice ?? mergedData.price);
+    const weightBillingPatch = hasWeightPatch
+      ? {
+          actualWeightKg: weightKg,
+          ...(isSameBillingUnit(billingUnit, 'Kg') ? {
+            billingQuantity: weightKg,
+            pricingQuantity: weightKg,
+            amount: Math.round(weightKg * unitPrice),
+            pricingAmount: Math.round(weightKg * unitPrice),
+            lineTotal: Math.round(weightKg * unitPrice)
+          } : {})
+        }
+      : {};
     const normalizedPayload = {
       ...updatedData,
-      customerNameSnapshot: updatedData.customerNameSnapshot || customer?.name || '',
-      productNameSnapshot: updatedData.productNameSnapshot || product?.name || '',
+      ...weightBillingPatch,
+      customerNameSnapshot: updatedData.customerNameSnapshot || mergedData.customerNameSnapshot || customer?.name || '',
+      productNameSnapshot: updatedData.productNameSnapshot || mergedData.productNameSnapshot || product?.name || '',
       weightKg,
       quantity,
-      pieceCount: parseLooseQuantityValue(updatedData.pieceCount ?? quantity),
-      quantityCount: parseLooseQuantityValue(updatedData.quantityCount ?? quantity),
+      pieceCount: parseLooseQuantityValue(mergedData.pieceCount ?? quantity),
+      quantityCount: parseLooseQuantityValue(mergedData.quantityCount ?? quantity),
       quantityUnit,
-      date: updatedData.date || getTodayString(),
-      companyId: updatedData.companyId || previousDispatch?.companyId || myCompanyId,
+      date: mergedData.date || getTodayString(),
+      companyId: mergedData.companyId || myCompanyId,
       updatedAt: new Date().toISOString(),
       updatedByEmpId: empId || ''
     };

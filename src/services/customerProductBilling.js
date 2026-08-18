@@ -24,6 +24,10 @@ const parsePositiveNumber = (value = 0) => {
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
 
+const firstPositiveNumber = (...values) => values
+  .map(parsePositiveNumber)
+  .find(value => value > 0) || 0;
+
 const parseMoney = (value = 0) => {
   if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0;
   const parsed = Number(`${value || ''}`.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'));
@@ -549,13 +553,13 @@ export const buildWarehouseDispatchOrderBillingSnapshot = ({
   ]
     .map(parsePositiveNumber)
     .find(value => value > 0) || 0;
-  const actualWeightKg = parsePositiveNumber(
-    source.actualWeightKg
-    ?? source.weightKg
-    ?? source.totalKg
-    ?? source.kg
-    ?? source.weight
-    ?? frozenSnapshot.actualWeightKg
+  const actualWeightKg = firstPositiveNumber(
+    source.weightKg,
+    source.totalKg,
+    source.kg,
+    source.actualWeightKg,
+    source.weight,
+    frozenSnapshot.actualWeightKg,
   );
   const usesWeightPricing = isSameBillingUnit(billingUnit, 'Kg');
   const fallbackFrozenQuantity = frozenPriceCanBeUsed
@@ -655,7 +659,12 @@ export const mergeWarehouseDispatchOrderBillingItems = (items = []) => {
     group.sourceActualUnits.push(actualUnit);
 
     const actualQuantity = parsePositiveNumber(source?.actualQuantity ?? source?.quantityCount ?? source?.quantity);
-    const actualWeightKg = parsePositiveNumber(source?.actualWeightKg ?? source?.weightKg ?? source?.totalKg ?? source?.kg);
+    const actualWeightKg = firstPositiveNumber(
+      source?.weightKg,
+      source?.totalKg,
+      source?.kg,
+      source?.actualWeightKg,
+    );
     const billingQuantity = parsePositiveNumber(source?.billingQuantity ?? source?.pricingQuantity ?? source?.quantity);
     const unitPrice = parseMoney(source?.unitPrice);
     const storedAmount = parseMoney(source?.amount ?? source?.pricingAmount ?? source?.lineTotal);
