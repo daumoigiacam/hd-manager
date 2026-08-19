@@ -57,6 +57,11 @@ const {
 const {
   runEmployeeEvaluationAggregation
 } = require('./employeeEvaluation');
+const {
+  createLegacyOrderLookup,
+  fetchSepayTransactions,
+  reconcileSepayTransactions
+} = require('./sepayReconciliation');
 
 admin.initializeApp();
 
@@ -1655,6 +1660,12 @@ const getPayrollAutoLockAppIds = () => [...new Set([
   ...parseCsvEnv('HD_MANAGER_PAYROLL_APP_IDS')
 ].map(normalizeAppId).filter(Boolean))];
 
+const getSepayReconciliationAppIds = () => [...new Set([
+  DEFAULT_APP_ID,
+  getEnv('HD_MANAGER_APP_ID'),
+  ...parseCsvEnv('HD_MANAGER_SEPAY_APP_IDS')
+].map(normalizeAppId).filter(Boolean))];
+
 const waitForPayrollPeriodCloseSecond = async (plan = {}) => {
   const clock = getVietnamClock();
   const monthEndDateKey = getPayrollMonthEndDateKey(plan?.monthKey);
@@ -2232,6 +2243,19 @@ const mapPaymentLink = (paymentLink, order, amount, orderCodeText, payosOrderCod
   paymentStatus: 'pending'
 });
 
+const createFirestoreLegacyOrderLookup = (ordersRef) => createLegacyOrderLookup({
+  fetchPage: async (cursor = null) => {
+    let query = ordersRef.orderBy(admin.firestore.FieldPath.documentId()).limit(500);
+    if (cursor) query = query.startAfter(cursor);
+    const snapshot = await query.get();
+    return snapshot.docs;
+  },
+  getOrderCodes: (docSnap) => {
+    const order = { id: docSnap.id, ...docSnap.data() };
+    return getOrderCodeCandidates(order);
+  }
+});
+
 const findOrderByPayosData = async (appId, data = {}, rawPayload = {}, options = {}) => {
   const orderCodeNumber = Number(data.orderCode || 0);
   const ordersRef = db.collection(collectionPath(appId, 'orders'));
@@ -2269,15 +2293,9 @@ const findOrderByPayosData = async (appId, data = {}, rawPayload = {}, options =
 
     if (options.allowLegacyScan !== false) {
       // Older orders may only have an id while the visible invoice code is derived from that id.
-      // Keep this fallback outside SePay's webhook hot path because SePay expects a very fast 200.
-      const scanSnap = await ordersRef.limit(2000).get();
-      for (const docSnap of scanSnap.docs) {
-        const order = { id: docSnap.id, ...docSnap.data() };
-        const orderCodes = getOrderCodeCandidates(order);
-        if (codeTokens.some((token) => orderCodes.includes(normalizeTransferCode(token)))) {
-          return docSnap;
-        }
-      }
+      const legacyOrderLookup = options.legacyOrderLookup || createFirestoreLegacyOrderLookup(ordersRef);
+      const legacyOrder = await legacyOrderLookup(codeTokens);
+      if (legacyOrder) return legacyOrder;
     }
   }
 
@@ -3156,6 +3174,165 @@ const verifySepayWebhookRequest = (req) => {
   }
 
   return true;
+};
+
+const getPositiveEnvNumber = (key, fallback, maximum) => {
+  const value = Number.parseInt(`${getEnv(key, fallback)}`, 10);
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.min(value, maximum);
+};
+
+const getSepayReconciliationOptions = () => ({
+  apiToken: `${getEnv('SEPAY_API_TOKEN') || ''}`.trim(),
+  bankAccountId: `${getEnv('SEPAY_BANK_ACCOUNT_ID') || ''}`.trim(),
+  lookbackMinutes: getPositiveEnvNumber('SEPAY_RECONCILIATION_LOOKBACK_MINUTES', 24 * 60, 7 * 24 * 60),
+  maxPages: getPositiveEnvNumber('SEPAY_RECONCILIATION_MAX_PAGES', 10, 50),
+  perPage: 100,
+  apiUrl: `${getEnv('SEPAY_TRANSACTIONS_API_URL', 'https://userapi.sepay.vn/v2/transactions')}`.trim()
+});
+
+const getSepayTransactionDescription = (transaction = {}) => [
+  transaction.content,
+  transaction.code,
+  transaction.referenceCode
+].map(value => `${value || ''}`.trim()).filter(Boolean).join(' ');
+
+const buildSepayTransactionPayload = (transaction = {}) => ({
+  id: transaction.id,
+  referenceCode: transaction.referenceCode,
+  gateway: transaction.gateway,
+  transactionDate: transaction.transactionDate,
+  accountNumber: transaction.accountNumber,
+  subAccount: transaction.subAccount,
+  code: transaction.code,
+  content: transaction.content,
+  description: getSepayTransactionDescription(transaction),
+  transferType: transaction.transferType || 'in',
+  transferAmount: transaction.transferAmount,
+  amount: transaction.transferAmount
+});
+
+const matchesSepayReceivingAccount = (transaction = {}, receivingProfile = {}) => {
+  const incomingAccounts = [transaction.accountNumber, transaction.subAccount]
+    .map(cleanBankAccountNumber)
+    .filter(Boolean);
+  const configuredAccounts = [
+    receivingProfile.accountNumber,
+    receivingProfile.mainAccountNumber,
+    receivingProfile.virtualAccountNumber
+  ].map(cleanBankAccountNumber).filter(Boolean);
+
+  if (!incomingAccounts.length || !configuredAccounts.length) return true;
+  return incomingAccounts.some(account => configuredAccounts.includes(account));
+};
+
+const writeSepayBankTransaction = async ({ appId, transaction, order, paymentId, status }) => {
+  const transactionIdentity = safeDocIdPart(transaction.id || transaction.referenceCode);
+  if (!transactionIdentity || !paymentId) return;
+
+  const transactionDate = resolveSepayTransactionDate({ data: buildSepayTransactionPayload(transaction) });
+  const now = new Date().toISOString();
+  const orderCode = `${getOrderPaymentDisplayCode(order)}`.trim();
+  await db.collection(collectionPath(appId, 'bankTransactions')).doc(`sepay_${transactionIdentity}`).set({
+    id: `sepay_${transactionIdentity}`,
+    companyId: order.companyId || '',
+    customerId: order.customerId || '',
+    transactionId: transaction.id || '',
+    referenceCode: transaction.referenceCode || transaction.id || '',
+    bankContent: getSepayTransactionDescription(transaction),
+    content: transaction.content || '',
+    amount: parseMoney(transaction.transferAmount),
+    direction: 'in',
+    transactionType: 'in',
+    method: 'SePay',
+    bankName: transaction.gateway || '',
+    bankAccountNumber: transaction.accountNumber || transaction.subAccount || '',
+    transactionDate: getVietnamDateKey(transactionDate),
+    transactionDateTime: transactionDate.toISOString(),
+    sourceType: 'sepay_api_reconciliation',
+    sourceLabel: 'SePay Transaction API',
+    matchedOrderId: order.id,
+    matchedOrderCode: orderCode,
+    reconciledPaymentId: paymentId,
+    autoReconcileStatus: status === 'duplicate_ignored' ? 'already_matched' : 'matched',
+    autoReconciledAt: now,
+    isArchived: false,
+    createdAt: now,
+    updatedAt: now
+  }, { merge: true });
+};
+
+const reconcileSepayTransactionsForApp = async ({ appId, targetOrderDoc = null } = {}) => {
+  const options = getSepayReconciliationOptions();
+  const targetOrder = targetOrderDoc ? { id: targetOrderDoc.id, ...targetOrderDoc.data() } : null;
+  const legacyOrderLookup = createFirestoreLegacyOrderLookup(db.collection(collectionPath(appId, 'orders')));
+  return reconcileSepayTransactions({
+    fetchTransactions: () => fetchSepayTransactions(options),
+    findOrder: async (transaction) => {
+      const payload = buildSepayTransactionPayload(transaction);
+      const description = getSepayTransactionDescription(transaction);
+      const invoiceTokens = extractInvoiceCodeTokens(description, transaction.referenceCode, transaction.code);
+      if (!invoiceTokens.length) return null;
+
+      if (targetOrderDoc) {
+        return isPayosPaymentMatchedToOrder({
+          order: targetOrder,
+          data: payload,
+          description,
+          expectedOrderCode: getOrderPaymentDisplayCode(targetOrder),
+          paymentLinkId: '',
+          payosOrderCode: ''
+        }) ? targetOrderDoc : null;
+      }
+
+      let orderDoc = await findOrderByPayosData(appId, payload, { data: payload }, { allowLegacyScan: false });
+      if (!orderDoc) {
+        orderDoc = await findOrderByPayosData(appId, payload, { data: payload }, {
+          allowLegacyScan: true,
+          legacyOrderLookup
+        });
+      }
+      return orderDoc;
+    },
+    applyTransaction: async ({ transaction, orderDoc }) => {
+      const order = { id: orderDoc.id, ...orderDoc.data() };
+      const payload = buildSepayTransactionPayload(transaction);
+      const receivingProfile = await resolveSepayReceivingProfile(appId, order, payload, { data: payload });
+      if (!matchesSepayReceivingAccount(transaction, receivingProfile)) {
+        return { success: true, status: 'need_reconciliation', reason: 'receiving_account_mismatch' };
+      }
+
+      const result = await applyPayosPaymentToOrder({
+        appId,
+        orderDoc,
+        paidAmount: transaction.transferAmount,
+        description: getSepayTransactionDescription(transaction),
+        reference: transaction.referenceCode || transaction.id,
+        paymentLinkId: '',
+        payosOrderCode: '',
+        rawPayload: {
+          provider: 'sepay',
+          source: 'sepay_api_reconciliation',
+          data: payload
+        },
+        sourceType: 'sepay_api_reconciliation',
+        provider: 'sepay',
+        providerLabel: 'SePay'
+      });
+
+      if (['paid', 'partial', 'duplicate_ignored'].includes(result.status)) {
+        await writeSepayBankTransaction({
+          appId,
+          transaction,
+          order,
+          paymentId: result.paymentId,
+          status: result.status
+        });
+      }
+      return result;
+    },
+    targetOrderId: targetOrderDoc?.id || ''
+  });
 };
 
 const buildSepayPaymentQrFingerprint = ({ amount = 0, paymentCode = '', receivingProfile = {} } = {}) => JSON.stringify({
@@ -4120,7 +4297,7 @@ exports.sepayWebhook = functions.https.onRequest(async (req, res) => {
   }
 });
 
-exports.syncSepayPaymentStatus = functions.https.onRequest(async (req, res) => {
+exports.syncSepayPaymentStatus = functions.https.onRequest({ secrets: ['SEPAY_API_TOKEN'] }, async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).send('');
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
@@ -4135,6 +4312,7 @@ exports.syncSepayPaymentStatus = functions.https.onRequest(async (req, res) => {
     if (!orderDoc.exists) return sendJson(res, 404, { success: false, message: 'Khong tim thay don hang.' });
     const order = { id: orderDoc.id, ...orderDoc.data() };
     verifyTenantOrderRequest({ claims, appId, order });
+    const reconciliation = await reconcileSepayTransactionsForApp({ appId, targetOrderDoc: orderDoc });
     const recordedAmount = await getRecordedPayosAmountForOrder(appId, order.id, 'sepay');
     const expectedAmount = parseMoney(order.paymentAmount || order.amount || 0);
     const outstandingAmount = Math.max(0, expectedAmount - recordedAmount);
@@ -4144,10 +4322,52 @@ exports.syncSepayPaymentStatus = functions.https.onRequest(async (req, res) => {
       provider: 'sepay',
       amountPaid: recordedAmount,
       recordedAmount,
-      outstandingAmount
+      outstandingAmount,
+      reconciliation: {
+        scannedTransactions: reconciliation.transactions.length,
+        pagesFetched: reconciliation.pagesFetched,
+        matchedTransactions: reconciliation.matchedCount,
+        from: reconciliation.from,
+        to: reconciliation.to
+      }
     });
   } catch (error) {
     if (Number(error?.statusCode || 500) >= 500) console.error('syncSepayPaymentStatus failed', error);
     return sendProtectedEndpointError(res, error, 'Khong kiem tra duoc trang thai SePay.');
   }
+});
+
+exports.autoReconcileSepayTransactions = onSchedule({
+  schedule: 'every 5 minutes',
+  timeZone: 'Asia/Ho_Chi_Minh',
+  region: 'asia-southeast1',
+  timeoutSeconds: 120,
+  secrets: ['SEPAY_API_TOKEN']
+}, async () => {
+  const options = getSepayReconciliationOptions();
+  if (!options.apiToken) {
+    console.error('autoReconcileSepayTransactions skipped: SEPAY_API_TOKEN is not configured.');
+    return null;
+  }
+
+  const outcomes = [];
+  for (const appId of getSepayReconciliationAppIds()) {
+    try {
+      const result = await reconcileSepayTransactionsForApp({ appId });
+      outcomes.push({
+        appId,
+        scannedTransactions: result.transactions.length,
+        pagesFetched: result.pagesFetched,
+        matchedTransactions: result.matchedCount
+      });
+    } catch (error) {
+      console.error('autoReconcileSepayTransactions failed', {
+        appId,
+        message: error?.message || String(error)
+      });
+      outcomes.push({ appId, status: 'failed' });
+    }
+  }
+  console.info('autoReconcileSepayTransactions completed', { outcomes });
+  return null;
 });
