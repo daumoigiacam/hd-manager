@@ -1090,7 +1090,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   delivery_reports: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'assets', 'assetCostLogs'],
   maps: ['customers', 'orders', 'orderRequests', 'warehouseDispatches', 'employees'],
   customers: ['customers', 'orders', 'payments', 'payment_reconciliations', 'customer_points', 'customerLoans', 'products', 'warehouseImports', 'warehouseDispatches'],
-  debt: ['customers', 'orders', 'payments', 'warehouseImports', 'employees'],
+  debt: ['customers', 'orders', 'payments', 'bankTransactions', 'warehouseImports', 'employees'],
   points: ['customer_points', 'reward_catalog'],
   finance: ['expenses', 'payments', 'orders', 'assets', 'deliveryReports', 'employees', 'customers'],
   bank_payments: ['customers', 'orders', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations'],

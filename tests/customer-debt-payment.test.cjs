@@ -223,6 +223,28 @@ assert.strictEqual(
   'A payment confirmed by the SePay webhook must reduce customer debt.'
 );
 
+for (let attempt = 1; attempt <= 100; attempt += 1) {
+  const customerId = `customer-auto-reconcile-${attempt}`;
+  const orderId = `order-auto-reconcile-${attempt}`;
+  const ledger = buildCustomerDebtLedger({
+    customer: { id: customerId },
+    orders: [{ id: orderId, customerId, amount: 275000, date: '2026-08-18' }],
+    payments: [{
+      id: `payment-bank-${attempt}`,
+      customerId,
+      amount: 275000,
+      matchedOrderId: orderId,
+      sourceType: 'bank_qr_transfer',
+      status: 'paid',
+      approvalStatus: 'approved',
+      handoverStatus: 'confirmed',
+      date: '2026-08-19'
+    }]
+  });
+  assert.strictEqual(ledger.currentDebt, 0, `Auto-reconcile iteration ${attempt} must clear the invoice debt.`);
+  assert.strictEqual(ledger.orderOutstandingById.get(orderId), 0, `Auto-reconcile iteration ${attempt} must settle the matched invoice.`);
+}
+
 const canonicalAmountLedger = buildCustomerDebtLedger({
   customer: { id: 'customer-1' },
   orders: [{
@@ -277,6 +299,11 @@ assert.ok(
 assert.ok(
   functionsSource.includes('resolveCustomerDebtPaymentCode({ fingerprint, items })'),
   'The payment endpoint must resolve its reconciliation code from the selected invoice count.'
+);
+assert.match(
+  appSource,
+  /debt: \['customers', 'orders', 'payments', 'bankTransactions', 'warehouseImports', 'employees'\]/,
+  'The debt workspace must listen to bank transactions so invoice-code reconciliation can run while it is open.'
 );
 assert.ok(
   !appSource.includes('Thanh toán bằng QR SePay'),
