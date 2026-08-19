@@ -140,6 +140,10 @@ import {
   isCustomerScopedNotification
 } from './utils/customerMessaging.js';
 import {
+  dedupePaymentNotifications,
+  isEmployeeNotificationVisible
+} from './utils/notificationVisibility.js';
+import {
   CUSTOMER_RECONCILIATION_FILTERS,
   buildCustomerReconciliationExportFileName,
   buildCustomerReconciliationWorkbook,
@@ -22417,31 +22421,13 @@ function MainAppView({
     const persistentFallbackAt = new Date(`${notificationDateKey || getTodayDateKey()}T07:30:00`).getTime();
     const safePersistentFallbackAt = Number.isFinite(persistentFallbackAt) ? persistentFallbackAt : 0;
 
-    safePersistentNotifications
+    dedupePaymentNotifications(safePersistentNotifications
       .filter((notice) => notice && !notice.isArchived)
       .filter((notice) => !['cancelled', 'canceled', 'archived', 'deleted'].includes(`${notice.status || ''}`.toLowerCase()))
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
       .slice(0, 40)
+      .filter((notice) => isEmployeeNotificationVisible(notice, { currentEmployeeId, isOwnerAccount })))
       .forEach((notice) => {
-        const directTargets = [
-          notice.targetEmpId,
-          notice.targetEmployeeId,
-          notice.recipientEmpId,
-          notice.receiverEmpId,
-          notice.employeeId,
-          notice.empId
-        ].filter(Boolean).map(String);
-        const listTargets = Array.isArray(notice.targetEmployeeIds)
-          ? notice.targetEmployeeIds.filter(Boolean).map(String)
-          : [];
-        const audience = `${notice.audience || notice.targetAudience || notice.scope || ''}`.toLowerCase();
-        const hasEmployeeTarget = directTargets.length > 0 || listTargets.length > 0;
-        const isForCurrentEmployee = isOwnerAccount
-          || directTargets.includes(String(currentEmployeeId))
-          || listTargets.includes(String(currentEmployeeId))
-          || (!hasEmployeeTarget && ['all', 'employees', 'employee', 'company'].includes(audience));
-
-        if (!isForCurrentEmployee) return;
         const orderRequestId = notice.orderRequestId || notice.requestId || notice.sourceOrderRequestId || '';
         if (orderRequestId) persistentOrderRequestNotificationIds.add(orderRequestId);
         const paymentNoticeLookup = `${notice.type || notice.category || ''} ${notice.paymentProvider || ''} ${notice.sourceType || ''}`.toLowerCase();

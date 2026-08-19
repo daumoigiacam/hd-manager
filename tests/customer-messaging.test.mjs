@@ -7,6 +7,10 @@ import {
   isCustomerScopedMessage,
   isCustomerScopedNotification
 } from '../src/utils/customerMessaging.js';
+import {
+  dedupePaymentNotifications,
+  isEmployeeNotificationVisible
+} from '../src/utils/notificationVisibility.js';
 
 const customerA = 'customer-a';
 const customerB = 'customer-b';
@@ -96,6 +100,29 @@ assert.equal(isCustomerScopedNotification({
   audience: 'all',
   category: 'system'
 }, customerA), false);
+
+const companyPaymentNotice = {
+  id: 'sepay-company-payment-1',
+  recipientType: 'company',
+  audience: 'company',
+  paymentId: 'payment-1'
+};
+const customerPaymentNotice = {
+  id: 'sepay-customer-payment-1',
+  recipientType: 'customer',
+  targetCustomerId: customerA,
+  paymentId: 'payment-1'
+};
+assert.equal(isEmployeeNotificationVisible(companyPaymentNotice, { isOwnerAccount: true }), true);
+assert.equal(isEmployeeNotificationVisible(customerPaymentNotice, { isOwnerAccount: true }), false);
+assert.deepEqual(
+  dedupePaymentNotifications([
+    companyPaymentNotice,
+    { ...companyPaymentNotice, id: 'duplicate-company-payment-1' },
+    { id: 'sepay-company-payment-2', recipientType: 'company', paymentId: 'payment-2' }
+  ]).map(notice => notice.id),
+  ['sepay-company-payment-1', 'sepay-company-payment-2']
+);
 
 const conversations = buildCustomerInboxConversations({
   messages,
