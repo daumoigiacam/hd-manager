@@ -5,6 +5,7 @@ import {
   buildWarehouseDispatchOrderBillingSnapshot,
   isWarehouseDispatchActualUnitCompatible,
   mergeWarehouseDispatchOrderBillingItems,
+  prepareWarehouseDispatchOrderItems,
   summarizeOrderBillingItems,
 } from '../src/services/customerProductBilling.js';
 
@@ -299,6 +300,75 @@ const duplicateListenerRows = mergeWarehouseDispatchOrderBillingItems([
 assert.equal(duplicateListenerRows[0].billingQuantity, kilogramBilling.billingQuantity, 'a repeated realtime dispatch snapshot is not counted twice');
 assert.equal(duplicateListenerRows[0].amount, kilogramBilling.amount, 'a repeated realtime dispatch snapshot cannot inflate revenue');
 
+const manualOrderItem = (id, quantity, unitPrice) => ({
+  productId: id,
+  productName: `Sản phẩm thêm ${id}`,
+  description: `Sản phẩm thêm ${id}`,
+  quantity: 0,
+  quantityCount: 0,
+  actualQuantity: 0,
+  actualWeightKg: 0,
+  billingQuantity: quantity,
+  pricingQuantity: quantity,
+  billingUnit: 'Kg',
+  pricingUnit: 'Kg',
+  unitPrice,
+  amount: quantity * unitPrice,
+  pricingAmount: quantity * unitPrice,
+  lineTotal: quantity * unitPrice,
+  billingSnapshotSource: 'warehouse_dispatch_order_snapshot',
+});
+
+const oneDispatchPlusOneManual = prepareWarehouseDispatchOrderItems([
+  { ...fiveDuckKilogramBilling, sourceDispatchIds: ['dispatch-regression-one'] },
+  manualOrderItem('manual-one', 3, 50000),
+]);
+assert.equal(oneDispatchPlusOneManual.length, 2, 'one dispatch line plus one manual line stays as two order lines');
+assert.deepEqual(
+  oneDispatchPlusOneManual.find(item => item.productId === 'manual-one'),
+  {
+    ...manualOrderItem('manual-one', 3, 50000),
+    quantity: 3,
+  },
+  'the manual line keeps its product, billing quantity, price, and snapshot metadata'
+);
+const oneDispatchPlusOneManualPayload = oneDispatchPlusOneManual.filter(
+  item => Boolean(item.productId) && Number(item.quantity) > 0 && Number(item.unitPrice) > 0
+);
+assert.equal(oneDispatchPlusOneManualPayload.length, 2, 'both dispatch and manual lines are valid save payload lines');
+
+const twoDispatchPlusThreeManual = prepareWarehouseDispatchOrderItems([
+  { ...fiveDuckKilogramBilling, sourceDispatchIds: ['dispatch-regression-two-a'] },
+  { ...featherBilling, sourceDispatchIds: ['dispatch-regression-two-b'] },
+  manualOrderItem('manual-two-a', 1, 20000),
+  manualOrderItem('manual-two-b', 2, 30000),
+  manualOrderItem('manual-two-c', 4, 40000),
+]);
+assert.equal(twoDispatchPlusThreeManual.length, 5, 'two dispatch lines plus three manual lines remain five lines');
+assert.deepEqual(
+  twoDispatchPlusThreeManual.filter(item => item.productId.startsWith('manual-two-')).map(item => item.quantity),
+  [1, 2, 4],
+  'all manual quantities remain available after dispatch preparation'
+);
+
+const manualOnlyLines = prepareWarehouseDispatchOrderItems([
+  manualOrderItem('manual-only-a', 2, 10000),
+  manualOrderItem('manual-only-b', 5, 11000),
+]);
+assert.equal(manualOnlyLines.length, 2, 'manual-only order lines are never merged or dropped');
+
+const duplicateDispatchAndManual = prepareWarehouseDispatchOrderItems([
+  { ...fiveDuckKilogramBilling, sourceDispatchIds: ['dispatch-regression-duplicate'] },
+  { ...fiveDuckKilogramBilling, sourceDispatchIds: ['dispatch-regression-duplicate'] },
+  manualOrderItem('manual-after-duplicate', 6, 70000),
+]);
+assert.equal(duplicateDispatchAndManual.length, 2, 'duplicate realtime dispatch snapshots merge without affecting manual lines');
+assert.equal(
+  duplicateDispatchAndManual.find(item => item.productId === 'manual-after-duplicate').quantity,
+  6,
+  'manual line remains after duplicate dispatch consolidation'
+);
+
 const stressStartedAt = performance.now();
 let stressActualTotal = 0;
 let stressExpectedTotal = 0;
@@ -341,7 +411,7 @@ assert.equal(stressActualTotal, stressExpectedTotal, 'all 500 order totals match
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 assert.match(appSource, /buildWarehouseDispatchOrderBillingSnapshot\(/, 'bulk conversion uses the dispatch-to-order billing resolver');
 assert.match(appSource, /mergeWarehouseDispatchOrderBillingItems\(group\.items\)/, 'bulk conversion consolidates duplicate product rows before review');
-assert.match(appSource, /draft\.sourceType === 'warehouse_dispatch'[\s\S]*mergeWarehouseDispatchOrderBillingItems\(draft\.items\)/, 'warehouse drafts are consolidated again immediately before persistence');
+assert.match(appSource, /draft\.sourceType === 'warehouse_dispatch'[\s\S]*prepareWarehouseDispatchOrderItems\(draft\.items\)/, 'warehouse drafts preserve manual lines while consolidating dispatch lines before persistence');
 assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchId, activeProducts\)/, 'bulk conversion reads the customer product pricing configuration');
 assert.match(appSource, /quantity: item\.actualQuantity > 0/, 'draft quantity preserves the customer ordered count');
 assert.match(appSource, /quantity: snapshot\.actualQuantity/, 'editing a warehouse draft keeps quantity separate from billing quantity');

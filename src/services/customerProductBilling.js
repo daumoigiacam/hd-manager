@@ -735,3 +735,45 @@ export const mergeWarehouseDispatchOrderBillingItems = (items = []) => {
     };
   });
 };
+
+const getWarehouseDispatchSourceIds = (item = {}) => uniqueNonEmptyValues([
+  ...(Array.isArray(item?.sourceDispatchIds) ? item.sourceDispatchIds : []),
+  item?.sourceDispatchId,
+  item?.dispatchId,
+]);
+
+export const isWarehouseDispatchOrderItem = (item = {}) => (
+  getWarehouseDispatchSourceIds(item).length > 0
+);
+
+// Bulk drafts can contain both dispatch snapshots and products added in the order form.
+// Only dispatch-backed lines are eligible for consolidation; manual lines need their
+// billing quantity copied into the persisted order quantity so they survive validation.
+export const prepareWarehouseDispatchOrderItems = (items = []) => {
+  const dispatchItems = [];
+  const manualItems = [];
+
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    if (isWarehouseDispatchOrderItem(item)) dispatchItems.push(item);
+    else manualItems.push(item);
+  });
+
+  const preservedManualItems = manualItems.map((item) => {
+    const billingQuantity = firstPositiveNumber(
+      item?.billingQuantity,
+      item?.pricingQuantity,
+      item?.quantity,
+    );
+    return {
+      ...item,
+      quantity: billingQuantity,
+      billingQuantity,
+      pricingQuantity: billingQuantity,
+    };
+  });
+
+  return [
+    ...mergeWarehouseDispatchOrderBillingItems(dispatchItems),
+    ...preservedManualItems,
+  ];
+};

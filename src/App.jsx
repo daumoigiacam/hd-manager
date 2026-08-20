@@ -286,6 +286,7 @@ import {
   resolveCustomerProductActualUnit,
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
+  prepareWarehouseDispatchOrderItems,
   summarizeOrderBillingItems,
   mergeWarehouseDispatchOrderBillingItems,
 } from './services/customerProductBilling.js';
@@ -65883,7 +65884,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
   const submitOrderDraft = async (draft, { allowDescriptionOnly = false } = {}) => {
     const preparedItems = draft.sourceType === 'warehouse_dispatch'
-      ? mergeWarehouseDispatchOrderBillingItems(draft.items)
+      ? prepareWarehouseDispatchOrderItems(draft.items)
       : draft.items;
     const validItems = normalizeOrderItemsForSubmit(preparedItems, { allowDescriptionOnly });
     if (validItems.length === 0) {
