@@ -1,4 +1,11 @@
 User-agent: *
 Allow: /
+Disallow: /checkout.html
+Disallow: /payment.html
+Disallow: /checkout/
+Disallow: /account
+Disallow: /success.html
+Disallow: /checkout/payment
+Disallow: /checkout/success
 
 Sitemap: https://hdconnect.net/sitemap.xml

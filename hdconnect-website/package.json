@@ -1,0 +1,9 @@
+{
+  "name": "hdconnect-website",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static HD CONNECT website release package",
+  "scripts": {
+    "build": "node ../scripts/build-hdconnect-website.mjs"
+  }
+}

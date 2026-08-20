@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base href="/">
     <title>Bảng giá HD CONNECT - Gói miễn phí, cơ bản và doanh nghiệp</title>
     <meta name="description" content="Bảng giá HD CONNECT đang được chuẩn bị với gói Miễn phí, Cơ bản và Doanh nghiệp. Thông tin chi tiết sẽ được cập nhật sau.">
     <meta name="keywords" content="bảng giá HD CONNECT, gói miễn phí, gói cơ bản, gói doanh nghiệp, giá HD Manager">
@@ -43,7 +44,7 @@
         <a class="brand" href="index.html" aria-label="HD CONNECT trang chủ"><span class="brand-mark" aria-hidden="true">HD</span><span class="brand-text"><strong>HD CONNECT</strong><small>Business Platform</small></span></a>
         <button class="nav-toggle" type="button" aria-label="Mở menu" aria-expanded="false" data-nav-toggle><span></span><span></span><span></span></button>
         <nav class="main-nav" aria-label="Điều hướng chính" data-nav>
-          <a href="index.html">Trang chủ</a><a href="gioi-thieu.html">Giới thiệu</a><a href="tinh-nang.html">Tính năng</a><a href="bang-gia.html" aria-current="page">Bảng giá</a><a href="ho-tro.html">Hỗ trợ</a><a href="lien-he.html">Liên hệ</a><a class="nav-login" href="https://app.hdconnect.net" rel="nofollow noopener">Đăng nhập</a>
+          <a href="index.html">Trang chủ</a><a href="apps.html">Ứng dụng</a><a href="gioi-thieu.html">Giới thiệu</a><a href="tinh-nang.html">Tính năng</a><a href="bang-gia.html" aria-current="page">Bảng giá</a><a href="ho-tro.html">Hỗ trợ</a><a href="lien-he.html">Liên hệ</a><a href="account.html">Tài khoản</a><a class="nav-login" href="https://app.hdconnect.net" rel="nofollow noopener">Đăng nhập</a>
         </nav>
       </div>
     </header>
@@ -58,7 +59,15 @@
       </section>
 
       <section class="section">
-        <div class="container pricing-grid">
+        <div class="container commerce-shell" data-commerce-catalog data-api-base="" hidden>
+          <div class="section-heading">
+            <p class="eyebrow">Danh mục dịch vụ</p>
+            <h2>Chọn ứng dụng và gói phù hợp</h2>
+            <p>Giá, VAT và chu kỳ được lấy trực tiếp từ hệ thống Billing khi sản phẩm đã mở bán.</p>
+          </div>
+          <div class="commerce-grid" data-commerce-products></div>
+        </div>
+        <div class="container pricing-grid" data-commerce-fallback>
           <article class="plan-card reveal">
             <span class="status-pill">Sắp cập nhật</span>
             <h2>Gói Miễn phí</h2>
@@ -99,12 +108,14 @@
     <footer class="site-footer">
       <div class="container footer-grid">
         <div><a class="brand footer-brand" href="index.html"><span class="brand-mark" aria-hidden="true">HD</span><span class="brand-text"><strong>HD CONNECT</strong><small>Business Platform</small></span></a><p>Nền tảng quản lý doanh nghiệp hiện đại, bảo mật và dễ mở rộng cho HD Manager.</p></div>
-        <div><h2>Liên kết</h2><a href="gioi-thieu.html">Giới thiệu</a><a href="tinh-nang.html">Tính năng</a><a href="bang-gia.html">Bảng giá</a><a href="ho-tro.html">Hỗ trợ</a></div>
-        <div><h2>Chính sách</h2><a href="chinh-sach-bao-mat.html">Chính sách quyền riêng tư</a><a href="dieu-khoan-su-dung.html">Điều khoản sử dụng</a><a href="xoa-tai-khoan.html">Xóa tài khoản</a><a href="tai-ung-dung.html">Tải ứng dụng</a></div>
+        <div><h2>Liên kết</h2><a href="apps.html">Ứng dụng</a><a href="gioi-thieu.html">Giới thiệu</a><a href="tinh-nang.html">Tính năng</a><a href="bang-gia.html">Bảng giá</a><a href="ho-tro.html">Hỗ trợ</a><a href="account.html">Tài khoản</a></div>
+        <div><h2>Chính sách</h2><a href="chinh-sach-bao-mat.html">Chính sách quyền riêng tư</a><a href="dieu-khoan-su-dung.html">Điều khoản sử dụng</a><a href="payment-policy.html">Chính sách thanh toán</a><a href="refund-policy.html">Chính sách hoàn tiền</a><a href="xoa-tai-khoan.html">Xóa tài khoản</a><a href="tai-ung-dung.html">Tải ứng dụng</a></div>
         <div><h2>Liên hệ</h2><a href="mailto:hotro.hdconnect@gmail.com">hotro.hdconnect@gmail.com</a><a href="tel:+84978194836">0978194836</a><a href="https://zalo.me/0978194836" target="_blank" rel="noopener">Zalo</a><a href="https://www.facebook.com/hdconnect" target="_blank" rel="noopener">Facebook</a></div>
       </div>
       <div class="container footer-bottom"><span>© <span data-year></span> HD CONNECT. All rights reserved.</span><span>hdconnect.net</span></div>
     </footer>
+    <script src="assets/js/site-config.js" defer></script>
     <script src="assets/js/main.js" defer></script>
+    <script src="assets/js/commerce.js" defer></script>
   </body>
 </html>

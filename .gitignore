@@ -22,6 +22,8 @@ stable-apk-web/
 
 # One-off export and local validation artifacts
 /hdconnect-website-upload*.zip
+/hdconnect-website-final-release*.zip
+/hdconnect-website-dist/
 /temp-restore*.zip
 /sanity-web/
 /ios-expo/dist-ios-test/

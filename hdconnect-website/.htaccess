@@ -7,6 +7,24 @@ Options -Indexes
   RewriteEngine On
   RewriteCond %{HTTPS} !=on
   RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+  # Clean public routes for the static multi-page release.
+  RewriteRule ^apps/?$ apps.html [L]
+  RewriteRule ^apps/([A-Za-z0-9-]+)/?$ app-detail.html?slug=$1 [QSA,L]
+  RewriteRule ^pricing/?$ bang-gia.html [L]
+  RewriteRule ^checkout/payment/?$ payment.html [L]
+  RewriteRule ^checkout/success/?$ success.html [L]
+  RewriteRule ^checkout/?$ checkout.html [L]
+  RewriteRule ^account/orders/?$ account.html?view=orders [QSA,L]
+  RewriteRule ^account/invoices/?$ account.html?view=invoices [QSA,L]
+  RewriteRule ^account/subscriptions/?$ account.html?view=subscriptions [QSA,L]
+  RewriteRule ^account/profile/?$ account.html?view=profile [QSA,L]
+  RewriteRule ^account/?$ account.html [L]
+  RewriteRule ^terms/?$ dieu-khoan-su-dung.html [L]
+  RewriteRule ^privacy/?$ chinh-sach-bao-mat.html [L]
+  RewriteRule ^payment-policy/?$ payment-policy.html [L]
+  RewriteRule ^refund-policy/?$ refund-policy.html [L]
+  RewriteRule ^support/?$ ho-tro.html [L]
 </IfModule>
 
 <IfModule mod_headers.c>
