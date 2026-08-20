@@ -13,7 +13,7 @@ const getSection = (startMarker, endMarker) => {
 };
 
 test('realtime customer listeners are constrained by both company and customer', () => {
-  const section = getSection('const getTenantCollectionSource =', 'const getSnapshotItems =');
+  const section = getSection('const getTenantCollectionSources =', 'const getSnapshotItems =');
 
   assert.match(section, /firebaseWhere\('companyId', '==', tenantCompanyId\),\s*firebaseWhere\('customerId', '==', sessionCustomerId\)/);
   assert.match(section, /if \(!customerSession\)[\s\S]*?firebaseWhere\('companyId', '==', tenantCompanyId\)/);

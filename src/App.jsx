@@ -140,6 +140,13 @@ import {
   isCustomerScopedNotification
 } from './utils/customerMessaging.js';
 import {
+  buildCustomerMessageRouting,
+  buildCustomerSupportConversationId,
+  buildEmployeeCustomerMessageNotification,
+  getCustomerMessagingEmployeeId,
+  isEmployeeScopedCustomerMessage
+} from './utils/employeeScopedCustomerMessaging.js';
+import {
   dedupePaymentNotifications,
   isEmployeeNotificationVisible
 } from './utils/notificationVisibility.js';
@@ -13109,18 +13116,51 @@ export default function App() {
       ])
     );
 
-    const getTenantCollectionSource = (colName) => {
+    const getTenantCollectionSources = (colName) => {
       if (colName === 'companies') {
-        return doc(db, 'artifacts', appId, 'public', 'data', 'companies', tenantCompanyId);
+        return [doc(db, 'artifacts', appId, 'public', 'data', 'companies', tenantCompanyId)];
       }
       if (!customerSession) {
-        return firebaseQuery(
-          collection(db, 'artifacts', appId, 'public', 'data', colName),
-          firebaseWhere('companyId', '==', tenantCompanyId)
-        );
+        const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+        if (colName !== 'messages') {
+          return [firebaseQuery(collectionRef, firebaseWhere('companyId', '==', tenantCompanyId))];
+        }
+        const currentEmployeeId = `${currentUser?.employeeId || currentUser?.id || ''}`.trim();
+        const currentRole = `${currentUser?.role || ''}`.trim().toLowerCase();
+        const currentPosition = `${currentUser?.position || ''}`.trim().toLowerCase();
+        const isMessageManager = isOwnerRoleValue(currentRole)
+          || isOwnerRoleValue(currentPosition)
+          || ['super_admin', 'admin', 'manager', 'company_owner', 'business_owner', 'accounting', 'accountant'].includes(currentRole);
+        if (isMessageManager) {
+          return [firebaseQuery(
+            collectionRef,
+            firebaseWhere('companyId', '==', tenantCompanyId),
+            firebaseOrderBy('createdAt', 'desc'),
+            firebaseLimit(200)
+          )];
+        }
+        if (!currentEmployeeId) return [];
+        return [
+          firebaseQuery(
+            collectionRef,
+            firebaseWhere('companyId', '==', tenantCompanyId),
+            firebaseWhere('conversationType', '==', 'customer_support'),
+            firebaseWhere('assignedEmployeeId', '==', currentEmployeeId),
+            firebaseWhere('assignmentState', '==', 'assigned'),
+            firebaseOrderBy('createdAt', 'desc'),
+            firebaseLimit(200)
+          ),
+          firebaseQuery(
+            collectionRef,
+            firebaseWhere('companyId', '==', tenantCompanyId),
+            firebaseWhere('conversationType', 'in', ['internal', 'internal_group', 'support']),
+            firebaseOrderBy('createdAt', 'desc'),
+            firebaseLimit(200)
+          )
+        ];
       }
       if (colName === 'customers' && sessionCustomerId) {
-        return doc(db, 'artifacts', appId, 'public', 'data', 'customers', sessionCustomerId);
+        return [doc(db, 'artifacts', appId, 'public', 'data', 'customers', sessionCustomerId)];
       }
       if (customerOwnedCollections.has(colName) && sessionCustomerId) {
         const constraints = [
@@ -13141,12 +13181,12 @@ export default function App() {
             firebaseLimit(100)
           );
         }
-        return firebaseQuery(
+        return [firebaseQuery(
           collection(db, 'artifacts', appId, 'public', 'data', colName),
           ...constraints
-        );
+        )];
       }
-      return null;
+      return [];
     };
 
     const readTenantCollectionViaRest = async (colName) => {
@@ -13154,6 +13194,16 @@ export default function App() {
       const projectId = activeFirebaseConfig?.projectId || '';
       if (!authenticatedUser?.getIdToken || !projectId || !colName) {
         throw new Error(`Firebase REST chưa sẵn sàng để đọc ${colName}.`);
+      }
+      const collectionSources = getTenantCollectionSources(colName);
+      if (collectionSources.length === 0) return [];
+      if (collectionSources.length > 1) {
+        const snapshots = await Promise.all(collectionSources.map(source => firebaseGetDocs(source)));
+        const byId = new Map();
+        snapshots.forEach(snapshot => {
+          getSnapshotItems(snapshot).forEach(item => byId.set(item.id, item));
+        });
+        return Array.from(byId.values());
       }
 
       const directDocumentId = colName === 'companies'
@@ -13542,8 +13592,8 @@ export default function App() {
         return;
       }
       try {
-        const source = getTenantCollectionSource(colName);
-        if (!source) {
+        const sources = getTenantCollectionSources(colName);
+        if (sources.length === 0) {
           markCollectionLoaded(colName);
           return;
         }
@@ -13727,23 +13777,25 @@ export default function App() {
       if (existingListener) return existingListener;
       let hasAppliedDataSnapshot = false;
       try {
-        const collectionRef = getTenantCollectionSource(colName);
-        if (!collectionRef) {
+        const collectionRefs = getTenantCollectionSources(colName);
+        if (collectionRefs.length === 0) {
           markCollectionLoaded(colName);
           return () => {};
         }
-        const firestoreUnsubscribe = onSnapshot(
-          collectionRef,
-          { includeMetadataChanges: true },
-          (snapshot) => {
+        const sourceItemsByIndex = new Map();
+        const serverConfirmedSourceIndexes = new Set();
+        const applySnapshot = (snapshot, sourceIndex) => {
             if (cancelled) return;
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
             const hasPendingWrites = Boolean(snapshot?.metadata?.hasPendingWrites);
             const snapshotAt = Date.now();
             lastRealtimeSnapshotAtRef.current.set(colName, snapshotAt);
             if (isServerConfirmedRealtimeSnapshot(snapshot)) {
-              lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
-              markCollectionServerConfirmed(colName);
+              serverConfirmedSourceIndexes.add(sourceIndex);
+              if (serverConfirmedSourceIndexes.size === collectionRefs.length) {
+                lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
+                markCollectionServerConfirmed(colName);
+              }
             }
             if (!shouldApplyRealtimeSnapshot(snapshot)) {
               updateRealtimeStatusLightly({
@@ -13754,6 +13806,7 @@ export default function App() {
               });
               return;
             }
+            sourceItemsByIndex.set(sourceIndex, getSnapshotItems(snapshot));
             const dataChangeCount = getRealtimeDataChangeCount(snapshot);
             let hasLocalMutationForCollection = false;
             for (const write of recentLocalWritesRef.current.values()) {
@@ -13780,7 +13833,11 @@ export default function App() {
               });
               return;
             }
-            const docs = getSnapshotItems(snapshot);
+            const docsById = new Map();
+            sourceItemsByIndex.forEach((items) => {
+              items.forEach((item) => docsById.set(item.id, item));
+            });
+            const docs = Array.from(docsById.values());
             hasAppliedDataSnapshot = true;
             applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
@@ -13794,8 +13851,8 @@ export default function App() {
               lastAt: new Date().toISOString(),
               error: ''
             });
-          },
-          (error) => {
+          };
+        const handleListenerError = (error) => {
             if (cancelled) return;
             const recoverable = isRecoverableRealtimeError(error);
             if (recoverable) {
@@ -13823,9 +13880,14 @@ export default function App() {
             });
             stopCollectionListener(colName);
             scheduleCollectionRefresh(colName, [1200, 4200]);
-          }
-        );
-        const unsubscribe = () => firestoreUnsubscribe?.();
+          };
+        const firestoreUnsubscribes = collectionRefs.map((collectionRef, sourceIndex) => onSnapshot(
+          collectionRef,
+          { includeMetadataChanges: true },
+          (snapshot) => applySnapshot(snapshot, sourceIndex),
+          handleListenerError
+        ));
+        const unsubscribe = () => firestoreUnsubscribes.forEach((firestoreUnsubscribe) => firestoreUnsubscribe?.());
         activeRealtimeCollectionListeners.set(colName, unsubscribe);
         activeRealtimeCollectionsRef.current.add(colName);
         unsubscribeCollectionListeners.push(unsubscribe);
@@ -21181,17 +21243,62 @@ export default function App() {
     if (isCustomerPortalMessage && !trustedCustomerId) {
       throw new Error('Unable to determine the signed-in customer profile.');
     }
+    const requestedCustomerId = isCustomerPortalMessage
+      ? trustedCustomerId
+      : `${messageData.customerId || ''}`.trim();
+    const isCustomerSupportMessage = isCustomerPortalMessage
+      || messageData.conversationType === 'customer_support'
+      || messageData.type === 'customer_to_employee'
+      || messageData.type === 'employee_to_customer';
+    const scopedCustomer = isCustomerPortalMessage
+      ? (currentCustomerInfo || rawCustomers.find(customer => customer?.id === requestedCustomerId) || null)
+      : rawCustomers.find(customer => (
+        customer?.id === requestedCustomerId
+        && `${customer?.companyId || customer?.company_id || ''}`.trim() === `${resolvedCompanyId}`.trim()
+      ));
+    const customerMessageRouting = isCustomerSupportMessage
+      ? buildCustomerMessageRouting(scopedCustomer || { id: requestedCustomerId })
+      : null;
+    const currentEmployeeId = `${employeeInfo?.id || currentUser?.employeeId || currentUser?.id || ''}`.trim();
+    const isMessageManager = isOwnerRoleValue(currentUser?.role)
+      || ['super_admin', 'admin', 'manager', 'company_owner', 'business_owner', 'accounting', 'accountant'].includes(`${currentUser?.role || ''}`.trim().toLowerCase());
+
+    if (isCustomerSupportMessage && !customerMessageRouting?.customerId) {
+      throw new Error('Không xác định được khách hàng của hội thoại này.');
+    }
+    if (
+      isCustomerSupportMessage
+      && !isCustomerPortalMessage
+      && !isMessageManager
+      && customerMessageRouting.assignedEmployeeId !== currentEmployeeId
+    ) {
+      throw new Error('Bạn không phụ trách khách hàng này nên không thể gửi tin trong hội thoại.');
+    }
     const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const createdAt = Date.now();
     const messagePayload = {
       ...messageData,
       id,
       companyId: resolvedCompanyId,
-      customerId: isCustomerPortalMessage ? trustedCustomerId : `${messageData.customerId || ''}`.trim(),
-      conversationType: isCustomerPortalMessage ? 'customer_support' : messageData.conversationType,
+      customerId: isCustomerSupportMessage ? customerMessageRouting.customerId : requestedCustomerId,
+      conversationId: isCustomerSupportMessage
+        ? customerMessageRouting.conversationId
+        : (messageData.conversationId || ''),
+      conversationType: isCustomerSupportMessage ? 'customer_support' : (messageData.conversationType || 'internal'),
+      ...(isCustomerSupportMessage ? (
+        customerMessageRouting.assignedEmployeeId
+          ? {
+            assignedEmployeeId: customerMessageRouting.assignedEmployeeId,
+            assignmentState: 'assigned',
+            receiverEmpId: customerMessageRouting.assignedEmployeeId,
+            recipientEmpId: customerMessageRouting.assignedEmployeeId,
+            targetEmpId: customerMessageRouting.assignedEmployeeId,
+          }
+          : { assignmentState: 'unclassified' }
+      ) : {}),
       source: isCustomerPortalMessage ? 'customer_portal' : messageData.source,
       type: isCustomerPortalMessage ? (messageData.type || 'customer_to_employee') : messageData.type,
-      senderEmpId: isCustomerPortalMessage ? '' : (messageData.senderEmpId || currentUser?.id || ''),
+      senderEmpId: isCustomerPortalMessage ? '' : currentEmployeeId,
       senderCustomerId: isCustomerPortalMessage ? trustedCustomerId : `${messageData.senderCustomerId || ''}`.trim(),
       senderType: isCustomerPortalMessage ? 'customer' : (messageData.senderType || 'employee'),
       senderName: messageData.senderName || (
@@ -21199,6 +21306,7 @@ export default function App() {
           ? (currentUser?.name || currentUser?.phone || 'Khách hàng')
           : (employeeInfo?.name || currentUser?.name || currentUser?.phone || 'Nhân sự')
       ),
+      status: messageData.status || (isCustomerPortalMessage ? 'unread' : 'read'),
       createdAt,
       updatedAt: createdAt,
       isArchived: false
@@ -22463,6 +22571,21 @@ function MainAppView({
         });
       });
 
+    (messages || [])
+      .filter((message) => message && !message.isArchived)
+      .filter((message) => `${message.senderType || ''}`.toLowerCase() === 'customer')
+      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
+      .slice(0, 40)
+      .forEach((message) => {
+        const customer = customers.find((item) => item.id === message.customerId) || {};
+        const customerMessageNotification = buildEmployeeCustomerMessageNotification(message, {
+          currentEmployeeId,
+          customer,
+          isManager: false
+        });
+        if (customerMessageNotification) items.push(customerMessageNotification);
+      });
+
     (payments || [])
       .filter((payment) => payment && !payment.isArchived && isPayosPaymentRecord(payment))
       .filter((payment) => !persistentPayosPaymentIds.has(payment.id))
@@ -22632,7 +22755,7 @@ function MainAppView({
     });
 
     return items.sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
-  }, [advanceRequests, attendanceAlerts, canViewWarehouseDispatchNotifications, canViewWarehouseShortageNotifications, currentAttendanceAlert, currentUser?.employeeId, currentUser?.id, customerCareAlerts, customers, debtLimitAlerts, employee?.id, employees, isAccounting, isOwnerAccount, isSales, notificationDateKey, notifications, orderRequests, orders, payments, pendingAdvanceNotifications, products, salesNotificationEmployeeIdSet, warehouseDispatchCoverage, warehouseDispatches]);
+  }, [advanceRequests, attendanceAlerts, canViewWarehouseDispatchNotifications, canViewWarehouseShortageNotifications, currentAttendanceAlert, currentUser?.employeeId, currentUser?.id, customerCareAlerts, customers, debtLimitAlerts, employee?.id, employees, isAccounting, isOwnerAccount, isSales, messages, notificationDateKey, notifications, orderRequests, orders, payments, pendingAdvanceNotifications, products, salesNotificationEmployeeIdSet, warehouseDispatchCoverage, warehouseDispatches]);
   const visibleNotificationItems = useMemo(
     () => filterNotificationsForActiveTab(notificationItems, activeTab),
     [activeTab, notificationItems]
@@ -22665,6 +22788,13 @@ function MainAppView({
       || isUnreadStatus(message.status || message.readStatus)
     );
     const hasCurrentEmployeeTarget = (message = {}) => {
+      if (`${message.conversationType || ''}`.toLowerCase() === 'customer_support') {
+        return isEmployeeScopedCustomerMessage(message, {
+          currentEmployeeId,
+          customer: currentCustomerById.get(message.customerId) || {},
+          isManager: false
+        });
+      }
       const directTargetIds = [
         message.receiverEmpId,
         message.recipientEmpId,
@@ -22697,14 +22827,6 @@ function MainAppView({
         message.employeeName
       ].map(collapseLookupText).filter(Boolean);
       if (currentEmployeeName && directNames.includes(currentEmployeeName)) return true;
-
-      const conversationId = `${message.conversationId || ''}`;
-      const type = `${message.conversationType || message.type || ''}`.toLowerCase();
-      const isCustomerConversation = type.includes('customer') || conversationId.startsWith('customer_');
-      if (isCustomerConversation && currentEmployeeId) {
-        const customer = currentCustomerById.get(message.customerId) || {};
-        return `${customer.empId || customer.salesEmpId || customer.managerEmpId || customer.employeeId || ''}` === currentEmployeeId;
-      }
 
       return false;
     };
@@ -46101,7 +46223,9 @@ function MessageCenterView({
       .filter((message) => !message?.isArchived)
       .sort((a, b) => getRawMessageActivityAt(a) - getRawMessageActivityAt(b))
       .forEach((message) => {
-        const conversationId = message.conversationId || `${message.conversationType || 'support'}-general`;
+        const conversationId = message.conversationType === 'customer_support'
+          ? (buildCustomerSupportConversationId(message.customerId) || message.conversationId || 'customer_support')
+          : (message.conversationId || `${message.conversationType || 'support'}-general`);
         const activityAt = getRawMessageActivityAt(message) || (stableMessageFallbackBaseAt - ((grouped[conversationId]?.length || 0) * 60000));
         if (!grouped[conversationId]) grouped[conversationId] = [];
         grouped[conversationId].push({
@@ -46185,6 +46309,14 @@ function MessageCenterView({
         || message.type === 'customer_to_employee'
         || conversationId.startsWith('customer_');
       if (!isCustomerConversation) return false;
+      const customer = customerById.get(message.customerId) || {};
+      if (message.conversationType === 'customer_support') {
+        return isEmployeeScopedCustomerMessage(message, {
+          currentEmployeeId,
+          customer,
+          isManager: canViewAllNotifications
+        });
+      }
       const receiverEmpId = message.receiverEmpId || message.recipientEmpId || message.targetEmpId || '';
       const receiverPhone = message.receiverPhone || message.recipientPhone || message.targetEmpPhone || message.employeePhone || '';
       const receiverName = message.receiverName || message.recipientName || message.targetEmpName || message.employeeName || '';
@@ -46199,7 +46331,9 @@ function MessageCenterView({
 
     const grouped = new Map();
     relevantMessages.forEach((message, index) => {
-      const conversationId = message.conversationId || `customer_${message.customerId || index}__employee_${currentEmployeeId || 'unassigned'}`;
+      const conversationId = message.conversationType === 'customer_support'
+        ? (buildCustomerSupportConversationId(message.customerId) || message.conversationId || `customer_${message.customerId || index}`)
+        : (message.conversationId || `customer_${message.customerId || index}`);
       const customer = customerById.get(message.customerId) || {};
       const savedMessages = storedMessagesByConversation[conversationId] || [];
       const latestMessage = savedMessages[savedMessages.length - 1] || {
@@ -46235,7 +46369,7 @@ function MessageCenterView({
     });
 
     return Array.from(grouped.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }, [currentEmployeeId, customerById, employee?.fullName, employee?.name, employee?.phone, messages, stableMessageFallbackBaseAt, storedMessagesByConversation]);
+  }, [canViewAllNotifications, currentEmployeeId, customerById, employee?.fullName, employee?.name, employee?.phone, messages, stableMessageFallbackBaseAt, storedMessagesByConversation]);
 
   const internalGroupConversations = useMemo(() => {
     if (!currentEmployeeId) return [];
@@ -47008,7 +47142,7 @@ function MessageCenterView({
   };
 
   const buildInternalConversationId = (leftId = '', rightId = '') => `internal-${[leftId, rightId].filter(Boolean).sort().join('-')}`;
-  const buildCustomerEmployeeConversationId = (customerId = '', employeeId = '') => `customer_${customerId || 'unknown'}__employee_${employeeId || 'unassigned'}`;
+  const buildCustomerEmployeeConversationId = (customerId = '') => buildCustomerSupportConversationId(customerId);
 
   const handleConnectConversationByPhone = () => {
     const rawQuery = `${phoneConnectDraft || ''}`.trim();
@@ -47067,7 +47201,12 @@ function MessageCenterView({
     ));
 
     if (matchedCustomer) {
-      const conversationId = buildCustomerEmployeeConversationId(matchedCustomer.id, currentEmployeeId);
+      const assignedEmployeeId = getCustomerMessagingEmployeeId(matchedCustomer);
+      if (!canViewAllNotifications && assignedEmployeeId !== currentEmployeeId) {
+        setStatus('Bạn không phụ trách khách hàng này nên không thể mở hội thoại.');
+        return;
+      }
+      const conversationId = buildCustomerEmployeeConversationId(matchedCustomer.id);
       const savedMessages = storedMessagesByConversation[conversationId] || [];
       const latestMessage = savedMessages[savedMessages.length - 1];
       const conversation = {
@@ -81099,7 +81238,7 @@ function CustomerPortalView({
     [customerProfile, customerVisibleProducts, selectedBranchId]
   );
   const responsibleEmployee = useMemo(() => {
-    const managerId = customerProfile?.empId || customerProfile?.salesEmpId || customerProfile?.managerEmpId || '';
+    const managerId = getCustomerMessagingEmployeeId(customerProfile);
     const managerPhone = customerProfile?.managerPhone || customerProfile?.salesPhone || customerProfile?.employeePhone || '';
     const managerName = customerProfile?.managerName || customerProfile?.salesName || customerProfile?.employeeName || customerProfile?.salesOwnerName || '';
     const normalizedManagerName = normalizeLookupText(managerName);
@@ -81121,22 +81260,8 @@ function CustomerPortalView({
     || customerProfile?.employeePhone
     || '';
   const responsibleEmployeeId = responsibleEmployee?.id
-    || customerProfile?.empId
-    || customerProfile?.salesEmpId
-    || customerProfile?.managerEmpId
+    || getCustomerMessagingEmployeeId(customerProfile)
     || '';
-  const hasResponsibleEmployeeContact = Boolean(
-    responsibleEmployeeId
-    || responsibleEmployeePhone
-    || customerProfile?.managerName
-    || customerProfile?.salesName
-    || customerProfile?.employeeName
-    || responsibleEmployee?.name
-  );
-  const responsibleEmployeeConversationKey = responsibleEmployeeId
-    || normalizeCustomerPhone(responsibleEmployeePhone)
-    || collapseLookupText(responsibleEmployeeName)
-    || 'unassigned';
   const responsibleEmployeeChatTitle = [
     'Tin nhắn',
     'NVKD',
@@ -81144,8 +81269,8 @@ function CustomerPortalView({
     responsibleEmployeePhone
   ].filter(Boolean).join(' - ');
   const customerResponsibleConversationId = useMemo(
-    () => `customer_${customerProfile?.id || 'unknown'}__employee_${responsibleEmployeeConversationKey}`,
-    [customerProfile?.id, responsibleEmployeeConversationKey]
+    () => buildCustomerSupportConversationId(customerProfile?.id || currentUser?.customerId || ''),
+    [currentUser?.customerId, customerProfile?.id]
   );
   const customerResponsibleMessages = useMemo(() => (
     safeMessages
@@ -81564,14 +81689,13 @@ function CustomerPortalView({
     messages: customerResponsibleMessages,
     notifications: customerNotificationItems,
     customerId: customerInboxCustomerId,
-    responsibleConversationId: hasResponsibleEmployeeContact ? customerResponsibleConversationId : '',
-    responsibleName: responsibleEmployeeName
+    responsibleConversationId: customerResponsibleConversationId,
+    responsibleName: responsibleEmployeeName || 'Hỗ trợ khách hàng'
   }), [
     customerInboxCustomerId,
     customerNotificationItems,
     customerResponsibleMessages,
     customerResponsibleConversationId,
-    hasResponsibleEmployeeContact,
     responsibleEmployeeName
   ]);
   const selectedCustomerConversation = useMemo(
@@ -81622,7 +81746,7 @@ function CustomerPortalView({
       openCustomerConversation(salesConversation);
       return;
     }
-    if (hasResponsibleEmployeeContact) {
+    if (customerResponsibleConversationId) {
       setSelectedCustomerConversationId(`sales:${customerResponsibleConversationId}`);
       setActiveTab('messages');
     }
@@ -82434,10 +82558,6 @@ function CustomerPortalView({
       setSubmitMessage('Vui lòng nhập nội dung tin nhắn.');
       return;
     }
-    if (!hasResponsibleEmployeeContact) {
-      setSubmitMessage('Khách hàng này chưa có nhân viên phụ trách để nhận tin.');
-      return;
-    }
     if (typeof onAddMessage !== 'function') {
       setSubmitMessage('Chức năng nhắn tin chưa sẵn sàng, vui lòng thử lại sau.');
       return;
@@ -82470,6 +82590,9 @@ function CustomerPortalView({
         message: cleanText,
         status: 'unread'
       });
+      setSubmitMessage(responsibleEmployeeId
+        ? 'Đã gửi tin nhắn cho nhân viên phụ trách.'
+        : 'Đã gửi tin nhắn vào hàng chờ phân loại.');
     } catch (error) {
       setCustomerMessageText(prev => prev || cleanText);
       setSubmitMessage(getFriendlyFirebaseErrorMessage(error, 'Chưa gửi được tin nhắn, vui lòng thử lại.'));
@@ -82733,7 +82856,7 @@ function CustomerPortalView({
                   <button
                     type="button"
                     onClick={handleSendCustomerMessage}
-                    disabled={isSendingCustomerMessage || !customerMessageText.trim() || !hasResponsibleEmployeeContact}
+                    disabled={isSendingCustomerMessage || !customerMessageText.trim()}
                     className="flex min-h-[48px] shrink-0 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 text-sm font-extrabold text-white shadow-lg shadow-emerald-100 disabled:from-gray-300 disabled:to-gray-300"
                     aria-label="Gửi tin nhắn"
                   >
@@ -84309,7 +84432,6 @@ function CustomerPortalView({
             <button
               type="button"
               onClick={openCustomerSalesConversation}
-              disabled={!hasResponsibleEmployeeContact}
               className="rounded-2xl bg-sky-50 px-3 py-2 text-xs font-extrabold text-sky-700 disabled:opacity-50"
             >
               Nhắn tin

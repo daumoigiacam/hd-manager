@@ -41,7 +41,7 @@ const test = async (name, callback) => {
   console.log(`PASS ${name}`);
 };
 
-const customerContext = (customerId) => environment.authenticatedContext(`firebase-${customerId}`, {
+const customerContext = (customerId, contextSuffix = '') => environment.authenticatedContext(`firebase-${customerId}${contextSuffix ? `-${contextSuffix}` : ''}`, {
   companyId,
   identityId: `identity-${customerId}`,
   appUserId: `account-${customerId}`,
@@ -81,6 +81,16 @@ try {
     );
 
     await Promise.all([
+      seed('customers', customerA, {
+        companyId,
+        empId: 'employee-a',
+        name: 'Customer A'
+      }),
+      seed('customers', customerB, {
+        companyId,
+        empId: 'employee-b',
+        name: 'Customer B'
+      }),
       seed('notifications', 'notice-a', {
         companyId,
         customerId: customerA,
@@ -119,7 +129,12 @@ try {
         companyId,
         customerId: customerA,
         conversationType: 'customer_support',
-        conversationId: 'support-a',
+        conversationId: 'customer_customer-a',
+        assignmentState: 'assigned',
+        assignedEmployeeId: 'employee-a',
+        receiverEmpId: 'employee-a',
+        recipientEmpId: 'employee-a',
+        targetEmpId: 'employee-a',
         senderType: 'employee',
         senderEmpId: 'employee-a',
         text: 'Message for customer A',
@@ -129,7 +144,12 @@ try {
         companyId,
         customerId: customerB,
         conversationType: 'customer_support',
-        conversationId: 'support-b',
+        conversationId: 'customer_customer-b',
+        assignmentState: 'assigned',
+        assignedEmployeeId: 'employee-b',
+        receiverEmpId: 'employee-b',
+        recipientEmpId: 'employee-b',
+        targetEmpId: 'employee-b',
         senderType: 'employee',
         senderEmpId: 'employee-a',
         text: 'Message for customer B',
@@ -201,7 +221,12 @@ try {
       companyId,
       customerId: customerA,
       conversationType: 'customer_support',
-      conversationId: 'support-a',
+      conversationId: 'customer_customer-a',
+      assignmentState: 'assigned',
+      assignedEmployeeId: 'employee-a',
+      receiverEmpId: 'employee-a',
+      recipientEmpId: 'employee-a',
+      targetEmpId: 'employee-a',
       senderType: 'customer',
       senderCustomerId: customerA,
       source: 'customer_portal',
@@ -215,7 +240,12 @@ try {
       companyId,
       customerId: customerB,
       conversationType: 'customer_support',
-      conversationId: 'support-b',
+      conversationId: 'customer_customer-b',
+      assignmentState: 'assigned',
+      assignedEmployeeId: 'employee-b',
+      receiverEmpId: 'employee-b',
+      recipientEmpId: 'employee-b',
+      targetEmpId: 'employee-b',
       senderType: 'customer',
       senderCustomerId: customerB,
       source: 'customer_portal',
@@ -259,14 +289,25 @@ try {
   });
 
   await test('customer A realtime inbox listener receives only A updates', async () => {
+    // Expected permission-denied writes above can leave the emulator gRPC
+    // stream unusable in the same SDK client. Use a fresh authenticated client
+    // so this remains a real listener and tenant-isolation check.
+    const realtimeCustomerADb = customerContext(customerA, 'realtime');
+    const realtimeNotificationCollection = collection(realtimeCustomerADb, `artifacts/${appId}/public/data/notifications`);
+    const realtimeOwnNotificationQuery = query(
+      realtimeNotificationCollection,
+      where('companyId', '==', companyId),
+      where('customerId', '==', customerA),
+      where('recipientType', '==', 'customer')
+    );
     const initialSnapshot = await waitForSnapshot(
-      ownNotificationQuery,
+      realtimeOwnNotificationQuery,
       snapshot => snapshot.docs.some(item => item.id === 'notice-a')
     );
     assert.ok(initialSnapshot.docs.every(item => item.data().customerId === customerA));
 
     const updatePromise = waitForSnapshot(
-      ownNotificationQuery,
+      realtimeOwnNotificationQuery,
       snapshot => snapshot.docs.some(item => item.id === 'notice-a-realtime')
     );
     await environment.withSecurityRulesDisabled(async context => {

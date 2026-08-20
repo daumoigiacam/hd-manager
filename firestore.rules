@@ -45,6 +45,120 @@ service cloud.firestore {
         );
     }
 
+    function employeePath(appId, employeeId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/employees/$(employeeId);
+    }
+
+    function customerPath(appId, customerId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/public/data/customers/$(customerId);
+    }
+
+    function hasNonEmptyStringField(data, fieldName) {
+      return fieldName in data
+        && data[fieldName] is string
+        && data[fieldName].size() > 0;
+    }
+
+    function hasCustomerMessagingAssignment(appId, customerId) {
+      return exists(customerPath(appId, customerId))
+        && get(customerPath(appId, customerId)).data.companyId == request.auth.token.companyId
+        && (
+          hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
+          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
+          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
+          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'responsibleEmployeeId')
+        );
+    }
+
+    function messageMatchesCustomerAssignment(appId, customerId, employeeId) {
+      return exists(customerPath(appId, customerId))
+        && get(customerPath(appId, customerId)).data.companyId == request.auth.token.companyId
+        && (
+          (
+            hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && get(customerPath(appId, customerId)).data.empId == employeeId
+          )
+          || (
+            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+            && get(customerPath(appId, customerId)).data.assignedEmployeeId == employeeId
+          )
+          || (
+            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
+            && get(customerPath(appId, customerId)).data.salesEmpId == employeeId
+          )
+          || (
+            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
+            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
+            && get(customerPath(appId, customerId)).data.managerEmpId == employeeId
+          )
+          || (
+            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
+            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
+            && get(customerPath(appId, customerId)).data.employeeId == employeeId
+          )
+          || (
+            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
+            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
+            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'responsibleEmployeeId')
+            && get(customerPath(appId, customerId)).data.responsibleEmployeeId == employeeId
+          )
+        );
+    }
+
+    function isMessagingManager(appId) {
+      return isEmployeeIdentity()
+        && 'role' in request.auth.token
+        && request.auth.token.role in [
+          'super_admin',
+          'owner',
+          'company_owner',
+          'business_owner',
+          'admin',
+          'manager',
+          'accounting',
+          'accountant'
+        ];
+    }
+
+    function hasValidCustomerMessageRouting(appId, data) {
+      return 'customerId' in data
+        && data.customerId is string
+        && data.customerId.size() > 0
+        && 'conversationId' in data
+        && data.conversationId is string
+        && data.conversationId == 'customer_' + data.customerId
+        && 'assignmentState' in data
+        && data.assignmentState is string
+        && (
+          (
+            hasCustomerMessagingAssignment(appId, data.customerId)
+            && data.assignmentState == 'assigned'
+            && 'assignedEmployeeId' in data
+            && data.assignedEmployeeId is string
+            && data.assignedEmployeeId.size() > 0
+            && messageMatchesCustomerAssignment(appId, data.customerId, data.assignedEmployeeId)
+          )
+          || (
+            !hasCustomerMessagingAssignment(appId, data.customerId)
+            && data.assignmentState == 'unclassified'
+            && !('assignedEmployeeId' in data)
+          )
+        );
+    }
+
     function customerOwnsDocument(collectionId, docId, data) {
       return isCustomerIdentity()
         && (
@@ -76,7 +190,7 @@ service cloud.firestore {
         && data.conversationType == 'customer_support';
     }
 
-    function canCustomerCreateMessage(data) {
+    function canCustomerCreateMessage(appId, data) {
       return canCustomerReadMessage(data)
         && data.senderCustomerId is string
         && data.senderCustomerId == request.auth.token.customerId
@@ -85,7 +199,8 @@ service cloud.firestore {
         && data.source is string
         && data.source == 'customer_portal'
         && data.type is string
-        && data.type in ['customer_to_employee', 'loyalty_point_withdraw_request'];
+        && data.type in ['customer_to_employee', 'loyalty_point_withdraw_request']
+        && hasValidCustomerMessageRouting(appId, data);
     }
 
     function canCustomerMarkNotificationRead(oldData, newData) {
@@ -155,8 +270,8 @@ service cloud.firestore {
       ];
     }
 
-    function canCustomerCreateDocument(collectionId, docId, data) {
-      return (collectionId == 'messages' && canCustomerCreateMessage(data))
+    function canCustomerCreateDocument(appId, collectionId, docId, data) {
+      return (collectionId == 'messages' && canCustomerCreateMessage(appId, data))
         || (
           collectionId != 'messages'
           && collectionId != 'notifications'
@@ -208,13 +323,73 @@ service cloud.firestore {
         && customerOwnsDocument(collectionId, docId, data);
     }
 
-    function canReadApplicationDocument(collectionId, docId, data) {
-      return (isEmployeeIdentity() && collectionId != 'customer_accounts')
-        || canCustomerReadDocument(collectionId, docId, data);
+    function canEmployeeReadCustomerSupportMessage(appId, data) {
+      return isMessagingManager(appId)
+        || (
+          isEmployeeIdentity()
+          && data.assignmentState == 'assigned'
+          && data.assignedEmployeeId == request.auth.token.appUserId
+        );
     }
 
-    function employeePath(appId, employeeId) {
-      return /databases/$(database)/documents/artifacts/$(appId)/public/data/employees/$(employeeId);
+    function canEmployeeReadMessage(appId, data) {
+      return isEmployeeIdentity()
+        && (
+          !('conversationType' in data)
+          || data.conversationType != 'customer_support'
+          || canEmployeeReadCustomerSupportMessage(appId, data)
+        );
+    }
+
+    function canEmployeeCreateMessage(appId, data) {
+      return isEmployeeIdentity()
+        && (
+          !('conversationType' in data)
+          || data.conversationType != 'customer_support'
+          || (
+            'senderType' in data
+            && data.senderType is string
+            && data.senderType == 'employee'
+            && 'senderEmpId' in data
+            && data.senderEmpId is string
+            && data.senderEmpId == request.auth.token.appUserId
+            && hasValidCustomerMessageRouting(appId, data)
+            && (
+              isMessagingManager(appId)
+              || (
+                data.assignmentState == 'assigned'
+                && data.assignedEmployeeId == request.auth.token.appUserId
+              )
+            )
+          )
+        );
+    }
+
+    function canEmployeeUpdateMessage(appId, oldData, newData) {
+      return isEmployeeIdentity()
+        && (
+          (
+            (!('conversationType' in oldData) || oldData.conversationType != 'customer_support')
+            && (!('conversationType' in newData) || newData.conversationType != 'customer_support')
+          )
+          || (isMessagingManager(appId) && hasValidCustomerMessageRouting(appId, newData))
+        );
+    }
+
+    function canEmployeeDeleteMessage(appId, data) {
+      return isEmployeeIdentity()
+        && (
+          !('conversationType' in data)
+          || data.conversationType != 'customer_support'
+          || isMessagingManager(appId)
+        );
+    }
+
+    function canReadApplicationDocument(appId, collectionId, docId, data) {
+      return (isEmployeeIdentity()
+        && collectionId != 'customer_accounts'
+        && (collectionId != 'messages' || canEmployeeReadMessage(appId, data)))
+        || canCustomerReadDocument(collectionId, docId, data);
     }
 
     function payrollPeriodPath(appId, periodId) {
@@ -665,22 +840,26 @@ service cloud.firestore {
             ? (!isProtectedPayrollCollection(collectionId) || isPayrollManager(appId))
             : (
               belongsToSignedInCompany(collectionId, docId, resource.data)
-              && canReadApplicationDocument(collectionId, docId, resource.data)
+              && canReadApplicationDocument(appId, collectionId, docId, resource.data)
               && canReadPayrollDocument(collectionId, resource.data)
             )
         );
 
       allow list: if hasIdentitySession()
         && belongsToSignedInCompany(collectionId, docId, resource.data)
-        && canReadApplicationDocument(collectionId, docId, resource.data)
+        && canReadApplicationDocument(appId, collectionId, docId, resource.data)
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
-          (isEmployeeIdentity() && collectionId != 'customer_accounts')
-          || canCustomerCreateDocument(collectionId, docId, request.resource.data)
+          (
+            isEmployeeIdentity()
+            && collectionId != 'customer_accounts'
+            && (collectionId != 'messages' || canEmployeeCreateMessage(appId, request.resource.data))
+          )
+          || canCustomerCreateDocument(appId, collectionId, docId, request.resource.data)
         )
         && (
           (collectionId == 'payrollPeriods' && isValidLockedPayrollPeriodCreate(appId, docId))
@@ -698,7 +877,11 @@ service cloud.firestore {
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
-          (isEmployeeIdentity() && collectionId != 'customer_accounts')
+          (
+            isEmployeeIdentity()
+            && collectionId != 'customer_accounts'
+            && (collectionId != 'messages' || canEmployeeUpdateMessage(appId, resource.data, request.resource.data))
+          )
           || canCustomerUpdateDocument(collectionId, docId, resource.data, request.resource.data)
         )
         && !isImmutablePayrollCollection(collectionId)
@@ -728,7 +911,11 @@ service cloud.firestore {
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && (
-          (isEmployeeIdentity() && collectionId != 'customer_accounts')
+          (
+            isEmployeeIdentity()
+            && collectionId != 'customer_accounts'
+            && (collectionId != 'messages' || canEmployeeDeleteMessage(appId, resource.data))
+          )
           || canCustomerDeleteDocument(collectionId, docId, resource.data)
         )
         && !isImmutablePayrollCollection(collectionId)

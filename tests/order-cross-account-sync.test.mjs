@@ -32,7 +32,7 @@ test('new order requests wait for Firestore confirmation before returning succes
 
 test('queued shared writes are retried once per document and remain tenant-scoped', () => {
   const pendingSyncSection = getSection('const flushPendingFirebaseWriteNow =', 'const saveDataDocument = async');
-  const tenantSourceSection = getSection('const getTenantCollectionSource =', 'const getSnapshotItems =');
+  const tenantSourceSection = getSection('const getTenantCollectionSources =', 'const getSnapshotItems =');
 
   assert.match(pendingSyncSection, /const inFlightKey = `\$\{normalizeTenantStorageScope\(companyId\)\}:\$\{key\}`/);
   assert.match(pendingSyncSection, /pendingFirebaseWritePromisesRef\.current\.get\(inFlightKey\)/);

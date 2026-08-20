@@ -1,5 +1,5 @@
 const functions = require('firebase-functions');
-const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
@@ -62,6 +62,10 @@ const {
   fetchSepayTransactions,
   reconcileSepayTransactions
 } = require('./sepayReconciliation');
+const {
+  buildCustomerMessageRouting,
+  hasMatchingCustomerMessageRouting
+} = require('./customerMessaging');
 
 admin.initializeApp();
 
@@ -2527,6 +2531,69 @@ exports.processPaymentJob = onDocumentCreated('artifacts/{appId}/public/data/pay
       return null;
     }
   });
+
+const syncCustomerSupportMessageRouting = async ({ appId, customerId, customer }) => {
+  const routing = buildCustomerMessageRouting(customer, customerId);
+  if (!routing.customerId || !customer?.companyId) return { updated: 0 };
+
+  const messageSnapshot = await db.collection(collectionPath(appId, 'messages'))
+    .where('companyId', '==', customer.companyId)
+    .where('customerId', '==', routing.customerId)
+    .where('conversationType', '==', 'customer_support')
+    .get();
+
+  const updates = messageSnapshot.docs.filter((messageDoc) => !hasMatchingCustomerMessageRouting(
+    messageDoc.data() || {},
+    routing
+  ));
+
+  for (let startIndex = 0; startIndex < updates.length; startIndex += 400) {
+    const batch = db.batch();
+    updates.slice(startIndex, startIndex + 400).forEach((messageDoc) => {
+      const patch = {
+        conversationId: routing.conversationId,
+        assignmentState: routing.assignmentState,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (routing.assignedEmployeeId) {
+        patch.assignedEmployeeId = routing.assignedEmployeeId;
+        patch.receiverEmpId = routing.assignedEmployeeId;
+        patch.recipientEmpId = routing.assignedEmployeeId;
+        patch.targetEmpId = routing.assignedEmployeeId;
+      } else {
+        patch.assignedEmployeeId = FieldValue.delete();
+        patch.receiverEmpId = FieldValue.delete();
+        patch.recipientEmpId = FieldValue.delete();
+        patch.targetEmpId = FieldValue.delete();
+      }
+      batch.set(messageDoc.ref, patch, { merge: true });
+    });
+    await batch.commit();
+  }
+
+  return { updated: updates.length };
+};
+
+exports.syncCustomerMessageAssignment = onDocumentWritten(
+  'artifacts/{appId}/public/data/customers/{customerId}',
+  async (event) => {
+    const customerSnapshot = event.data?.after;
+    if (!customerSnapshot?.exists) return null;
+    const customer = customerSnapshot.data() || {};
+    const appId = normalizeAppId(event.params.appId);
+    const result = await syncCustomerSupportMessageRouting({
+      appId,
+      customerId: event.params.customerId,
+      customer: { id: event.params.customerId, ...customer },
+    });
+    console.log('syncCustomerMessageAssignment completed', {
+      appId,
+      customerId: event.params.customerId,
+      updated: result.updated,
+    });
+    return null;
+  }
+);
 
 const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, description, reference = '', paymentLinkId = '', payosOrderCode = '', rawPayload = {}, sourceType = 'payos_sync', provider = 'payos', providerLabel = 'PayOS', trace = null }) => {
   markPaymentTrace(trace, 'payment_apply_start');

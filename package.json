@@ -25,6 +25,8 @@
     "test:customer-location-directions": "node tests/customer-location-directions.test.mjs",
     "test:customer-messaging": "node tests/customer-messaging.test.mjs",
     "test:firestore-customer-messaging-rules": "firebase emulators:exec --only firestore \"node tests/firestore-customer-messaging-rules.test.mjs\"",
+    "test:employee-scoped-customer-messaging": "node tests/employee-scoped-customer-messaging.test.mjs",
+    "test:firestore-employee-customer-messaging-rules": "firebase emulators:exec --only firestore \"node tests/firestore-employee-customer-messaging-rules.test.mjs\"",
     "test:search": "node tests/search-engine.test.mjs",
     "test:sales-revenue-period": "node tests/sales-revenue-period.test.mjs",
     "test:salary-advance-period": "node tests/salary-advance-period.test.mjs",
