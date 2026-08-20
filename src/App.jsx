@@ -378,6 +378,7 @@ const getCapacitorPlugin = (name) => {
 
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
 const clientRuntime = resolveClientRuntime();
+const isPreviewDataMode = import.meta.env.VITE_DATA_MODE === 'preview';
 const GOOGLE_MAPS_API_KEY = clientRuntime.googleMapsApiKey;
 const GOOGLE_MAPS_MAP_ID = clientRuntime.googleMapsMapId;
 const GOONG_MAPTILES_API_KEY = clientRuntime.goongMapTilesApiKey;
@@ -13190,13 +13191,20 @@ export default function App() {
     };
 
     const readTenantCollectionViaRest = async (colName) => {
+      const collectionSources = getTenantCollectionSources(colName);
+      if (collectionSources.length === 0) return [];
+      if (isPreviewDataMode) {
+        const snapshots = await Promise.all(collectionSources.map(source => (
+          source?.kind === 'doc' ? firebaseGetDoc(source) : firebaseGetDocs(source)
+        )));
+        return snapshots.flatMap(snapshot => getSnapshotItems(snapshot));
+      }
+
       const authenticatedUser = firebaseUser || auth?.currentUser;
       const projectId = activeFirebaseConfig?.projectId || '';
       if (!authenticatedUser?.getIdToken || !projectId || !colName) {
         throw new Error(`Firebase REST chưa sẵn sàng để đọc ${colName}.`);
       }
-      const collectionSources = getTenantCollectionSources(colName);
-      if (collectionSources.length === 0) return [];
       if (collectionSources.length > 1) {
         const snapshots = await Promise.all(collectionSources.map(source => firebaseGetDocs(source)));
         const byId = new Map();
@@ -36048,6 +36056,7 @@ function MapManagementView({
 function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee, attendanceAlerts = [], currentAttendanceAlert = null }) {
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
   const menuItems = [
+    { id: 'executive_dashboard', label: 'Điều hành', icon: <PieChart className="text-blue-500" />, show: tabPermissions.executive_dashboard },
     { id: 'order_requests', label: 'Lên đơn đặt hàng', icon: <Receipt className="text-sky-500" />, show: tabPermissions.order_requests },
     { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList className="text-orange-500" />, show: tabPermissions.orders },
     { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package className="text-emerald-500" />, show: tabPermissions.warehouse_import },
@@ -36058,6 +36067,7 @@ function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWare
     { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle className="text-cyan-500" />, show: tabPermissions.messages },
     { id: 'debt', label: 'Sổ nợ', icon: <BookText className="text-rose-500" />, show: tabPermissions.debt },
     { id: 'finance', label: 'Thu chi', icon: <ArrowRightLeft className="text-emerald-500" />, show: tabPermissions.finance },
+    { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard className="text-cyan-500" />, show: tabPermissions.bank_payments },
     { id: 'customers', label: 'Khách hàng', icon: <Users className="text-green-500" />, show: tabPermissions.customers },
     { id: 'products', label: 'Kho sản phẩm', icon: <Package className="text-orange-500" />, show: tabPermissions.products },
     { id: 'pricing', label: 'Giá cả', icon: <TrendingUp className="text-amber-500" />, show: tabPermissions.pricing },

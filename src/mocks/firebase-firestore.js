@@ -119,7 +119,11 @@ function createDocumentSnapshot(docRef) {
   return {
     id: docRef.id,
     exists: () => Boolean(entry),
-    data: () => (entry ? clone(entry) : undefined)
+    data: () => (entry ? clone(entry) : undefined),
+    metadata: {
+      fromCache: false,
+      hasPendingWrites: false
+    }
   };
 }
 
@@ -244,13 +248,17 @@ export async function deleteDoc(docRef) {
 }
 
 export function onSnapshot(ref, optionsOrNext, nextOrError) {
-  if (ref.kind !== 'collection') {
-    throw new Error('Preview mock currently supports collection snapshots only.');
-  }
-
   const onNext = typeof optionsOrNext === 'function' ? optionsOrNext : nextOrError;
   if (typeof onNext !== 'function') {
     throw new Error('Preview mock requires an onSnapshot callback.');
+  }
+
+  if (ref.kind === 'doc') {
+    queueMicrotask(() => onNext(createDocumentSnapshot(ref)));
+    return () => {};
+  }
+  if (ref.kind !== 'collection') {
+    throw new Error('Preview mock supports collection and document snapshots only.');
   }
 
   const listeners = collectionListeners.get(ref.name) || new Set();

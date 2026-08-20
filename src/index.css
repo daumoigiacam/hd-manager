@@ -511,8 +511,8 @@ svg {
 }
 
 .mobile-app-shell :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
-  border-color: rgba(248, 113, 113, 0.28);
-  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.06);
+  border-color: var(--hd-color-border-strong, #c7d2e2);
+  box-shadow: 0 0 0 1px rgb(37 99 235 / 0.04);
   min-height: 2.85rem;
 }
 
@@ -1302,7 +1302,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 }
 
 .hd-header-search-field:focus-within {
-  border-color: color-mix(in srgb, var(--hd-color-primary, #059669) 42%, transparent);
+  border-color: color-mix(in srgb, var(--hd-primary, #2563eb) 42%, transparent);
 }
 
 .hd-header-search-input,
@@ -2371,8 +2371,8 @@ html.hd-low-power-ui .hd-soft-red-outline {
 
 /* Premium Phase 2.3: shared data-surface language for operational modules. */
 .premium-data-module {
-  --premium-data-border: #e2e8f0;
-  --premium-data-muted: #64748b;
+  --premium-data-border: var(--hd-color-border, #dbe3ee);
+  --premium-data-muted: var(--hd-color-muted, #64748b);
   display: grid;
   gap: 1rem;
   min-inline-size: 0;
@@ -2406,10 +2406,10 @@ html.hd-low-power-ui .hd-soft-red-outline {
   display: grid;
   min-block-size: 7rem;
   place-items: center;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--hd-color-border-strong, #c7d2e2);
   border-radius: 1.25rem;
   color: var(--premium-data-muted);
-  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  background: linear-gradient(180deg, var(--hd-color-surface, #ffffff), var(--hd-color-surface-muted, #f5f8fc));
   text-align: center;
 }
 

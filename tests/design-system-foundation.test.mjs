@@ -27,6 +27,13 @@ for (const token of ['colors', 'spacing', 'typography', 'radius', 'elevation', '
   assert(tokens.includes(token), `Missing Design System token group: ${token}`);
 }
 
+assert(tokens.includes("primary: Object.freeze({ 50: '#eff6ff'"), 'Primary brand palette must be HD Blue');
+assert(tokens.includes("secondary: Object.freeze({ 50: '#ecfeff'"), 'Secondary brand palette must be HD Cyan');
+assert(foundation.includes('--hd-gradient: linear-gradient(120deg'), 'Brand gradient must be defined in the shared foundation');
+assert(foundation.includes('.hd-dashboard-kpi[data-tone="good"]') && foundation.includes('var(--hd-color-success-surface)'), 'Positive dashboard tone must keep semantic success colors');
+assert(foundation.includes('.premium-data-module :where(table thead th)'), 'Operational tables must use the shared data-surface language');
+assert(foundation.includes('[class~="bg-emerald-600"]'), 'Legacy command buttons must be mapped to the shared brand treatment');
+
 for (const selector of [
   '[data-hd-theme="dark"]',
   '@media (prefers-reduced-motion: reduce)',
@@ -38,6 +45,17 @@ for (const selector of [
   '--hd-radius-control',
   '--hd-elevation-floating',
   '--hd-glass-blur',
+  '--hd-primary:',
+  '--hd-primary-hover:',
+  '--hd-primary-active:',
+  '--hd-secondary:',
+  '--hd-cyan:',
+  '--hd-gradient:',
+  '--hd-surface:',
+  '--hd-background:',
+  '--hd-text:',
+  '--hd-text-secondary:',
+  '--hd-border:',
   '.hd-ds-card',
   '.hd-ds-button',
   '.hd-ds-field',

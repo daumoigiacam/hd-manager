@@ -131,8 +131,8 @@ export default function App() {
   if (!isReady) {
     return (
       <SafeAreaView style={styles.centerScreen}>
-        <StatusBar style="dark" />
-        <ActivityIndicator color="#10b981" size="large" />
+        <StatusBar style="light" />
+        <ActivityIndicator color="#22d3ee" size="large" />
         <Text style={styles.loadingText}>Dang mo HD Manager...</Text>
       </SafeAreaView>
     );
