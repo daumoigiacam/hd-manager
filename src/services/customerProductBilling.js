@@ -416,6 +416,34 @@ export const resolveTransactionBillingSnapshot = ({
   };
 };
 
+export const updateTransactionBillingItem = (item = {}, { billingQuantity = 0, unitPrice = 0 } = {}) => {
+  const snapshot = resolveTransactionBillingSnapshot({ record: item });
+  const nextBillingQuantity = parsePositiveNumber(billingQuantity);
+  const nextUnitPrice = parseMoney(unitPrice);
+  const billingUnit = normalizeProductPricingUnit(
+    snapshot.billingUnit
+    || item.billingUnit
+    || item.pricingUnit
+    || item.quantityUnit
+    || item.unit
+    || ''
+  );
+  const nextAmount = Math.round(nextBillingQuantity * nextUnitPrice);
+
+  return {
+    ...item,
+    ...(!snapshot.hasFrozenPricing ? { quantity: nextBillingQuantity } : {}),
+    billingQuantity: nextBillingQuantity,
+    pricingQuantity: nextBillingQuantity,
+    billingUnit,
+    pricingUnit: billingUnit,
+    unitPrice: nextUnitPrice,
+    amount: nextAmount,
+    pricingAmount: nextAmount,
+    lineTotal: nextAmount,
+  };
+};
+
 // Keep order-list summaries aligned with the frozen billing snapshot used by
 // invoices. Never add physical counts and Kg together under a hard-coded unit.
 export const summarizeOrderBillingItems = (items = []) => {

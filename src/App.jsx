@@ -287,6 +287,7 @@ import {
   resolveCustomerProductConfiguration,
   resolveTransactionBillingSnapshot,
   prepareWarehouseDispatchOrderItems,
+  updateTransactionBillingItem,
   summarizeOrderBillingItems,
   mergeWarehouseDispatchOrderBillingItems,
 } from './services/customerProductBilling.js';
@@ -23670,7 +23671,7 @@ function MainAppView({
           });
         }
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
-      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
@@ -64358,7 +64359,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   );
 }
 
-function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, orderRequests = [], payments, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, orderRequests = [], payments, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showAddOrder, setShowAddOrder] = useState(false); 
   const [showOrderSourcePicker, setShowOrderSourcePicker] = useState(false);
   const [orderCreationSource, setOrderCreationSource] = useState('');
@@ -64921,6 +64922,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     return [order.createdByEmpId, order.empId, order.salesEmpId].filter(Boolean).includes(empId);
   };
   const canEditOrderRecord = (order) => Boolean(canEditOrder || canEditDraftOrder(order));
+  const canEditOrderItemRecord = (order) => Boolean(canEditOrderQuantityPrice || canEditDraftOrder(order));
 
   const buildEditableOrderPayload = (order, patch = {}) => {
     const items = Array.isArray(patch.items) ? patch.items : (Array.isArray(order?.items) ? order.items : []);
@@ -65217,16 +65219,17 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const openOrderItemEditor = (order, itemIndex) => {
-    if (!order || !canEditOrderRecord(order)) return;
+    if (!order || !canEditOrderItemRecord(order)) return;
     const currentItems = Array.isArray(order.items) ? order.items : [];
     const targetItem = currentItems[itemIndex];
     if (!targetItem) return;
+    const billing = getOrderItemBillingPresentation(targetItem);
     setOrderItemEditor({
       orderId: order.id,
       itemIndex,
-      quantity: `${targetItem.quantity ?? ''}`,
-      unitPrice: parseLooseMoneyValue(targetItem.unitPrice ?? targetItem.price) > 0
-        ? formatCurrency(parseLooseMoneyValue(targetItem.unitPrice ?? targetItem.price))
+      quantity: `${billing.billingQuantity || ''}`,
+      unitPrice: billing.unitPrice > 0
+        ? formatCurrency(billing.unitPrice)
         : ''
     });
     setOrderShareStatus('');
@@ -65237,13 +65240,14 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const saveOrderItemEditor = async (order) => {
-    if (!order || !onEditOrder || !canEditOrderRecord(order)) return;
+    if (!order || !onEditOrder || !canEditOrderItemRecord(order)) return;
     const currentItems = Array.isArray(order.items) ? order.items : [];
     const targetItem = currentItems[orderItemEditor.itemIndex];
     if (!targetItem) return;
 
-    const currentQuantity = parseLooseQuantityValue(targetItem.quantity);
-    const currentUnitPrice = parseLooseMoneyValue(targetItem.unitPrice ?? targetItem.price);
+    const currentBilling = getOrderItemBillingPresentation(targetItem);
+    const currentQuantity = currentBilling.billingQuantity;
+    const currentUnitPrice = currentBilling.unitPrice;
     const quantityInput = `${orderItemEditor.quantity ?? ''}`.trim();
     const unitPriceInput = `${orderItemEditor.unitPrice ?? ''}`.trim();
     const nextQuantity = quantityInput === '' ? currentQuantity : parseLooseQuantityValue(quantityInput);
@@ -65257,9 +65261,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       return;
     }
 
-    const nextItems = currentItems.map((item, index) => (
-      index === orderItemEditor.itemIndex ? { ...item, quantity: nextQuantity, unitPrice: nextUnitPrice } : item
-    ));
+    const nextItems = currentItems.map((item, index) => index === orderItemEditor.itemIndex
+      ? updateTransactionBillingItem(item, { billingQuantity: nextQuantity, unitPrice: nextUnitPrice })
+      : item);
 
     try {
       await onEditOrder(order.id, buildEditableOrderPayload(order, { items: nextItems }));
@@ -65280,13 +65284,14 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const promptEditOrderItem = async (order, itemIndex, field) => {
-    if (!order || !onEditOrder || !canEditOrderRecord(order)) return;
+    if (!order || !onEditOrder || !canEditOrderItemRecord(order)) return;
     const currentItems = Array.isArray(order.items) ? order.items : [];
     const targetItem = currentItems[itemIndex];
     if (!targetItem) return;
 
+    const currentBilling = getOrderItemBillingPresentation(targetItem);
     const isQuantity = field === 'quantity';
-    const currentValue = isQuantity ? (targetItem.quantity || '') : (targetItem.unitPrice || 0);
+    const currentValue = isQuantity ? currentBilling.billingQuantity : currentBilling.unitPrice;
     const rawValue = window.prompt(
       isQuantity ? 'Nhập lại số lượng' : 'Nhập lại đơn giá',
       isQuantity ? `${currentValue || ''}` : formatCurrency(currentValue || 0)
@@ -65301,9 +65306,12 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       return;
     }
 
-    const nextItems = currentItems.map((item, index) => (
-      index === itemIndex ? { ...item, [field]: nextValue } : item
-    ));
+    const nextItems = currentItems.map((item, index) => index === itemIndex
+      ? updateTransactionBillingItem(item, {
+        billingQuantity: isQuantity ? nextValue : currentBilling.billingQuantity,
+        unitPrice: isQuantity ? currentBilling.unitPrice : nextValue,
+      })
+      : item);
 
     try {
       await onEditOrder(order.id, buildEditableOrderPayload(order, { items: nextItems }));
@@ -67206,10 +67214,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                         <div className="min-w-0">
                           <p className="truncate text-[15px] font-extrabold leading-5 text-slate-900">{item.description || `Sản phẩm ${index + 1}`}</p>
                           <div className="mt-2 grid grid-cols-[0.8fr_1fr_1.25fr] items-center gap-2 text-[12px] font-semibold leading-5 text-slate-500">
-                            <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
+                            <button type="button" title="Sửa số lượng" disabled={!canEditOrderItemRecord(selectedOrder)} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
                               {formatNumber(billing.billingQuantity)} {billing.billingUnit}
                             </button>
-                            <button type="button" disabled={!canEditSelectedOrder} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
+                            <button type="button" title="Sửa đơn giá" disabled={!canEditOrderItemRecord(selectedOrder)} onClick={() => openOrderItemEditor(selectedOrder, index)} className="rounded-lg bg-white px-2 py-0.5 font-extrabold text-emerald-700 shadow-sm ring-1 ring-emerald-100 disabled:text-slate-500 disabled:ring-slate-100">
                               {formatCurrency(billing.unitPrice)} đ/{billing.billingUnit}
                             </button>
                             <p className="text-right text-[15px] font-extrabold leading-5 text-slate-900">{formatCurrency(billing.amount)} đ</p>
