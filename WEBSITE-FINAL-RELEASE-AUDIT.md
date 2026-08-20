@@ -63,7 +63,7 @@ The release is a static multi-page website package. It does not deploy or modify
 - Disabled checkout POST count: `0`.
 - `sitemap.xml`: valid XML, 19 URLs.
 - Deploy artifact safety scan: `RELEASE_ENDPOINT_SECRET_SCAN_PASS`.
-- ZIP: `hdconnect-website-final-release-20260820.zip`, 41 entries, 103352 bytes at audit time.
+- ZIP: `hdconnect-website-final-release-20260821.zip`, 41 entries, 103564 bytes at audit time.
 - Screenshots: `test-results/hdconnect-website-qa/home-desktop.png` and `home-mobile.png`.
 
 ## Hosting handoff notes
