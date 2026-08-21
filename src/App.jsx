@@ -22403,7 +22403,7 @@ function MainAppView({
 
   useEffect(() => {
     if (!currentUser?.id || !currentCompany?.id || typeof window === 'undefined') return;
-    if (isNativeRuntime()) return;
+    if (!isNativeRuntime()) return;
     const promptKey = `hd-manager-system-notification-permission-prompted:${currentCompany.id}:${currentUser.id}`;
     try {
       if (window.localStorage.getItem(promptKey)) return;
@@ -22411,9 +22411,7 @@ function MainAppView({
     } catch (error) {
       console.warn('Failed to persist notification prompt state.', error);
     }
-    if (isNativeRuntime()) {
-      requestSystemNotificationPermission({ forcePrompt: true });
-    }
+    requestSystemNotificationPermission({ forcePrompt: true });
   }, [currentCompany?.id, currentUser?.id]);
 
   useEffect(() => {
@@ -22634,6 +22632,8 @@ function MainAppView({
           tab: 'finance',
           tone: 'emerald',
           customerId: payment.customerId || '',
+          paymentId: payment.id || '',
+          type: 'payment_received',
           searchKeyword: customerName,
           sourcePayment: payment
         });
@@ -22852,28 +22852,28 @@ function MainAppView({
 
   useEffect(() => {
     if (!systemNotificationStorageKey || !systemNotificationReadyRef.current || notificationItems.length === 0 || typeof window === 'undefined') return;
-    if (isNativeRuntime()) return;
     const now = Date.now();
-    const latestNewItem = notificationItems
+    const newlyArrivedItems = notificationItems
       .map((item) => ({
         item,
         createdAt: getEntityTimestamp(item) || 0
       }))
       .filter(({ item, createdAt }) => item && createdAt > lastSystemNotificationShownAtRef.current)
-      .filter((item) => {
-        const createdAt = item.createdAt || 0;
+      .filter(({ createdAt }) => {
         return createdAt > (now - 30 * 60 * 1000) && createdAt <= (now + 5 * 60 * 1000);
       })
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    if (!latestNewItem?.item) return;
-    const nextShownAt = Math.max(lastSystemNotificationShownAtRef.current, latestNewItem.createdAt || now);
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (newlyArrivedItems.length === 0) return;
+    const nextShownAt = Math.max(lastSystemNotificationShownAtRef.current, ...newlyArrivedItems.map(({ createdAt }) => createdAt), now);
     lastSystemNotificationShownAtRef.current = nextShownAt;
     try {
       window.localStorage.setItem(systemNotificationStorageKey, String(nextShownAt));
     } catch (error) {
       console.warn('Failed to save system notification state.', error);
     }
-    showSystemNotificationForItem(latestNewItem.item);
+    newlyArrivedItems.forEach(({ item }) => {
+      showSystemNotificationForItem(item);
+    });
   }, [notificationItems, systemNotificationStorageKey]);
 
   useEffect(() => {
