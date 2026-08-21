@@ -8845,6 +8845,8 @@ const showSystemNotificationForItem = async (item = {}) => {
           id: buildSystemNotificationId(`${item.id || title}-${item.createdAt || Date.now()}`),
           title,
           body,
+          smallIcon: 'ic_stat_hd_manager',
+          iconColor: '#0B5ED7',
           schedule: { at: new Date(Date.now() + 250) },
           extra: {
             notificationId: item.id || '',

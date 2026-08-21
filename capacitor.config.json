@@ -9,7 +9,9 @@
         "badge",
         "sound",
         "alert"
-      ]
+      ],
+      "smallIcon": "ic_stat_hd_manager",
+      "iconColor": "#0B5ED7"
     }
   }
 }
