@@ -181,6 +181,7 @@ import {
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
+  initializeAuth,
   setPersistence,
   indexedDBLocalPersistence,
   browserLocalPersistence,
@@ -710,7 +711,22 @@ if (isVpsMode) {
         appName: 'HD Manager',
         projectId: firebaseConfig?.projectId || '',
       });
-      auth = getAuth(app);
+      try {
+        // Let Firebase select the first persistence layer supported by the
+        // device during Auth construction so WebView IndexedDB startup does
+        // not block registration of the initial auth-state listener.
+        auth = initializeAuth(app, {
+          persistence: [indexedDBLocalPersistence, browserLocalPersistence]
+        });
+        firebaseAuthPersistencePromise = Promise.resolve('indexedDB-or-localStorage');
+        recordStartupEvent('auth.persistence.configured', {
+          mode: 'indexedDB-or-localStorage'
+        });
+      } catch (authInitializationError) {
+        console.warn('Khong the khoi tao Firebase Auth voi persistence tu dong:', authInitializationError);
+        auth = getAuth(app);
+        firebaseAuthPersistencePromise = configureFirebaseAuthPersistence(auth);
+      }
       try {
         db = initializeFirestore(app, {
           // Auto-detect can overlap watch target teardown with short-lived reads
@@ -722,7 +738,6 @@ if (isVpsMode) {
         console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
         db = getFirestore(app);
       }
-      firebaseAuthPersistencePromise = configureFirebaseAuthPersistence(auth);
     }
   } catch (error) {
     console.error("Lỗi khởi tạo Firebase:", error);
@@ -12834,6 +12849,7 @@ export default function App() {
         const restoredUser = {
           id: claims.appUserId || '',
           identityKey: claims.identityId || '',
+          firebaseUid: u.uid || '',
           accountId: claims.accountType === 'customer' ? (claims.appUserId || '') : undefined,
           customerId: claims.customerId || undefined,
           companyId: claims.companyId,
@@ -12926,6 +12942,22 @@ export default function App() {
         return;
       }
       setFirebaseUser(u);
+      const cachedIdentityKey = `${persistedSession.currentUser?.identityKey || ''}`.trim();
+      const cachedFirebaseUid = `${persistedSession.currentUser?.firebaseUid || ''}`.trim();
+      const expectedCachedFirebaseUid = cachedFirebaseUid || (cachedIdentityKey ? `identity_${cachedIdentityKey}` : '');
+      const cachedSessionBoundToAuth = Boolean(
+        persistedSession.currentUser
+        && expectedCachedFirebaseUid
+        && expectedCachedFirebaseUid === u.uid
+      );
+      if (cachedSessionBoundToAuth && !cancelled) {
+        const cachedUser = { ...persistedSession.currentUser, firebaseUid: u.uid };
+        setCurrentUser(cachedUser);
+        setCurrentCompany(persistedSession.currentCompany || { id: cachedUser.companyId, name: '' });
+        setActiveTab(persistedSession.activeTab || (cachedUser.accountType === 'customer' ? 'customer_home' : 'home'));
+        setIsFirebaseLoading(false);
+        recordStartupEvent('auth.identity_cache_released', { bound: true });
+      }
       await restoreIdentityFromClaims(u);
       if (!cancelled) setIsFirebaseLoading(false);
     };
@@ -14993,6 +15025,7 @@ export default function App() {
     const company = await resolveIdentityCompany(identity.companyId);
     const nextUser = {
       ...identity,
+      firebaseUid: credential.user?.uid || '',
       role: identity.role || (identity.accountType === 'customer' ? 'customer' : 'employee'),
     };
     const nextTab = identity.accountType === 'customer' ? 'customer_home' : 'home';

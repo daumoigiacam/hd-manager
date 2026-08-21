@@ -149,6 +149,18 @@ assert.match(appSource, /loadedCollectionsTenantId === effectiveSessionCompanyId
 assert.match(appSource, /firebaseAuthenticated: isSessionRevocationDataReady/);
 assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
+assert.match(
+  appSource,
+  /auth = initializeAuth\(app, \{[\s\S]*?persistence: \[indexedDBLocalPersistence, browserLocalPersistence\]/,
+  'Firebase Auth must configure supported persistence during construction'
+);
+assert.match(appSource, /firebaseAuthPersistencePromise = Promise\.resolve\('indexedDB-or-localStorage'\)/);
+assert.match(appSource, /firebaseAuthPersistencePromise = configureFirebaseAuthPersistence\(auth\)/);
+assert.match(appSource, /const expectedCachedFirebaseUid = cachedFirebaseUid \|\|/);
+assert.match(appSource, /`identity_\$\{cachedIdentityKey\}`/);
+assert.match(appSource, /const cachedSessionBoundToAuth = Boolean\(/);
+assert.match(appSource, /auth\.identity_cache_released/);
+assert.match(appSource, /firebaseUid: credential\.user\?\.uid \|\| ''/);
 
 const anonymousSignInCalls = appSource.match(/signInAnonymously\(auth\)/g) || [];
 assert.equal(anonymousSignInCalls.length, 0, 'Anonymous Auth must never run in login or startup paths');

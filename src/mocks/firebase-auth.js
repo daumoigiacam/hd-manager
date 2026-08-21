@@ -40,6 +40,10 @@ export function getAuth() {
   return authState;
 }
 
+export function initializeAuth() {
+  return authState;
+}
+
 export async function setPersistence() {
   return undefined;
 }
