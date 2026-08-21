@@ -103,6 +103,10 @@ import {
   buildOrderRequestSharePagesByCustomer,
   groupOrderRequestShareRowsByCustomer
 } from './utils/orderRequestShareGrouping.js';
+import {
+  buildOrderRequestShareFiles,
+  hasCompleteOrderRequestShareBlobSet
+} from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import {
@@ -4738,7 +4742,9 @@ const saveBlobFile = async (filename, blob) => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  window.URL.revokeObjectURL(objectUrl);
+  // Keep the object URL alive long enough for browsers to finish a download,
+  // especially when several share images fall back to downloads together.
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 2000);
   return { status: 'downloaded', path: filename };
 };
 
@@ -62482,9 +62488,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const prepareOrderRequestSheetBlobs = async ({ reason = 'background' } = {}) => {
     const cacheKey = orderRequestSheetAssetKey;
     if (!cacheKey || groupedShareableMergedRequestSheetRows.length === 0) return [];
+    const expectedBlobCount = buildOrderRequestSheetPages().length;
 
     const cached = orderRequestSheetAssetCacheRef.current.get(cacheKey);
-    if (cached?.blobs?.length) {
+    if (hasCompleteOrderRequestShareBlobSet(cached?.blobs, expectedBlobCount)) {
       debugShareImageCache('order request memory hit', { count: cached.blobs.length, reason });
       recordPerformanceEvent('share_order_request.cache_lookup', {
         hit: true,
@@ -62502,9 +62509,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const promise = (async () => {
       const persisted = await readPersistentShareImageAsset(cacheKey, SHARE_IMAGE_CACHE_TTL_MS);
       const persistedBlobs = persisted?.payload?.blobs;
-      if (Array.isArray(persistedBlobs)
-        && persistedBlobs.length > 0
-        && persistedBlobs.every(blob => blob && typeof blob.arrayBuffer === 'function')) {
+      if (hasCompleteOrderRequestShareBlobSet(persistedBlobs, expectedBlobCount)) {
         orderRequestSheetAssetCacheRef.current.set(cacheKey, {
           blobs: persistedBlobs,
           createdAt: Number(persisted.createdAt || Date.now())
@@ -62527,6 +62532,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       prepareSpan = createPerformanceSpan('share_order_request.prepare', { reason });
       const canvases = await renderOrderRequestSheetCanvases();
       const blobs = await Promise.all(canvases.map((canvas) => canvasToBlob(canvas, 'image/png')));
+      if (!hasCompleteOrderRequestShareBlobSet(blobs, canvases.length)) {
+        throw new Error('Không thể chuẩn bị đủ ảnh bảng đơn đặt hàng. Vui lòng thử lại.');
+      }
       const createdAt = Date.now();
       orderRequestSheetAssetCacheRef.current.delete(cacheKey);
       orderRequestSheetAssetCacheRef.current.set(cacheKey, { blobs, createdAt });
@@ -62630,13 +62638,23 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
       try {
-        const files = blobs.map((blob, index) => new File([blob], `${baseFilename}-trang-${index + 1}.png`, { type: blob.type || 'image/png' }));
-        if (!navigator.canShare || navigator.canShare({ files })) {
-          await withTimeout(navigator.share({
-            title: 'Bảng đơn đặt hàng',
-            text: `Bảng đơn đặt hàng được tách thành ${files.length} ảnh để dễ xem.`,
-            files
-          }), 12000, 'share-timeout');
+        const files = buildOrderRequestShareFiles(blobs, baseFilename);
+        if (files.length === blobs.length && (!navigator.canShare || navigator.canShare({ files }))) {
+          try {
+            await withTimeout(navigator.share({
+              title: 'Bảng đơn đặt hàng',
+              text: `Bảng đơn đặt hàng được tách thành ${files.length} ảnh để dễ xem.`,
+              files
+            }), 12000, 'share-timeout');
+          } catch (error) {
+            if (`${error?.message || ''}`.toLowerCase().includes('cancel')) throw error;
+            // Some browser share targets reject text together with multiple
+            // files. Retry the same complete file set without optional text.
+            await withTimeout(navigator.share({
+              title: 'Bảng đơn đặt hàng',
+              files
+            }), 12000, 'share-timeout');
+          }
           return { status: 'shared', count: files.length };
         }
       } catch (error) {
@@ -62646,8 +62664,18 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       }
     }
 
-    await Promise.all(blobs.map((blob, index) => saveBlobFile(`${baseFilename}-trang-${index + 1}.png`, blob)));
-    return { status: 'downloaded', count: blobs.length };
+    const downloadResults = [];
+    for (let index = 0; index < blobs.length; index += 1) {
+      downloadResults.push(await saveBlobFile(`${baseFilename}-trang-${index + 1}.png`, blobs[index]));
+      // Let the browser register one download before starting the next one.
+      if (index < blobs.length - 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 180));
+      }
+    }
+    return {
+      status: 'downloaded',
+      count: downloadResults.filter(result => result.status === 'downloaded' || result.status === 'saved').length
+    };
   };
 
   const handleShareOrderRequestSheet = async () => {
