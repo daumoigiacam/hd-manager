@@ -76090,13 +76090,13 @@ function EmployeeReviewRadarChart({
           const edge = pointFor(index, 5);
           // Keep criterion names clear of the score touch targets on each axis.
           const labelLines = wrapEmployeeReviewRadarLabel(criteriaItem.label);
-          const labelRadius = maxRadius + (labelLines.length > 1 ? 50 : 34);
+          const labelRadius = maxRadius + (labelLines.length > 1 ? 60 : 34);
           const labelAngle = angleFor(index);
           const label = {
             x: center + (Math.cos(labelAngle) * labelRadius),
             y: center + (Math.sin(labelAngle) * labelRadius)
           };
-          const labelX = Math.min(Math.max(label.x, 58), size - 58);
+          const labelX = Math.min(Math.max(label.x, 32), size - 32);
           const labelY = label.y - ((labelLines.length - 1) * 6);
           const isEditingLabel = editingCriteriaId === criteriaItem.id;
           const labelBoxWidth = 118;
