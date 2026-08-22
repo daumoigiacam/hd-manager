@@ -177,4 +177,11 @@ test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => 
   assert.doesNotMatch(warehouseModuleSource, /hasOrderRequest:/);
 });
 
+test('thanh tim kiem danh sach xuat kho khong ep dong tong so tren mobile', () => {
+  assert.match(warehouseModuleSource, /flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center/);
+  assert.match(warehouseModuleSource, /w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1/);
+  assert.match(warehouseModuleSource, /flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0/);
+  assert.match(warehouseModuleSource, /min-w-0 flex-1 items-center gap-2 rounded-full/);
+});
+
 console.log('Warehouse dispatch weight input regression suite passed.');

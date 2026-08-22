@@ -60572,13 +60572,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 />
               </label>
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <p className="min-w-0 flex-1 text-xs font-bold text-slate-500">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+              <p className="w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1">
                 Tổng {dispatchSummary.totalCustomers} khách • {dispatchSummary.totalLines} đơn
               </p>
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0">
               {(isDispatchListSearchOpen || dispatchListSearch) ? (
-                <div className="flex min-w-[180px] max-w-[58vw] items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm">
+                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm sm:min-w-[180px] sm:max-w-[58vw] sm:flex-none">
                   <Search size={15} className="shrink-0 text-emerald-600" />
                   <input
                     ref={dispatchListSearchInputRef}
@@ -60605,7 +60605,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 <button
                   type="button"
                   onClick={() => setIsDispatchListSearchOpen(true)}
-                  className="inline-flex items-center justify-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 shadow-sm hover:bg-emerald-100"
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 shadow-sm hover:bg-emerald-100 sm:flex-none"
                   aria-label="Mở tìm kiếm phiếu xuất kho"
                 >
                   <Search size={14} />
