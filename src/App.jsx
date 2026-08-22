@@ -225,6 +225,7 @@ import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { useChunkedList, useDebouncedValue } from './services/renderOptimization';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
+import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
 import {
   hasSearchQuery as hasTokenSearchQuery,
   rankCustomerSearchResults,
@@ -34305,9 +34306,9 @@ function BankPaymentCenterView({
   ), [safeBankAccounts]);
 
   const sortedTransactions = useMemo(() => (
-    [...safeBankTransactions]
-      .filter(transaction => !transaction.isArchived)
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
+    sortBankTransactionsByTransactionDate(
+      safeBankTransactions.filter(transaction => !transaction.isArchived)
+    )
   ), [safeBankTransactions]);
 
   const bankPaymentRows = useMemo(() => (
@@ -34498,7 +34499,7 @@ function BankPaymentCenterView({
             <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">
               Chưa có giao dịch ngân hàng được đồng bộ.
             </div>
-          ) : sortedTransactions.slice(0, 12).map(transaction => {
+          ) : sortedTransactions.map(transaction => {
             const status = transactionStatusMeta(transaction);
             const amount = resolveBankTransactionAmount(transaction);
             const content = resolveBankTransactionContent(transaction) || 'Chưa có nội dung chuyển khoản';
