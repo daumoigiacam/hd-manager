@@ -49,7 +49,12 @@ export const validateSmokeTarget = (rawValue, label) => {
 
 export const collectFirebaseRequests = (urls = []) => urls.filter((value) => {
   const normalized = stringValue(value).toLowerCase();
-  return FIREBASE_MARKERS.some((marker) => normalized.includes(marker));
+  try {
+    const hostname = new URL(normalized).hostname;
+    return FIREBASE_MARKERS.some((marker) => hostname === marker || hostname.endsWith(`.${marker}`));
+  } catch {
+    return false;
+  }
 });
 
 const getConfig = (env = process.env) => ({

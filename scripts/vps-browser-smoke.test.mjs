@@ -22,6 +22,7 @@ test('Firebase request inventory is deterministic and does not expose values', (
   assert.deepEqual(
     collectFirebaseRequests([
       'https://staging-api.hdconnect.net/api/v1/health',
+      'http://127.0.0.1:4173/src/mocks/firebase-firestore.js',
       'https://firestore.googleapis.com/v1/projects/redacted',
       'https://us-central1-example.cloudfunctions.net/redacted',
       'https://firebasestorage.googleapis.com/v0/b/redacted/o/file',

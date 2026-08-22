@@ -28,6 +28,20 @@ import {
 } from './utils/warehouseInventory.js';
 import { buildWarehouseDispatchProductOptions } from './utils/warehouseDispatchProductOptions.js';
 import {
+  addWarehouseQuantityUnit,
+  buildWarehouseQuantityUnitSuggestions,
+  dedupeWarehouseQuantityUnits,
+  getRecentWarehouseQuantityUnits,
+  normalizeWarehouseQuantityUnit,
+  resolveRememberedWarehouseQuantityUnit
+} from './utils/warehouseQuantityUnits.js';
+import {
+  buildWarehouseProductScanLookup,
+  getWarehouseScanResultText,
+  resolveWarehouseProductScan
+} from './utils/warehouseProductScanner.js';
+import { mergeWarehouseSupplierOptions } from './utils/warehouseSupplierOptions.js';
+import {
   ORDER_REQUEST_SELECTION_LOCK_MS,
   releaseOrderRequestSelectionLock,
   tryAcquireOrderRequestSelectionLock
@@ -244,6 +258,12 @@ import {
 import { extractZaloOrderRequest } from './zaloOrderRequestAi.js';
 import { buildExecutiveDashboardSnapshot } from './services/executiveDashboardService.js';
 import { buildPricingEngineSnapshot } from './services/pricingEngineService.js';
+import {
+  buildPricingProductMarginRows,
+  getPricingProductMarginKey,
+  getPricingProductTargetMargin,
+  normalizePricingMarginByProduct,
+} from './utils/pricingProductMargins.js';
 import {
   MAP_PROVIDER_OPTIONS,
   MapService,
@@ -16317,6 +16337,9 @@ export default function App() {
       productGroups: settingsData.productGroups !== undefined
         ? normalizeProductGroups(settingsData.productGroups)
         : normalizeProductGroups(currentCompany?.productGroups || []),
+      warehouseQuantityUnits: settingsData.warehouseQuantityUnits !== undefined
+        ? dedupeWarehouseQuantityUnits(settingsData.warehouseQuantityUnits)
+        : dedupeWarehouseQuantityUnits(currentCompany?.warehouseQuantityUnits || []),
       salaryAdvancePercent: normalizedSalaryAdvancePercent,
       salaryAdvancePercentByDepartment: normalizedSalaryAdvancePercentByDepartment,
       attendanceWifiEnabled: settingsData.attendanceWifiEnabled ?? currentAttendanceWifiSettings.enabled,
@@ -17345,7 +17368,6 @@ export default function App() {
         expenseDate: expenseData?.date || undefined,
         sourceReference: clientMutationId,
         description: normalizeLeadingLabel(expenseData?.note || 'Khoản chi'),
-        clientMutationId,
       });
       const normalized = {
         ...result,
@@ -19138,6 +19160,62 @@ export default function App() {
     return id;
   };
 
+  const handlePostInventoryOpeningBalance = async (empId, openingData = {}) => {
+    if (!isVpsStagingMode) return null;
+    const warehouseId = `${openingData.warehouseId || ''}`.trim();
+    const productId = `${openingData.productId || ''}`.trim();
+    const unitId = `${openingData.unitId || ''}`.trim();
+    const quantity = parseLooseQuantityValue(openingData.quantity);
+    const asOf = `${openingData.asOf || ''}`.trim();
+    if (!warehouseId || !productId || !unitId) {
+      throw new Error('VPS opening balance requires an explicit warehouse, product, and unit.');
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error('VPS opening balance requires a positive quantity.');
+    }
+    if (!asOf || Number.isNaN(Date.parse(asOf))) {
+      throw new Error('VPS opening balance requires a valid cut-off timestamp.');
+    }
+
+    const clientMutationId = `${openingData.clientMutationId || `opening-balance-${Date.now()}`}`.trim();
+    const ledgerPayload = buildVpsInventoryTransaction({
+      ...openingData,
+      warehouseId,
+      productId,
+      unitId,
+      quantity,
+      clientMutationId,
+      referenceId: clientMutationId,
+      sourceRecordId: clientMutationId,
+      reason: `${openingData.reason || ''}`.trim(),
+      metadata: {
+        ...(openingData.metadata || {}),
+        openingBalance: true,
+        openingAsOf: new Date(asOf).toISOString(),
+        createdByEmployeeId: `${empId || ''}`.trim() || undefined,
+      },
+    }, { referenceType: 'HD_MANAGER_OPENING_BALANCE' });
+    const ledger = await getHdConnectStagingApi().postInventoryOpeningBalance(ledgerPayload);
+    const product = (rawProducts || []).find(item => item?.id === productId) || {};
+    const unit = (vpsMasterData?.units || []).find(item => item?.id === unitId) || {};
+    const normalized = normalizeVpsStockMovement(ledger, {
+      id: ledger?.id || clientMutationId,
+      companyId: myCompanyId,
+      productId,
+      warehouseId,
+      unitId,
+      quantity,
+      quantityUnit: unit.symbol || unit.code || unit.name || '',
+      sourceRecordId: clientMutationId,
+      sourceType: 'opening_balance',
+      date: asOf,
+      productName: product.name || product.productName || '',
+      readOnlyLedger: true,
+    });
+    upsertLocalListRecord(setRawWarehouseImports, normalized);
+    return normalized.id;
+  };
+
   const handleEditWarehouseImport = async (importId, importData = {}) => {
     if (isVpsStagingMode) {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
@@ -19401,14 +19479,12 @@ export default function App() {
         code: countData.code || `CNT-${clientMutationId}`,
         warehouseId,
         notes: `${countData.note || countData.reason || ''}`.trim(),
-        clientMutationId,
       });
       const line = await api.addWarehouseCountLine(session?.id, {
         productId,
         unitId,
         countedQuantity,
         reason: `${countData.reason || countData.note || ''}`.trim() || undefined,
-        clientMutationId,
       });
       const posted = await api.postWarehouseCountSession(session.id);
       const product = (rawProducts || []).find(item => item?.id === productId) || {};
@@ -22097,7 +22173,7 @@ export default function App() {
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
         onGetCustomerProductPreference={handleGetCustomerProductPreference} onSaveCustomerProductPreference={handleSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={handleSyncCustomerFixedProductDefaults}
-        onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
+        onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onPostInventoryOpeningBalance={handlePostInventoryOpeningBalance} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
         onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport}
@@ -22655,7 +22731,7 @@ function MainAppView({
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -24377,7 +24453,7 @@ function MainAppView({
             note: 'Sản phẩm tạo nhanh sẽ dùng được ngay cho nhập kho, xuất kho, báo giá và báo cáo lợi nhuận.'
           });
         }
-        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
+        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
@@ -36953,6 +37029,7 @@ const createDefaultPricingRuleDraft = () => ({
     { name: 'Không móc -> Móc', inputWeight: 2.65, outputWeight: 2.35 },
   ],
   marginByGroup: createPricingMarginByGroupDefaults(),
+  marginByProduct: {},
   lossStageGroups: createPricingLossStageGroupDefaults(),
   activeLossGroupKey: 'duck',
   hiddenTodayPriceGroupKeys: [],
@@ -37067,6 +37144,7 @@ const normalizePricingRuleDraft = (rules = {}) => {
       ...(rules.costAllocation || {}),
     },
     marginByGroup: normalizePricingMarginByGroup(rules.marginByGroup, baseRules),
+    marginByProduct: normalizePricingMarginByProduct(rules.marginByProduct),
     cutParts: normalizePricingCutPartDrafts(rules.cutParts),
     cutPartGroups: normalizePricingCutPartGroups(rules.cutPartGroups, rules.cutParts),
     productFormulas: normalizePricingProductFormulas(rules.productFormulas),
@@ -37545,16 +37623,34 @@ const buildPricingSalesGroupsByActivity = ({ orders = [], orderRequests = [], pr
   return groups;
 };
 
-const buildPricingGroupRowsFromInputs = (latestInputsByGroup = {}, salesGroupsByGroup = {}) => {
+const buildPricingGroupRowsFromInputs = (latestInputsByGroup = {}, salesGroupsByGroup = {}, products = []) => {
   const existingKeys = new Set(PRICING_LOSS_GROUP_PRESETS.map(group => group.key));
+  const productGroupsByKey = {};
+  (Array.isArray(products) ? products : [])
+    .filter(product => product && !product.isArchived)
+    .forEach(product => {
+      const groupKey = getPricingProductGroupKey(product);
+      if (!groupKey || productGroupsByKey[groupKey]) return;
+      productGroupsByKey[groupKey] = {
+        groupKey,
+        groupName: getPricingProductGroupLabel(product),
+        timestamp: 0,
+        averageKg: 1,
+      };
+    });
   const activeKeys = new Set([
     ...Object.keys(latestInputsByGroup || {}),
     ...Object.keys(salesGroupsByGroup || {}),
+    ...Object.keys(productGroupsByKey),
   ].filter(Boolean));
   const activePresetGroups = PRICING_LOSS_GROUP_PRESETS.filter(group => activeKeys.has(group.key));
   const dynamicRowsByKey = new Map();
 
-  [...Object.values(latestInputsByGroup || {}), ...Object.values(salesGroupsByGroup || {})].forEach(row => {
+  [
+    ...Object.values(latestInputsByGroup || {}),
+    ...Object.values(salesGroupsByGroup || {}),
+    ...Object.values(productGroupsByKey),
+  ].forEach(row => {
     if (!row?.groupKey || existingKeys.has(row.groupKey)) return;
     const current = dynamicRowsByKey.get(row.groupKey);
     if (!current || (row.timestamp || 0) >= (current.timestamp || 0)) {
@@ -37591,22 +37687,29 @@ const buildPricingTodayPriceMatrix = ({
   pricingCostPerKg = 0,
   latestInputsByGroup = {},
   marginByGroup = {},
+  marginByProduct = {},
   fallbackMargin = 20,
   cutParts = [],
   cutPartGroups = {},
 } = {}) => {
+  const normalizedProductMargins = normalizePricingMarginByProduct(marginByProduct);
+  const hasProductMarginConfig = Object.keys(normalizedProductMargins).length > 0;
   const productCandidates = [
     ...(Array.isArray(focusedSuggestions) ? focusedSuggestions : []).map(item => ({
       name: item?.productName || item?.name || '',
       groupName: item?.groupName || '',
       price: parseLooseMoneyValue(item?.suggestedPrice || item?.currentPrice || item?.price),
       source: 'Theo dữ liệu bán',
+      productKey: `${item?.id || item?.productId || ''}`.trim(),
+      isCatalogProduct: false,
     })),
     ...(Array.isArray(products) ? products : []).map(product => ({
       name: product?.name || product?.productName || product?.title || '',
       groupName: product?.groupName || product?.category || product?.mainGroup || '',
       price: parseLooseMoneyValue(product?.price || product?.salePrice || product?.sellingPrice || product?.defaultPrice || product?.unitPrice),
       source: 'Kho sản phẩm',
+      productKey: getPricingProductMarginKey(product),
+      isCatalogProduct: true,
     })),
   ].filter(item => item.name || item.groupName);
 
@@ -37635,6 +37738,21 @@ const buildPricingTodayPriceMatrix = ({
         const typeKey = inferPricingTypeKeyFromText(item.name);
         return groupKey === group.key && typeKey === column.key && item.price > 0;
       });
+      const matchingCatalogProduct = productCandidates.find(item => {
+        if (!item.isCatalogProduct) return false;
+        const groupKey = getPricingProductGroupKey({
+          name: item.name,
+          groupName: item.groupName,
+        });
+        const typeKey = inferPricingTypeKeyFromText(item.name);
+        return groupKey === group.key && typeKey === column.key;
+      });
+      const productMargin = matchingCatalogProduct
+        ? getPricingProductTargetMargin(normalizedProductMargins, matchingCatalogProduct.productKey, hasProductMarginConfig ? 0 : groupMargin)
+        : groupMargin;
+      if (hasProductMarginConfig && (!matchingCatalogProduct || productMargin <= 0)) {
+        return { price: 0, productName: '', source: '' };
+      }
 
       if (PRICING_CUT_PART_TYPE_KEYS.has(column.key) && matchingCutPart) {
         return {
@@ -37658,7 +37776,7 @@ const buildPricingTodayPriceMatrix = ({
           averageWeight: inputWeight,
           lossWeight: hasLossWeight ? effectiveLossWeight : '',
           outputWeight: hasLossWeight ? '' : outputWeight,
-          marginPercent: groupMargin,
+          marginPercent: productMargin,
         });
         return {
           price: roundPricingToThousand(stageSalePrice > 0 ? stageSalePrice : matchingProduct?.price || 0),
@@ -37685,7 +37803,7 @@ const buildPricingTodayPriceMatrix = ({
 
       if (column.key === 'live' && groupCostPerKg > 0) {
         return {
-          price: roundPricingToThousand(groupCostPerKg * (1 + groupMargin / 100)),
+          price: roundPricingToThousand(groupCostPerKg * (1 + productMargin / 100)),
           productName: `${group.label} sống`,
           source: latestGroupInput?.date ? `Phiếu ${formatDateLabel(latestGroupInput.date)}` : 'Phiếu nhập gần nhất',
         };
@@ -37729,6 +37847,12 @@ const getPricingProductGroupKey = (product = {}) => {
   if (knownKey) return knownKey;
   const fallback = collapseLookupText(product?.mainGroup || product?.groupName || product?.productGroup || product?.category || '');
   return fallback ? `custom_${fallback}` : '';
+};
+
+const getPricingProductGroupLabel = (product = {}) => {
+  const rawLabel = product?.mainGroup || product?.groupName || product?.productGroup || product?.category || getPricingProductName(product) || 'Nhóm hàng';
+  const knownKey = inferPricingGroupKeyFromText(rawLabel);
+  return PRICING_LOSS_GROUP_PRESETS.find(group => group.key === knownKey)?.label || normalizeLeadingLabel(rawLabel);
 };
 
 const getPricingOrderLineProductId = (line = {}) => (
@@ -38490,6 +38614,7 @@ function SimplePricingEngineView({
   const [isSavingPricing, setIsSavingPricing] = useState(false);
   const [isSharingTodayPriceTable, setIsSharingTodayPriceTable] = useState(false);
   const [openPricingSections, setOpenPricingSections] = useState({});
+  const [openMarginGroupKeys, setOpenMarginGroupKeys] = useState({ duck: true });
   const [todayPriceOverrideGroupKey, setTodayPriceOverrideGroupKey] = useState('');
   const [inputDraft, setInputDraft] = useState({
     date: getTodayString(),
@@ -38518,8 +38643,8 @@ function SimplePricingEngineView({
     [orders, orderRequests, products],
   );
   const pricingGroupRows = useMemo(
-    () => buildPricingGroupRowsFromInputs(latestWarehouseInputsByGroup, salesPricingGroupsByGroup),
-    [latestWarehouseInputsByGroup, salesPricingGroupsByGroup],
+    () => buildPricingGroupRowsFromInputs(latestWarehouseInputsByGroup, salesPricingGroupsByGroup, products),
+    [latestWarehouseInputsByGroup, salesPricingGroupsByGroup, products],
   );
   const latestWarehouseInputRowsByGroup = useMemo(
     () => Object.values(latestWarehouseInputsByGroup).sort((a, b) => b.timestamp - a.timestamp),
@@ -38597,6 +38722,14 @@ function SimplePricingEngineView({
         },
       ];
     })),
+    marginByProduct: Object.fromEntries(Object.entries(rulesDraft.marginByProduct || {}).map(([productKey, productMargin]) => [
+      productKey,
+      {
+        minMargin: parseLooseQuantityValue(productMargin?.minMargin),
+        targetMargin: parseLooseQuantityValue(productMargin?.targetMargin ?? productMargin?.margin),
+        maxMargin: parseLooseQuantityValue(productMargin?.maxMargin),
+      },
+    ])),
     lossStages: pricingLossStageDraftsToRules(effectiveLossStageDrafts),
     lossStageGroups: Object.fromEntries(
       Object.entries(lossStageGroupsDraft).map(([key, rows]) => [
@@ -38753,6 +38886,18 @@ function SimplePricingEngineView({
     () => (Array.isArray(products) ? products : []).filter(product => !product?.isArchived),
     [products],
   );
+  const pricingProductMarginRows = useMemo(() => buildPricingProductMarginRows({
+    products: activePricingProducts,
+    getGroupKey: getPricingProductGroupKey,
+    getGroupLabel: getPricingProductGroupLabel,
+    marginByProduct: rulesDraft.marginByProduct,
+    legacyMarginByGroup: rulesDraft.marginByGroup,
+  }), [activePricingProducts, rulesDraft.marginByProduct, rulesDraft.marginByGroup]);
+  const pricingProductMarginRowsByGroup = useMemo(() => pricingProductMarginRows.reduce((groups, row) => {
+    if (!groups[row.groupKey]) groups[row.groupKey] = [];
+    groups[row.groupKey].push(row);
+    return groups;
+  }, {}), [pricingProductMarginRows]);
   const productFormulaDrafts = useMemo(
     () => (Array.isArray(rulesDraft.productFormulas) ? rulesDraft.productFormulas : []),
     [rulesDraft.productFormulas],
@@ -38763,6 +38908,7 @@ function SimplePricingEngineView({
     orders,
     latestInputsByGroup: effectiveLatestInputsByGroup,
     marginByGroup: parsedRules.marginByGroup,
+    marginByProduct: parsedRules.marginByProduct,
     fallbackMargin: parsedRules.targetMargin,
   }), [
     parsedRules.productFormulas,
@@ -38806,6 +38952,7 @@ function SimplePricingEngineView({
     pricingCostPerKg,
     latestInputsByGroup: effectiveLatestInputsByGroup,
     marginByGroup: parsedRules.marginByGroup,
+    marginByProduct: parsedRules.marginByProduct,
     fallbackMargin: parsedRules.targetMargin,
     cutParts: parsedRules.cutParts,
     cutPartGroups: parsedRules.cutPartGroups,
@@ -38813,6 +38960,7 @@ function SimplePricingEngineView({
     visiblePricingGroupRows,
     parsedRules.lossStageGroups,
     parsedRules.marginByGroup,
+    parsedRules.marginByProduct,
     parsedRules.targetMargin,
     products,
     focusedSuggestions,
@@ -38987,6 +39135,39 @@ function SimplePricingEngineView({
         },
       },
     }));
+  };
+
+  const buildSeedProductMargins = () => Object.fromEntries(pricingProductMarginRows.map(row => [
+    row.productKey,
+    {
+      minMargin: rulesDraft.marginByGroup?.[row.groupKey]?.minMargin ?? 0,
+      targetMargin: row.targetMargin,
+      maxMargin: rulesDraft.marginByGroup?.[row.groupKey]?.maxMargin ?? 0,
+    },
+  ]));
+
+  const updateProductMarginDraft = (productKey, field, value) => {
+    if (!productKey) return;
+    setRulesDraft(prev => {
+      const currentMargins = normalizePricingMarginByProduct(prev.marginByProduct);
+      const nextMargins = Object.keys(currentMargins).length
+        ? currentMargins
+        : buildSeedProductMargins();
+      return {
+        ...prev,
+        marginByProduct: {
+          ...nextMargins,
+          [productKey]: {
+            ...(nextMargins[productKey] || {}),
+            [field]: value,
+          },
+        },
+      };
+    });
+  };
+
+  const toggleMarginGroup = (groupKey) => {
+    setOpenMarginGroupKeys(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
 
   const setTodayPriceGroupHidden = (groupKey, shouldHide) => {
@@ -39210,8 +39391,12 @@ function SimplePricingEngineView({
     if (!canEditRules || !onSavePricingRules) return;
     setIsSavingPricing(true);
     try {
+      const savedProductMargins = Object.keys(parsedRules.marginByProduct || {}).length
+        ? parsedRules.marginByProduct
+        : buildSeedProductMargins();
       await onSavePricingRules({
         ...parsedRules,
+        marginByProduct: savedProductMargins,
         id: 'pricing_engine_rules',
         operationMode: 'assistant',
       });
@@ -39448,7 +39633,7 @@ function SimplePricingEngineView({
         <div>
           <h3 className="text-lg font-black text-gray-900">Bảng giá hôm nay</h3>
           <p className="mt-1 text-xs font-semibold text-gray-500">
-            Nhóm hàng nằm ngang, loại sản phẩm nằm dọc. Giá tự tính từ lô nhập mới nhất, hao hụt và biên lợi nhuận nhóm.
+            Nhóm hàng nằm ngang, loại sản phẩm nằm dọc. Giá tự tính từ lô nhập mới nhất, hao hụt và biên lợi nhuận theo sản phẩm.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -39656,33 +39841,62 @@ function SimplePricingEngineView({
       {canViewLossPricingSetup && (
       <>
         <PricingSectionShell
-          sectionKey="margin-by-group"
-          title="2. Biên độ lợi nhuận theo nhóm"
+          sectionKey="margin-by-product"
+          title="2. Biên độ lợi nhuận theo sản phẩm"
           icon={<Percent className="text-emerald-500" size={20} />}
         >
+          <p className="mb-3 text-xs font-semibold text-gray-500">
+            Mở từng nhóm để cài biên độ cho từng sản phẩm. Chỉ sản phẩm có biên độ lớn hơn 0 mới xuất hiện trong bảng giá hôm nay.
+          </p>
           <div className="space-y-2">
             {pricingGroupRows.map(group => {
-              const marginRow = rulesDraft.marginByGroup?.[group.key] || {};
+              const productRows = pricingProductMarginRowsByGroup[group.key] || [];
+              const isOpen = Boolean(openMarginGroupKeys[group.key]);
               return (
-                <div key={`margin-${group.key}`} className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-50 bg-emerald-50/40 px-3 py-2">
-                  <p className="min-w-0 truncate font-black text-gray-900">{group.label}</p>
-                  <label className="flex w-28 shrink-0 items-center justify-center gap-1 rounded-2xl bg-white px-2 py-2 text-center shadow-sm">
-                    <input
-                      inputMode="decimal"
-                      value={marginRow.targetMargin ?? rulesDraft.targetMargin}
-                      onChange={e => updateGroupMarginDraft(group.key, 'targetMargin', e.target.value)}
-                      disabled={!canEditMarginRules}
-                      className="w-16 bg-transparent text-center text-lg font-black text-emerald-700 outline-none disabled:text-gray-400"
-                      placeholder="20"
-                    />
-                    <span className="text-sm font-black text-emerald-700">%</span>
-                  </label>
+                <div key={`margin-${group.key}`} className="overflow-hidden rounded-2xl border border-emerald-50 bg-emerald-50/40">
+                  <button
+                    type="button"
+                    onClick={() => toggleMarginGroup(group.key)}
+                    className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-black text-gray-900">{group.label}</p>
+                      <p className="mt-0.5 text-[11px] font-bold text-gray-500">{productRows.length} sản phẩm</p>
+                    </div>
+                    {isOpen ? <ChevronUp className="shrink-0 text-emerald-700" size={18} /> : <ChevronDown className="shrink-0 text-emerald-700" size={18} />}
+                  </button>
+                  {isOpen && (
+                    <div className="space-y-2 border-t border-emerald-100 bg-white/70 p-2">
+                      {productRows.length ? productRows.map(row => (
+                        <div key={`margin-product-${row.productKey}`} className="flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-gray-900">{row.productName}</p>
+                            {row.inheritedFromGroup && <p className="mt-0.5 text-[10px] font-semibold text-gray-400">Đang dùng biên độ nhóm cũ, hãy lưu để chuyển sang sản phẩm</p>}
+                          </div>
+                          <label className="flex w-24 shrink-0 items-center justify-center gap-1 rounded-xl bg-emerald-50 px-2 py-2 text-center">
+                            <input
+                              inputMode="decimal"
+                              value={row.targetMargin || ''}
+                              onChange={e => updateProductMarginDraft(row.productKey, 'targetMargin', e.target.value)}
+                              disabled={!canEditMarginRules}
+                              className="w-12 bg-transparent text-center text-base font-black text-emerald-700 outline-none disabled:text-gray-400"
+                              placeholder="0"
+                              aria-label={`Biên lợi nhuận ${row.productName}`}
+                            />
+                            <span className="text-xs font-black text-emerald-700">%</span>
+                          </label>
+                        </div>
+                      )) : (
+                        <p className="px-2 py-2 text-xs font-bold text-gray-400">Nhóm này chưa có sản phẩm trong catalog.</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
             {!pricingGroupRows.length && (
               <div className="rounded-2xl border border-dashed border-gray-200 bg-slate-50 px-3 py-4 text-center text-sm font-bold text-gray-500">
-                Chưa có nhóm hàng để cài biên lợi nhuận.
+                Chưa có nhóm hoặc sản phẩm trong catalog để cài biên lợi nhuận.
               </div>
             )}
           </div>
@@ -52979,7 +53193,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   );
 }
 
-function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
+function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canPostVpsOpeningBalance = false, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
   const actualStockReasonOptions = ['Đếm sai', 'Bị mất', 'Hư hỏng', 'Bị lỗi', 'Bị chết', 'Bị loại', 'Trả nhà cung cấp', 'Khác'];
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [warehouseCalendarMonth, setWarehouseCalendarMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
@@ -53009,7 +53223,13 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [groupSearchTerm, setGroupSearchTerm] = useState('');
   const [showWarehouseProductCodePicker, setShowWarehouseProductCodePicker] = useState(false);
+  const [showQuantityUnitPicker, setShowQuantityUnitPicker] = useState(false);
+  const [showCustomQuantityUnitModal, setShowCustomQuantityUnitModal] = useState(false);
+  const [customQuantityUnitDraft, setCustomQuantityUnitDraft] = useState('');
+  const [customQuantityUnitStatus, setCustomQuantityUnitStatus] = useState('');
   const [warehouseProductScanStatus, setWarehouseProductScanStatus] = useState('');
+  const [showWarehouseCameraScanner, setShowWarehouseCameraScanner] = useState(false);
+  const [isWarehouseCameraScanning, setIsWarehouseCameraScanning] = useState(false);
   const [stockCountDraft, setStockCountDraft] = useState({
     warehouseId: '',
     productId: '',
@@ -53034,6 +53254,16 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   });
   const [vpsStockCountStatus, setVpsStockCountStatus] = useState('');
   const [isSavingVpsStockCount, setIsSavingVpsStockCount] = useState(false);
+  const [vpsOpeningBalanceDraft, setVpsOpeningBalanceDraft] = useState({
+    warehouseId: '',
+    productId: '',
+    unitId: '',
+    quantity: '',
+    asOf: '',
+    reason: '',
+  });
+  const [vpsOpeningBalanceStatus, setVpsOpeningBalanceStatus] = useState('');
+  const [isSavingVpsOpeningBalance, setIsSavingVpsOpeningBalance] = useState(false);
   const [showStockCountGroupPicker, setShowStockCountGroupPicker] = useState(false);
   const [stockCountGroupSearchTerm, setStockCountGroupSearchTerm] = useState('');
   const [showSupplierPicker, setShowSupplierPicker] = useState(false);
@@ -53046,6 +53276,11 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   const [warehouseStockVisibilityStatus, setWarehouseStockVisibilityStatus] = useState('');
   const warehouseImportFieldRefs = useRef({});
   const warehouseProductCodeImageInputRef = useRef(null);
+  const warehouseCameraVideoRef = useRef(null);
+  const warehouseCameraStreamRef = useRef(null);
+  const warehouseCameraZxingControlsRef = useRef(null);
+  const warehouseCameraTimerRef = useRef(null);
+  const warehouseScanInFlightRef = useRef(false);
   const warehouseMovementDetailRef = useRef(null);
   const focusNextWarehouseImportField = (fieldKey) => {
     const nextField = warehouseImportFieldRefs.current?.[fieldKey];
@@ -53122,18 +53357,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       .map(value => `${value || ''}`.trim())
       .filter(Boolean);
   };
-  const warehouseProductCodeLookup = useMemo(() => {
-    const lookup = new Map();
-    (products || [])
-      .filter(product => product && !product.isArchived)
-      .forEach(product => {
-        getWarehouseProductCodeCandidates(product).forEach(code => {
-          const key = normalizeLookupText(code);
-          if (key && !lookup.has(key)) lookup.set(key, product);
-        });
-      });
-    return lookup;
-  }, [products]);
+  const warehouseProductCodeLookup = useMemo(
+    () => buildWarehouseProductScanLookup(products),
+    [products]
+  );
   const warehouseProductCodeSuggestions = useMemo(() => {
     const keyword = normalizeLookupText(draft.productCode || '');
     if (!keyword) return [];
@@ -53157,11 +53384,53 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       })
       .slice(0, 8);
   }, [draft.productCode, products]);
+  const customQuantityUnits = useMemo(
+    () => dedupeWarehouseQuantityUnits(currentCompany?.warehouseQuantityUnits || []),
+    [currentCompany?.warehouseQuantityUnits]
+  );
+  const rememberedQuantityUnit = useMemo(
+    () => resolveRememberedWarehouseQuantityUnit(warehouseImports, {
+      productId: draft.productId,
+      productCode: draft.productCode,
+      productName: draft.productName,
+      groupName: draft.groupName
+    }),
+    [draft.groupName, draft.productCode, draft.productId, draft.productName, warehouseImports]
+  );
+  const recentQuantityUnits = useMemo(
+    () => getRecentWarehouseQuantityUnits(warehouseImports, {
+      productId: draft.productId,
+      productCode: draft.productCode,
+      productName: draft.productName,
+      groupName: draft.groupName
+    }),
+    [draft.groupName, draft.productCode, draft.productId, draft.productName, warehouseImports]
+  );
+  const quantityUnitSuggestions = useMemo(
+    () => buildWarehouseQuantityUnitSuggestions({
+      currentUnit: draft.quantityUnit,
+      rememberedUnit: rememberedQuantityUnit,
+      recentUnits: recentQuantityUnits,
+      customUnits: customQuantityUnits
+    }),
+    [customQuantityUnits, draft.quantityUnit, recentQuantityUnits, rememberedQuantityUnit]
+  );
+  useEffect(() => {
+    if (!rememberedQuantityUnit) return;
+    setDraft(prev => prev.quantityUnit === rememberedQuantityUnit
+      ? prev
+      : { ...prev, quantityUnit: rememberedQuantityUnit });
+  }, [rememberedQuantityUnit]);
   const applyWarehouseProductToDraft = (product = {}, rawCode = '') => {
     if (!product?.id) return false;
     const code = `${rawCode || product.barcode || product.sku || product.productCode || getProductShortName(product) || product.id || ''}`.trim();
     const groupName = getWarehouseInventoryGroupLabel(product, product.name);
     const costPrice = parseLooseMoneyValue(product.costPrice ?? product.importPrice ?? product.purchasePrice ?? product.unitCost);
+    const rememberedUnit = resolveRememberedWarehouseQuantityUnit(warehouseImports, {
+      productId: product.id,
+      productName: product.name || product.productName,
+      groupName
+    });
     setDraft(prev => ({
       ...prev,
       productId: product.id || '',
@@ -53169,7 +53438,8 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       productCode: code,
       productBarcode: product.barcode || product.productBarcode || code,
       groupName: groupName || prev.groupName,
-      quantityUnit: normalizeWarehouseMeasureUnit(product.unit || product.quantityUnit || prev.quantityUnit || 'Con'),
+      quantityUnit: rememberedUnit
+        || normalizeWarehouseMeasureUnit(product.unit || product.quantityUnit || prev.quantityUnit || 'Con'),
       unitPrice: prev.unitPrice || (costPrice > 0 ? `${costPrice}` : prev.unitPrice)
     }));
     setWarehouseProductScanStatus(`Đã nhận ${product.name || product.productName || code}${groupName ? ` - nhóm ${groupName}` : ''}.`);
@@ -53182,30 +53452,66 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       setWarehouseProductScanStatus('Vui lòng nhập hoặc quét mã sản phẩm.');
       return false;
     }
-    const product = warehouseProductCodeLookup.get(normalizeLookupText(code));
+    const { product, code: matchedCode } = resolveWarehouseProductScan(warehouseProductCodeLookup, code);
     if (!product) {
       setWarehouseProductScanStatus(`Chưa tìm thấy sản phẩm có mã "${code}". Bạn vẫn có thể nhập nhóm hàng thủ công.`);
       return false;
     }
-    return applyWarehouseProductToDraft(product, code);
+    return applyWarehouseProductToDraft(product, matchedCode || code);
+  };
+  const getWarehouseUniversalBarcodeDetector = async () => {
+    if (typeof window === 'undefined' || !('BarcodeDetector' in window)) {
+      throw new Error('Thiết bị này chưa hỗ trợ quét mã tự động.');
+    }
+    const defaultFormats = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'codabar', 'data_matrix', 'pdf417', 'aztec'];
+    const supportedFormats = typeof window.BarcodeDetector.getSupportedFormats === 'function'
+      ? await window.BarcodeDetector.getSupportedFormats()
+      : defaultFormats;
+    const formats = defaultFormats.filter(format => supportedFormats.includes(format));
+    return new window.BarcodeDetector({ formats: formats.length > 0 ? formats : supportedFormats });
+  };
+  const getWarehouseZxingReader = async () => {
+    const { BrowserMultiFormatReader } = await import('@zxing/browser');
+    return new BrowserMultiFormatReader();
+  };
+  const detectWarehouseCodeFromImageFile = async (file) => {
+    try {
+      const detector = await getWarehouseUniversalBarcodeDetector();
+      if (typeof window.createImageBitmap === 'function') {
+        const bitmap = await window.createImageBitmap(file);
+        try {
+          const results = await detector.detect(bitmap);
+          const detectedCode = `${results?.[0]?.rawValue || ''}`.trim();
+          if (detectedCode) return detectedCode;
+        } finally {
+          bitmap.close?.();
+        }
+      }
+    } catch (error) {
+      console.warn('Native warehouse image scan unavailable, falling back to ZXing.', error);
+    }
+    const reader = await getWarehouseZxingReader();
+    const imageUrl = URL.createObjectURL(file);
+    try {
+      const result = await reader.decodeFromImageUrl(imageUrl);
+      return getWarehouseScanResultText(result);
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+      reader.reset?.();
+    }
   };
   const handleWarehouseProductCodeImage = async (file) => {
     if (!file) return;
     setWarehouseProductScanStatus('Đang quét mã sản phẩm...');
     try {
-      const { BrowserMultiFormatReader } = await import('@zxing/browser');
-      const reader = new BrowserMultiFormatReader();
-      const imageUrl = URL.createObjectURL(file);
-      try {
-        const result = await reader.decodeFromImageUrl(imageUrl);
-        const code = `${result?.getText?.() || result?.text || ''}`.trim();
-        if (!code) throw new Error('NO_BARCODE');
-        setDraft(prev => ({ ...prev, productCode: code }));
-        const matched = applyWarehouseProductCode(code);
-        if (matched) focusNextWarehouseImportField('totalKg');
-      } finally {
-        URL.revokeObjectURL(imageUrl);
-        reader.reset?.();
+      const code = await detectWarehouseCodeFromImageFile(file);
+      if (!code) throw new Error('NO_BARCODE');
+      setDraft(prev => ({ ...prev, productCode: code }));
+      const matched = applyWarehouseProductCode(code);
+      if (matched) {
+        stopWarehouseCameraScanner();
+        setShowWarehouseCameraScanner(false);
+        focusNextWarehouseImportField('totalKg');
       }
     } catch (error) {
       setWarehouseProductScanStatus('Chưa đọc được mã. Hãy chụp rõ mã hơn hoặc nhập mã tay.');
@@ -53213,6 +53519,131 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       if (warehouseProductCodeImageInputRef.current) warehouseProductCodeImageInputRef.current.value = '';
     }
   };
+  const stopWarehouseCameraScanner = (updateState = true) => {
+    if (warehouseCameraTimerRef.current) {
+      window.clearTimeout?.(warehouseCameraTimerRef.current);
+      warehouseCameraTimerRef.current = null;
+    }
+    if (warehouseCameraZxingControlsRef.current) {
+      try {
+        warehouseCameraZxingControlsRef.current.stop?.();
+      } catch (error) {
+        console.warn('Failed to stop warehouse ZXing scanner.', error);
+      }
+      warehouseCameraZxingControlsRef.current = null;
+    }
+    const stream = warehouseCameraStreamRef.current;
+    if (stream) {
+      stream.getTracks?.().forEach(track => track.stop());
+      warehouseCameraStreamRef.current = null;
+    }
+    if (warehouseCameraVideoRef.current) warehouseCameraVideoRef.current.srcObject = null;
+    warehouseScanInFlightRef.current = false;
+    if (updateState) setIsWarehouseCameraScanning(false);
+  };
+  const completeWarehouseScan = (rawCode = '') => {
+    const code = `${rawCode || ''}`.trim();
+    if (!code || warehouseScanInFlightRef.current) return false;
+    warehouseScanInFlightRef.current = true;
+    const { product, code: matchedCode } = resolveWarehouseProductScan(warehouseProductCodeLookup, code);
+    if (!product) {
+      warehouseScanInFlightRef.current = false;
+      setDraft(prev => ({ ...prev, productCode: code }));
+      setWarehouseProductScanStatus(`Đã đọc mã "${code}" nhưng chưa khớp sản phẩm trong catalog.`);
+      stopWarehouseCameraScanner();
+      return false;
+    }
+    const matched = applyWarehouseProductToDraft(product, matchedCode || code);
+    stopWarehouseCameraScanner();
+    if (matched) {
+      setShowWarehouseCameraScanner(false);
+      focusNextWarehouseImportField('totalKg');
+    }
+    return matched;
+  };
+  const openWarehouseCameraScanner = () => {
+    setShowWarehouseProductCodePicker(false);
+    setWarehouseProductScanStatus('Đang chuẩn bị camera...');
+    setShowWarehouseCameraScanner(true);
+  };
+  const closeWarehouseCameraScanner = () => {
+    stopWarehouseCameraScanner();
+    setShowWarehouseCameraScanner(false);
+  };
+  const startWarehouseCameraScanner = async () => {
+    try {
+      setWarehouseProductScanStatus('Đang mở camera...');
+      stopWarehouseCameraScanner(false);
+      const video = warehouseCameraVideoRef.current;
+      if (!video || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Thiết bị này chưa cho phép mở camera từ app.');
+      }
+      let detector = null;
+      try {
+        detector = await getWarehouseUniversalBarcodeDetector();
+      } catch (error) {
+        console.warn('Native warehouse camera scan unavailable, falling back to ZXing.', error);
+      }
+      if (!detector) {
+        const reader = await getWarehouseZxingReader();
+        setIsWarehouseCameraScanning(true);
+        setWarehouseProductScanStatus('Đưa QR hoặc mã vạch vào khung để quét.');
+        const controls = await reader.decodeFromConstraints(
+          { video: { facingMode: { ideal: 'environment' } }, audio: false },
+          video,
+          (result, error, controlsRef) => {
+            if (controlsRef) warehouseCameraZxingControlsRef.current = controlsRef;
+            const detectedCode = getWarehouseScanResultText(result);
+            if (detectedCode) completeWarehouseScan(detectedCode);
+          }
+        );
+        warehouseCameraZxingControlsRef.current = controls;
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+      warehouseCameraStreamRef.current = stream;
+      video.srcObject = stream;
+      await video.play();
+      setIsWarehouseCameraScanning(true);
+      setWarehouseProductScanStatus('Đưa QR hoặc mã vạch vào khung để quét.');
+
+      if (detector) {
+        const scanFrame = async () => {
+          if (!warehouseCameraStreamRef.current || !warehouseCameraVideoRef.current) return;
+          try {
+            const results = warehouseCameraVideoRef.current.readyState >= 2
+              ? await detector.detect(warehouseCameraVideoRef.current)
+              : [];
+            const detectedCode = `${results?.[0]?.rawValue || ''}`.trim();
+            if (detectedCode) {
+              completeWarehouseScan(detectedCode);
+              return;
+            }
+          } catch (error) {
+            console.warn('Warehouse scanner frame failed.', error);
+          }
+          warehouseCameraTimerRef.current = window.setTimeout(scanFrame, 450);
+        };
+        scanFrame();
+        return;
+      }
+    } catch (error) {
+      console.warn('Failed to start warehouse scanner.', error);
+      stopWarehouseCameraScanner();
+      setWarehouseProductScanStatus(error?.message || 'Chưa mở được camera. Bạn có thể chọn ảnh chứa mã để quét.');
+    }
+  };
+  useEffect(() => {
+    if (!showWarehouseCameraScanner) return undefined;
+    const timer = window.setTimeout(() => startWarehouseCameraScanner(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      stopWarehouseCameraScanner(false);
+    };
+  }, [showWarehouseCameraScanner]);
 
   const groupOptions = useMemo(() => {
     const orderGroupLabels = (orders || []).flatMap(order => (order.items || []).map(item => {
@@ -53296,7 +53727,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       .sort((left, right) => (getEntityTimestamp(right) || 0) - (getEntityTimestamp(left) || 0))
       .forEach(item => {
         const supplierName = `${item.supplier || ''}`.trim();
-        const supplierKey = normalizeLookupText(`${item.supplierCustomerId || ''} ${supplierName} ${item.supplierPhone || ''}`);
+        const supplierKey = normalizeLookupText(`${supplierName} ${item.supplierPhone || ''}`);
         if (!supplierKey || optionMap.has(supplierKey)) return;
         optionMap.set(supplierKey, {
           id: item.supplierCustomerId || `recent_supplier_${supplierKey}`,
@@ -53308,18 +53739,15 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     return Array.from(optionMap.values()).slice(0, 18);
   }, [warehouseImports]);
   const supplierPickerOptions = useMemo(() => {
-    const optionMap = new Map();
-    recentSupplierOptions.forEach(option => {
-      const key = normalizeLookupText(`${option.id || ''} ${option.name || ''} ${option.phone || ''}`);
-      if (key) optionMap.set(key, option);
-    });
-    supplierCustomerOptions.forEach(customer => {
-      const label = getSupplierCustomerLabel(customer);
-      const key = normalizeLookupText(`${customer.id || ''} ${label} ${customer.phone || customer.phoneNumber || ''}`);
-      if (!key || optionMap.has(key)) return;
-      optionMap.set(key, { ...customer, source: 'customer' });
-    });
-    return Array.from(optionMap.values());
+    return mergeWarehouseSupplierOptions(
+      recentSupplierOptions,
+      supplierCustomerOptions.map(customer => ({
+        ...customer,
+        name: getSupplierCustomerLabel(customer),
+        phone: customer.phone || customer.phoneNumber || '',
+        source: 'customer'
+      }))
+    );
   }, [recentSupplierOptions, supplierCustomerOptions]);
   const findSupplierCustomerMatch = (supplierText = '', supplierCustomerId = '') => {
     if (supplierCustomerId) {
@@ -53355,11 +53783,12 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     });
     return rows.slice(0, 8);
   }, [draft.supplier, supplierPickerOptions]);
-  useDismissSearchOnOutsideClick(showGroupPicker || showSupplierPicker || showStockCountGroupPicker || showWarehouseProductCodePicker, () => {
+  useDismissSearchOnOutsideClick(showGroupPicker || showSupplierPicker || showStockCountGroupPicker || showWarehouseProductCodePicker || showQuantityUnitPicker, () => {
     setShowGroupPicker(false);
     setShowSupplierPicker(false);
     setShowStockCountGroupPicker(false);
     setShowWarehouseProductCodePicker(false);
+    setShowQuantityUnitPicker(false);
   });
   const selectSupplierCustomer = (customer = {}) => {
     const isLinkedCustomer = customer.source !== 'recent' && supplierCustomerOptions.some(item => item.id === customer.id);
@@ -54432,6 +54861,31 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     setDraft(prev => ({ ...prev, ...patch }));
     setStatus('');
   };
+  const handleSaveCustomQuantityUnit = async (event) => {
+    event?.preventDefault?.();
+    const normalizedUnit = normalizeWarehouseQuantityUnit(customQuantityUnitDraft);
+    if (!normalizedUnit) {
+      setCustomQuantityUnitStatus('Vui lòng nhập tên đơn vị.');
+      return;
+    }
+    if (!onUpdateCompanySettings) {
+      setCustomQuantityUnitStatus('Chưa có quyền lưu đơn vị dùng chung cho công ty.');
+      return;
+    }
+    const nextUnits = addWarehouseQuantityUnit(customQuantityUnits, normalizedUnit);
+    try {
+      const result = await onUpdateCompanySettings({ warehouseQuantityUnits: nextUnits });
+      if (result?.success === false) throw new Error(result.message || 'Không thể lưu đơn vị mới.');
+      updateDraft({ quantityUnit: normalizedUnit });
+      setCustomQuantityUnitDraft('');
+      setCustomQuantityUnitStatus('');
+      setShowCustomQuantityUnitModal(false);
+      setShowQuantityUnitPicker(false);
+      setStatus(`Đã lưu đơn vị ${normalizedUnit} và chọn cho phiếu nhập hiện tại.`);
+    } catch (error) {
+      setCustomQuantityUnitStatus(error?.message || 'Chưa lưu được đơn vị mới.');
+    }
+  };
   const resetImportDraft = () => {
     setEditingImportId('');
     setDraft(prev => ({
@@ -54585,7 +55039,9 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       } else {
         await onAddWarehouseStockCount(payload);
       }
-      const syncResult = await ensureWarehouseInventoryGroupExists(groupName);
+      const syncResult = isVpsMode
+        ? { created: false }
+        : await ensureWarehouseInventoryGroupExists(groupName);
       const syncNote = buildWarehouseGroupSyncNote(syncResult);
       setStockCountStatus(`${isEditingStockCount ? 'Đã cập nhật phiếu tồn thực tế' : 'Đã ghi nhận tồn thực tế'} ${groupName}.${syncNote}`);
       resetStockCountDraft();
@@ -54627,6 +55083,44 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       setVpsStockCountStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa post được kiểm tồn VPS.'));
     } finally {
       setIsSavingVpsStockCount(false);
+    }
+  };
+
+  const handleSubmitVpsOpeningBalance = async (event) => {
+    event?.preventDefault?.();
+    if (!isVpsMode || !canPostVpsOpeningBalance || !onPostInventoryOpeningBalance || isSavingVpsOpeningBalance) return;
+    const { warehouseId, productId, unitId, quantity: rawQuantity, asOf, reason } = vpsOpeningBalanceDraft;
+    const quantity = parseLooseQuantityValue(rawQuantity);
+    if (!warehouseId || !productId || !unitId) {
+      setVpsOpeningBalanceStatus('Vui lòng chọn đủ kho, sản phẩm và UOM cho tồn đầu kỳ VPS.');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setVpsOpeningBalanceStatus('Số lượng tồn đầu kỳ phải lớn hơn 0.');
+      return;
+    }
+    if (!asOf || Number.isNaN(Date.parse(asOf))) {
+      setVpsOpeningBalanceStatus('Vui lòng chọn thời điểm chốt tồn đầu kỳ hợp lệ.');
+      return;
+    }
+    setIsSavingVpsOpeningBalance(true);
+    setVpsOpeningBalanceStatus('Đang post tồn đầu kỳ VPS...');
+    try {
+      await onPostInventoryOpeningBalance({
+        vpsContract: true,
+        warehouseId,
+        productId,
+        unitId,
+        quantity,
+        asOf,
+        reason: `${reason || ''}`.trim(),
+      });
+      setVpsOpeningBalanceDraft(prev => ({ ...prev, quantity: '', reason: '' }));
+      setVpsOpeningBalanceStatus('Đã post tồn đầu kỳ VPS theo product/warehouse/UOM. Weight chưa thuộc contract inventory hiện tại.');
+    } catch (error) {
+      setVpsOpeningBalanceStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa post được tồn đầu kỳ VPS.'));
+    } finally {
+      setIsSavingVpsOpeningBalance(false);
     }
   };
 
@@ -54709,7 +55203,9 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       } else {
         await onAddWarehouseImport(payload);
       }
-      const syncResult = await ensureWarehouseInventoryGroupExists(groupName);
+      const syncResult = isVpsMode
+        ? { created: false }
+        : await ensureWarehouseInventoryGroupExists(groupName);
       const syncNote = buildWarehouseGroupSyncNote(syncResult);
       setStatus(`${isEditingImport ? 'Đã cập nhật phiếu nhập kho' : 'Đã lưu nhập kho'} ${groupName}.${syncNote}`);
       setDraft(prev => ({
@@ -54761,7 +55257,85 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
       {warehouseInventoryTab === 'import' && (
         <>
-      <form onSubmit={handleSubmit} className="rounded-[30px] border border-gray-100 bg-white p-4 shadow-sm">
+      {isVpsMode && canPostVpsOpeningBalance && (
+        <section className="mb-3 rounded-[30px] border border-violet-100 bg-violet-50/50 p-4 shadow-sm">
+          <div className="mb-3">
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-violet-700">Tồn đầu kỳ VPS</p>
+            <p className="mt-1 text-xs font-semibold text-violet-900/75">Chỉ post khi đã có snapshot được phê duyệt. Bắt buộc chọn kho, sản phẩm, UOM, số lượng và thời điểm chốt; không tự quy đổi.</p>
+          </div>
+          <form onSubmit={handleSubmitVpsOpeningBalance} className="grid grid-cols-1 gap-2 md:grid-cols-5">
+            <select
+              value={vpsOpeningBalanceDraft.warehouseId}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, warehouseId: event.target.value }))}
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500"
+              required
+            >
+              <option value="">Chọn kho</option>
+              {vpsWarehouses.filter(item => !item?.deletedAt).map(item => (
+                <option key={item.id} value={item.id}>{item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <select
+              value={vpsOpeningBalanceDraft.productId}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, productId: event.target.value }))}
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500"
+              required
+            >
+              <option value="">Chọn sản phẩm</option>
+              {products.filter(item => !item?.isArchived).map(item => (
+                <option key={item.id} value={item.id}>{item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <select
+              value={vpsOpeningBalanceDraft.unitId}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, unitId: event.target.value }))}
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500"
+              required
+            >
+              <option value="">Chọn UOM</option>
+              {vpsUnits.filter(item => !item?.deletedAt).map(item => (
+                <option key={item.id} value={item.id}>{item.symbol || item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              min="0.000001"
+              step="0.000001"
+              value={vpsOpeningBalanceDraft.quantity}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, quantity: event.target.value }))}
+              placeholder="Số lượng"
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500"
+              required
+            />
+            <input
+              type="datetime-local"
+              value={vpsOpeningBalanceDraft.asOf}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, asOf: event.target.value }))}
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500"
+              required
+            />
+            <input
+              type="text"
+              value={vpsOpeningBalanceDraft.reason}
+              onChange={event => setVpsOpeningBalanceDraft(prev => ({ ...prev, reason: event.target.value }))}
+              placeholder="Lý do / phê duyệt"
+              className="rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-violet-500 md:col-span-3"
+            />
+            <button
+              type="submit"
+              disabled={isSavingVpsOpeningBalance || vpsWarehouses.length === 0 || vpsUnits.length === 0 || products.length === 0}
+              className="rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-black text-white shadow-sm disabled:opacity-50"
+            >
+              {isSavingVpsOpeningBalance ? 'Đang post' : 'Post tồn đầu kỳ'}
+            </button>
+          </form>
+          {vpsOpeningBalanceStatus && <p className="mt-2 rounded-xl bg-white px-3 py-2 text-xs font-bold text-violet-800">{vpsOpeningBalanceStatus}</p>}
+          {(vpsWarehouses.length === 0 || vpsUnits.length === 0 || products.length === 0) && (
+            <p className="mt-2 text-xs font-semibold text-amber-700">Thiếu master kho, UOM hoặc sản phẩm VPS; không thể post an toàn.</p>
+          )}
+        </section>
+      )}
+      <form onSubmit={handleSubmit} data-keyboard-guard="off" className="rounded-[30px] border border-gray-100 bg-white p-4 shadow-sm">
         {isVpsMode && (
           <div className="mb-3 grid grid-cols-1 gap-2 rounded-2xl border border-blue-100 bg-blue-50/60 p-3 sm:grid-cols-2">
             <label className="min-w-0">
@@ -54847,13 +55421,26 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
                 placeholder="Quét hoặc nhập mã sản phẩm"
                 className="w-full min-w-0 rounded-2xl border border-gray-200 bg-white px-3 py-3 text-center text-sm font-medium text-gray-900 outline-none placeholder:text-center placeholder:text-gray-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
               />
-              <button
-                type="button"
-                onClick={() => warehouseProductCodeImageInputRef.current?.click()}
-                className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs font-black text-emerald-700 shadow-sm active:scale-[0.98]"
-              >
-                Quét
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={openWarehouseCameraScanner}
+                  title="Quét QR hoặc mã vạch bằng camera"
+                  className="flex items-center gap-1.5 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-xs font-black text-emerald-700 shadow-sm active:scale-[0.98]"
+                >
+                  <Camera size={15} aria-hidden="true" />
+                  Quét
+                </button>
+                <button
+                  type="button"
+                  onClick={() => warehouseProductCodeImageInputRef.current?.click()}
+                  title="Chọn ảnh QR hoặc mã vạch"
+                  aria-label="Chọn ảnh QR hoặc mã vạch"
+                  className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-3 text-slate-600 shadow-sm active:scale-[0.98]"
+                >
+                  <ImagePlus size={16} aria-hidden="true" />
+                </button>
+              </div>
             </div>
             <input
               ref={warehouseProductCodeImageInputRef}
@@ -54992,7 +55579,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,0.78fr)] gap-2">
             <label className="min-w-0">
               <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-gray-500">Số lượng</span>
-              <div className="flex min-w-0 overflow-hidden rounded-2xl border border-gray-200 bg-white focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100">
+              <div className="flex min-w-0 overflow-visible rounded-2xl border border-gray-200 bg-white focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100">
                 <input
                   ref={node => { warehouseImportFieldRefs.current.quantity = node; }}
                   type="text"
@@ -55004,15 +55591,57 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
                   placeholder="VD 100"
                   className="min-w-0 flex-1 bg-transparent px-3 py-3 text-center text-sm font-medium text-gray-900 outline-none placeholder:text-center placeholder:text-gray-400"
                 />
-                <select
-                  value={draft.quantityUnit || 'Con'}
-                  onChange={event => updateDraft({ quantityUnit: normalizeWarehouseMeasureUnit(event.target.value) })}
-                  className="w-[82px] shrink-0 border-l border-gray-100 bg-gray-50 px-2 text-center text-xs font-medium text-gray-700 outline-none"
-                >
-                  {Array.from(new Set(['Con', ...ORDER_REQUEST_QUANTITY_UNIT_OPTIONS, 'Bộ', 'Rổ'])).map(unit => (
-                    <option key={unit} value={unit}>{unit}</option>
-                  ))}
-                </select>
+                <div data-search-zone="true" className="relative shrink-0 border-l border-gray-100 bg-gray-50">
+                  <button
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={showQuantityUnitPicker}
+                    aria-label="Chọn đơn vị số lượng"
+                    onClick={() => {
+                      setShowGroupPicker(false);
+                      setShowSupplierPicker(false);
+                      setShowWarehouseProductCodePicker(false);
+                      setShowQuantityUnitPicker(prev => !prev);
+                    }}
+                    className="flex h-full min-h-[46px] w-[92px] items-center justify-center gap-1 px-2 text-center text-xs font-bold text-gray-700 outline-none"
+                  >
+                    <span className="max-w-[62px] truncate">{draft.quantityUnit || 'Con'}</span>
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </button>
+                  {showQuantityUnitPicker && (
+                    <div role="listbox" aria-label="Gợi ý đơn vị số lượng" className="absolute right-0 top-[calc(100%+8px)] z-50 w-44 overflow-hidden rounded-2xl border border-emerald-100 bg-white p-1.5 text-left shadow-2xl shadow-emerald-900/15">
+                      {quantityUnitSuggestions.map(unit => (
+                        <button
+                          key={unit}
+                          type="button"
+                          role="option"
+                          aria-selected={normalizeWarehouseQuantityUnit(draft.quantityUnit) === normalizeWarehouseQuantityUnit(unit)}
+                          onClick={() => {
+                            updateDraft({ quantityUnit: normalizeWarehouseQuantityUnit(unit) });
+                            setShowQuantityUnitPicker(false);
+                          }}
+                          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700"
+                        >
+                          <span className="truncate">{unit}</span>
+                          {normalizeWarehouseQuantityUnit(draft.quantityUnit) === normalizeWarehouseQuantityUnit(unit) && <Check size={15} aria-hidden="true" />}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomQuantityUnitDraft('');
+                          setCustomQuantityUnitStatus('');
+                          setShowQuantityUnitPicker(false);
+                          setShowCustomQuantityUnitModal(true);
+                        }}
+                        className="mt-1 flex w-full items-center gap-2 rounded-xl border-t border-slate-100 px-3 py-2.5 text-sm font-black text-emerald-700 hover:bg-emerald-50"
+                      >
+                        <Plus size={16} aria-hidden="true" />
+                        Thêm loại
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </label>
             <label className="min-w-0">
@@ -55785,6 +56414,141 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
           Bảng này thay cho lịch nhập kho, lịch xuất kho và lịch tồn kho cũ.
         </p>
       </section>
+      )}
+
+      {showWarehouseCameraScanner && (
+        <div
+          className="fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/60 px-0 sm:items-center sm:px-4"
+          onClick={closeWarehouseCameraScanner}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="warehouse-camera-scanner-title"
+            className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-600">Nhập Xuất Tồn</p>
+                <h3 id="warehouse-camera-scanner-title" className="mt-1 text-lg font-black text-slate-900">Quét QR / mã vạch</h3>
+                <p className="mt-1 text-xs font-semibold text-slate-500">Đưa mã sản phẩm vào giữa khung. Khi nhận được mã, app sẽ tự điền thông tin sản phẩm.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeWarehouseCameraScanner}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600"
+                aria-label="Đóng scanner sản phẩm"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              <div className="relative h-56 overflow-hidden rounded-3xl border border-emerald-100 bg-slate-950">
+                <video
+                  ref={warehouseCameraVideoRef}
+                  className={`h-full w-full object-cover ${isWarehouseCameraScanning ? 'opacity-100' : 'opacity-0'}`}
+                  muted
+                  playsInline
+                />
+                {!isWarehouseCameraScanning && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-white">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/20">
+                      <Scan size={32} />
+                    </div>
+                    <p className="text-sm font-bold text-white/90">Camera chưa quét. Bạn có thể thử lại hoặc chọn ảnh mã.</p>
+                  </div>
+                )}
+                {isWarehouseCameraScanning && (
+                  <div className="pointer-events-none absolute inset-10 rounded-3xl border-2 border-emerald-300/90 shadow-[0_0_0_999px_rgba(15,23,42,0.25)]" />
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={startWarehouseCameraScanner}
+                  className="flex min-h-[46px] items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-3 py-3 text-sm font-black text-white shadow-lg shadow-emerald-100"
+                >
+                  {isWarehouseCameraScanning ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />}
+                  {isWarehouseCameraScanning ? 'Đang quét' : 'Quét lại'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => warehouseProductCodeImageInputRef.current?.click()}
+                  className="flex min-h-[46px] items-center justify-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm font-black text-emerald-700"
+                >
+                  <ImagePlus size={18} />
+                  Chọn ảnh
+                </button>
+              </div>
+              {warehouseProductScanStatus && (
+                <div className="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                  {warehouseProductScanStatus}
+                </div>
+              )}
+              <p className="text-center text-[11px] font-semibold text-slate-400">Nếu camera không được cấp quyền, hãy cho phép camera hoặc dùng ảnh mã rõ nét.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCustomQuantityUnitModal && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+          onClick={() => setShowCustomQuantityUnitModal(false)}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="warehouse-custom-unit-title"
+            onSubmit={handleSaveCustomQuantityUnit}
+            onClick={event => event.stopPropagation()}
+            className="w-full max-w-sm rounded-[28px] border border-emerald-100 bg-white p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-600">Đơn vị nhập kho</p>
+                <h3 id="warehouse-custom-unit-title" className="mt-1 text-xl font-black text-slate-900">Thêm loại mới</h3>
+                <p className="mt-1 text-xs font-semibold text-slate-500">Đơn vị sẽ được lưu để dùng lại cho các lần nhập sau.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCustomQuantityUnitModal(false)}
+                className="shrink-0 rounded-full bg-slate-100 p-2 text-slate-500"
+                aria-label="Đóng thêm đơn vị"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <label className="mt-4 block">
+              <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Tên đơn vị</span>
+              <input
+                type="text"
+                value={customQuantityUnitDraft}
+                onChange={event => setCustomQuantityUnitDraft(event.target.value)}
+                placeholder="VD: Thùng xốp"
+                autoFocus
+                className="w-full rounded-2xl border border-emerald-100 bg-emerald-50/30 px-4 py-3 text-base font-bold text-slate-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+            </label>
+            {customQuantityUnitStatus && <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">{customQuantityUnitStatus}</p>}
+            <div className="mt-4 grid grid-cols-[0.8fr_1fr] gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCustomQuantityUnitModal(false)}
+                className="rounded-2xl bg-slate-100 py-3 text-sm font-black text-slate-600"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                className="rounded-2xl bg-emerald-500 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/20"
+              >
+                Lưu đơn vị
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {quickStockEdit && (
@@ -82396,8 +83160,8 @@ function CustomerPortalView({
     [safeOrders, safeOrderRequests, customerVisibleProducts]
   );
   const customerPricingGroupRows = useMemo(
-    () => buildPricingGroupRowsFromInputs(customerLatestWarehouseInputsByGroup, customerSalesPricingGroupsByGroup),
-    [customerLatestWarehouseInputsByGroup, customerSalesPricingGroupsByGroup]
+    () => buildPricingGroupRowsFromInputs(customerLatestWarehouseInputsByGroup, customerSalesPricingGroupsByGroup, customerVisibleProducts),
+    [customerLatestWarehouseInputsByGroup, customerSalesPricingGroupsByGroup, customerVisibleProducts]
   );
   const customerVisiblePricingGroupRows = useMemo(() => {
     const hiddenSet = new Set(Array.isArray(customerPricingRules.hiddenTodayPriceGroupKeys)
@@ -82493,6 +83257,7 @@ function CustomerPortalView({
     pricingCostPerKg: customerPricingCostPerKg,
     latestInputsByGroup: customerEffectiveLatestInputsByGroup,
     marginByGroup: customerPricingRules.marginByGroup,
+    marginByProduct: customerPricingRules.marginByProduct,
     fallbackMargin: customerPricingRules.targetMargin,
     cutParts: customerPricingRules.cutParts,
     cutPartGroups: customerPricingRules.cutPartGroups,
@@ -82500,6 +83265,7 @@ function CustomerPortalView({
     customerVisiblePricingGroupRows,
     customerPricingRules.lossStageGroups,
     customerPricingRules.marginByGroup,
+    customerPricingRules.marginByProduct,
     customerPricingRules.targetMargin,
     customerPricingRules.cutParts,
     customerPricingRules.cutPartGroups,
