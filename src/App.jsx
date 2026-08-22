@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
@@ -335,12 +335,16 @@ import {
   customerRedeemPoints,
   customerCreateDebtPayment,
   requestAiGenerateContent,
-} from './services/identityCenter.js';
+} from '@hd/identity-center';
 import {
+  createVpsIdentitySecurityApi,
   getHdConnectStagingApi,
+  buildVpsInventoryTransaction,
   inventoryVpsEnabled,
   isVpsMode,
   isVpsStagingMode,
+  normalizeVpsAttendance,
+  normalizeVpsStockMovement,
   vpsDataMode,
 } from './api/hdConnectStaging.js';
 import {
@@ -360,7 +364,7 @@ const LazyIdentitySecurityCenter = React.lazy(
   () => import('./features/identity/IdentitySecurityCenter.jsx'),
 );
 
-const identitySecurityApi = {
+const legacyIdentitySecurityApi = {
   getIdentityDevice,
   identityCompleteSetup,
   identityListAudit,
@@ -370,6 +374,10 @@ const identitySecurityApi = {
   identitySetBiometric,
   identityVerifyPin,
 };
+
+const identitySecurityApi = isVpsMode
+  ? createVpsIdentitySecurityApi()
+  : legacyIdentitySecurityApi;
 
 const getCapacitorPlugin = (name) => {
   const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -2658,6 +2666,20 @@ const ContactPicker = getCapacitorPlugin('ContactPicker');
 const WEB_WIFI_AUTODETECT_MESSAGE = '';
 const EMPTY_WIFI_LOOKUP_STATE = { loading: false, success: false, message: '', failureCode: null };
 
+const VPS_UI_READ_MODULE_BY_TAB = Object.freeze({
+  executive_dashboard: 'reports',
+  warehouse_import: 'warehouse',
+  warehouse_dispatch: 'warehouse',
+  finance: 'finance',
+  debt: 'debt',
+  company_attendance: 'attendance',
+  employees: 'hr',
+  payroll: 'payroll',
+  report: 'reports',
+  settings: 'settings',
+  messages: 'notifications',
+});
+
 // --- UTILS & SHARED LOGIC ---
 
 const toTitleCase = (str) => {
@@ -3015,6 +3037,12 @@ const formatMonthYearLabel = (monthKey = '') => {
   const safeMonthKey = buildMonthKeyFromDate(monthKey);
   const [year, month] = safeMonthKey.split('-');
   return `Tháng ${month}/${year}`;
+};
+
+const formatMonthYearShortLabel = (monthKey = '') => {
+  const safeMonthKey = buildMonthKeyFromDate(monthKey);
+  const [year, month] = safeMonthKey.split('-');
+  return `${Number(month)}/${year}`;
 };
 
 const buildCalendarMonthCells = (monthKey = '') => {
@@ -12063,6 +12091,8 @@ export default function App() {
   const identitySetupPendingRef = useRef(false);
   const [pendingFirebaseWriteCount, setPendingFirebaseWriteCount] = useState(pendingFirebaseWritesRef.current.length);
   const [loadedCollections, setLoadedCollections] = useState({});
+  const [vpsReadModels, setVpsReadModels] = useState({});
+  const [vpsMasterData, setVpsMasterData] = useState({ warehouses: [], units: [] });
   const [loadedCollectionsTenantId, setLoadedCollectionsTenantId] = useState(
     () => `${persistedSession.currentUser?.companyId || ''}`.trim()
   );
@@ -13049,11 +13079,15 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult] = await Promise.allSettled([
           api.listCustomers({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
           api.listProducts({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
           api.listUnits({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
           api.listOrders({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listEmployees({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          api.listNotifications({ page: 1, limit: 100 }),
+          api.listAttendance({ page: 1, limit: 100, sortBy: 'workDate', sortOrder: 'desc' }),
+          api.listWarehouses({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
         ]);
         if (cancelled) return;
 
@@ -13063,15 +13097,52 @@ export default function App() {
         if (productsResult.status === 'fulfilled') setRawProducts(productsResult.value.items);
         else failedDomains.push('products');
         if (unitsResult.status === 'fulfilled') {
+          setVpsMasterData((previous) => ({
+            ...previous,
+            units: unitsResult.value.items,
+          }));
+          const availableUnits = unitsResult.value.items
+            .map((unit) => unit?.symbol || unit?.name || unit?.code || '')
+            .map((unit) => `${unit}`.trim())
+            .filter(Boolean);
           setRawProducts((previous) => previous.map((product) => ({
             ...product,
-            availableUnits: unitsResult.value.items,
+            availableUnits,
           })));
         } else {
           failedDomains.push('units');
         }
+        if (warehousesResult.status === 'fulfilled') {
+          setVpsMasterData((previous) => ({
+            ...previous,
+            warehouses: warehousesResult.value.items,
+          }));
+        } else {
+          failedDomains.push('warehouses');
+        }
         if (ordersResult.status === 'fulfilled') setRawOrders(ordersResult.value.items);
         else failedDomains.push('orders');
+        if (employeesResult.status === 'fulfilled' && employeesResult.value.items.length > 0) {
+          setRawEmployees(employeesResult.value.items);
+        } else if (employeesResult.status !== 'fulfilled') {
+          failedDomains.push('employees');
+        }
+        if (notificationsResult.status === 'fulfilled') {
+          setRawNotifications(notificationsResult.value.items);
+        } else {
+          failedDomains.push('notifications');
+        }
+        if (attendanceResult.status === 'fulfilled') {
+          const attendanceByWorkDate = Object.fromEntries(
+            attendanceResult.value.items
+              .map((record) => normalizeVpsAttendance(record))
+              .filter((record) => record.companyId && record.employeeId && record.date)
+              .map((record) => [`${record.date}_${record.employeeId}`, record]),
+          );
+          setRawAttendance(attendanceByWorkDate);
+        } else {
+          failedDomains.push('attendance');
+        }
 
         // The available CX payment endpoint is customer-portal scoped, not an
         // internal finance ledger. Do not substitute it for operator payments.
@@ -13079,10 +13150,12 @@ export default function App() {
         setLoadedCollections((previous) => ({
           ...previous,
           companies: true,
-          employees: true,
           customers: customersResult.status === 'fulfilled',
           products: productsResult.status === 'fulfilled',
           orders: ordersResult.status === 'fulfilled',
+          employees: employeesResult.status === 'fulfilled',
+          notifications: notificationsResult.status === 'fulfilled',
+          attendance: attendanceResult.status === 'fulfilled',
         }));
         setRealtimeStatus({
           state: failedDomains.length > 0 ? 'degraded' : 'polling',
@@ -13098,15 +13171,138 @@ export default function App() {
     };
 
     void loadCoreVpsData();
-    const intervalId = window.setInterval(() => {
-      void loadCoreVpsData();
-    }, 30_000);
+    const realtimeController = new AbortController();
+    const connectRealtime = async () => {
+      try {
+        await api.subscribeRealtime({
+          signal: realtimeController.signal,
+          onEvent: (message) => {
+            if (cancelled) return;
+            setRealtimeStatus({
+              state: message?.type === 'event' ? 'connected' : 'connecting',
+              collection: message?.data?.eventName || 'vps-realtime',
+              lastAt: new Date().toISOString(),
+              error: '',
+            });
+            if (message?.type === 'event') void loadCoreVpsData();
+          },
+        });
+      } catch (error) {
+        if (!cancelled && !realtimeController.signal.aborted) {
+          setRealtimeStatus({
+            state: 'degraded',
+            collection: 'vps-realtime',
+            lastAt: new Date().toISOString(),
+            error: error?.message || 'VPS realtime unavailable.',
+          });
+        }
+      }
+    };
+    void connectRealtime();
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      realtimeController.abort();
     };
   }, [currentUser?.companyId]);
+
+  const vpsReadModuleForActiveTab = isVpsStagingMode
+    ? VPS_UI_READ_MODULE_BY_TAB[activeTab] || ''
+    : '';
+
+  useEffect(() => {
+    if (!vpsReadModuleForActiveTab || !currentUser?.companyId) return undefined;
+
+    let cancelled = false;
+    const api = getHdConnectStagingApi();
+    const query = { page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' };
+    const definitionsByModule = {
+      warehouse: [
+        { label: 'Kho', path: '/api/v1/warehouse-suite/warehouses', run: () => api.listWarehouses(query) },
+        { label: 'Tồn kho', path: '/api/v1/warehouse-suite/balances', run: () => api.listWarehouseBalances(query) },
+        { label: 'Sổ kho', path: '/api/v1/warehouse-suite/ledger', run: () => api.listWarehouseLedger(query) },
+        { label: 'Kiểm tồn', path: '/api/v1/warehouse-suite/counts', run: () => api.listWarehouseCountSessions(query) },
+        { label: 'Tra tồn', path: '/api/v1/inventory/lookup', run: () => api.listInventory(query) },
+        { label: 'Sổ tồn', path: '/api/v1/inventory/ledger', run: () => api.listInventoryLedger(query) },
+        { label: 'Tồn theo sản phẩm', path: '/api/v1/inventory/balances', run: () => api.listInventoryBalances(query) },
+      ],
+      finance: [
+        { label: 'Tài khoản tiền', path: '/api/v1/finance-suite/cash-accounts', run: () => api.listFinanceCashAccounts(query) },
+        { label: 'Giao dịch tiền', path: '/api/v1/finance-suite/cash-transactions', run: () => api.listFinanceCashTransactions(query) },
+        { label: 'Chi phí', path: '/api/v1/finance-suite/expenses', run: () => api.listFinanceExpenses(query) },
+      ],
+      debt: [
+        { label: 'Phải thu', path: '/api/v1/finance-suite/receivables', run: () => api.listFinanceReceivables(query) },
+        { label: 'Phải trả', path: '/api/v1/finance-suite/payables', run: () => api.listFinancePayables(query) },
+        { label: 'Tuổi nợ', path: '/api/v1/finance-suite/aging', run: () => api.getFinanceAging() },
+      ],
+      attendance: [
+        { label: 'Chấm công', path: '/api/v1/hr-suite/attendance', run: () => api.listAttendance(query) },
+      ],
+      hr: [
+        { label: 'Nhân sự', path: '/api/v1/hr-suite/employees', run: () => api.listEmployees(query) },
+      ],
+      payroll: [
+        { label: 'Bảng lương', path: '/api/v1/hr-suite/payrolls', run: () => api.listPayrolls(query) },
+      ],
+      reports: [
+        { label: 'Tổng quan', path: '/api/v1/executive/dashboard', run: () => api.getExecutiveDashboard() },
+        { label: 'Báo cáo', path: '/api/v1/executive/reports', run: () => api.getExecutiveReports(query) },
+      ],
+      settings: [
+        { label: 'Cấu hình nền tảng', path: '/api/v1/platform/config', run: () => api.getPlatformConfig() },
+        { label: 'Cờ tính năng', path: '/api/v1/platform/flags', run: () => api.getPlatformFlags(query) },
+      ],
+      notifications: [
+        { label: 'Thông báo', path: '/api/v1/notifications', run: () => api.listNotifications(query) },
+      ],
+    };
+    const definitions = definitionsByModule[vpsReadModuleForActiveTab] || [];
+    if (definitions.length === 0) return undefined;
+
+    setVpsReadModels((previous) => ({
+      ...previous,
+      [vpsReadModuleForActiveTab]: { status: 'loading', endpoints: [], updatedAt: '' },
+    }));
+
+    const summarizeResult = (result) => {
+      if (Array.isArray(result)) return { count: result.length };
+      if (Array.isArray(result?.items)) return { count: result.items.length };
+      return { count: result == null ? 0 : 1 };
+    };
+
+    Promise.allSettled(definitions.map((definition) => definition.run()))
+      .then((results) => {
+        if (cancelled) return;
+        const endpoints = results.map((result, index) => {
+          const definition = definitions[index];
+          if (result.status === 'fulfilled') {
+            return { label: definition.label, path: definition.path, status: 'ready', ...summarizeResult(result.value) };
+          }
+          return {
+            label: definition.label,
+            path: definition.path,
+            status: 'error',
+            count: 0,
+            error: result.reason?.message || 'VPS endpoint failed.',
+          };
+        });
+        const failed = endpoints.filter((endpoint) => endpoint.status === 'error');
+        setVpsReadModels((previous) => ({
+          ...previous,
+          [vpsReadModuleForActiveTab]: {
+            status: failed.length > 0 ? 'error' : 'ready',
+            endpoints,
+            updatedAt: new Date().toISOString(),
+            error: failed.map((endpoint) => `${endpoint.label}: ${endpoint.error}`).join(' '),
+          },
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.companyId, vpsReadModuleForActiveTab]);
 
   useEffect(() => {
     const tenantCompanyId = `${currentUser?.companyId || ''}`.trim();
@@ -14309,6 +14505,16 @@ export default function App() {
   const rewardCatalog = useMemo(() => rawRewardCatalog.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawRewardCatalog, myCompanyId]);
   const promotions = useMemo(() => rawPromotions.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPromotions, myCompanyId]);
   const notifications = useMemo(() => rawNotifications.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawNotifications, myCompanyId]);
+  const handleMarkVpsNotificationsRead = async (notificationIds = []) => {
+    if (!isVpsStagingMode || !Array.isArray(notificationIds) || notificationIds.length === 0) return;
+    await getHdConnectStagingApi().markNotificationsRead({ notificationIds });
+    const readAt = new Date().toISOString();
+    setRawNotifications((previous) => previous.map((notification) => (
+      notificationIds.includes(notification?.id)
+        ? { ...notification, isRead: true, readAt, updatedAt: readAt }
+        : notification
+    )));
+  };
   const products = useMemo(() => rawProducts.filter(p => p.companyId === myCompanyId && !p.isArchived), [rawProducts, myCompanyId]);
   const orders = useMemo(() => rawOrders.filter(o => o.companyId === myCompanyId && !o.isArchived), [rawOrders, myCompanyId]);
   const orderRequests = useMemo(() => rawOrderRequests.filter(request => request.companyId === myCompanyId && !request.isArchived), [rawOrderRequests, myCompanyId]);
@@ -15127,6 +15333,13 @@ export default function App() {
   };
 
   const handleIdentitySetup = async ({ password, username, pin, biometricEnabled, trustDevice }) => {
+    if (isVpsStagingMode) {
+      return {
+        success: false,
+        message: 'VPS mode uses invitation acceptance and does not use Firebase identity setup.',
+      };
+    }
+
     try {
       const idToken = await auth?.currentUser?.getIdToken?.();
       if (!idToken) return { success: false, message: 'Phiên xác thực đã hết hạn. Vui lòng đăng nhập lại.' };
@@ -15169,10 +15382,15 @@ export default function App() {
 
   const handleIdentityCompleteRecovery = async ({ resetToken, password, identifier }) => {
     if (isVpsStagingMode) {
-      return {
-        success: false,
-        message: 'Complete the VPS password reset only through the approved reset link or invitation flow.',
-      };
+      try {
+        await getHdConnectStagingApi().completePasswordReset({
+          token: resetToken,
+          newPassword: password,
+        });
+        return { success: true, message: 'Đổi mật khẩu thành công.' };
+      } catch (error) {
+        return { success: false, message: error?.message || 'Không thể đặt lại mật khẩu VPS.' };
+      }
     }
 
     try {
@@ -15679,16 +15897,30 @@ export default function App() {
   };
 
   const handleCheckIn = async (empId, method) => {
-    if (!firebaseUser) return;
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
     const targetDate = resolveAttendanceActionDateForShift(employee, attendanceRecords, currentDate, 'checkIn', now);
-    const key = `${targetDate}_${empId}`;
     const methodInfo = applyAttendanceFixedLocationGuard(
       normalizeAttendanceMethod(method, 'Chấm công'),
       employee,
       currentCompany
     );
+    if (isVpsStagingMode) {
+      const record = await getHdConnectStagingApi().recordAttendance({
+        employeeId: empId,
+        workDate: targetDate,
+        action: 'check-in',
+        method: methodInfo.label,
+      });
+      const normalizedRecord = normalizeVpsAttendance(record);
+      setRawAttendance((previous) => ({
+        ...previous,
+        [`${normalizedRecord.date}_${normalizedRecord.employeeId}`]: normalizedRecord,
+      }));
+      return;
+    }
+    if (!firebaseUser) return;
+    const key = `${targetDate}_${empId}`;
     await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
       companyId: myCompanyId,
       checkIn: now.toISOString(),
@@ -15697,18 +15929,32 @@ export default function App() {
       status: calculateCheckInStatus(employee, now, targetDate)
     }, { merge: true }), 18000, 'Không lưu được chấm công vào ca trong 18 giây. Kiểm tra mạng rồi thử lại.');
   };
-  
+
   const handleCheckOut = async (empId, method) => {
-    if (!firebaseUser) return;
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
     const targetDate = resolveAttendanceActionDateForShift(employee, attendanceRecords, currentDate, 'checkOut', now);
-    const key = `${targetDate}_${empId}`;
     const methodInfo = applyAttendanceFixedLocationGuard(
       normalizeAttendanceMethod(method, 'Chấm công'),
       employee,
       currentCompany
     );
+    if (isVpsStagingMode) {
+      const record = await getHdConnectStagingApi().recordAttendance({
+        employeeId: empId,
+        workDate: targetDate,
+        action: 'check-out',
+        method: methodInfo.label,
+      });
+      const normalizedRecord = normalizeVpsAttendance(record);
+      setRawAttendance((previous) => ({
+        ...previous,
+        [`${normalizedRecord.date}_${normalizedRecord.employeeId}`]: normalizedRecord,
+      }));
+      return;
+    }
+    if (!firebaseUser) return;
+    const key = `${targetDate}_${empId}`;
     await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
       companyId: myCompanyId,
       checkOut: now.toISOString(),
@@ -15718,12 +15964,28 @@ export default function App() {
   };
   
   const handleLeave = async (empId) => {
+    if (isVpsStagingMode) {
+      const record = await getHdConnectStagingApi().recordAttendance({
+        employeeId: empId,
+        workDate: currentDate,
+        status: 'LEAVE',
+      });
+      const normalizedRecord = normalizeVpsAttendance(record);
+      setRawAttendance((previous) => ({
+        ...previous,
+        [`${normalizedRecord.date}_${normalizedRecord.employeeId}`]: normalizedRecord,
+      }));
+      return;
+    }
     if (!firebaseUser) return;
     const key = `${currentDate}_${empId}`;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, status: 'leave', checkIn: null, checkOut: null }, { merge: true });
   };
 
   const handleEditAttendance = async (empId, targetDate, editData) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS attendance editing requires an approved adjustment contract; direct time overwrite is disabled.');
+    }
     if (!firebaseUser) return;
     const key = `${targetDate}_${empId}`;
     const actingEmployee = employees.find(item => item.id === currentUser?.id) || {};
@@ -16914,6 +17176,9 @@ export default function App() {
   };
 
   const handleEditPayment = async (paymentId, paymentData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('Payment editing is blocked in VPS staging until the finance payment contract is approved.');
+    }
     if (!firebaseUser || !paymentId) return;
     const previousPayment = rawPayments.find(item => item.id === paymentId) || {};
     const patch = { ...paymentData, updatedAt: new Date().toISOString(), updatedByEmpId: currentUser?.id || '' };
@@ -17055,6 +17320,9 @@ export default function App() {
   }, [bankTransactions, currentCompany, currentUser?.id, firebaseUser, isInitialDataLoaded, myCompanyId, orders, rawPayments]);
 
   const handleDeletePayment = async (paymentId) => {
+    if (isVpsStagingMode) {
+      throw new Error('Payment deletion is blocked in VPS staging until the finance payment contract is approved.');
+    }
     if (!firebaseUser) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), {
       isArchived: true,
@@ -17064,6 +17332,36 @@ export default function App() {
   };
 
   const handleAddExpense = async (empId, expenseData) => {
+    if (isVpsStagingMode) {
+      const amount = parseLooseMoneyValue(expenseData?.amount);
+      if (amount <= 0) throw new Error('VPS expense requires a positive amount.');
+      const clientMutationId = `${expenseData?.clientMutationId || `expense-${Date.now()}`}`.trim();
+      const code = `${expenseData?.code || `HDM-${clientMutationId}`}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+      const result = await getHdConnectStagingApi().createFinanceExpense({
+        code,
+        expenseType: normalizeExpenseCategoryLabel(expenseData?.category || 'Chi phí khác'),
+        amount,
+        expenseDate: expenseData?.date || undefined,
+        sourceReference: clientMutationId,
+        description: normalizeLeadingLabel(expenseData?.note || 'Khoản chi'),
+        clientMutationId,
+      });
+      const normalized = {
+        ...result,
+        id: result?.id || clientMutationId,
+        companyId: result?.companyId || myCompanyId,
+        amount: parseLooseMoneyValue(result?.amount ?? amount),
+        category: result?.expenseType || expenseData?.category || 'Chi phí khác',
+        note: result?.description || expenseData?.note || '',
+        date: result?.expenseDate || expenseData?.date || getTodayString(),
+        approvalStatus: result?.status === 'APPROVED' || result?.status === 'POSTED'
+          ? CASHFLOW_APPROVAL_STATUS.approved
+          : CASHFLOW_APPROVAL_STATUS.pending,
+        sourceSystem: 'hd-connect-vps',
+      };
+      upsertLocalListRecord(setRawExpenses, normalized);
+      return normalized.id;
+    }
     if (!firebaseUser) return;
     const id = `exp_${Date.now()}`;
     const needsApproval = Boolean(expenseData.requiresApproval || expenseData.approvalStatus === CASHFLOW_APPROVAL_STATUS.pending);
@@ -17104,6 +17402,9 @@ export default function App() {
   };
 
   const handleEditExpense = async (expenseId, expenseData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS finance expenses are immutable after creation; use the approved expense approval/post workflow.');
+    }
     if (!firebaseUser || !expenseId) return;
     const patch = { ...expenseData, updatedAt: new Date().toISOString(), updatedByEmpId: currentUser?.id || '' };
     if (expenseData.amount !== undefined) patch.amount = parseLooseMoneyValue(expenseData.amount);
@@ -17125,6 +17426,9 @@ export default function App() {
   };
 
   const handleDeleteExpense = async (expenseId) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS finance expenses cannot be archived or deleted without an approved cancellation contract.');
+    }
     if (!firebaseUser) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', expenseId), {
       isArchived: true,
@@ -17134,6 +17438,9 @@ export default function App() {
   };
 
   const addFinancialRecord = async (empId, type, amount, reason, date = getTodayString(), extraData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('Financial record writes are blocked in VPS staging until the accounting contract is approved.');
+    }
     if (!firebaseUser) return;
     const id = `f_${Date.now()}`;
     const financialPayload = {
@@ -17168,6 +17475,9 @@ export default function App() {
   };
 
   const handleEditFinancialRecord = async (financialId, patchData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('Financial record editing is blocked in VPS staging until the accounting contract is approved.');
+    }
     if (!firebaseUser || !financialId) return;
     const patch = {
       ...patchData,
@@ -17181,6 +17491,9 @@ export default function App() {
   };
 
   const handleDeleteFinancialRecord = async (financialId) => {
+    if (isVpsStagingMode) {
+      throw new Error('Financial record deletion is blocked in VPS staging until the accounting contract is approved.');
+    }
     if (!firebaseUser || !financialId) return;
     const patch = {
       isArchived: true,
@@ -17194,6 +17507,9 @@ export default function App() {
   };
 
   const handleLoadPayrollPeriodSnapshots = async ({ monthKey } = {}) => {
+    if (isVpsStagingMode) {
+      return { success: false, snapshots: [], message: 'VPS payroll snapshot UI is not yet mapped to the HR payroll contract; Firebase fallback is disabled.' };
+    }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
     if (!firebaseUser || !db || !myCompanyId || !periodId) {
@@ -17279,6 +17595,9 @@ export default function App() {
   };
 
   const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'VPS payroll generate/approve/lock UI is not yet mapped to the HR payroll contract; no Firebase write was attempted.' };
+    }
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
     if (!firebaseUser || !db || !myCompanyId || !periodId) {
@@ -17433,6 +17752,9 @@ export default function App() {
     nextEndingDebt = 0,
     reason = ''
   } = {}) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'VPS payroll adjustments require the approved HR adjustment contract; no Firebase write was attempted.' };
+    }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
     const normalizedReason = `${reason || ''}`.trim();
@@ -17583,6 +17905,9 @@ export default function App() {
   };
 
   const handlePreparePayrollAutoLockPlan = async ({ period, snapshots, sourceSignature = '' } = {}) => {
+    if (isVpsStagingMode) {
+      return { success: false, message: 'VPS payroll auto-lock requires the approved HR payroll scheduler contract; no Firebase write was attempted.' };
+    }
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
     const planId = buildPayrollAutoLockPlanId(myCompanyId, safeMonthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
@@ -18704,6 +19029,36 @@ export default function App() {
   };
 
   const handleAddWarehouseImport = async (empId, importData = {}) => {
+    if (isVpsStagingMode) {
+      const clientMutationId = `${importData.clientMutationId || `warehouse-import-${Date.now()}`}`.trim();
+      const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
+      const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
+      const quantityUnit = normalizeLeadingLabel(importData.quantityUnit || importData.unit || '');
+      const ledgerPayload = buildVpsInventoryTransaction({
+        ...importData,
+        quantity: quantity > 0 ? quantity : (normalizeLookupText(quantityUnit) === 'kg' ? totalKg : 0),
+        quantityUnit,
+        actualWeightKg: totalKg,
+        clientMutationId,
+        referenceId: clientMutationId,
+        reason: importData.note,
+      }, { referenceType: 'HD_MANAGER_WAREHOUSE_IMPORT' });
+      const ledger = await getHdConnectStagingApi().postWarehouseStockIn(ledgerPayload);
+      const normalized = normalizeVpsStockMovement(ledger, {
+        id: ledger?.id || clientMutationId,
+        companyId: myCompanyId,
+        productId: importData.productId,
+        warehouseId: importData.warehouseId,
+        unitId: importData.unitId,
+        quantityUnit,
+        weightKg: totalKg,
+        sourceRecordId: clientMutationId,
+        date: importData.date || getTodayString(),
+        groupName: importData.groupName || '',
+      });
+      upsertLocalListRecord(setRawWarehouseImports, normalized);
+      return normalized.id;
+    }
     if (!firebaseUser) return null;
     const id = `wi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
@@ -18783,6 +19138,9 @@ export default function App() {
   };
 
   const handleEditWarehouseImport = async (importId, importData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
+    }
     if (!firebaseUser || !importId) return;
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
     const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
@@ -18870,6 +19228,9 @@ export default function App() {
   };
 
   const handleDeleteWarehouseImport = async (importId) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
+    }
     if (!firebaseUser) return;
     const archivedAt = new Date().toISOString();
     const archivedPayload = {
@@ -19022,6 +19383,57 @@ export default function App() {
   };
 
   const handleAddWarehouseStockCount = async (empId, countData = {}) => {
+    if (isVpsStagingMode) {
+      const warehouseId = `${countData.warehouseId || ''}`.trim();
+      const productId = `${countData.productId || ''}`.trim();
+      const unitId = `${countData.unitId || ''}`.trim();
+      const countedQuantity = parseLooseQuantityValue(countData.countedQuantity);
+      if (!warehouseId || !productId || !unitId) {
+        throw new Error('VPS stock count requires an explicit warehouse, product, and unit.');
+      }
+      if (!Number.isFinite(countedQuantity) || countedQuantity < 0) {
+        throw new Error('VPS stock count requires a non-negative counted quantity.');
+      }
+      const api = getHdConnectStagingApi();
+      const clientMutationId = `${countData.clientMutationId || `stock-count-${Date.now()}`}`.trim();
+      const session = await api.createWarehouseCountSession({
+        code: countData.code || `CNT-${clientMutationId}`,
+        warehouseId,
+        notes: `${countData.note || countData.reason || ''}`.trim(),
+        clientMutationId,
+      });
+      const line = await api.addWarehouseCountLine(session?.id, {
+        productId,
+        unitId,
+        countedQuantity,
+        reason: `${countData.reason || countData.note || ''}`.trim() || undefined,
+        clientMutationId,
+      });
+      const posted = await api.postWarehouseCountSession(session.id);
+      const product = (rawProducts || []).find(item => item?.id === productId) || {};
+      const unit = (vpsMasterData?.units || []).find(item => item?.id === unitId) || {};
+      const payload = {
+        id: posted?.id || session.id,
+        companyId: posted?.companyId || myCompanyId,
+        warehouseId,
+        productId,
+        unitId,
+        groupName: product.name || product.productName || product.code || productId,
+        productName: product.name || product.productName || '',
+        quantity: countedQuantity,
+        countedQuantity,
+        quantityUnit: unit.symbol || unit.code || unit.name || countData.quantityUnit || '',
+        countedMeasures: [{ unit: unit.symbol || unit.code || unit.name || '', quantity: countedQuantity }],
+        reason: countData.reason || '',
+        note: countData.note || '',
+        date: posted?.countedAt || posted?.postedAt || session?.createdAt || getTodayString(),
+        status: posted?.status || 'POSTED',
+        sourceSystem: 'hd-connect-vps',
+        readOnlyLedger: true,
+      };
+      upsertLocalListRecord(setRawWarehouseStockCounts, payload);
+      return payload.id;
+    }
     if (!firebaseUser) return null;
     const id = `wsc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const quantity = parseLooseQuantityValue(countData.quantity ?? countData.totalQuantity);
@@ -19060,6 +19472,9 @@ export default function App() {
   };
 
   const handleEditWarehouseStockCount = async (stockCountId, countData = {}) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock count editing requires the approved stock-count session contract.');
+    }
     if (!firebaseUser || !stockCountId) return;
     const quantity = parseLooseQuantityValue(countData.quantity ?? countData.totalQuantity);
     const totalKg = parseLooseQuantityValue(countData.totalKg ?? countData.weightKg);
@@ -19093,6 +19508,9 @@ export default function App() {
   };
 
   const handleDeleteWarehouseStockCount = async (stockCountId) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock count deletion requires an approved cancellation contract.');
+    }
     if (!firebaseUser || !stockCountId) return;
     const archivedAt = new Date().toISOString();
     const payload = {
@@ -19400,6 +19818,36 @@ export default function App() {
   };
 
   const handleAddWarehouseDispatch = async (empId, dispatchData) => {
+    if (isVpsStagingMode) {
+      const clientMutationId = `${dispatchData?.clientMutationId || `warehouse-dispatch-${Date.now()}`}`.trim();
+      const quantity = parseLooseQuantityValue(dispatchData?.quantity ?? dispatchData?.pieceCount ?? dispatchData?.quantityCount);
+      const weightKg = parseLooseQuantityValue(dispatchData?.weightKg ?? dispatchData?.totalKg);
+      const quantityUnit = normalizeLeadingLabel(dispatchData?.quantityUnit || dispatchData?.unit || '');
+      const ledgerPayload = buildVpsInventoryTransaction({
+        ...dispatchData,
+        quantity: quantity > 0 ? quantity : (normalizeLookupText(quantityUnit) === 'kg' ? weightKg : 0),
+        quantityUnit,
+        actualWeightKg: weightKg,
+        clientMutationId,
+        referenceId: clientMutationId,
+        reason: dispatchData?.note,
+      }, { referenceType: 'HD_MANAGER_WAREHOUSE_DISPATCH' });
+      const ledger = await getHdConnectStagingApi().postWarehouseStockOut(ledgerPayload);
+      const normalized = normalizeVpsStockMovement(ledger, {
+        id: ledger?.id || clientMutationId,
+        companyId: myCompanyId,
+        productId: dispatchData?.productId,
+        warehouseId: dispatchData?.warehouseId,
+        unitId: dispatchData?.unitId,
+        quantityUnit,
+        weightKg,
+        sourceRecordId: clientMutationId,
+        date: dispatchData?.date || getTodayString(),
+        customerId: dispatchData?.customerId || '',
+      });
+      upsertLocalListRecord(setRawWarehouseDispatches, normalized);
+      return { id: normalized.id, queued: false };
+    }
     if (!firebaseUser) return null;
     const nowMs = Date.now();
     const createdAtIso = new Date(nowMs).toISOString();
@@ -19479,6 +19927,9 @@ export default function App() {
   };
 
   const handleEditWarehouseDispatch = async (dispatchId, updatedData = {}, empId = '') => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
+    }
     if (!firebaseUser || !dispatchId) return;
     const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
     const mergedData = { ...(previousDispatch || {}), ...(updatedData || {}) };
@@ -19533,6 +19984,9 @@ export default function App() {
   };
 
   const handleDeleteWarehouseDispatch = async (dispatchId) => {
+    if (isVpsStagingMode) {
+      throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
+    }
     if (!firebaseUser || !dispatchId) return;
     const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
     const archivedPayload = {
@@ -21632,11 +22086,13 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
+        isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
+        onMarkVpsNotificationsRead={handleMarkVpsNotificationsRead}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
         onGetCustomerProductPreference={handleGetCustomerProductPreference} onSaveCustomerProductPreference={handleSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={handleSyncCustomerFixedProductDefaults}
@@ -21742,6 +22198,51 @@ function QuickCreateLink({ label, onClick, primary = false, icon = null, classNa
       {icon}
       <span>{label}</span>
     </button>
+  );
+}
+
+function SectionInfoHint({ description, label = 'phần này', className = '' }) {
+  const tooltipId = useId();
+  const [isOpen, setIsOpen] = useState(false);
+
+  if (!description) return null;
+
+  return (
+    <span
+      className={`relative inline-flex shrink-0 align-middle ${className}`.trim()}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      <button
+        type="button"
+        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-transparent p-0 text-slate-500 transition hover:text-blue-700 focus:outline-none focus-visible:text-blue-700 focus-visible:underline focus-visible:underline-offset-2"
+        aria-label={`Xem mô tả ${label}`}
+        aria-expanded={isOpen}
+        aria-describedby={isOpen ? tooltipId : undefined}
+        onClick={(event) => {
+          event.stopPropagation();
+          setIsOpen(prev => !prev);
+        }}
+        onBlur={() => setIsOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setIsOpen(false);
+          }
+        }}
+      >
+        <span className="text-sm font-black leading-none" aria-hidden="true">i</span>
+      </button>
+      {isOpen && (
+        <span
+          id={tooltipId}
+          role="tooltip"
+          className="absolute left-1/2 top-full z-[140] mt-2 w-[min(18rem,calc(100vw-10rem))] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-left text-[11px] font-semibold leading-5 normal-case text-white shadow-2xl"
+        >
+          {description}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -22106,15 +22607,57 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
   });
 };
 
+function VpsModuleReadPanel({ moduleKey, model }) {
+  if (!moduleKey || !model) return null;
+  const isLoading = model.status === 'loading';
+  const hasError = model.status === 'error';
+  const statusLabel = isLoading ? 'Đang đọc VPS' : hasError ? 'VPS đọc lỗi' : 'Đã đọc từ VPS';
+  const statusClass = isLoading
+    ? 'border-sky-200 bg-sky-50 text-sky-700'
+    : hasError
+      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-800';
+
+  return (
+    <section className={`mb-4 rounded-2xl border px-4 py-3 ${statusClass}`} data-vps-read-module={moduleKey}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.14em]">VPS read path</p>
+          <p className="mt-1 text-sm font-bold">{statusLabel}</p>
+        </div>
+        {!isLoading && <span className="text-xs font-semibold">{model.endpoints?.filter((endpoint) => endpoint.status === 'ready').length || 0}/{model.endpoints?.length || 0} endpoint</span>}
+      </div>
+      {model.endpoints?.length > 0 && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {model.endpoints.map((endpoint) => (
+            <div key={endpoint.path} className="rounded-xl border border-current/10 bg-white/70 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold">{endpoint.label}</span>
+                <span className="font-black">{endpoint.status === 'ready' ? `${endpoint.count} bản ghi` : 'Lỗi'}</span>
+              </div>
+              <code className="mt-1 block truncate text-[10px] opacity-70">{endpoint.path}</code>
+              {endpoint.error && <p className="mt-1 text-[11px] font-semibold">{endpoint.error}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {!isLoading && model.endpoints?.length > 0 && model.endpoints.every((endpoint) => endpoint.status === 'ready' && endpoint.count === 0) && (
+        <p className="mt-3 text-xs font-semibold">VPS trả về trạng thái rỗng hợp lệ cho module này.</p>
+      )}
+    </section>
+  );
+}
+
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
+  isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
-  onAddMessage, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
+  onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
   onUpdateZaloOrderRequest, onConvertZaloOrderRequest,
   onToggleArchiveOrder, onToggleArchivePayment, onToggleArchiveExpense, onToggleArchiveProduct
 }) {
@@ -23188,6 +23731,18 @@ function MainAppView({
     const latestNotificationAt = notificationItems.reduce((latest, notice) => Math.max(latest, getEntityTimestamp(notice) || 0), 0);
     markNotificationsAsSeen(Math.max(Date.now(), latestNotificationAt));
     setShowNotificationCenter(false);
+    const isPersistedVpsNotification = Boolean(
+      isVpsMode
+      && item?.id
+      && notifications.some((notification) => notification?.id === item.id),
+    );
+    if (isPersistedVpsNotification && onMarkVpsNotificationsRead) {
+      try {
+        await onMarkVpsNotificationsRead([item.id]);
+      } catch (error) {
+        window.alert?.(error?.message || 'Không thể cập nhật trạng thái thông báo trên VPS.');
+      }
+    }
     if (item?.actionType === 'identity_owner_reset_request' && item?.identityResetRequestId) {
       const requesterLabel = item.requesterName || item.requesterPhone || 'nhân sự';
       const shouldApprove = typeof window === 'undefined' || typeof window.confirm !== 'function'
@@ -23821,8 +24376,8 @@ function MainAppView({
             note: 'Sản phẩm tạo nhanh sẽ dùng được ngay cho nhập kho, xuất kho, báo giá và báo cáo lợi nhuận.'
           });
         }
-        return <WarehouseImportView employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
+        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
@@ -24268,6 +24823,7 @@ function MainAppView({
       {renderHeader()}
       
       <main className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
+        {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
         <AppSectionErrorBoundary
           name={`staff_${activeTab}`}
           resetKey={activeTab}
@@ -26024,6 +26580,7 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
         <LazyIdentitySecurityCenter
           identityApi={identitySecurityApi}
           identityUser={currentUser}
+          vpsMode={isVpsMode}
           onGetIdentityToken={onGetIdentityToken}
           onLogout={onLogout}
         />
@@ -33827,8 +34384,13 @@ function BankPaymentCenterView({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-black uppercase tracking-[0.22em] text-sky-700">Trung tâm thanh toán</p>
-            <h2 className="mt-2 text-2xl font-black text-slate-900">Ngân hàng & Thanh toán</h2>
-            <p className="mt-1 text-sm font-semibold text-slate-500">Theo dõi QR, giao dịch chuyển khoản và đối soát công nợ trong một màn hình.</p>
+            <h2 className="mt-2 flex items-center gap-1 text-2xl font-black text-slate-900">
+              <span>Ngân hàng & Thanh toán</span>
+              <SectionInfoHint
+                description="Theo dõi QR, giao dịch chuyển khoản và đối soát công nợ trong một màn hình."
+                label="Ngân hàng & Thanh toán"
+              />
+            </h2>
           </div>
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-sky-600 shadow-sm">
             <CreditCard size={24} />
@@ -43986,11 +44548,13 @@ const buildOperatingCostSummaryForDate = ({
 
 function ReportSection({ title, subtitle, action, children }) {
   return (
-    <section className="bg-white rounded-[28px] border border-gray-100 shadow-sm overflow-hidden">
+    <section className="bg-white rounded-[28px] border border-gray-100 shadow-sm overflow-visible">
       <div className="px-4 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-bold text-gray-800">{title}</h3>
-          {subtitle && <p className="text-xs text-gray-500 mt-1 leading-relaxed">{subtitle}</p>}
+          <h3 className="flex items-center gap-1 font-bold text-gray-800">
+            <span>{title}</span>
+            <SectionInfoHint description={subtitle} label={title} />
+          </h3>
         </div>
         {action && <div className="shrink-0">{action}</div>}
       </div>
@@ -52414,11 +52978,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   );
 }
 
-function WarehouseImportView({ employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
+function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
   const actualStockReasonOptions = ['Đếm sai', 'Bị mất', 'Hư hỏng', 'Bị lỗi', 'Bị chết', 'Bị loại', 'Trả nhà cung cấp', 'Khác'];
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [warehouseCalendarMonth, setWarehouseCalendarMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
   const [draft, setDraft] = useState({
+    warehouseId: '',
+    unitId: '',
     productId: '',
     productName: '',
     productCode: '',
@@ -52444,6 +53010,9 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   const [showWarehouseProductCodePicker, setShowWarehouseProductCodePicker] = useState(false);
   const [warehouseProductScanStatus, setWarehouseProductScanStatus] = useState('');
   const [stockCountDraft, setStockCountDraft] = useState({
+    warehouseId: '',
+    productId: '',
+    unitId: '',
     groupName: DEFAULT_PROCESSING_INVENTORY_GROUPS[0] || 'Vịt',
     totalKg: '',
     quantity: '',
@@ -52454,6 +53023,16 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
   const [stockCountStatus, setStockCountStatus] = useState('');
   const [editingStockCountId, setEditingStockCountId] = useState('');
   const [isSavingStockCount, setIsSavingStockCount] = useState(false);
+  const [vpsStockCountDraft, setVpsStockCountDraft] = useState({
+    warehouseId: '',
+    productId: '',
+    unitId: '',
+    countedQuantity: '',
+    reason: '',
+    note: ''
+  });
+  const [vpsStockCountStatus, setVpsStockCountStatus] = useState('');
+  const [isSavingVpsStockCount, setIsSavingVpsStockCount] = useState(false);
   const [showStockCountGroupPicker, setShowStockCountGroupPicker] = useState(false);
   const [stockCountGroupSearchTerm, setStockCountGroupSearchTerm] = useState('');
   const [showSupplierPicker, setShowSupplierPicker] = useState(false);
@@ -54016,6 +54595,40 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     }
   };
 
+  const handleSubmitVpsStockCount = async (event) => {
+    event?.preventDefault?.();
+    if (!isVpsMode || !onAddWarehouseStockCount || isSavingVpsStockCount) return;
+    const { warehouseId, productId, unitId, countedQuantity, reason, note } = vpsStockCountDraft;
+    const quantity = parseLooseQuantityValue(countedQuantity);
+    if (!warehouseId || !productId || !unitId) {
+      setVpsStockCountStatus('Vui lòng chọn đủ kho, sản phẩm và đơn vị tồn VPS.');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      setVpsStockCountStatus('Số lượng kiểm thực tế phải là số không âm.');
+      return;
+    }
+    setIsSavingVpsStockCount(true);
+    setVpsStockCountStatus('Đang tạo session, ghi line và post kiểm tồn...');
+    try {
+      await onAddWarehouseStockCount({
+        vpsContract: true,
+        warehouseId,
+        productId,
+        unitId,
+        countedQuantity: quantity,
+        reason: canRecordActualStockReason ? `${reason || ''}`.trim() : '',
+        note: `${note || ''}`.trim(),
+      });
+      setVpsStockCountDraft(prev => ({ ...prev, countedQuantity: '', reason: '', note: '' }));
+      setVpsStockCountStatus('Đã post kiểm tồn VPS theo product/unit line.');
+    } catch (error) {
+      setVpsStockCountStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa post được kiểm tồn VPS.'));
+    } finally {
+      setIsSavingVpsStockCount(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event?.preventDefault?.();
     if (isEditingImport && (!canEditWarehouseImport || !onEditWarehouseImport)) {
@@ -54063,6 +54676,11 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
     try {
       setIsSaving(true);
       const payload = {
+        warehouseId: draft.warehouseId || '',
+        unitId: draft.unitId || '',
+        unitLabel: vpsUnits.find(unit => unit.id === draft.unitId)?.symbol
+          || vpsUnits.find(unit => unit.id === draft.unitId)?.name
+          || '',
         productId: matchedProduct?.id || draft.productId || '',
         productName,
         productNameSnapshot: productName,
@@ -54095,6 +54713,8 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       setStatus(`${isEditingImport ? 'Đã cập nhật phiếu nhập kho' : 'Đã lưu nhập kho'} ${groupName}.${syncNote}`);
       setDraft(prev => ({
         ...prev,
+        warehouseId: '',
+        unitId: '',
         productId: '',
         productName: '',
         productCode: '',
@@ -54141,6 +54761,47 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
       {warehouseInventoryTab === 'import' && (
         <>
       <form onSubmit={handleSubmit} className="rounded-[30px] border border-gray-100 bg-white p-4 shadow-sm">
+        {isVpsMode && (
+          <div className="mb-3 grid grid-cols-1 gap-2 rounded-2xl border border-blue-100 bg-blue-50/60 p-3 sm:grid-cols-2">
+            <label className="min-w-0">
+              <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Kho VPS</span>
+              <select
+                value={draft.warehouseId || ''}
+                onChange={event => updateDraft({ warehouseId: event.target.value })}
+                className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+                required
+              >
+                <option value="">Chọn kho đã xác định</option>
+                {vpsWarehouses.filter(item => !item?.deletedAt).map(warehouse => (
+                  <option key={warehouse.id} value={warehouse.id}>{warehouse.code || warehouse.name} - {warehouse.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="min-w-0">
+              <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Đơn vị tồn VPS</span>
+              <select
+                value={draft.unitId || ''}
+                onChange={event => {
+                  const selectedUnit = vpsUnits.find(unit => unit.id === event.target.value);
+                  updateDraft({
+                    unitId: event.target.value,
+                    quantityUnit: normalizeWarehouseMeasureUnit(selectedUnit?.symbol || selectedUnit?.code || selectedUnit?.name || ''),
+                  });
+                }}
+                className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+                required
+              >
+                <option value="">Chọn UOM, không tự quy đổi</option>
+                {vpsUnits.filter(item => !item?.deletedAt).map(unit => (
+                  <option key={unit.id} value={unit.id}>{unit.symbol || unit.code || unit.name} - {unit.name}</option>
+                ))}
+              </select>
+            </label>
+            {(vpsWarehouses.length === 0 || vpsUnits.length === 0) && (
+              <p className="sm:col-span-2 text-xs font-semibold text-amber-700">Chưa có master kho/UOM VPS để chọn. Không thể ghi nhận nhập kho an toàn.</p>
+            )}
+          </div>
+        )}
         {isEditingImport && (
           <div className="mb-3 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-black text-amber-700">
             Đang sửa phiếu nhập kho. Bấm cập nhật để lưu thay đổi hoặc hủy để quay lại tạo mới.
@@ -54597,6 +55258,88 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
 
       {warehouseInventoryTab === 'stock' && (
         <>
+      {isVpsMode && (
+        <section className="rounded-[30px] border border-blue-100 bg-blue-50/50 p-4 shadow-sm">
+          <div className="mb-3">
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-blue-700">Kiểm tồn VPS</p>
+            <p className="mt-1 text-xs font-semibold text-blue-800/75">Mỗi lần post là một session với một product/unit line; không tự quy đổi.</p>
+          </div>
+          <form onSubmit={handleSubmitVpsStockCount} className="grid grid-cols-1 gap-2 md:grid-cols-4">
+            <select
+              value={vpsStockCountDraft.warehouseId}
+              onChange={event => setVpsStockCountDraft(prev => ({ ...prev, warehouseId: event.target.value }))}
+              className="rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+              required
+            >
+              <option value="">Chọn kho</option>
+              {vpsWarehouses.filter(item => !item?.deletedAt).map(item => (
+                <option key={item.id} value={item.id}>{item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <select
+              value={vpsStockCountDraft.productId}
+              onChange={event => setVpsStockCountDraft(prev => ({ ...prev, productId: event.target.value }))}
+              className="rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+              required
+            >
+              <option value="">Chọn sản phẩm</option>
+              {products.filter(item => !item?.isArchived).map(item => (
+                <option key={item.id} value={item.id}>{item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <select
+              value={vpsStockCountDraft.unitId}
+              onChange={event => setVpsStockCountDraft(prev => ({ ...prev, unitId: event.target.value }))}
+              className="rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+              required
+            >
+              <option value="">Chọn UOM</option>
+              {vpsUnits.filter(item => !item?.deletedAt).map(item => (
+                <option key={item.id} value={item.id}>{item.symbol || item.code || item.name} - {item.name}</option>
+              ))}
+            </select>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min="0"
+                step="0.000001"
+                value={vpsStockCountDraft.countedQuantity}
+                onChange={event => setVpsStockCountDraft(prev => ({ ...prev, countedQuantity: event.target.value }))}
+                placeholder="Tồn thực tế"
+                className="min-w-0 flex-1 rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+                required
+              />
+              <button
+                type="submit"
+                disabled={isSavingVpsStockCount || vpsWarehouses.length === 0 || vpsUnits.length === 0 || products.length === 0}
+                className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-black text-white shadow-sm disabled:opacity-50"
+              >
+                {isSavingVpsStockCount ? 'Đang post' : 'Post'}
+              </button>
+            </div>
+            {canRecordActualStockReason && (
+              <input
+                type="text"
+                value={vpsStockCountDraft.reason}
+                onChange={event => setVpsStockCountDraft(prev => ({ ...prev, reason: event.target.value }))}
+                placeholder="Lý do chênh lệch"
+                className="rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 md:col-span-2"
+              />
+            )}
+            <input
+              type="text"
+              value={vpsStockCountDraft.note}
+              onChange={event => setVpsStockCountDraft(prev => ({ ...prev, note: event.target.value }))}
+              placeholder="Ghi chú"
+              className="rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 md:col-span-2"
+            />
+          </form>
+          {vpsStockCountStatus && <p className="mt-2 rounded-xl bg-white px-3 py-2 text-xs font-bold text-blue-800">{vpsStockCountStatus}</p>}
+          {(vpsWarehouses.length === 0 || vpsUnits.length === 0 || products.length === 0) && (
+            <p className="mt-2 text-xs font-semibold text-amber-700">Thiếu master kho, UOM hoặc sản phẩm VPS; không thể post an toàn.</p>
+          )}
+        </section>
+      )}
       {canViewActualStockCount && (
         <section className="rounded-[30px] border border-cyan-100 bg-gradient-to-br from-white via-cyan-50/60 to-emerald-50 p-4 shadow-sm">
           <div className="mb-3 flex items-start justify-between gap-3">
@@ -54634,7 +55377,13 @@ function WarehouseImportView({ employee, currentCompany = {}, customers = [], pr
                           <button
                             key={`${row.key}_${measure.unit}`}
                             type="button"
-                            onClick={() => openQuickStockEdit(row, measure)}
+                            onClick={() => {
+                              if (isVpsMode) {
+                                setStockCountStatus('VPS dùng form product/unit ở phía trên; không sửa grouped legacy count.');
+                                return;
+                              }
+                              openQuickStockEdit(row, measure);
+                            }}
                             className={`min-w-0 flex-1 rounded-full px-2 py-1 text-center text-[11px] font-black shadow-sm transition active:scale-95 ${hasRecordedActual ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100'}`}
                           >
                             <span className="block truncate">Tồn {formatNumber(resolveWarehouseStockChecklistDisplayValue(actualMeasure, measure.remaining))} {measure.unit}</span>
@@ -55552,7 +56301,7 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 });
 
-function WarehouseDispatchView({ employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
+function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
@@ -55574,6 +56323,8 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
   const canManageDispatchRows = canEdit || canDelete;
   const dispatchListRef = useRef(null);
   const createEmptyDispatchDraft = (assignedDriverId = '') => ({
+    warehouseId: '',
+    unitId: '',
     customerId: '',
     customerSearch: '',
     productId: '',
@@ -58392,6 +59143,11 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
 
     const saveResult = await onAddWarehouseDispatch(employee.id, {
       ...billingSnapshot,
+      warehouseId: dispatchDraft.warehouseId || '',
+      unitId: dispatchDraft.unitId || '',
+      unitLabel: vpsUnits.find(unit => unit.id === dispatchDraft.unitId)?.symbol
+        || vpsUnits.find(unit => unit.id === dispatchDraft.unitId)?.name
+        || '',
       clientMutationId: `wd_${employee.id}_${workingDate}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       date: workingDate,
       customerId: customer.id,
@@ -58787,6 +59543,48 @@ function WarehouseDispatchView({ employee, employees = [], currentCompany, custo
       {canCreate && (
         <div className="order-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <form onSubmit={handleSubmitDispatch} className="space-y-3">
+            {isVpsMode && (
+              <div className="grid grid-cols-1 gap-2 rounded-2xl border border-blue-100 bg-blue-50/60 p-3 sm:grid-cols-2">
+                <label className="min-w-0">
+                  <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Kho VPS</span>
+                  <select
+                    value={dispatchDraft.warehouseId || ''}
+                    onChange={event => setDispatchDraft(prev => ({ ...prev, warehouseId: event.target.value }))}
+                    className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+                    required
+                  >
+                    <option value="">Chọn kho đã xác định</option>
+                    {vpsWarehouses.filter(item => !item?.deletedAt).map(warehouse => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.code || warehouse.name} - {warehouse.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="min-w-0">
+                  <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Đơn vị tồn VPS</span>
+                  <select
+                    value={dispatchDraft.unitId || ''}
+                    onChange={event => {
+                      const selectedUnit = vpsUnits.find(unit => unit.id === event.target.value);
+                      setDispatchDraft(prev => ({
+                        ...prev,
+                        unitId: event.target.value,
+                        quantityUnit: normalizeWarehouseMeasureUnit(selectedUnit?.symbol || selectedUnit?.code || selectedUnit?.name || ''),
+                      }));
+                    }}
+                    className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+                    required
+                  >
+                    <option value="">Chọn UOM, không tự quy đổi</option>
+                    {vpsUnits.filter(item => !item?.deletedAt).map(unit => (
+                      <option key={unit.id} value={unit.id}>{unit.symbol || unit.code || unit.name} - {unit.name}</option>
+                    ))}
+                  </select>
+                </label>
+                {(vpsWarehouses.length === 0 || vpsUnits.length === 0) && (
+                  <p className="sm:col-span-2 text-xs font-semibold text-amber-700">Chưa có master kho/UOM VPS để chọn. Không thể ghi nhận xuất kho an toàn.</p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
@@ -67370,7 +68168,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               <div className="rounded-[28px] border border-rose-100 bg-gradient-to-br from-white via-rose-50/40 to-amber-50/40 p-4 shadow-sm hd-soft-red-outline">
                 <div className="mb-4 grid grid-cols-[1.05fr_1.15fr] gap-3">
                   <div className="rounded-3xl bg-white/85 px-3 py-4 text-left shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Khách hàng</p>
                     <p className="mt-1 line-clamp-2 text-[15px] font-black leading-5 text-slate-950">{selectedOrder.customer?.name || 'Khách lẻ'}</p>
                     {(selectedOrder.branchName || selectedOrder.customerBranchName) && (
                       <p className="mt-1 inline-flex max-w-full rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-black text-sky-700">
@@ -74781,13 +75578,54 @@ const getEmployeeReviewStars = (score = 0) => {
   return 1;
 };
 
-const getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = '', monthKey = '', companyId = '') => (
-  Object.values(attendance || {}).filter(record => (
-    `${record?.empId || record?.employeeId || ''}` === `${empId || ''}` &&
-    normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)) === monthKey &&
-    (!companyId || `${record?.companyId || record?.appId || record?.tenantId || ''}` === `${companyId}`)
-  ))
-);
+const getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = '', monthKey = '', companyId = '') => {
+  const records = Array.isArray(attendance)
+    ? attendance.map(record => ({ key: record?.id || '', record }))
+    : Object.entries(attendance || {}).map(([key, record]) => ({ key, record }));
+
+  return records
+    .map(({ key, record }) => {
+      // Attendance payroll rows are keyed by work date and employee. Prefer
+      // that document identity so legacy record.date values cannot move the
+      // same check-in into a different shift day during evaluation.
+      const documentId = `${key || record?.id || ''}`;
+      const documentIdMatch = documentId.match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
+      const employeeId = record?.empId
+        || record?.employeeId
+        || record?.targetEmployeeId
+        || documentIdMatch?.[2]
+        || '';
+      const date = documentIdMatch?.[1]
+        || record?.date
+        || record?.dateKey
+        || record?.monthKey
+        || documentIdMatch?.[1]
+        || record?.createdAt
+        || record?.updatedAt
+        || getEntityTimestamp(record);
+      return {
+        ...(record || {}),
+        id: documentId || record?.id,
+        employeeId: record?.employeeId || employeeId,
+        date: documentIdMatch?.[1] || record?.date || date
+      };
+    })
+    .filter(record => (
+      `${record?.employeeId || record?.empId || ''}` === `${empId || ''}` &&
+      normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)) === monthKey &&
+      (!companyId || `${record?.companyId || record?.appId || record?.tenantId || ''}` === `${companyId}`)
+    ));
+};
+
+const isEmployeeReviewLeaveRecord = (record = {}) => {
+  const status = `${record?.status || record?.type || ''}`.trim().toLowerCase();
+  return Boolean(
+    record?.leave
+    || record?.isLeave
+    || record?.leaveType
+    || ['leave', 'approved_leave', 'unapproved_leave', 'absent'].includes(status)
+  );
+};
 
 const getEmployeeReviewOrderAmount = (order = {}) => (
   parseLooseMoneyValue(order.totalAmount ?? order.total ?? order.amount ?? order.finalAmount ?? order.grandTotal ?? order.revenue ?? 0)
@@ -74960,14 +75798,18 @@ const calculateEmployeeSystemReview = (emp = {}, {
 } = {}) => {
   const employeeId = emp?.id || '';
   const attendanceEntries = getEmployeeAttendanceEntriesForMonth(attendance, employeeId, monthKey, companyId);
-  const shiftPolicy = resolveEmployeeShiftPolicy(emp);
-  const shiftStartMinutes = getMinutesFromTimeString(shiftPolicy.shiftStart || '07:00');
-  const graceMinutes = Number(shiftPolicy.graceMinutes || 0);
   const workDays = attendanceEntries.filter(record => record?.checkIn || record?.status === 'present' || record?.type === 'work').length;
-  const leaveDays = attendanceEntries.filter(record => record?.leave || record?.status === 'leave' || record?.isLeave).length;
+  const leaveDays = new Set(
+    attendanceEntries
+      .filter(isEmployeeReviewLeaveRecord)
+      .map(record => getDateKeyFromAnyValue(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)))
+      .filter(Boolean)
+  ).size;
   const lateCount = attendanceEntries.filter(record => {
-    const checkInMinutes = getCheckTimeMinutes(record?.checkIn || record?.checkInAt || record?.timeIn);
-    return checkInMinutes !== null && shiftStartMinutes !== null && checkInMinutes > (shiftStartMinutes + graceMinutes);
+    if (isEmployeeReviewLeaveRecord(record)) return false;
+    const checkInValue = record?.checkIn || record?.checkInAt || record?.timeIn;
+    if (checkInValue) return calculateAttendanceTiming(emp, record).lateMinutes > 0;
+    return parseMinutesInput(record?.lateMinutes ?? record?.minutesLate ?? record?.late, 0) > 0;
   }).length;
   const missingCheckOut = attendanceEntries.filter(record => (record?.checkIn || record?.checkInAt) && !(record?.checkOut || record?.checkOutAt)).length;
   const monthOrders = (orders || []).filter(order => (
@@ -75011,7 +75853,8 @@ const calculateEmployeeSystemReview = (emp = {}, {
 const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
   const monthKey = normalizeEmployeeReviewMonthKey(context.monthKey || getTodayString());
   const companyId = context.companyId || context.currentCompany?.id || context.currentCompany?.companyId || emp?.companyId || '';
-  const system = calculateEmployeeSystemReview(emp, { ...context, monthKey, companyId });
+  const effectiveEmployee = applyEmployeePayrollPolicyForMonth(emp, monthKey);
+  const system = calculateEmployeeSystemReview(effectiveEmployee, { ...context, monthKey, companyId });
   const peer = summarizeEmployeeReviews(context.reviews || [], emp.id, monthKey, 'peer');
   const customer = summarizeEmployeeReviews(context.reviews || [], emp.id, monthKey, 'customer');
   const systemCriteriaScores = buildEmployeeSystemReviewCriteriaScores(system);
@@ -75029,9 +75872,6 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
   const finalCriteriaAverage = getEmployeeReviewCriteriaAverage(finalCriteriaScores);
   const finalScore = Math.round(finalCriteriaAverage * 20);
   const stars = getEmployeeReviewStars(finalScore);
-  const attendanceSource = Array.isArray(context.attendance)
-    ? context.attendance
-    : Object.values(context.attendance || {});
   const attendanceLoaded = context.attendanceLoaded !== undefined
     ? context.attendanceLoaded
     : context.attendance !== null && context.attendance !== undefined;
@@ -75039,14 +75879,14 @@ const buildEmployeeReviewSummary = (emp = {}, context = {}) => {
     ? context.complaintsLoaded
     : context.complaints !== null && context.complaints !== undefined;
   const automaticEvaluation = emp?.id ? calculateEmployeeAutomaticEvaluation({
-    employeeId: emp.id,
+    employeeId: effectiveEmployee.id,
     companyId,
     monthKey,
     attendanceEntries: attendanceLoaded
-      ? getEmployeeAttendanceEntriesForMonth(attendanceSource, emp.id, monthKey, companyId)
+      ? getEmployeeAttendanceEntriesForMonth(context.attendance, emp.id, monthKey, companyId)
       : null,
     complaints: complaintsLoaded ? context.complaints : null,
-    shiftPolicy: context.shiftPolicy || emp?.shiftPolicy || context.currentCompany?.shiftPolicy || context.currentCompany?.evaluationSettings?.shiftPolicy || {}
+    shiftPolicy: resolveEmployeeShiftPolicy(effectiveEmployee)
   }) : null;
   const evaluationSummary13 = emp?.id ? buildEvaluationSummary13({
     employeeId: emp.id,
@@ -75187,6 +76027,24 @@ const getEmployeeReviewAdvice = (stars = 0, criteriaScores = {}, criteriaList = 
   };
 };
 
+const wrapEmployeeReviewRadarLabel = (label = '', maxChars = 10) => {
+  const words = `${label || ''}`.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let current = '';
+  words.forEach(word => {
+    const candidate = current ? `${current} ${word}` : word;
+    if (current && candidate.length > maxChars) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  });
+  if (current) lines.push(current);
+  return lines;
+};
+
 function EmployeeReviewRadarChart({
   criteriaList = [],
   datasets = [],
@@ -75230,7 +76088,15 @@ function EmployeeReviewRadarChart({
         {criteria.map((criteriaItem, index) => {
           const edge = pointFor(index, 5);
           // Keep criterion names clear of the score touch targets on each axis.
-          const label = pointFor(index, 6.3);
+          const labelLines = wrapEmployeeReviewRadarLabel(criteriaItem.label);
+          const labelRadius = maxRadius + (labelLines.length > 1 ? 50 : 34);
+          const labelAngle = angleFor(index);
+          const label = {
+            x: center + (Math.cos(labelAngle) * labelRadius),
+            y: center + (Math.sin(labelAngle) * labelRadius)
+          };
+          const labelX = Math.min(Math.max(label.x, 58), size - 58);
+          const labelY = label.y - ((labelLines.length - 1) * 6);
           const isEditingLabel = editingCriteriaId === criteriaItem.id;
           const labelBoxWidth = 118;
           const labelBoxHeight = 38;
@@ -75262,9 +76128,9 @@ function EmployeeReviewRadarChart({
                 </foreignObject>
               ) : (
                 <text
-                  x={label.x}
-                  y={label.y}
-                  textAnchor={label.x < center - 10 ? 'end' : label.x > center + 10 ? 'start' : 'middle'}
+                  x={labelX}
+                  y={labelY}
+                  textAnchor="middle"
                   dominantBaseline="middle"
                   className={`fill-slate-700 text-[12px] font-black ${canEditLabels ? 'cursor-pointer hover:fill-emerald-600' : ''}`}
                   onClick={() => canEditLabels && onStartLabelEdit?.(criteriaItem)}
@@ -75279,7 +76145,9 @@ function EmployeeReviewRadarChart({
                     }
                   }}
                 >
-                  {criteriaItem.label}
+                  {labelLines.map((line, lineIndex) => (
+                    <tspan key={`${criteriaItem.id}-label-${lineIndex}`} x={labelX} dy={lineIndex === 0 ? 0 : 12}>{line}</tspan>
+                  ))}
                 </text>
               )}
             </g>
@@ -75381,7 +76249,6 @@ function EmployeeReviewModuleView({
   const [saveMessage, setSaveMessage] = useState('');
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [editingReviewId, setEditingReviewId] = useState('');
-  const [editingCriteria, setEditingCriteria] = useState(false);
   const [editingCriteriaId, setEditingCriteriaId] = useState('');
   const [criteriaDraft, setCriteriaDraft] = useState(() => criteriaList.reduce((acc, criteria) => {
     acc[criteria.id] = criteria.label;
@@ -75413,21 +76280,28 @@ function EmployeeReviewModuleView({
   const peerReviews = monthReviews.filter(review => `${review?.source || 'peer'}` === 'peer');
   const customerReviews = monthReviews.filter(review => `${review?.source || ''}` === 'customer');
   const companyId = currentCompany?.id || currentCompany?.companyId || selectedEmployee?.companyId || '';
-  const systemReview = calculateEmployeeSystemReview(selectedEmployee, { attendance, orders, deliveryReports, monthKey, companyId });
+  const evaluationEmployee = applyEmployeePayrollPolicyForMonth(selectedEmployee, monthKey);
+  const systemReview = calculateEmployeeSystemReview(evaluationEmployee, { attendance, orders, deliveryReports, monthKey, companyId });
+  const evaluationAttendanceEntries = attendanceLoaded
+    ? getEmployeeAttendanceEntriesForMonth(
+      attendance,
+      selectedEmployee?.id,
+      monthKey,
+      companyId
+    ).map(entry => ({
+      ...entry,
+      // Reuse the payroll timing result so early arrival can never become late
+      // in the automatic review card when legacy attendance dates are mixed.
+      payrollLateMinutes: calculateAttendanceTiming(evaluationEmployee, entry).lateMinutes
+    }))
+    : null;
   const automaticEvaluation = calculateEmployeeAutomaticEvaluation({
     employeeId: selectedEmployee?.id,
     companyId,
     monthKey,
-    attendanceEntries: attendanceLoaded
-      ? getEmployeeAttendanceEntriesForMonth(
-        Array.isArray(attendance) ? attendance : Object.values(attendance || {}),
-        selectedEmployee?.id,
-        monthKey,
-        companyId
-      )
-      : null,
+    attendanceEntries: evaluationAttendanceEntries,
     complaints: complaintsLoaded ? complaints : null,
-    shiftPolicy: selectedEmployee?.shiftPolicy || currentCompany?.shiftPolicy || currentCompany?.evaluationSettings?.shiftPolicy || {}
+    shiftPolicy: resolveEmployeeShiftPolicy(evaluationEmployee)
   });
   const systemScores = buildEmployeeSystemReviewCriteriaScores(systemReview);
   const peerScores = summarizeEmployeeReviewCriteriaScores(peerReviews, criteriaList);
@@ -75517,15 +76391,13 @@ function EmployeeReviewModuleView({
     setSaveMessage('');
   };
 
-  const handleSaveCriteriaLabels = async (options = {}) => {
+  const handleSaveCriteriaLabels = async () => {
     if (!canManageReviewCriteria || !onUpdateCompanySettings) return;
-    const closeEditor = options?.closeEditor !== false;
     const normalizedLabels = normalizeEmployeeReviewCriteriaLabels(criteriaDraft, currentCompany);
     setSaveMessage('Đang lưu tiêu chí đánh giá...');
     try {
       const result = await onUpdateCompanySettings({ employeeReviewCriteriaLabels: normalizedLabels });
       if (result?.success === false) throw new Error(result?.message || 'Không lưu được tiêu chí đánh giá.');
-      if (closeEditor) setEditingCriteria(false);
       setEditingCriteriaId('');
       setSaveMessage('Đã cập nhật tiêu chí đánh giá.');
     } catch (error) {
@@ -75535,7 +76407,6 @@ function EmployeeReviewModuleView({
 
   const startInlineCriteriaEdit = (criteria) => {
     if (!canManageReviewCriteria) return;
-    setEditingCriteria(false);
     setCriteriaDraft(prev => ({
       ...prev,
       [criteria.id]: prev?.[criteria.id] ?? criteria.label
@@ -75596,16 +76467,20 @@ function EmployeeReviewModuleView({
           </label>
           <label className="min-w-0 space-y-1 text-center">
             <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Tháng</span>
-            <input
-              type="month"
-              value={monthKey}
-              onChange={event => {
-                setMonthKey(normalizeEmployeeReviewMonthKey(event.target.value || getTodayString()));
-                setEditingReviewId('');
-                setSaveMessage('');
-              }}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-2 py-2.5 text-center text-sm font-bold text-slate-800 outline-none"
-            />
+            <span className="relative flex w-full items-center justify-center rounded-2xl border border-slate-200 bg-white px-2 py-2.5 text-sm font-bold text-slate-800">
+              <span aria-hidden="true">{formatMonthYearShortLabel(monthKey)}</span>
+              <input
+                type="month"
+                value={monthKey}
+                aria-label="Chọn tháng đánh giá"
+                onChange={event => {
+                  setMonthKey(normalizeEmployeeReviewMonthKey(event.target.value || getTodayString()));
+                  setEditingReviewId('');
+                  setSaveMessage('');
+                }}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              />
+            </span>
           </label>
         </div>
       </section>
@@ -75630,7 +76505,7 @@ function EmployeeReviewModuleView({
               criteriaDraft={criteriaDraft}
               onStartLabelEdit={startInlineCriteriaEdit}
               onDraftLabelChange={(criteriaId, value) => setCriteriaDraft(prev => ({ ...prev, [criteriaId]: value }))}
-              onSaveLabel={() => handleSaveCriteriaLabels({ closeEditor: false })}
+              onSaveLabel={handleSaveCriteriaLabels}
               onCancelLabelEdit={(criteriaId) => {
                 const criteria = criteriaList.find(item => item.id === criteriaId);
                 setCriteriaDraft(prev => ({ ...prev, [criteriaId]: criteria?.label || prev?.[criteriaId] || '' }));
@@ -75638,49 +76513,6 @@ function EmployeeReviewModuleView({
               }}
             />
           </div>
-          {canManageReviewCriteria && (
-            <div className="mt-4 rounded-3xl border border-emerald-100 bg-emerald-50/60 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">Tên 10 tiêu chí</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingCriteria(prev => !prev);
-                    setEditingCriteriaId('');
-                  }}
-                  className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-700 transition-colors hover:bg-emerald-100"
-                >
-                  {editingCriteria ? 'Đóng chỉnh sửa' : 'Sửa tên tiêu chí'}
-                </button>
-              </div>
-              {editingCriteria && (
-                <>
-                  <p className="mt-2 text-xs leading-relaxed text-emerald-800">Đổi tên trực tiếp tại từng ô, sau đó bấm lưu. Tên mới sẽ áp dụng cho toàn bộ màn hình đánh giá.</p>
-                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {criteriaList.map(criteria => (
-                      <label key={criteria.id} className="min-w-0">
-                        <span className="sr-only">Tên tiêu chí {criteria.label}</span>
-                        <input
-                          type="text"
-                          value={criteriaDraft?.[criteria.id] || ''}
-                          onChange={event => setCriteriaDraft(prev => ({ ...prev, [criteria.id]: event.target.value }))}
-                          className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
-                          aria-label={`Đổi tên tiêu chí ${criteria.label}`}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleSaveCriteriaLabels({ closeEditor: true })}
-                    className="mt-3 w-full rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-black text-white transition-colors hover:bg-emerald-700"
-                  >
-                    Lưu tên tiêu chí
-                  </button>
-                </>
-              )}
-            </div>
-          )}
           <textarea
             value={reviewReason}
             onChange={event => setReviewReason(event.target.value)}
@@ -75718,7 +76550,7 @@ function EmployeeReviewModuleView({
           <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Đánh giá của đồng nghiệp</p>
           <div className="flex flex-wrap justify-end gap-2">
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
-              {peerReviews.length ? `${peerReviewerCount} nhân viên đã đánh giá` : 'Chưa có đánh giá'}
+              Số người đánh giá: {peerReviewerCount}
             </span>
             <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
               Tổng thưởng {formatCurrency(peerReviewBonus)} đ
@@ -75736,6 +76568,31 @@ function EmployeeReviewModuleView({
                   <span className="shrink-0 text-amber-700">· {score.toLocaleString('vi-VN', { maximumFractionDigits: 1 })} sao</span>
                 </p>
                 <p className="mt-1 text-[11px] font-black text-emerald-600">{formatCurrency(criteriaBonus)} đ</p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-100">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-sky-600">Đánh giá tự động</p>
+          </div>
+          <span className={`rounded-full px-3 py-1 text-xs font-black ${automaticEvaluation?.status === 'complete' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+            {automaticEvaluation?.status === 'complete' ? 'Đã đủ dữ liệu' : 'Chờ bổ sung dữ liệu'}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {AUTOMATIC_EVALUATION_CRITERIA.map(criteria => {
+            const result = automaticEvaluation?.criteria?.[criteria.id] || {};
+            const hasValue = result.value !== null && result.value !== undefined;
+            const hasScore = result.score !== null && result.score !== undefined;
+            return (
+              <div key={criteria.id} className="rounded-2xl bg-sky-50/70 px-3 py-3 ring-1 ring-sky-100">
+                <p className="text-xs font-black leading-5 text-slate-700">{result.label || criteria.label}</p>
+                <p className="mt-2 text-sm font-black text-sky-700">{hasValue ? `${result.value} ${result.unit || criteria.unit}` : 'Chưa có dữ liệu'}</p>
+                <p className="mt-1 text-[11px] font-bold text-slate-500">{hasScore ? `${result.score}/5 sao` : 'Chưa chấm'}</p>
               </div>
             );
           })}
@@ -75878,11 +76735,14 @@ function HolidayConfigCard({
     <div className="rounded-3xl border border-purple-100 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-purple-600">Ngày lễ trong năm</p>
-          <h2 className="mt-1 text-base font-black text-slate-900">Cài một lần, bảng lương tự tính</h2>
-          <p className="mt-1 text-xs leading-relaxed text-slate-500">
-            Cài tiền cố định hoặc % lương ngày. Nhân sự có chấm công vào đúng ngày lễ sẽ được cộng thưởng tự động.
+          <p className="flex items-center text-[10px] font-black uppercase tracking-[0.16em] text-purple-600">
+            <span>Ngày lễ trong năm</span>
+            <SectionInfoHint
+              description="Cài tiền cố định hoặc phần trăm lương ngày. Nhân sự chấm công đúng ngày lễ sẽ được cộng thưởng tự động."
+              label="Ngày lễ trong năm"
+            />
           </p>
+          <h2 className="mt-1 text-base font-black text-slate-900">Cài một lần, bảng lương tự tính</h2>
         </div>
         {canManage && (
           <button
@@ -76750,37 +77610,29 @@ function EmployeeView({
       <div className="flex items-center mb-2">
         <h2 className="text-lg font-bold text-gray-800">Tài khoản bộ phận</h2>
       </div>
-      <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm text-blue-900">
-        <p className="font-bold uppercase text-[11px] tracking-[0.16em] text-blue-700 mb-2">Mô hình tài khoản</p>
-        <p className="leading-relaxed">Mỗi công ty có một tài khoản <strong>Chủ doanh nghiệp</strong> được tạo khi đăng ký. Từ đây, chủ doanh nghiệp tạo thêm tài khoản cho các bộ phận: <strong>Kế toán & nhân sự</strong>, <strong>Tài xế</strong>, <strong>Sản xuất</strong>, <strong>Kinh doanh</strong>, <strong>Cộng tác viên kinh doanh</strong> và <strong>Xuất kho</strong>.</p>
-      </div>
-      {employeeStatus && (
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-          {employeeStatus}
-        </div>
-      )}
-      {(canViewEmployees || canManageHolidayConfig || isSuperAdmin) && (
-        <HolidayConfigCard
-          holidays={holidays}
-          onAddHoliday={onAddHoliday}
-          onDeleteHoliday={onDeleteHoliday}
-          canManage={Boolean(isSuperAdmin || canManageHolidayConfig)}
-        />
-      )}
       {salesRevenueRows.length > 0 && (
         <div className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 to-teal-600 p-4 text-white shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">Doanh thu nhân viên kinh doanh</p>
-              <p className="mt-1 text-xs font-semibold text-white/80">Mỗi tháng được tính độc lập theo ngày phát sinh đơn hàng.</p>
+              <p className="flex items-center text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">
+                <span>Doanh thu</span>
+                <SectionInfoHint
+                  description="Mỗi tháng được tính độc lập theo ngày phát sinh đơn hàng."
+                  label="Doanh thu"
+                  className="[&>button]:text-white"
+                />
+              </p>
             </div>
-            <input
-              type="month"
-              value={salesRevenueMonth}
-              onChange={event => setSalesRevenueMonth(normalizePayrollMonthKey(event.target.value) || getTodayString().slice(0, 7))}
-              className="min-h-11 shrink-0 rounded-2xl border border-white/30 bg-white/15 px-3 text-xs font-black text-white outline-none [color-scheme:dark] focus:ring-2 focus:ring-white/50"
-              aria-label="Chọn tháng doanh thu nhân viên kinh doanh"
-            />
+            <label className="relative flex min-h-11 min-w-[9rem] shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/30 bg-white/15 px-3 text-xs font-black text-white">
+              <span aria-hidden="true">{formatMonthYearShortLabel(salesRevenueMonth)}</span>
+              <input
+                type="month"
+                value={salesRevenueMonth}
+                onChange={event => setSalesRevenueMonth(normalizePayrollMonthKey(event.target.value) || getTodayString().slice(0, 7))}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label="Chọn tháng doanh thu"
+              />
+            </label>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-center">
             <div className="rounded-2xl bg-white/12 px-2 py-2.5">
@@ -76798,95 +77650,27 @@ function EmployeeView({
           </div>
         </div>
       )}
-      {canUseEmployeeReviews && (
-        <div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-amber-600">Đánh giá nhân sự</p>
-              <h3 className="text-lg font-black text-gray-900">Chấm sao nội bộ & hệ thống tự chấm</h3>
-              <p className="text-xs text-gray-500">Đánh giá theo hướng xây dựng: hỗ trợ nhau tốt hơn, làm việc hòa thuận và rõ trách nhiệm.</p>
-            </div>
-            <input
-              type="month"
-              value={reviewMonth}
-              onChange={event => setReviewMonth(normalizeEmployeeReviewMonthKey(event.target.value))}
-              className="rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-amber-300"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-3 text-center">
-              <p className="text-[10px] font-black uppercase text-gray-400">Nhân sự</p>
-              <p className="text-xl font-black text-gray-900">{employeeEvaluationOverview.total}</p>
-            </div>
-            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-center">
-              <p className="text-[10px] font-black uppercase text-emerald-600">Điểm TB</p>
-              <p className="text-xl font-black text-emerald-700">{employeeEvaluationOverview.avgScore}</p>
-            </div>
-            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3 text-center">
-              <p className="text-[10px] font-black uppercase text-amber-600">5 sao</p>
-              <p className="text-xl font-black text-amber-700">{employeeEvaluationOverview.fiveStar}</p>
-            </div>
-            <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-center">
-              <p className="text-[10px] font-black uppercase text-blue-600">Thưởng gợi ý</p>
-              <p className="text-sm font-black text-blue-700">{formatCurrency(employeeEvaluationOverview.bonusTotal)} đ</p>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
-            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Tiêu chí đánh giá</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {getEmployeeReviewCriteriaList(currentCompany).map(criteria => (
-                <span key={criteria.id} className="rounded-full border border-emerald-100 bg-white px-3 py-1 text-[11px] font-bold text-emerald-700">
-                  {criteria.label}
-                </span>
-              ))}
-              {AUTOMATIC_EVALUATION_CRITERIA.map(criteria => (
-                <span key={criteria.id} className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] font-bold text-blue-700">
-                  Tự động: {criteria.label}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-2">
-            {employeeEvaluationRows.slice(0, 12).map(row => {
-              const emp = row.employee || {};
-              const canReviewThisEmployee = canCreateEmployeeReview && `${emp.id || ''}` !== `${currentEmployee?.id || ''}`;
-              return (
-                <div key={emp.id} className="rounded-2xl border border-gray-100 bg-white px-3 py-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-sm font-black text-gray-900">{emp.name || 'Nhân sự'}</p>
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-gray-500">{getEmployeePositionSummary(emp)}</span>
-                      </div>
-                      <p className="mt-1 text-xs text-gray-500">
-                        Hệ thống {row.system.score}/100
-                        {row.peer.count ? ` • Chéo ${row.peer.avgStars.toFixed(1)} sao` : ''}
-                        {row.customer.count ? ` • Khách ${row.customer.avgStars.toFixed(1)} sao` : ''}
-                      </p>
-                      <p className="mt-1 text-[11px] text-gray-400">
-                        {row.system.warnings.length ? row.system.warnings.join(' • ') : (row.system.strengths.join(' • ') || 'Chưa đủ dữ liệu tháng này')}
-                      </p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-lg font-black text-amber-500">{'★'.repeat(row.stars)}<span className="text-gray-200">{'★'.repeat(5 - row.stars)}</span></p>
-                      <p className="text-xs font-black text-gray-800">{row.finalScore}/100</p>
-                      {row.bonus > 0 && <p className="text-[11px] font-bold text-emerald-600">Thưởng {formatCurrency(row.bonus)} đ</p>}
-                    </div>
-                  </div>
-                  {canReviewThisEmployee && (
-                    <button
-                      type="button"
-                      onClick={() => openEmployeeReview(emp)}
-                      className="mt-3 w-full rounded-2xl border border-amber-100 bg-amber-50 py-2 text-xs font-black text-amber-700 active:scale-[0.99]"
-                    >
-                      Chấm sao nhân sự này
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+      <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm text-blue-900">
+        <p className="flex items-center font-bold uppercase text-[11px] tracking-[0.16em] text-blue-700">
+          <span>Mô hình tài khoản</span>
+          <SectionInfoHint
+            description="Tạo và quản lý tài khoản theo bộ phận, vai trò và quyền truy cập của công ty."
+            label="Mô hình tài khoản"
+          />
+        </p>
+      </div>
+      {employeeStatus && (
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+          {employeeStatus}
         </div>
+      )}
+      {(canViewEmployees || canManageHolidayConfig || isSuperAdmin) && (
+        <HolidayConfigCard
+          holidays={holidays}
+          onAddHoliday={onAddHoliday}
+          onDeleteHoliday={onDeleteHoliday}
+          canManage={Boolean(isSuperAdmin || canManageHolidayConfig)}
+        />
       )}
       <div className="space-y-3">
         {employees.map(emp => {

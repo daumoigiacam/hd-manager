@@ -57,8 +57,13 @@ export default defineConfig(({ mode }) => {
         'firebase/performance': fileURLToPath(new URL('./src/mocks/firebase-performance.js', import.meta.url)),
         './services/identityCenter.js': fileURLToPath(new URL('./src/mocks/identity-center-vps.js', import.meta.url))
       };
+  const identityCenterAlias = fileURLToPath(new URL(
+    useVpsData ? './src/mocks/identity-center-vps.js' : './src/services/identityCenter.js',
+    import.meta.url,
+  ));
   const runtimeAliases = {
     ...firebaseAliases,
+    '@hd/identity-center': identityCenterAlias,
     '@hd/firebase-runtime': fileURLToPath(new URL(
       useVpsData ? './src/mocks/firebase-runtime-vps.js' : './src/config/firebase-runtime.js',
       import.meta.url,

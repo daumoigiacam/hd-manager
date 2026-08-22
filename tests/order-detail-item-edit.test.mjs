@@ -73,5 +73,6 @@ assert.match(appSource, /const canEditOrderItemRecord = \(order\) =>/);
 assert.match(appSource, /const currentBilling = getOrderItemBillingPresentation\(targetItem\);/);
 assert.match(appSource, /updateTransactionBillingItem\(item, \{ billingQuantity: nextQuantity, unitPrice: nextUnitPrice \}\)/);
 assert.match(appSource, /disabled=\{!canEditOrderItemRecord\(selectedOrder\)\}/);
+assert.doesNotMatch(appSource, /text-\[10px\] font-black uppercase tracking-\[0\.16em\] text-emerald-600">Khách hàng<\/p>/);
 
 console.log('Order detail quantity/price edit tests: PASS');

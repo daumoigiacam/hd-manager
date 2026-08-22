@@ -4,12 +4,14 @@ import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
 export default function IdentitySecurityCenter({
   identityApi,
   identityUser,
+  vpsMode = false,
   onGetIdentityToken,
   onLogout,
 }) {
   const {
     getIdentityDevice,
     identityCompleteSetup,
+    identityChangePassword,
     identityDeleteAccount,
     identityListAudit,
     identityListDevices,
@@ -23,6 +25,7 @@ export default function IdentitySecurityCenter({
   const [securityStatus, setSecurityStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeEditor, setActiveEditor] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [currentPin, setCurrentPin] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
@@ -39,22 +42,28 @@ export default function IdentitySecurityCenter({
     setIsLoading(true);
     setSecurityStatus('');
     try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      const [deviceResult, auditResult] = await Promise.all([
-        identityListDevices({ idToken }),
-        identityListAudit({ idToken }),
+      const idToken = vpsMode ? undefined : await onGetIdentityToken?.();
+      if (!vpsMode && !idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      const [deviceResult, auditResult] = await Promise.allSettled([
+        identityListDevices(vpsMode ? {} : { idToken }),
+        identityListAudit(vpsMode ? {} : { idToken }),
       ]);
-      setDevices(deviceResult?.devices || []);
-      setAuditEntries(auditResult?.entries || []);
-      const currentDevice = (deviceResult?.devices || []).find(item => item.deviceId === device.deviceId);
-      setBiometricEnabled(Boolean(currentDevice?.biometricEnabled));
+      if (deviceResult.status === 'rejected') throw deviceResult.reason;
+      setDevices(deviceResult.value?.devices || []);
+      if (auditResult.status === 'fulfilled') {
+        setAuditEntries(auditResult.value?.entries || []);
+      } else if (vpsMode) {
+        setAuditEntries([]);
+        setSecurityStatus('Thiết bị đã được tải. Nhật ký bảo mật VPS yêu cầu quyền audit.read.');
+      }
+      const currentDevice = (deviceResult.value?.devices || []).find(item => item.deviceId === device.deviceId);
+      setBiometricEnabled(vpsMode ? false : Boolean(currentDevice?.biometricEnabled));
     } catch (error) {
       setSecurityStatus(error?.message || 'Không thể tải thông tin bảo mật.');
     } finally {
       setIsLoading(false);
     }
-  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, onGetIdentityToken]);
+  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, onGetIdentityToken, vpsMode]);
 
   useEffect(() => {
     if (expanded) refreshSecurityData();
@@ -63,12 +72,20 @@ export default function IdentitySecurityCenter({
   const runSensitiveUpdate = async (event) => {
     event.preventDefault();
     if (!identityReady) return;
-    if (!/^\d{6}$/.test(currentPin)) {
-      setSecurityStatus('Nhập PIN hiện tại gồm 6 số để xác nhận thay đổi.');
+    if (vpsMode && activeEditor !== 'password') {
+      setSecurityStatus('VPS mode chỉ hỗ trợ đổi mật khẩu qua Identity API.');
       return;
     }
     if (activeEditor === 'password' && (!newPassword || newPassword !== newPasswordConfirm)) {
       setSecurityStatus('Mật khẩu mới chưa khớp.');
+      return;
+    }
+    if (vpsMode && !currentPassword) {
+      setSecurityStatus('Nhập mật khẩu hiện tại để xác nhận thay đổi.');
+      return;
+    }
+    if (!vpsMode && !/^\d{6}$/.test(currentPin)) {
+      setSecurityStatus('Nhập PIN hiện tại gồm 6 số để xác nhận thay đổi.');
       return;
     }
     if (activeEditor === 'pin' && (!/^\d{6}$/.test(newPin) || newPin !== newPinConfirm)) {
@@ -78,22 +95,27 @@ export default function IdentitySecurityCenter({
     setIsLoading(true);
     setSecurityStatus('');
     try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      await identityVerifyPin({ idToken, pin: currentPin });
-      const result = await identityCompleteSetup({
-        idToken,
-        password: activeEditor === 'password' ? newPassword : undefined,
-        pin: activeEditor === 'pin' ? newPin : undefined,
-      });
+      if (vpsMode) {
+        await identityChangePassword({ currentPassword, newPassword });
+      } else {
+        const idToken = await onGetIdentityToken?.();
+        if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+        await identityVerifyPin({ idToken, pin: currentPin });
+        const result = await identityCompleteSetup({
+          idToken,
+          password: activeEditor === 'password' ? newPassword : undefined,
+          pin: activeEditor === 'pin' ? newPin : undefined,
+        });
+        if (result?.setup) setBiometricEnabled(Boolean(result.setup.biometricEnabled));
+      }
       setSecurityStatus(activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
       setActiveEditor('');
+      setCurrentPassword('');
       setCurrentPin('');
       setNewPassword('');
       setNewPasswordConfirm('');
       setNewPin('');
       setNewPinConfirm('');
-      if (result?.setup) setBiometricEnabled(Boolean(result.setup.biometricEnabled));
       await refreshSecurityData();
     } catch (error) {
       setSecurityStatus(error?.message || 'Không thể cập nhật thông tin bảo mật.');
@@ -125,8 +147,8 @@ export default function IdentitySecurityCenter({
     setIsLoading(true);
     setSecurityStatus('');
     try {
-      const idToken = await onGetIdentityToken?.();
-      if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
+      const idToken = vpsMode ? undefined : await onGetIdentityToken?.();
+      if (!vpsMode && !idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
       await identityRevokeDevices({ idToken, deviceId, all, identity: identityUser });
       if (all || deviceId === device.deviceId) {
         await onLogout?.();
@@ -208,8 +230,8 @@ export default function IdentitySecurityCenter({
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
-                <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>
-                <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>
+                {!vpsMode && <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>}
+                {!vpsMode && <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>}
               </div>
               {activeEditor && (
                 <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -225,7 +247,11 @@ export default function IdentitySecurityCenter({
                       <input type="password" inputMode="numeric" maxLength={6} value={newPinConfirm} onChange={event => setNewPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="Xác nhận PIN mới" />
                     </>
                   )}
-                  <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
+                  {vpsMode ? (
+                    <input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Mật khẩu hiện tại để xác nhận" autoComplete="current-password" />
+                  ) : (
+                    <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
+                  )}
                   <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang lưu...' : 'Xác nhận thay đổi'}</button>
                 </form>
               )}
@@ -254,7 +280,7 @@ export default function IdentitySecurityCenter({
                   </div>
                 )) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}
               </div>
-              <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
+              {!vpsMode && <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
                 <div>
                   <h4 className="text-sm font-bold text-red-800">Xóa tài khoản</h4>
                   <p className="mt-1 text-xs leading-5 text-red-700">Thao tác này xóa phiên đăng nhập, mật khẩu, PIN và dữ liệu xác thực. Đơn hàng, công nợ, bảng lương và hồ sơ nghiệp vụ được giữ lại theo chính sách lưu trữ.</p>
@@ -265,7 +291,7 @@ export default function IdentitySecurityCenter({
                   <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-red-600 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang xử lý...' : 'Xóa tài khoản'}</button>
                 </form>
                 <a className="block text-xs font-semibold text-red-700 underline" href="https://hdconnect.net/xoa-tai-khoan.html" target="_blank" rel="noreferrer">Xem chính sách xóa dữ liệu</a>
-              </section>
+              </section>}
             </>
           )}
           {securityStatus && <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs font-medium text-slate-700" role="status">{securityStatus}</p>}

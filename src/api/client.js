@@ -34,6 +34,26 @@ const readResponseBody = async (response) => {
   }
 };
 
+const parseSseBlock = (block, onEvent) => {
+  let eventType = 'message';
+  const dataLines = [];
+
+  block.split(/\r?\n/).forEach((line) => {
+    if (line.startsWith('event:')) eventType = line.slice(6).trim() || 'message';
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  });
+
+  if (dataLines.length === 0) return;
+  const rawData = dataLines.join('\n');
+  let data = rawData;
+  try {
+    data = JSON.parse(rawData);
+  } catch {
+    // Non-JSON SSE data remains available to the caller as a string.
+  }
+  onEvent({ type: eventType, data });
+};
+
 const getBrowserSessionStorage = () => {
   if (typeof window === 'undefined') return null;
 
@@ -320,6 +340,68 @@ export class HdApiClient {
 
   delete(path, options = {}) {
     return this.request(path, { ...options, method: 'DELETE' });
+  }
+
+  async stream(path, { onEvent, signal } = {}) {
+    if (typeof onEvent !== 'function') {
+      throw new HdApiError('A realtime event callback is required.', {
+        code: 'REALTIME_CALLBACK_REQUIRED',
+      });
+    }
+
+    const requestId = createRequestId();
+    const accessToken = this.getAccessToken();
+    if (!accessToken) {
+      throw new HdApiError('An access token is required for realtime.', {
+        code: 'AUTH_ACCESS_TOKEN_MISSING',
+      });
+    }
+
+    const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const response = await this.fetchImpl(url, {
+      method: 'GET',
+      signal,
+      headers: {
+        Accept: 'text/event-stream',
+        'X-Request-ID': requestId,
+        ...(this.platform ? { 'X-Platform': this.platform } : {}),
+        ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const payload = await readResponseBody(response);
+      const error = payload?.error && typeof payload.error === 'object'
+        ? payload.error
+        : {};
+      throw new HdApiError(error.message || 'The realtime stream could not be opened.', {
+        status: response.status,
+        code: error.code || 'REALTIME_STREAM_FAILED',
+        requestId,
+        retryable: response.status >= 500,
+      });
+    }
+
+    if (!response.body?.getReader) {
+      throw new HdApiError('The browser does not support streaming responses.', {
+        code: 'REALTIME_STREAM_UNSUPPORTED',
+      });
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || '';
+      blocks.forEach((block) => parseSseBlock(block, onEvent));
+      if (done) break;
+    }
+
+    if (buffer.trim()) parseSseBlock(buffer, onEvent);
   }
 
   async request(path, {

@@ -97,7 +97,38 @@ function isEvaluationPeriodDue(monthKey, now = new Date()) {
 }
 
 function eventDate(item) {
-  return item?.date ?? item?.dateKey ?? item?.createdAt ?? item?.updatedAt ?? item?.timestamp ?? item?.time;
+  const explicit = item?.date ?? item?.dateKey ?? item?.createdAt ?? item?.updatedAt ?? item?.timestamp ?? item?.time;
+  if (explicit) return explicit;
+  const match = text(item?.id ?? item?.recordId ?? '').match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
+  return match?.[1] ?? null;
+}
+
+function attendanceEventDate(item) {
+  const match = text(item?.id ?? item?.recordId ?? item?.attendanceId ?? '').match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
+  return match?.[1] ?? eventDate(item);
+}
+
+function resolveEmployeePayrollPolicyValues(employee = {}, monthKey = '') {
+  const history = Array.isArray(employee?.payrollPolicies)
+    ? employee.payrollPolicies
+    : Array.isArray(employee?.salaryPolicyHistory)
+      ? employee.salaryPolicyHistory
+      : [];
+  const normalizedMonth = normalizeMonthKey(monthKey);
+  if (!history.length || !normalizedMonth) return {};
+  const periodStart = `${normalizedMonth}-01`;
+  const periodEnd = `${normalizedMonth}-31`;
+  const matchingPolicies = history
+    .filter(policy => policy && typeof policy === 'object' && !policy.supersededAt)
+    .filter(policy => {
+      const effectiveFrom = text(policy.effectiveFrom || policy.effectiveDate || '1970-01-01');
+      const effectiveTo = text(policy.effectiveTo || '');
+      return effectiveFrom <= periodEnd && (!effectiveTo || effectiveTo >= periodStart);
+    })
+    .sort((left, right) => text(left.effectiveFrom).localeCompare(text(right.effectiveFrom)));
+  const policy = matchingPolicies[matchingPolicies.length - 1];
+  const values = policy?.values || policy?.policy || {};
+  return values && typeof values === 'object' && !Array.isArray(values) ? values : {};
 }
 
 function inMonth(item, monthKey) {
@@ -127,6 +158,42 @@ function timeMinutes(value) {
   if (match) return Number(match[1]) * 60 + Number(match[2]);
   const parts = vietnamParts(value);
   return parts ? Number(parts.hour) * 60 + Number(parts.minute) : null;
+}
+
+function vietnamDateKey(value) {
+  const parts = vietnamParts(value);
+  return parts ? `${parts.year}-${parts.month}-${parts.day}` : '';
+}
+
+function calendarDayNumber(value) {
+  const raw = vietnamDateKey(value);
+  if (!raw) return null;
+  const [year, month, day] = raw.split('-').map(Number);
+  if (![year, month, day].every(Number.isFinite)) return null;
+  return Math.floor(Date.UTC(year, month - 1, day) / (24 * 60 * 60 * 1000));
+}
+
+function attendanceDateTimeParts(value) {
+  const raw = text(value);
+  const localMatch = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T ](\d{1,2}):(\d{2})/);
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  if (localMatch && !hasExplicitZone) {
+    return {
+      year: Number(localMatch[1]),
+      month: Number(localMatch[2]),
+      day: Number(localMatch[3]),
+      hour: Number(localMatch[4]),
+      minute: Number(localMatch[5])
+    };
+  }
+  return vietnamParts(value);
+}
+
+function calendarDayNumberFromParts(parts) {
+  if (!parts) return null;
+  return calendarDayNumber(
+    `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+  );
 }
 
 function stableRecordId(item, index) {
@@ -191,20 +258,35 @@ function isComplaintValid(item) {
 }
 
 function lateMinutesForEntry(entry, shiftPolicy = {}) {
-  const explicit = numberOrNull(entry?.lateMinutes ?? entry?.minutesLate ?? entry?.late);
-  if (explicit !== null) return explicit;
-  const checkIn = timeMinutes(entry?.checkIn ?? entry?.checkInAt ?? entry?.timeIn);
-  if (checkIn === null) return null;
+  const checkInValue = entry?.checkIn ?? entry?.checkInAt ?? entry?.timeIn;
+  const checkIn = timeMinutes(checkInValue);
+  if (checkIn === null) return numberOrNull(entry?.lateMinutes ?? entry?.minutesLate ?? entry?.late);
   const start = timeMinutes(shiftPolicy?.shiftStart ?? shiftPolicy?.start ?? '07:00');
   if (start === null) return null;
-  const grace = numberOrNull(shiftPolicy?.graceMinutes ?? shiftPolicy?.grace ?? 0) ?? 0;
-  return Math.max(0, checkIn - start - grace);
+  const end = timeMinutes(shiftPolicy?.shiftEnd ?? shiftPolicy?.end ?? '17:00');
+  const isOvernight = end !== null && end <= start;
+  const checkInParts = attendanceDateTimeParts(checkInValue);
+  const attendanceDay = calendarDayNumber(attendanceEventDate(entry));
+  if (checkInParts && attendanceDay !== null) {
+    const checkInDay = calendarDayNumberFromParts(checkInParts);
+    const shiftStartDay = attendanceDay - (isOvernight ? 1 : 0);
+    return Math.max(0, (
+      (checkInDay - shiftStartDay) * (24 * 60)
+      + Number(checkInParts.hour) * 60
+      + Number(checkInParts.minute)
+      - start
+    ));
+  }
+
+  // Time-only legacy records cannot prove their calendar date, so keep the
+  // conservative fallback and never turn an early value into late.
+  return checkIn >= start ? checkIn - start : 0;
 }
 
 function buildAutomaticEvaluation({ employeeId, companyId, monthKey, attendance, complaints, shiftPolicy = {} }) {
   const attendanceRows = uniqueRecords(attendance).filter(item => employeeIdOf(item) === text(employeeId)
     && (!companyId || companyIdOf(item) === text(companyId))
-    && inMonth(item, monthKey));
+    && normalizeMonthKey(attendanceEventDate(item)) === monthKey);
   const worked = attendanceRows.filter(item => !isLeaveRecord(item));
   const leaveRows = attendanceRows.filter(isLeaveRecord);
   // An empty array is a successfully loaded source and therefore represents zero activity.
@@ -217,7 +299,7 @@ function buildAutomaticEvaluation({ employeeId, companyId, monthKey, attendance,
 
   const lateValues = worked.map(item => lateMinutesForEntry(item, shiftPolicy));
   const lateComplete = attendanceAvailable && lateValues.every(value => value !== null);
-  const leaveDays = new Set(leaveRows.map(eventDate).map(value => vietnamParts(value))
+  const leaveDays = new Set(leaveRows.map(attendanceEventDate).map(value => vietnamParts(value))
     .filter(Boolean).map(parts => `${parts.year}-${parts.month}-${parts.day}`));
   const complaintCount = complaintRows.filter(isComplaintValid).length;
   const automatic = [
@@ -226,7 +308,7 @@ function buildAutomaticEvaluation({ employeeId, companyId, monthKey, attendance,
       status: lateComplete ? 'complete' : 'needs_review',
       value: lateComplete ? lateValues.reduce((sum, value) => sum + value, 0) : null,
       score: lateComplete ? scoreLateMinutes(lateValues.reduce((sum, value) => sum + value, 0)) : null,
-      details: worked.map((item, index) => ({ id: stableRecordId(item, index), date: eventDate(item), minutes: lateValues[index] }))
+      details: worked.map((item, index) => ({ id: stableRecordId(item, index), date: attendanceEventDate(item), minutes: lateValues[index] }))
     },
     {
       id: 'leaveDays', label: AUTOMATIC_CRITERIA[1].label, unit: 'ngày', source: 'attendance',
@@ -269,7 +351,19 @@ function readManualScores(reviews, employeeId, monthKey) {
 function buildEvaluationSummary({ employee, companyId, monthKey, reviews, attendance, complaints, company, shiftPolicy }) {
   const id = text(employee?.id ?? employee?.employeeId);
   const manual = readManualScores(reviews, id, monthKey);
-  const automatic = buildAutomaticEvaluation({ employeeId: id, companyId, monthKey, attendance, complaints, company, shiftPolicy });
+  const effectiveEmployee = {
+    ...(employee || {}),
+    ...resolveEmployeePayrollPolicyValues(employee, monthKey)
+  };
+  const effectiveShiftPolicy = {
+    ...(company?.shiftPolicy ?? company?.evaluationSettings?.shiftPolicy ?? {}),
+    ...(shiftPolicy ?? {}),
+    ...(effectiveEmployee?.shiftPolicy ?? {}),
+    ...(effectiveEmployee?.shiftStart !== undefined ? { shiftStart: effectiveEmployee.shiftStart } : {}),
+    ...(effectiveEmployee?.shiftEnd !== undefined ? { shiftEnd: effectiveEmployee.shiftEnd } : {}),
+    ...(effectiveEmployee?.graceMinutes !== undefined ? { graceMinutes: effectiveEmployee.graceMinutes } : {})
+  };
+  const automatic = buildAutomaticEvaluation({ employeeId: id, companyId, monthKey, attendance, complaints, company, shiftPolicy: effectiveShiftPolicy });
   const criteria = [...manual.criteria, ...automatic.criteria];
   const complete = criteria.every(item => item.status === 'complete');
   const average = complete ? criteria.reduce((sum, item) => sum + Number(item.score), 0) / criteria.length : null;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
   buildEmployeeEvaluationSummaryId,
@@ -14,6 +15,10 @@ import {
   scoreLeaveDays,
   scoreValidatedComplaints
 } from '../src/utils/employeeEvaluationAutomation.js';
+import { applyEmployeePayrollPolicyForMonth } from '../src/utils/payrollPolicyHistory.js';
+
+const require = createRequire(import.meta.url);
+const { buildEvaluationSummary: buildServerEvaluationSummary } = require('../functions/employeeEvaluation.js');
 
 test('late-minute scoring preserves every required boundary', () => {
   const cases = [
@@ -141,6 +146,225 @@ test('automatic evaluation calculates exact values without early rounding', () =
   assert.equal(result.criteria.customerComplaints.score, 4);
   assert.equal(result.exactAverage, 4.166666666666667);
   assert.equal(result.displayAverage, 4.17);
+});
+
+test('attendance documents recover employee and date from their document id', () => {
+  const result = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'e1',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [
+      { id: '2026-08-01_e1', companyId: 'c1', checkIn: '2026-08-01T07:30:00', status: 'late' },
+      { id: '2026-08-02_e1', companyId: 'c1', status: 'leave' }
+    ],
+    complaints: []
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.criteria.lateMinutes.value, 30);
+  assert.equal(result.criteria.leaveDays.value, 1);
+});
+
+test('attendance document date wins over a conflicting legacy record date', () => {
+  const result = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'e1',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [{
+      id: '2026-08-01_e1',
+      companyId: 'c1',
+      date: '2026-07-31',
+      checkIn: '2026-08-01T06:45:00',
+      status: 'present'
+    }],
+    complaints: [],
+    shiftPolicy: { shiftStart: '06:30', shiftEnd: '16:30' }
+  });
+
+  assert.equal(result.criteria.lateMinutes.value, 15);
+  assert.equal(result.criteria.lateMinutes.details[0].date, '2026-08-01');
+});
+
+test('overnight attendance uses actual check-in time and ignores stale derived minutes', () => {
+  const result = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'e1',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [{
+      id: '2026-08-21_e1',
+      companyId: 'c1',
+      checkIn: '2026-08-21T03:00:00',
+      lateMinutes: 20160,
+      status: 'late'
+    }],
+    complaints: [],
+    shiftPolicy: { shiftStart: '23:00', shiftEnd: '11:00', graceMinutes: 10 }
+  });
+
+  assert.equal(result.criteria.lateMinutes.value, 240);
+  assert.equal(result.criteria.lateMinutes.details[0].minutes, 240);
+});
+
+test('all shift cases keep early check-ins out of late totals and count leave days once', () => {
+  const cases = [
+    {
+      employeeId: 'day-early',
+      shiftPolicy: { shiftStart: '08:00', shiftEnd: '17:00' },
+      checkIn: '2026-08-21T07:30:00',
+      staleLateMinutes: 999,
+      expectedLateMinutes: 0
+    },
+    {
+      employeeId: 'day-late',
+      shiftPolicy: { shiftStart: '08:00', shiftEnd: '17:00' },
+      checkIn: '2026-08-21T08:15:00',
+      expectedLateMinutes: 15
+    },
+    {
+      employeeId: 'overnight-early',
+      shiftPolicy: { shiftStart: '23:00', shiftEnd: '11:00' },
+      checkIn: '2026-08-20T21:00:00',
+      staleLateMinutes: 1320,
+      expectedLateMinutes: 0
+    },
+    {
+      employeeId: 'overnight-late',
+      shiftPolicy: { shiftStart: '23:00', shiftEnd: '11:00' },
+      checkIn: '2026-08-21T03:00:00',
+      expectedLateMinutes: 240
+    }
+  ];
+
+  for (const testCase of cases) {
+    const result = calculateEmployeeAutomaticEvaluation({
+      employeeId: testCase.employeeId,
+      companyId: 'c1',
+      monthKey: '2026-08',
+      attendanceEntries: [
+        {
+          id: `2026-08-21_${testCase.employeeId}`,
+          companyId: 'c1',
+          checkIn: testCase.checkIn,
+          lateMinutes: testCase.staleLateMinutes,
+          status: 'present'
+        },
+        { id: `leave-${testCase.employeeId}-1`, employeeId: testCase.employeeId, companyId: 'c1', date: '2026-08-22', status: 'leave' },
+        { id: `leave-${testCase.employeeId}-2`, employeeId: testCase.employeeId, companyId: 'c1', date: '2026-08-22', status: 'approved_leave' }
+      ],
+      complaints: [],
+      shiftPolicy: testCase.shiftPolicy
+    });
+
+    assert.equal(result.criteria.lateMinutes.value, testCase.expectedLateMinutes, testCase.employeeId);
+    assert.equal(result.criteria.leaveDays.value, 1, `${testCase.employeeId} leave days`);
+  }
+});
+
+test('historical early check-in is excluded from day-shift late evaluation', () => {
+  const early = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'tho-legacy',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [{
+      id: '2026-08-02_tho-legacy',
+      companyId: 'c1',
+      date: '2026-08-02',
+      checkIn: '2026-08-01T23:00:00',
+      checkOut: '2026-08-02T11:00:00',
+      status: 'present'
+    }],
+    complaints: [],
+    shiftPolicy: { shiftStart: '06:30', shiftEnd: '16:30' }
+  });
+  assert.equal(early.criteria.lateMinutes.value, 0);
+  assert.equal(early.criteria.lateMinutes.score, 5);
+
+  const late = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'tho-legacy',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [{
+      id: '2026-08-02_tho-legacy-late',
+      employeeId: 'tho-legacy',
+      companyId: 'c1',
+      date: '2026-08-02',
+      checkIn: '2026-08-02T06:45:00',
+      status: 'present'
+    }],
+    complaints: [],
+    shiftPolicy: { shiftStart: '06:30', shiftEnd: '16:30' }
+  });
+  assert.equal(late.criteria.lateMinutes.value, 15);
+});
+
+test('payroll timing is authoritative when legacy attendance dates conflict with shift policy', () => {
+  const result = calculateEmployeeAutomaticEvaluation({
+    employeeId: 'tho-legacy',
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries: [{
+      id: '2026-08-02_tho-legacy',
+      companyId: 'c1',
+      date: '2026-08-02',
+      checkIn: '2026-08-02T06:30:00',
+      payrollLateMinutes: 0,
+      status: 'present'
+    }],
+    complaints: [],
+    shiftPolicy: { shiftStart: '23:00', shiftEnd: '11:00' }
+  });
+  assert.equal(result.criteria.lateMinutes.value, 0);
+  assert.equal(result.criteria.lateMinutes.score, 5);
+});
+
+test('monthly payroll policy keeps early check-ins out of client and server late totals', () => {
+  const employee = {
+    id: 'tho-policy',
+    name: 'Lưu Văn Thọ',
+    shiftStart: '23:00',
+    shiftEnd: '11:00',
+    payrollPolicies: [{
+      effectiveFrom: '2026-08-01',
+      values: { shiftStart: '06:30', shiftEnd: '16:30' }
+    }]
+  };
+  const effectiveEmployee = applyEmployeePayrollPolicyForMonth(employee, '2026-08');
+  const attendanceEntries = [
+    {
+      id: '2026-08-01_tho-policy',
+      employeeId: 'tho-policy',
+      companyId: 'c1',
+      checkIn: '2026-07-31T16:00:00.000Z',
+      status: 'present'
+    },
+    {
+      id: '2026-08-10_tho-policy',
+      employeeId: 'tho-policy',
+      companyId: 'c1',
+      checkIn: '2026-08-09T23:30:00.000Z',
+      status: 'present'
+    }
+  ];
+  const clientResult = calculateEmployeeAutomaticEvaluation({
+    employeeId: effectiveEmployee.id,
+    companyId: 'c1',
+    monthKey: '2026-08',
+    attendanceEntries,
+    complaints: [],
+    shiftPolicy: effectiveEmployee
+  });
+  assert.equal(clientResult.criteria.lateMinutes.value, 0);
+
+  const serverResult = buildServerEvaluationSummary({
+    employee,
+    companyId: 'c1',
+    monthKey: '2026-08',
+    reviews: [],
+    attendance: attendanceEntries,
+    complaints: [],
+    company: {}
+  });
+  assert.equal(serverResult.automaticCriteria.find(item => item.id === 'lateMinutes')?.value, 0);
 });
 
 test('13-criterion summary keeps manual scores and adds automatic scores', () => {

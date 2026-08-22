@@ -61,6 +61,7 @@
     "test:ai-gateway-security": "node tests/ai-gateway-security.test.mjs",
     "test:fetch-timeout": "node tests/fetch-timeout.test.mjs",
     "test:vps-api": "node --test tests/vps-api-client.test.mjs",
+    "test:vps-browser-smoke": "node --test scripts/vps-browser-smoke.test.mjs",
     "test:platform-sdk": "node --test tests/platform-sdk.test.mjs",
     "test:platform-admin-cutover": "node --test tests/platform-admin-cutover.test.mjs",
     "test:g10-staging-contract": "node scripts/g10-staging-contract-test.mjs",

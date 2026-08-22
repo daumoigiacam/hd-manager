@@ -1,0 +1,13 @@
+{
+  "firestore": {
+    "rules": "X:/firestore.rules",
+    "indexes": "X:/firestore.indexes.json"
+  },
+  "emulators": {
+    "singleProjectMode": false,
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8081
+    }
+  }
+}

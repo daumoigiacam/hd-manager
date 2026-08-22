@@ -75,6 +75,42 @@ const toDate = value => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const getDateTimeParts = value => {
+  const raw = text(value);
+  const localMatch = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T ](\d{1,2}):(\d{2})/);
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  if (localMatch && !hasExplicitZone) {
+    return {
+      year: Number(localMatch[1]),
+      month: Number(localMatch[2]),
+      day: Number(localMatch[3]),
+      hour: Number(localMatch[4]),
+      minute: Number(localMatch[5])
+    };
+  }
+  const parsed = toDate(value);
+  if (!parsed) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    calendar: 'gregory',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    hourCycle: 'h23'
+  }).formatToParts(parsed);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute)
+  };
+};
+
 const dateKey = value => {
   const raw = text(value);
   const direct = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -92,13 +128,37 @@ const clampNonNegativeNumber = value => {
   return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
 };
 
-const getEmployeeId = item => text(
-  item?.employeeId ?? item?.empId ?? item?.targetEmployeeId ?? item?.driverId ?? item?.assignedEmployeeId
-);
+const getAttendanceDocumentIdentity = item => {
+  const match = text(item?.id ?? item?.recordId ?? '').match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
+  return {
+    date: match?.[1] || '',
+    employeeId: match?.[2] || ''
+  };
+};
+
+const getEmployeeId = item => {
+  const attendanceIdentity = getAttendanceDocumentIdentity(item);
+  return text(
+    item?.employeeId ?? item?.empId ?? item?.targetEmployeeId ?? item?.driverId ?? item?.assignedEmployeeId
+      ?? attendanceIdentity.employeeId
+  );
+};
 
 const getCompanyId = item => text(item?.companyId ?? item?.appId ?? item?.tenantId);
 
-const getEventDate = item => item?.date ?? item?.dateKey ?? item?.monthKey ?? item?.createdAt ?? item?.updatedAt ?? item?.timestamp;
+const getEventDate = item => {
+  const attendanceIdentity = getAttendanceDocumentIdentity(item);
+  return attendanceIdentity.date
+    || (
+      item?.date
+      ?? item?.dateKey
+      ?? item?.monthKey
+      ?? item?.createdAt
+      ?? item?.updatedAt
+      ?? item?.timestamp
+      ?? ''
+    );
+};
 
 const stableFingerprint = (item, index = 0) => text(
   item?.id ?? item?.recordId ?? item?.attendanceId ?? item?.complaintId
@@ -117,23 +177,67 @@ const uniqueByStableId = (items = []) => {
 
 const normalizeTimeMinutes = value => {
   if (value === null || value === undefined || value === '') return null;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 0 && value <= 24 * 60) return value;
+    const parsedTimestamp = toDate(value);
+    return parsedTimestamp ? (parsedTimestamp.getHours() * 60) + parsedTimestamp.getMinutes() : null;
+  }
   const raw = text(value);
+  if (/^\d{1,2}:\d{2}$/.test(raw)) {
+    const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+    return (Number(match[1]) * 60) + Number(match[2]);
+  }
+  const parsed = getDateTimeParts(value);
+  if (parsed) return (parsed.hour * 60) + parsed.minute;
   const match = raw.match(/(\d{1,2}):(\d{2})/);
-  if (match) return (Number(match[1]) * 60) + Number(match[2]);
-  const parsed = toDate(value);
-  return parsed ? (parsed.getHours() * 60) + parsed.getMinutes() : null;
+  return match ? (Number(match[1]) * 60) + Number(match[2]) : null;
 };
 
+const calendarDayNumber = value => {
+  const raw = dateKey(value);
+  if (!raw) return null;
+  const [year, month, day] = raw.split('-').map(Number);
+  if (![year, month, day].every(Number.isFinite)) return null;
+  return Math.floor(Date.UTC(year, month - 1, day) / (24 * 60 * 60 * 1000));
+};
+
+const calendarDayNumberFromParts = parts => calendarDayNumber(
+  `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+);
+
 const resolveLateMinutes = (entry, shiftPolicy = {}) => {
-  const explicit = clampNonNegativeNumber(entry?.lateMinutes ?? entry?.minutesLate ?? entry?.late);
-  if (explicit !== null) return explicit;
-  const checkIn = normalizeTimeMinutes(entry?.checkIn ?? entry?.checkInAt ?? entry?.timeIn);
-  if (checkIn === null) return null;
+  const payrollLateMinutes = clampNonNegativeNumber(entry?.payrollLateMinutes);
+  if (payrollLateMinutes !== null) return payrollLateMinutes;
+
+  const checkInValue = entry?.checkIn ?? entry?.checkInAt ?? entry?.timeIn;
+  const checkIn = normalizeTimeMinutes(checkInValue);
   const start = normalizeTimeMinutes(shiftPolicy?.shiftStart ?? shiftPolicy?.start ?? '07:00');
-  if (start === null) return null;
-  const grace = clampNonNegativeNumber(shiftPolicy?.graceMinutes ?? shiftPolicy?.grace ?? 0) ?? 0;
-  return Math.max(0, checkIn - start - grace);
+  const end = normalizeTimeMinutes(shiftPolicy?.shiftEnd ?? shiftPolicy?.end ?? '17:00');
+
+  if (checkIn !== null && start !== null) {
+    const isOvernight = end !== null && end <= start;
+    const checkInParts = getDateTimeParts(checkInValue);
+    const attendanceDay = calendarDayNumber(getEventDate(entry));
+    if (checkInParts && attendanceDay !== null) {
+      const checkInDay = calendarDayNumberFromParts(checkInParts);
+      const shiftStartDay = attendanceDay - (isOvernight ? 1 : 0);
+      const elapsedMinutes = (
+        (checkInDay - shiftStartDay) * (24 * 60)
+        + (checkInParts.hour * 60)
+        + checkInParts.minute
+        - start
+      );
+      return Math.max(0, elapsedMinutes);
+    }
+
+    // Time-only legacy records cannot prove their calendar date, so keep the
+    // conservative clock-only fallback and never turn an early value into late.
+    return checkIn >= start ? checkIn - start : 0;
+  }
+
+  // Older records may not contain checkIn, so keep their explicit derived value
+  // as a fallback. When checkIn exists, the actual timestamp is authoritative.
+  return clampNonNegativeNumber(entry?.lateMinutes ?? entry?.minutesLate ?? entry?.late);
 };
 
 export const scoreLateMinutes = value => {
