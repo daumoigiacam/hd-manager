@@ -86399,7 +86399,9 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
   useEffect(() => {
     // Warm the auth Function while the user is entering credentials so the
     // secure password request does not have to pay the server cold-start cost.
-    void warmIdentityLoginService();
+    // VPS mode authenticates through the HD Connect API and must not invoke
+    // the legacy Firebase Function during initial page load.
+    if (!isVpsMode) void warmIdentityLoginService();
   }, []);
 
   const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
