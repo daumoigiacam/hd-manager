@@ -46,6 +46,7 @@
     "test:workflow-data-readiness": "node --test tests/workflow-data-readiness.test.mjs",
     "test:firestore-resilience": "node --test tests/firestore-resilience.test.mjs",
     "test:delivery-reconciliation": "node tests/delivery-reconciliation-ux.test.mjs",
+    "test:delivery-map-navigation": "node tests/delivery-map-navigation.test.mjs",
     "test:payroll-evaluation": "node tests/payroll-evaluation-integration.test.mjs",
     "test:payroll-lock": "node tests/payroll-period-lock.test.mjs",
     "test:payroll-freeze": "node tests/payroll-period-freeze.test.mjs",

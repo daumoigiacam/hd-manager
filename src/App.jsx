@@ -274,6 +274,15 @@ import {
   isValidLatLng,
 } from './services/mapEngineService.js';
 import {
+  buildDeliveryRouteCacheKey,
+  getDeliveryCustomerLocationState,
+  getDeliveryGpsQuality,
+  getPendingDeliveryMapPoints,
+  normalizeDeliveryGpsPosition,
+  shouldAcceptDeliveryGpsPosition,
+  shouldRefreshDeliveryRoute,
+} from './utils/deliveryMapNavigation.js';
+import {
   createPerformanceSpan,
   isPerformanceMonitorEnabled,
   recordFirestoreOperation,
@@ -20121,7 +20130,15 @@ export default function App() {
 
   const handleAddDeliveryReport = async (empId, reportData = {}) => {
     if (!firebaseUser) return null;
-    const id = `dr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const idempotencyKey = `${reportData.idempotencyKey || ''}`.trim();
+    const mapDeliveryId = reportData.source === 'map_delivery' && reportData.dispatchId
+      ? `dr_map_${reportData.dispatchId}`
+      : '';
+    const id = reportData.id || mapDeliveryId || `dr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const existingReport = (deliveryReports || []).find(report => (
+      report.id === id || (idempotencyKey && report.idempotencyKey === idempotencyKey)
+    ));
+    if (existingReport?.id) return existingReport.id;
     const dispatch = warehouseDispatches.find(item => item.id === reportData.dispatchId);
     const customer = customers.find(c => c.id === (reportData.customerId || dispatch?.customerId));
     const product = products.find(p => p.id === (reportData.productId || dispatch?.productId));
@@ -34716,33 +34733,45 @@ function DeliveryTileMap({
   currentLocation = null,
   warehouseLocation = null,
   perspective = true,
-  followCurrentLocation = false,
+  cameraRequestKey = 0,
+  cameraMode = 'overview',
+  navigationOrigin = null,
+  navigationTarget = null,
 }) {
   const containerRef = useRef(null);
   const dragRef = useRef(null);
+  const pointersRef = useRef(new Map());
+  const pinchRef = useRef(null);
+  const lastCameraRequestRef = useRef(null);
   const initialView = useMemo(() => calculateDeliveryMapView(points, bounds), [points, bounds]);
   const [center, setCenter] = useState(initialView.center);
   const [zoom, setZoom] = useState(initialView.zoom);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    setCenter(initialView.center);
-    setZoom(initialView.zoom);
-  }, [initialView.center.latitude, initialView.center.longitude, initialView.zoom]);
-
-  useEffect(() => {
-    if (!followCurrentLocation || !currentLocation) return;
-    const liveRouteView = calculateDeliveryMapView([
-      currentLocation,
-      ...((routePoints || []).filter(Boolean)),
-    ], null);
-    setCenter(liveRouteView.center);
-    setZoom(Math.max(13, liveRouteView.zoom));
+    const requestId = `${cameraRequestKey}:${cameraMode}`;
+    if (lastCameraRequestRef.current === requestId) return;
+    const focusPoints = cameraMode === 'navigation'
+      ? [navigationOrigin, navigationTarget].filter(Boolean)
+      : [
+        ...(points || []),
+        ...(warehouseLocation ? [warehouseLocation] : []),
+        ...(currentLocation ? [currentLocation] : []),
+      ];
+    if (!focusPoints.some(point => isValidLatLng(Number(point?.latitude), Number(point?.longitude)))) return;
+    const nextView = calculateDeliveryMapView(focusPoints, cameraMode === 'navigation' ? null : bounds);
+    setCenter(nextView.center);
+    setZoom(cameraMode === 'navigation' ? Math.max(13, nextView.zoom) : nextView.zoom);
+    lastCameraRequestRef.current = requestId;
   }, [
-    followCurrentLocation,
-    currentLocation?.latitude,
-    currentLocation?.longitude,
-    routePoints,
+    bounds,
+    cameraMode,
+    cameraRequestKey,
+    currentLocation,
+    navigationOrigin,
+    navigationTarget,
+    points,
+    warehouseLocation,
   ]);
 
   useEffect(() => {
@@ -34863,8 +34892,20 @@ function DeliveryTileMap({
 
   const updateZoom = delta => setZoom(value => Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, value + delta)));
 
+  const getPointerDistance = () => {
+    const pointers = [...pointersRef.current.values()];
+    if (pointers.length < 2) return 0;
+    return Math.hypot(pointers[1].x - pointers[0].x, pointers[1].y - pointers[0].y);
+  };
+
   const handlePointerDown = event => {
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointersRef.current.size >= 2) {
+      pinchRef.current = { distance: getPointerDistance(), zoom };
+      dragRef.current = null;
+      return;
+    }
     dragRef.current = {
       x: event.clientX,
       y: event.clientY,
@@ -34873,6 +34914,18 @@ function DeliveryTileMap({
   };
 
   const handlePointerMove = event => {
+    if (pointersRef.current.has(event.pointerId)) {
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+    if (pinchRef.current && pointersRef.current.size >= 2) {
+      const distance = getPointerDistance();
+      if (distance > 0 && pinchRef.current.distance > 0) {
+        const scale = distance / pinchRef.current.distance;
+        const nextZoom = Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, pinchRef.current.zoom + Math.log2(scale)));
+        setZoom(nextZoom);
+      }
+      return;
+    }
     if (!dragRef.current) return;
     const dx = event.clientX - dragRef.current.x;
     const dy = event.clientY - dragRef.current.y;
@@ -34886,6 +34939,8 @@ function DeliveryTileMap({
 
   const stopDrag = event => {
     event.currentTarget.releasePointerCapture?.(event.pointerId);
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
     dragRef.current = null;
   };
 
@@ -34901,6 +34956,10 @@ function DeliveryTileMap({
       onPointerMove={handlePointerMove}
       onPointerUp={stopDrag}
       onPointerCancel={stopDrag}
+      onDoubleClick={event => {
+        event.preventDefault();
+        updateZoom(1);
+      }}
       style={{ touchAction: 'none' }}
     >
       <div
@@ -35020,19 +35079,30 @@ function GoogleDeliveryMap({
   warehouseLocation = null,
   apiKey = '',
   mapId = '',
+  cameraRequestKey = 0,
+  cameraMode = 'overview',
+  navigationOrigin = null,
+  navigationTarget = null,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const markersRef = useRef([]);
+  const markersRef = useRef(new Map());
   const onSelectRef = useRef(onSelect);
+  const selectedIdRef = useRef(selectedId);
   const routeLineRef = useRef(null);
   const currentLocationMarkerRef = useRef(null);
+  const lastCameraRequestRef = useRef(null);
+  const lastSelectedIdRef = useRef('');
   const [loadState, setLoadState] = useState(apiKey ? 'loading' : 'missing_key');
   const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   const validPoints = useMemo(() => (points || [])
     .map((point, index) => ({
@@ -35066,10 +35136,10 @@ function GoogleDeliveryMap({
       .then(google => {
         if (cancelled || !containerRef.current) return;
         if (!mapRef.current) {
-          const firstPoint = validPoints[0] || currentLocation || warehouseLocation || { latitude: 10.8231, longitude: 106.6297 };
+          const firstPoint = { latitude: 10.8231, longitude: 106.6297 };
           mapRef.current = new google.maps.Map(containerRef.current, {
             center: { lat: Number(firstPoint.latitude), lng: Number(firstPoint.longitude) },
-            zoom: validPoints.length ? 13 : 11,
+            zoom: 11,
             mapId: mapId || undefined,
             mapTypeId: 'roadmap',
             clickableIcons: false,
@@ -35091,106 +35161,96 @@ function GoogleDeliveryMap({
     return () => {
       cancelled = true;
     };
-  }, [apiKey, mapId, currentLocation, warehouseLocation, validPoints]);
-
-  useEffect(() => {
-    const google = window.google;
-    const map = mapRef.current;
-    if (!map || !google?.maps || loadState !== 'ready') return undefined;
-
-    markersRef.current.forEach(marker => marker.setMap(null));
-    markersRef.current = [];
-
-    const markerBounds = new google.maps.LatLngBounds();
-    const addBoundsPoint = point => {
-      if (isValidLatLng(Number(point.latitude), Number(point.longitude))) {
-        markerBounds.extend({ lat: Number(point.latitude), lng: Number(point.longitude) });
-      }
-    };
-
-    validPoints.forEach((point, index) => {
-      const pointId = getMapPointId(point, `point-${index}`);
-      const isSelected = selectedId && selectedId === pointId;
-      const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
-      const marker = new google.maps.Marker({
-        map,
-        position: { lat: Number(point.latitude), lng: Number(point.longitude) },
-        title: point.customerName || point.label || 'Điểm giao hàng',
-        label: {
-          text: `${point.count || index + 1}`,
-          color: '#ffffff',
-          fontWeight: '900',
-          fontSize: '13px',
-        },
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          fillColor: isDelivered ? '#10b981' : '#f59e0b',
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 3,
-          scale: isSelected ? 17 : 14,
-        },
-        zIndex: isSelected ? 1000 : 10 + index,
-      });
-      marker.addListener('click', () => onSelectRef.current?.(selectedId === pointId ? '' : pointId));
-      markersRef.current.push(marker);
-      addBoundsPoint(point);
-    });
-
-    if (warehouseLocation && isValidLatLng(toMapNumber(warehouseLocation.latitude), toMapNumber(warehouseLocation.longitude))) {
-      const warehouseMarker = new google.maps.Marker({
-        map,
-        position: { lat: toMapNumber(warehouseLocation.latitude), lng: toMapNumber(warehouseLocation.longitude) },
-        title: 'Kho',
-        label: { text: 'K', color: '#ffffff', fontWeight: '900' },
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          fillColor: '#0f766e',
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 3,
-          scale: 15,
-        },
-        zIndex: 900,
-      });
-      markersRef.current.push(warehouseMarker);
-      addBoundsPoint(warehouseLocation);
-    }
-
-    const allBoundsPoints = [
-      ...validPoints,
-      ...(warehouseLocation ? [warehouseLocation] : []),
-      ...(currentLocation ? [currentLocation] : []),
-    ].filter(point => isValidLatLng(toMapNumber(point.latitude), toMapNumber(point.longitude)));
-    allBoundsPoints.forEach(addBoundsPoint);
-
-    if (allBoundsPoints.length > 1) {
-      map.fitBounds(markerBounds, 64);
-    } else if (allBoundsPoints.length === 1) {
-      map.setCenter({ lat: Number(allBoundsPoints[0].latitude), lng: Number(allBoundsPoints[0].longitude) });
-      map.setZoom(15);
-    } else if (bounds?.center) {
-      map.setCenter({ lat: Number(bounds.center.latitude), lng: Number(bounds.center.longitude) });
-      map.setZoom(bounds.zoom || 11);
-    }
-
-    return () => {
-      markersRef.current.forEach(marker => marker.setMap(null));
-      markersRef.current = [];
-    };
-  }, [bounds, currentLocation, loadState, selectedId, validPoints, warehouseLocation]);
+  }, [apiKey, mapId]);
 
   useEffect(() => {
     const google = window.google;
     const map = mapRef.current;
     if (!map || !google?.maps || loadState !== 'ready') return;
 
-    if (routeLineRef.current) {
-      routeLineRef.current.setMap(null);
-      routeLineRef.current = null;
+    const desiredMarkerIds = new Set();
+    const markerIcon = ({ selected = false, delivered = false, warehouse = false }) => ({
+      path: google.maps.SymbolPath.CIRCLE,
+      fillColor: warehouse ? '#0f766e' : delivered ? '#10b981' : '#f59e0b',
+      fillOpacity: 1,
+      strokeColor: '#ffffff',
+      strokeWeight: 3,
+      scale: warehouse ? 15 : selected ? 17 : 14,
+    });
+    const upsertMarker = ({ id, selectId = id, position, title, label, selected = false, delivered = false, warehouse = false, zIndex = 10 }) => {
+      desiredMarkerIds.add(id);
+      const markerRecord = markersRef.current.get(id);
+      if (markerRecord) {
+        markerRecord.marker.setPosition(position);
+        markerRecord.marker.setTitle(title);
+        markerRecord.marker.setLabel(label);
+        markerRecord.marker.setIcon(markerIcon({ selected, delivered, warehouse }));
+        markerRecord.marker.setZIndex(zIndex);
+        return;
+      }
+      const marker = new google.maps.Marker({
+        map,
+        position,
+        title,
+        label,
+        icon: markerIcon({ selected, delivered, warehouse }),
+        zIndex,
+      });
+      if (!warehouse) {
+        marker.addListener('click', () => onSelectRef.current?.(selectedIdRef.current === selectId ? '' : selectId));
+      }
+      markersRef.current.set(id, { marker });
+    };
+
+    validPoints.forEach((point, index) => {
+      const pointId = getMapPointId(point, `point-${index}`);
+      const isSelected = selectedId === pointId;
+      const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
+      upsertMarker({
+        id: `point:${pointId}`,
+        selectId: pointId,
+        position: { lat: Number(point.latitude), lng: Number(point.longitude) },
+        title: point.customerName || point.label || 'Điểm giao hàng',
+        label: { text: `${point.count || index + 1}`, color: '#ffffff', fontWeight: '900', fontSize: '13px' },
+        selected: isSelected,
+        delivered: isDelivered,
+        zIndex: isSelected ? 1000 : 10 + index,
+      });
+    });
+
+    const warehouseLat = toMapNumber(warehouseLocation?.latitude);
+    const warehouseLng = toMapNumber(warehouseLocation?.longitude);
+    if (isValidLatLng(warehouseLat, warehouseLng)) {
+      upsertMarker({
+        id: 'warehouse',
+        position: { lat: warehouseLat, lng: warehouseLng },
+        title: 'Kho',
+        label: { text: 'K', color: '#ffffff', fontWeight: '900' },
+        warehouse: true,
+        zIndex: 900,
+      });
     }
+
+    markersRef.current.forEach((record, id) => {
+      if (!desiredMarkerIds.has(id)) {
+        record.marker.setMap(null);
+        markersRef.current.delete(id);
+      }
+    });
+  }, [loadState, selectedId, validPoints, warehouseLocation]);
+
+  useEffect(() => {
+    const google = window.google;
+    const map = mapRef.current;
+    if (!map || !google?.maps || loadState !== 'ready') return;
+
     const routePath = validRoutePoints.map(point => ({ lat: Number(point.latitude), lng: Number(point.longitude) }));
-    if (routePath.length >= 2) {
+    if (routePath.length < 2) {
+      routeLineRef.current?.setMap(null);
+      routeLineRef.current = null;
+    } else if (routeLineRef.current) {
+      routeLineRef.current.setPath(routePath);
+    } else {
       routeLineRef.current = new google.maps.Polyline({
         path: routePath,
         geodesic: true,
@@ -35207,38 +35267,84 @@ function GoogleDeliveryMap({
     const map = mapRef.current;
     if (!map || !google?.maps || loadState !== 'ready') return;
 
-    if (currentLocationMarkerRef.current) {
-      currentLocationMarkerRef.current.setMap(null);
-      currentLocationMarkerRef.current = null;
-    }
     const latitude = toMapNumber(currentLocation?.latitude);
     const longitude = toMapNumber(currentLocation?.longitude);
-    if (!isValidLatLng(latitude, longitude)) return;
+    if (!isValidLatLng(latitude, longitude)) {
+      currentLocationMarkerRef.current?.setMap(null);
+      currentLocationMarkerRef.current = null;
+      return;
+    }
 
+    const position = { lat: latitude, lng: longitude };
+    if (currentLocationMarkerRef.current) {
+      currentLocationMarkerRef.current.setPosition(position);
+      return;
+    }
     currentLocationMarkerRef.current = new google.maps.Marker({
       map,
-      position: { lat: latitude, lng: longitude },
+      position,
       title: 'Vị trí hiện tại',
-      icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        fillColor: '#2563eb',
-        fillOpacity: 1,
-        strokeColor: '#ffffff',
-        strokeWeight: 4,
-        scale: 10,
-      },
+      icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#2563eb', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 4, scale: 10 },
       zIndex: 1200,
     });
   }, [currentLocation, loadState]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || loadState !== 'ready' || !selectedId) return;
+    if (!map || loadState !== 'ready') return;
+    if (!selectedId) {
+      lastSelectedIdRef.current = '';
+      return;
+    }
+    if (lastSelectedIdRef.current === selectedId) return;
     const selectedPoint = validPoints.find(point => getMapPointId(point) === selectedId);
     if (!selectedPoint) return;
     map.panTo({ lat: Number(selectedPoint.latitude), lng: Number(selectedPoint.longitude) });
     if ((map.getZoom?.() || 0) < 15) map.setZoom(15);
+    lastSelectedIdRef.current = selectedId;
   }, [loadState, selectedId, validPoints]);
+
+  useEffect(() => {
+    const google = window.google;
+    const map = mapRef.current;
+    if (!map || !google?.maps || loadState !== 'ready') return;
+    const requestId = `${cameraRequestKey}:${cameraMode}`;
+    if (lastCameraRequestRef.current === requestId) return;
+    const cameraPoints = cameraMode === 'navigation'
+      ? [navigationOrigin, navigationTarget].filter(Boolean)
+      : [
+        ...validPoints,
+        ...(warehouseLocation ? [warehouseLocation] : []),
+        ...(currentLocation ? [currentLocation] : []),
+      ];
+    const validCameraPoints = cameraPoints.filter(point => isValidLatLng(toMapNumber(point?.latitude), toMapNumber(point?.longitude)));
+    if (validCameraPoints.length > 1) {
+      const markerBounds = new google.maps.LatLngBounds();
+      validCameraPoints.forEach(point => markerBounds.extend({ lat: toMapNumber(point.latitude), lng: toMapNumber(point.longitude) }));
+      map.fitBounds(markerBounds, 64);
+      if (cameraMode === 'navigation') {
+        google.maps.event.addListenerOnce(map, 'idle', () => map.panBy?.(0, Math.round((containerRef.current?.clientHeight || 0) * 0.18)));
+      }
+    } else if (validCameraPoints.length === 1) {
+      map.setCenter({ lat: toMapNumber(validCameraPoints[0].latitude), lng: toMapNumber(validCameraPoints[0].longitude) });
+      map.setZoom(15);
+    } else if (bounds?.center) {
+      map.setCenter({ lat: Number(bounds.center.latitude), lng: Number(bounds.center.longitude) });
+      map.setZoom(bounds.zoom || 11);
+    } else {
+      return;
+    }
+    lastCameraRequestRef.current = requestId;
+  }, [bounds, cameraMode, cameraRequestKey, currentLocation, loadState, navigationOrigin, navigationTarget, validPoints, warehouseLocation]);
+
+  useEffect(() => () => {
+    markersRef.current.forEach(record => record.marker.setMap(null));
+    markersRef.current.clear();
+    routeLineRef.current?.setMap(null);
+    currentLocationMarkerRef.current?.setMap(null);
+    if (mapRef.current) window.google?.maps?.event?.clearInstanceListeners(mapRef.current);
+    mapRef.current = null;
+  }, []);
 
   if (loadState === 'error' || loadState === 'missing_key') {
     return (
@@ -35248,7 +35354,14 @@ function GoogleDeliveryMap({
           bounds={bounds}
           selectedId={selectedId}
           onSelect={onSelect}
+          routePoints={routePoints}
+          currentLocation={currentLocation}
+          warehouseLocation={warehouseLocation}
           perspective
+          cameraRequestKey={cameraRequestKey}
+          cameraMode={cameraMode}
+          navigationOrigin={navigationOrigin}
+          navigationTarget={navigationTarget}
         />
         <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-amber-100 bg-white/95 p-3 text-xs font-bold text-slate-700 shadow-xl backdrop-blur">
           <p className="font-black text-amber-700">Google Maps chưa sẵn sàng, app đã tự chuyển sang bản đồ dự phòng.</p>
@@ -35279,13 +35392,26 @@ function GoongDeliveryMap({
   currentLocation = null,
   warehouseLocation = null,
   apiKey = '',
+  cameraRequestKey = 0,
+  cameraMode = 'overview',
+  navigationOrigin = null,
+  navigationTarget = null,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const markersRef = useRef([]);
+  const markersRef = useRef(new Map());
+  const onSelectRef = useRef(onSelect);
+  const selectedIdRef = useRef(selectedId);
   const currentLocationMarkerRef = useRef(null);
+  const lastCameraRequestRef = useRef(null);
+  const lastSelectedIdRef = useRef('');
   const [loadState, setLoadState] = useState(apiKey ? 'loading' : 'missing_key');
   const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+    selectedIdRef.current = selectedId;
+  }, [onSelect, selectedId]);
 
   const validPoints = useMemo(() => (points || [])
     .map((point, index) => ({
@@ -35319,12 +35445,12 @@ function GoongDeliveryMap({
       .then(goongjs => {
         if (cancelled || !containerRef.current) return;
         if (!mapRef.current) {
-          const firstPoint = validPoints[0] || currentLocation || warehouseLocation || { latitude: 10.8231, longitude: 106.6297 };
+          const firstPoint = { latitude: 10.8231, longitude: 106.6297 };
           mapRef.current = new goongjs.Map({
             container: containerRef.current,
             style: buildGoongStyleUrl(apiKey),
             center: [Number(firstPoint.longitude), Number(firstPoint.latitude)],
-            zoom: validPoints.length ? 13 : 11,
+            zoom: 11,
             pitch: 34,
             bearing: -8,
             attributionControl: true,
@@ -35363,21 +35489,7 @@ function GoongDeliveryMap({
   useEffect(() => {
     const goongjs = window.goongjs;
     const map = mapRef.current;
-    if (!map || !goongjs?.Marker || loadState !== 'ready') return undefined;
-
-    markersRef.current.forEach(marker => marker.remove?.());
-    markersRef.current = [];
-
-    const markerBounds = new goongjs.LngLatBounds();
-    let hasBounds = false;
-    const addBoundsPoint = point => {
-      const latitude = Number(point.latitude);
-      const longitude = Number(point.longitude);
-      if (isValidLatLng(latitude, longitude)) {
-        markerBounds.extend([longitude, latitude]);
-        hasBounds = true;
-      }
-    };
+    if (!map || !goongjs?.Marker || loadState !== 'ready') return;
 
     const createMarkerElement = ({ label, selected = false, delivered = false, warehouse = false }) => {
       const element = document.createElement('button');
@@ -35402,55 +35514,59 @@ function GoongDeliveryMap({
       return element;
     };
 
+    const updateMarkerElement = (element, { label, selected = false, delivered = false, warehouse = false }) => {
+      element.textContent = label;
+      element.style.width = warehouse ? '44px' : selected ? '46px' : '38px';
+      element.style.height = warehouse ? '44px' : selected ? '46px' : '38px';
+      element.style.border = selected ? '4px solid #fde68a' : '3px solid #ffffff';
+      element.style.background = warehouse ? '#0f766e' : delivered ? '#10b981' : '#f59e0b';
+      element.style.boxShadow = selected ? '0 20px 34px rgba(245, 158, 11, .38)' : '0 14px 24px rgba(15, 23, 42, .24)';
+    };
+    const desiredMarkerIds = new Set();
+    const upsertMarker = ({ id, selectId = id, longitude, latitude, label, selected = false, delivered = false, warehouse = false }) => {
+      desiredMarkerIds.add(id);
+      const existing = markersRef.current.get(id);
+      if (existing) {
+        existing.marker.setLngLat([longitude, latitude]);
+        updateMarkerElement(existing.element, { label, selected, delivered, warehouse });
+        return;
+      }
+      const element = createMarkerElement({ label, selected, delivered, warehouse });
+      if (!warehouse) element.addEventListener('click', () => onSelectRef.current?.(selectedIdRef.current === selectId ? '' : selectId));
+      const marker = new goongjs.Marker({ element, anchor: 'bottom' })
+        .setLngLat([longitude, latitude])
+        .addTo(map);
+      markersRef.current.set(id, { marker, element });
+    };
+
     validPoints.forEach((point, index) => {
       const pointId = getMapPointId(point, `point-${index}`);
       const isSelected = selectedId && selectedId === pointId;
       const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
-      const element = createMarkerElement({
+      upsertMarker({
+        id: `point:${pointId}`,
+        selectId: pointId,
+        longitude: Number(point.longitude),
+        latitude: Number(point.latitude),
         label: `${point.count || index + 1}`,
         selected: isSelected,
         delivered: isDelivered,
       });
-      element.addEventListener('click', () => onSelect?.(selectedId === pointId ? '' : pointId));
-      const marker = new goongjs.Marker({ element, anchor: 'bottom' })
-        .setLngLat([Number(point.longitude), Number(point.latitude)])
-        .addTo(map);
-      markersRef.current.push(marker);
-      addBoundsPoint(point);
     });
 
     const warehouseLat = toMapNumber(warehouseLocation?.latitude);
     const warehouseLng = toMapNumber(warehouseLocation?.longitude);
     if (isValidLatLng(warehouseLat, warehouseLng)) {
-      const element = createMarkerElement({ label: 'K', warehouse: true });
-      const marker = new goongjs.Marker({ element, anchor: 'bottom' })
-        .setLngLat([warehouseLng, warehouseLat])
-        .addTo(map);
-      markersRef.current.push(marker);
-      addBoundsPoint({ latitude: warehouseLat, longitude: warehouseLng });
+      upsertMarker({ id: 'warehouse', longitude: warehouseLng, latitude: warehouseLat, label: 'K', warehouse: true });
     }
 
-    const currentLat = toMapNumber(currentLocation?.latitude);
-    const currentLng = toMapNumber(currentLocation?.longitude);
-    if (isValidLatLng(currentLat, currentLng)) {
-      addBoundsPoint({ latitude: currentLat, longitude: currentLng });
-    }
-
-    if (hasBounds) {
-      map.fitBounds(markerBounds, { padding: 72, maxZoom: 15, duration: 450 });
-    } else if (bounds?.center) {
-      map.easeTo({
-        center: [Number(bounds.center.longitude), Number(bounds.center.latitude)],
-        zoom: bounds.zoom || 11,
-        duration: 450,
-      });
-    }
-
-    return () => {
-      markersRef.current.forEach(marker => marker.remove?.());
-      markersRef.current = [];
-    };
-  }, [bounds, currentLocation, loadState, onSelect, selectedId, validPoints, warehouseLocation]);
+    markersRef.current.forEach((record, id) => {
+      if (!desiredMarkerIds.has(id)) {
+        record.marker.remove?.();
+        markersRef.current.delete(id);
+      }
+    });
+  }, [loadState, selectedId, validPoints, warehouseLocation]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -35500,11 +35616,18 @@ function GoongDeliveryMap({
     const map = mapRef.current;
     if (!map || !goongjs?.Marker || loadState !== 'ready') return;
 
-    currentLocationMarkerRef.current?.remove?.();
-    currentLocationMarkerRef.current = null;
     const latitude = toMapNumber(currentLocation?.latitude);
     const longitude = toMapNumber(currentLocation?.longitude);
-    if (!isValidLatLng(latitude, longitude)) return;
+    if (!isValidLatLng(latitude, longitude)) {
+      currentLocationMarkerRef.current?.remove?.();
+      currentLocationMarkerRef.current = null;
+      return;
+    }
+
+    if (currentLocationMarkerRef.current) {
+      currentLocationMarkerRef.current.setLngLat([longitude, latitude]);
+      return;
+    }
 
     const element = document.createElement('span');
     element.style.width = '22px';
@@ -35520,7 +35643,12 @@ function GoongDeliveryMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || loadState !== 'ready' || !selectedId) return;
+    if (!map || loadState !== 'ready') return;
+    if (!selectedId) {
+      lastSelectedIdRef.current = '';
+      return;
+    }
+    if (lastSelectedIdRef.current === selectedId) return;
     const selectedPoint = validPoints.find(point => getMapPointId(point) === selectedId);
     if (!selectedPoint) return;
     map.easeTo({
@@ -35528,7 +35656,59 @@ function GoongDeliveryMap({
       zoom: Math.max(map.getZoom?.() || 0, 15),
       duration: 450,
     });
+    lastSelectedIdRef.current = selectedId;
   }, [loadState, selectedId, validPoints]);
+
+  useEffect(() => {
+    const goongjs = window.goongjs;
+    const map = mapRef.current;
+    if (!map || !goongjs?.LngLatBounds || loadState !== 'ready') return;
+    const requestId = `${cameraRequestKey}:${cameraMode}`;
+    if (lastCameraRequestRef.current === requestId) return;
+    const cameraPoints = cameraMode === 'navigation'
+      ? [navigationOrigin, navigationTarget].filter(Boolean)
+      : [
+        ...validPoints,
+        ...(warehouseLocation ? [warehouseLocation] : []),
+        ...(currentLocation ? [currentLocation] : []),
+      ];
+    const validCameraPoints = cameraPoints.filter(point => isValidLatLng(toMapNumber(point?.latitude), toMapNumber(point?.longitude)));
+    if (validCameraPoints.length > 1) {
+      const mapBounds = new goongjs.LngLatBounds();
+      validCameraPoints.forEach(point => mapBounds.extend([toMapNumber(point.longitude), toMapNumber(point.latitude)]));
+      const navigationPadding = Math.round((containerRef.current?.clientHeight || 0) * 0.3);
+      map.fitBounds(mapBounds, {
+        padding: cameraMode === 'navigation'
+          ? { top: 64, right: 56, bottom: Math.max(140, navigationPadding), left: 56 }
+          : 72,
+        maxZoom: 15,
+        duration: 420,
+      });
+    } else if (validCameraPoints.length === 1) {
+      map.easeTo({
+        center: [toMapNumber(validCameraPoints[0].longitude), toMapNumber(validCameraPoints[0].latitude)],
+        zoom: 15,
+        duration: 420,
+      });
+    } else if (bounds?.center) {
+      map.easeTo({
+        center: [Number(bounds.center.longitude), Number(bounds.center.latitude)],
+        zoom: bounds.zoom || 11,
+        duration: 420,
+      });
+    } else {
+      return;
+    }
+    lastCameraRequestRef.current = requestId;
+  }, [bounds, cameraMode, cameraRequestKey, currentLocation, loadState, navigationOrigin, navigationTarget, validPoints, warehouseLocation]);
+
+  useEffect(() => () => {
+    markersRef.current.forEach(record => record.marker.remove?.());
+    markersRef.current.clear();
+    currentLocationMarkerRef.current?.remove?.();
+    mapRef.current?.remove?.();
+    mapRef.current = null;
+  }, []);
 
   if (loadState === 'error' || loadState === 'missing_key') {
     return (
@@ -35542,6 +35722,10 @@ function GoongDeliveryMap({
           currentLocation={currentLocation}
           warehouseLocation={warehouseLocation}
           perspective
+          cameraRequestKey={cameraRequestKey}
+          cameraMode={cameraMode}
+          navigationOrigin={navigationOrigin}
+          navigationTarget={navigationTarget}
         />
         <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-amber-100 bg-white/95 p-3 text-xs font-bold text-slate-700 shadow-xl backdrop-blur">
           <p className="font-black text-amber-700">Goong Map chưa sẵn sàng, app đã tự chuyển sang bản đồ dự phòng.</p>
@@ -35611,8 +35795,14 @@ function MapManagementView({
   const [navigationLocationError, setNavigationLocationError] = useState('');
   const [navigationRoadRoute, setNavigationRoadRoute] = useState(null);
   const [navigationRouteLoading, setNavigationRouteLoading] = useState(false);
+  const [navigationRouteOrigin, setNavigationRouteOrigin] = useState(null);
+  const [gpsQualityNotice, setGpsQualityNotice] = useState('');
+  const [mapCameraRequest, setMapCameraRequest] = useState(1);
+  const [mapCameraMode, setMapCameraMode] = useState('overview');
   const selectedDeliveryOrderSnapshotRef = useRef(null);
   const lastNavigationPositionRef = useRef(null);
+  const currentMapPositionRef = useRef(null);
+  const navigationRouteCacheRef = useRef(new Map());
 
   useEffect(() => {
     setProviderId(getPreferredMapProvider(currentCompany));
@@ -35842,7 +36032,7 @@ function MapManagementView({
 
   const deliveryCustomerPoints = useMemo(() => {
     const groups = new Map();
-    (deliveryOrderPoints || []).forEach(point => {
+    getPendingDeliveryMapPoints(deliveryOrderPoints).forEach(point => {
       const customerId = `${point.customerId || ''}`.trim();
       const phone = `${point.phone || ''}`.replace(/\D/g, '');
       const name = normalizeLookupText(point.customerName || '');
@@ -35900,6 +36090,10 @@ function MapManagementView({
     return Array.from(groups.values())
       .map(group => {
         const hasCoordinates = isValidLatLng(Number(group.latitude), Number(group.longitude));
+        const locationState = getDeliveryCustomerLocationState({
+          customerPosition: group,
+          originPosition: origin,
+        });
         const distanceKm = origin && hasCoordinates
           ? distanceBetweenMapPointsKm(origin, group)
           : Infinity;
@@ -35915,7 +36109,7 @@ function MapManagementView({
             : '',
           distanceLabel: Number.isFinite(distanceKm)
             ? `${formatDistanceKm(distanceKm)}${currentMapPosition ? '' : ' • từ kho'}`
-            : hasCoordinates ? 'Đang lấy vị trí' : 'Chưa có GPS',
+            : locationState.label,
           status: group.allDelivered ? 'delivered' : group.status,
         };
       })
@@ -36039,6 +36233,10 @@ function MapManagementView({
       });
   }, [optimizedMapRoutePoints, visibleLimitedPoints]);
 
+  const pendingSuggestedDeliveryOrderPoints = useMemo(() => (
+    getPendingDeliveryMapPoints(suggestedDeliveryOrderPoints)
+  ), [suggestedDeliveryOrderPoints]);
+
   const selectedDeliveryOrderLive = useMemo(() => (
     suggestedDeliveryOrderPoints.find(point => (point.id || point.dispatchId) === selectedDeliveryOrderId) || null
   ), [selectedDeliveryOrderId, suggestedDeliveryOrderPoints]);
@@ -36080,30 +36278,45 @@ function MapManagementView({
     return null;
   }, [currentMapPosition, warehouseLocation]);
 
+  const requestMapCamera = useCallback((mode = 'overview') => {
+    setMapCameraMode(mode);
+    setMapCameraRequest(value => value + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!navigationTargetId) {
+      setNavigationRouteOrigin(null);
+      return;
+    }
+    if (!navigationOrigin) return;
+    setNavigationRouteOrigin(previous => {
+      if (!previous || previous.source !== navigationOrigin.source || navigationOrigin.source === 'warehouse') {
+        return navigationOrigin;
+      }
+      return shouldRefreshDeliveryRoute(previous, navigationOrigin) ? navigationOrigin : previous;
+    });
+  }, [navigationOrigin, navigationTargetId]);
+
+  const routeOriginForRequest = navigationRouteOrigin || navigationOrigin;
+
   const navigationRouteRequestKey = useMemo(() => {
-    if (!navigationTarget || !navigationOrigin) return '';
-    const originLat = Number(navigationOrigin.latitude);
-    const originLng = Number(navigationOrigin.longitude);
-    const destinationLat = Number(navigationTarget.latitude);
-    const destinationLng = Number(navigationTarget.longitude);
-    if (!isValidLatLng(originLat, originLng) || !isValidLatLng(destinationLat, destinationLng)) return '';
-    return [
-      navigationTargetId,
-      originLat.toFixed(4),
-      originLng.toFixed(4),
-      destinationLat.toFixed(5),
-      destinationLng.toFixed(5),
-    ].join('|');
-  }, [navigationOrigin, navigationTarget, navigationTargetId]);
+    if (!navigationTarget || !routeOriginForRequest) return '';
+    const routeKey = buildDeliveryRouteCacheKey({
+      origin: routeOriginForRequest,
+      target: navigationTarget,
+      provider: 'osrm',
+    });
+    return routeKey ? `${navigationTargetId}|${routeKey}` : '';
+  }, [navigationTarget, navigationTargetId, routeOriginForRequest]);
 
   const navigationRoutePoints = useMemo(() => {
     if (!navigationTarget) return optimizedMapRoutePoints;
     if (navigationRoadRoute?.targetId === navigationTargetId && navigationRoadRoute?.points?.length) {
       return navigationRoadRoute.points;
     }
-    const startPoint = navigationOrigin;
+    const startPoint = navigationOrigin || routeOriginForRequest;
     return startPoint ? [startPoint, navigationTarget] : [navigationTarget];
-  }, [navigationOrigin, navigationRoadRoute, navigationTarget, navigationTargetId, optimizedMapRoutePoints]);
+  }, [navigationOrigin, navigationRoadRoute, navigationTarget, navigationTargetId, optimizedMapRoutePoints, routeOriginForRequest]);
 
   const navigationMetrics = useMemo(() => {
     if (!navigationTarget || !navigationOrigin) {
@@ -36124,16 +36337,22 @@ function MapManagementView({
   }, [navigationOrigin, navigationRoadRoute, navigationTarget]);
 
   useEffect(() => {
-    if (!navigationRouteRequestKey || !navigationTarget || !navigationOrigin) {
+    if (!navigationRouteRequestKey || !navigationTarget || !routeOriginForRequest) {
       setNavigationRoadRoute(null);
       return undefined;
     }
 
-    const originLat = Number(navigationOrigin.latitude);
-    const originLng = Number(navigationOrigin.longitude);
+    const originLat = Number(routeOriginForRequest.latitude);
+    const originLng = Number(routeOriginForRequest.longitude);
     const destinationLat = Number(navigationTarget.latitude);
     const destinationLng = Number(navigationTarget.longitude);
     const targetId = navigationTarget.id || navigationTarget.dispatchId || navigationTargetId;
+    const cachedRoute = navigationRouteCacheRef.current.get(navigationRouteRequestKey);
+    if (cachedRoute) {
+      setNavigationRoadRoute(cachedRoute);
+      setNavigationRouteLoading(false);
+      return undefined;
+    }
     const controller = new AbortController();
     let cancelled = false;
 
@@ -36158,18 +36377,23 @@ function MapManagementView({
           ? `${firstMeaningfulStep.name ? `Đi theo ${firstMeaningfulStep.name}` : 'Tiếp tục đi theo tuyến'} • ${formatDistanceKm((Number(firstMeaningfulStep.distance) || 0) / 1000)}`
           : '';
         if (!cancelled && roadPoints.length >= 2) {
-          setNavigationRoadRoute({
+          const nextRoute = {
             targetId,
             points: roadPoints,
             distanceKm: (Number(route?.distance) || 0) / 1000,
             etaMinutes: Math.max(1, Math.round((Number(route?.duration) || 0) / 60)),
             nextInstruction,
             updatedAt: new Date().toISOString(),
-          });
+          };
+          navigationRouteCacheRef.current.set(navigationRouteRequestKey, nextRoute);
+          if (navigationRouteCacheRef.current.size > 24) {
+            navigationRouteCacheRef.current.delete(navigationRouteCacheRef.current.keys().next().value);
+          }
+          setNavigationRoadRoute(nextRoute);
         }
       } catch (error) {
         if (!cancelled && error?.name !== 'AbortError') {
-          setNavigationRoadRoute(null);
+          setNavigationRoadRoute(previous => previous?.targetId === targetId ? previous : null);
           setNavigationLocationError('Chưa tải được tuyến đường theo đường phố, app tạm dẫn theo khoảng cách trực tiếp.');
         }
       } finally {
@@ -36182,7 +36406,7 @@ function MapManagementView({
       cancelled = true;
       controller.abort();
     };
-  }, [navigationOrigin, navigationRouteRequestKey, navigationTarget, navigationTargetId]);
+  }, [navigationRouteRequestKey, navigationTarget, navigationTargetId, routeOriginForRequest]);
 
   useEffect(() => {
     if (
@@ -36209,25 +36433,11 @@ function MapManagementView({
     }
   }, [navigationTarget, navigationTargetId]);
 
-  const bounds = useMemo(() => mapService.fitBounds(suggestedDeliveryOrderPoints), [mapService, suggestedDeliveryOrderPoints]);
+  const bounds = useMemo(() => mapService.fitBounds(pendingSuggestedDeliveryOrderPoints), [mapService, pendingSuggestedDeliveryOrderPoints]);
 
-  const normalizeMapPosition = useCallback((coords = {}) => {
-    const latitude = Number(coords?.latitude);
-    const longitude = Number(coords?.longitude);
-    if (!isValidLatLng(latitude, longitude)) return null;
-    const rawSpeed = Number(coords?.speed);
-    const speedKmh = Number.isFinite(rawSpeed) && rawSpeed > 0 ? rawSpeed * 3.6 : null;
-    const heading = Number(coords?.heading);
-    const accuracy = Number(coords?.accuracy);
-    return {
-      latitude,
-      longitude,
-      speedKmh,
-      heading: Number.isFinite(heading) ? heading : null,
-      accuracy: Number.isFinite(accuracy) ? accuracy : null,
-      updatedAt: new Date().toISOString(),
-    };
-  }, []);
+  const normalizeMapPosition = useCallback((rawPosition = {}) => (
+    normalizeDeliveryGpsPosition(rawPosition)
+  ), []);
 
   const enrichNavigationPosition = useCallback((position) => {
     if (!position) return null;
@@ -36235,8 +36445,8 @@ function MapManagementView({
     const explicitSpeedKmh = Number(position.speedKmh);
     let speedKmh = Number.isFinite(explicitSpeedKmh) && explicitSpeedKmh > 0 ? explicitSpeedKmh : null;
     if (!speedKmh && previous) {
-      const previousTime = Date.parse(previous.updatedAt || '');
-      const currentTime = Date.parse(position.updatedAt || '');
+      const previousTime = Number(previous.timestampMs || Date.parse(previous.updatedAt || ''));
+      const currentTime = Number(position.timestampMs || Date.parse(position.updatedAt || ''));
       const elapsedSeconds = (currentTime - previousTime) / 1000;
       const distanceKm = distanceBetweenMapPointsKm(previous, position);
       const derivedSpeedKmh = elapsedSeconds > 1 && elapsedSeconds <= 300
@@ -36249,42 +36459,44 @@ function MapManagementView({
     return enriched;
   }, []);
 
-  const getCurrentMapPosition = async () => {
-    try {
-      const result = await Geolocation.getCurrentPosition({
-        enableHighAccuracy: true,
-        timeout: 8000,
-        maximumAge: 60000,
-      });
-      const normalized = enrichNavigationPosition(normalizeMapPosition(result?.coords || {}));
-      if (normalized) return normalized;
-    } catch (error) {
-      // Fall back to browser geolocation below when Capacitor permission is not available.
+  const applyMapPosition = useCallback((rawPosition) => {
+    const normalized = normalizeMapPosition(rawPosition);
+    if (!normalized) {
+      setGpsQualityNotice('GPS chưa có vị trí hợp lệ.');
+      return null;
     }
+    const quality = getDeliveryGpsQuality(normalized);
+    if (!quality.isUsable) {
+      setGpsQualityNotice(quality.message || 'GPS chưa đủ chính xác, đang tìm vị trí tốt hơn.');
+      return null;
+    }
+    const previous = currentMapPositionRef.current;
+    if (!shouldAcceptDeliveryGpsPosition(previous, normalized)) {
+      setGpsQualityNotice('App đã bỏ qua điểm GPS nhiễu để tránh làm bản đồ nhảy.');
+      return null;
+    }
+    const nextPosition = enrichNavigationPosition(normalized);
+    currentMapPositionRef.current = nextPosition;
+    setCurrentMapPosition(nextPosition);
+    setGpsQualityNotice(quality.message || '');
+    return nextPosition;
+  }, [enrichNavigationPosition, normalizeMapPosition]);
 
-    if (!navigator?.geolocation) return null;
-    return new Promise(resolve => {
-      navigator.geolocation.getCurrentPosition(
-        position => {
-          resolve(enrichNavigationPosition(normalizeMapPosition(position?.coords || {})));
-        },
-        () => resolve(null),
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
-      );
-    });
-  };
+  const getCurrentMapPosition = useCallback(async () => {
+    try {
+      const result = await requestCurrentLocation();
+      const position = applyMapPosition(result);
+      if (position) return position;
+    } catch (error) {
+      setGpsQualityNotice(error?.message || 'Chưa lấy được GPS hiện tại. Hãy kiểm tra quyền vị trí của app.');
+    }
+    return null;
+  }, [applyMapPosition]);
 
   useEffect(() => {
-    let cancelled = false;
-    getCurrentMapPosition()
-      .then(position => {
-        if (!cancelled && position) setCurrentMapPosition(position);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [enrichNavigationPosition]);
+    void getCurrentMapPosition().catch(() => {});
+    return undefined;
+  }, [getCurrentMapPosition]);
 
   useEffect(() => {
     if (!navigationTargetId) return undefined;
@@ -36292,26 +36504,28 @@ function MapManagementView({
     let browserWatchId = null;
     let fallbackTimer = null;
 
-    const applyPosition = coords => {
-      const nextPosition = enrichNavigationPosition(normalizeMapPosition(coords || {}));
+    const applyPosition = rawPosition => {
+      const nextPosition = applyMapPosition(rawPosition);
       if (!cancelled && nextPosition) {
-        setCurrentMapPosition(nextPosition);
-        setNavigationLocationError('');
+        setNavigationLocationError(previous => (
+          previous.startsWith('Chưa lấy được GPS') ? '' : previous
+        ));
       }
     };
 
     getCurrentMapPosition()
       .then(position => {
         if (!cancelled && position) {
-          setCurrentMapPosition(position);
-          setNavigationLocationError('');
+          setNavigationLocationError(previous => (
+            previous.startsWith('Chưa lấy được GPS') ? '' : previous
+          ));
         }
       })
       .catch(() => {});
 
     if (typeof navigator !== 'undefined' && navigator.geolocation?.watchPosition) {
       browserWatchId = navigator.geolocation.watchPosition(
-        position => applyPosition(position?.coords),
+        position => applyPosition(position),
         () => {
           if (!cancelled) {
             setNavigationLocationError('Chưa lấy được GPS liên tục. Hãy bật định vị chính xác cho app.');
@@ -36322,7 +36536,11 @@ function MapManagementView({
     } else {
       fallbackTimer = window.setInterval(async () => {
         const position = await getCurrentMapPosition();
-        if (!cancelled && position) setCurrentMapPosition(position);
+        if (!cancelled && position) {
+          setNavigationLocationError(previous => (
+            previous.startsWith('Chưa lấy được GPS') ? '' : previous
+          ));
+        }
       }, 7000);
     }
 
@@ -36333,7 +36551,7 @@ function MapManagementView({
       }
       if (fallbackTimer) window.clearInterval(fallbackTimer);
     };
-  }, [enrichNavigationPosition, navigationTargetId, normalizeMapPosition]);
+  }, [applyMapPosition, getCurrentMapPosition, navigationTargetId]);
 
   const buildGoogleDirectionsUrl = (destination = {}, origin = null) => {
     const destinationLat = Number(destination.latitude);
@@ -36393,6 +36611,7 @@ function MapManagementView({
     setNavigationLocationError('');
     setNavigationRoadRoute(null);
     setStatusText('Đang lấy GPS để bắt đầu dẫn đường trong app...');
+    requestMapCamera('navigation');
 
     const currentPosition = await getCurrentMapPosition();
     if (currentPosition) {
@@ -36413,17 +36632,18 @@ function MapManagementView({
     setNavigationLocationError('');
     setNavigationRoadRoute(null);
     setStatusText('');
+    requestMapCamera('overview');
   };
 
   const handleOpenBestRoute = async () => {
-    if (!visibleLimitedPoints.length) {
-      setStatusText('Chưa có điểm giao có GPS để tạo tuyến đi.');
+    if (!pendingSuggestedDeliveryOrderPoints.length) {
+      stopInAppNavigation();
+      setStatusText('Tất cả phiếu giao hôm nay đã giao xong.');
       return;
     }
-
     if (!pendingVisibleLimitedPoints.length) {
       stopInAppNavigation();
-      setStatusText('Tất cả phiếu có GPS hôm nay đã giao xong.');
+      setStatusText('Chưa có phiếu cần giao nào có tọa độ GPS để dẫn đường.');
       return;
     }
 
@@ -36449,6 +36669,7 @@ function MapManagementView({
     setNavigationRoadRoute(null);
     setNavigationLocationError(currentPosition ? '' : 'Chưa lấy được GPS hiện tại, app tạm tính tuyến từ kho hoặc điểm gần nhất.');
     setStatusText(`Đã gợi ý tuyến gần nhất. Điểm đầu: ${firstTarget.customerName || 'khách hàng'}.`);
+    requestMapCamera('navigation');
   };
 
   const handleMarkDeliveryDone = async (mission = selectedDeliveryOrder) => {
@@ -36466,10 +36687,18 @@ function MapManagementView({
     }
 
     const markerId = mission.id || mission.dispatchId;
+    if (markingDeliveredId === markerId) return;
     setMarkingDeliveredId(markerId);
-    setOptimisticDeliveredIds(prev => prev.includes(markerId) ? prev : [...prev, markerId]);
     try {
+      const deliveredAt = new Date().toISOString();
+      const deliveryPosition = currentMapPosition
+        && isValidLatLng(Number(currentMapPosition.latitude), Number(currentMapPosition.longitude))
+        ? currentMapPosition
+        : null;
       await onAddDeliveryReport({
+        idempotencyKey: `map_delivery:${mission.dispatchId}`,
+        source: 'map_delivery',
+        deliveryStatus: 'delivered',
         dispatchId: mission.dispatchId,
         customerId: mission.customerId || '',
         productId: mission.productId || '',
@@ -36478,11 +36707,17 @@ function MapManagementView({
         expectedWeightKg: mission.weight || 0,
         actualWeightKg: mission.weight || 0,
         date: mission.date || mapDate,
-        deliveredAt: new Date().toISOString(),
+        deliveredAt,
+        deliveryCompletedAt: deliveredAt,
         driverId: mission.driverId || selectedDriverId || '',
         driverName: mission.driverName || '',
+        deliveryLatitude: deliveryPosition?.latitude ?? null,
+        deliveryLongitude: deliveryPosition?.longitude ?? null,
+        deliveryGpsAccuracy: deliveryPosition?.accuracy ?? null,
+        deliveryGpsTimestamp: deliveryPosition?.timestampMs ?? null,
         note: 'Đánh dấu đã giao từ bản đồ',
       });
+      setOptimisticDeliveredIds(prev => prev.includes(markerId) ? prev : [...prev, markerId]);
       const nextMission = getNextPendingDeliveryPoint([markerId], currentMapPosition);
       if (nextMission) {
         await startInAppNavigation(nextMission);
@@ -36492,7 +36727,6 @@ function MapManagementView({
         setStatusText(`Đã giao xong ${mission.customerName || 'khách hàng'}. Không còn phiếu chưa giao có GPS.`);
       }
     } catch (error) {
-      setOptimisticDeliveredIds(prev => prev.filter(id => id !== markerId));
       setStatusText(getFriendlyFirebaseErrorMessage(error, 'Chưa đánh dấu được đã giao.'));
     } finally {
       setMarkingDeliveredId('');
@@ -36527,7 +36761,7 @@ function MapManagementView({
       >
         {providerId === 'goong' ? (
           <GoongDeliveryMap
-            points={suggestedDeliveryOrderPoints}
+            points={pendingSuggestedDeliveryOrderPoints}
             routePoints={navigationRoutePoints}
             bounds={bounds}
             selectedId={selectedDeliveryOrderId}
@@ -36535,10 +36769,14 @@ function MapManagementView({
             currentLocation={currentMapPosition}
             warehouseLocation={warehouseLocation}
             apiKey={configuredGoongMapTilesKey}
+            cameraRequestKey={mapCameraRequest}
+            cameraMode={mapCameraMode}
+            navigationOrigin={navigationOrigin}
+            navigationTarget={navigationTarget}
           />
         ) : providerId === 'google' && GOOGLE_MAPS_API_KEY ? (
           <GoogleDeliveryMap
-            points={suggestedDeliveryOrderPoints}
+            points={pendingSuggestedDeliveryOrderPoints}
             routePoints={navigationRoutePoints}
             bounds={bounds}
             selectedId={selectedDeliveryOrderId}
@@ -36547,10 +36785,14 @@ function MapManagementView({
             warehouseLocation={warehouseLocation}
             apiKey={GOOGLE_MAPS_API_KEY}
             mapId={GOOGLE_MAPS_MAP_ID}
+            cameraRequestKey={mapCameraRequest}
+            cameraMode={mapCameraMode}
+            navigationOrigin={navigationOrigin}
+            navigationTarget={navigationTarget}
           />
         ) : (
           <DeliveryTileMap
-            points={suggestedDeliveryOrderPoints}
+            points={pendingSuggestedDeliveryOrderPoints}
             routePoints={navigationRoutePoints}
             bounds={bounds}
             selectedId={selectedDeliveryOrderId}
@@ -36559,7 +36801,10 @@ function MapManagementView({
             currentLocation={currentMapPosition}
             warehouseLocation={warehouseLocation}
             perspective={mapPerspective3d}
-            followCurrentLocation={Boolean(navigationTargetId)}
+            cameraRequestKey={mapCameraRequest}
+            cameraMode={mapCameraMode}
+            navigationOrigin={navigationOrigin}
+            navigationTarget={navigationTarget}
           />
         )}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/20 via-transparent to-slate-900/10" />
@@ -36574,6 +36819,7 @@ function MapManagementView({
               onChange={(event) => {
                 setSelectedDeliveryOrderId('');
                 setShowDeliveryListSheet(true);
+                requestMapCamera('overview');
                 if (!isCurrentDriver) setSelectedEmployeeId(event.target.value);
               }}
               disabled={isCurrentDriver}
@@ -36594,6 +36840,7 @@ function MapManagementView({
             onClick={() => {
               setSelectedDeliveryOrderId('');
               setShowDeliveryListSheet(value => !value);
+              requestMapCamera('overview');
             }}
             className="flex min-w-0 items-center gap-1.5 rounded-full border border-white/80 bg-white/95 px-2 py-1.5 text-left shadow-lg backdrop-blur transition hover:bg-white"
           >
@@ -36602,7 +36849,7 @@ function MapManagementView({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-xs font-black text-slate-900">Danh sách đơn</span>
-              <span className="block truncate text-[10px] font-bold leading-none text-slate-500">{deliveryOrderPoints.length} phiếu</span>
+              <span className="block truncate text-[10px] font-bold leading-none text-slate-500">{pendingSuggestedDeliveryOrderPoints.length} phiếu cần giao</span>
             </span>
           </button>
 
@@ -36640,7 +36887,10 @@ function MapManagementView({
           </button>
           <button
             type="button"
-            onClick={() => setSelectedDeliveryOrderId('')}
+            onClick={() => {
+              setSelectedDeliveryOrderId('');
+              requestMapCamera('overview');
+            }}
             className="flex h-11 w-11 items-center justify-center text-slate-700"
             title="Xem toàn bộ"
           >
@@ -36654,6 +36904,15 @@ function MapManagementView({
               <MapPin className="mx-auto h-10 w-10 text-slate-300" />
               <p className="mt-2 font-black text-slate-700">Chưa có tọa độ để hiển thị.</p>
               <p className="mt-1 text-sm font-semibold text-slate-400">App đang tự dò từ địa chỉ khách; nếu muốn chính xác tuyệt đối hãy cập nhật GPS trong hồ sơ khách hàng.</p>
+            </div>
+          </div>
+        )}
+        {deliveryOrderPoints.length > 0 && !pendingSuggestedDeliveryOrderPoints.length && (
+          <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
+            <div className="rounded-[2rem] bg-white/90 p-5 shadow-sm">
+              <CheckCircle className="mx-auto h-10 w-10 text-emerald-500" />
+              <p className="mt-2 font-black text-slate-700">Đã giao hết các phiếu.</p>
+              <p className="mt-1 text-sm font-semibold text-slate-400">Lịch sử giao hàng, doanh thu và công nợ vẫn được giữ nguyên.</p>
             </div>
           </div>
         )}
@@ -36671,7 +36930,7 @@ function MapManagementView({
                     {selectedDeliveryCustomer?.weight ? ` • ${formatNumber(selectedDeliveryCustomer.weight)}kg` : ''}
                   </p>
                 </div>
-                <button type="button" onClick={() => { setSelectedDeliveryOrderId(''); setShowDeliveryListSheet(false); }} className="rounded-full bg-slate-100 p-2 text-slate-500">
+                <button type="button" onClick={() => { setSelectedDeliveryOrderId(''); setShowDeliveryListSheet(false); requestMapCamera('overview'); }} className="rounded-full bg-slate-100 p-2 text-slate-500">
                   <X className="h-4 w-4" />
                 </button>
               </div>
@@ -36696,7 +36955,7 @@ function MapManagementView({
               <div className="flex items-center justify-between gap-2 px-1">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Danh sách khách hàng</p>
-                  <h3 className="text-base font-black text-slate-900">{deliveryCustomerPoints.length} khách • {deliveryOrderPoints.length} phiếu</h3>
+                  <h3 className="text-base font-black text-slate-900">{deliveryCustomerPoints.length} khách • {pendingSuggestedDeliveryOrderPoints.length} phiếu cần giao</h3>
                 </div>
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-500">{formatDateLabel(mapDate)}</span>
               </div>
@@ -36749,6 +37008,11 @@ function MapManagementView({
                 {navigationLocationError && (
                   <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={navigationLocationError}>
                     {navigationLocationError}
+                  </p>
+                )}
+                {gpsQualityNotice && (
+                  <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={gpsQualityNotice}>
+                    {gpsQualityNotice}
                   </p>
                 )}
               </div>
