@@ -365,6 +365,7 @@ import {
   isVpsMode,
   isVpsStagingMode,
   normalizeVpsAttendance,
+  normalizeVpsFinanceExpense,
   normalizeVpsStockMovement,
   vpsDataMode,
 } from './api/hdConnectStaging.js';
@@ -13197,10 +13198,24 @@ export default function App() {
       try {
         await api.subscribeRealtime({
           signal: realtimeController.signal,
+          onState: (streamState) => {
+            if (cancelled) return;
+            const state = streamState?.state || 'connecting';
+            setRealtimeStatus({
+              state: state === 'failed' || state === 'authentication-failed'
+                ? 'degraded'
+                : state,
+              collection: 'vps-realtime',
+              lastAt: new Date().toISOString(),
+              error: streamState?.error || '',
+            });
+          },
           onEvent: (message) => {
             if (cancelled) return;
             setRealtimeStatus({
-              state: message?.type === 'event' ? 'connected' : 'connecting',
+              state: message?.type === 'event' || message?.type === 'ready' || message?.type === 'heartbeat'
+                ? 'connected'
+                : 'connecting',
               collection: message?.data?.eventName || 'vps-realtime',
               lastAt: new Date().toISOString(),
               error: '',
@@ -13250,7 +13265,12 @@ export default function App() {
       finance: [
         { label: 'Tài khoản tiền', path: '/api/v1/finance-suite/cash-accounts', run: () => api.listFinanceCashAccounts(query) },
         { label: 'Giao dịch tiền', path: '/api/v1/finance-suite/cash-transactions', run: () => api.listFinanceCashTransactions(query) },
-        { label: 'Chi phí', path: '/api/v1/finance-suite/expenses', run: () => api.listFinanceExpenses(query) },
+        {
+          label: 'Chi phí',
+          path: '/api/v1/finance-suite/expenses',
+          run: () => api.listFinanceExpenses(query),
+          apply: (result) => setRawExpenses(result.items.map(normalizeVpsFinanceExpense)),
+        },
       ],
       debt: [
         { label: 'Phải thu', path: '/api/v1/finance-suite/receivables', run: () => api.listFinanceReceivables(query) },
@@ -13295,6 +13315,9 @@ export default function App() {
     Promise.allSettled(definitions.map((definition) => definition.run()))
       .then((results) => {
         if (cancelled) return;
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled') definitions[index].apply?.(result.value);
+        });
         const endpoints = results.map((result, index) => {
           const definition = definitions[index];
           if (result.status === 'fulfilled') {

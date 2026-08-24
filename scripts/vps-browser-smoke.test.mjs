@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectFirebaseRequests, validateSmokeTarget } from './vps-browser-smoke.mjs';
+import {
+  classifyRuntimeRequest,
+  collectFirebaseRequests,
+  summarizeRuntimeRequests,
+  validateSmokeTarget,
+} from './vps-browser-smoke.mjs';
 
 test('browser smoke rejects production targets', () => {
   assert.throws(() => validateSmokeTarget('https://app.hdconnect.net', 'app'), /production/);
@@ -36,5 +41,41 @@ test('Firebase request inventory is deterministic and does not expose values', (
       'https://redacted.firebasestorage.app/o/file',
       'https://securetoken.googleapis.com/v1/token',
     ],
+  );
+});
+
+test('runtime request classification separates VPS, Firebase categories and analytics without query data', () => {
+  assert.deepEqual(
+    classifyRuntimeRequest('https://staging-api.hdconnect.net/api/v1/identity/me?access_token=redacted', 'https://staging-api.hdconnect.net'),
+    { category: 'VPS API', origin: 'https://staging-api.hdconnect.net', path: '/api/v1/identity/me' },
+  );
+  assert.deepEqual(
+    classifyRuntimeRequest('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=redacted'),
+    { category: 'Firebase Auth', origin: 'https://identitytoolkit.googleapis.com', path: '/v1/accounts:signInWithPassword' },
+  );
+  assert.deepEqual(
+    classifyRuntimeRequest('https://firestore.googleapis.com/v1/projects/redacted/databases/(default)/documents'),
+    { category: 'Firestore', origin: 'https://firestore.googleapis.com', path: '/v1/projects/redacted/databases/(default)/documents' },
+  );
+  assert.deepEqual(
+    classifyRuntimeRequest('https://www.googletagmanager.com/gtag/js?id=redacted'),
+    { category: 'Analytics', origin: 'https://www.googletagmanager.com', path: '/gtag/js' },
+  );
+});
+
+test('runtime request summary is deterministic and redacts query strings', () => {
+  assert.deepEqual(
+    summarizeRuntimeRequests([
+      'https://staging-api.hdconnect.net/api/v1/products?cursor=secret',
+      'https://staging-api.hdconnect.net/api/v1/products?cursor=other',
+      'https://securetoken.googleapis.com/v1/token?refresh_token=redacted',
+    ], 'https://staging-api.hdconnect.net'),
+    {
+      counts: { 'Firebase Auth': 1, 'VPS API': 2 },
+      paths: {
+        'Firebase Auth': ['/v1/token'],
+        'VPS API': ['/api/v1/products'],
+      },
+    },
   );
 });

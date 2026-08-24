@@ -25,6 +25,20 @@ const FIREBASE_MARKERS = [
   'firebaseapp.com',
 ];
 
+const FIREBASE_REQUEST_TYPES = [
+  ['Firebase Auth', ['identitytoolkit.googleapis.com', 'securetoken.googleapis.com']],
+  ['Firestore', ['firestore.googleapis.com']],
+  ['Firebase Storage', ['firebasestorage.googleapis.com', 'firebasestorage.app']],
+  ['Firebase Functions', ['cloudfunctions.net']],
+  ['Firebase Hosting/static', ['firebaseapp.com']],
+];
+
+const ANALYTICS_MARKERS = [
+  'google-analytics.com',
+  'googletagmanager.com',
+  'analytics.google.com',
+];
+
 const stringValue = (value) => `${value ?? ''}`.trim();
 
 export const validateSmokeTarget = (rawValue, label) => {
@@ -56,6 +70,55 @@ export const collectFirebaseRequests = (urls = []) => urls.filter((value) => {
     return false;
   }
 });
+
+export const classifyRuntimeRequest = (value, apiOrigin = '') => {
+  const rawValue = stringValue(value);
+  try {
+    const url = new URL(rawValue);
+    const hostname = url.hostname.toLowerCase();
+    const safePath = url.pathname || '/';
+
+    if (apiOrigin && url.origin === apiOrigin) {
+      return { category: 'VPS API', origin: url.origin, path: safePath };
+    }
+
+    for (const [category, markers] of FIREBASE_REQUEST_TYPES) {
+      if (markers.some((marker) => hostname === marker || hostname.endsWith(`.${marker}`))) {
+        return { category, origin: url.origin, path: safePath };
+      }
+    }
+
+    if (ANALYTICS_MARKERS.some((marker) => hostname === marker || hostname.endsWith(`.${marker}`))) {
+      return { category: 'Analytics', origin: url.origin, path: safePath };
+    }
+
+    return { category: 'Other', origin: url.origin, path: safePath };
+  } catch {
+    return { category: 'Other', origin: 'invalid-url', path: '' };
+  }
+};
+
+export const summarizeRuntimeRequests = (urls = [], apiOrigin = '') => {
+  const counts = {};
+  const paths = {};
+
+  for (const value of urls) {
+    const request = classifyRuntimeRequest(value, apiOrigin);
+    counts[request.category] = (counts[request.category] ?? 0) + 1;
+    const categoryPaths = paths[request.category] ?? new Set();
+    categoryPaths.add(request.path);
+    paths[request.category] = categoryPaths;
+  }
+
+  return {
+    counts: Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))),
+    paths: Object.fromEntries(
+      Object.entries(paths)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([category, entries]) => [category, [...entries].sort()]),
+    ),
+  };
+};
 
 const getConfig = (env = process.env) => ({
   appUrl: stringValue(env.HD_MANAGER_E2E_APP_URL),
@@ -98,11 +161,20 @@ const main = async () => {
   }
 
   const requests = [];
+  const apiResponses = [];
   const consoleErrors = [];
   const browser = await chromium.launch({ executablePath: config.browserPath, headless: true });
   try {
     const page = await browser.newPage();
     page.on('request', (request) => requests.push(request.url()));
+    page.on('response', (response) => {
+      if (response.url().startsWith(apiUrl.origin)) {
+        apiResponses.push({
+          path: new URL(response.url()).pathname,
+          status: response.status(),
+        });
+      }
+    });
     page.on('console', (message) => {
       if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 500));
     });
@@ -117,17 +189,24 @@ const main = async () => {
 
     const firebaseRequests = collectFirebaseRequests(requests);
     const apiRequests = requests.filter((url) => url.startsWith(apiUrl.origin));
-    const coreApiRequests = apiRequests.filter((url) => /\/api\/v1\/(master-data\/customers|products|sales\/orders|auth\/)/.test(url));
+    const coreApiRequests = apiRequests.filter((url) => /\/api\/v1\/(auth|identity|master-data\/customers|products|sales\/orders|warehouse|inventory|finance-suite|realtime)/.test(url));
+    const coreApiResponses = apiResponses.filter(({ path, status }) =>
+      status >= 200
+      && status < 400
+      && /\/api\/v1\/(auth|identity|master-data\/customers|products|sales\/orders|warehouse|inventory|finance-suite|realtime)/.test(path));
+    const network = summarizeRuntimeRequests(requests, apiUrl.origin);
 
     const result = {
-      status: firebaseRequests.length === 0 && coreApiRequests.length > 0 ? 'PASS' : 'FAIL',
+      status: firebaseRequests.length === 0 && coreApiRequests.length > 0 && coreApiResponses.length > 0 ? 'PASS' : 'FAIL',
       appUrl: appUrl.origin,
       apiUrl: apiUrl.origin,
       login: 'ATTEMPTED',
       coreApiRequests: coreApiRequests.length,
-      firebaseRequests,
+      coreApiResponses: coreApiResponses.length,
+      network,
+      firebaseRequestCount: firebaseRequests.length,
       consoleErrors,
-      note: 'This harness proves network routing for the existing login/core load. CRUD actions still require explicit staging fixtures/selectors and are not silently marked PASS.',
+      note: 'Network output contains only origin, path and counts; query strings, credentials and cookies are never recorded. CRUD actions still require explicit staging fixtures/selectors and are not silently marked PASS.',
     };
     writeResult(result);
     process.exitCode = result.status === 'PASS' ? 0 : 1;

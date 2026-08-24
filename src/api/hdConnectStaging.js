@@ -40,6 +40,35 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(number) ? number : undefined;
 };
 
+const REALTIME_EVENT_DEDUPE_LIMIT = 256;
+
+const normalizeReconnectDelay = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
+const waitForReconnect = (delayMs, signal) => new Promise((resolve) => {
+  if (signal?.aborted || delayMs <= 0) {
+    resolve();
+    return;
+  }
+
+  const timer = globalThis.setTimeout(cleanup, delayMs);
+  const abort = () => cleanup();
+
+  function cleanup() {
+    globalThis.clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
+    resolve();
+  }
+
+  signal?.addEventListener?.('abort', abort, { once: true });
+});
+
+const isAbortError = (error, signal) => Boolean(
+  signal?.aborted || error?.name === 'AbortError',
+);
+
 const toTargetId = (value) => isUuid(value) ? `${value}` : undefined;
 
 const requireIdentityInput = (value, code, message) => {
@@ -211,6 +240,29 @@ export const normalizeVpsPayment = (record = {}) => ({
   sourceSystem: 'hd-connect-vps',
   readOnly: true,
 });
+
+export const normalizeVpsFinanceExpense = (record = {}) => {
+  const status = stringValue(record.status).toUpperCase();
+
+  return {
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    branchId: record.branchId || '',
+    empId: record.createdBy || '',
+    amount: toFiniteNumber(record.amount) ?? 0,
+    category: record.expenseType || 'Chi phí khác',
+    note: record.description || '',
+    date: stringValue(record.expenseDate || record.createdAt).slice(0, 10),
+    approvalStatus: status === 'APPROVED' || status === 'POSTED'
+      ? 'approved'
+      : 'pending',
+    requiresApproval: status !== 'POSTED',
+    handoverStatus: status === 'POSTED' ? 'confirmed' : 'pending',
+    isArchived: Boolean(record.deletedAt),
+    sourceSystem: 'hd-connect-vps',
+  };
+};
 
 export const normalizeVpsAttendance = (record = {}) => {
   const workDate = stringValue(record.workDate).slice(0, 10);
@@ -830,6 +882,19 @@ export class HdConnectStagingApi {
     return this.client.post('/warehouse-suite/stock-out', toTenantSafePayload(record), mutationOptions(record));
   }
 
+  async listWarehouseTransfers(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/transfers', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createWarehouseTransfer(record = {}) {
+    return this.client.post('/warehouse-suite/transfers', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postWarehouseTransfer(transferId) {
+    const safeTransferId = requireIdentityInput(transferId, 'WAREHOUSE_TRANSFER_ID_REQUIRED', 'A warehouse transfer id is required.');
+    return this.client.post(`/warehouse-suite/transfers/${safeTransferId}/post`, undefined, { retry: false });
+  }
+
   async createWarehouseAdjustment(record = {}, direction = 'increase') {
     if (!['increase', 'decrease'].includes(direction)) {
       throw new HdApiError('The warehouse adjustment direction is invalid.', {
@@ -1081,13 +1146,98 @@ export class HdConnectStagingApi {
     return this.client.post('/worker/jobs/run', undefined, { query, retry: false });
   }
 
-  async subscribeRealtime({ onEvent, signal } = {}) {
+  async subscribeRealtime({
+    onEvent,
+    signal,
+    onState,
+    initialReconnectDelayMs = 500,
+    maxReconnectDelayMs = 8_000,
+  } = {}) {
     if (typeof onEvent !== 'function') {
       throw new HdApiError('A realtime event callback is required.', {
         code: 'REALTIME_CALLBACK_REQUIRED',
       });
     }
-    return this.client.stream('/realtime/stream', { onEvent, signal });
+
+    const initialDelay = normalizeReconnectDelay(initialReconnectDelayMs, 500);
+    const maximumDelay = Math.max(
+      initialDelay,
+      normalizeReconnectDelay(maxReconnectDelayMs, 8_000),
+    );
+    const recentEventIds = new Set();
+    let reconnectAttempt = 0;
+    let refreshesSinceReady = 0;
+
+    const emitState = (state, details = {}) => {
+      if (typeof onState !== 'function') return;
+      onState({ state, attempt: reconnectAttempt, ...details });
+    };
+
+    const handleEvent = (message) => {
+      if (message?.type === 'ready') {
+        reconnectAttempt = 0;
+        refreshesSinceReady = 0;
+        emitState('connected');
+      }
+
+      if (message?.type === 'heartbeat') {
+        emitState('connected', { heartbeatAt: message?.data?.at || '' });
+      }
+
+      const eventId = message?.type === 'event'
+        ? stringValue(message?.data?.eventId)
+        : '';
+      if (eventId) {
+        if (recentEventIds.has(eventId)) return;
+        recentEventIds.add(eventId);
+        if (recentEventIds.size > REALTIME_EVENT_DEDUPE_LIMIT) {
+          recentEventIds.delete(recentEventIds.values().next().value);
+        }
+      }
+
+      onEvent(message);
+    };
+
+    while (!signal?.aborted) {
+      try {
+        emitState(reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+        await this.client.stream('/realtime/stream', { onEvent: handleEvent, signal });
+
+        if (signal?.aborted) return;
+        throw new HdApiError('The realtime stream closed unexpectedly.', {
+          code: 'REALTIME_STREAM_CLOSED',
+          retryable: true,
+        });
+      } catch (error) {
+        if (isAbortError(error, signal)) return;
+
+        if (error?.status === 401 && typeof this.client.refresh === 'function') {
+          if (refreshesSinceReady >= 1) {
+            emitState('authentication-failed', { error: error.message || '' });
+            throw error;
+          }
+
+          refreshesSinceReady += 1;
+          emitState('reauthenticating');
+          await this.client.refresh();
+          continue;
+        }
+
+        const retryable = Boolean(error?.retryable || error?.status >= 500 || error?.status === 0);
+        if (!retryable) {
+          emitState('failed', { error: error?.message || '' });
+          throw error;
+        }
+
+        const delayMs = Math.min(
+          maximumDelay,
+          initialDelay * (2 ** Math.min(reconnectAttempt, 8)),
+        );
+        emitState('reconnecting', { delayMs, error: error?.message || '' });
+        reconnectAttempt += 1;
+        await waitForReconnect(delayMs, signal);
+      }
+    }
   }
 }
 

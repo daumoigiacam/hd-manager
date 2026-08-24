@@ -5,6 +5,7 @@ import {
   buildVpsInventoryTransaction,
   createHdConnectStagingApi,
   normalizeVpsAttendance,
+  normalizeVpsFinanceExpense,
   normalizeVpsOrder,
   normalizeVpsProduct,
   normalizeVpsStockMovement,
@@ -81,6 +82,26 @@ test('normalizes relational order-line units before the legacy UI renders them',
 
   assert.equal(order.items[0].unit, 'Con');
   assert.equal(order.items[0].quantity, 2);
+});
+
+test('normalizes VPS draft expenses for the legacy finance read model without posting', () => {
+  const expense = normalizeVpsFinanceExpense({
+    id: 'expense-1',
+    companyId: 'company-1',
+    createdBy: 'user-1',
+    amount: '125000',
+    expenseType: 'Fuel',
+    description: 'Delivery fuel',
+    expenseDate: '2026-08-24T09:00:00.000Z',
+    status: 'DRAFT',
+  });
+
+  assert.equal(expense.amount, 125000);
+  assert.equal(expense.category, 'Fuel');
+  assert.equal(expense.date, '2026-08-24');
+  assert.equal(expense.approvalStatus, 'pending');
+  assert.equal(expense.handoverStatus, 'pending');
+  assert.equal(expense.sourceSystem, 'hd-connect-vps');
 });
 
 test('normalizes relational VPS attendance into the existing staff UI read model', () => {
@@ -539,6 +560,40 @@ test('routes the explicit payroll lifecycle without Firebase-shaped status write
   assert.equal(calls[4].options.retry, false);
 });
 
+test('routes warehouse transfers through explicit source and destination contracts', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ method: 'GET', path, options });
+      return { items: [] };
+    },
+    post: async (path, payload, options) => {
+      calls.push({ method: 'POST', path, payload, options });
+      return { id: '11111111-1111-4111-8111-111111111111', status: 'DRAFT' };
+    },
+  });
+
+  await api.listWarehouseTransfers({ companyId: 'attacker-company', page: 1 });
+  await api.createWarehouseTransfer({
+    companyId: 'attacker-company',
+    sourceWarehouseId: '11111111-1111-4111-8111-111111111112',
+    destinationWarehouseId: '11111111-1111-4111-8111-111111111113',
+    lines: [{ productId: '11111111-1111-4111-8111-111111111114', unitId: '11111111-1111-4111-8111-111111111115', quantity: 1 }],
+    clientMutationId: 'transfer-1',
+  });
+  await api.postWarehouseTransfer('11111111-1111-4111-8111-111111111111');
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /warehouse-suite/transfers',
+    'POST /warehouse-suite/transfers',
+    'POST /warehouse-suite/transfers/11111111-1111-4111-8111-111111111111/post',
+  ]);
+  assert.equal(Object.hasOwn(calls[1].payload, 'companyId'), false);
+  assert.equal(calls[1].options.idempotencyKey, 'transfer-1');
+  assert.equal(calls[1].options.retry, false);
+  assert.equal(calls[2].options.retry, false);
+});
+
 test('routes VPS stock count as an explicit session, line, and post sequence', async () => {
   const calls = [];
   const api = createHdConnectStagingApi({
@@ -578,18 +633,119 @@ test('routes VPS stock count as an explicit session, line, and post sequence', a
 });
 
 test('opens the authenticated VPS realtime stream without a Firebase fallback', async () => {
+  const controller = new AbortController();
   const events = [];
   const api = createHdConnectStagingApi({
     stream: async (path, options) => {
       events.push({ path, options });
       options.onEvent({ type: 'ready', data: { companyId: 'company-1' } });
+      controller.abort();
     },
   });
 
-  await api.subscribeRealtime({ onEvent: () => {} });
+  await api.subscribeRealtime({ signal: controller.signal, onEvent: () => {} });
 
   assert.equal(events[0].path, '/realtime/stream');
   assert.equal(typeof events[0].options.onEvent, 'function');
+});
+
+test('reconnects a closed VPS realtime stream and suppresses duplicate event IDs', async () => {
+  const controller = new AbortController();
+  const deliveredEvents = [];
+  const streamStates = [];
+  let streamCalls = 0;
+  const api = createHdConnectStagingApi({
+    stream: async (_path, options) => {
+      streamCalls += 1;
+      options.onEvent({ type: 'ready', data: { companyId: 'company-1' } });
+      options.onEvent({
+        type: 'event',
+        data: { eventId: 'event-1', companyId: 'company-1' },
+      });
+
+      if (streamCalls === 1) return;
+
+      options.onEvent({
+        type: 'event',
+        data: { eventId: 'event-1', companyId: 'company-1' },
+      });
+      options.onEvent({
+        type: 'event',
+        data: { eventId: 'event-2', companyId: 'company-1' },
+      });
+      controller.abort();
+    },
+  });
+
+  await api.subscribeRealtime({
+    signal: controller.signal,
+    initialReconnectDelayMs: 0,
+    maxReconnectDelayMs: 0,
+    onEvent: (message) => deliveredEvents.push(message),
+    onState: (state) => streamStates.push(state),
+  });
+
+  assert.equal(streamCalls, 2);
+  assert.deepEqual(
+    deliveredEvents
+      .filter((message) => message.type === 'event')
+      .map((message) => message.data.eventId),
+    ['event-1', 'event-2'],
+  );
+  assert.ok(streamStates.some((state) => state.state === 'reconnecting'));
+});
+
+test('refreshes once before reconnecting an unauthorized VPS realtime stream', async () => {
+  const controller = new AbortController();
+  const streamStates = [];
+  let streamCalls = 0;
+  let refreshCalls = 0;
+  const api = createHdConnectStagingApi({
+    stream: async (_path, options) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        throw new HdApiError('Access token expired.', {
+          status: 401,
+          code: 'AUTH_ACCESS_TOKEN_EXPIRED',
+        });
+      }
+      options.onEvent({ type: 'ready', data: { companyId: 'company-1' } });
+      controller.abort();
+    },
+    refresh: async () => {
+      refreshCalls += 1;
+      return { accessToken: 'rotated-access', refreshToken: 'rotated-refresh' };
+    },
+  });
+
+  await api.subscribeRealtime({
+    signal: controller.signal,
+    onEvent: () => {},
+    onState: (state) => streamStates.push(state),
+  });
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(streamCalls, 2);
+  assert.ok(streamStates.some((state) => state.state === 'reauthenticating'));
+});
+
+test('does not retry a forbidden VPS realtime stream', async () => {
+  let streamCalls = 0;
+  const api = createHdConnectStagingApi({
+    stream: async () => {
+      streamCalls += 1;
+      throw new HdApiError('Realtime permission denied.', {
+        status: 403,
+        code: 'AUTH_PERMISSION_DENIED',
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => api.subscribeRealtime({ onEvent: () => {} }),
+    (error) => error instanceof HdApiError && error.code === 'AUTH_PERMISSION_DENIED',
+  );
+  assert.equal(streamCalls, 1);
 });
 
 test('routes notification, storage, reporting and settings contracts without tenant override', async () => {
