@@ -126,4 +126,18 @@ test('map rendering keeps marker instances stable and delivery completion is ide
   assert.match(appSource, /getDeliveryCustomerLocationState\(\{/);
 });
 
+test('uses the native Capacitor watcher for APK navigation and keeps a fresh GPS fallback', () => {
+  assert.match(appSource, /const cachedPosition = getCachedMapPosition\(\);/);
+  assert.match(appSource, /return cachedPosition;/);
+  assert.match(appSource, /if \(isNativeRuntime\(\)\) \{\s*void Geolocation\.watchPosition\(/);
+  assert.match(appSource, /Geolocation\.clearWatch\(\{ id: nativeWatchId \}\)/);
+  assert.match(appSource, /App chưa được cấp quyền vị trí/);
+  assert.match(appSource, /Dịch vụ vị trí chưa sẵn sàng/);
+  assert.match(appSource, /Đang chờ tín hiệu GPS chính xác\. App tạm tính tuyến từ kho và sẽ tự cập nhật khi nhận được vị trí\./);
+  assert.match(appSource, /Đang chờ tín hiệu GPS để cập nhật tuyến\./);
+  assert.doesNotMatch(appSource, /Chưa lấy được vị trí hiện tại\. Hãy bật GPS rồi bấm Chỉ đường lại\./);
+  assert.doesNotMatch(appSource, /Chưa đủ dữ liệu vị trí để tính tuyến\./);
+  assert.doesNotMatch(appSource, /setNavigationLocationError\(currentPosition \? '' : 'Chưa lấy được GPS hiện tại/);
+});
+
 console.log('\ndelivery map navigation tests: PASS');

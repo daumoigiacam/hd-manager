@@ -9075,34 +9075,36 @@ const mapLocationErrorMessage = (error, source = 'web') => {
 
   if (code === 1 || rawMessage.includes('permission') || rawMessage.includes('denied')) {
     return isNative
-            ? 'Chưa có'
-            : 'Chưa có mặt hàng';
+      ? 'App chưa được cấp quyền vị trí. Hãy cho phép quyền vị trí trong cài đặt ứng dụng.'
+      : 'Trình duyệt chưa được cấp quyền vị trí. Hãy cho phép quyền vị trí rồi thử lại.';
   }
 
   if (
     code === 2 ||
+    rawMessage.includes('os-plug-gloc-0002') ||
+    rawMessage.includes('os-plug-gloc-0007') ||
     rawMessage.includes('services are not enabled') ||
     rawMessage.includes('location services are disabled') ||
     (rawMessage.includes('gps') && rawMessage.includes('disabled')) ||
     rawMessage.includes('location unavailable') ||
     rawMessage.includes('unavailable')
   ) {
-    return 'web';
+    return 'Dịch vụ vị trí chưa sẵn sàng. Hãy bật GPS và di chuyển ra nơi thoáng, app sẽ tự thử lại.';
   }
 
-  if (code === 3 || rawMessage.includes('timeout')) {
-    return 'web';
+  if (code === 3 || rawMessage.includes('os-plug-gloc-0010') || rawMessage.includes('timeout')) {
+    return 'Chưa nhận được tín hiệu GPS kịp thời. App vẫn đang chờ vị trí chính xác.';
   }
 
   if (rawMessage.includes('not supported') || rawMessage.includes('not available')) {
     return isNative
-            ? 'Chưa có'
-            : 'Chưa có mặt hàng';
+      ? 'Thiết bị này chưa hỗ trợ lấy vị trí GPS.'
+      : 'Trình duyệt này chưa hỗ trợ lấy vị trí GPS.';
   }
 
   return isNative
-            ? 'Chưa có'
-            : 'Chưa có mặt hàng';
+    ? 'Chưa lấy được vị trí từ thiết bị. App vẫn đang chờ GPS.'
+    : 'Chưa lấy được vị trí từ trình duyệt. App vẫn đang chờ GPS.';
 };
 
 const getBrowserGeolocationPermissionState = async () => {
@@ -36482,16 +36484,24 @@ function MapManagementView({
     return nextPosition;
   }, [enrichNavigationPosition, normalizeMapPosition]);
 
+  const getCachedMapPosition = useCallback(() => {
+    const cachedPosition = currentMapPositionRef.current;
+    return getDeliveryGpsQuality(cachedPosition).isUsable ? cachedPosition : null;
+  }, []);
+
   const getCurrentMapPosition = useCallback(async () => {
+    const cachedPosition = getCachedMapPosition();
     try {
       const result = await requestCurrentLocation();
       const position = applyMapPosition(result);
       if (position) return position;
     } catch (error) {
-      setGpsQualityNotice(error?.message || 'Chưa lấy được GPS hiện tại. Hãy kiểm tra quyền vị trí của app.');
+      if (!cachedPosition) {
+        setGpsQualityNotice(error?.message || 'Chưa lấy được GPS hiện tại. App vẫn đang chờ vị trí.');
+      }
     }
-    return null;
-  }, [applyMapPosition]);
+    return cachedPosition;
+  }, [applyMapPosition, getCachedMapPosition]);
 
   useEffect(() => {
     void getCurrentMapPosition().catch(() => {});
@@ -36501,36 +36511,61 @@ function MapManagementView({
   useEffect(() => {
     if (!navigationTargetId) return undefined;
     let cancelled = false;
+    let nativeWatchId = '';
     let browserWatchId = null;
     let fallbackTimer = null;
 
     const applyPosition = rawPosition => {
       const nextPosition = applyMapPosition(rawPosition);
       if (!cancelled && nextPosition) {
-        setNavigationLocationError(previous => (
-          previous.startsWith('Chưa lấy được GPS') ? '' : previous
-        ));
+        setNavigationLocationError('');
+        setStatusText('');
       }
+    };
+
+    const handleWatchError = error => {
+      if (cancelled) return;
+      setGpsQualityNotice(mapLocationErrorMessage(error, isNativeRuntime() ? 'native' : 'web'));
     };
 
     getCurrentMapPosition()
       .then(position => {
         if (!cancelled && position) {
-          setNavigationLocationError(previous => (
-            previous.startsWith('Chưa lấy được GPS') ? '' : previous
-          ));
+          setNavigationLocationError('');
+          setStatusText('');
         }
       })
       .catch(() => {});
 
-    if (typeof navigator !== 'undefined' && navigator.geolocation?.watchPosition) {
+    if (isNativeRuntime()) {
+      void Geolocation.watchPosition(
+        {
+          enableHighAccuracy: true,
+          timeout: 30000,
+          maximumAge: 3000,
+          minimumUpdateInterval: 5000,
+          interval: 5000,
+          enableLocationFallback: true
+        },
+        (position, error) => {
+          if (error) {
+            handleWatchError(error);
+            return;
+          }
+          if (position) applyPosition(position);
+        }
+      )
+        .then(watchId => {
+          nativeWatchId = watchId;
+          if (cancelled) {
+            void Geolocation.clearWatch({ id: watchId }).catch(() => {});
+          }
+        })
+        .catch(handleWatchError);
+    } else if (typeof navigator !== 'undefined' && navigator.geolocation?.watchPosition) {
       browserWatchId = navigator.geolocation.watchPosition(
         position => applyPosition(position),
-        () => {
-          if (!cancelled) {
-            setNavigationLocationError('Chưa lấy được GPS liên tục. Hãy bật định vị chính xác cho app.');
-          }
-        },
+        handleWatchError,
         { enableHighAccuracy: true, maximumAge: 3000, timeout: 12000 }
       );
     } else {
@@ -36546,6 +36581,9 @@ function MapManagementView({
 
     return () => {
       cancelled = true;
+      if (nativeWatchId) {
+        void Geolocation.clearWatch({ id: nativeWatchId }).catch(() => {});
+      }
       if (browserWatchId !== null && typeof navigator !== 'undefined' && navigator.geolocation?.clearWatch) {
         navigator.geolocation.clearWatch(browserWatchId);
       }
@@ -36618,11 +36656,11 @@ function MapManagementView({
       setCurrentMapPosition(currentPosition);
       setStatusText('');
     } else if (warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))) {
-      setNavigationLocationError('Chưa có GPS hiện tại. App đang tính tuyến từ kho; bật định vị để cập nhật khoảng cách và tốc độ thực tế.');
-      setStatusText('');
+      setNavigationLocationError('');
+      setStatusText('Đang chờ tín hiệu GPS chính xác. App tạm tính tuyến từ kho và sẽ tự cập nhật khi nhận được vị trí.');
     } else {
-      setNavigationLocationError('Chưa lấy được vị trí hiện tại. Hãy bật GPS rồi bấm Chỉ đường lại.');
-      setStatusText('');
+      setNavigationLocationError('');
+      setStatusText('Đang chờ tín hiệu GPS chính xác. Tuyến sẽ tự cập nhật khi nhận được vị trí.');
     }
   };
 
@@ -36667,8 +36705,14 @@ function MapManagementView({
     setNavigationTargetId(firstTargetId);
     setNavigationStarted(true);
     setNavigationRoadRoute(null);
-    setNavigationLocationError(currentPosition ? '' : 'Chưa lấy được GPS hiện tại, app tạm tính tuyến từ kho hoặc điểm gần nhất.');
-    setStatusText(`Đã gợi ý tuyến gần nhất. Điểm đầu: ${firstTarget.customerName || 'khách hàng'}.`);
+    setNavigationLocationError('');
+    setStatusText(
+      currentPosition
+        ? `Đã gợi ý tuyến gần nhất. Điểm đầu: ${firstTarget.customerName || 'khách hàng'}.`
+        : fallbackWarehouse
+          ? 'Đang chờ tín hiệu GPS chính xác. App tạm tính tuyến từ kho và sẽ tự cập nhật khi nhận được vị trí.'
+          : 'Đang chờ tín hiệu GPS chính xác. Tuyến sẽ tự cập nhật khi nhận được vị trí.'
+    );
     requestMapCamera('navigation');
   };
 
@@ -37003,7 +37047,7 @@ function MapManagementView({
                     ? 'Đang tính tuyến đường...'
                     : navigationMetrics.distanceKm !== null
                       ? `${formatDistanceKm(navigationMetrics.distanceKm)} • ETA ${navigationMetrics.arrivalLabel} • ${navigationMetrics.speedKmh ? `${navigationMetrics.speedKmh} km/h` : navigationMetrics.originSource === 'warehouse' ? 'GPS đang chờ' : 'Đang đo tốc độ'}`
-                      : 'Chưa đủ dữ liệu vị trí để tính tuyến.'}
+                      : 'Đang chờ tín hiệu GPS để cập nhật tuyến.'}
                 </p>
                 {navigationLocationError && (
                   <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={navigationLocationError}>
