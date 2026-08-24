@@ -7315,7 +7315,18 @@ const getCustomerProductVariants = (customer = null, product = null) => {
       || Object.keys(baseVariant.unitPrices || {}).length > 0
     )
   );
-  if (baseVariant && (!hasConfiguredVariants || hasIndependentBaseConfiguration)) {
+  if (productAttributes.length > 0 && !hasConfiguredVariants) {
+    // A catalog product can define selectable attributes without storing a
+    // customer-specific variant for each one. Keep the configured price/unit
+    // and expose every catalog attribute as its own order-request option.
+    productAttributes.forEach((attribute, index) => {
+      variants.push({
+        ...baseVariant,
+        id: `${product?.id || 'product'}_attribute_${index}`,
+        attributeLabel: attribute
+      });
+    });
+  } else if (baseVariant && (!hasConfiguredVariants || hasIndependentBaseConfiguration)) {
     variants.push({ ...baseVariant, id: `${product?.id || 'product'}_default` });
   }
   (Array.isArray(config?.variants) ? config.variants : []).forEach((variant, index) => {
@@ -61031,6 +61042,148 @@ const OrderRequestSelectableProductCard = React.memo(function OrderRequestSelect
   );
 });
 
+const groupOrderRequestProductVariants = (options = []) => {
+  const attributeLabels = [...new Set([
+    'To',
+    'Trung',
+    'Nhỏ',
+    ...options.flatMap(({ product, variant }) => [
+      ...getProductAttributes(product),
+      variant?.attributeLabel,
+      variant?.size,
+    ].filter(Boolean)),
+  ])]
+    .map(label => `${label}`.trim())
+    .filter(Boolean)
+    .sort((left, right) => normalizeLookupText(right).length - normalizeLookupText(left).length);
+
+  const getFamily = (product = {}) => {
+    const rawName = `${product?.name || product?.productName || ''}`.trim();
+    const rawTokens = rawName.split(/\s+/).filter(Boolean);
+    const normalizedTokens = rawTokens.map(token => normalizeLookupText(token));
+    const suffix = attributeLabels.find((label) => {
+      const labelTokens = normalizeLookupText(label).split(' ').filter(Boolean);
+      return labelTokens.length > 0
+        && normalizedTokens.length > labelTokens.length
+        && normalizedTokens.slice(-labelTokens.length).join(' ') === labelTokens.join(' ');
+    });
+    if (!suffix) return { name: rawName, key: normalizeLookupText(rawName), derivedAttributeLabel: '' };
+    const suffixTokenCount = normalizeLookupText(suffix).split(' ').filter(Boolean).length;
+    const familyName = rawTokens.slice(0, -suffixTokenCount).join(' ').trim();
+    return {
+      name: familyName || rawName,
+      key: normalizeLookupText(familyName || rawName),
+      derivedAttributeLabel: suffix,
+    };
+  };
+
+  const groups = new Map();
+  options.forEach((option) => {
+    const product = option?.product;
+    const productId = product?.id || option?.productId || option?.key;
+    if (!productId) return;
+    const family = getFamily(product);
+    const explicitAttributeLabel = `${option?.variant?.attributeLabel || ''}`.trim();
+    const displayAttributeLabel = explicitAttributeLabel || family.derivedAttributeLabel;
+    const groupKey = `${family.key}__${normalizeLookupText(product?.category || product?.mainGroup || '')}`;
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, { family, candidates: [], variants: [] });
+    }
+    const group = groups.get(groupKey);
+    group.candidates.push(product);
+    group.variants.push({
+      ...option,
+      displayAttributeLabel,
+      isCanonicalProduct: normalizeLookupText(product?.name || product?.productName || '') === family.key,
+      hasExplicitAttribute: Boolean(explicitAttributeLabel),
+    });
+  });
+
+  return Array.from(groups.values()).map(({ family, candidates, variants }) => {
+    const product = [...new Map(candidates.filter(Boolean).map(candidate => [candidate.id, candidate])).values()]
+      .sort((left, right) => {
+        const leftIsCanonical = normalizeLookupText(left?.name || left?.productName || '') === family.key;
+        const rightIsCanonical = normalizeLookupText(right?.name || right?.productName || '') === family.key;
+        if (leftIsCanonical !== rightIsCanonical) return Number(rightIsCanonical) - Number(leftIsCanonical);
+        return `${left?.name || ''}`.length - `${right?.name || ''}`.length;
+      })[0];
+    const visibleLabels = new Set();
+    const dedupedVariants = [...variants]
+      .sort((left, right) => {
+        if (left.isCanonicalProduct !== right.isCanonicalProduct) return Number(right.isCanonicalProduct) - Number(left.isCanonicalProduct);
+        if (left.hasExplicitAttribute !== right.hasExplicitAttribute) return Number(right.hasExplicitAttribute) - Number(left.hasExplicitAttribute);
+        return `${left.displayAttributeLabel || left.variant?.unit || ''}`.localeCompare(
+          `${right.displayAttributeLabel || right.variant?.unit || ''}`,
+          'vi'
+        );
+      })
+      .filter((option) => {
+        const label = normalizeLookupText(option.displayAttributeLabel || option.variant?.size || option.variant?.unit || option.selectionKey);
+        if (visibleLabels.has(label)) return false;
+        visibleLabels.add(label);
+        return true;
+      });
+    return { product, variants: dedupedVariants };
+  });
+};
+
+const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelectableProductGroup({
+  product,
+  variants = [],
+  selectedQuickVariantKeys = new Set(),
+  pendingQuickProductSelectionKeys = new Set(),
+  onSelect
+}) {
+  if (!product || variants.length === 0) return null;
+  return (
+    <div className="rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-bold text-slate-900">{product.name}</p>
+          <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-400">
+            {product.category || product.unit || 'Sản phẩm'}
+          </p>
+        </div>
+        <span className="shrink-0 text-[10px] font-bold text-slate-400">Chọn thuộc tính</span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {variants.map(({ variant, key, selectionKey, product: optionProduct, displayAttributeLabel, displayPrice }) => {
+          const isSelected = selectedQuickVariantKeys.has(selectionKey);
+          const isPending = pendingQuickProductSelectionKeys.has(selectionKey);
+          const variantLabel = [
+            variant.size ? 'Size ' + variant.size : '',
+            displayAttributeLabel || variant.attributeLabel || '',
+          ].filter(Boolean).join(' • ') || variant.unit || optionProduct?.unit || 'Mặc định';
+          return (
+            <button
+              key={key}
+              type="button"
+              disabled={isPending}
+              onClick={() => onSelect?.(selectionKey, optionProduct?.id || product.id, variant)}
+              aria-pressed={isSelected}
+              aria-busy={isPending}
+              aria-label={product.name + ' - ' + variantLabel}
+              data-order-product-attribute={selectionKey}
+              className={[
+                'inline-flex min-h-9 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left text-[11px] font-bold transition',
+                isSelected
+                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50',
+                isPending ? 'cursor-wait opacity-70' : ''
+              ].join(' ')}
+            >
+              <span>{variantLabel}</span>
+              {displayPrice > 0 && <span className={isSelected ? 'text-emerald-50' : 'text-slate-400'}>{formatCurrency(displayPrice)}đ</span>}
+              {isSelected && <Check size={13} strokeWidth={3} aria-hidden="true" />}
+              {isPending && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
 function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
@@ -62155,6 +62308,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       return {
         product,
         variant,
+        displayPrice: parseLooseMoneyValue(variant.price) > 0
+          ? parseLooseMoneyValue(variant.price)
+          : getCustomerProductPrice(primaryProductConfigSource, product),
         key: buildOrderRequestVariantKey(product.id, variant),
         selectionKey: buildOrderRequestVariantKey(product.id, {
           attributeLabel: configuration.attributeLabel,
@@ -62185,6 +62341,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       })
       .slice(0, quickProductSearchKeyword ? 80 : 16);
   }, [manualCatalogProductVariantOptions, quickProductSearchKeyword, selectedQuickVariantKeys]);
+  const manualExtraProductVariantGroups = useMemo(
+    () => groupOrderRequestProductVariants(manualExtraProductVariantOptions),
+    [manualExtraProductVariantOptions]
+  );
   const manualCustomerPickerKey = primaryDraft ? `customer:${primaryDraft.localId}` : '';
   const isManualCustomerPickerOpen = Boolean(manualCustomerPickerKey) && openDraftPicker === manualCustomerPickerKey;
   const manualCustomerSearchKeyword = normalizeLookupText(primaryDraft?.customerSearch || '');
@@ -65176,32 +65336,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               </div>
                             </div>
                             <div className="max-h-56 overflow-y-auto p-2 space-y-1">
-                              {manualExtraProductVariantOptions.map(({ product, variant, key, selectionKey }) => {
-                                const isActive = selectedQuickVariantKeys.has(selectionKey);
-                                const fixedPrice = parseLooseMoneyValue(variant.price) > 0
-                                  ? parseLooseMoneyValue(variant.price)
-                                  : getCustomerProductPrice(primaryProductConfigSource, product);
-                                const fixedSize = `${variant.size || ''}`.trim();
-                                const fixedAttribute = `${variant.attributeLabel || ''}`.trim();
-                                const variantLabel = [fixedSize ? `Size ${fixedSize}` : '', fixedAttribute]
-                                  .filter(Boolean)
-                                  .join(' • ');
-                                return (
-                                  <OrderRequestSelectableProductCard
-                                    key={`extra:${key}`}
-                                    layout="list"
-                                    selectionKey={selectionKey}
-                                    productId={product.id}
-                                    title={product.name}
-                                    subtitle={`${variantLabel || product.category || product.unit || 'Sản phẩm'}${fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}`}
-                                    variantConfig={variant}
-                                    isSelected={isActive}
-                                    isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
-                                    onSelect={handleQuickProductCardSelect}
-                                  />
-                                );
-                              })}
-                              {manualExtraProductVariantOptions.length === 0 && (
+                              {manualExtraProductVariantGroups.map(({ product, variants }) => (
+                                <OrderRequestSelectableProductGroup
+                                  key={'extra-group:' + product.id}
+                                  product={product}
+                                  variants={variants}
+                                  selectedQuickVariantKeys={selectedQuickVariantKeys}
+                                  pendingQuickProductSelectionKeys={pendingQuickProductSelectionKeys}
+                                  onSelect={handleQuickProductCardSelect}
+                                />
+                              ))}
+                              {manualExtraProductVariantGroups.length === 0 && (
                                 <p className="px-2 py-3 text-center text-[11px] text-amber-600">
                                   {quickProductSearchKeyword ? 'Không tìm thấy sản phẩm phù hợp.' : 'Không còn sản phẩm khác để thêm.'}
                                 </p>

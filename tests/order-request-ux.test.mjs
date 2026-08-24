@@ -65,6 +65,31 @@ test('plus picker exposes the active catalog and remembers new customer products
   assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
 });
 
+test('catalog product attributes become selectable order-request variants', () => {
+  const variantSource = appSource.slice(
+    appSource.indexOf('const getCustomerProductVariants'),
+    appSource.indexOf('const hasCustomerProductPrice'),
+  );
+
+  assert.match(variantSource, /if \(productAttributes\.length > 0 && !hasConfiguredVariants\)/);
+  assert.match(variantSource, /productAttributes\.forEach\(\(attribute, index\) =>/);
+  assert.match(variantSource, /attributeLabel: attribute/);
+  assert.match(appSource, /const manualFixedProductVariantOptions = useMemo\(\(\) => manualFixedProductOptions\.flatMap/);
+  assert.match(appSource, /const fixedAttribute = `\$\{variant\.attributeLabel \|\| ''\}`\.trim\(\)/);
+});
+
+test('catalog search groups one product and keeps its attributes as selectable chips', () => {
+  assert.match(appSource, /const groupOrderRequestProductVariants = \(options = \[\]\) =>/);
+  assert.match(appSource, /const attributeLabels = \[\.\.\.new Set\(\[/);
+  assert.match(appSource, /const getFamily = \(product = \{\}\) =>/);
+  assert.match(appSource, /displayAttributeLabel/);
+  assert.match(appSource, /const visibleLabels = new Set\(\)/);
+  assert.match(appSource, /const manualExtraProductVariantGroups = useMemo\(/);
+  assert.match(appSource, /<OrderRequestSelectableProductGroup/);
+  assert.match(appSource, /data-order-product-attribute=\{selectionKey\}/);
+  assert.match(appSource, /onSelect=\{handleQuickProductCardSelect\}/);
+});
+
 test('new product memory merges customer products once without replacing existing data', () => {
   const input = {
     customer: {
