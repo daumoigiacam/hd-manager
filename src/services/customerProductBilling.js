@@ -800,8 +800,24 @@ export const prepareWarehouseDispatchOrderItems = (items = []) => {
     };
   });
 
+  // The generic order validator requires `quantity` to be positive. A Kg-priced
+  // dispatch can legitimately have no counted units, so persist its billing Kg
+  // in that legacy field while retaining the physical fields unchanged.
+  const preservedDispatchItems = mergeWarehouseDispatchOrderBillingItems(dispatchItems).map((item) => ({
+    ...item,
+    quantity: firstPositiveNumber(
+      item?.actualQuantity,
+      item?.quantityCount,
+      item?.quantity,
+      item?.billingQuantity,
+      item?.pricingQuantity,
+      item?.actualWeightKg,
+      item?.weightKg,
+    ),
+  }));
+
   return [
-    ...mergeWarehouseDispatchOrderBillingItems(dispatchItems),
+    ...preservedDispatchItems,
     ...preservedManualItems,
   ];
 };

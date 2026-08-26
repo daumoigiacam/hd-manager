@@ -351,6 +351,22 @@ assert.deepEqual(
   'all manual quantities remain available after dispatch preparation'
 );
 
+const threeDispatchProducts = prepareWarehouseDispatchOrderItems([
+  { ...correctedEditedWeightBilling, sourceDispatchIds: ['dispatch-save-kg-only'] },
+  { ...featherBilling, sourceDispatchIds: ['dispatch-save-feather'] },
+  { ...fiveDuckCountBilling, sourceDispatchIds: ['dispatch-save-count'] },
+]);
+assert.equal(threeDispatchProducts.length, 3, 'three distinct warehouse products remain three order lines before save');
+const persistedThreeDispatchProducts = threeDispatchProducts.filter(
+  item => Boolean(item.productId) && Number(item.quantity) > 0 && Number(item.unitPrice) > 0
+);
+assert.equal(persistedThreeDispatchProducts.length, 3, 'all three warehouse products survive the generic order save validator');
+const persistedKgOnlyLine = persistedThreeDispatchProducts.find(item => item.productId === duckProduct.id && item.billingUnit === 'Kg');
+assert.equal(persistedKgOnlyLine.actualQuantity, 0, 'the Kg-only row keeps its missing physical count unchanged');
+assert.equal(persistedKgOnlyLine.actualWeightKg, 102.7, 'the Kg-only row keeps its physical dispatch weight');
+assert.equal(persistedKgOnlyLine.billingQuantity, 102.7, 'the Kg-only row keeps the quantity used for billing');
+assert.equal(persistedKgOnlyLine.quantity, 102.7, 'the legacy save quantity falls back to billed Kg so the row is not discarded');
+
 const manualOnlyLines = prepareWarehouseDispatchOrderItems([
   manualOrderItem('manual-only-a', 2, 10000),
   manualOrderItem('manual-only-b', 5, 11000),
