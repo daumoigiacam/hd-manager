@@ -6,10 +6,11 @@ const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
 
 export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ''}`.trim();
 export const isVpsProductionMode = vpsDataMode === 'vps-production';
-export const isVpsMode = vpsDataMode === 'vps-staging' || isVpsProductionMode;
-// Existing HD Manager renderer checks use this export. Keep it as a VPS-mode
-// compatibility alias while production and staging share the same safe API path.
-export const isVpsStagingMode = isVpsMode;
+// Staging is the only full API-only cutover. Production stays on the established
+// Firebase user path until an individual VPS capability has explicit parity.
+export const isVpsStagingMode = vpsDataMode === 'vps-staging';
+export const isVpsApiMode = isVpsStagingMode || isVpsProductionMode;
+export const isVpsMode = isVpsStagingMode;
 export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1244,7 +1245,7 @@ export class HdConnectStagingApi {
 let vpsApi;
 
 export const getHdConnectApi = () => {
-  if (!isVpsMode) {
+  if (!isVpsApiMode) {
     throw new HdApiError('The VPS API client is only available in a VPS data mode.', {
       code: 'VPS_MODE_REQUIRED',
     });

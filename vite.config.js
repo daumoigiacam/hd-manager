@@ -28,10 +28,13 @@ export default defineConfig(({ mode }) => {
   const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
   const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
   const vpsDataMode = `${env.VITE_DATA_MODE || ''}`.trim();
-  const useVpsData = vpsDataMode === 'vps-staging' || vpsDataMode === 'vps-production';
-  const useCloudData = !usePreviewData && !useVpsData;
-  if (useVpsData && !`${env.VITE_API_BASE_URL || ''}`.trim()) {
-    throw new Error(`VITE_API_BASE_URL is required when VITE_DATA_MODE=${vpsDataMode}.`);
+  // Only staging is allowed to replace the legacy Firebase core. A production
+  // VPS flag is a compatibility mode: it keeps Firebase Auth/Firestore live so
+  // unsupported VPS resources can never make the whole application unavailable.
+  const isVpsStagingBuild = vpsDataMode === 'vps-staging';
+  const useCloudData = !usePreviewData && !isVpsStagingBuild;
+  if (isVpsStagingBuild && !`${env.VITE_API_BASE_URL || ''}`.trim()) {
+    throw new Error('VITE_API_BASE_URL is required when VITE_DATA_MODE=vps-staging.');
   }
   const cloudFirebaseConfig = {
     apiKey: env.VITE_FIREBASE_API_KEY || defaultCloudFirebaseConfig.apiKey,
@@ -47,7 +50,7 @@ export default defineConfig(({ mode }) => {
     : (usePreviewData ? previewFirebaseConfig : {});
   const dataAppId = usePreviewData
     ? (env.VITE_HD_APP_ID || 'preview-app')
-    : (useVpsData ? `hd-manager-${vpsDataMode}` : (env.VITE_HD_APP_ID || defaultProductionAppId));
+    : (isVpsStagingBuild ? 'hd-manager-vps-staging' : (env.VITE_HD_APP_ID || defaultProductionAppId));
   const firebaseAliases = useCloudData
     ? {}
     : {
@@ -58,22 +61,22 @@ export default defineConfig(({ mode }) => {
         './services/identityCenter.js': fileURLToPath(new URL('./src/mocks/identity-center-vps.js', import.meta.url))
       };
   const identityCenterAlias = fileURLToPath(new URL(
-    useVpsData ? './src/mocks/identity-center-vps.js' : './src/services/identityCenter.js',
+    isVpsStagingBuild ? './src/mocks/identity-center-vps.js' : './src/services/identityCenter.js',
     import.meta.url,
   ));
   const runtimeAliases = {
     ...firebaseAliases,
     '@hd/identity-center': identityCenterAlias,
     '@hd/firebase-runtime': fileURLToPath(new URL(
-      useVpsData ? './src/mocks/firebase-runtime-vps.js' : './src/config/firebase-runtime.js',
+      isVpsStagingBuild ? './src/mocks/firebase-runtime-vps.js' : './src/config/firebase-runtime.js',
       import.meta.url,
     )),
     '@hd/client-runtime': fileURLToPath(new URL(
-      useVpsData ? './src/mocks/client-runtime-vps.js' : './src/config/client-runtime.js',
+      isVpsStagingBuild ? './src/mocks/client-runtime-vps.js' : './src/config/client-runtime.js',
       import.meta.url,
     )),
     '@hd/firebase-rest-runtime': fileURLToPath(new URL(
-      useVpsData ? './src/mocks/firebase-rest-runtime-vps.js' : './src/config/firebase-rest-runtime.js',
+      isVpsStagingBuild ? './src/mocks/firebase-rest-runtime-vps.js' : './src/config/firebase-rest-runtime.js',
       import.meta.url,
     )),
   };
@@ -94,10 +97,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), releaseManifestPlugin],
     base: './',
-    // VPS bundles must not expose legacy Firebase/provider credentials through
-    // Vite's import.meta.env serialization. Cloud builds retain the legacy env
-    // surface until their migration is completed.
-    envPrefix: useVpsData
+    // Only the API-only staging bundle omits the legacy Firebase/provider
+    // surface. Production compatibility mode keeps the proven Firebase path.
+    envPrefix: isVpsStagingBuild
       ? ['VITE_API_BASE_URL', 'VITE_DATA_MODE', 'VITE_HD_BUILD_ID']
       : 'VITE_',
     define: {

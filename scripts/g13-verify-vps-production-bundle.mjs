@@ -7,37 +7,29 @@ const reportFile = path.resolve(
   process.argv[3] || 'hd-connect-platform/migration/g13/FRONTEND-VPS-PRODUCTION-BUNDLE.json',
 );
 const requiredDataMode = 'vps-production';
-const forbiddenMarkers = [
-  'hd-manager-c5839',
-  'cloudfunctions.net',
-  'firestore.googleapis.com',
-  'firebaseapp.com',
-  'firebasestorage.app',
-  'identitytoolkit.googleapis.com',
-  'securetoken.googleapis.com',
-  'api-merchant.payos.vn',
-  'api.payos.vn',
-  'AIza',
-];
-const legacyMarkers = ['firebase', 'firestore', 'cloud functions', 'firebase storage'];
 const sourceAssertions = [
   {
-    name: 'VPS_PRODUCTION_MODE_SUPPORTED',
+    name: 'VPS_STAGING_IS_THE_ONLY_API_ONLY_CUTOVER',
     file: 'vite.config.js',
-    pattern: /vpsDataMode === 'vps-staging' \|\| vpsDataMode === 'vps-production'/,
+    pattern: /const isVpsStagingBuild = vpsDataMode === 'vps-staging';/,
   },
   {
-    name: 'FIREBASE_INITIALIZATION_SKIPPED_IN_VPS_MODE',
+    name: 'VPS_PRODUCTION_KEEPS_THE_LEGACY_FIREBASE_BUNDLE',
+    file: 'vite.config.js',
+    pattern: /const useCloudData = !usePreviewData && !isVpsStagingBuild;/,
+  },
+  {
+    name: 'FIREBASE_CUTOVER_IS_RESERVED_FOR_STAGING',
     file: 'src/App.jsx',
     pattern: /if \(isVpsMode\) \{[\s\S]*?isFirebaseConfigured = false;[\s\S]*?firebase\.initialization\.skipped/,
   },
   {
-    name: 'FIREBASE_WRITES_BLOCKED_IN_VPS_MODE',
-    file: 'src/App.jsx',
-    pattern: /const assertFirebaseWriteAllowed = \(operation, context = \{\}\) => \{[\s\S]*?if \(isVpsMode\) throw createVpsStagingFirebaseWriteError/,
+    name: 'VPS_API_REMAINS_AVAILABLE_FOR_EXPLICIT_CAPABILITIES',
+    file: 'src/api/hdConnectStaging.js',
+    pattern: /export const isVpsApiMode = isVpsStagingMode \|\| isVpsProductionMode;/,
   },
   {
-    name: 'PRODUCTION_TOKEN_NAMESPACE_ISOLATED',
+    name: 'PRODUCTION_TOKEN_NAMESPACE_REMAINS_ISOLATED',
     file: 'src/api/hdConnectStaging.js',
     pattern: /tokenStorageNamespace: isVpsProductionMode \? 'vps-production' : 'vps-staging'/,
   },
@@ -85,12 +77,9 @@ const bundleContents = bundleFiles.map((filePath) => ({
   file: relativePath(filePath),
   content: fs.readFileSync(filePath, 'utf8'),
 }));
-const forbiddenFindings = forbiddenMarkers.flatMap((marker) => bundleContents
-  .filter(({ content }) => content.includes(marker))
-  .map(({ file }) => ({ marker, file })));
-const legacyReferences = legacyMarkers.flatMap((marker) => bundleContents
-  .filter(({ content }) => content.toLowerCase().includes(marker))
-  .map(({ file }) => ({ marker, file })));
+const firebaseRuntimeFiles = bundleContents
+  .filter(({ content }) => content.includes('hd-manager-c5839'))
+  .map(({ file }) => file);
 const assertionFindings = sourceAssertions.map((assertion) => {
   const filePath = path.join(workspaceRoot, assertion.file);
   const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
@@ -102,20 +91,19 @@ const assertionFindings = sourceAssertions.map((assertion) => {
 });
 const failedAssertions = assertionFindings.filter(({ status }) => status !== 'PASS');
 const report = {
-  status: forbiddenFindings.length === 0 && failedAssertions.length === 0 ? 'PASS' : 'FAIL',
+  status: firebaseRuntimeFiles.length > 0 && failedAssertions.length === 0 ? 'PASS' : 'FAIL',
   generatedAt: new Date().toISOString(),
   dataMode: requiredDataMode,
   bundleDirectory: relativePath(bundleDirectory),
   bundleFiles: bundleFiles.length,
   corePath: {
-    api: 'VPS API only',
-    firebaseFallback: 'blocked',
-    firebaseInitialization: 'skipped',
-    tokenNamespace: 'hdconnect.vps-production.*',
+    api: 'VPS API available only through explicitly approved capabilities',
+    firebaseFallback: 'active for legacy production capabilities',
+    firebaseInitialization: 'active',
+    tokenNamespace: 'hdconnect.vps-production.* when a VPS capability is used',
   },
   assertions: assertionFindings,
-  forbiddenRuntimeReferences: forbiddenFindings,
-  legacyReferencesClassified: legacyReferences,
+  firebaseRuntimeFiles,
 };
 
 fs.mkdirSync(path.dirname(reportFile), { recursive: true });
