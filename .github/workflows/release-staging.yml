@@ -1,0 +1,253 @@
+name: Release HD Manager staging
+
+# This workflow is deliberately manual and staging-only. It never builds an
+# artifact, changes Nginx, runs migrations, or reuses the production workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Release the exact P4 artifact or roll back to P3.2
+        required: true
+        type: choice
+        options:
+          - release
+          - rollback
+        default: release
+      artifact_run_id:
+        description: Completed GitHub Actions run containing the immutable P4 artifact
+        required: false
+        type: string
+        default: "0"
+      artifact_name:
+        description: Exact artifact name; must match the P4 release manifest
+        required: false
+        type: string
+        default: hd-manager-p4-vps-staging-20260829T072544Z.zip
+      artifact_sha256:
+        description: Exact P4 SHA-256; do not replace with a rebuilt artifact
+        required: false
+        type: string
+        default: 08A6FB1849F0448AEA9B01A65480DEACBAD58FD81A3F8FEA03075C4AF582BB18
+      rollback_build_id:
+        description: Rollback target; only the allow-listed P3.2 build is accepted
+        required: false
+        type: string
+        default: p32-vps-staging-finance-refresh-20260829T090000Z
+
+concurrency:
+  group: staging-frontend-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  STAGING_APP_DOMAIN: staging-app.hdconnect.net
+  STAGING_APP_URL: https://staging-app.hdconnect.net
+  STAGING_API_URL: https://staging-api.hdconnect.net/api/v1
+  STAGING_VERSION_URL: https://staging-app.hdconnect.net/version.json
+  EXPECTED_BUILD_ID: p4-vps-staging-20260829T072544Z
+  EXPECTED_ARTIFACT_NAME: hd-manager-p4-vps-staging-20260829T072544Z.zip
+  EXPECTED_ARTIFACT_SHA256: 08A6FB1849F0448AEA9B01A65480DEACBAD58FD81A3F8FEA03075C4AF582BB18
+  PREVIOUS_GOOD_BUILD_ID: p32-vps-staging-finance-refresh-20260829T090000Z
+  EXPECTED_REMOTE_ARTIFACT_DIR: /srv/hd-manager-staging/incoming
+  REMOTE_RELEASE_COMMAND: /usr/local/sbin/hd-manager-staging-release
+
+jobs:
+  release:
+    name: Staging-only release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      url: https://staging-app.hdconnect.net
+
+    steps:
+      - name: Fail closed unless the requested release is exact and staging-only
+        env:
+          MODE: ${{ inputs.mode }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+          ROLLBACK_BUILD_ID: ${{ inputs.rollback_build_id }}
+          STAGING_DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
+          STAGING_DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
+          STAGING_DEPLOY_SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
+          STAGING_DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_DEPLOY_KNOWN_HOSTS }}
+          STAGING_REMOTE_ARTIFACT_DIR: ${{ secrets.STAGING_REMOTE_ARTIFACT_DIR }}
+          STAGING_DEPLOY_HOST_ATTESTATION: ${{ vars.STAGING_DEPLOY_HOST_ATTESTATION }}
+          STAGING_TARGET_ATTESTATION: ${{ vars.STAGING_TARGET_ATTESTATION }}
+        run: |
+          set -euo pipefail
+
+          test "${STAGING_APP_DOMAIN}" = "staging-app.hdconnect.net"
+          test "${STAGING_API_URL}" = "https://staging-api.hdconnect.net/api/v1"
+          test "${EXPECTED_REMOTE_ARTIFACT_DIR}" = "/srv/hd-manager-staging/incoming"
+          test "${REMOTE_RELEASE_COMMAND}" = "/usr/local/sbin/hd-manager-staging-release"
+          for required in STAGING_DEPLOY_HOST STAGING_DEPLOY_USER STAGING_DEPLOY_SSH_KEY STAGING_DEPLOY_KNOWN_HOSTS STAGING_REMOTE_ARTIFACT_DIR STAGING_DEPLOY_HOST_ATTESTATION STAGING_TARGET_ATTESTATION; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "Missing required staging environment secret: ${required}" >&2
+              exit 1
+            fi
+          done
+
+          # A staging host must be supplied by the platform owner. Production
+          # hostnames are rejected even if somebody enters them by mistake.
+          case "${STAGING_DEPLOY_HOST}" in
+            app.hdconnect.net|api.hdconnect.net|*.app.hdconnect.net|*.api.hdconnect.net)
+              echo "Refusing a production-looking deployment host" >&2
+              exit 1
+              ;;
+          esac
+
+          test "${STAGING_REMOTE_ARTIFACT_DIR}" = "${EXPECTED_REMOTE_ARTIFACT_DIR}"
+          test "${STAGING_DEPLOY_HOST}" = "${STAGING_DEPLOY_HOST_ATTESTATION}"
+          expected_attestation="${STAGING_DEPLOY_HOST}|${STAGING_APP_DOMAIN}|${STAGING_API_URL}|${EXPECTED_REMOTE_ARTIFACT_DIR}"
+          test "${STAGING_TARGET_ATTESTATION}" = "${expected_attestation}"
+
+          case "${MODE}" in
+            release)
+              [[ "${ARTIFACT_RUN_ID}" =~ ^[1-9][0-9]*$ ]] || {
+                echo "artifact_run_id must identify an existing GitHub Actions run" >&2
+                exit 1
+              }
+              test "${ARTIFACT_NAME}" = "${EXPECTED_ARTIFACT_NAME}"
+              test "${ARTIFACT_SHA256^^}" = "${EXPECTED_ARTIFACT_SHA256}"
+              ;;
+            rollback)
+              test "${ROLLBACK_BUILD_ID}" = "${PREVIOUS_GOOD_BUILD_ID}"
+              ;;
+            *)
+              echo "Unsupported mode" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "Preflight passed for HTTPS staging target ${STAGING_APP_DOMAIN}; no remote command has run yet."
+
+      - name: Download the exact immutable P4 artifact
+        if: inputs.mode == 'release'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: incoming
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify artifact SHA-256 before transfer
+        if: inputs.mode == 'release'
+        run: |
+          set -euo pipefail
+          artifact="$(find incoming -maxdepth 2 -type f -name "${EXPECTED_ARTIFACT_NAME}" -print -quit)"
+          test -n "${artifact}"
+          actual="$(sha256sum "${artifact}" | awk '{print toupper($1)}')"
+          echo "Artifact: ${EXPECTED_ARTIFACT_NAME}"
+          echo "SHA-256: ${actual}"
+          test "${actual}" = "${EXPECTED_ARTIFACT_SHA256}"
+          test "$(stat -c '%s' "${artifact}")" -gt 0
+          printf '%s\n' "${artifact}" > artifact-path.txt
+
+      - name: Prepare strict SSH identity for the staging host
+        env:
+          STAGING_DEPLOY_SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
+          STAGING_DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "${STAGING_DEPLOY_SSH_KEY}" > "${RUNNER_TEMP}/staging-release-key"
+          printf '%s\n' "${STAGING_DEPLOY_KNOWN_HOSTS}" > "${RUNNER_TEMP}/staging-known-hosts"
+          test -s "${RUNNER_TEMP}/staging-release-key"
+          test -s "${RUNNER_TEMP}/staging-known-hosts"
+
+      - name: Transfer exact P4 artifact to staging only
+        if: inputs.mode == 'release'
+        env:
+          STAGING_DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
+          STAGING_DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
+          STAGING_REMOTE_ARTIFACT_DIR: ${{ secrets.STAGING_REMOTE_ARTIFACT_DIR }}
+        run: |
+          set -euo pipefail
+          artifact="$(cat artifact-path.txt)"
+          remote="${STAGING_REMOTE_ARTIFACT_DIR}/${EXPECTED_ARTIFACT_NAME}"
+          scp -q \
+            -i "${RUNNER_TEMP}/staging-release-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RUNNER_TEMP}/staging-known-hosts" \
+            "${artifact}" "${STAGING_DEPLOY_USER}@${STAGING_DEPLOY_HOST}:${remote}"
+
+      - name: Execute the platform-owned staging release command
+        env:
+          MODE: ${{ inputs.mode }}
+          ROLLBACK_BUILD_ID: ${{ inputs.rollback_build_id }}
+          STAGING_DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
+          STAGING_DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
+          STAGING_REMOTE_ARTIFACT_DIR: ${{ secrets.STAGING_REMOTE_ARTIFACT_DIR }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(
+            -i "${RUNNER_TEMP}/staging-release-key"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="${RUNNER_TEMP}/staging-known-hosts"
+          )
+
+          ssh "${ssh_opts[@]}" "${STAGING_DEPLOY_USER}@${STAGING_DEPLOY_HOST}" \
+            "test -x ${REMOTE_RELEASE_COMMAND}"
+
+          if [[ "${MODE}" = "release" ]]; then
+            remote="${STAGING_REMOTE_ARTIFACT_DIR}/${EXPECTED_ARTIFACT_NAME}"
+            ssh "${ssh_opts[@]}" "${STAGING_DEPLOY_USER}@${STAGING_DEPLOY_HOST}" \
+              "${REMOTE_RELEASE_COMMAND} release --target-domain ${STAGING_APP_DOMAIN} --api-url ${STAGING_API_URL} --artifact ${remote} --artifact-sha256 ${EXPECTED_ARTIFACT_SHA256} --build-id ${EXPECTED_BUILD_ID} --previous-good ${PREVIOUS_GOOD_BUILD_ID}"
+          else
+            ssh "${ssh_opts[@]}" "${STAGING_DEPLOY_USER}@${STAGING_DEPLOY_HOST}" \
+              "${REMOTE_RELEASE_COMMAND} rollback --target-domain ${STAGING_APP_DOMAIN} --api-url ${STAGING_API_URL} --rollback-to ${ROLLBACK_BUILD_ID} --allow-only ${PREVIOUS_GOOD_BUILD_ID}"
+          fi
+
+      - name: Verify served staging bundle and API
+        env:
+          MODE: ${{ inputs.mode }}
+          ROLLBACK_BUILD_ID: ${{ inputs.rollback_build_id }}
+        run: |
+          set -euo pipefail
+          served_file="${RUNNER_TEMP}/staging-version.json"
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            --header 'Cache-Control: no-cache' \
+            "${STAGING_VERSION_URL}?release=${GITHUB_RUN_ID}" > "${served_file}"
+          served_build_id="$(jq -r '.buildId // empty' "${served_file}")"
+          served_artifact_sha="$(jq -r '.artifactSha256 // empty' "${served_file}")"
+
+          if [[ "${MODE}" = "release" ]]; then
+            test "${served_build_id}" = "${EXPECTED_BUILD_ID}"
+            test "${served_artifact_sha^^}" = "${EXPECTED_ARTIFACT_SHA256}"
+          else
+            test "${served_build_id}" = "${ROLLBACK_BUILD_ID}"
+          fi
+
+          api_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --retry 3 --retry-delay 2 "${STAGING_API_URL}/health")"
+          test "${api_status}" = "200"
+
+          {
+            echo "mode=${MODE}"
+            echo "staging_domain=${STAGING_APP_DOMAIN}"
+            echo "staging_api=${STAGING_API_URL}"
+            echo "served_build_id=${served_build_id}"
+            echo "served_artifact_sha256=${served_artifact_sha}"
+            echo "api_health_http_status=${api_status}"
+            echo "production_writes=0"
+            echo "production_migration=none"
+          } | tee staging-release-audit.log >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload staging deployment audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hd-manager-staging-release-audit-${{ github.run_id }}
+          path: |
+            staging-release-audit.log
+          if-no-files-found: ignore
+          retention-days: 14
