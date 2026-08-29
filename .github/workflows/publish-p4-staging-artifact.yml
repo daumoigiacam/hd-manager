@@ -1,0 +1,59 @@
+name: Publish approved P4 staging artifact
+
+# This producer only publishes the already-approved immutable P4 ZIP as a
+# GitHub Actions artifact. It has no staging environment, deployment secrets,
+# remote commands, migrations, or production integration.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_ID: p4-vps-staging-20260829T072544Z
+  EXPECTED_ARTIFACT_NAME: hd-manager-p4-vps-staging-20260829T072544Z.zip
+  EXPECTED_ARTIFACT_SHA256: 08A6FB1849F0448AEA9B01A65480DEACBAD58FD81A3F8FEA03075C4AF582BB18
+  MANIFEST_PATH: release/p4-vps-staging-20260829T072544Z/manifest.json
+  ARTIFACT_PATH: release/p4-vps-staging-20260829T072544Z/hd-manager-p4-vps-staging-20260829T072544Z.zip
+
+jobs:
+  publish:
+    name: Verify and publish approved immutable P4 artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout approved release source
+        uses: actions/checkout@v5
+
+      - name: Verify immutable P4 manifest and ZIP
+        run: |
+          set -euo pipefail
+
+          test -f "${MANIFEST_PATH}"
+          test -f "${ARTIFACT_PATH}"
+          test "$(basename "${ARTIFACT_PATH}")" = "${EXPECTED_ARTIFACT_NAME}"
+          test "$(jq -er '.releaseId' "${MANIFEST_PATH}")" = "${RELEASE_ID}"
+          test "$(jq -er '.buildId' "${MANIFEST_PATH}")" = "${RELEASE_ID}"
+          test "$(jq -er '.artifact.file' "${MANIFEST_PATH}")" = "${EXPECTED_ARTIFACT_NAME}"
+          test "$(jq -er '.artifact.sha256' "${MANIFEST_PATH}" | tr '[:lower:]' '[:upper:]')" = "${EXPECTED_ARTIFACT_SHA256}"
+
+          actual_sha256="$(sha256sum "${ARTIFACT_PATH}" | awk '{print toupper($1)}')"
+          test "${actual_sha256}" = "${EXPECTED_ARTIFACT_SHA256}"
+          test "$(unzip -p "${ARTIFACT_PATH}" version.json | jq -er '.buildId')" = "${RELEASE_ID}"
+
+          {
+            echo "artifact=${EXPECTED_ARTIFACT_NAME}"
+            echo "sha256=${actual_sha256}"
+            echo "release_id=${RELEASE_ID}"
+            echo "source=versioned-approved-p4-zip"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Publish exact immutable P4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hd-manager-p4-vps-staging-20260829T072544Z.zip
+          path: release/p4-vps-staging-20260829T072544Z/hd-manager-p4-vps-staging-20260829T072544Z.zip
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: false

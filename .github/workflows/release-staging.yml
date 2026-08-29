@@ -6,10 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Release the exact P4 artifact or roll back to P3.2
+        description: Verify, release the exact P4 artifact, or roll back to P3.2
         required: true
         type: choice
         options:
+          - verify-artifact
           - release
           - rollback
         default: release
@@ -66,7 +67,7 @@ jobs:
     steps:
       - name: Resolve immutable P4 artifact provenance
         id: resolve-p4-artifact
-        if: inputs.mode == 'release'
+        if: inputs.mode == 'release' || inputs.mode == 'verify-artifact'
         env:
           REQUESTED_ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
           GH_TOKEN: ${{ github.token }}
@@ -157,7 +158,25 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "Resolved P4 artifact ${resolved_artifact_id} from workflow run ${resolved_run_id} after SHA-256 verification." >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Verify exact P4 artifact request without deployment
+        if: inputs.mode == 'verify-artifact'
+        env:
+          ARTIFACT_RUN_ID: ${{ steps.resolve-p4-artifact.outputs.run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+        run: |
+          set -euo pipefail
+
+          [[ "${ARTIFACT_RUN_ID}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "P4 artifact resolution did not produce a valid GitHub Actions run ID" >&2
+            exit 1
+          }
+          test "${ARTIFACT_NAME}" = "${EXPECTED_ARTIFACT_NAME}"
+          test "${ARTIFACT_SHA256^^}" = "${EXPECTED_ARTIFACT_SHA256}"
+          echo "P4 artifact provenance will be verified without any staging transfer or remote command." >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Fail closed unless the requested release is exact and staging-only
+        if: inputs.mode != 'verify-artifact'
         env:
           MODE: ${{ inputs.mode }}
           ARTIFACT_RUN_ID: ${{ steps.resolve-p4-artifact.outputs.run_id }}
@@ -220,7 +239,7 @@ jobs:
           echo "Preflight passed for HTTPS staging target ${STAGING_APP_DOMAIN}; no remote command has run yet."
 
       - name: Download the exact immutable P4 artifact
-        if: inputs.mode == 'release'
+        if: inputs.mode == 'release' || inputs.mode == 'verify-artifact'
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
@@ -229,7 +248,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Verify artifact SHA-256 before transfer
-        if: inputs.mode == 'release'
+        if: inputs.mode == 'release' || inputs.mode == 'verify-artifact'
         run: |
           set -euo pipefail
           artifact="$(find incoming -maxdepth 2 -type f -name "${EXPECTED_ARTIFACT_NAME}" -print -quit)"
@@ -242,6 +261,7 @@ jobs:
           printf '%s\n' "${artifact}" > artifact-path.txt
 
       - name: Prepare strict SSH identity for the staging host
+        if: inputs.mode != 'verify-artifact'
         env:
           STAGING_DEPLOY_SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
           STAGING_DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_DEPLOY_KNOWN_HOSTS }}
@@ -272,6 +292,7 @@ jobs:
             "${artifact}" "${STAGING_DEPLOY_USER}@${STAGING_DEPLOY_HOST}:${remote}"
 
       - name: Execute the platform-owned staging release command
+        if: inputs.mode != 'verify-artifact'
         env:
           MODE: ${{ inputs.mode }}
           ROLLBACK_BUILD_ID: ${{ inputs.rollback_build_id }}
@@ -301,6 +322,7 @@ jobs:
           fi
 
       - name: Verify served staging bundle and API
+        if: inputs.mode != 'verify-artifact'
         env:
           MODE: ${{ inputs.mode }}
           ROLLBACK_BUILD_ID: ${{ inputs.rollback_build_id }}

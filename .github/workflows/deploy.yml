@@ -4,9 +4,13 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      confirm_production_release:
+        description: Explicitly authorize this manual production release after validation succeeds
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: production
@@ -97,7 +101,7 @@ jobs:
           retention-days: 14
 
       - name: Create deployment package
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         run: |
           set -euo pipefail
           cd dist
@@ -107,7 +111,7 @@ jobs:
           ls -lh hd-manager-dist.zip
 
       - name: Calculate build SHA
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         id: build-sha
         run: |
           set -euo pipefail
@@ -116,7 +120,7 @@ jobs:
           echo "Build index SHA: ${INDEX_SHA}"
 
       - name: Prepare VPS deployment package path
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -130,7 +134,7 @@ jobs:
             test ! -e /tmp/hd-manager-dist.zip
 
       - name: Upload frontend to VPS
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -141,7 +145,7 @@ jobs:
           overwrite: true
 
       - name: Deploy frontend to VPS
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/ssh-action@v1.2.2
         env:
           EXPECTED_INDEX_SHA: ${{ steps.build-sha.outputs.index_sha }}
@@ -162,7 +166,7 @@ jobs:
             EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
 
       - name: Verify production serves this release
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         run: |
           set -euo pipefail
 

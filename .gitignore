@@ -115,3 +115,12 @@ hd-connect-platform/
 
 # Expo local state
 ios-expo/.expo/
+
+# The approved P4 staging artifact is an immutable release input. Keep this
+# single artifact and its manifest versioned so GitHub Actions can publish and
+# verify the exact approved bytes without rebuilding or changing its hash.
+!release/
+release/*
+!release/p4-vps-staging-20260829T072544Z/
+!release/p4-vps-staging-20260829T072544Z/manifest.json
+!release/p4-vps-staging-20260829T072544Z/hd-manager-p4-vps-staging-20260829T072544Z.zip
