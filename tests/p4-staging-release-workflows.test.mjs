@@ -39,6 +39,9 @@ test('the staging release resolver supports a no-deploy provenance check', async
   assert.match(workflow, /- verify-artifact/);
   assert.match(workflow, /if: inputs\.mode == 'release' \|\| inputs\.mode == 'verify-artifact'/);
   assert.match(workflow, /if: inputs\.mode != 'verify-artifact'/);
+  assert.match(workflow, /Multiple immutable P4 artifacts match the exact manifest; refusing to select a latest or fallback artifact/);
+  assert.doesNotMatch(workflow, /resolution=latest-name-and-sha256-match/);
+  assert.doesNotMatch(workflow, /sort -r/);
   assert.match(workflow, new RegExp(`EXPECTED_ARTIFACT_NAME: ${artifactName}`));
   assert.match(workflow, new RegExp(`EXPECTED_ARTIFACT_SHA256: ${artifactSha256}`));
   assert.match(workflow, /if: inputs\.mode == 'release'/);

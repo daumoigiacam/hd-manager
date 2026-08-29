@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for required_command in curl jq unzip sha256sum sort sed awk; do
+          for required_command in curl jq unzip sha256sum sed awk; do
             command -v "${required_command}" >/dev/null
           done
 
@@ -105,7 +105,7 @@ jobs:
               .artifacts[]
               | select(.name == $name and .expired == false and (.workflow_run.id? != null))
               | [.created_at, .id, .workflow_run.id] | @tsv
-            ' "${candidates_file}" | sort -r
+            ' "${candidates_file}"
           )
 
           ((${#candidates[@]} > 0)) || {
@@ -113,8 +113,7 @@ jobs:
             exit 1
           }
 
-          resolved_run_id=""
-          resolved_artifact_id=""
+          matching_candidates=()
           for candidate in "${candidates[@]}"; do
             IFS=$'\t' read -r created_at artifact_id workflow_run_id <<< "${candidate}"
             archive="${RUNNER_TEMP}/p4-artifact-${artifact_id}.zip"
@@ -141,12 +140,20 @@ jobs:
               continue
             fi
 
-            resolved_run_id="${workflow_run_id}"
-            resolved_artifact_id="${artifact_id}"
-            break
+            matching_candidates+=("${artifact_id}:${workflow_run_id}")
           done
 
-          [[ -n "${resolved_run_id}" ]] || {
+          ((${#matching_candidates[@]} == 1)) || {
+            if ((${#matching_candidates[@]} == 0)); then
+              echo "No GitHub Actions artifact matched the immutable P4 name and SHA-256 manifest" >&2
+            else
+              echo "Multiple immutable P4 artifacts match the exact manifest; refusing to select a latest or fallback artifact" >&2
+            fi
+            exit 1
+          }
+
+          IFS=':' read -r resolved_artifact_id resolved_run_id <<< "${matching_candidates[0]}"
+          [[ "${resolved_run_id}" =~ ^[1-9][0-9]*$ ]] || {
             echo "No GitHub Actions artifact matched the immutable P4 name and SHA-256 manifest" >&2
             exit 1
           }
@@ -154,7 +161,7 @@ jobs:
           {
             echo "run_id=${resolved_run_id}"
             echo "artifact_id=${resolved_artifact_id}"
-            echo "resolution=latest-name-and-sha256-match"
+            echo "resolution=exact-name-and-sha256-match"
           } >> "${GITHUB_OUTPUT}"
           echo "Resolved P4 artifact ${resolved_artifact_id} from workflow run ${resolved_run_id} after SHA-256 verification." >> "${GITHUB_STEP_SUMMARY}"
 
