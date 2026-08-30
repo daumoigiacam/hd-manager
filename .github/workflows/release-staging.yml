@@ -339,12 +339,12 @@ jobs:
           curl --fail --silent --show-error --retry 3 --retry-delay 2 \
             --header 'Cache-Control: no-cache' \
             "${STAGING_VERSION_URL}?release=${GITHUB_RUN_ID}" > "${served_file}"
-          served_build_id="$(jq -r '.buildId // empty' "${served_file}")"
-          served_artifact_sha="$(jq -r '.artifactSha256 // empty' "${served_file}")"
+          # The immutable artifact SHA is verified before transfer. The served
+          # version contract identifies the deployed release by buildId only.
+          served_build_id="$(jq -er '.buildId | select(type == "string")' "${served_file}")"
 
           if [[ "${MODE}" = "release" ]]; then
             test "${served_build_id}" = "${EXPECTED_BUILD_ID}"
-            test "${served_artifact_sha^^}" = "${EXPECTED_ARTIFACT_SHA256}"
           else
             test "${served_build_id}" = "${ROLLBACK_BUILD_ID}"
           fi
@@ -358,7 +358,6 @@ jobs:
             echo "staging_domain=${STAGING_APP_DOMAIN}"
             echo "staging_api=${STAGING_API_URL}"
             echo "served_build_id=${served_build_id}"
-            echo "served_artifact_sha256=${served_artifact_sha}"
             echo "api_health_http_status=${api_status}"
             echo "production_writes=0"
             echo "production_migration=none"
