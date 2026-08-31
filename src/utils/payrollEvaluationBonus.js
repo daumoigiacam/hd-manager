@@ -1,3 +1,9 @@
+import {
+  getEvaluationReward,
+  getEvaluationStarsFromAverage,
+  normalizeEvaluationStars,
+} from './employeeEvaluationAutomation.js';
+
 const normalizeMonthKey = (value = '') => {
   const raw = `${value || ''}`.trim();
   const match = raw.match(/^(\d{4})-(\d{2})/);
@@ -35,7 +41,7 @@ export const createEmptyPayrollEvaluationResult = ({ employeeId = '', monthKey =
   criteria: []
 });
 
-// Read-only adapter: no star or reward conversion formula belongs in payroll.
+// Read-only adapter: the evaluation module owns the star/reward formula.
 export const projectEvaluationSummaryToPayroll = (summary, { employeeId = '', monthKey = '' } = {}) => {
   const expectedEmployeeId = `${employeeId || ''}`;
   const expectedMonthKey = normalizeMonthKey(monthKey);
@@ -72,17 +78,20 @@ export const projectEvaluationSummaryToPayroll = (summary, { employeeId = '', mo
     const exactAverage = toFiniteNumber(
       evaluationSummary13.exactAverage ?? evaluationSummary13.displayAverage
     );
+    const stars = Number.isFinite(Number(evaluationSummary13.exactAverage ?? evaluationSummary13.displayAverage))
+      ? getEvaluationStarsFromAverage(exactAverage)
+      : normalizeEvaluationStars(evaluationSummary13.stars);
     return {
       employeeId: expectedEmployeeId,
       monthKey: expectedMonthKey,
       hasEvaluation: true,
-      stars: Math.max(0, Math.min(5, toFiniteNumber(evaluationSummary13.stars))),
+      stars,
       averageScore: Math.max(0, exactAverage),
-      // This is a copied display value only; no payroll formula is applied.
+      // The amount is derived from the approved evaluation star value.
       finalScore: Math.max(0, toFiniteNumber(
         evaluationSummary13.finalScore ?? evaluationSummary13.totalScore
       )),
-      bonus: Math.max(0, Math.round(toFiniteNumber(evaluationSummary13.reward))),
+      bonus: getEvaluationReward(stars),
       note: '',
       status: evaluationSummary13.status,
       criterionCount,
@@ -95,14 +104,15 @@ export const projectEvaluationSummaryToPayroll = (summary, { employeeId = '', mo
 
   if (!hasEvaluationSourceData(summary)) return emptyResult;
 
+  const stars = normalizeEvaluationStars(summary.stars ?? summary.finalCriteriaAverage);
   return {
     employeeId: expectedEmployeeId,
     monthKey: expectedMonthKey,
     hasEvaluation: true,
-    stars: Math.max(0, Math.min(5, toFiniteNumber(summary.stars))),
+    stars,
     averageScore: Math.max(0, toFiniteNumber(summary.finalCriteriaAverage)),
     finalScore: Math.max(0, toFiniteNumber(summary.finalScore)),
-    bonus: Math.max(0, Math.round(toFiniteNumber(summary.bonus))),
+    bonus: getEvaluationReward(stars),
     note: ''
   };
 };

@@ -11,6 +11,8 @@ import {
   collectValidatedComplaints,
   createIdempotentEvaluationWritePlan,
   getEvaluationReward,
+  getEvaluationStarsFromAverage,
+  normalizeEvaluationStars,
   scoreLateMinutes,
   scoreLeaveDays,
   scoreValidatedComplaints
@@ -18,7 +20,10 @@ import {
 import { applyEmployeePayrollPolicyForMonth } from '../src/utils/payrollPolicyHistory.js';
 
 const require = createRequire(import.meta.url);
-const { buildEvaluationSummary: buildServerEvaluationSummary } = require('../functions/employeeEvaluation.js');
+const {
+  buildEvaluationSummary: buildServerEvaluationSummary,
+  rewardForAverage
+} = require('../functions/employeeEvaluation.js');
 
 test('late-minute scoring preserves every required boundary', () => {
   const cases = [
@@ -382,13 +387,26 @@ test('13-criterion summary keeps manual scores and adds automatic scores', () =>
   assert.equal(summary.status, 'complete');
   assert.equal(summary.totalScore, 65);
   assert.equal(summary.exactAverage, 5);
-  assert.equal(summary.reward, 100000);
+  assert.equal(summary.reward, 1000000);
   assert.equal(summary.criteria.filter(item => item.source === 'manual').length, 10);
   assert.equal(summary.criteria.filter(item => item.source === 'attendance' || item.source === 'customer_complaints').length, 3);
 });
 
-test('reward mapping is explicit and compatible with final stars', () => {
-  assert.deepEqual([0, 1, 2, 3, 4, 5].map(getEvaluationReward), [0, 0, 40000, 60000, 80000, 100000]);
+test('average scores map to half-star steps and the requested reward schedule', () => {
+  assert.deepEqual(
+    [0, 0.24, 0.25, 0.5, 4, 4.49, 4.5, 4.74, 5].map(getEvaluationStarsFromAverage),
+    [0, 0, 0.5, 0.5, 4, 4.5, 4.5, 4.5, 5]
+  );
+  assert.deepEqual(
+    [0, 0.5, 1, 2, 3, 4, 4.5, 5].map(getEvaluationReward),
+    [0, 100000, 200000, 400000, 600000, 800000, 900000, 1000000]
+  );
+  assert.equal(normalizeEvaluationStars(7), 5);
+  assert.equal(normalizeEvaluationStars(-1), 0);
+  assert.deepEqual(
+    [0, 0.5, 1, 4, 4.5, 5].map(rewardForAverage),
+    [0, 100000, 200000, 800000, 900000, 1000000]
+  );
 });
 
 test('period and summary ids are tenant-scoped and stable', () => {

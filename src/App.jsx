@@ -79932,13 +79932,20 @@ const PayrollEvaluationDetailDialog = React.memo(function PayrollEvaluationDetai
           {result.hasEvaluation ? (
             <>
               <div className="flex items-center justify-center gap-1" aria-label={`${result.stars} sao`}>
-                {Array.from({ length: 5 }, (_, index) => (
-                  <Star
-                    key={index}
-                    size={25}
-                    className={index < result.stars ? 'fill-amber-400 text-amber-400' : 'text-slate-200'}
-                  />
-                ))}
+                {Array.from({ length: 5 }, (_, index) => {
+                  const isFull = index + 1 <= result.stars;
+                  const isHalf = !isFull && index + 0.5 <= result.stars;
+                  return (
+                    <span key={index} className="relative inline-flex h-7 w-7">
+                      <Star size={25} className="absolute inset-0 text-slate-200" />
+                      {(isFull || isHalf) && (
+                        <span className={`absolute inset-y-0 left-0 overflow-hidden ${isHalf ? 'w-1/2' : 'w-full'}`}>
+                          <Star size={25} className="max-w-none fill-amber-400 text-amber-400" />
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-center">

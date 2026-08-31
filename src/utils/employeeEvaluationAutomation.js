@@ -21,14 +21,13 @@ export const AUTOMATIC_EVALUATION_CRITERIA = [
   }
 ];
 
-export const EVALUATION_REWARD_BY_STAR = Object.freeze({
-  0: 0,
-  1: 0,
-  2: 40000,
-  3: 60000,
-  4: 80000,
-  5: 100000
-});
+export const EVALUATION_REWARD_PER_STAR = 200000;
+
+export const normalizeEvaluationStars = stars => {
+  const value = Number(stars);
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(Math.max(0, Math.min(5, value)) * 2) / 2;
+};
 
 const VALID_COMPLAINT_STATUSES = new Set([
   'accepted',
@@ -394,15 +393,11 @@ export const calculateEmployeeAutomaticEvaluation = ({
 export const getEvaluationStarsFromAverage = average => {
   const value = Number(average);
   if (!Number.isFinite(value)) return null;
-  if (value >= 5) return 5;
-  if (value >= 4) return 4;
-  if (value >= 3) return 3;
-  if (value >= 2) return 2;
-  if (value >= 1) return 1;
-  return 0;
+  return normalizeEvaluationStars(value);
 };
 
-export const getEvaluationReward = stars => EVALUATION_REWARD_BY_STAR[String(Math.max(0, Math.min(5, Math.round(Number(stars) || 0))))] ?? 0;
+export const getEvaluationReward = stars =>
+  Math.round(normalizeEvaluationStars(stars) * EVALUATION_REWARD_PER_STAR);
 
 export const buildEvaluationSummary13 = ({
   employeeId = '',

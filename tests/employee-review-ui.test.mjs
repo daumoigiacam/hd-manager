@@ -27,12 +27,12 @@ assert.match(appSource, /documentIdMatch/);
 assert.match(moduleSource, /Số người đánh giá:/);
 assert.match(moduleSource, /Đánh giá của đồng nghiệp/);
 assert.match(moduleSource, /Đánh giá tự động/);
-assert.match(moduleSource, /const evaluationEmployee = applyEmployeePayrollPolicyForMonth\(selectedEmployee, monthKey\)/);
-assert.match(moduleSource, /payrollLateMinutes: calculateAttendanceTiming\(evaluationEmployee, entry\)\.lateMinutes/);
-assert.match(appSource, /const date = documentIdMatch\?\.\[1\]\s*\|\|\s*record\?\.date/);
+assert.match(moduleSource, /const evaluationEmployee = applyEmployeePayrollPolicyForMonth\(\s*selectedEmployee,\s*monthKey\s*,?\s*\)/);
+assert.match(moduleSource, /payrollLateMinutes:\s*calculateAttendanceTiming\(\s*evaluationEmployee,\s*entry\s*\)\s*\.lateMinutes/);
+assert.match(appSource, /const date =\s*documentIdMatch\?\.\[1\]\s*\|\|\s*record\?\.date/);
 assert.match(moduleSource, /shiftPolicy: resolveEmployeeShiftPolicy\(evaluationEmployee\)/);
 assert.match(appSource, /isEmployeeReviewLeaveRecord/);
 assert.match(appSource, /calculateAttendanceTiming\(emp, record\)\.lateMinutes > 0/);
-assert.match(appSource, /manage_employee_review_criteria.*Sửa 10 tiêu chí đánh giá/);
+assert.match(appSource, /manage_employee_review_criteria[\s\S]*Sửa 10 tiêu chí đánh giá/);
 
 console.log('employee-review-ui: PASS');

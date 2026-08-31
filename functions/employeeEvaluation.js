@@ -27,7 +27,7 @@ const AUTOMATIC_CRITERIA = Object.freeze([
   { id: 'customerComplaints', label: 'Phản ánh khách hàng đã xác nhận', unit: 'lần', source: 'customer_complaints' }
 ]);
 
-const REWARD_BY_STAR = Object.freeze({ 0: 0, 1: 0, 2: 40000, 3: 60000, 4: 80000, 5: 100000 });
+const REWARD_PER_STAR = 200000;
 const VALID_COMPLAINT_STATUSES = new Set([
   'accepted', 'confirmed', 'processed', 'resolved', 'valid', 'validated',
   'đã xác nhận', 'đã xử lý'
@@ -239,8 +239,8 @@ function scoreCount(value) {
 
 function rewardForAverage(average) {
   if (!Number.isFinite(average)) return null;
-  const star = Math.max(0, Math.min(5, Math.round(average)));
-  return REWARD_BY_STAR[star];
+  const star = Math.round(Math.max(0, Math.min(5, average)) * 2) / 2;
+  return Math.round(star * REWARD_PER_STAR);
 }
 
 function isLeaveRecord(item) {
@@ -382,7 +382,7 @@ function buildEvaluationSummary({ employee, companyId, monthKey, reviews, attend
     manualCount: manual.count,
     automaticStatus: automatic.status,
     average,
-    stars: average === null ? null : Math.round(average),
+    stars: average === null ? null : Math.round(Math.max(0, Math.min(5, average)) * 2) / 2,
     rewardAmount: rewardForAverage(average),
     source: {
       attendance: attendance !== null,
@@ -531,7 +531,7 @@ module.exports = {
   CALCULATION_VERSION,
   MANUAL_CRITERIA,
   AUTOMATIC_CRITERIA,
-  REWARD_BY_STAR,
+  REWARD_PER_STAR,
   vietnamMonthKey,
   previousMonthKey,
   isEvaluationPeriodDue,

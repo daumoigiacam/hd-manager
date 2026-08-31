@@ -57,13 +57,13 @@ const tests = [
     assert.equal(result.hasEvaluation, false);
     assert.equal(result.note, 'Chua co du lieu danh gia');
   }],
-  ['5. Final stars, scores and bonus are copied without recalculation', () => {
+  ['5. Final stars, scores and bonus use the requested reward schedule', () => {
     const result = projectEvaluationSummaryToPayroll(baseSummary, { employeeId: employee.id, monthKey });
     assert.equal(result.hasEvaluation, true);
     assert.equal(result.stars, 5);
     assert.equal(result.averageScore, 4.91);
     assert.equal(result.finalScore, 98);
-    assert.equal(result.bonus, 850000);
+    assert.equal(result.bonus, 1000000);
   }],
   ['6. Automatic evaluation with attendance is accepted', () => {
     const result = projectEvaluationSummaryToPayroll({
@@ -73,7 +73,7 @@ const tests = [
       bonus: 300000
     }, { employeeId: employee.id, monthKey });
     assert.equal(result.hasEvaluation, true);
-    assert.equal(result.bonus, 300000);
+    assert.equal(result.bonus, 1000000);
   }],
   ['7. Customer feedback is accepted as evaluation source data', () => {
     const result = projectEvaluationSummaryToPayroll({
@@ -86,14 +86,14 @@ const tests = [
     }, { employeeId: employee.id, monthKey });
     assert.equal(result.hasEvaluation, true);
     assert.equal(result.stars, 4);
-    assert.equal(result.bonus, 500000);
+    assert.equal(result.bonus, 800000);
   }],
   ['8. Evaluation bonus is added exactly once to gross and net salary', () => {
     const result = projectEvaluationSummaryToPayroll(baseSummary, { employeeId: employee.id, monthKey });
     const salary = applyEvaluationBonusToSalaryDetails({ monthKey, grossSalary: 10000000, netSalary: 8500000 }, result);
-    assert.equal(salary.evaluationBonus, 850000);
-    assert.equal(salary.grossSalary, 10850000);
-    assert.equal(salary.netSalary, 9350000);
+    assert.equal(salary.evaluationBonus, 1000000);
+    assert.equal(salary.grossSalary, 11000000);
+    assert.equal(salary.netSalary, 9500000);
   }],
   ['9. Missing evaluation leaves every existing salary amount unchanged', () => {
     const empty = createEmptyPayrollEvaluationResult({ employeeId: employee.id, monthKey });
@@ -123,7 +123,7 @@ const tests = [
     assert.equal(result.criterionCount, 13);
     assert.equal(result.averageScore, summary13.exactAverage);
     assert.equal(result.stars, summary13.stars);
-    assert.equal(result.bonus, summary13.reward);
+    assert.equal(result.bonus, 900000);
     assert.equal(result.status, 'complete');
   }],
   ['12. Incomplete 13-criterion summary cannot add payroll bonus', () => {
@@ -142,6 +142,29 @@ const tests = [
     assert.equal(result.bonus, 0);
     assert.equal(result.status, 'needs_review');
     assert.deepEqual(result.missingData, ['attendance']);
+  }],
+  ['13. Average-derived half-star rewards ignore stale stored reward values', () => {
+    for (const [average, expectedStars, expectedBonus] of [
+      [5, 5, 1000000],
+      [4.5, 4.5, 900000],
+      [4, 4, 800000],
+      [0.5, 0.5, 100000],
+      [0, 0, 0]
+    ]) {
+      const result = projectEvaluationSummaryToPayroll({
+        employee,
+        monthKey,
+        evaluationSummary13: {
+          ...summary13,
+          exactAverage: average,
+          displayAverage: average,
+          stars: expectedStars,
+          reward: 1
+        }
+      }, { employeeId: employee.id, monthKey });
+      assert.equal(result.stars, expectedStars);
+      assert.equal(result.bonus, expectedBonus);
+    }
   }]
 ];
 
