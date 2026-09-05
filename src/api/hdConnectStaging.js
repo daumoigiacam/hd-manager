@@ -170,7 +170,8 @@ export const normalizeVpsCustomer = (record = {}) => {
     emails,
     empId: record.salesOwnerId || attributes.empId || '',
     creditLimit: toFiniteNumber(record.creditLimit) ?? attributes.creditLimit ?? 0,
-    isArchived: Boolean(record.deletedAt),
+    isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || attributes.isArchived === true,
+    legacySourceId: attributes.__hdcoProjection?.sourceRecordId || attributes.legacySourceId || '',
     createdAt: record.createdAt || attributes.createdAt || '',
     updatedAt: record.updatedAt || attributes.updatedAt || '',
     sourceSystem: 'hd-connect-vps',
@@ -180,7 +181,7 @@ export const normalizeVpsCustomer = (record = {}) => {
 export const normalizeVpsProduct = (record = {}) => {
   const metadata = normalizeMetadata(record);
   const primaryUnit = record.salesUnit || record.baseUnit || record.inventoryUnit || record.purchaseUnit;
-  const unit = unitLabel(record.unit) || unitLabel(primaryUnit);
+  const unit = unitLabel(record.unit) || unitLabel(primaryUnit) || unitLabel(metadata.unit);
 
   return {
     ...metadata,
@@ -189,9 +190,13 @@ export const normalizeVpsProduct = (record = {}) => {
     companyId: record.companyId,
     name: record.name || '',
     productName: record.name || metadata.productName || '',
+    category: typeof record.category === 'string'
+      ? record.category
+      : (record.category?.name || (typeof metadata.category === 'string' ? metadata.category : '')),
     unit,
     unitId: record.salesUnitId || record.baseUnitId || primaryUnit?.id || metadata.unitId || '',
-    isArchived: Boolean(record.deletedAt),
+    isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || metadata.isArchived === true,
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || metadata.legacySourceId || '',
     createdAt: record.createdAt || metadata.createdAt || '',
     updatedAt: record.updatedAt || metadata.updatedAt || '',
     sourceSystem: 'hd-connect-vps',
@@ -212,55 +217,69 @@ export const normalizeVpsOrder = (record = {}) => {
     customerId: record.customerId,
     warehouseId: record.warehouseId,
     salesEmpId: record.salespersonId || metadata.salesEmpId || '',
-    date: record.orderDate || metadata.date || '',
+    date: metadata.__hdcoProjection ? (metadata.date || record.orderDate || '') : (record.orderDate || metadata.date || ''),
     orderDate: record.orderDate || '',
     items: lines.map((line) => ({
+      ...normalizeMetadata(line),
       ...line,
       id: line.id,
       productId: line.productId,
       unitId: line.unitId,
-      unit: unitLabel(line.unit) || unitLabel(line.unitName),
+      unit: unitLabel(line.unit) || unitLabel(line.unitName) || unitLabel(normalizeMetadata(line).unit) || unitLabel(normalizeMetadata(line).quantityUnit),
       quantity: toFiniteNumber(line.quantity) ?? 0,
       unitPrice: toFiniteNumber(line.unitPrice) ?? 0,
     })),
-    reviewStatus: record.status || metadata.reviewStatus || '',
-    isArchived: Boolean(record.deletedAt),
+    reviewStatus: metadata.__hdcoProjection ? (metadata.reviewStatus || record.status || '') : (record.status || metadata.reviewStatus || ''),
+    isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || metadata.legacySourceId || '',
     createdAt: record.createdAt || metadata.createdAt || '',
     updatedAt: record.updatedAt || metadata.updatedAt || '',
     sourceSystem: 'hd-connect-vps',
   };
 };
 
-export const normalizeVpsPayment = (record = {}) => ({
-  ...record,
-  id: record.id,
-  companyId: record.companyId,
-  reference: record.reference || record.externalPaymentId || '',
-  amount: toFiniteNumber(record.amount) ?? 0,
-  isArchived: Boolean(record.deletedAt),
-  sourceSystem: 'hd-connect-vps',
-  readOnly: true,
-});
+export const normalizeVpsPayment = (record = {}) => {
+  const metadata = normalizeMetadata(record);
+  return {
+    ...metadata,
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    customerId: record.customerTargetId || record.customerId || '',
+    matchedOrderId: record.salesOrderTargetId || record.matchedOrderId || '',
+    reference: record.reference || record.externalReference || record.externalPaymentId || '',
+    amount: toFiniteNumber(record.amount) ?? 0,
+    isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
+    sourceSystem: 'hd-connect-vps',
+    readOnly: true,
+  };
+};
 
 export const normalizeVpsFinanceExpense = (record = {}) => {
   const status = stringValue(record.status).toUpperCase();
+  const metadata = normalizeMetadata(record);
+  const historical = metadata.__hdcoProjection?.historicalOnly === true;
 
   return {
+    ...metadata,
     ...record,
     id: record.id,
     companyId: record.companyId,
     branchId: record.branchId || '',
-    empId: record.createdBy || '',
+    empId: historical ? (metadata.__hdcoProjection.references?.employee || metadata.empId || '') : (record.createdBy || ''),
     amount: toFiniteNumber(record.amount) ?? 0,
     category: record.expenseType || 'Chi phí khác',
     note: record.description || '',
     date: stringValue(record.expenseDate || record.createdAt).slice(0, 10),
-    approvalStatus: status === 'APPROVED' || status === 'POSTED'
+    approvalStatus: historical && metadata.approvalStatus ? metadata.approvalStatus : status === 'APPROVED' || status === 'POSTED'
       ? 'approved'
       : 'pending',
-    requiresApproval: status !== 'POSTED',
-    handoverStatus: status === 'POSTED' ? 'confirmed' : 'pending',
-    isArchived: Boolean(record.deletedAt),
+    requiresApproval: historical ? metadata.requiresApproval === true : status !== 'POSTED',
+    handoverStatus: historical ? (metadata.handoverStatus || '') : status === 'POSTED' ? 'confirmed' : 'pending',
+    isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
+    readOnly: historical,
     sourceSystem: 'hd-connect-vps',
   };
 };
@@ -269,6 +288,7 @@ export const normalizeVpsAttendance = (record = {}) => {
   const workDate = stringValue(record.workDate).slice(0, 10);
   const status = stringValue(record.status).toLowerCase();
   return {
+    ...normalizeMetadata(record),
     ...record,
     id: record.id,
     companyId: record.companyId,
