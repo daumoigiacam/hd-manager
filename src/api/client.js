@@ -76,6 +76,14 @@ const getDefaultStorage = () => {
 
 const normalizeMethod = (method = 'GET') => `${method}`.toUpperCase();
 
+export const normalizeVpsPhoneIdentifier = (value = '') => {
+  const digits = `${value || ''}`.replace(/\D/g, '');
+  if (!digits) return '';
+
+  const normalized = digits.startsWith('84') ? `0${digits.slice(2)}` : digits;
+  return /^0[0-9]{9,10}$/.test(normalized) ? normalized : '';
+};
+
 export const createRequestId = () => {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
 
@@ -224,10 +232,11 @@ export class HdApiClient {
     this.storage.setItem(this.tokenStorageKeys.refreshToken, refreshToken);
   }
 
-  async login({ email, password, deviceName = this.deviceName } = {}) {
+  async login({ phone, email, password, deviceName = this.deviceName } = {}) {
+    const normalizedPhone = normalizeVpsPhoneIdentifier(phone);
     const normalizedEmail = `${email || ''}`.trim();
-    if (!normalizedEmail || !password) {
-      throw new HdApiError('Email and password are required.', {
+    if ((!normalizedPhone && !normalizedEmail) || !password) {
+      throw new HdApiError('Phone or email and password are required.', {
         code: 'LOGIN_INPUT_INVALID',
       });
     }
@@ -235,8 +244,48 @@ export class HdApiClient {
     const session = await this.request('/auth/login', {
       method: 'POST',
       body: {
-        email: normalizedEmail,
+        ...(normalizedPhone ? { phone: normalizedPhone } : { email: normalizedEmail }),
         password,
+        ...(deviceName ? { deviceName } : {}),
+      },
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    this.setSession(session);
+    return session;
+  }
+
+  async register({
+    companyCode,
+    companyName,
+    phone,
+    password,
+    fullName,
+    deviceName = this.deviceName,
+  } = {}) {
+    const normalizedCompanyCode = `${companyCode || ''}`.trim().toUpperCase();
+    const normalizedCompanyName = `${companyName || ''}`.trim();
+    const normalizedPhone = normalizeVpsPhoneIdentifier(phone);
+    if (
+      !/^[A-Z0-9][A-Z0-9_-]{2,63}$/.test(normalizedCompanyCode)
+      || normalizedCompanyName.length < 2
+      || !normalizedPhone
+      || `${password || ''}`.length < 8
+    ) {
+      throw new HdApiError('Company code, company name, phone and password are invalid.', {
+        code: 'REGISTRATION_INPUT_INVALID',
+      });
+    }
+
+    const session = await this.request('/auth/register', {
+      method: 'POST',
+      body: {
+        companyCode: normalizedCompanyCode,
+        companyName: normalizedCompanyName,
+        phone: normalizedPhone,
+        password,
+        ...(fullName ? { fullName: `${fullName}`.trim() } : {}),
         ...(deviceName ? { deviceName } : {}),
       },
       authenticate: false,

@@ -15174,11 +15174,48 @@ export default function App() {
     }
   };
 
-  const handleRegisterCompany = async (companyName, phone, password) => {
+  const handleRegisterCompany = async (companyName, phone, password, companyCode = '') => {
     const normalizedPhone = normalizeEmployeeLoginPhone(phone);
     if (!normalizedPhone) return { success: false, message: "Vui lòng nhập số điện thoại hợp lệ." };
     const passwordError = validateAccountPasswordInput(password, password);
     if (passwordError) return { success: false, message: passwordError };
+    if (isVpsApiMode) {
+      const normalizedCompanyCode = `${companyCode || ''}`.trim().toUpperCase();
+      if (!/^[A-Z0-9][A-Z0-9_-]{2,63}$/.test(normalizedCompanyCode)) {
+        return { success: false, message: 'Mã công ty cần từ 3 đến 64 ký tự, chỉ gồm chữ, số, dấu gạch ngang hoặc gạch dưới.' };
+      }
+
+      try {
+        const session = await getHdConnectStagingApi().register({
+          companyCode: normalizedCompanyCode,
+          companyName,
+          phone: normalizedPhone,
+          password,
+          fullName: companyName,
+        });
+        const company = session.company || { id: session.user.companyId, name: companyName };
+        setFirebaseUser(null);
+        setCurrentUser(session.user);
+        setCurrentCompany(company);
+        setRawCompanies([company]);
+        setRawEmployees([{ ...session.user, isArchived: false }]);
+        setActiveTab('home');
+        setRealtimeStatus({
+          state: 'polling',
+          collection: '',
+          lastAt: new Date().toISOString(),
+          error: '',
+        });
+        recordStartupEvent('auth.vps_registration.completed');
+        return { success: true, identity: session.user };
+      } catch (error) {
+        recordStartupEvent('auth.vps_registration.failed', {
+          code: `${error?.code || ''}`,
+        }, 'error');
+        return { success: false, message: error?.message || 'Không thể tạo công ty trên VPS.' };
+      }
+    }
+
     const defaultCompanyPaymentSettings = {
       bankId: DEFAULT_INVOICE_TRANSFER_PROFILE.bankId,
       bankName: DEFAULT_INVOICE_TRANSFER_PROFILE.bankName,
@@ -15356,13 +15393,13 @@ export default function App() {
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
     if (isVpsApiMode) {
-      const email = `${identifier || ''}`.trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || `${password || ''}`.length < 8) {
-        return { success: false, message: 'Enter a valid email address and a password with at least 8 characters.' };
+      const phone = normalizeEmployeeLoginPhone(identifier);
+      if (!/^0[0-9]{9,10}$/.test(phone) || `${password || ''}`.length < 8) {
+        return { success: false, message: 'Nhập số điện thoại hợp lệ và mật khẩu tối thiểu 8 ký tự.' };
       }
 
       try {
-        const session = await getHdConnectStagingApi().login({ email, password });
+        const session = await getHdConnectStagingApi().login({ phone, password });
         const company = session.company || { id: session.user.companyId, name: '' };
         setFirebaseUser(null);
         setCurrentUser(session.user);
@@ -15467,11 +15504,10 @@ export default function App() {
 
   const handleIdentityRecovery = async ({ identifier, pin }) => {
     if (isVpsApiMode) {
-      try {
-        return await getHdConnectStagingApi().requestPasswordReset(identifier);
-      } catch (error) {
-        return { success: false, message: error?.message || 'Unable to request a password reset.' };
-      }
+      return {
+        success: false,
+        message: 'Khôi phục mật khẩu VPS bằng số điện thoại chưa được bật. Vui lòng liên hệ quản trị viên để được cấp lại mật khẩu an toàn.',
+      };
     }
 
     try {
@@ -86885,6 +86921,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
   const [forgotError, setForgotError] = useState('');
   const [forgotMessage, setForgotMessage] = useState('');
   const [isRequestingRecovery, setIsRequestingRecovery] = useState(false);
+  const [regCompanyCode, setRegCompanyCode] = useState('');
   const [regCompanyName, setRegCompanyName] = useState('');
   const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -86928,7 +86965,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
   const handleForgotPasswordSubmit = async (e) => {
     e.preventDefault();
     if (!forgotPhone.trim()) {
-      setForgotError(vpsStagingMode ? 'Enter the email address for password reset.' : 'Vui lòng nhập số điện thoại cần khôi phục.');
+      setForgotError('Vui lòng nhập số điện thoại cần khôi phục.');
       return;
     }
     setIsRequestingRecovery(true);
@@ -86956,7 +86993,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    if (!loginPhone.trim()) { setLoginError(vpsStagingMode ? 'Enter your email address.' : 'Vui lòng nhập số điện thoại'); return; }
+    if (!loginPhone.trim()) { setLoginError('Vui lòng nhập số điện thoại'); return; }
     if (`${loginPassword || ''}`.length < 8) { setLoginError('Mật khẩu cần ít nhất 8 ký tự.'); return; }
     setIsLoggingIn(true);
     setLoginError('');
@@ -87021,8 +87058,9 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
-    if (vpsStagingMode) {
-      setRegError('VPS staging accounts are provisioned through the identity invitation flow.');
+    const normalizedCompanyCode = regCompanyCode.trim().toUpperCase();
+    if (vpsStagingMode && !/^[A-Z0-9][A-Z0-9_-]{2,63}$/.test(normalizedCompanyCode)) {
+      setRegError('Mã công ty cần từ 3 đến 64 ký tự, chỉ gồm chữ, số, dấu gạch ngang hoặc gạch dưới.');
       return;
     }
     if (!regCompanyName.trim() || !regPhone.trim()) { setRegError('Vui lòng điền đủ thông tin'); return; }
@@ -87030,7 +87068,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
     if (passwordError) { setRegError(passwordError); return; }
     setIsRegistering(true);
     try {
-      const result = await onRegister(toTitleCase(regCompanyName), regPhone, regPassword);
+      const result = await onRegister(toTitleCase(regCompanyName), regPhone, regPassword, normalizedCompanyCode);
       if (!result.success) setRegError(result.message);
       else if (result.requiresSetup) setIdentitySetupContext(result);
     } catch (error) {
@@ -87064,7 +87102,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
             <form onSubmit={handleAuthFormSubmit} className="space-y-4">
               {!showForgotPassword && <>
                 <div className="hd-login-3d-field">
-                  <input type={vpsStagingMode ? 'email' : 'tel'} value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'username'} inputMode={vpsStagingMode ? 'email' : 'tel'} />
+                  <input type="tel" value={loginPhone} onChange={(e) => { setLoginPhone(e.target.value); setLoginError(''); setLoginMessage(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none focus:border-0 focus:ring-0 text-sm font-medium transition-colors" placeholder="Số điện thoại" autoComplete="username" inputMode="tel" />
                 </div>
                 <div className="hd-login-3d-field relative">
                   <Lock size={17} className="pointer-events-none absolute left-4 top-1/2 z-[2] -translate-y-1/2 text-gray-400" />
@@ -87094,9 +87132,9 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
               {showForgotPassword && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
-                  <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Request a password reset from the HD CONNECT identity service. The frontend never receives or stores a reset token.' : 'App ưu tiên Face ID/vân tay trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
+                  <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Nhập số điện thoại để gửi yêu cầu hỗ trợ. Việc đặt lại mật khẩu VPS luôn cần xác minh của quản trị viên.' : 'App ưu tiên Face ID/vân tay trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
                   <div className="space-y-2.5">
-                    <input type={vpsStagingMode ? 'email' : 'tel'} value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'tel'} />
+                    <input type="tel" value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="Số điện thoại" autoComplete="tel" />
                     {!vpsStagingMode && !recoveryToken && (
                       <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-xs font-semibold text-gray-600">
                         <input
@@ -87133,7 +87171,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
                 </button>
               )}
             </form>
-            {!showForgotPassword && !vpsStagingMode && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
+            {!showForgotPassword && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
           </div>
         ) : (
           <div>
@@ -87141,6 +87179,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
             <p className="text-center text-xs text-gray-500 mb-6 font-medium">Tạo công ty và tài khoản chủ doanh nghiệp đầu tiên</p>
             {regError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{regError}</div>}
             <form onSubmit={handleRegisterSubmit} className="space-y-4">
+              {vpsStagingMode && <input type="text" value={regCompanyCode} onChange={(e) => { setRegCompanyCode(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, '')); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="Mã Công Ty (VD: HDCO)" autoComplete="organization" />}
               <input type="text" value={regCompanyName} onChange={(e) => { setRegCompanyName(toTitleCase(e.target.value)); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="Tên Doanh Nghiệp (VD: Cty HD)" />
               <input type="tel" value={regPhone} onChange={(e) => { setRegPhone(e.target.value); setRegError(''); }} className="w-full border-2 border-gray-100 rounded-2xl p-4 outline-none focus:border-emerald-500 text-sm font-medium transition-colors" placeholder="SĐT Chủ Doanh Nghiệp" />
               <div className="relative">
@@ -87191,7 +87230,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
               )}
               <p className="-mt-2 px-1 text-[11px] leading-relaxed text-gray-400">Mật khẩu tối thiểu 8 ký tự, gồm chữ và số.</p>
               <button type="submit" disabled={isRegistering} className={`w-full text-white py-4 rounded-2xl font-bold shadow-lg transition-all active:scale-[0.98] mt-2 ${isRegistering ? 'bg-orange-300 cursor-not-allowed shadow-orange-200/30' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/30'}`}>
-                {isRegistering ? 'Đang khởi tạo Cloud...' : 'Bắt Đầu Miễn Phí'}
+                {isRegistering ? 'Đang tạo tài khoản...' : 'Bắt Đầu Miễn Phí'}
               </button>
             </form>
             <p className="mt-4 text-[11px] text-gray-500 leading-relaxed text-center">Sau khi tạo công ty, chủ doanh nghiệp đăng nhập rồi vào mục <strong>Nhân sự</strong> để tạo các tài khoản <strong>Kế toán & nhân sự</strong>, <strong>Tài xế</strong>, <strong>Sản xuất</strong>, <strong>Kinh doanh</strong>.</p>
@@ -87199,7 +87238,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
           </div>
         )}
       </div>
-      <p className="text-[10px] text-gray-400 mt-6 text-center px-8 font-medium leading-relaxed">Bằng việc đăng nhập, bạn đồng ý với Chính sách Bảo mật. Dữ liệu được mã hóa trên Cloud.</p>
+      <p className="text-[10px] text-gray-400 mt-6 text-center px-8 font-medium leading-relaxed">Bằng việc đăng nhập, bạn đồng ý với Chính sách Bảo mật. Dữ liệu được bảo vệ trên hệ thống HD CONNECT.</p>
     </AppShell>
   );
 }

@@ -174,7 +174,7 @@ assert.ok(authTimeoutStart >= 0 && authTimeoutEnd > authTimeoutStart, 'Auth rest
 assert.doesNotMatch(authTimeoutSource, /clearAppSession|setCurrentUser\(null\)/, 'Slow Auth restoration must not delete a valid cached session');
 assert.match(
   appSource,
-  /if \(!isVpsStagingMode && !firebaseUser && currentUser\)/,
+  /if \(!isVpsApiMode && !firebaseUser && currentUser\)/,
   'Cached app state must be protected until Firebase Auth confirms the user'
 );
 
@@ -275,7 +275,7 @@ const loginViewSource = appSource.slice(loginViewStart, loginViewStart + 25000);
 assert.ok(loginViewStart >= 0, 'LoginRegisterView must exist');
 assert.match(
   loginViewSource,
-  /\{!showForgotPassword && <>[\s\S]*?autoComplete=\{vpsStagingMode \? 'email' : 'username'\}[\s\S]*?autoComplete="current-password"[\s\S]*?<\/>,?\}/,
+  /\{!showForgotPassword && <>[\s\S]*?type="tel"[\s\S]*?autoComplete="username"[\s\S]*?autoComplete="current-password"[\s\S]*?<\/>,?\}/,
   'Login credentials must be hidden while password recovery is open'
 );
 assert.match(
@@ -294,6 +294,10 @@ assert.match(loginViewSource, /Xin lại mật khẩu/);
 assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
 assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
 assert.match(loginViewSource, /setShowForgotPassword\(false\)/);
+assert.match(loginViewSource, /placeholder="Số điện thoại" autoComplete="username" inputMode="tel"/);
+assert.doesNotMatch(loginViewSource, /vpsStagingMode \? 'email' : 'tel'/);
+assert.match(loginViewSource, /Mã Công Ty \(VD: HDCO\)/);
+assert.match(loginViewSource, /const normalizedCompanyCode = regCompanyCode\.trim\(\)\.toUpperCase\(\)/);
 
 const identitySetupStart = appSource.indexOf('function IdentitySetupWizard');
 const identitySetupEnd = appSource.indexOf('function LoginRegisterView', identitySetupStart);

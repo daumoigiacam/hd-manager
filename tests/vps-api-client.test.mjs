@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HdApiClient, HdApiError } from '../src/api/client.js';
+import { HdApiClient, HdApiError, normalizeVpsPhoneIdentifier } from '../src/api/client.js';
 import {
   buildVpsInventoryTransaction,
   createHdConnectStagingApi,
@@ -803,6 +803,72 @@ test('routes notification, storage, reporting and settings contracts without ten
   assert.equal(Object.hasOwn(calls[3].payload, 'tenantId'), false);
   assert.equal(Object.hasOwn(calls[4].payload, 'tenantId'), false);
   assert.equal(Object.hasOwn(calls[6].options.query, 'companyId'), false);
+});
+
+test('normalizes supported phone forms and sends the phone/password login contract', async () => {
+  assert.equal(normalizeVpsPhoneIdentifier('0925999333'), '0925999333');
+  assert.equal(normalizeVpsPhoneIdentifier('84925999333'), '0925999333');
+  assert.equal(normalizeVpsPhoneIdentifier('+84925999333'), '0925999333');
+  assert.equal(normalizeVpsPhoneIdentifier('not-a-phone'), '');
+
+  for (const phone of ['0925999333', '84925999333', '+84925999333']) {
+    const requests = [];
+    const client = new HdApiClient({
+      baseUrl: 'https://api.example.test/api/v1',
+      storage: createStorage(),
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return envelope({ accessToken: 'access', refreshToken: 'refresh', user: { id: 'user' } });
+      },
+    });
+    await client.login({ phone, password: 'password-123' });
+    assert.deepEqual(JSON.parse(requests[0].init.body), {
+      phone: '0925999333',
+      password: 'password-123',
+    });
+  }
+});
+
+test('rejects invalid phone input before sending a login request', async () => {
+  let called = false;
+  const client = new HdApiClient({
+    baseUrl: 'https://api.example.test/api/v1',
+    storage: createStorage(),
+    fetchImpl: async () => {
+      called = true;
+      return envelope({});
+    },
+  });
+  await assert.rejects(
+    () => client.login({ phone: '12345', password: 'password-123' }),
+    { code: 'LOGIN_INPUT_INVALID' },
+  );
+  assert.equal(called, false);
+});
+
+test('registers a phone-only owner without adding an email field', async () => {
+  const requests = [];
+  const client = new HdApiClient({
+    baseUrl: 'https://api.example.test/api/v1',
+    storage: createStorage(),
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      return envelope({ accessToken: 'access', refreshToken: 'refresh', user: { id: 'user' } });
+    },
+  });
+  await client.register({
+    companyCode: 'hdco2',
+    companyName: 'HD Test Company',
+    phone: '+84925999333',
+    password: 'password-123',
+  });
+  assert.match(requests[0].url, /\/api\/v1\/auth\/register$/);
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    companyCode: 'HDCO2',
+    companyName: 'HD Test Company',
+    phone: '0925999333',
+    password: 'password-123',
+  });
 });
 
 test('routes tenant-scoped legacy business history without accepting a caller tenant override', async () => {

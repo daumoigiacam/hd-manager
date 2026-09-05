@@ -129,8 +129,10 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
     user: {
       id: sourceUser.id,
       email: sourceUser.email || '',
-      name: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
-      displayName: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
+      phone: sourceUser.phone || sourceUser.phoneNormalized || '',
+      phoneNormalized: sourceUser.phoneNormalized || sourceUser.phone || '',
+      name: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
+      displayName: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
       companyId: company?.id || sourceUser.companyId || '',
       branchId: branch?.id || sourceUser.branchId || '',
       role: primaryRole,
@@ -620,8 +622,19 @@ export class HdConnectStagingApi {
     this.client = client;
   }
 
-  async login({ email, password, deviceName } = {}) {
-    return normalizeVpsSession(await this.client.login({ email, password, deviceName }));
+  async login({ phone, email, password, deviceName } = {}) {
+    return normalizeVpsSession(await this.client.login({ phone, email, password, deviceName }));
+  }
+
+  async register({ companyCode, companyName, phone, password, fullName, deviceName } = {}) {
+    return normalizeVpsSession(await this.client.register({
+      companyCode,
+      companyName,
+      phone,
+      password,
+      fullName,
+      deviceName,
+    }));
   }
 
   async restoreSession() {
