@@ -804,3 +804,29 @@ test('routes notification, storage, reporting and settings contracts without ten
   assert.equal(Object.hasOwn(calls[4].payload, 'tenantId'), false);
   assert.equal(Object.hasOwn(calls[6].options.query, 'companyId'), false);
 });
+
+test('routes tenant-scoped legacy business history without accepting a caller tenant override', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ path, options });
+      if (path === '/legacy-business/summary') return { total: 4338, domains: {} };
+      return { items: [{ id: 'legacy-1', companyId: 'company-1' }], pagination: { totalItems: 1 } };
+    },
+  });
+
+  const history = await api.listLegacyBusiness({
+    domain: 'FINANCE',
+    companyId: 'attacker-company',
+    tenantId: 'attacker-tenant',
+  });
+  const summary = await api.getLegacyBusinessSummary();
+
+  assert.equal(history.items[0].id, 'legacy-1');
+  assert.equal(summary.total, 4338);
+  assert.equal(calls[0].path, '/legacy-business');
+  assert.equal(calls[0].options.query.domain, 'FINANCE');
+  assert.equal(Object.hasOwn(calls[0].options.query, 'companyId'), false);
+  assert.equal(Object.hasOwn(calls[0].options.query, 'tenantId'), false);
+  assert.equal(calls[1].path, '/legacy-business/summary');
+});

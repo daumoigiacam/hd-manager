@@ -7,10 +7,12 @@ const [viteSource, vpsSource] = await Promise.all([
 ]);
 
 assert.match(viteSource, /const isVpsStagingBuild = vpsDataMode === 'vps-staging';/);
-assert.match(viteSource, /const useCloudData = !usePreviewData && !isVpsStagingBuild;/);
-assert.match(viteSource, /isVpsStagingBuild \? '\.\/src\/mocks\/firebase-runtime-vps\.js' : '\.\/src\/config\/firebase-runtime\.js'/);
+assert.match(viteSource, /const isVpsProductionBuild = vpsDataMode === 'vps-production';/);
+assert.match(viteSource, /const isVpsApiBuild = isVpsStagingBuild \|\| isVpsProductionBuild;/);
+assert.match(viteSource, /const useCloudData = !usePreviewData && !isVpsApiBuild;/);
+assert.match(viteSource, /isVpsApiBuild \? '\.\/src\/mocks\/firebase-runtime-vps\.js' : '\.\/src\/config\/firebase-runtime\.js'/);
 assert.match(vpsSource, /export const isVpsStagingMode = vpsDataMode === 'vps-staging';/);
 assert.match(vpsSource, /export const isVpsApiMode = isVpsStagingMode \|\| isVpsProductionMode;/);
-assert.match(vpsSource, /export const isVpsMode = isVpsStagingMode;/);
+assert.match(vpsSource, /export const isVpsMode = isVpsApiMode;/);
 
-console.log('Hybrid runtime safety checks passed.');
+console.log('VPS production runtime safety checks passed.');

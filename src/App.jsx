@@ -372,7 +372,7 @@ import {
   buildVpsInventoryTransaction,
   inventoryVpsEnabled,
   isVpsMode,
-  isVpsStagingMode,
+  isVpsApiMode,
   normalizeVpsAttendance,
   normalizeVpsFinanceExpense,
   normalizeVpsStockMovement,
@@ -2700,6 +2700,9 @@ const EMPTY_WIFI_LOOKUP_STATE = { loading: false, success: false, message: '', f
 
 const VPS_UI_READ_MODULE_BY_TAB = Object.freeze({
   executive_dashboard: 'reports',
+  customers: 'customers',
+  products: 'products',
+  orders: 'orders',
   warehouse_import: 'warehouse',
   warehouse_dispatch: 'warehouse',
   finance: 'finance',
@@ -4019,7 +4022,7 @@ const buildPayosPaymentQrImageSource = (value = '') => {
 };
 
 const getPayosApiBaseUrl = () => {
-  if (isVpsStagingMode) return '';
+  if (isVpsApiMode) return '';
   const configuredBaseUrl = resolveLegacyPaymentApiBaseUrl();
   if (configuredBaseUrl) return configuredBaseUrl;
   // The VPS may host another API at /api. Use the Firebase Hosting rewrite
@@ -4030,7 +4033,7 @@ const PAYOS_API_BASE_URL = getPayosApiBaseUrl();
 const buildPayosApiUrl = (path = '') => `${PAYOS_API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 const requestPayosPaymentLink = async ({ firebaseUser, appId, orderId, receivingProfile = null, amount = 0 }) => {
-  if (isVpsStagingMode) {
+  if (isVpsApiMode) {
     throw new Error('Legacy Firebase payment requests are disabled in VPS staging.');
   }
   if (!firebaseUser || !orderId) {
@@ -4073,7 +4076,7 @@ const requestPayosPaymentLink = async ({ firebaseUser, appId, orderId, receiving
 };
 
 const requestCustomerDebtPaymentIntent = async ({ firebaseUser, appId, orderIds = [] }) => {
-  if (isVpsStagingMode) {
+  if (isVpsApiMode) {
     throw new Error('Legacy Firebase debt payments are disabled in VPS staging.');
   }
   if (!firebaseUser || !Array.isArray(orderIds) || orderIds.length === 0) {
@@ -12024,7 +12027,7 @@ export default function App() {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
   const persistedSession = useMemo(() => (
-    isVpsStagingMode
+    isVpsApiMode
       ? { currentUser: null, currentCompany: null, activeTab: 'home' }
       : loadAppSession()
   ), []);
@@ -12033,7 +12036,7 @@ export default function App() {
   // considered. The app-session cache only improves restoration context; it
   // never grants authenticated access on its own.
   const [isFirebaseLoading, setIsFirebaseLoading] = useState(() => Boolean(isFirebaseConfigured && auth));
-  const [isVpsSessionLoading, setIsVpsSessionLoading] = useState(() => isVpsStagingMode);
+  const [isVpsSessionLoading, setIsVpsSessionLoading] = useState(() => isVpsApiMode);
   const [sessionRecoveryTimedOut, setSessionRecoveryTimedOut] = useState(false);
 
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
@@ -12584,7 +12587,7 @@ export default function App() {
   };
 
   const flushPendingFirebaseWriteNow = (collectionName, documentId, timeoutMs = 12000, expectedCompanyId = activeTenantScopeRef.current) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return Promise.reject(createVpsStagingFirebaseWriteError('pending-write-flush', {
         functionName: 'flushPendingFirebaseWriteNow',
         collection: collectionName,
@@ -12844,7 +12847,7 @@ export default function App() {
 
   useEffect(() => {
     const companyId = `${currentUser?.companyId || ''}`.trim();
-    if (isVpsStagingMode || !firebaseUser || !isFirebaseConfigured || !companyId || pendingFirebaseWriteCount === 0) return;
+    if (isVpsApiMode || !firebaseUser || !isFirebaseConfigured || !companyId || pendingFirebaseWriteCount === 0) return;
     let cancelled = false;
 
     const flushPendingWrites = async () => {
@@ -12877,7 +12880,7 @@ export default function App() {
   }, [firebaseUser?.uid, currentUser?.companyId, pendingFirebaseWriteCount]);
 
   useEffect(() => {
-    if (isVpsStagingMode) return;
+    if (isVpsApiMode) return;
     saveAppSession({ currentUser, currentCompany, activeTab });
   }, [currentUser, currentCompany, activeTab]);
 
@@ -13072,7 +13075,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isVpsStagingMode) {
+    if (!isVpsApiMode) {
       setIsVpsSessionLoading(false);
       return undefined;
     }
@@ -13115,7 +13118,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isVpsStagingMode || !currentUser?.companyId) return undefined;
+    if (!isVpsApiMode || !currentUser?.companyId) return undefined;
 
     let cancelled = false;
     let loading = false;
@@ -13263,7 +13266,7 @@ export default function App() {
     };
   }, [currentUser?.companyId]);
 
-  const vpsReadModuleForActiveTab = isVpsStagingMode
+  const vpsReadModuleForActiveTab = isVpsApiMode
     ? VPS_UI_READ_MODULE_BY_TAB[activeTab] || ''
     : '';
 
@@ -13273,7 +13276,18 @@ export default function App() {
     let cancelled = false;
     const api = getHdConnectStagingApi();
     const query = { page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' };
+    const legacyDefinition = (label, domain) => ({
+      label,
+      path: `/api/v1/legacy-business?domain=${domain}`,
+      run: () => api.listLegacyBusiness({ ...query, domain }),
+    });
     const definitionsByModule = {
+      customers: [legacyDefinition('Lịch sử điểm khách hàng', 'LOYALTY')],
+      products: [legacyDefinition('Lịch sử sản phẩm / đơn vị', 'PRODUCT')],
+      orders: [
+        legacyDefinition('Đơn cần đối soát', 'ORDER'),
+        legacyDefinition('Lịch sử giao hàng', 'DELIVERY'),
+      ],
       warehouse: [
         { label: 'Kho', path: '/api/v1/warehouse-suite/warehouses', run: () => api.listWarehouses(query) },
         { label: 'Tồn kho', path: '/api/v1/warehouse-suite/balances', run: () => api.listWarehouseBalances(query) },
@@ -13282,6 +13296,7 @@ export default function App() {
         { label: 'Tra tồn', path: '/api/v1/inventory/lookup', run: () => api.listInventory(query) },
         { label: 'Sổ tồn', path: '/api/v1/inventory/ledger', run: () => api.listInventoryLedger(query) },
         { label: 'Tồn theo sản phẩm', path: '/api/v1/inventory/balances', run: () => api.listInventoryBalances(query) },
+        legacyDefinition('Lịch sử kiểm tồn', 'INVENTORY'),
       ],
       finance: [
         { label: 'Tài khoản tiền', path: '/api/v1/finance-suite/cash-accounts', run: () => api.listFinanceCashAccounts(query) },
@@ -13292,17 +13307,21 @@ export default function App() {
           run: () => api.listFinanceExpenses(query),
           apply: (result) => setRawExpenses(result.items.map(normalizeVpsFinanceExpense)),
         },
+        legacyDefinition('Lịch sử tài chính', 'FINANCE'),
+        legacyDefinition('Lịch sử tạm ứng', 'ADVANCE'),
       ],
       debt: [
         { label: 'Phải thu', path: '/api/v1/finance-suite/receivables', run: () => api.listFinanceReceivables(query) },
         { label: 'Phải trả', path: '/api/v1/finance-suite/payables', run: () => api.listFinancePayables(query) },
         { label: 'Tuổi nợ', path: '/api/v1/finance-suite/aging', run: () => api.getFinanceAging() },
+        legacyDefinition('Lịch sử thanh toán', 'PAYMENT'),
       ],
       attendance: [
         { label: 'Chấm công', path: '/api/v1/hr-suite/attendance', run: () => api.listAttendance(query) },
       ],
       hr: [
         { label: 'Nhân sự', path: '/api/v1/hr-suite/employees', run: () => api.listEmployees(query) },
+        legacyDefinition('Lịch sử nhân sự', 'HR'),
       ],
       payroll: [
         { label: 'Bảng lương', path: '/api/v1/hr-suite/payrolls', run: () => api.listPayrolls(query) },
@@ -13310,13 +13329,18 @@ export default function App() {
       reports: [
         { label: 'Tổng quan', path: '/api/v1/executive/dashboard', run: () => api.getExecutiveDashboard() },
         { label: 'Báo cáo', path: '/api/v1/executive/reports', run: () => api.getExecutiveReports(query) },
+        { label: 'Đối soát dữ liệu legacy', path: '/api/v1/legacy-business/summary', run: () => api.getLegacyBusinessSummary() },
       ],
       settings: [
         { label: 'Cấu hình nền tảng', path: '/api/v1/platform/config', run: () => api.getPlatformConfig() },
         { label: 'Cờ tính năng', path: '/api/v1/platform/flags', run: () => api.getPlatformFlags(query) },
+        legacyDefinition('Lịch sử cấu hình', 'SETTINGS'),
+        legacyDefinition('Lịch sử vận hành', 'OPERATIONS'),
       ],
       notifications: [
         { label: 'Thông báo', path: '/api/v1/notifications', run: () => api.listNotifications(query) },
+        legacyDefinition('Thông báo lịch sử', 'NOTIFICATION'),
+        legacyDefinition('Tin nhắn lịch sử', 'MESSAGE'),
       ],
     };
     const definitions = definitionsByModule[vpsReadModuleForActiveTab] || [];
@@ -13329,7 +13353,19 @@ export default function App() {
 
     const summarizeResult = (result) => {
       if (Array.isArray(result)) return { count: result.length };
-      if (Array.isArray(result?.items)) return { count: result.items.length };
+      if (Array.isArray(result?.items)) {
+        return {
+          count: Number.isInteger(result?.pagination?.totalItems)
+            ? result.pagination.totalItems
+            : result.items.length,
+          preview: result.items.slice(0, 3).map((item) => ({
+            id: item.id,
+            title: item.title || item.sourceId || item.id,
+            summary: item.summary || item.recordType || '',
+          })),
+        };
+      }
+      if (Number.isInteger(result?.total)) return { count: result.total };
       return { count: result == null ? 0 : 1 };
     };
 
@@ -13371,7 +13407,7 @@ export default function App() {
 
   useEffect(() => {
     const tenantCompanyId = `${currentUser?.companyId || ''}`.trim();
-    if (isVpsStagingMode || !firebaseUser || !isFirebaseConfigured || !tenantCompanyId) return;
+    if (isVpsApiMode || !firebaseUser || !isFirebaseConfigured || !tenantCompanyId) return;
     const customerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
     const sessionCustomerId = `${currentUser?.customerId || ''}`.trim();
     const customerOwnedCollections = new Set([
@@ -14571,7 +14607,7 @@ export default function App() {
   const promotions = useMemo(() => rawPromotions.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPromotions, myCompanyId]);
   const notifications = useMemo(() => rawNotifications.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawNotifications, myCompanyId]);
   const handleMarkVpsNotificationsRead = async (notificationIds = []) => {
-    if (!isVpsStagingMode || !Array.isArray(notificationIds) || notificationIds.length === 0) return;
+    if (!isVpsApiMode || !Array.isArray(notificationIds) || notificationIds.length === 0) return;
     await getHdConnectStagingApi().markNotificationsRead({ notificationIds });
     const readAt = new Date().toISOString();
     setRawNotifications((previous) => previous.map((notification) => (
@@ -15319,7 +15355,7 @@ export default function App() {
 
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const email = `${identifier || ''}`.trim().toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || `${password || ''}`.length < 8) {
         return { success: false, message: 'Enter a valid email address and a password with at least 8 characters.' };
@@ -15398,7 +15434,7 @@ export default function App() {
   };
 
   const handleIdentitySetup = async ({ password, username, pin, biometricEnabled, trustDevice }) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return {
         success: false,
         message: 'VPS mode uses invitation acceptance and does not use Firebase identity setup.',
@@ -15430,7 +15466,7 @@ export default function App() {
   };
 
   const handleIdentityRecovery = async ({ identifier, pin }) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       try {
         return await getHdConnectStagingApi().requestPasswordReset(identifier);
       } catch (error) {
@@ -15446,7 +15482,7 @@ export default function App() {
   };
 
   const handleIdentityCompleteRecovery = async ({ resetToken, password, identifier }) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       try {
         await getHdConnectStagingApi().completePasswordReset({
           token: resetToken,
@@ -15467,7 +15503,7 @@ export default function App() {
   };
 
   const handleOwnerResetEmployeePassword = async (employeeId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'Chức năng đặt lại tài khoản nhân sự chưa được bật trong VPS mode.' };
     }
     try {
@@ -15483,7 +15519,7 @@ export default function App() {
   };
 
   const handleIdentityOwnerResetRequest = async ({ identifier }) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'Chức năng cấp lại tài khoản chưa được bật trong VPS mode.' };
     }
     try {
@@ -15497,7 +15533,7 @@ export default function App() {
   };
 
   const handleIdentityOwnerResetApproval = async (requestId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'Chức năng cấp lại tài khoản chưa được bật trong VPS mode.' };
     }
     try {
@@ -15915,7 +15951,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       try {
         await getHdConnectStagingApi().logout();
       } finally {
@@ -15942,7 +15978,7 @@ export default function App() {
   };
 
   const handleSwitchToCustomerLogin = async () => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       await handleLogout();
       return;
     }
@@ -15970,7 +16006,7 @@ export default function App() {
       employee,
       currentCompany
     );
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: targetDate,
@@ -16004,7 +16040,7 @@ export default function App() {
       employee,
       currentCompany
     );
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: targetDate,
@@ -16029,7 +16065,7 @@ export default function App() {
   };
   
   const handleLeave = async (empId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: currentDate,
@@ -16048,7 +16084,7 @@ export default function App() {
   };
 
   const handleEditAttendance = async (empId, targetDate, editData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS attendance editing requires an approved adjustment contract; direct time overwrite is disabled.');
     }
     if (!firebaseUser) return;
@@ -17065,7 +17101,7 @@ export default function App() {
   };
 
   const handleAddPayment = async (paymentData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Payment posting is blocked in VPS staging until the finance payment contract is approved.');
     }
     if (!firebaseUser) return;
@@ -17244,7 +17280,7 @@ export default function App() {
   };
 
   const handleEditPayment = async (paymentId, paymentData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Payment editing is blocked in VPS staging until the finance payment contract is approved.');
     }
     if (!firebaseUser || !paymentId) return;
@@ -17388,7 +17424,7 @@ export default function App() {
   }, [bankTransactions, currentCompany, currentUser?.id, firebaseUser, isInitialDataLoaded, myCompanyId, orders, rawPayments]);
 
   const handleDeletePayment = async (paymentId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Payment deletion is blocked in VPS staging until the finance payment contract is approved.');
     }
     if (!firebaseUser) return;
@@ -17400,7 +17436,7 @@ export default function App() {
   };
 
   const handleAddExpense = async (empId, expenseData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const amount = parseLooseMoneyValue(expenseData?.amount);
       if (amount <= 0) throw new Error('VPS expense requires a positive amount.');
       const clientMutationId = `${expenseData?.clientMutationId || `expense-${Date.now()}`}`.trim();
@@ -17469,7 +17505,7 @@ export default function App() {
   };
 
   const handleEditExpense = async (expenseId, expenseData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS finance expenses are immutable after creation; use the approved expense approval/post workflow.');
     }
     if (!firebaseUser || !expenseId) return;
@@ -17493,7 +17529,7 @@ export default function App() {
   };
 
   const handleDeleteExpense = async (expenseId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS finance expenses cannot be archived or deleted without an approved cancellation contract.');
     }
     if (!firebaseUser) return;
@@ -17505,7 +17541,7 @@ export default function App() {
   };
 
   const addFinancialRecord = async (empId, type, amount, reason, date = getTodayString(), extraData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Financial record writes are blocked in VPS staging until the accounting contract is approved.');
     }
     if (!firebaseUser) return;
@@ -17542,7 +17578,7 @@ export default function App() {
   };
 
   const handleEditFinancialRecord = async (financialId, patchData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Financial record editing is blocked in VPS staging until the accounting contract is approved.');
     }
     if (!firebaseUser || !financialId) return;
@@ -17558,7 +17594,7 @@ export default function App() {
   };
 
   const handleDeleteFinancialRecord = async (financialId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('Financial record deletion is blocked in VPS staging until the accounting contract is approved.');
     }
     if (!firebaseUser || !financialId) return;
@@ -17574,7 +17610,7 @@ export default function App() {
   };
 
   const handleLoadPayrollPeriodSnapshots = async ({ monthKey } = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, snapshots: [], message: 'VPS payroll snapshot UI is not yet mapped to the HR payroll contract; Firebase fallback is disabled.' };
     }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
@@ -17662,7 +17698,7 @@ export default function App() {
   };
 
   const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'VPS payroll generate/approve/lock UI is not yet mapped to the HR payroll contract; no Firebase write was attempted.' };
     }
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
@@ -17819,7 +17855,7 @@ export default function App() {
     nextEndingDebt = 0,
     reason = ''
   } = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'VPS payroll adjustments require the approved HR adjustment contract; no Firebase write was attempted.' };
     }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
@@ -17972,7 +18008,7 @@ export default function App() {
   };
 
   const handlePreparePayrollAutoLockPlan = async ({ period, snapshots, sourceSignature = '' } = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return { success: false, message: 'VPS payroll auto-lock requires the approved HR payroll scheduler contract; no Firebase write was attempted.' };
     }
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
@@ -18292,7 +18328,7 @@ export default function App() {
   };
 
   const handleAddCustomer = async (empId, customerData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const assignedEmpId = empId || customerData?.empId || currentUser?.id || '';
       if (!assignedEmpId) {
         throw new Error('Select a responsible employee before saving a customer.');
@@ -18371,7 +18407,7 @@ export default function App() {
   };
 
   const handleEditCustomer = async (customerId, updatedData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const currentCustomer = rawCustomers.find((customer) => customer.id === customerId);
       if (!currentCustomer) throw new Error('The customer was not found in the current tenant.');
       const nextPhone = `${updatedData?.phone ?? currentCustomer?.phone ?? ''}`.trim();
@@ -18471,7 +18507,7 @@ export default function App() {
       validProductIds,
     });
 
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const currentCustomer = rawCustomers.find((customer) => customer.id === normalizedCustomerId);
       if (!currentCustomer) throw new Error('Không tìm thấy khách hàng để đồng bộ sản phẩm cố định.');
 
@@ -18529,7 +18565,7 @@ export default function App() {
   };
 
   const handleDeleteCustomer = async (customerId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       await getHdConnectStagingApi().deleteCustomer(customerId);
       setRawCustomers((previous) => previous.map((customer) => (
         customer?.id === customerId
@@ -18611,7 +18647,7 @@ export default function App() {
   };
 
   const handleAddProduct = async (productData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const savedProduct = await getHdConnectStagingApi().createProduct({
         ...productData,
         clientMutationId: productData?.clientMutationId || `product-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -18632,7 +18668,7 @@ export default function App() {
   };
 
   const handleEditProduct = async (prodId, updatedData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const currentProduct = rawProducts.find((product) => product.id === prodId);
       if (!currentProduct) throw new Error('The product was not found in the current tenant.');
       const savedProduct = await getHdConnectStagingApi().updateProduct(prodId, {
@@ -18649,7 +18685,7 @@ export default function App() {
   };
 
   const handleDeleteProduct = async (prodId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       await getHdConnectStagingApi().deleteProduct(prodId);
       setRawProducts((previous) => previous.map((product) => (
         product?.id === prodId
@@ -18668,7 +18704,7 @@ export default function App() {
   };
 
   const handleAddOrder = async (empId, orderData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const customer = customers.find((item) => item.id === orderData.customerId);
       const salesEmpId = orderData.salesEmpId || empId || customer?.empId || currentUser?.id || '';
       const orderDateTime = buildDateTimeFromDateKey(orderData.date, new Date());
@@ -19096,7 +19132,7 @@ export default function App() {
   };
 
   const handleAddWarehouseImport = async (empId, importData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const clientMutationId = `${importData.clientMutationId || `warehouse-import-${Date.now()}`}`.trim();
       const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
       const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
@@ -19205,7 +19241,7 @@ export default function App() {
   };
 
   const handlePostInventoryOpeningBalance = async (empId, openingData = {}) => {
-    if (!isVpsStagingMode) return null;
+    if (!isVpsApiMode) return null;
     const warehouseId = `${openingData.warehouseId || ''}`.trim();
     const productId = `${openingData.productId || ''}`.trim();
     const unitId = `${openingData.unitId || ''}`.trim();
@@ -19261,7 +19297,7 @@ export default function App() {
   };
 
   const handleEditWarehouseImport = async (importId, importData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
     }
     if (!firebaseUser || !importId) return;
@@ -19351,7 +19387,7 @@ export default function App() {
   };
 
   const handleDeleteWarehouseImport = async (importId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
     }
     if (!firebaseUser) return;
@@ -19506,7 +19542,7 @@ export default function App() {
   };
 
   const handleAddWarehouseStockCount = async (empId, countData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const warehouseId = `${countData.warehouseId || ''}`.trim();
       const productId = `${countData.productId || ''}`.trim();
       const unitId = `${countData.unitId || ''}`.trim();
@@ -19593,7 +19629,7 @@ export default function App() {
   };
 
   const handleEditWarehouseStockCount = async (stockCountId, countData = {}) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock count editing requires the approved stock-count session contract.');
     }
     if (!firebaseUser || !stockCountId) return;
@@ -19629,7 +19665,7 @@ export default function App() {
   };
 
   const handleDeleteWarehouseStockCount = async (stockCountId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock count deletion requires an approved cancellation contract.');
     }
     if (!firebaseUser || !stockCountId) return;
@@ -19939,7 +19975,7 @@ export default function App() {
   };
 
   const handleAddWarehouseDispatch = async (empId, dispatchData) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       const clientMutationId = `${dispatchData?.clientMutationId || `warehouse-dispatch-${Date.now()}`}`.trim();
       const quantity = parseLooseQuantityValue(dispatchData?.quantity ?? dispatchData?.pieceCount ?? dispatchData?.quantityCount);
       const weightKg = parseLooseQuantityValue(dispatchData?.weightKg ?? dispatchData?.totalKg);
@@ -20048,7 +20084,7 @@ export default function App() {
   };
 
   const handleEditWarehouseDispatch = async (dispatchId, updatedData = {}, empId = '') => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
     }
     if (!firebaseUser || !dispatchId) return;
@@ -20105,7 +20141,7 @@ export default function App() {
   };
 
   const handleDeleteWarehouseDispatch = async (dispatchId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
     }
     if (!firebaseUser || !dispatchId) return;
@@ -20239,7 +20275,7 @@ export default function App() {
   };
 
   const handleEditOrder = async (orderId, orderData, collectedPaymentData = null) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       if (collectedPaymentData) {
         throw new Error('Payment collection is not enabled in the VPS staging order flow.');
       }
@@ -20973,7 +21009,7 @@ export default function App() {
   };
 
   const handleDeleteOrder = async (orderId) => {
-    if (isVpsStagingMode) {
+    if (isVpsApiMode) {
       return {
         success: false,
         message: 'Order deletion is not mapped to VPS staging. Use an approved cancel workflow with a reason.',
@@ -22090,10 +22126,10 @@ export default function App() {
     return () => window.clearTimeout(timerId);
   }, [recoverableSyncNotice?.id]);
 
-  if (!isFirebaseConfigured && !isVpsStagingMode) return <MissingFirebaseError />;
+  if (!isFirebaseConfigured && !isVpsApiMode) return <MissingFirebaseError />;
   if (isFirebaseLoading || isVpsSessionLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
 
-  if (!isVpsStagingMode && !firebaseUser && currentUser) {
+  if (!isVpsApiMode && !firebaseUser && currentUser) {
     return (
       <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-6 text-center border border-emerald-100">
@@ -22125,7 +22161,7 @@ export default function App() {
           onCompleteRecovery={handleIdentityCompleteRecovery}
           onCompleteIdentitySetup={handleIdentitySetup}
           onRequestOwnerReset={handleIdentityOwnerResetRequest}
-          vpsStagingMode={isVpsStagingMode}
+          vpsStagingMode={isVpsApiMode}
         />
       </>
     );
@@ -22215,11 +22251,11 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
-        isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
+        isVpsMode={isVpsApiMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
-        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
+        onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsApiMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onMarkVpsNotificationsRead={handleMarkVpsNotificationsRead}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
@@ -22766,6 +22802,11 @@ function VpsModuleReadPanel({ moduleKey, model }) {
               </div>
               <code className="mt-1 block truncate text-[10px] opacity-70">{endpoint.path}</code>
               {endpoint.error && <p className="mt-1 text-[11px] font-semibold">{endpoint.error}</p>}
+              {endpoint.preview?.map((item) => (
+                <p key={item.id} className="mt-1 truncate text-[11px]" title={item.summary}>
+                  {item.title}
+                </p>
+              ))}
             </div>
           ))}
         </div>

@@ -6,11 +6,9 @@ const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
 
 export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ''}`.trim();
 export const isVpsProductionMode = vpsDataMode === 'vps-production';
-// Staging is the only full API-only cutover. Production stays on the established
-// Firebase user path until an individual VPS capability has explicit parity.
 export const isVpsStagingMode = vpsDataMode === 'vps-staging';
 export const isVpsApiMode = isVpsStagingMode || isVpsProductionMode;
-export const isVpsMode = isVpsStagingMode;
+export const isVpsMode = isVpsApiMode;
 export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1051,6 +1049,17 @@ export class HdConnectStagingApi {
 
   async sendNotification(record = {}) {
     return this.client.post('/notifications/send', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listLegacyBusiness(query = {}) {
+    return normalizePage(
+      await this.client.get('/legacy-business', { query: toTenantSafeQuery(query) }),
+      (item) => item,
+    );
+  }
+
+  async getLegacyBusinessSummary() {
+    return this.client.get('/legacy-business/summary');
   }
 
   async listStorage(query = {}) {
