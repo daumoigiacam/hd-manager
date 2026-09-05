@@ -378,6 +378,7 @@ import {
   normalizeVpsStockMovement,
   vpsDataMode,
 } from './api/hdConnectStaging.js';
+import { readCompleteVpsCollection } from './api/vpsCompleteCollection.js';
 import {
   resolveDataAppId,
   resolveFirebaseRuntimeConfig,
@@ -13118,20 +13119,24 @@ export default function App() {
     let cancelled = false;
     let loading = false;
     const api = getHdConnectStagingApi();
+    const readComplete = (method, query = {}) => readCompleteVpsCollection(
+      (pageQuery) => api[method](pageQuery),
+      { companyId: currentUser.companyId, cancelled: () => cancelled, query },
+    );
     const loadCoreVpsData = async () => {
       if (loading) return;
       loading = true;
 
       try {
         const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult] = await Promise.allSettled([
-          api.listCustomers({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listProducts({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listUnits({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listOrders({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listEmployees({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
-          api.listNotifications({ page: 1, limit: 100 }),
-          api.listAttendance({ page: 1, limit: 100, sortBy: 'workDate', sortOrder: 'desc' }),
-          api.listWarehouses({ page: 1, limit: 100, sortBy: 'updatedAt', sortOrder: 'desc' }),
+          readComplete('listCustomers'),
+          readComplete('listProducts'),
+          readComplete('listUnits'),
+          readComplete('listOrders'),
+          readComplete('listEmployees'),
+          readComplete('listNotifications'),
+          readComplete('listAttendance', { sortBy: 'workDate' }),
+          readComplete('listWarehouses'),
         ]);
         if (cancelled) return;
 
@@ -13145,14 +13150,6 @@ export default function App() {
             ...previous,
             units: unitsResult.value.items,
           }));
-          const availableUnits = unitsResult.value.items
-            .map((unit) => unit?.symbol || unit?.name || unit?.code || '')
-            .map((unit) => `${unit}`.trim())
-            .filter(Boolean);
-          setRawProducts((previous) => previous.map((product) => ({
-            ...product,
-            availableUnits,
-          })));
         } else {
           failedDomains.push('units');
         }
