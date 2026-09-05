@@ -330,6 +330,38 @@ assert.equal(
   '39. executive dashboard revenue uses the frozen 20 Kg billing amount instead of 7 Con'
 );
 
+const postgresNumericDashboard = buildExecutiveDashboardSnapshot({
+  now: reportDate,
+  customers: [{
+    id: 'postgres-numeric-customer',
+    name: 'Postgres Numeric Customer',
+    currentDebt: '162844000.2135611',
+  }],
+  orders: [{
+    id: 'postgres-numeric-order',
+    customerId: 'postgres-numeric-customer',
+    customerName: 'Postgres Numeric Customer',
+    orderDate: reportDate.toISOString(),
+    totalAmount: '1438441308.0025882',
+    paidAmount: '1438441308.0025882',
+  }],
+});
+assert.equal(
+  postgresNumericDashboard.finance.revenueToday,
+  1438441308.0025882,
+  '40. PostgreSQL numeric strings retain their decimal point instead of being parsed as grouped text'
+);
+assert.equal(
+  postgresNumericDashboard.business.topCustomersByRevenue[0].revenue,
+  1438441308.0025882,
+  '41. customer revenue rankings preserve PostgreSQL numeric values'
+);
+assert.equal(
+  postgresNumericDashboard.business.topCustomersByDebt[0].debt,
+  162844000.2135611,
+  '42. customer debt rankings preserve PostgreSQL numeric values'
+);
+
 const pricingSnapshot = buildPricingEngineSnapshot({
   date: reportDate,
   orders: [frozenBillingOrder],
@@ -338,7 +370,7 @@ const pricingSnapshot = buildPricingEngineSnapshot({
 assert.equal(
   pricingSnapshot.totals.monthlyRevenue,
   1200000,
-  '40. pricing analytics uses the same frozen billing amount as the order and debt flow'
+  '43. pricing analytics uses the same frozen billing amount as the order and debt flow'
 );
 
-console.log('Customer product billing tests: PASS (22 scenarios, 60 assertions)');
+console.log('Customer product billing tests: PASS (23 scenarios, 64 assertions)');

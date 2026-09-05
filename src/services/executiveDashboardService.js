@@ -5,7 +5,34 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const toNumber = (value, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
-    const normalized = value.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+    const compact = value.replace(/[^\d,.-]/g, '');
+    if (!compact || compact === '-' || compact === '.' || compact === ',') return fallback;
+
+    const commaCount = (compact.match(/,/g) || []).length;
+    const dotCount = (compact.match(/\./g) || []).length;
+    let normalized = compact;
+
+    if (commaCount && dotCount) {
+      const decimalSeparator = compact.lastIndexOf(',') > compact.lastIndexOf('.') ? ',' : '.';
+      const groupSeparator = decimalSeparator === ',' ? /\./g : /,/g;
+      normalized = compact.replace(groupSeparator, '').replace(decimalSeparator, '.');
+    } else if (dotCount > 1) {
+      normalized = compact.replace(/\./g, '');
+    } else if (commaCount > 1) {
+      normalized = compact.replace(/,/g, '');
+    } else if (dotCount === 1) {
+      const [integerPart, fractionalPart = ''] = compact.split('.');
+      // A single dot with a three-digit suffix is the Vietnamese grouping form;
+      // PostgreSQL numeric values otherwise keep their decimal point intact.
+      normalized = fractionalPart.length === 3 && integerPart.replace('-', '').length <= 3
+        ? `${integerPart}${fractionalPart}`
+        : compact;
+    } else if (commaCount === 1) {
+      const [integerPart, fractionalPart = ''] = compact.split(',');
+      normalized = fractionalPart.length === 3 && integerPart.replace('-', '').length <= 3
+        ? `${integerPart}${fractionalPart}`
+        : compact.replace(',', '.');
+    }
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : fallback;
   }
