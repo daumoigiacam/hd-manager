@@ -11222,6 +11222,7 @@ const getPaymentRawPayosData = (payment = {}) => {
 const getPaymentDateCandidates = (payment = {}) => {
   const { rawWebhook, data, paymentLink, latestTransaction, latestLinkedTransaction } = getPaymentRawPayosData(payment);
   return [
+    ...(payment.sourceSystem === 'hd-connect-vps' && Array.isArray(payment.legacyPaymentDateCandidates) ? payment.legacyPaymentDateCandidates : []),
     payment.paymentDate,
     payment.transactionDate,
     payment.transactionDateTime,
@@ -13128,7 +13129,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13137,12 +13138,17 @@ export default function App() {
           readComplete('listNotifications'),
           readComplete('listAttendance', { sortBy: 'workDate' }),
           readComplete('listWarehouses'),
+          readComplete('listPaymentHistory'),
         ]);
         if (cancelled) return;
 
         const failedDomains = [];
         if (customersResult.status === 'fulfilled') setRawCustomers(customersResult.value.items);
-        else failedDomains.push('customers');
+        if (ordersResult.status === 'fulfilled') setRawOrders(ordersResult.value.items);
+        if (paymentsResult.status === 'fulfilled') setRawPayments(paymentsResult.value.items);
+        if (customersResult.status !== 'fulfilled') failedDomains.push('customers');
+        if (ordersResult.status !== 'fulfilled') failedDomains.push('orders');
+        if (paymentsResult.status !== 'fulfilled') failedDomains.push('payments');
         if (productsResult.status === 'fulfilled') setRawProducts(productsResult.value.items);
         else failedDomains.push('products');
         if (unitsResult.status === 'fulfilled') {
@@ -13161,8 +13167,6 @@ export default function App() {
         } else {
           failedDomains.push('warehouses');
         }
-        if (ordersResult.status === 'fulfilled') setRawOrders(ordersResult.value.items);
-        else failedDomains.push('orders');
         if (employeesResult.status === 'fulfilled' && employeesResult.value.items.length > 0) {
           setRawEmployees(employeesResult.value.items);
         } else if (employeesResult.status !== 'fulfilled') {
@@ -13185,15 +13189,13 @@ export default function App() {
           failedDomains.push('attendance');
         }
 
-        // The available CX payment endpoint is customer-portal scoped, not an
-        // internal finance ledger. Do not substitute it for operator payments.
-        setRawPayments([]);
         setLoadedCollections((previous) => ({
           ...previous,
           companies: true,
           customers: customersResult.status === 'fulfilled',
           products: productsResult.status === 'fulfilled',
           orders: ordersResult.status === 'fulfilled',
+          payments: paymentsResult.status === 'fulfilled',
           employees: employeesResult.status === 'fulfilled',
           notifications: notificationsResult.status === 'fulfilled',
           attendance: attendanceResult.status === 'fulfilled',

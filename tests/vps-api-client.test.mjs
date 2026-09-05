@@ -35,6 +35,22 @@ const errorEnvelope = (message, { status = 400, code = 'REQUEST_REJECTED' } = {}
   { status, headers: { 'content-type': 'application/json' } },
 );
 
+test('uses the operator finance history contract without substituting customer-portal payments or caller tenant input', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({ get: async (path, options) => {
+    calls.push({ path, options });
+    return { items: [{ id: 'payment', companyId: 'tenant', amount: '12.50', metadata: { __hdcoProjection: { sourceRecordId: 'legacy-payment' }, requiresApproval: true } }], pagination: { totalItems: 1 } };
+  } });
+  const page = await api.listPaymentHistory({ page: 1, limit: 100, companyId: 'forged', tenantId: 'forged' });
+  assert.equal(calls[0].path, '/finance-suite/payments/history');
+  assert.equal(calls[0].options.query.companyId, undefined);
+  assert.equal(calls[0].options.query.tenantId, undefined);
+  assert.equal(page.items[0].requiresApproval, true);
+  await api.getHistoricalCustomerLedger('native-customer');
+  assert.equal(calls[1].path, '/finance-suite/customers/native-customer/historical-ledger');
+  await assert.rejects(() => api.getHistoricalCustomerLedger(''), { code: 'CUSTOMER_ID_REQUIRED' });
+});
+
 test('stores an access and refresh token pair after VPS login', async () => {
   const storage = createStorage();
   const requests = [];

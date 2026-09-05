@@ -18,6 +18,19 @@ test('payment references use native mapped targets without dropping original app
   const payment = normalizeVpsPayment({ id: 'p', companyId: 'tenant', customerTargetId: 'native-customer', salesOrderTargetId: 'native-order', externalReference: 'external', amount: '100.25', metadata: { __hdcoProjection: marker, isArchived: true, handoverStatus: 'pending', approvalStatus: 'pending' } });
   assert.equal(payment.customerId, 'native-customer'); assert.equal(payment.matchedOrderId, 'native-order'); assert.equal(payment.reference, 'external'); assert.equal(payment.handoverStatus, 'pending'); assert.equal(payment.isArchived, true); assert.equal(payment.amount, 100.25); assert.equal(payment.readOnly, true);
 });
+
+test('historical payment eligibility is not replaced by migration reconciliation status', () => {
+  const payment = normalizeVpsPayment({ id: 'p', companyId: 'tenant', status: 'RECONCILIATION_REQUIRED', reconciliationStatus: 'RECONCILIATION_REQUIRED', metadata: { __hdcoProjection: marker, requiresApproval: true, isPaymentIntent: true, status: 'pending', settlementStatus: 'unpaid', reconciliationStatus: 'processing', createdByRole: 'driver' } });
+  assert.equal(payment.requiresApproval, true);
+  assert.equal(payment.isPaymentIntent, true);
+  assert.equal(payment.status, 'pending');
+  assert.equal(payment.settlementStatus, 'unpaid');
+  assert.equal(payment.reconciliationStatus, 'processing');
+  assert.equal(payment.projectionReconciliationStatus, 'RECONCILIATION_REQUIRED');
+  assert.equal(payment.createdByRole, 'driver');
+  const noLegacyStatus = normalizeVpsPayment({ id: 'p2', companyId: 'tenant', status: 'approved', metadata: { __hdcoProjection: marker } });
+  assert.equal(noLegacyStatus.status, '');
+});
 test('historical expenses preserve confirmed handover without pretending they were posted again', () => {
   const expense = normalizeVpsFinanceExpense({ id: 'e', amount: '30.50', status: 'APPROVED', expenseDate: '2026-07-01T00:00:00Z', metadata: { __hdcoProjection: { ...marker, references: { employee: 'native-employee' } }, approvalStatus: 'approved', handoverStatus: 'confirmed', sourceWarehouseImportId: 'original-import', isArchived: true } });
   assert.equal(expense.empId, 'native-employee'); assert.equal(expense.handoverStatus, 'confirmed'); assert.equal(expense.status, 'APPROVED'); assert.equal(expense.isArchived, true); assert.equal(expense.readOnly, true); assert.equal(expense.sourceWarehouseImportId, 'original-import');

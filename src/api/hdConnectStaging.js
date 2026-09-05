@@ -240,6 +240,7 @@ export const normalizeVpsOrder = (record = {}) => {
 
 export const normalizeVpsPayment = (record = {}) => {
   const metadata = normalizeMetadata(record);
+  const historical = Boolean(metadata.__hdcoProjection);
   return {
     ...metadata,
     ...record,
@@ -249,6 +250,9 @@ export const normalizeVpsPayment = (record = {}) => {
     matchedOrderId: record.salesOrderTargetId || record.matchedOrderId || '',
     reference: record.reference || record.externalReference || record.externalPaymentId || '',
     amount: toFiniteNumber(record.amount) ?? 0,
+    status: historical ? (metadata.status || '') : (record.status || ''),
+    reconciliationStatus: historical ? (metadata.reconciliationStatus || '') : (record.reconciliationStatus || ''),
+    projectionReconciliationStatus: historical ? (record.reconciliationStatus || '') : '',
     isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
     legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
     sourceSystem: 'hd-connect-vps',
@@ -844,6 +848,15 @@ export class HdConnectStagingApi {
 
   async listPayments(query = {}) {
     return normalizePage(await this.client.get('/cx-suite/payments', { query }), normalizeVpsPayment);
+  }
+
+  async listPaymentHistory(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/payments/history', { query: toTenantSafeQuery(query) }), normalizeVpsPayment);
+  }
+
+  async getHistoricalCustomerLedger(id) {
+    const customerId = requireIdentityInput(id, 'CUSTOMER_ID_REQUIRED', 'A customer id is required.');
+    return this.client.get(`/finance-suite/customers/${encodeURIComponent(customerId)}/historical-ledger`);
   }
 
   // These methods intentionally mirror existing VPS contracts. They do not
