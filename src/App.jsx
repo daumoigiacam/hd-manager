@@ -11,7 +11,7 @@ import { loadVpsEmployeeReviews, mergeVpsEmployeeReviews, saveVpsEmployeeReview 
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
 import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
 import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
-import { loadVpsPayrollPeriod, lockVpsPayrollPeriod } from './api/vpsPayroll.js';
+import { adjustVpsLockedPayroll, loadVpsPayrollPeriod, lockVpsPayrollPeriod } from './api/vpsPayroll.js';
 import { loadVpsMessages, saveVpsMessage } from './api/vpsMessages.js';
 import { loadVpsDeliveryReports, saveVpsDeliveryReport } from './api/vpsDeliveryReports.js';
 import { advanceVpsDelivery, assignVpsDelivery, DELIVERY_LIFECYCLE_LABELS, loadVpsDeliveryMasters } from './api/vpsDeliveryLifecycle.js';
@@ -17916,6 +17916,10 @@ export default function App() {
           myCompanyId,
           monthKey,
         );
+        setRawPayrollDebtCarryovers(previous => [
+          ...(Array.isArray(previous) ? previous : []).filter(item => item?.companyId !== myCompanyId),
+          ...(Array.isArray(result?.carryovers) ? result.carryovers : [])
+        ]);
         if (result.period) {
           const nativePeriod = {
             ...result.period,
@@ -18048,12 +18052,6 @@ export default function App() {
       if (!canCurrentUserManagePayrollByRole()) {
         return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được khóa kỳ lương.' };
       }
-      if ((Array.isArray(snapshots) ? snapshots : []).some(snapshot => Number(snapshot?.salaryDetails?.endingDebt || 0) !== 0)) {
-        return {
-          success: false,
-          message: 'Kỳ lương có dư nợ chuyển kỳ nên cần hợp đồng bút toán công nợ VPS trước khi khóa. Hệ thống chưa ghi dữ liệu nào.'
-        };
-      }
       try {
         const result = await lockVpsPayrollPeriod(
           getHdConnectStagingApi(),
@@ -18077,11 +18075,15 @@ export default function App() {
           )),
           nativePeriod
         ]);
+        setRawPayrollDebtCarryovers(previous => [
+          ...(Array.isArray(previous) ? previous : []).filter(item => item?.companyId !== myCompanyId),
+          ...(Array.isArray(result?.carryovers) ? result.carryovers : [])
+        ]);
         return {
           success: true,
           period: nativePeriod,
           snapshots: result.snapshots,
-          debtCarryovers: []
+          debtCarryovers: Array.isArray(result?.carryovers) ? result.carryovers : []
         };
       } catch (error) {
         return {
@@ -18240,12 +18242,39 @@ export default function App() {
   const handleAdjustLockedPayroll = async ({
     monthKey = '',
     snapshotId = '',
+    employeeId = '',
     nextNetSalary = 0,
     nextEndingDebt = 0,
     reason = ''
   } = {}) => {
     if (isVpsApiMode) {
-      return { success: false, message: 'VPS payroll adjustments require the approved HR adjustment contract; no Firebase write was attempted.' };
+      if (!canCurrentUserManagePayrollByRole()) {
+        return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được điều chỉnh kỳ lương đã chốt.' };
+      }
+      try {
+        const result = await adjustVpsLockedPayroll(
+          getHdConnectStagingApi(),
+          myCompanyId,
+          {
+            monthKey,
+            snapshotId,
+            employeeId,
+            nextNetSalary,
+            nextEndingDebt,
+            reason,
+          },
+        );
+        setRawPayrollDebtCarryovers(previous => [
+          ...(Array.isArray(previous) ? previous : []).filter(item => item?.companyId !== myCompanyId),
+          ...(Array.isArray(result?.carryovers) ? result.carryovers : [])
+        ]);
+        return { success: true, period: result.period, adjustment: true };
+      } catch (error) {
+        return {
+          success: false,
+          message: error?.message || 'Không lưu được phiếu điều chỉnh trên VPS. Snapshot kỳ lương vẫn được giữ nguyên.'
+        };
+      }
     }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
@@ -81864,6 +81893,7 @@ function SalaryView({
       const result = await onAdjustLockedPayroll({
         monthKey: currentMonth,
         snapshotId: payrollAdjustmentRow.snapshotId,
+        employeeId: payrollAdjustmentRow.emp?.id || '',
         nextNetSalary: parseInputCurrency(payrollAdjustmentNetSalary),
         nextEndingDebt: parseInputCurrency(payrollAdjustmentEndingDebt),
         reason: normalizedReason

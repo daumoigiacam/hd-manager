@@ -155,6 +155,13 @@ const snapshotFromPayrollEntry = (
     ...snapshot,
     sourcePeriodId: snapshot.periodId,
     periodId: nativePeriodId,
+    ...(entry?.latestAdjustment
+      ? {
+          latestAdjustment: entry.latestAdjustment,
+          effectiveSalaryDetails: entry.effectiveSalaryDetails,
+          status: "ADJUSTED",
+        }
+      : {}),
   };
 };
 
@@ -176,7 +183,14 @@ export const loadVpsPayrollPeriod = async (api, companyId, monthKey) => {
     "PAYROLL_PERIOD_AMBIGUOUS",
     "More than one native payroll period has the same HD Manager period code.",
   );
-  if (!period) return { period: null, payroll: null, snapshots: [] };
+  const carryovers = await api.listPayrollDebtCarryovers({
+    targetMonthKey: bounds.monthKey,
+    limit: 100,
+  });
+  const tenantCarryovers = (Array.isArray(carryovers?.items) ? carryovers.items : [])
+    .map((item) => assertTenant(item, companyId, "Payroll debt carryover"));
+  if (!period)
+    return { period: null, payroll: null, snapshots: [], carryovers: tenantCarryovers };
   assertTenant(period, companyId, "Payroll period");
 
   const payrollPage = await api.listPayrolls({
@@ -194,6 +208,7 @@ export const loadVpsPayrollPeriod = async (api, companyId, monthKey) => {
       period: { ...period, monthKey: bounds.monthKey },
       payroll: null,
       snapshots: [],
+      carryovers: tenantCarryovers,
     };
   assertTenant(payroll, companyId, "Payroll");
 
@@ -207,7 +222,81 @@ export const loadVpsPayrollPeriod = async (api, companyId, monthKey) => {
     period: { ...period, monthKey: bounds.monthKey },
     payroll: details,
     snapshots,
+    carryovers: [
+      ...tenantCarryovers,
+      ...(Array.isArray(details.carryovers) ? details.carryovers : []),
+    ].filter((carryover, index, values) => (
+      carryover?.id && values.findIndex((item) => item?.id === carryover.id) === index
+    )),
   };
+};
+
+/**
+ * Append an immutable correction to a locked native payroll. The browser sends
+ * only the intended final net/debt values; the API validates source lineage,
+ * preserves the frozen snapshot, updates the next open carryover, and makes a
+ * retry with the same request ID replay-safe.
+ */
+export const adjustVpsLockedPayroll = async (
+  api,
+  companyId,
+  {
+    monthKey,
+    snapshotId,
+    employeeId,
+    nextNetSalary,
+    nextEndingDebt,
+    reason,
+  } = {},
+) => {
+  const bounds = monthBounds(monthKey);
+  if (!snapshotId || !employeeId) {
+    throw vpsPayrollError(
+      "A frozen payroll snapshot and employee are required.",
+      "PAYROLL_ADJUSTMENT_SOURCE_REQUIRED",
+    );
+  }
+  const normalizedReason = `${reason || ""}`.trim();
+  if (!normalizedReason) {
+    throw vpsPayrollError(
+      "A correction reason is required.",
+      "PAYROLL_ADJUSTMENT_REASON_REQUIRED",
+    );
+  }
+  const nextNet = asNumber(nextNetSalary, "nextNetSalary");
+  const nextDebt = asNumber(nextEndingDebt, "nextEndingDebt");
+  if (nextNet < 0 || nextDebt < 0) {
+    throw vpsPayrollError(
+      "Corrected payroll amounts cannot be negative.",
+      "PAYROLL_ADJUSTMENT_AMOUNT_INVALID",
+    );
+  }
+  const current = await loadVpsPayrollPeriod(api, companyId, bounds.monthKey);
+  if (!current.payroll || current.payroll.status !== "LOCKED") {
+    throw vpsPayrollError(
+      "The native payroll period must be locked before it can be corrected.",
+      "PAYROLL_NOT_LOCKED",
+    );
+  }
+  const source = (Array.isArray(current.snapshots) ? current.snapshots : []).find(
+    (snapshot) => snapshot?.id === snapshotId && snapshot?.employeeId === employeeId,
+  );
+  if (!source) {
+    throw vpsPayrollError(
+      "The requested snapshot does not belong to the active native payroll.",
+      "PAYROLL_ADJUSTMENT_SOURCE_MISMATCH",
+    );
+  }
+  const result = await api.adjustLockedPayroll(current.payroll.id, {
+    sourceSnapshotId: snapshotId,
+    employeeId,
+    nextNetSalary: nextNet,
+    nextEndingDebt: nextDebt,
+    reason: normalizedReason,
+    requestId: createRequestId(),
+  });
+  assertTenant(result, companyId, "Payroll");
+  return loadVpsPayrollPeriod(api, companyId, bounds.monthKey);
 };
 
 /**

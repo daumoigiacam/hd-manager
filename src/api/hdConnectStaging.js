@@ -1527,6 +1527,14 @@ export class HdConnectStagingApi {
     return this.client.post(`/hr-suite/payrolls/${id}/lock`, undefined, mutationOptions(record));
   }
 
+  async adjustLockedPayroll(id, record = {}) {
+    return this.client.post(`/hr-suite/payrolls/${id}/adjustments`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listPayrollDebtCarryovers(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/payroll-debt-carryovers', { query }), (item) => item);
+  }
+
   async listDocuments(query = {}) {
     return normalizePage(await this.client.get('/documents', { query }), (item) => item);
   }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  adjustVpsLockedPayroll,
   loadVpsPayrollPeriod,
   lockVpsPayrollPeriod,
   vpsPayrollEntryPayload,
@@ -79,6 +80,9 @@ test("native payroll lock uses tenant-scoped create/generate/approve/lock and re
     status: "LOCKED",
   };
   const api = {
+    async listPayrollDebtCarryovers() {
+      return { items: [] };
+    },
     async listPayrollPeriods() {
       calls.push("list-periods");
       return { items: locked ? [period] : [] };
@@ -150,6 +154,9 @@ test("native payroll lock uses tenant-scoped create/generate/approve/lock and re
 
 test("payroll reload rejects an entry whose immutable snapshot belongs to another tenant", async () => {
   const api = {
+    async listPayrollDebtCarryovers() {
+      return { items: [] };
+    },
     async listPayrollPeriods() {
       return { items: [{ id: "period-a", companyId, code: "HDM-2026-09" }] };
     },
@@ -176,4 +183,93 @@ test("payroll reload rejects an entry whose immutable snapshot belongs to anothe
   await assert.rejects(loadVpsPayrollPeriod(api, companyId, "2026-09"), {
     code: "PAYROLL_SNAPSHOT_PROVENANCE_MISMATCH",
   });
+});
+
+test("locked payroll corrections use the native tenant-scoped adjustment contract and reload the immutable source", async () => {
+  const period = {
+    id: "period-a",
+    companyId,
+    code: "HDM-2026-09",
+    status: "LOCKED",
+  };
+  const payroll = {
+    id: "payroll-a",
+    companyId,
+    payrollPeriodId: period.id,
+    status: "LOCKED",
+  };
+  let adjusted = false;
+  let adjustmentRequest = null;
+  const api = {
+    async listPayrollDebtCarryovers() {
+      return {
+        items: adjusted
+          ? [
+              {
+                id: "carryover-a",
+                companyId,
+                employeeId: snapshot.employeeId,
+                targetMonthKey: "2026-09",
+                amount: 30,
+                status: "ADJUSTED",
+              },
+            ]
+          : [],
+      };
+    },
+    async listPayrollPeriods() {
+      return { items: [period] };
+    },
+    async listPayrolls() {
+      return { items: [payroll] };
+    },
+    async getPayroll() {
+      return {
+        ...payroll,
+        entries: [
+          {
+            employeeId: snapshot.employeeId,
+            sourceContext: { periodId: period.id },
+            legacyDetails: snapshot,
+            ...(adjusted
+              ? {
+                  latestAdjustment: { id: "adjustment-a", companyId },
+                  effectiveSalaryDetails: {
+                    ...snapshot.salaryDetails,
+                    netSalary: 80,
+                    endingDebt: 30,
+                    adjustedAfterLock: true,
+                  },
+                }
+              : {}),
+          },
+        ],
+      };
+    },
+    async adjustLockedPayroll(id, input) {
+      adjustmentRequest = { id, input };
+      adjusted = true;
+      return payroll;
+    },
+  };
+
+  const result = await adjustVpsLockedPayroll(api, companyId, {
+    monthKey: "2026-09",
+    snapshotId: snapshot.id,
+    employeeId: snapshot.employeeId,
+    nextNetSalary: 80,
+    nextEndingDebt: 30,
+    reason: "Approved correction",
+  });
+
+  assert.equal(adjustmentRequest.id, payroll.id);
+  assert.equal(adjustmentRequest.input.sourceSnapshotId, snapshot.id);
+  assert.equal(adjustmentRequest.input.employeeId, snapshot.employeeId);
+  assert.equal(adjustmentRequest.input.nextNetSalary, 80);
+  assert.equal(adjustmentRequest.input.nextEndingDebt, 30);
+  assert.equal(adjustmentRequest.input.reason, "Approved correction");
+  assert.match(adjustmentRequest.input.requestId, /^[0-9a-f-]{36}$/i);
+  assert.equal(result.snapshots[0].salaryDetails.netSalary, snapshot.salaryDetails.netSalary);
+  assert.equal(result.snapshots[0].effectiveSalaryDetails.netSalary, 80);
+  assert.equal(result.carryovers[0].amount, 30);
 });
