@@ -1437,6 +1437,60 @@ export class HdConnectStagingApi {
     return this.client.post('/finance-suite/cash-accounts', toTenantSafePayload(record), mutationOptions(record));
   }
 
+  async listFinanceBankAccounts(query = {}) {
+    return normalizePage(
+      await this.client.get('/finance-suite/bank-accounts', {
+        query: toTenantSafeQuery(query),
+      }),
+      (item) => item,
+    );
+  }
+
+  async createFinanceBankAccount(record = {}) {
+    const code = stringValue(record.code).toUpperCase();
+    const bankName = stringValue(record.bankName);
+    const accountNumber = stringValue(record.accountNumber).replace(/\s+/g, '');
+    if (!code || !bankName) {
+      throw new HdApiError('Bank account code and bank name are required.', {
+        code: 'FINANCE_BANK_ACCOUNT_INPUT_INVALID',
+      });
+    }
+    if (record.isCustomerPaymentDefault === true && !accountNumber) {
+      throw new HdApiError('A customer-payment default requires an account number.', {
+        code: 'FINANCE_BANK_ACCOUNT_DEFAULT_INVALID',
+      });
+    }
+    return this.client.post('/finance-suite/bank-accounts', {
+      code,
+      bankName,
+      ...(stringValue(record.accountName) ? { accountName: stringValue(record.accountName) } : {}),
+      ...(accountNumber ? { accountNumber } : {}),
+      ...(stringValue(record.currencyCode) ? { currencyCode: stringValue(record.currencyCode) } : {}),
+      ...(record.branchId ? { branchId: record.branchId } : {}),
+      ...(record.accountId ? { accountId: record.accountId } : {}),
+      ...(record.status ? { status: record.status } : {}),
+      ...(record.isCustomerPaymentDefault === true ? { isCustomerPaymentDefault: true } : {}),
+    }, mutationOptions(record));
+  }
+
+  async setFinanceCustomerPaymentDefaultBankAccount(id) {
+    const bankAccountId = requireIdentityInput(
+      id,
+      'FINANCE_BANK_ACCOUNT_REQUIRED',
+      'A bank account is required.',
+    );
+    if (!isUuid(bankAccountId)) {
+      throw new HdApiError('The bank account id is invalid.', {
+        code: 'FINANCE_BANK_ACCOUNT_INVALID',
+      });
+    }
+    return this.client.post(
+      `/finance-suite/bank-accounts/${encodeURIComponent(bankAccountId)}/customer-payment-default`,
+      undefined,
+      { retry: false },
+    );
+  }
+
   async listFinanceCashTransactions(query = {}) {
     return normalizePage(await this.client.get('/finance-suite/cash-transactions', { query: toTenantSafeQuery(query) }), (item) => item);
   }

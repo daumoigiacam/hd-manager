@@ -197,6 +197,48 @@ test('creates a portal transfer request from native receivables without caller t
   );
 });
 
+test('uses the tenant-scoped finance bank account default contract without accepting a caller company', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ method: 'GET', path, options });
+      return { items: [{ id: 'bank-1', isCustomerPaymentDefault: true }], pagination: { totalItems: 1 } };
+    },
+    post: async (path, payload, options) => {
+      calls.push({ method: 'POST', path, payload, options });
+      return { id: 'bank-1' };
+    },
+  });
+
+  const accounts = await api.listFinanceBankAccounts({ companyId: 'attacker-company', page: 1 });
+  await api.createFinanceBankAccount({
+    companyId: 'attacker-company',
+    code: 'vcb-main',
+    bankName: 'Vietcombank',
+    accountName: 'HD CO LTD',
+    accountNumber: '0123 456 789',
+    isCustomerPaymentDefault: true,
+  });
+  await api.setFinanceCustomerPaymentDefaultBankAccount('11111111-1111-4111-8111-111111111111');
+
+  assert.equal(accounts.items.length, 1);
+  assert.equal(calls[0].options.query.companyId, undefined);
+  assert.deepEqual(calls[1].payload, {
+    code: 'VCB-MAIN',
+    bankName: 'Vietcombank',
+    accountName: 'HD CO LTD',
+    accountNumber: '0123456789',
+    isCustomerPaymentDefault: true,
+  });
+  assert.equal(Object.hasOwn(calls[1].payload, 'companyId'), false);
+  assert.equal(calls[2].path, '/finance-suite/bank-accounts/11111111-1111-4111-8111-111111111111/customer-payment-default');
+  assert.equal(calls[2].options.retry, false);
+  await assert.rejects(
+    () => api.setFinanceCustomerPaymentDefaultBankAccount('foreign-bank'),
+    { code: 'FINANCE_BANK_ACCOUNT_INVALID' },
+  );
+});
+
 test('routes customer-support chat through scoped VPS contracts without caller tenant or customer IDs', async () => {
   const calls = [];
   const conversation = {
