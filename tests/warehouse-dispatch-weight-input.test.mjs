@@ -180,10 +180,19 @@ test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => 
 test('VPS xuất kho chỉ chọn dòng đơn còn chưa xuất và gửi lineage canonical', () => {
   assert.match(appSource, /buildVpsPendingDispatchOrderRows/);
   assert.match(appSource, /orders=\{orders\}/);
+  assert.match(warehouseModuleSource, /warehouseId: orderRow\.warehouseId \|\| ''/);
+  assert.match(warehouseModuleSource, /unitId: orderRow\.unitId \|\| ''/);
   assert.match(warehouseModuleSource, /orderId: matchedOrderRow\?\.orderId \|\| ''/);
   assert.match(warehouseModuleSource, /orderLineId: matchedOrderRow\?\.orderLineId \|\| ''/);
   assert.match(warehouseModuleSource, /sourceType: isVpsMode/);
   assert.match(warehouseModuleSource, /Đơn nguồn chưa có kho hoặc UOM đã xác định/);
+});
+
+test('màn hình xuất kho không hiển thị bộ chọn master kỹ thuật hay bảng chẩn đoán VPS', () => {
+  assert.match(appSource, /const SHOW_VPS_READ_DIAGNOSTICS = import\.meta\.env\.VITE_SHOW_VPS_READ_DIAGNOSTICS === 'true';/);
+  assert.match(appSource, /if \(!SHOW_VPS_READ_DIAGNOSTICS \|\| !moduleKey \|\| !model\) return null;/);
+  assert.doesNotMatch(warehouseModuleSource, /Kho VPS/);
+  assert.doesNotMatch(warehouseModuleSource, /Đơn vị tồn VPS/);
 });
 
 test('đơn tham chiếu điền mặc định nhưng vẫn gửi giá trị nhân viên chỉnh sửa làm số thực xuất', () => {

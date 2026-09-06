@@ -444,6 +444,8 @@ const getCapacitorPlugin = (name) => {
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
 const clientRuntime = resolveClientRuntime();
 const isPreviewDataMode = import.meta.env.VITE_DATA_MODE === 'preview';
+// The endpoint probe is useful to developers, but it is not an operator-facing warehouse workflow.
+const SHOW_VPS_READ_DIAGNOSTICS = import.meta.env.VITE_SHOW_VPS_READ_DIAGNOSTICS === 'true';
 const GOOGLE_MAPS_API_KEY = clientRuntime.googleMapsApiKey;
 const GOOGLE_MAPS_MAP_ID = clientRuntime.googleMapsMapId;
 const GOONG_MAPTILES_API_KEY = clientRuntime.goongMapTilesApiKey;
@@ -24011,7 +24013,7 @@ const filterNotificationsForActiveTab = (items = [], activeTab = '') => {
 };
 
 function VpsModuleReadPanel({ moduleKey, model }) {
-  if (!moduleKey || !model) return null;
+  if (!SHOW_VPS_READ_DIAGNOSTICS || !moduleKey || !model) return null;
   const isLoading = model.status === 'loading';
   const hasError = model.status === 'error';
   const statusLabel = isLoading ? 'Đang đọc VPS' : hasError ? 'VPS đọc lỗi' : 'Đã đọc từ VPS';
@@ -62455,53 +62457,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       {canCreate && (
         <div className="order-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <form onSubmit={handleSubmitDispatch} className="space-y-3">
-            {isVpsMode && (
-              <div className="grid grid-cols-1 gap-2 rounded-2xl border border-blue-100 bg-blue-50/60 p-3 sm:grid-cols-2">
-                <label className="min-w-0">
-                  <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Kho VPS</span>
-                  <select
-                    value={dispatchDraft.warehouseId || ''}
-                    onChange={event => setDispatchDraft(prev => ({ ...prev, warehouseId: event.target.value }))}
-                    className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
-                    required
-                  >
-                    <option value="">Chọn kho đã xác định</option>
-                    {vpsWarehouses.filter(item => !item?.deletedAt).map(warehouse => (
-                      <option key={warehouse.id} value={warehouse.id}>{warehouse.code || warehouse.name} - {warehouse.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="min-w-0">
-                  <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-blue-700">Đơn vị tồn VPS</span>
-                  <select
-                    value={dispatchDraft.unitId || ''}
-                    onChange={event => {
-                      const selectedUnit = vpsUnits.find(unit => unit.id === event.target.value);
-                      setDispatchDraft(prev => ({
-                        ...prev,
-                        unitId: event.target.value,
-                        quantityUnit: normalizeWarehouseMeasureUnit(selectedUnit?.symbol || selectedUnit?.code || selectedUnit?.name || ''),
-                      }));
-                    }}
-                    className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
-                    required
-                  >
-                    <option value="">Chọn UOM, không tự quy đổi</option>
-                    {vpsUnits.filter(item => !item?.deletedAt).map(unit => (
-                      <option key={unit.id} value={unit.id}>{unit.symbol || unit.code || unit.name} - {unit.name}</option>
-                    ))}
-                  </select>
-                </label>
-                {(vpsWarehouses.length === 0 || vpsUnits.length === 0) && (
-                  <p className="sm:col-span-2 text-xs font-semibold text-amber-700">Chưa có master kho/UOM VPS để chọn. Không thể ghi nhận xuất kho an toàn.</p>
-                )}
-                {dispatchDraft.orderNumber && (
-                  <p className="sm:col-span-2 text-xs font-semibold text-blue-800">
-                    Đơn nguồn VPS: {dispatchDraft.orderNumber}. App chỉ lấy phần còn chưa xuất của đơn này.
-                  </p>
-                )}
-              </div>
-            )}
             <div className="grid grid-cols-2 gap-3">
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
