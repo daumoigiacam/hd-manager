@@ -39,12 +39,15 @@ async function coreLoad({ directory = async () => page([directoryRow()]), readPr
       ? readCompleteVpsCollection(query => api.listEmployees(query), { companyId: COMPANY, cancelled: () => cancelled })
       : { items: [] },
     loadVpsHolidays: async () => ({ items: [] }), mergeVpsHolidays: old => old,
+    loadVpsSalaryAdvances: async () => ({ items: [] }),
+    mergeVpsSalaryAdvances: old => old,
+    mergeVpsSalaryAdvanceFinancials: old => old,
     normalizeVpsAttendance: item => item,
     setRawEmployees: update => { employees = typeof update === 'function' ? update(employees) : update; },
     setLoadedCollections: update => { loaded = update({}); },
     setRealtimeStatus: value => { status = value; },
   };
-  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawNotifications', 'setRawAttendance', 'setVpsInventoryReconciliation', 'setRawHolidays']) bindings[name] = () => {};
+  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawNotifications', 'setRawAttendance', 'setVpsInventoryReconciliation', 'setRawHolidays', 'setRawAdvanceRequests', 'setRawFinancials']) bindings[name] = () => {};
   await new Function(...Object.keys(bindings), `let cancelled = false; let loading = false;\n${core}\nreturn loadCoreVpsData();`)(...Object.values(bindings));
   return { employees, loaded, status, calls };
 }

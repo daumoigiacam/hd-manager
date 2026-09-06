@@ -1,6 +1,7 @@
 import { HdApiClient, HdApiError, createRequestId } from './client.js';
 import { vpsAssetId, vpsAssetMutationPayload, vpsAssetQuery } from './vpsAssets.js';
 import { vpsHolidayId, vpsHolidayMutationPayload, vpsHolidayQuery } from './vpsHolidays.js';
+import { vpsSalaryAdvanceId, vpsSalaryAdvanceMutationPayload, vpsSalaryAdvanceQuery } from './vpsSalaryAdvances.js';
 import { normalizeVpsEmployee } from './vpsEmployees.js';
 import { customerLoanEditablePayload, listVpsCustomerLoanPage } from './vpsCustomerLoans.js';
 
@@ -1395,6 +1396,26 @@ export class HdConnectStagingApi {
 
   async archiveManagerHoliday(id, record) {
     return this.client.post(`/hr-suite/manager-holidays/${vpsHolidayId(id)}/archive`, vpsHolidayMutationPayload('archive', record), { retry: false });
+  }
+
+  async listManagerSalaryAdvances(query = {}) {
+    return this.client.get('/hr-suite/manager-salary-advances', { query: vpsSalaryAdvanceQuery(query) });
+  }
+
+  async createManagerSalaryAdvance(record) {
+    return this.client.post('/hr-suite/manager-salary-advances', vpsSalaryAdvanceMutationPayload('create', record), { retry: false });
+  }
+
+  async approveManagerSalaryAdvance(id, record) {
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/approve`, vpsSalaryAdvanceMutationPayload('approve', record), { retry: false });
+  }
+
+  async rejectManagerSalaryAdvance(id, record) {
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/reject`, vpsSalaryAdvanceMutationPayload('reject', record), { retry: false });
+  }
+
+  async cancelManagerSalaryAdvance(id, record) {
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/cancel`, vpsSalaryAdvanceMutationPayload('cancel', record), { retry: false });
   }
 
   async listPayrollPeriods(query = {}) {

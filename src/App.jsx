@@ -6,6 +6,7 @@ import { archiveVpsAsset, getVpsAssetFormDefaults, isVpsAssetHrEmployee, loadVps
 import { uploadVpsAssetEvidence } from './api/vpsAssetEvidence.js';
 import { loadVpsAssetCosts, mergeVpsAssetCosts, mergeVpsAssetCostExpenses, mergeVpsFinanceExpenseSnapshot, saveVpsAssetCost } from './api/vpsAssetCosts.js';
 import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays } from './api/vpsHolidays.js';
+import { approveVpsSalaryAdvance, cancelVpsSalaryAdvance, createVpsSalaryAdvance, loadVpsSalaryAdvances, mergeVpsSalaryAdvanceFinancials, mergeVpsSalaryAdvances, rejectVpsSalaryAdvance, vpsSalaryAdvanceErrorMessage } from './api/vpsSalaryAdvances.js';
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
 import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
 import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
@@ -13147,7 +13148,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult, assetCostsResult, messagesResult, deliveryReportsResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, salaryAdvancesResult, assetsResult, assetCostsResult, messagesResult, deliveryReportsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13181,6 +13182,9 @@ export default function App() {
             : Promise.resolve(null),
           currentUser.permissions?.includes('hr.payroll.read')
             ? loadVpsHolidays(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
+          currentUser.permissions?.includes('hr.payroll.read')
+            ? loadVpsSalaryAdvances(api, currentUser, { cancelled: () => cancelled })
             : Promise.resolve(null),
           currentUser.permissions?.includes('logistics.read')
             ? loadVpsAssets(api, currentUser, { cancelled: () => cancelled })
@@ -13223,6 +13227,12 @@ export default function App() {
           setRawHolidays(previous => mergeVpsHolidays(previous, holidaysResult.value.items, currentUser.companyId));
         } else if (holidaysResult.status === 'rejected') {
           failedDomains.push('holidays');
+        }
+        if (salaryAdvancesResult.status === 'fulfilled' && salaryAdvancesResult.value) {
+          setRawAdvanceRequests(previous => mergeVpsSalaryAdvances(previous, salaryAdvancesResult.value.items, currentUser.companyId));
+          setRawFinancials(previous => mergeVpsSalaryAdvanceFinancials(previous, salaryAdvancesResult.value.items, currentUser.companyId));
+        } else if (salaryAdvancesResult.status === 'rejected') {
+          failedDomains.push('salary-advances');
         }
         if (managerSettingsResult.status === 'fulfilled' && managerSettingsResult.value.companyId === currentUser.companyId) {
           const { settings, version } = managerSettingsResult.value;
@@ -13310,6 +13320,7 @@ export default function App() {
           notifications: notificationsResult.status === 'fulfilled',
           attendance: attendanceResult.status === 'fulfilled',
           holidays: holidaysResult.status === 'fulfilled' && Boolean(holidaysResult.value),
+          advances: salaryAdvancesResult.status === 'fulfilled' && Boolean(salaryAdvancesResult.value),
           assets: assetsResult.status === 'fulfilled' && Boolean(assetsResult.value),
         }));
         setRealtimeStatus({
@@ -16296,6 +16307,24 @@ export default function App() {
   };
 
   const handleAddAdvanceRequest = async (empId, amount, reason, extraData = {}) => {
+    if (isVpsApiMode) {
+      if (!canCurrentUserManagePayrollByRole() && !hasCurrentUserPayrollAction('approve_salary_advance')) {
+        return { success: false, message: 'Tài khoản chưa có quyền tạo lệnh ứng lương trên VPS.' };
+      }
+      try {
+        const saved = await createVpsSalaryAdvance(getHdConnectStagingApi(), currentUser, {
+          empId,
+          amount: parseLooseMoneyValue(amount),
+          reason: capitalizeFirst(reason || 'Ứng lương'),
+          salaryMonth: normalizeSalaryAdvanceMonth(extraData?.salaryMonth || extraData?.deductionMonth || getTodayString().substring(0, 7)),
+        });
+        setRawAdvanceRequests(previous => mergeVpsSalaryAdvances(previous, [saved], myCompanyId));
+        setRawFinancials(previous => mergeVpsSalaryAdvanceFinancials(previous, [saved], myCompanyId));
+        return { success: true, id: saved.id };
+      } catch (error) {
+        return { success: false, message: vpsSalaryAdvanceErrorMessage(error) };
+      }
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const cleanAmount = parseLooseMoneyValue(amount);
     if (!empId || cleanAmount <= 0) return { success: false, message: 'Số tiền ứng không hợp lệ.' };
@@ -16362,6 +16391,21 @@ export default function App() {
   );
 
   const handleApproveAdvance = async (reqId) => {
+    if (isVpsApiMode) {
+      if (!canCurrentUserApproveAdvanceRequests()) {
+        return { success: false, message: 'Tài khoản chưa có quyền duyệt lệnh ứng lương.' };
+      }
+      const current = (Array.isArray(advanceRequests) ? advanceRequests : []).find(item => item.id === reqId)
+        || (Array.isArray(rawAdvanceRequests) ? rawAdvanceRequests : []).find(item => item.id === reqId);
+      try {
+        const saved = await approveVpsSalaryAdvance(getHdConnectStagingApi(), currentUser, current);
+        setRawAdvanceRequests(previous => mergeVpsSalaryAdvances(previous, [saved], myCompanyId));
+        setRawFinancials(previous => mergeVpsSalaryAdvanceFinancials(previous, [saved], myCompanyId));
+        return { success: true };
+      } catch (error) {
+        return { success: false, message: vpsSalaryAdvanceErrorMessage(error) };
+      }
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     if (!canCurrentUserApproveAdvanceRequests()) {
       return { success: false, message: 'Tài khoản chưa có quyền duyệt lệnh ứng lương.' };
@@ -16425,6 +16469,21 @@ export default function App() {
   };
 
   const handleRejectAdvance = async (reqId) => {
+    if (isVpsApiMode) {
+      if (!canCurrentUserRejectAdvanceRequests()) {
+        return { success: false, message: 'Tài khoản chưa có quyền từ chối lệnh ứng lương.' };
+      }
+      const current = (Array.isArray(advanceRequests) ? advanceRequests : []).find(item => item.id === reqId)
+        || (Array.isArray(rawAdvanceRequests) ? rawAdvanceRequests : []).find(item => item.id === reqId);
+      try {
+        const saved = await rejectVpsSalaryAdvance(getHdConnectStagingApi(), currentUser, current);
+        setRawAdvanceRequests(previous => mergeVpsSalaryAdvances(previous, [saved], myCompanyId));
+        setRawFinancials(previous => mergeVpsSalaryAdvanceFinancials(previous, [saved], myCompanyId));
+        return { success: true };
+      } catch (error) {
+        return { success: false, message: vpsSalaryAdvanceErrorMessage(error) };
+      }
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     if (!canCurrentUserRejectAdvanceRequests()) {
       return { success: false, message: 'Tài khoản chưa có quyền từ chối lệnh ứng lương.' };
@@ -16443,6 +16502,21 @@ export default function App() {
   };
 
   const handleDeleteAdvance = async (reqId) => {
+    if (isVpsApiMode) {
+      if (!canCurrentUserDeleteAdvanceRequests()) {
+        return { success: false, message: 'Tài khoản chưa có quyền hủy lệnh ứng lương.' };
+      }
+      const current = (Array.isArray(advanceRequests) ? advanceRequests : []).find(item => item.id === reqId)
+        || (Array.isArray(rawAdvanceRequests) ? rawAdvanceRequests : []).find(item => item.id === reqId);
+      try {
+        const saved = await cancelVpsSalaryAdvance(getHdConnectStagingApi(), currentUser, current);
+        setRawAdvanceRequests(previous => mergeVpsSalaryAdvances(previous, [saved], myCompanyId));
+        setRawFinancials(previous => mergeVpsSalaryAdvanceFinancials(previous, [saved], myCompanyId));
+        return { success: true };
+      } catch (error) {
+        return { success: false, message: vpsSalaryAdvanceErrorMessage(error) };
+      }
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     if (!canCurrentUserDeleteAdvanceRequests()) {
       return { success: false, message: 'Tài khoản chưa có quyền xóa lệnh ứng lương.' };

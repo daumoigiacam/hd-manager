@@ -389,11 +389,15 @@ async function coreLoad(listManagerHolidays, previous, actor = session) {
     currentUser: actor, api: { listManagerHolidays, getInventoryReconciliationStatus: async () => ({}), getManagerSettings: async () => ({ companyId: COMPANY, settings: {}, version: 'v1' }) },
     readComplete: async () => ({ items: [] }), hydrateVpsEmployeeProfiles: async () => [],
     loadVpsCustomerLoans: async () => ({ items: [] }), mergeVpsCustomerLoans: (old) => old,
-    loadVpsHolidays, mergeVpsHolidays, normalizeVpsAttendance: item => item,
+    loadVpsHolidays, mergeVpsHolidays,
+    loadVpsSalaryAdvances: async () => ({ items: [] }),
+    mergeVpsSalaryAdvances: old => old,
+    mergeVpsSalaryAdvanceFinancials: old => old,
+    normalizeVpsAttendance: item => item,
     setRawHolidays: update => { state = update(state); },
     setLoadedCollections: update => { loaded = update({}); }, setRealtimeStatus: value => { status = value; },
   };
-  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawEmployees', 'setRawNotifications', 'setRawAttendance', 'setVpsInventoryReconciliation']) bindings[name] = noop;
+  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawEmployees', 'setRawNotifications', 'setRawAttendance', 'setVpsInventoryReconciliation', 'setRawAdvanceRequests', 'setRawFinancials']) bindings[name] = noop;
   await new Function(...Object.keys(bindings), `let cancelled = false; let loading = false;\n${coreSource}\nreturn loadCoreVpsData();`)(...Object.values(bindings));
   return { state, loaded, status };
 }
