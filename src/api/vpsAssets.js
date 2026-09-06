@@ -7,8 +7,9 @@ const DATES = ['registrationDate', 'inspectionExpiry', 'lastMaintenanceDate', 'n
 const NUMBERS = ['fuelNorm', 'tankCapacity', 'maintenanceIntervalKm', 'lastMaintenanceKm', 'nextMaintenanceKm', 'currentKm'];
 const URLS = ['registrationImageUrl', 'inspectionImageUrl'];
 const URL_LISTS = ['registrationImageUrls', 'inspectionImageUrls'];
-const FIELDS = [...Object.keys(TEXT), 'type', 'driverIds', 'status', ...DATES, ...NUMBERS, ...URLS, ...URL_LISTS];
-const HANDOVER_FORM = ['recordHandover', 'handoverDriverIds', 'handoverDate', 'handoverKm', 'handoverCondition', 'handoverNote', 'handoverImageUrl'];
+const STORAGE_FILE_LISTS = ['registrationStorageFileIds', 'inspectionStorageFileIds'];
+const FIELDS = [...Object.keys(TEXT), 'type', 'driverIds', 'status', ...DATES, ...NUMBERS, ...URLS, ...URL_LISTS, ...STORAGE_FILE_LISTS];
+const HANDOVER_FORM = ['recordHandover', 'handoverDriverIds', 'handoverDate', 'handoverKm', 'handoverCondition', 'handoverNote', 'handoverImageUrl', 'handoverStorageFileId'];
 const pending = new Map();
 const owns = (o, key) => Object.prototype.hasOwnProperty.call(o, key);
 const fail = (code) => { throw new HdApiError(code, { code }); };
@@ -61,6 +62,7 @@ const field = (key, value) => {
   if (DATES.includes(key)) return value === null ? null : date(value);
   if (NUMBERS.includes(key)) return value === null ? null : number(value);
   if (URLS.includes(key)) return value === null ? null : url(value);
+  if (STORAGE_FILE_LISTS.includes(key)) return list(value, 8, vpsAssetId);
   return list(value, 8, url);
 };
 const profile = (data, required = false) => {
@@ -70,12 +72,13 @@ const profile = (data, required = false) => {
   return Object.fromEntries(FIELDS.filter(key => owns(data, key)).map(key => [key, field(key, data[key])]));
 };
 const handover = data => {
-  keys(data, ['eventId', 'driverIds', 'date', 'km', 'condition', 'note', 'imageUrl']);
+  keys(data, ['eventId', 'driverIds', 'date', 'km', 'condition', 'note', 'imageUrl', 'storageFileId']);
   return {
     eventId: uuid4(data.eventId), driverIds: list(data.driverIds, 32, vpsAssetId), date: date(data.date), km: number(data.km),
     ...(owns(data, 'condition') ? { condition: text(data.condition, 1000) } : {}),
     ...(owns(data, 'note') ? { note: text(data.note, 4000, false, true) } : {}),
     ...(owns(data, 'imageUrl') ? { imageUrl: data.imageUrl === null ? null : url(data.imageUrl) } : {}),
+    ...(owns(data, 'storageFileId') ? { storageFileId: data.storageFileId === null ? null : vpsAssetId(data.storageFileId) } : {}),
   };
 };
 
@@ -153,9 +156,9 @@ const checkDrivers = (ids, employees, companyId) => {
 export function getVpsAssetFormDefaults(asset = {}) {
   const defaults = { ...Object.fromEntries(Object.keys(TEXT).map(key => [key, asset[key] ?? ''])), type: 'VEHICLE', status: asset.status ?? 'active', driverIds: asset.driverIds ?? [] };
   for (const key of [...DATES, ...NUMBERS, ...URLS]) defaults[key] = asset[key] ?? '';
-  for (const key of URL_LISTS) defaults[key] = asset[key] ?? [];
+  for (const key of [...URL_LISTS, ...STORAGE_FILE_LISTS]) defaults[key] = asset[key] ?? [];
   return { ...defaults, code: asset.code ?? '', vpsAssetVersion: asset.version ?? null,
-    recordHandover: false, handoverDriverIds: [], handoverDate: '', handoverKm: '', handoverCondition: '', handoverNote: '', handoverImageUrl: '' };
+    recordHandover: false, handoverDriverIds: [], handoverDate: '', handoverKm: '', handoverCondition: '', handoverNote: '', handoverImageUrl: '', handoverStorageFileId: '' };
 }
 const uiField = (key, value) => {
   if ([...DATES, ...NUMBERS, ...URLS].includes(key) && value === '') return null;
@@ -180,8 +183,9 @@ const commandFromForm = (data, current, employees, companyId) => {
     const km = uiField('currentKm', data.handoverKm);
     result.handover = { driverIds: data.handoverDriverIds, date: date(data.handoverDate), km: number(km),
       condition: text(data.handoverCondition ?? '', 1000), note: text(data.handoverNote ?? '', 4000, false, true),
-      imageUrl: data.handoverImageUrl ? url(data.handoverImageUrl) : null };
-  } else if (data.recordHandover || ['handoverDate', 'handoverKm', 'handoverCondition', 'handoverNote', 'handoverImageUrl'].some(key => data[key] !== undefined && data[key] !== '')) {
+      imageUrl: data.handoverImageUrl ? url(data.handoverImageUrl) : null,
+      storageFileId: data.handoverStorageFileId ? vpsAssetId(data.handoverStorageFileId) : null };
+  } else if (data.recordHandover || ['handoverDate', 'handoverKm', 'handoverCondition', 'handoverNote', 'handoverImageUrl', 'handoverStorageFileId'].some(key => data[key] !== undefined && data[key] !== '')) {
     fail('MANAGER_ASSET_HANDOVER_INTENT_REQUIRED');
   }
   return result;
@@ -263,7 +267,7 @@ export async function loadVpsAssetDetails(api, session, id) {
       const { vehicleId, recordedAt, actorUserId, requestId, evidenceStatus, ...fields } = event;
       handover(fields); uuid4(requestId); vpsAssetId(actorUserId);
       if (vehicleId !== id || !iso(recordedAt) || ids.has(event.eventId)
-        || evidenceStatus !== (event.imageUrl ? 'UNVERIFIED_REFERENCE' : 'NO_EVIDENCE')) reconcile();
+        || evidenceStatus !== (event.storageFileId ? 'VERIFIED_STORAGE' : event.imageUrl ? 'UNVERIFIED_REFERENCE' : 'NO_EVIDENCE')) reconcile();
       ids.add(event.eventId); events.push(event);
     }
     if (response.handoverHistory.nextOffset === null) return { ...asset, vpsHandoverHistory: events };

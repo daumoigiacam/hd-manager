@@ -276,7 +276,7 @@ const uiSource = view.slice(view.indexOf('  const handleAssetSubmit ='), view.in
 function uiHandlers(extra = {}) {
   let closed = 0;
   const statuses = [];
-  const bindings = { isVpsApiMode: true, isSavingAsset: false, editingAsset: native(), assetForm: form(), canDeleteAsset: true,
+  const bindings = { isVpsApiMode: true, isSavingAsset: false, isUploadingAssetEvidence: false, editingAsset: native(), assetForm: form(), canDeleteAsset: true,
     setIsSavingAsset() {}, setAssetSaveStatus: value => statuses.push(value), closeAssetForm: () => { closed++; },
     vpsAssetErrorMessage, getFriendlyFirebaseErrorMessage: error => error.message, window: { confirm: () => true },
     onEditAsset: async () => ({ success: true }), onAddAsset: async () => VEHICLE, onDeleteAsset: async () => ({ success: true }), ...extra,
@@ -311,7 +311,7 @@ function deferredAssetDraft() {
   const expected = {
     code: 'QA-BROWSER-VEHICLE', vehicleType: 'TRUCK', name: 'QA Browser Vehicle', plateNumber: 'QA-001', status: 'active',
     recordHandover: true, handoverDriverIds: [HR], handoverKm: '240000', handoverDate: '2026-09-06',
-    handoverCondition: 'Good', handoverNote: 'QA handover', handoverImageUrl: 'https://example.test/reference.jpg',
+    handoverCondition: 'Good', handoverNote: 'QA handover',
     lastMaintenanceDate: '2026-09-01', nextMaintenanceDate: '2027-03-01', nextMaintenanceKm: '255000',
   };
   assert.deepEqual(Object.keys(handlers).sort(), Object.keys(expected).sort());
@@ -392,7 +392,9 @@ test('App wiring exposes explicit code/subtype/handover and routes costs through
   assert.match(view, /editingAsset\.vpsHandoverHistory\.map/);
   assert.match(view, /asset = await onGetAsset\(asset\.id\)/);
   assert.match(app, /onGetAsset=\{handleGetAsset\}/);
+  assert.match(app, /onUploadAssetEvidence=\{handleUploadAssetEvidence\}/);
   assert.match(app, /<AssetManagementView onGetAsset=\{onGetAsset\}/);
+  assert.match(view, /accept="image\/jpeg,image\/png,image\/webp"/);
   assert.match(app, /loadVpsAssets\(api, currentUser, \{ cancelled: \(\) => cancelled \}\)/);
   for (const handler of ['handleAddAssetCostLog', 'handleEditAssetCostLog', 'handleDeleteAssetCostLog']) {
     const start = app.indexOf(`  const ${handler} =`);
@@ -402,6 +404,31 @@ test('App wiring exposes explicit code/subtype/handover and routes costs through
   }
   assert.match(rootSource, /if \(!firebaseUser\) return null/);
   assert.match(rootSource, /'assets', assetId/);
+});
+
+test('durable storage evidence IDs are validated and carried in the native asset command', () => {
+  const storageFileId = '12121212-1212-4121-8121-121212121212';
+  const payload = vpsAssetMutationPayload('create', {
+    requestId: REQUEST,
+    code: 'TRUCK-002',
+    codeOrigin: 'PROVIDED',
+    asset: { ...baseProfile, registrationStorageFileIds: [storageFileId] },
+    handover: {
+      eventId: EVENT,
+      driverIds: [HR],
+      date: '2026-09-06',
+      km: 240000,
+      storageFileId,
+    },
+  });
+  assert.deepEqual(payload.asset.registrationStorageFileIds, [storageFileId]);
+  assert.equal(payload.handover.storageFileId, storageFileId);
+  assert.throws(() => vpsAssetMutationPayload('create', {
+    requestId: REQUEST,
+    code: 'TRUCK-003',
+    codeOrigin: 'PROVIDED',
+    asset: { ...baseProfile, inspectionStorageFileIds: ['legacy-file-id'] },
+  }), /MANAGER_ASSET_ID_INVALID/);
 });
 
 test('App JSX parses after the scoped form changes (no build or browser)', () => {

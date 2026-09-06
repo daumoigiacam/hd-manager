@@ -3,6 +3,7 @@ import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
 import { archiveVpsAsset, getVpsAssetFormDefaults, isVpsAssetHrEmployee, loadVpsAssetDetails, loadVpsAssets, mergeVpsAssets, saveVpsAsset, vpsAssetErrorMessage } from './api/vpsAssets.js';
+import { uploadVpsAssetEvidence } from './api/vpsAssetEvidence.js';
 import { loadVpsAssetCosts, mergeVpsAssetCosts, mergeVpsAssetCostExpenses, mergeVpsFinanceExpenseSnapshot, saveVpsAssetCost } from './api/vpsAssetCosts.js';
 import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays } from './api/vpsHolidays.js';
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
@@ -20042,6 +20043,11 @@ export default function App() {
     return saved;
   };
 
+  const handleUploadAssetEvidence = async (file, purpose) => {
+    if (!isVpsApiMode) throw new Error('MANAGER_ASSET_EVIDENCE_VPS_REQUIRED');
+    return uploadVpsAssetEvidence(getHdConnectStagingApi(), currentUser, file, purpose);
+  };
+
   const handleAddAsset = async (empId, assetData = {}) => {
     if (isVpsApiMode) {
       if (currentUser?.companyId !== myCompanyId) throw new Error('MANAGER_ASSET_SCOPE_MISMATCH');
@@ -22758,6 +22764,7 @@ export default function App() {
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
         onGetAsset={handleGetAsset}
+        onUploadAssetEvidence={handleUploadAssetEvidence}
         onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport}
         onResolveDeliveryReportIssue={handleResolveDeliveryReportIssue}
         onAddPayment={handleAddPayment} onEditPayment={handleEditPayment} onDeletePayment={handleDeletePayment}
@@ -23317,7 +23324,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {}, vpsInventoryReconciliation = null,
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
-  onChangeDate, onGetAsset,
+  onChangeDate, onGetAsset, onUploadAssetEvidence,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
@@ -25042,7 +25049,7 @@ function MainAppView({
         }
         return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} vpsInventoryReconciliation={vpsInventoryReconciliation} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
-      case 'asset_management': return <AssetManagementView onGetAsset={onGetAsset} employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
+      case 'asset_management': return <AssetManagementView onGetAsset={onGetAsset} onUploadAssetEvidence={onUploadAssetEvidence} employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
           return renderWorkflowGuide({
@@ -34338,6 +34345,7 @@ const getAssetMetrics = (asset = {}, logs = []) => {
 
 function AssetManagementView({
   onGetAsset,
+  onUploadAssetEvidence,
   employee,
   employees = [],
   assets = [],
@@ -34371,6 +34379,7 @@ function AssetManagementView({
   const [editingCostLog, setEditingCostLog] = useState(null);
   const [costForm, setCostForm] = useState(getAssetCostFormDefaults());
   const [isSavingAsset, setIsSavingAsset] = useState(false);
+  const [isUploadingAssetEvidence, setIsUploadingAssetEvidence] = useState(false);
   const [isSavingCost, setIsSavingCost] = useState(false);
   const [assetDocumentFiles, setAssetDocumentFiles] = useState({ registration: [], inspection: [] });
   const [isReadingAssetDocuments, setIsReadingAssetDocuments] = useState(false);
@@ -34423,7 +34432,7 @@ function AssetManagementView({
     setShowAssetForm(true);
   };
   const closeAssetForm = () => {
-    if (isSavingAsset) return;
+    if (isSavingAsset || isUploadingAssetEvidence) return;
     setEditingAsset(null);
     setAssetForm(isVpsApiMode ? getVpsAssetFormDefaults() : getAssetFormDefaults());
     setAssetDocumentFiles({ registration: [], inspection: [] });
@@ -34443,17 +34452,72 @@ function AssetManagementView({
     setShowCostForm(false);
   };
   const handleAssetImage = async (event) => {
-    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ tải ảnh bằng chứng.'); return; }
     const file = event.target.files?.[0];
     if (!file) return;
+    if (isVpsApiMode) {
+      if (!assetForm.recordHandover) {
+        setAssetSaveStatus('Hãy chọn ghi sự kiện bàn giao trước khi tải ảnh bằng chứng.');
+        event.target.value = '';
+        return;
+      }
+      if (typeof onUploadAssetEvidence !== 'function') {
+        setAssetSaveStatus('Chưa có kết nối tải bằng chứng VPS.');
+        event.target.value = '';
+        return;
+      }
+      setIsUploadingAssetEvidence(true);
+      setAssetSaveStatus('');
+      try {
+        const evidence = await onUploadAssetEvidence(file, 'HANDOVER');
+        if (!evidence?.id) throw new Error('MANAGER_ASSET_EVIDENCE_UPLOAD_RECONCILIATION_REQUIRED');
+        setAssetForm(prev => ({ ...prev, handoverStorageFileId: evidence.id }));
+        setAssetDocumentStatus('Đã tải ảnh bàn giao vào kho tệp VPS riêng của công ty. Ảnh sẽ được gắn khi lưu bàn giao.');
+      } catch (error) {
+        setAssetSaveStatus(vpsAssetErrorMessage(error));
+      } finally {
+        setIsUploadingAssetEvidence(false);
+        event.target.value = '';
+      }
+      return;
+    }
     const imageUrl = await readImageFileAsDataUrl(file, 720, 0.78);
     setAssetForm(prev => ({ ...prev, handoverImageUrl: imageUrl }));
     event.target.value = '';
   };
   const handleAssetDocumentImage = async (field, fileType, event) => {
-    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ tải ảnh giấy tờ.'); return; }
     const selectedFiles = Array.from(event.target.files || []).filter(file => file?.type?.startsWith('image/'));
     if (!selectedFiles.length) return;
+    if (isVpsApiMode) {
+      if (typeof onUploadAssetEvidence !== 'function') {
+        setAssetSaveStatus('Chưa có kết nối tải giấy tờ VPS.');
+        event.target.value = '';
+        return;
+      }
+      const storageField = `${fileType}StorageFileIds`;
+      const currentIds = Array.isArray(assetForm[storageField]) ? assetForm[storageField] : [];
+      const currentUrls = Array.isArray(assetForm[`${fileType}ImageUrls`]) ? assetForm[`${fileType}ImageUrls`] : [];
+      const filesToUpload = selectedFiles.slice(0, Math.max(0, 8 - currentIds.length - currentUrls.length));
+      if (!filesToUpload.length) {
+        setAssetDocumentStatus('Mỗi loại giấy tờ chỉ lưu tối đa 8 ảnh.');
+        event.target.value = '';
+        return;
+      }
+      setIsUploadingAssetEvidence(true);
+      setAssetDocumentStatus('Đang tải ảnh giấy tờ vào kho tệp VPS...');
+      try {
+        const purpose = fileType === 'registration' ? 'REGISTRATION' : 'INSPECTION';
+        const evidence = await Promise.all(filesToUpload.map(file => onUploadAssetEvidence(file, purpose)));
+        if (evidence.some(item => !item?.id)) throw new Error('MANAGER_ASSET_EVIDENCE_UPLOAD_RECONCILIATION_REQUIRED');
+        setAssetForm(prev => ({ ...prev, [storageField]: [...currentIds, ...evidence.map(item => item.id)] }));
+        setAssetDocumentStatus(`Đã tải ${evidence.length} ảnh giấy tờ vào kho tệp VPS.`);
+      } catch (error) {
+        setAssetSaveStatus(vpsAssetErrorMessage(error));
+      } finally {
+        setIsUploadingAssetEvidence(false);
+        event.target.value = '';
+      }
+      return;
+    }
     setAssetDocumentStatus('');
     const listField = `${fileType}ImageUrls`;
     const currentUrls = Array.isArray(assetForm[listField])
@@ -34560,7 +34624,10 @@ function AssetManagementView({
   };
   const handleAssetSubmit = async (event) => {
     event.preventDefault();
-    if (isSavingAsset) return;
+    if (isSavingAsset || isUploadingAssetEvidence) {
+      if (isUploadingAssetEvidence) setAssetSaveStatus('Đợi tải bằng chứng VPS hoàn tất trước khi lưu.');
+      return;
+    }
     setAssetSaveStatus('');
     setIsSavingAsset(true);
     try {
@@ -34575,7 +34642,7 @@ function AssetManagementView({
     }
   };
   const handleAssetArchive = async () => {
-    if (isSavingAsset || !editingAsset || !canDeleteAsset || !window.confirm('Xóa/ngừng sử dụng tài sản này?')) return;
+    if (isSavingAsset || isUploadingAssetEvidence || !editingAsset || !canDeleteAsset || !window.confirm('Xóa/ngừng sử dụng tài sản này?')) return;
     setAssetSaveStatus('');
     setIsSavingAsset(true);
     try {
@@ -34823,7 +34890,7 @@ function AssetManagementView({
                 <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Tài sản</p>
                 <h3 className="text-xl font-black">{editingAsset ? 'Sửa tài sản' : 'Thêm tài sản'}</h3>
               </div>
-              <button type="button" disabled={isSavingAsset} onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
+              <button type="button" disabled={isSavingAsset || isUploadingAssetEvidence} onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
             {assetSaveStatus && <p role="alert" className="text-sm font-bold text-red-700">{assetSaveStatus}</p>}
             <div className="rounded-3xl border border-gray-100 bg-white p-3 space-y-3">
@@ -34923,8 +34990,12 @@ function AssetManagementView({
                     <label className="text-xs font-bold sm:col-span-2">Ghi chú bàn giao
                       <textarea maxLength={4000} value={assetForm.handoverNote} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverNote: value })); }} className="mt-1 w-full rounded-lg border p-2" />
                     </label>
-                    <label className="text-xs font-bold sm:col-span-2">URL tham chiếu chưa xác minh
-                      <input type="url" value={assetForm.handoverImageUrl} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverImageUrl: value })); }} className="mt-1 w-full rounded-lg border p-2" />
+                    <label className="text-xs font-bold sm:col-span-2">Ảnh bằng chứng bàn giao
+                      <span className="mt-1 flex items-center gap-2 rounded-lg border border-dashed border-emerald-300 bg-white p-2 normal-case tracking-normal text-emerald-800">
+                        <input type="file" accept="image/jpeg,image/png,image/webp" disabled={isSavingAsset || isUploadingAssetEvidence} onChange={handleAssetImage} className="min-w-0 text-xs" />
+                        {isUploadingAssetEvidence && <span className="shrink-0 text-xs font-bold">Đang tải...</span>}
+                      </span>
+                      {assetForm.handoverStorageFileId && <span className="mt-1 block normal-case tracking-normal text-emerald-700">Đã có bằng chứng VPS, sẽ gắn vào lần lưu này.</span>}
                     </label>
                   </>}
                   </>}
@@ -34963,9 +35034,9 @@ function AssetManagementView({
               </section>
             )}
             <div className="sticky bottom-0 -mx-5 flex gap-2 border-t border-gray-100 bg-white/95 px-5 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur">
-              {editingAsset && canDeleteAsset && <button type="button" disabled={isSavingAsset} onClick={handleAssetArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
-              <button type="button" disabled={isSavingAsset} onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
-              <button disabled={isSavingAsset} type="submit" className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-black">{isSavingAsset ? 'Đang lưu...' : 'Lưu'}</button>
+              {editingAsset && canDeleteAsset && <button type="button" disabled={isSavingAsset || isUploadingAssetEvidence} onClick={handleAssetArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
+              <button type="button" disabled={isSavingAsset || isUploadingAssetEvidence} onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
+              <button disabled={isSavingAsset || isUploadingAssetEvidence} type="submit" className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-black">{isSavingAsset ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
           </form>
         </div>
