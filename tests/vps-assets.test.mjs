@@ -384,7 +384,7 @@ test('actual UI save and archive await success, keep form open on rejected/false
   assert.equal(success.closed(), 2);
 });
 
-test('App wiring exposes explicit code/subtype/handover and blocks unsupported evidence/cost paths', () => {
+test('App wiring exposes explicit code/subtype/handover and routes costs through verified VPS commands', () => {
   assert.match(view, /value=\{assetForm\.code\}/);
   assert.match(view, /value=\{assetForm\.vehicleType\}/);
   assert.match(view, /checked=\{assetForm\.recordHandover\}/);
@@ -395,8 +395,10 @@ test('App wiring exposes explicit code/subtype/handover and blocks unsupported e
   assert.match(app, /<AssetManagementView onGetAsset=\{onGetAsset\}/);
   assert.match(app, /loadVpsAssets\(api, currentUser, \{ cancelled: \(\) => cancelled \}\)/);
   for (const handler of ['handleAddAssetCostLog', 'handleEditAssetCostLog', 'handleDeleteAssetCostLog']) {
-    const source = app.slice(app.indexOf(`  const ${handler} =`), app.indexOf(`  const ${handler} =`) + 400);
-    assert.match(source, /if \(isVpsApiMode\) throw new Error\('VPS asset cost logs are not supported/);
+    const start = app.indexOf(`  const ${handler} =`);
+    const source = app.slice(start, app.indexOf('\n  const ', start + 1));
+    assert.match(source, /if \(isVpsApiMode\)/);
+    assert.match(source, /await saveVpsAssetCost/);
   }
   assert.match(rootSource, /if \(!firebaseUser\) return null/);
   assert.match(rootSource, /'assets', assetId/);

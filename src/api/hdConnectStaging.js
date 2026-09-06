@@ -280,6 +280,7 @@ export const normalizeVpsFinanceExpense = (record = {}) => {
   const status = stringValue(record.status).toUpperCase();
   const metadata = normalizeMetadata(record);
   const historical = metadata.__hdcoProjection?.historicalOnly === true;
+  const assetCost = metadata.hdManagerAssetCost?.kind === 'NATIVE_CREATE' && metadata.assetCostLogId === metadata.hdManagerAssetCost?.costId;
 
   return {
     ...metadata,
@@ -295,11 +296,11 @@ export const normalizeVpsFinanceExpense = (record = {}) => {
     approvalStatus: historical && metadata.approvalStatus ? metadata.approvalStatus : status === 'APPROVED' || status === 'POSTED'
       ? 'approved'
       : 'pending',
-    requiresApproval: historical ? metadata.requiresApproval === true : status !== 'POSTED',
-    handoverStatus: historical ? (metadata.handoverStatus || '') : status === 'POSTED' ? 'confirmed' : 'pending',
+    requiresApproval: assetCost ? false : historical ? metadata.requiresApproval === true : status !== 'POSTED',
+    handoverStatus: assetCost ? 'confirmed' : historical ? (metadata.handoverStatus || '') : status === 'POSTED' ? 'confirmed' : 'pending',
     isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
     legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
-    readOnly: historical,
+    readOnly: historical || assetCost,
     sourceSystem: 'hd-connect-vps',
   };
 };
@@ -1311,6 +1312,22 @@ export class HdConnectStagingApi {
 
   async listManagerAssets(query = {}) {
     return this.client.get('/logistics-suite/manager-assets', { query: vpsAssetQuery(query) });
+  }
+
+  async listManagerAssetCosts(query = {}) {
+    return this.client.get('/logistics-suite/manager-asset-costs', { query: vpsAssetQuery(query) });
+  }
+
+  async createManagerAssetCost(record) {
+    return this.client.post('/logistics-suite/manager-asset-costs', record, { retry: false });
+  }
+
+  async updateManagerAssetCost(id, record) {
+    return this.client.patch(`/logistics-suite/manager-asset-costs/${vpsAssetId(id)}`, record, { retry: false });
+  }
+
+  async archiveManagerAssetCost(id, record) {
+    return this.client.post(`/logistics-suite/manager-asset-costs/${vpsAssetId(id)}/archive`, record, { retry: false });
   }
 
   async getManagerAsset(id, query = {}) {

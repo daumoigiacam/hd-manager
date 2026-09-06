@@ -3,6 +3,7 @@ import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
 import { archiveVpsAsset, getVpsAssetFormDefaults, isVpsAssetHrEmployee, loadVpsAssetDetails, loadVpsAssets, mergeVpsAssets, saveVpsAsset, vpsAssetErrorMessage } from './api/vpsAssets.js';
+import { loadVpsAssetCosts, mergeVpsAssetCosts, mergeVpsAssetCostExpenses, mergeVpsFinanceExpenseSnapshot, saveVpsAssetCost } from './api/vpsAssetCosts.js';
 import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays } from './api/vpsHolidays.js';
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
 import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
@@ -13141,7 +13142,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult, assetCostsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13179,10 +13180,19 @@ export default function App() {
           currentUser.permissions?.includes('logistics.read')
             ? loadVpsAssets(api, currentUser, { cancelled: () => cancelled })
             : Promise.resolve(null),
+          ['logistics.read', 'finance.read'].every(permission => currentUser.permissions?.includes(permission))
+            ? loadVpsAssetCosts(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
         ]);
         if (cancelled) return;
 
         const failedDomains = [];
+        if (assetCostsResult.status === 'fulfilled' && assetCostsResult.value) {
+          setRawAssetCostLogs(previous => mergeVpsAssetCosts(previous, assetCostsResult.value.items, currentUser.companyId));
+          setRawExpenses(previous => mergeVpsAssetCostExpenses(previous, assetCostsResult.value.items, currentUser.companyId));
+        } else if (assetCostsResult.status === 'rejected') {
+          failedDomains.push('asset-costs');
+        }
         if (assetsResult.status === 'fulfilled' && assetsResult.value) {
           setRawAssets(previous => mergeVpsAssets(previous, assetsResult.value.items, currentUser.companyId));
         } else if (assetsResult.status === 'rejected') {
@@ -13421,8 +13431,10 @@ export default function App() {
         {
           label: 'Chi phí',
           path: '/api/v1/finance-suite/expenses',
-          run: () => api.listFinanceExpenses(query),
-          apply: (result) => setRawExpenses(result.items.map(normalizeVpsFinanceExpense)),
+          run: () => readCompleteVpsCollection(pageQuery => api.listFinanceExpenses(pageQuery), {
+            companyId: currentUser.companyId, cancelled: () => cancelled, query: { sortBy: 'expenseDate', sortOrder: 'desc' },
+          }),
+          apply: (result) => setRawExpenses(previous => mergeVpsFinanceExpenseSnapshot(previous, result, currentUser.companyId)),
         },
         legacyDefinition('Lịch sử tài chính', 'FINANCE'),
         legacyDefinition('Lịch sử tạm ứng', 'ADVANCE'),
@@ -20025,7 +20037,12 @@ export default function App() {
   };
 
   const handleAddAssetCostLog = async (empId, logData = {}) => {
-    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
+    if (isVpsApiMode) {
+      const saved = await saveVpsAssetCost(getHdConnectStagingApi(), currentUser, null, logData);
+      setRawAssetCostLogs(previous => mergeVpsAssetCosts(previous, [saved], myCompanyId));
+      setRawExpenses(previous => mergeVpsAssetCostExpenses(previous, [saved], myCompanyId));
+      return saved.id;
+    }
     if (!firebaseUser) return null;
     const id = `acl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const liters = parseLooseQuantityValue(logData.liters);
@@ -20110,7 +20127,14 @@ export default function App() {
   };
 
   const handleEditAssetCostLog = async (logId, logData = {}, empId = '') => {
-    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
+    if (isVpsApiMode) {
+      const current = rawAssetCostLogs.find(item => item.id === logId && item.companyId === myCompanyId);
+      if (!current || current.version !== logData.version) throw new Error('ASSET_COST_CHANGED_RELOAD');
+      const saved = await saveVpsAssetCost(getHdConnectStagingApi(), currentUser, current, logData);
+      setRawAssetCostLogs(previous => mergeVpsAssetCosts(previous, [saved], myCompanyId));
+      setRawExpenses(previous => mergeVpsAssetCostExpenses(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser || !logId) return;
     const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
     const liters = parseLooseQuantityValue(logData.liters);
@@ -20175,8 +20199,15 @@ export default function App() {
     }
   };
 
-  const handleDeleteAssetCostLog = async (logId) => {
-    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
+  const handleDeleteAssetCostLog = async (logId, version) => {
+    if (isVpsApiMode) {
+      const current = rawAssetCostLogs.find(item => item.id === logId && item.companyId === myCompanyId);
+      if (!current || current.version !== version) throw new Error('ASSET_COST_CHANGED_RELOAD');
+      const saved = await saveVpsAssetCost(getHdConnectStagingApi(), currentUser, current, null, true);
+      setRawAssetCostLogs(previous => mergeVpsAssetCosts(previous, [saved], myCompanyId));
+      setRawExpenses(previous => mergeVpsAssetCostExpenses(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser || !logId) return;
     const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
     const linkedExpense = expenses.find(expense => (
@@ -34353,22 +34384,45 @@ function AssetManagementView({
   };
   const handleCostSubmit = async (event) => {
     event.preventDefault();
-    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ nhật ký chi phí tài sản; chưa ghi sổ tài chính.'); return; }
+    if (isSavingCost) return;
+    setAssetSaveStatus('');
     const nextForm = {
       ...costForm,
+      ...(isVpsApiMode && editingCostLog ? { version: editingCostLog.version } : {}),
+      kmAt: parseLooseQuantityValue(costForm.kmAt),
+      liters: parseLooseQuantityValue(costForm.liters),
+      unitPrice: parseLooseMoneyValue(costForm.unitPrice),
       amount: parseLooseMoneyValue(costForm.amount) || (parseLooseQuantityValue(costForm.liters) * parseLooseMoneyValue(costForm.unitPrice))
     };
     setIsSavingCost(true);
     try {
-      if (editingCostLog) await onEditAssetCostLog?.(editingCostLog.id, nextForm);
-      else await onAddAssetCostLog?.(nextForm);
+      const handler = editingCostLog ? onEditAssetCostLog : onAddAssetCostLog;
+      if (typeof handler !== 'function') throw new Error('Asset cost handler unavailable.');
+      const saved = editingCostLog ? await handler(editingCostLog.id, nextForm) : await handler(nextForm);
+      if (isVpsApiMode && (!saved || saved.success === false)) throw new Error('Asset cost save was not confirmed.');
       closeCostForm();
+    } catch (error) {
+      setAssetSaveStatus(error?.message || 'Chưa lưu được chi phí tài sản.');
     } finally {
       setIsSavingCost(false);
     }
   };
+  const handleCostArchive = async () => {
+    if (isSavingCost || !editingCostLog || !canDeleteAssetCostLog || !window.confirm('Lưu trữ nhật ký và phiếu chi liên kết?')) return;
+    setIsSavingCost(true);
+    setAssetSaveStatus('');
+    try {
+      if (typeof onDeleteAssetCostLog !== 'function') throw new Error('Asset cost archive handler unavailable.');
+      const result = await onDeleteAssetCostLog(editingCostLog.id, editingCostLog.version);
+      if (isVpsApiMode && result?.success !== true) throw new Error('Asset cost archive was not confirmed.');
+      closeCostForm();
+    } catch (error) {
+      setAssetSaveStatus(error?.message || 'Chưa lưu trữ được chi phí.');
+    } finally { setIsSavingCost(false); }
+  };
   const sectionItems = (isVpsApiMode ? [
     { id: 'assets', label: 'Xe', value: summary.totalAssets },
+    { id: 'costs', label: 'Nhật ký chi phí', value: assetCostLogs.length },
   ] : [
     { id: 'assets', label: 'Tài sản', value: summary.totalAssets },
     { id: 'costs', label: 'Nhật ký chi phí', value: assetCostLogs.length },
@@ -34711,40 +34765,42 @@ function AssetManagementView({
       )}
 
       {showCostForm && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" onClick={closeCostForm}>
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" onClick={() => { if (!isSavingCost) closeCostForm(); }}>
           <form onSubmit={handleCostSubmit} onClick={event => event.stopPropagation()} className="bg-white rounded-3xl p-5 w-full max-w-xl max-h-[88vh] overflow-y-auto space-y-3">
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-xs font-black uppercase tracking-widest text-blue-600">Nhật ký chi phí</p>
                 <h3 className="text-xl font-black">{editingCostLog ? 'Sửa chi phí' : 'Thêm chi phí'}</h3>
               </div>
-              <button type="button" onClick={closeCostForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
+              <button type="button" disabled={isSavingCost} onClick={closeCostForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
+            {assetSaveStatus && <p role="alert" className="text-sm font-bold text-red-700">{assetSaveStatus}</p>}
             <div className="grid grid-cols-2 gap-2">
-              <select value={costForm.type} onChange={e => setCostForm(prev => ({ ...prev, type: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
+              <select value={costForm.type} onChange={e => { const type = e.target.value; setCostForm(prev => ({ ...prev, type })); }} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                 <option value="fuel">Đổ xăng/dầu</option>
                 <option value="other">Chi phí khác</option>
               </select>
               <select required value={costForm.assetId} onChange={e => {
-                const asset = assets.find(item => item.id === e.target.value);
-                setCostForm(prev => ({ ...prev, assetId: e.target.value, driverId: prev.driverId || getPrimaryDeliveryAssignmentId(asset) || '' }));
+                const assetId = e.target.value;
+                const asset = assets.find(item => item.id === assetId);
+                setCostForm(prev => ({ ...prev, assetId, driverId: prev.driverId || getPrimaryDeliveryAssignmentId(asset) || '' }));
               }} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                 <option value="">Chọn xe</option>
                 {assets.map(asset => <option key={asset.id} value={asset.id}>{asset.name} {asset.plateNumber ? `- ${asset.plateNumber}` : ''}</option>)}
               </select>
-              <select value={costForm.driverId} onChange={e => setCostForm(prev => ({ ...prev, driverId: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
+              <select value={costForm.driverId} onChange={e => { const driverId = e.target.value; setCostForm(prev => ({ ...prev, driverId })); }} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                 <option value="">Nhân sự</option>
                 {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
               </select>
-              <input type="date" value={costForm.date} onChange={e => setCostForm(prev => ({ ...prev, date: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" />
-              <input type="tel" value={costForm.kmAt} onChange={e => setCostForm(prev => ({ ...prev, kmAt: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Km lúc phát sinh" />
+              <input type="date" value={costForm.date} onChange={e => { const date = e.target.value; setCostForm(prev => ({ ...prev, date })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" />
+              <input type="tel" value={costForm.kmAt} onChange={e => { const kmAt = e.target.value; setCostForm(prev => ({ ...prev, kmAt })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Km lúc phát sinh" />
               {costForm.type === 'fuel' ? (
                 <>
-                  <input type="tel" value={costForm.liters} onChange={e => setCostForm(prev => ({ ...prev, liters: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Số lít" />
-                  <input type="tel" value={costForm.unitPrice} onChange={e => setCostForm(prev => ({ ...prev, unitPrice: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Đơn giá" />
+                  <input type="tel" value={costForm.liters} onChange={e => { const liters = e.target.value; setCostForm(prev => ({ ...prev, liters })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Số lít" />
+                  <input type="tel" value={costForm.unitPrice} onChange={e => { const unitPrice = e.target.value; setCostForm(prev => ({ ...prev, unitPrice })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Đơn giá" />
                 </>
               ) : (
-                <select value={costForm.costType} onChange={e => setCostForm(prev => ({ ...prev, costType: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
+                <select value={costForm.costType} onChange={e => { const costType = e.target.value; setCostForm(prev => ({ ...prev, costType })); }} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                   <option value="maintenance">Bảo dưỡng</option>
                   <option value="repair">Sửa chữa</option>
                   <option value="tire">Vá lốp</option>
@@ -34753,8 +34809,8 @@ function AssetManagementView({
                   <option value="other">Khác</option>
                 </select>
               )}
-              <input type="tel" value={costForm.amount} onChange={e => setCostForm(prev => ({ ...prev, amount: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Tổng tiền" />
-              {canUploadAssetCostImages && (
+              <input type="tel" value={costForm.amount} onChange={e => { const amount = e.target.value; setCostForm(prev => ({ ...prev, amount })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Tổng tiền" />
+              {canUploadAssetCostImages && !isVpsApiMode && (
                 <>
                   <label className="border border-dashed border-blue-200 rounded-2xl p-3 bg-blue-50 text-sm font-bold text-blue-700 text-center">
                     Ảnh hóa đơn
@@ -34769,10 +34825,10 @@ function AssetManagementView({
                 </>
               )}
             </div>
-            <textarea value={costForm.note} onChange={e => setCostForm(prev => ({ ...prev, note: e.target.value }))} className="w-full border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Ghi chú" />
+            <textarea value={costForm.note} onChange={e => { const note = e.target.value; setCostForm(prev => ({ ...prev, note })); }} className="w-full border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Ghi chú" />
             <div className="flex gap-2">
-              {editingCostLog && canDeleteAssetCostLog && <button type="button" onClick={() => { if (window.confirm('Xóa nhật ký chi phí này?')) { onDeleteAssetCostLog?.(editingCostLog.id); closeCostForm(); } }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
-              <button type="button" onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
+              {editingCostLog && canDeleteAssetCostLog && <button type="button" disabled={isSavingCost} onClick={handleCostArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Lưu trữ</button>}
+              <button type="button" disabled={isSavingCost} onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
               <button disabled={isSavingCost} type="submit" className="flex-1 py-3 rounded-2xl bg-blue-500 text-white font-black">{isSavingCost ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
           </form>
