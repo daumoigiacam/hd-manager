@@ -105,7 +105,10 @@ export const projectVpsSalesOrderToOrderRequest = (order = {}) => {
     amount: totalAmount,
     createdAt: order.createdAt || '',
     updatedAt: order.updatedAt || order.createdAt || '',
-    isArchived: Boolean(order.isArchived),
+    // A cancelled native order remains available to the sales audit trail, but
+    // must leave this legacy-compatible read model and its shortage list.
+    isArchived: Boolean(order.isArchived)
+      || ['CANCELLED', 'CANCELED'].includes(stringValue(order.status).toUpperCase()),
   };
 };
 

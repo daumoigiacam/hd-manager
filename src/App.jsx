@@ -142,7 +142,10 @@ import {
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
-import { projectVpsSalesOrdersToOrderRequests } from './utils/vpsOrderRequestProjection.js';
+import {
+  isVpsOrderRequestSource,
+  projectVpsSalesOrdersToOrderRequests,
+} from './utils/vpsOrderRequestProjection.js';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
   AUTOMATIC_EVALUATION_SCHEMA_VERSION,
@@ -19969,7 +19972,7 @@ export default function App() {
       if (!requestId) return;
 
       const existingOrder = rawOrders.find((order) => order?.id === requestId);
-      if (!existingOrder || existingOrder?.sourceWorkflow !== 'hd_manager_order_request_entry') {
+      if (!existingOrder || !isVpsOrderRequestSource(existingOrder)) {
         throw new Error('Chỉ có thể sửa đơn đặt được tạo từ luồng VPS hiện tại.');
       }
       if (updatedData?.customerId && updatedData.customerId !== existingOrder.customerId) {
@@ -19977,12 +19980,13 @@ export default function App() {
       }
 
       const existingLines = Array.isArray(existingOrder.items) ? existingOrder.items : [];
-      const updatedItems = Array.isArray(updatedData?.items) ? updatedData.items : [];
-      if (updatedItems.length === 0 || updatedItems.length !== existingLines.length) {
+      const hasLineUpdate = Array.isArray(updatedData?.items);
+      const updatedItems = hasLineUpdate ? updatedData.items : [];
+      if (hasLineUpdate && (updatedItems.length === 0 || updatedItems.length !== existingLines.length)) {
         throw new Error('Dữ liệu dòng đơn VPS không đầy đủ để cập nhật an toàn.');
       }
 
-      const lines = updatedItems.map((item, index) => {
+      const lines = hasLineUpdate ? updatedItems.map((item, index) => {
         const existingLine = existingLines[index] || {};
         const productId = `${item?.productId || existingLine?.productId || ''}`.trim();
         const unitId = `${item?.unitId || existingLine?.unitId || ''}`.trim();
@@ -20016,21 +20020,36 @@ export default function App() {
             billingSnapshotVersion: item?.billingSnapshotVersion || existingLine?.billingSnapshotVersion || undefined,
           },
         };
-      });
+      }) : undefined;
+
+      const currentMetadata = existingOrder?.metadata && typeof existingOrder.metadata === 'object'
+        ? existingOrder.metadata
+        : {};
+      const updatedMetadata = updatedData?.metadata && typeof updatedData.metadata === 'object'
+        ? updatedData.metadata
+        : {};
 
       const savedOrder = await getHdConnectStagingApi().updateOrder(existingOrder.id, {
-        branchId: updatedData?.branchId || existingOrder.branchId || undefined,
-        salespersonId: existingOrder.salesEmpId || empId || undefined,
-        items: lines,
-        internalNote: `${updatedData?.note ?? existingOrder.internalNote ?? ''}`.trim() || undefined,
-        customerNote: `${updatedData?.note ?? existingOrder.customerNote ?? ''}`.trim() || undefined,
+        branchId: updatedData?.branchId || undefined,
+        salespersonId: updatedData?.salesEmpId || updatedData?.salespersonId || undefined,
+        ...(hasLineUpdate ? { items: lines } : {}),
+        ...(Object.prototype.hasOwnProperty.call(updatedData || {}, 'note')
+          ? {
+              internalNote: `${updatedData?.note ?? ''}`.trim() || undefined,
+              customerNote: `${updatedData?.note ?? ''}`.trim() || undefined,
+            }
+          : {}),
         clientMutationId: `order-request-edit-${existingOrder.id}-${Date.now()}`,
         metadata: {
-          ...(existingOrder?.metadata || {}),
+          ...currentMetadata,
+          ...updatedMetadata,
           sourceWorkflow: 'hd_manager_order_request_entry',
-          sourceOrderRequestDate: updatedData?.date || existingOrder.date || existingOrder.orderDate || undefined,
-          sourceOrderRequestTotalQuantity: updatedData?.totalQuantity || undefined,
-          sourceOrderRequestTotalAmount: updatedData?.totalAmount || undefined,
+          sourceOrderRequestDate: updatedData?.date || currentMetadata.sourceOrderRequestDate || existingOrder.date || existingOrder.orderDate || undefined,
+          sourceOrderRequestTotalQuantity: updatedData?.totalQuantity ?? currentMetadata.sourceOrderRequestTotalQuantity,
+          sourceOrderRequestTotalAmount: updatedData?.totalAmount ?? currentMetadata.sourceOrderRequestTotalAmount,
+          ...(updatedData?.closedShortItems
+            ? { closedShortItems: updatedData.closedShortItems }
+            : {}),
         },
       });
       upsertLocalListRecord(setRawOrders, savedOrder);
@@ -20102,6 +20121,19 @@ export default function App() {
   };
 
   const handleDeleteOrderRequest = async (requestId) => {
+    if (isVpsApiMode) {
+      if (!requestId) return;
+      const existingOrder = rawOrders.find((order) => order?.id === requestId);
+      if (!existingOrder || !isVpsOrderRequestSource(existingOrder)) {
+        throw new Error('Chỉ có thể hủy đơn đặt được tạo từ luồng VPS hiện tại.');
+      }
+      const cancelledOrder = await getHdConnectStagingApi().cancelOrder(
+        requestId,
+        'Removed from the warehouse shortage list as an incorrect order request.',
+      );
+      upsertLocalListRecord(setRawOrders, cancelledOrder);
+      return cancelledOrder.id;
+    }
     if (!firebaseUser) return;
     const archivedPayload = {
       isArchived: true,
@@ -60510,7 +60542,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     try {
       const request = (orderRequests || []).find(item => item.id === row.requestId);
       const requestItems = Array.isArray(request?.items) ? request.items : [];
-      if (!request || requestItems.length <= 1) {
+      if (isVpsMode || !request || requestItems.length <= 1) {
+        // Native cancellation retains the original request and its audit trail.
         await onDeleteOrderRequest(row.requestId);
       } else {
         const nextItems = requestItems.filter((item, index) => {
@@ -60594,7 +60627,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           };
         });
         await onEditOrderRequest(requestId, {
-          ...request,
           closedShortItems: nextClosedShortItems
         }, employee?.id || 'warehouse');
       }));
@@ -62107,6 +62139,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         || dispatchErrorCode.includes('exceeds the undelivered order-line quantity')
       ) {
         setDispatchError('Số thực xuất vượt phần còn lại của đơn. Hãy điều chỉnh đơn có phê duyệt trước, rồi lưu lại phiếu xuất; app không tự đổi số trên đơn hoặc số tồn.');
+      } else if (
+        dispatchErrorCode.includes('NEGATIVE_STOCK_NOT_ALLOWED')
+        || dispatchErrorCode.includes('This transaction would make stock balance negative.')
+      ) {
+        setDispatchError('Không thể lưu phiếu xuất vì tồn kho của đúng đơn vị chưa đủ. Hãy nhập kho hoặc kiểm tồn thực tế trước; hệ thống không tự cho phép tồn âm.');
       } else {
       setDispatchError(getFriendlyFirebaseErrorMessage(
         error,

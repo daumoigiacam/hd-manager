@@ -190,6 +190,37 @@ test('ordinary VPS sales orders do not leak into the order-request list', () => 
   }]), []);
 });
 
+test('a cancelled VPS order leaves the shortage read model without deleting its audit record', () => {
+  assert.deepEqual(projectVpsSalesOrdersToOrderRequests([{
+    id: 'sales-order-cancelled',
+    companyId: 'company-1',
+    status: 'CANCELLED',
+    sourceWorkflow: VPS_ORDER_REQUEST_SOURCE_WORKFLOW,
+    items: [{ productId: 'product-1', unitId: 'unit-1', quantity: 1 }],
+  }]).filter((order) => !order.isArchived), []);
+});
+
+test('VPS shortage actions use native sales-order commands without a Firebase fallback', () => {
+  assert.match(appSource, /const cancelledOrder = await getHdConnectStagingApi\(\)\.cancelOrder\(/);
+  assert.match(appSource, /if \(isVpsMode \|\| !request \|\| requestItems\.length <= 1\)/);
+  assert.match(appSource, /Native cancellation retains the original request and its audit trail\./);
+  assert.match(appSource, /closedShortItems: nextClosedShortItems/);
+  assert.doesNotMatch(
+    appSource.slice(appSource.indexOf('const handleCloseSelectedShortage'), appSource.indexOf('const getRecognitionConstructor')),
+    /\.\.\.request,\s*closedShortItems/,
+  );
+});
+
+test('VPS metadata-only shortage closure avoids rewriting dispatched order lines', () => {
+  const handlerSource = appSource.slice(
+    appSource.indexOf('const handleEditOrderRequest'),
+    appSource.indexOf('const handleDeleteOrderRequest'),
+  );
+  assert.match(handlerSource, /const hasLineUpdate = Array\.isArray\(updatedData\?\.items\)/);
+  assert.match(handlerSource, /\.\.\.\(hasLineUpdate \? \{ items: lines \} : \{\}\)/);
+  assert.match(handlerSource, /closedShortItems: updatedData\.closedShortItems/);
+});
+
 test('new product memory merges customer products once without replacing existing data', () => {
   const input = {
     customer: {
