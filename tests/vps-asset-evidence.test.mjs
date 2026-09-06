@@ -55,6 +55,13 @@ test("uploads private, tenant-scoped evidence and returns only its durable Stora
   assert.ok(calls[0].contentBase64);
 });
 
+test("allows the two private evidence purposes used by native asset costs", async () => {
+  for (const purpose of ["ASSET_COST_RECEIPT", "ASSET_COST_ODOMETER"]) {
+    const result = await uploadVpsAssetEvidence(api(), session, file(), purpose);
+    assert.equal(result.purpose, purpose);
+  }
+});
+
 test("rejects unsafe inputs and never sends a storage request", async () => {
   for (const candidate of [
     file({ type: "image/svg+xml" }),

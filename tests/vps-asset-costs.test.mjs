@@ -6,7 +6,7 @@ import { loadVpsAssetCosts, mergeVpsAssetCosts, mergeVpsAssetCostExpenses, merge
 import { normalizeVpsFinanceExpense } from '../src/api/hdConnectStaging.js';
 
 const session = { id: randomUUID(), companyId: randomUUID(), permissions: ['logistics.read', 'logistics.manage', 'finance.read', 'finance.manage'] };
-const form = { assetId: randomUUID(), driverId: '', type: 'fuel', costType: 'maintenance', date: '2026-09-06', kmAt: '100', liters: '10', unitPrice: '20000', amount: 200000, note: 'Fuel', receiptImageUrl: '', odometerImageUrl: '' };
+const form = { assetId: randomUUID(), driverId: '', type: 'fuel', costType: 'maintenance', date: '2026-09-06', kmAt: '100', liters: '10', unitPrice: '20000', amount: 200000, note: 'Fuel', receiptImageUrl: '', odometerImageUrl: '', receiptStorageFileId: '', odometerStorageFileId: '' };
 const response = (input = form, changes = {}) => {
   const cost = vpsAssetCostPayload(input), id = randomUUID(), expenseId = randomUUID();
   return { ...cost, id, expenseId, companyId: session.companyId, version: '2026-09-06T01:00:00.000Z', isArchived: false, vpsAssetCost: true,
@@ -16,6 +16,13 @@ const response = (input = form, changes = {}) => {
 test('cost form preserves explicit amount even when it differs from liters * unit price', () => {
   assert.equal(vpsAssetCostPayload({ ...form, amount: 215000 }).amount, 215000);
   assert.equal(vpsAssetCostPayload({ ...form, liters: '' }).liters, 0);
+});
+test('cost form carries only durable VPS storage IDs for receipt evidence', () => {
+  const receiptStorageFileId = randomUUID(), odometerStorageFileId = randomUUID();
+  const payload = vpsAssetCostPayload({ ...form, receiptStorageFileId, odometerStorageFileId });
+  assert.equal(payload.receiptStorageFileId, receiptStorageFileId);
+  assert.equal(payload.odometerStorageFileId, odometerStorageFileId);
+  assert.throws(() => vpsAssetCostPayload({ ...form, receiptStorageFileId: 'legacy-file' }));
 });
 for (const [name, patch] of Object.entries({ booleanMoney: { amount: false }, arrayMoney: { amount: [] }, foreignLink: { relatedExpenseId: randomUUID() }, delivery: { relatedDeliveryReportId: randomUUID() }, image: { receiptImageUrl: 'data:image/png;base64,x' }, fractionalMoney: { amount: 1.001 }, invalidDate: { date: '2026-02-30' }, skip: { skipExpenseSync: true } })) {
   test(`rejects ${name} before any request`, async () => {
@@ -96,10 +103,12 @@ test('a delayed complete finance snapshot cannot erase a newer cost receipt or c
 test('UI waits for save/archive, preserves failed form and exposes cost tab', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   const submit = source.slice(source.indexOf('  const handleCostSubmit ='), source.indexOf('  const sectionItems = (isVpsApiMode'));
-  assert.match(submit, /if \(isSavingCost\) return/);
+  assert.match(submit, /if \(isSavingCost \|\| isUploadingAssetEvidence\)/);
   assert.match(submit, /await onDeleteAssetCostLog/);
   assert.match(submit, /catch \(error\)/);
   assert.doesNotMatch(submit, /VPS chưa hỗ trợ nhật ký/);
+  assert.match(source, /onUploadAssetEvidence\(file, purpose\)/);
+  assert.match(source, /receiptStorageFileId/);
   assert.match(source, /id: 'costs', label: 'Nhật ký chi phí'/);
 });
 
@@ -109,7 +118,7 @@ function uiHandlers(extra = {}) {
   let closed = 0;
   const statuses = [];
   const bindings = {
-    isVpsApiMode: true, isSavingCost: false, costForm: form, editingCostLog: null, canDeleteAssetCostLog: true,
+    isVpsApiMode: true, isSavingCost: false, isUploadingAssetEvidence: false, costForm: form, editingCostLog: null, canDeleteAssetCostLog: true,
     setIsSavingCost() {}, setAssetSaveStatus: value => statuses.push(value), closeCostForm: () => { closed++; },
     parseLooseQuantityValue: Number, parseLooseMoneyValue: Number, window: { confirm: () => true },
     onAddAssetCostLog: async () => response(), onEditAssetCostLog: async () => response(),

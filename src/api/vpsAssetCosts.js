@@ -3,6 +3,11 @@ import { normalizeVpsFinanceExpense } from './hdConnectStaging.js';
 const pending = new Map();
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const fail = () => { throw new Error('ASSET_COST_RECONCILIATION_REQUIRED'); };
+const optionalStorageFileId = value => {
+  if (value === '' || value === null || value === undefined) return null;
+  if (!uuid(value)) fail();
+  return value;
+};
 const authorize = (session, write) => {
   if (!uuid(session?.companyId) || !uuid(session?.id)) fail();
   if (!(write ? ['logistics.manage', 'finance.manage'] : ['logistics.read', 'finance.read']).every(permission => session.permissions?.includes(permission))) {
@@ -25,14 +30,16 @@ export function vpsAssetCostPayload(form) {
   if (form.skipExpenseSync || form.relatedDeliveryReportId || /delivery/i.test(form.sourceType || '') || form.receiptImageUrl || form.odometerImageUrl || form.relatedExpenseId) fail();
   if (typeof form.note !== 'string' || form.note.length > 4000) fail();
   return { assetId: form.assetId, driverId: form.driverId || null, type: form.type, costType: form.costType, date: form.date,
-    kmAt: numeric(form.kmAt, 3), liters: numeric(form.liters, 3), unitPrice: numeric(form.unitPrice, 2), amount: numeric(form.amount, 2), note: form.note };
+    kmAt: numeric(form.kmAt, 3), liters: numeric(form.liters, 3), unitPrice: numeric(form.unitPrice, 2), amount: numeric(form.amount, 2), note: form.note,
+    receiptStorageFileId: optionalStorageFileId(form.receiptStorageFileId), odometerStorageFileId: optionalStorageFileId(form.odometerStorageFileId) };
 }
 export function normalizeVpsAssetCost(record, companyId) {
   if (!uuid(record?.id) || record.companyId !== companyId || record.vpsAssetCost !== true || !Number.isFinite(Date.parse(record.version))) fail();
   const amount = numeric(record.amount, 2);
   if (record.expenseId && (!record.expense || record.expense.id !== record.expenseId || record.expense.companyId !== companyId || numeric(record.expense.amount, 2) !== amount)) fail();
   if (amount > 0 && !record.expenseId) fail();
-  return { ...record, amount, kmAt: numeric(record.kmAt, 3), liters: numeric(record.liters, 3), unitPrice: numeric(record.unitPrice, 2) };
+  return { ...record, amount, kmAt: numeric(record.kmAt, 3), liters: numeric(record.liters, 3), unitPrice: numeric(record.unitPrice, 2),
+    receiptStorageFileId: optionalStorageFileId(record.receiptStorageFileId), odometerStorageFileId: optionalStorageFileId(record.odometerStorageFileId) };
 }
 const mutable = (current, session) => {
   if (!current?.vpsAssetCost || current.companyId !== session.companyId || !uuid(current.id) || current.isArchived || !Number.isFinite(Date.parse(current.version))) fail();

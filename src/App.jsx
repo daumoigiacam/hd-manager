@@ -34215,7 +34215,9 @@ const getAssetCostFormDefaults = (log = {}) => ({
   costType: log.costType || 'maintenance',
   note: log.note || '',
   receiptImageUrl: log.receiptImageUrl || '',
-  odometerImageUrl: log.odometerImageUrl || ''
+  odometerImageUrl: log.odometerImageUrl || '',
+  receiptStorageFileId: log.receiptStorageFileId || '',
+  odometerStorageFileId: log.odometerStorageFileId || ''
 });
 
 const getAssetStatusLabel = (status) => ({
@@ -34278,8 +34280,8 @@ const getAssetCostWarnings = (log = {}, asset = {}, previousFuelLogs = []) => {
     .sort((a, b) => parseLooseQuantityValue(b.kmAt) - parseLooseQuantityValue(a.kmAt))[0];
   const previousKm = parseLooseQuantityValue(previous?.kmAt);
   if (log.type === 'fuel') {
-    if (!log.receiptImageUrl) warnings.push({ level: 'yellow', text: 'Thiếu ảnh hóa đơn' });
-    if (!log.odometerImageUrl) warnings.push({ level: 'yellow', text: 'Thiếu ảnh đồng hồ km' });
+    if (!log.receiptImageUrl && !log.receiptStorageFileId) warnings.push({ level: 'yellow', text: 'Thiếu ảnh hóa đơn' });
+    if (!log.odometerImageUrl && !log.odometerStorageFileId) warnings.push({ level: 'yellow', text: 'Thiếu ảnh đồng hồ km' });
     if (previousKm > 0 && kmAt > 0 && kmAt < previousKm) warnings.push({ level: 'red', text: 'Km nhỏ hơn lần trước' });
     if (tankCapacity > 0 && liters > tankCapacity) warnings.push({ level: 'red', text: 'Số lít vượt dung tích bình' });
     if (previousKm > 0 && kmAt === previousKm && liters > 0) warnings.push({ level: 'red', text: 'Xe không chạy nhưng phát sinh nhiên liệu' });
@@ -34619,6 +34621,27 @@ function AssetManagementView({
   const handleCostImage = async (field, event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (isVpsApiMode) {
+      if (typeof onUploadAssetEvidence !== 'function') {
+        setAssetSaveStatus('Chưa có kết nối tải chứng từ chi phí VPS.');
+        event.target.value = '';
+        return;
+      }
+      const purpose = field === 'receiptStorageFileId' ? 'ASSET_COST_RECEIPT' : 'ASSET_COST_ODOMETER';
+      setIsUploadingAssetEvidence(true);
+      setAssetSaveStatus('');
+      try {
+        const evidence = await onUploadAssetEvidence(file, purpose);
+        if (!evidence?.id) throw new Error('ASSET_COST_EVIDENCE_UPLOAD_RECONCILIATION_REQUIRED');
+        setCostForm(prev => ({ ...prev, [field]: evidence.id }));
+      } catch (error) {
+        setAssetSaveStatus(vpsAssetErrorMessage(error));
+      } finally {
+        setIsUploadingAssetEvidence(false);
+        event.target.value = '';
+      }
+      return;
+    }
     const imageUrl = await readImageFileAsDataUrl(file, 720, 0.78);
     setCostForm(prev => ({ ...prev, [field]: imageUrl }));
   };
@@ -34658,7 +34681,10 @@ function AssetManagementView({
   };
   const handleCostSubmit = async (event) => {
     event.preventDefault();
-    if (isSavingCost) return;
+    if (isSavingCost || isUploadingAssetEvidence) {
+      if (isUploadingAssetEvidence) setAssetSaveStatus('Đợi tải chứng từ VPS hoàn tất trước khi lưu chi phí.');
+      return;
+    }
     setAssetSaveStatus('');
     const nextForm = {
       ...costForm,
@@ -34682,7 +34708,7 @@ function AssetManagementView({
     }
   };
   const handleCostArchive = async () => {
-    if (isSavingCost || !editingCostLog || !canDeleteAssetCostLog || !window.confirm('Lưu trữ nhật ký và phiếu chi liên kết?')) return;
+    if (isSavingCost || isUploadingAssetEvidence || !editingCostLog || !canDeleteAssetCostLog || !window.confirm('Lưu trữ nhật ký và phiếu chi liên kết?')) return;
     setIsSavingCost(true);
     setAssetSaveStatus('');
     try {
@@ -35043,7 +35069,7 @@ function AssetManagementView({
       )}
 
       {showCostForm && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" onClick={() => { if (!isSavingCost) closeCostForm(); }}>
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" onClick={() => { if (!isSavingCost && !isUploadingAssetEvidence) closeCostForm(); }}>
           <form onSubmit={handleCostSubmit} onClick={event => event.stopPropagation()} className="bg-white rounded-3xl p-5 w-full max-w-xl max-h-[88vh] overflow-y-auto space-y-3">
             <div className="flex justify-between items-start">
               <div>
@@ -35088,16 +35114,18 @@ function AssetManagementView({
                 </select>
               )}
               <input type="tel" value={costForm.amount} onChange={e => { const amount = e.target.value; setCostForm(prev => ({ ...prev, amount })); }} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Tổng tiền" />
-              {canUploadAssetCostImages && !isVpsApiMode && (
+              {canUploadAssetCostImages && (
                 <>
                   <label className="border border-dashed border-blue-200 rounded-2xl p-3 bg-blue-50 text-sm font-bold text-blue-700 text-center">
                     Ảnh hóa đơn
-                    <input type="file" accept="image/*" className="hidden" onChange={(event) => handleCostImage('receiptImageUrl', event)} />
+                    <input type="file" accept={isVpsApiMode ? 'image/jpeg,image/png,image/webp' : 'image/*'} disabled={isUploadingAssetEvidence || isSavingCost} className="hidden" onChange={(event) => handleCostImage(isVpsApiMode ? 'receiptStorageFileId' : 'receiptImageUrl', event)} />
+                    {isVpsApiMode && costForm.receiptStorageFileId && <span className="mt-1 block text-[11px] text-emerald-700">Đã tải chứng từ VPS</span>}
                   </label>
                   {costForm.type === 'fuel' && (
                     <label className="border border-dashed border-blue-200 rounded-2xl p-3 bg-blue-50 text-sm font-bold text-blue-700 text-center">
                       Ảnh đồng hồ km
-                      <input type="file" accept="image/*" className="hidden" onChange={(event) => handleCostImage('odometerImageUrl', event)} />
+                      <input type="file" accept={isVpsApiMode ? 'image/jpeg,image/png,image/webp' : 'image/*'} disabled={isUploadingAssetEvidence || isSavingCost} className="hidden" onChange={(event) => handleCostImage(isVpsApiMode ? 'odometerStorageFileId' : 'odometerImageUrl', event)} />
+                      {isVpsApiMode && costForm.odometerStorageFileId && <span className="mt-1 block text-[11px] text-emerald-700">Đã tải ảnh công-tơ-mét VPS</span>}
                     </label>
                   )}
                 </>
@@ -35105,9 +35133,9 @@ function AssetManagementView({
             </div>
             <textarea value={costForm.note} onChange={e => { const note = e.target.value; setCostForm(prev => ({ ...prev, note })); }} className="w-full border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Ghi chú" />
             <div className="flex gap-2">
-              {editingCostLog && canDeleteAssetCostLog && <button type="button" disabled={isSavingCost} onClick={handleCostArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Lưu trữ</button>}
-              <button type="button" disabled={isSavingCost} onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
-              <button disabled={isSavingCost} type="submit" className="flex-1 py-3 rounded-2xl bg-blue-500 text-white font-black">{isSavingCost ? 'Đang lưu...' : 'Lưu'}</button>
+              {editingCostLog && canDeleteAssetCostLog && <button type="button" disabled={isSavingCost || isUploadingAssetEvidence} onClick={handleCostArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Lưu trữ</button>}
+              <button type="button" disabled={isSavingCost || isUploadingAssetEvidence} onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
+              <button disabled={isSavingCost || isUploadingAssetEvidence} type="submit" className="flex-1 py-3 rounded-2xl bg-blue-500 text-white font-black">{isSavingCost ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
           </form>
         </div>

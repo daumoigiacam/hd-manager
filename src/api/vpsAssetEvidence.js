@@ -35,7 +35,15 @@ export async function uploadVpsAssetEvidence(api, session, file, purpose) {
   ) {
     fail("MANAGER_ASSET_EVIDENCE_PERMISSION_REQUIRED");
   }
-  if (!["HANDOVER", "REGISTRATION", "INSPECTION"].includes(purpose))
+  if (
+    ![
+      "HANDOVER",
+      "REGISTRATION",
+      "INSPECTION",
+      "ASSET_COST_RECEIPT",
+      "ASSET_COST_ODOMETER",
+    ].includes(purpose)
+  )
     fail("MANAGER_ASSET_EVIDENCE_PURPOSE_INVALID");
   if (
     !file ||
