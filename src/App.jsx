@@ -142,6 +142,7 @@ import {
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
+import { projectVpsSalesOrdersToOrderRequests } from './utils/vpsOrderRequestProjection.js';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
   AUTOMATIC_EVALUATION_SCHEMA_VERSION,
@@ -14902,7 +14903,13 @@ export default function App() {
   };
   const products = useMemo(() => rawProducts.filter(p => p.companyId === myCompanyId && !p.isArchived), [rawProducts, myCompanyId]);
   const orders = useMemo(() => rawOrders.filter(o => o.companyId === myCompanyId && !o.isArchived), [rawOrders, myCompanyId]);
-  const orderRequests = useMemo(() => rawOrderRequests.filter(request => request.companyId === myCompanyId && !request.isArchived), [rawOrderRequests, myCompanyId]);
+  const orderRequests = useMemo(() => {
+    if (isVpsApiMode) {
+      return projectVpsSalesOrdersToOrderRequests(rawOrders)
+        .filter(request => request.companyId === myCompanyId && !request.isArchived);
+    }
+    return rawOrderRequests.filter(request => request.companyId === myCompanyId && !request.isArchived);
+  }, [isVpsApiMode, myCompanyId, rawOrderRequests, rawOrders]);
 
   useEffect(() => {
     if (orderCreateInFlightRef.current.size === 0) return;
@@ -63270,7 +63277,7 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
   );
 });
 
-function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, isVpsMode = false, onNavigateToOrders = () => {}, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, isVpsMode = false, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -66850,8 +66857,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       }
 
       if (isVpsMode) {
+        setRequestStatus('');
         closeOrderRequestForm();
-        onNavigateToOrders();
         return;
       }
       await persistOrderRequestMemories(normalizedRequests);

@@ -18,6 +18,10 @@ import {
 } from '../src/utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from '../src/utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixedProductMemory.js';
+import {
+  projectVpsSalesOrdersToOrderRequests,
+  VPS_ORDER_REQUEST_SOURCE_WORKFLOW,
+} from '../src/utils/vpsOrderRequestProjection.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
@@ -123,7 +127,7 @@ test('manual order product search keeps the active catalog available beyond fixe
   assert.match(appSource, /Sản phẩm cố định được ưu tiên; bạn vẫn có thể chọn toàn bộ danh mục\./);
 });
 
-test('VPS order entry captures a one-off price and persists a native sales order', () => {
+test('VPS order entry persists a native sales order and keeps it in the order-request list', () => {
   assert.match(appSource, /Đơn giá \{selectedPricingUnit \|\| selectedOrderUnit \|\| item\.quantityUnit \|\| ''\}/);
   assert.match(appSource, /unitPrice: parseInputCurrency\(event\.target\.value\)/);
   assert.match(appSource, /const targetUnitId = `\$\{[\s\S]*product\?\.unitId[\s\S]*product\?\.baseUnit\?\.id/);
@@ -134,8 +138,46 @@ test('VPS order entry captures a one-off price and persists a native sales order
   assert.match(appSource, /const warehouseId = resolveSingleActiveMainWarehouseId\(vpsMasterData\?\.warehouses \|\| \[\]\)/);
   assert.match(appSource, /sourceWorkflow: 'hd_manager_order_request_entry'/);
   assert.match(appSource, /const orderId = await handleAddOrder\(actorUserId \|\| empId \|\| 'admin'/);
-  assert.match(appSource, /if \(isVpsMode\) \{\s*closeOrderRequestForm\(\);\s*onNavigateToOrders\(\);\s*return;/);
-  assert.match(appSource, /isVpsMode=\{isVpsMode\} onNavigateToOrders=\{\(\) => setActiveTab\('orders'\)\}/);
+  assert.match(appSource, /projectVpsSalesOrdersToOrderRequests\(rawOrders\)/);
+  assert.match(appSource, /if \(isVpsMode\) \{\s*setRequestStatus\(''\);\s*closeOrderRequestForm\(\);\s*return;/);
+});
+
+test('a VPS sales order is read back as an order request without a Firebase shadow record', () => {
+  const [projected] = projectVpsSalesOrdersToOrderRequests([{
+    id: 'sales-order-1',
+    companyId: 'company-1',
+    customerId: 'customer-1',
+    warehouseId: 'warehouse-1',
+    salesEmpId: 'employee-1',
+    orderDate: '2026-09-07',
+    sourceWorkflow: VPS_ORDER_REQUEST_SOURCE_WORKFLOW,
+    items: [{
+      id: 'line-1',
+      productId: 'product-1',
+      unitId: 'unit-1',
+      unit: 'Con',
+      quantity: 12,
+      unitPrice: 34500,
+      metadata: { inputUnit: 'Con', pricingUnit: 'Con' },
+    }],
+  }]);
+
+  assert.equal(projected.id, 'sales-order-1');
+  assert.equal(projected.vpsSalesOrderId, 'sales-order-1');
+  assert.equal(projected.source, 'vps_sales_order');
+  assert.equal(projected.date, '2026-09-07');
+  assert.equal(projected.items[0].quantity, 12);
+  assert.equal(projected.items[0].billingUnit, 'Con');
+  assert.equal(projected.items[0].amount, 414000);
+  assert.equal(projected.totalAmount, 414000);
+});
+
+test('ordinary VPS sales orders do not leak into the order-request list', () => {
+  assert.deepEqual(projectVpsSalesOrdersToOrderRequests([{
+    id: 'sales-order-unrelated',
+    companyId: 'company-1',
+    items: [{ productId: 'product-1', quantity: 1 }],
+  }]), []);
 });
 
 test('new product memory merges customer products once without replacing existing data', () => {
