@@ -11,6 +11,8 @@ assert.match(viteSource, /const isVpsProductionBuild = vpsDataMode === 'vps-prod
 assert.match(viteSource, /const isVpsApiBuild = isVpsStagingBuild \|\| isVpsProductionBuild;/);
 assert.match(viteSource, /const localVpsApiProxyTarget = `\$\{env\.HD_LOCAL_VPS_API_PROXY_TARGET \|\| ''\}`/);
 assert.ok(viteSource.includes('const isLocalApiBaseUrl = /^http:\\/\\/(?:127\\.0\\.0\\.1|localhost)'));
+assert.match(viteSource, /const isSafeLocalVpsApiProxyTarget =/);
+assert.ok(viteSource.includes('|| /^http:\\/\\/(?:127\\.0\\.0\\.1|localhost)'));
 assert.match(viteSource, /const useLocalVpsApiProxy = mode !== 'production'/);
 assert.match(viteSource, /proxy: \{\s*'\/api': \{/);
 assert.match(viteSource, /const useCloudData = !usePreviewData && !isVpsApiBuild;/);

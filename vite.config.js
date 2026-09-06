@@ -37,10 +37,14 @@ export default defineConfig(({ mode }) => {
     .replace(/\/+$/, '');
   const isLocalApiBaseUrl = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i
     .test(apiBaseUrl);
+  const isSafeLocalVpsApiProxyTarget = /^https:\/\/[^/]+(?:\/.*)?$/i
+    .test(localVpsApiProxyTarget)
+    || /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/.*)?$/i
+      .test(localVpsApiProxyTarget);
   const useLocalVpsApiProxy = mode !== 'production'
     && isVpsApiBuild
     && isLocalApiBaseUrl
-    && /^https:\/\/[^/]+(?:\/.*)?$/i.test(localVpsApiProxyTarget);
+    && isSafeLocalVpsApiProxyTarget;
   const useCloudData = !usePreviewData && !isVpsApiBuild;
   if (isVpsApiBuild && !apiBaseUrl) {
     throw new Error('VITE_API_BASE_URL is required when VITE_DATA_MODE uses the VPS API.');
