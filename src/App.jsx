@@ -63104,19 +63104,53 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
   const hasAttributeChoices = variants.some(({ variant = {} }) => Boolean(
     `${variant.size || variant.sizeLabel || variant.attributeLabel || ''}`.trim(),
   ));
+  const hasSingleDirectChoice = variants.length === 1 && !hasAttributeChoices;
+  const directChoice = hasSingleDirectChoice ? variants[0] : null;
+  const directVariant = directChoice?.variant || {};
+  const directVariantLabel = directVariant.unit || directChoice?.product?.unit || product.unit || 'Mặc định';
+  const isDirectChoiceSelected = Boolean(directChoice && selectedQuickVariantKeys.has(directChoice.selectionKey));
+  const isDirectChoicePending = Boolean(directChoice && pendingQuickProductSelectionKeys.has(directChoice.selectionKey));
+  const selectDirectChoice = () => {
+    if (!directChoice || isDirectChoicePending) return;
+    onSelect?.(directChoice.selectionKey, directChoice.product?.id || product.id, directVariant);
+  };
   return (
     <div className="rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-slate-900">{product.name}</p>
-          <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-400">
-            {product.category || product.unit || 'Sản phẩm'}
-          </p>
+      {hasSingleDirectChoice ? (
+        <button
+          type="button"
+          disabled={isDirectChoicePending}
+          onClick={selectDirectChoice}
+          aria-pressed={isDirectChoiceSelected}
+          aria-busy={isDirectChoicePending}
+          aria-label={`Chọn ${product.name} - ${directVariantLabel}`}
+          className={[
+            'flex w-full items-center justify-between gap-3 rounded-xl p-1 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-500',
+            isDirectChoiceSelected ? 'bg-emerald-50' : 'hover:bg-slate-50',
+            isDirectChoicePending ? 'cursor-wait opacity-70' : '',
+          ].join(' ')}
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-bold text-slate-900">{product.name}</span>
+            <span className="mt-0.5 block truncate text-[10px] font-semibold text-slate-400">
+              {product.category || product.unit || 'Sản phẩm'}
+            </span>
+          </span>
+          <span className={`shrink-0 text-[10px] font-bold ${isDirectChoiceSelected ? 'text-emerald-700' : 'text-slate-400'}`}>
+            {isDirectChoiceSelected ? 'Đã chọn' : 'Bấm để chọn'}
+          </span>
+        </button>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold text-slate-900">{product.name}</p>
+            <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-400">
+              {product.category || product.unit || 'Sản phẩm'}
+            </p>
+          </div>
+          <span className="shrink-0 text-[10px] font-bold text-slate-400">Chọn thuộc tính</span>
         </div>
-        <span className="shrink-0 text-[10px] font-bold text-slate-400">
-          {hasAttributeChoices ? 'Chọn thuộc tính' : 'Chọn đơn vị'}
-        </span>
-      </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {variants.map(({ variant, key, selectionKey, product: optionProduct, displayAttributeLabel, displayPrice }) => {
           const isSelected = selectedQuickVariantKeys.has(selectionKey);

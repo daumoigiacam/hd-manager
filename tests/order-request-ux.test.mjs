@@ -92,7 +92,10 @@ test('catalog search groups one product and keeps its attributes as selectable c
 
 test('catalog selection distinguishes units from attributes and carries the target unit ID', () => {
   assert.match(appSource, /const hasAttributeChoices = variants\.some/);
-  assert.match(appSource, /hasAttributeChoices \? 'Chọn thuộc tính' : 'Chọn đơn vị'/);
+  assert.match(appSource, /const hasSingleDirectChoice = variants\.length === 1 && !hasAttributeChoices/);
+  assert.match(appSource, /aria-label=\{`Chọn \$\{product\.name\} - \$\{directVariantLabel\}`\}/);
+  assert.match(appSource, /isDirectChoiceSelected \? 'Đã chọn' : 'Bấm để chọn'/);
+  assert.match(appSource, /<span className="shrink-0 text-\[10px\] font-bold text-slate-400">Chọn thuộc tính<\/span>/);
   assert.match(appSource, /unitId: selectedProduct\.unitId \|\| ''/);
   assert.match(appSource, /unitId: seed\.unitId \|\| seed\.salesUnitId \|\| seed\.baseUnitId \|\| ''/);
 });
