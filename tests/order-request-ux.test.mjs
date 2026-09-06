@@ -123,6 +123,21 @@ test('manual order product search keeps the active catalog available beyond fixe
   assert.match(appSource, /Sản phẩm cố định được ưu tiên; bạn vẫn có thể chọn toàn bộ danh mục\./);
 });
 
+test('VPS order entry captures a one-off price and persists a native sales order', () => {
+  assert.match(appSource, /Đơn giá \{selectedPricingUnit \|\| selectedOrderUnit \|\| item\.quantityUnit \|\| ''\}/);
+  assert.match(appSource, /unitPrice: parseInputCurrency\(event\.target\.value\)/);
+  assert.match(appSource, /const targetUnitId = `\$\{[\s\S]*product\?\.unitId[\s\S]*product\?\.baseUnit\?\.id/);
+  assert.match(appSource, /if \(!product \|\| !targetUnitId \|\| quantity <= 0\)/);
+  assert.match(appSource, /productId: product\.id,\s*unitId: targetUnitId,/);
+  assert.match(appSource, /pricingUnit: manualPricingUnit/);
+  assert.match(appSource, /billingUnit: manualPricingUnit/);
+  assert.match(appSource, /const warehouseId = resolveSingleActiveMainWarehouseId\(vpsMasterData\?\.warehouses \|\| \[\]\)/);
+  assert.match(appSource, /sourceWorkflow: 'hd_manager_order_request_entry'/);
+  assert.match(appSource, /const orderId = await handleAddOrder\(actorUserId \|\| empId \|\| 'admin'/);
+  assert.match(appSource, /if \(isVpsMode\) \{\s*closeOrderRequestForm\(\);\s*onNavigateToOrders\(\);\s*return;/);
+  assert.match(appSource, /isVpsMode=\{isVpsMode\} onNavigateToOrders=\{\(\) => setActiveTab\('orders'\)\}/);
+});
+
 test('new product memory merges customer products once without replacing existing data', () => {
   const input = {
     customer: {
