@@ -55480,6 +55480,32 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     () => buildWarehouseProductScanLookup(products),
     [products]
   );
+  const getVpsInventoryProductUnitId = (product = {}) => `${
+    product.inventoryUnitId
+    || product.inventoryUnit?.id
+    || product.unitId
+    || product.baseUnitId
+    || product.baseUnit?.id
+    || product.purchaseUnitId
+    || product.purchaseUnit?.id
+    || product.salesUnitId
+    || product.salesUnit?.id
+    || ''
+  }`.trim();
+  const getVpsInventoryProductUnitLabel = (product = {}, unitId = '') => {
+    const masterUnit = (vpsUnits || []).find(unit => unit?.id === unitId);
+    return normalizeWarehouseMeasureUnit(
+      masterUnit?.symbol
+      || masterUnit?.name
+      || masterUnit?.code
+      || product.inventoryUnit?.symbol
+      || product.inventoryUnit?.name
+      || product.inventoryUnit?.code
+      || product.unit
+      || product.quantityUnit
+      || '',
+    );
+  };
   const warehouseProductCodeSuggestions = useMemo(() => {
     const keyword = normalizeLookupText(draft.productCode || '');
     if (!keyword) return [];
@@ -55544,6 +55570,8 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     if (!product?.id) return false;
     const code = `${rawCode || product.barcode || product.sku || product.productCode || getProductShortName(product) || product.id || ''}`.trim();
     const groupName = getWarehouseInventoryGroupLabel(product, product.name);
+    const inventoryUnitId = getVpsInventoryProductUnitId(product);
+    const inventoryUnitLabel = getVpsInventoryProductUnitLabel(product, inventoryUnitId);
     const costPrice = parseLooseMoneyValue(product.costPrice ?? product.importPrice ?? product.purchasePrice ?? product.unitCost);
     const rememberedUnit = resolveRememberedWarehouseQuantityUnit(warehouseImports, {
       productId: product.id,
@@ -55557,7 +55585,9 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       productCode: code,
       productBarcode: product.barcode || product.productBarcode || code,
       groupName: groupName || prev.groupName,
+      unitId: inventoryUnitId,
       quantityUnit: rememberedUnit
+        || inventoryUnitLabel
         || normalizeWarehouseMeasureUnit(product.unit || product.quantityUnit || prev.quantityUnit || 'Con'),
       unitPrice: prev.unitPrice || (costPrice > 0 ? `${costPrice}` : prev.unitPrice)
     }));
@@ -57271,10 +57301,17 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     }
     const productCode = `${draft.productCode || matchedProduct?.barcode || matchedProduct?.sku || matchedProduct?.code || matchedProduct?.productCode || ''}`.trim();
     const productBarcode = `${draft.productBarcode || matchedProduct?.barcode || matchedProduct?.productBarcode || productCode || ''}`.trim();
+    const warehouseId = `${draft.warehouseId || defaultVpsWarehouseId || ''}`.trim();
+    const productId = `${matchedProduct?.id || draft.productId || ''}`.trim();
+    const unitId = `${draft.unitId || getVpsInventoryProductUnitId(matchedProduct) || ''}`.trim();
+    const resolvedUnitLabel = getVpsInventoryProductUnitLabel(matchedProduct, unitId);
+    const quantityUnit = isVpsMode && resolvedUnitLabel
+      ? resolvedUnitLabel
+      : normalizeLeadingLabel(draft.quantityUnit || 'Con');
     const measures = buildWarehouseImportMeasureEntries({
       totalKg,
       quantity,
-      quantityUnit: draft.quantityUnit || 'Con',
+      quantityUnit,
       extraMeasures: draft.extraMeasures || []
     });
 
@@ -57286,16 +57323,18 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       setStatus('Cần nhập ít nhất một chỉ số tồn kho như số con, số kg, số bao hoặc số thùng.');
       return;
     }
+    if (isVpsMode && (!warehouseId || !productId || !unitId)) {
+      setStatus('Chưa xác định được kho, sản phẩm hoặc đơn vị tồn. Hãy chọn sản phẩm đã lưu với đơn vị tính hợp lệ rồi thử lại.');
+      return;
+    }
 
     try {
       setIsSaving(true);
       const payload = {
-        warehouseId: draft.warehouseId || '',
-        unitId: draft.unitId || '',
-        unitLabel: vpsUnits.find(unit => unit.id === draft.unitId)?.symbol
-          || vpsUnits.find(unit => unit.id === draft.unitId)?.name
-          || '',
-        productId: matchedProduct?.id || draft.productId || '',
+        warehouseId,
+        unitId,
+        unitLabel: resolvedUnitLabel,
+        productId,
         productName,
         productNameSnapshot: productName,
         productCode,
@@ -57304,7 +57343,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
         groupName,
         totalKg,
         quantity,
-        quantityUnit: normalizeLeadingLabel(draft.quantityUnit || 'Con'),
+        quantityUnit,
         sourceType,
         sourceLabel: getWarehouseImportSourceLabel(sourceType),
         supplier: supplierName,

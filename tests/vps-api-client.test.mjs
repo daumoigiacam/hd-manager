@@ -1024,6 +1024,19 @@ test('customer assignments distinguish omitted HR fields, explicit unassignment 
   assert.equal(body.salesEmployeeId, null);
 });
 
+test('preserves a product inventory UOM target for warehouse mutations', () => {
+  const product = normalizeVpsProduct({
+    id: 'product-1',
+    companyId: 'company-1',
+    name: 'Duck by weight',
+    salesUnit: { id: 'unit-count', name: 'Con' },
+    inventoryUnit: { id: 'unit-weight', name: 'Kg', symbol: 'Kg' },
+  });
+
+  assert.equal(product.unitId, 'unit-count');
+  assert.equal(product.inventoryUnitId, 'unit-weight');
+});
+
 test('allows an owner to create the first VPS customer without inventing a sales employee', async () => {
   let body;
   const api = createHdConnectStagingApi({

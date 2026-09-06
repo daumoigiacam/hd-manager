@@ -240,6 +240,7 @@ export const normalizeVpsProduct = (record = {}) => {
       : (record.category?.name || (typeof metadata.category === 'string' ? metadata.category : legacyUi.category || '')),
     unit,
     unitId: record.salesUnitId || record.baseUnitId || primaryUnit?.id || metadata.unitId || '',
+    inventoryUnitId: record.inventoryUnitId || record.inventoryUnit?.id || metadata.inventoryUnitId || '',
     costPrice: toFiniteNumber(record.costPrice ?? metadata.costPrice ?? legacyUi.costPrice ?? legacyUi.cost) ?? 0,
     sellingPrice: toFiniteNumber(record.sellingPrice ?? metadata.sellingPrice ?? legacyUi.sellingPrice ?? legacyUi.price) ?? 0,
     discount: toFiniteNumber(record.discount ?? metadata.discount ?? legacyUi.discount) ?? 0,

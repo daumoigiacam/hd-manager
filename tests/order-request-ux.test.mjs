@@ -119,6 +119,14 @@ test('VPS product create and edit resolve UOM and category masters before assign
   assert.match(appSource, /inventoryUnitId: unit\.id/);
 });
 
+test('warehouse imports resolve the selected product inventory UOM before posting stock-in', () => {
+  assert.match(appSource, /const getVpsInventoryProductUnitId = \(product = \{\}\)/);
+  assert.match(appSource, /const inventoryUnitId = getVpsInventoryProductUnitId\(product\)/);
+  assert.match(appSource, /unitId: inventoryUnitId,/);
+  assert.match(appSource, /const unitId = `\$\{draft\.unitId \|\| getVpsInventoryProductUnitId\(matchedProduct\) \|\| ''\}`\.trim\(\)/);
+  assert.match(appSource, /Chưa xác định được kho, sản phẩm hoặc đơn vị tồn/);
+});
+
 test('a company owner can create the first customer before a sales employee exists', () => {
   assert.match(appSource, /if \(!finalEmpId && !isOwnerCustomerAccount\)/);
   assert.match(appSource, /const assignedEmpId = empId \|\| customerData\?\.empId \|\| ''/);
