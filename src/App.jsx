@@ -19749,6 +19749,8 @@ export default function App() {
         const unitPrice = parseLooseMoneyValue(item?.unitPrice);
         const inputUnit = normalizeProductPricingUnit(item?.quantityUnit || item?.actualUnit || '');
         const pricingUnit = normalizeProductPricingUnit(item?.billingUnit || item?.pricingUnit || inputUnit);
+        const sizeLabel = `${item?.sizeLabel ?? item?.weightKg ?? ''}`.trim();
+        const attributeLabel = `${item?.attributeLabel ?? item?.productAttribute ?? ''}`.trim();
 
         if (!productId || !unitId || quantity <= 0 || unitPrice <= 0) {
           throw new Error(`Dòng hàng ${index + 1} thiếu sản phẩm, đơn vị VPS, số lượng hoặc đơn giá.`);
@@ -19769,6 +19771,10 @@ export default function App() {
             orderRequestLine: index + 1,
             inputUnit,
             pricingUnit,
+            sizeLabel,
+            attributeLabel,
+            productAttribute: attributeLabel,
+            configurationId: item?.configurationId || undefined,
             billingSnapshotVersion: item?.billingSnapshotVersion || undefined,
           },
         };
@@ -19957,6 +19963,78 @@ export default function App() {
   };
 
   const handleEditOrderRequest = async (requestId, updatedData, empId = '') => {
+    if (isVpsApiMode) {
+      if (!requestId) return;
+
+      const existingOrder = rawOrders.find((order) => order?.id === requestId);
+      if (!existingOrder || existingOrder?.sourceWorkflow !== 'hd_manager_order_request_entry') {
+        throw new Error('Chỉ có thể sửa đơn đặt được tạo từ luồng VPS hiện tại.');
+      }
+      if (updatedData?.customerId && updatedData.customerId !== existingOrder.customerId) {
+        throw new Error('Chưa hỗ trợ đổi khách hàng cho đơn VPS đã lưu. Hãy tạo đơn mới để giữ nguyên lịch sử.');
+      }
+
+      const existingLines = Array.isArray(existingOrder.items) ? existingOrder.items : [];
+      const updatedItems = Array.isArray(updatedData?.items) ? updatedData.items : [];
+      if (updatedItems.length === 0 || updatedItems.length !== existingLines.length) {
+        throw new Error('Dữ liệu dòng đơn VPS không đầy đủ để cập nhật an toàn.');
+      }
+
+      const lines = updatedItems.map((item, index) => {
+        const existingLine = existingLines[index] || {};
+        const productId = `${item?.productId || existingLine?.productId || ''}`.trim();
+        const unitId = `${item?.unitId || existingLine?.unitId || ''}`.trim();
+        const quantity = parseLooseQuantityValue(item?.quantity ?? existingLine?.quantity);
+        const unitPrice = parseLooseMoneyValue(item?.unitPrice ?? existingLine?.unitPrice);
+        const inputUnit = normalizeProductPricingUnit(item?.quantityUnit || item?.actualUnit || existingLine?.inputUnit || existingLine?.quantityUnit || existingLine?.unit || '');
+        const pricingUnit = normalizeProductPricingUnit(item?.billingUnit || item?.pricingUnit || existingLine?.billingUnit || existingLine?.pricingUnit || inputUnit);
+        const sizeLabel = `${item?.sizeLabel ?? item?.weightKg ?? existingLine?.sizeLabel ?? existingLine?.weightKg ?? ''}`.trim();
+        const attributeLabel = `${item?.attributeLabel ?? item?.productAttribute ?? existingLine?.attributeLabel ?? existingLine?.productAttribute ?? ''}`.trim();
+
+        if (!productId || !unitId || quantity <= 0 || unitPrice <= 0 || !inputUnit || !pricingUnit) {
+          throw new Error(`Dòng hàng ${index + 1} không đủ thông tin để cập nhật VPS.`);
+        }
+
+        return {
+          productId,
+          unitId,
+          quantity,
+          unitPrice,
+          note: `${item?.note || existingLine?.note || ''}`.trim() || undefined,
+          metadata: {
+            ...(existingLine?.metadata || {}),
+            sourceWorkflow: 'hd_manager_order_request_entry',
+            orderRequestLine: index + 1,
+            inputUnit,
+            pricingUnit,
+            sizeLabel,
+            attributeLabel,
+            productAttribute: attributeLabel,
+            configurationId: item?.configurationId || existingLine?.configurationId || undefined,
+            billingSnapshotVersion: item?.billingSnapshotVersion || existingLine?.billingSnapshotVersion || undefined,
+          },
+        };
+      });
+
+      const savedOrder = await getHdConnectStagingApi().updateOrder(existingOrder.id, {
+        branchId: updatedData?.branchId || existingOrder.branchId || undefined,
+        salespersonId: existingOrder.salesEmpId || empId || undefined,
+        items: lines,
+        internalNote: `${updatedData?.note ?? existingOrder.internalNote ?? ''}`.trim() || undefined,
+        customerNote: `${updatedData?.note ?? existingOrder.customerNote ?? ''}`.trim() || undefined,
+        clientMutationId: `order-request-edit-${existingOrder.id}-${Date.now()}`,
+        metadata: {
+          ...(existingOrder?.metadata || {}),
+          sourceWorkflow: 'hd_manager_order_request_entry',
+          sourceOrderRequestDate: updatedData?.date || existingOrder.date || existingOrder.orderDate || undefined,
+          sourceOrderRequestTotalQuantity: updatedData?.totalQuantity || undefined,
+          sourceOrderRequestTotalAmount: updatedData?.totalAmount || undefined,
+        },
+      });
+      upsertLocalListRecord(setRawOrders, savedOrder);
+      return savedOrder.id;
+    }
+
     if (!firebaseUser || !requestId) return;
     const existingRequest = orderRequests.find(request => request?.id === requestId) || {};
     const customer = customers.find(c => c.id === (updatedData.customerId || existingRequest.customerId));

@@ -137,9 +137,12 @@ test('VPS order entry persists a native sales order and keeps it in the order-re
   assert.match(appSource, /billingUnit: manualPricingUnit/);
   assert.match(appSource, /const warehouseId = resolveSingleActiveMainWarehouseId\(vpsMasterData\?\.warehouses \|\| \[\]\)/);
   assert.match(appSource, /sourceWorkflow: 'hd_manager_order_request_entry'/);
+  assert.match(appSource, /sizeLabel,\s*attributeLabel,\s*productAttribute: attributeLabel,/);
   assert.match(appSource, /const orderId = await handleAddOrder\(actorUserId \|\| empId \|\| 'admin'/);
   assert.match(appSource, /projectVpsSalesOrdersToOrderRequests\(rawOrders\)/);
   assert.match(appSource, /if \(isVpsMode\) \{\s*setRequestStatus\(''\);\s*closeOrderRequestForm\(\);\s*return;/);
+  assert.match(appSource, /getHdConnectStagingApi\(\)\.updateOrder\(existingOrder\.id/);
+  assert.match(appSource, /Chưa hỗ trợ đổi khách hàng cho đơn VPS đã lưu/);
 });
 
 test('a VPS sales order is read back as an order request without a Firebase shadow record', () => {
@@ -158,7 +161,12 @@ test('a VPS sales order is read back as an order request without a Firebase shad
       unit: 'Con',
       quantity: 12,
       unitPrice: 34500,
-      metadata: { inputUnit: 'Con', pricingUnit: 'Con' },
+      metadata: {
+        inputUnit: 'Con',
+        pricingUnit: 'Con',
+        sizeLabel: '2.4-2.7kg',
+        attributeLabel: 'Loại A',
+      },
     }],
   }]);
 
@@ -168,6 +176,8 @@ test('a VPS sales order is read back as an order request without a Firebase shad
   assert.equal(projected.date, '2026-09-07');
   assert.equal(projected.items[0].quantity, 12);
   assert.equal(projected.items[0].billingUnit, 'Con');
+  assert.equal(projected.items[0].sizeLabel, '2.4-2.7kg');
+  assert.equal(projected.items[0].attributeLabel, 'Loại A');
   assert.equal(projected.items[0].amount, 414000);
   assert.equal(projected.totalAmount, 414000);
 });

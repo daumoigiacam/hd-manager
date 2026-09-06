@@ -31,6 +31,12 @@ const projectLine = (line = {}, index = 0) => {
   const billingUnit = stringValue(
     line.billingUnit || line.pricingUnit || metadata.pricingUnit || quantityUnit,
   );
+  const sizeLabel = stringValue(
+    line.sizeLabel || line.size || line.weightKg || metadata.sizeLabel || metadata.size || metadata.weightKg,
+  );
+  const attributeLabel = stringValue(
+    line.attributeLabel || line.productAttribute || metadata.attributeLabel || metadata.productAttribute,
+  );
   const amount = numericValue(line.lineTotal ?? line.amount ?? line.total ?? (quantity * unitPrice));
 
   return {
@@ -46,6 +52,10 @@ const projectLine = (line = {}, index = 0) => {
     billingUnit,
     pricingQuantity: quantity,
     pricingUnit: billingUnit,
+    sizeLabel,
+    attributeLabel,
+    productAttribute: attributeLabel,
+    configurationId: stringValue(line.configurationId || metadata.configurationId),
     unitPrice,
     amount,
     lineTotal: amount,
