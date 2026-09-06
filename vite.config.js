@@ -31,8 +31,18 @@ export default defineConfig(({ mode }) => {
   const isVpsStagingBuild = vpsDataMode === 'vps-staging';
   const isVpsProductionBuild = vpsDataMode === 'vps-production';
   const isVpsApiBuild = isVpsStagingBuild || isVpsProductionBuild;
+  const apiBaseUrl = `${env.VITE_API_BASE_URL || ''}`.trim();
+  const localVpsApiProxyTarget = `${env.HD_LOCAL_VPS_API_PROXY_TARGET || ''}`
+    .trim()
+    .replace(/\/+$/, '');
+  const isLocalApiBaseUrl = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i
+    .test(apiBaseUrl);
+  const useLocalVpsApiProxy = mode !== 'production'
+    && isVpsApiBuild
+    && isLocalApiBaseUrl
+    && /^https:\/\/[^/]+(?:\/.*)?$/i.test(localVpsApiProxyTarget);
   const useCloudData = !usePreviewData && !isVpsApiBuild;
-  if (isVpsApiBuild && !`${env.VITE_API_BASE_URL || ''}`.trim()) {
+  if (isVpsApiBuild && !apiBaseUrl) {
     throw new Error('VITE_API_BASE_URL is required when VITE_DATA_MODE uses the VPS API.');
   }
   const cloudFirebaseConfig = {
@@ -134,6 +144,18 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       port: 5173,
+      ...(useLocalVpsApiProxy
+        ? {
+            // A local-only bridge avoids weakening the production API CORS policy.
+            proxy: {
+              '/api': {
+                target: localVpsApiProxyTarget,
+                changeOrigin: true,
+                secure: true,
+              },
+            },
+          }
+        : {}),
       watch: {
         ignored: [
           '**/android/**',
