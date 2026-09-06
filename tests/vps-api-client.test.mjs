@@ -9,6 +9,7 @@ import {
   normalizeVpsFinanceExpense,
   normalizeVpsOrder,
   normalizeVpsProduct,
+  normalizeVpsSession,
   normalizeVpsStockMovement,
 } from '../src/api/hdConnectStaging.js';
 
@@ -50,6 +51,60 @@ test('uses the operator finance history contract without substituting customer-p
   await api.getHistoricalCustomerLedger('native-customer');
   assert.equal(calls[1].path, '/finance-suite/customers/native-customer/historical-ledger');
   await assert.rejects(() => api.getHistoricalCustomerLedger(''), { code: 'CUSTOMER_ID_REQUIRED' });
+});
+
+test('keeps a customer VPS session and routes bank links without caller tenant or customer IDs', async () => {
+  const session = normalizeVpsSession({
+    user: {
+      id: 'user-1',
+      role: 'customer',
+      customerId: 'customer-1',
+      phoneNormalized: '0900000000',
+    },
+    company: { id: 'company-1', name: 'Company 1' },
+    roles: ['customer'],
+    permissions: ['cx.portal.read', 'cx.portal.write'],
+  });
+  assert.equal(session.user.accountType, 'customer');
+  assert.equal(session.user.customerId, 'customer-1');
+
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ method: 'GET', path, options });
+      return [{ id: 'bank-1', customerId: 'customer-1', companyId: 'company-1' }];
+    },
+    post: async (path, payload, options) => {
+      calls.push({ method: 'POST', path, payload, options });
+      return { id: 'bank-1', customerId: 'customer-1', companyId: 'company-1' };
+    },
+  });
+
+  const accounts = await api.listCustomerPortalBankAccounts();
+  await api.linkCustomerPortalBankAccount({
+    companyId: 'attacker-company',
+    customerId: 'attacker-customer',
+    bankCode: 'vcb',
+    bankName: 'Vietcombank',
+    accountNumber: '0123 456 789',
+    accountName: 'TEST CUSTOMER',
+  });
+
+  assert.equal(accounts.items.length, 1);
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /cx-suite/portal/bank-accounts',
+    'POST /cx-suite/portal/bank-accounts',
+  ]);
+  assert.deepEqual(calls[1].payload, {
+    bankCode: 'VCB',
+    bankName: 'Vietcombank',
+    accountNumber: '0123456789',
+    accountName: 'TEST CUSTOMER',
+    isDefault: true,
+  });
+  assert.equal(Object.hasOwn(calls[1].payload, 'companyId'), false);
+  assert.equal(Object.hasOwn(calls[1].payload, 'customerId'), false);
+  assert.equal(calls[1].options.retry, false);
 });
 
 test('stores an access and refresh token pair after VPS login', async () => {

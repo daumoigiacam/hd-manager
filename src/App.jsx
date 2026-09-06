@@ -13401,6 +13401,30 @@ export default function App() {
   }, [currentUser?.companyId, currentUser?.id, currentUser?.permissions]);
 
   useEffect(() => {
+    if (!isVpsApiMode || currentUser?.accountType !== 'customer') return undefined;
+
+    let cancelled = false;
+    getHdConnectStagingApi().listCustomerPortalBankAccounts()
+      .then((result) => {
+        if (!cancelled) setRawBankAccounts(result.items);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRealtimeStatus((previous) => ({
+          ...previous,
+          state: 'degraded',
+          collection: 'customer-bank-accounts',
+          lastAt: new Date().toISOString(),
+          error: error?.message || 'Không thể tải tài khoản ngân hàng khách hàng từ VPS.',
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.accountType, currentUser?.companyId, currentUser?.id]);
+
+  useEffect(() => {
     if (!isVpsApiMode || !currentUser?.companyId) return undefined;
     const historyMethod = activeTab === 'warehouse_import'
       ? 'listWarehouseHistoryImports'
@@ -17459,10 +17483,6 @@ export default function App() {
   };
 
   const handleLinkCustomerBankAccount = async (customerId, accountData = {}) => {
-    if (!firebaseUser || !myCompanyId || !customerId) {
-      return { success: false, message: 'Chưa đủ thông tin để liên kết ngân hàng.' };
-    }
-
     const selectedBank = BANK_ID_OPTIONS.find(option => option.value === accountData.bankCode || option.value === accountData.bankId);
     const bankCode = selectedBank?.value || String(accountData.bankCode || accountData.bankId || '').trim().toUpperCase();
     const bankName = normalizeLeadingLabel(selectedBank?.label || accountData.bankName || bankCode);
@@ -17471,6 +17491,34 @@ export default function App() {
 
     if (!bankCode || !bankName || !accountNumber || !accountName) {
       return { success: false, message: 'Vui lòng nhập đủ ngân hàng, số tài khoản và tên chủ tài khoản.' };
+    }
+
+    if (isVpsApiMode) {
+      const linked = await getHdConnectStagingApi().linkCustomerPortalBankAccount({
+        bankCode,
+        bankName,
+        accountNumber,
+        accountName,
+        isDefault: true,
+      });
+      if (!linked?.id || linked.customerId !== customerId || linked.companyId !== myCompanyId) {
+        throw new Error('Liên kết ngân hàng VPS không khớp hồ sơ khách hàng hiện tại.');
+      }
+      const payload = {
+        ...linked,
+        bankId: linked.bankCode,
+        bankAccountNumber: linked.accountNumber,
+        bankAccountName: linked.accountName,
+        status: `${linked.status || 'LINKED'}`.toLowerCase(),
+        isArchived: false,
+        sourceSystem: 'hd-connect-vps',
+      };
+      upsertLocalListRecord(setRawBankAccounts, payload);
+      return { success: true, message: 'Đã liên kết tài khoản ngân hàng qua VPS.' };
+    }
+
+    if (!firebaseUser || !myCompanyId || !customerId) {
+      return { success: false, message: 'Chưa đủ thông tin để liên kết ngân hàng.' };
     }
 
     const now = new Date().toISOString();

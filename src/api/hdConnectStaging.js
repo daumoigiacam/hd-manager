@@ -129,6 +129,9 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
     ? session.permissions
     : (currentUser?.permissions || []);
   const primaryRole = stringValue(roles[0] || sourceUser.role || 'employee').toLowerCase();
+  const accountType = stringValue(sourceUser.accountType || sourceUser.type || primaryRole).toLowerCase() === 'customer'
+    ? 'customer'
+    : 'employee';
 
   return {
     user: {
@@ -136,6 +139,7 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
       email: sourceUser.email || '',
       phone: sourceUser.phone || sourceUser.phoneNormalized || '',
       phoneNormalized: sourceUser.phoneNormalized || sourceUser.phone || '',
+      customerId: sourceUser.customerId || session.customerId || '',
       name: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
       displayName: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
       companyId: company?.id || sourceUser.companyId || '',
@@ -143,7 +147,7 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
       role: primaryRole,
       roles,
       permissions,
-      accountType: 'employee',
+      accountType,
       authProvider: 'hd-connect-vps',
     },
     company: company ? {
@@ -974,6 +978,33 @@ export class HdConnectStagingApi {
 
   async listPayments(query = {}) {
     return normalizePage(await this.client.get('/cx-suite/payments', { query }), normalizeVpsPayment);
+  }
+
+  async listCustomerPortalBankAccounts() {
+    return normalizePage(
+      await this.client.get('/cx-suite/portal/bank-accounts'),
+      (item) => item,
+    );
+  }
+
+  async linkCustomerPortalBankAccount(record = {}) {
+    const bankCode = stringValue(record.bankCode || record.bankId).toUpperCase();
+    const bankName = stringValue(record.bankName);
+    const accountNumber = stringValue(record.accountNumber || record.bankAccountNumber)
+      .replace(/\s+/g, '');
+    const accountName = stringValue(record.accountName || record.bankAccountName);
+    if (!bankCode || !bankName || !accountNumber || !accountName) {
+      throw new HdApiError('Bank account details are required.', {
+        code: 'CUSTOMER_BANK_ACCOUNT_INPUT_INVALID',
+      });
+    }
+    return this.client.post('/cx-suite/portal/bank-accounts', {
+      bankCode,
+      bankName,
+      accountNumber,
+      accountName,
+      isDefault: record.isDefault !== false,
+    }, { retry: false });
   }
 
   async listPaymentHistory(query = {}) {
