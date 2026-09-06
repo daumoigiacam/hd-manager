@@ -12082,6 +12082,7 @@ export default function App() {
   const [rawCustomerAccounts, setRawCustomerAccounts] = useState([]);
   const [rawCustomerCart, setRawCustomerCart] = useState([]);
   const [rawCustomerPoints, setRawCustomerPoints] = useState([]);
+  const [customerPortalReceivables, setCustomerPortalReceivables] = useState([]);
   const [rawCustomerLoans, setRawCustomerLoans] = useState([]);
   const [rawRewardCatalog, setRawRewardCatalog] = useState([]);
   const [rawPromotions, setRawPromotions] = useState([]);
@@ -13423,6 +13424,44 @@ export default function App() {
       cancelled = true;
     };
   }, [currentUser?.accountType, currentUser?.companyId, currentUser?.id]);
+
+  useEffect(() => {
+    if (!isVpsApiMode || currentUser?.accountType !== 'customer') return undefined;
+
+    let cancelled = false;
+    const api = getHdConnectStagingApi();
+    Promise.all([api.listCustomerPortalReceivables(), api.getCustomerPortalLoyalty()])
+      .then(([receivables, loyalty]) => {
+        if (cancelled) return;
+        setCustomerPortalReceivables(receivables.items);
+        setRawCustomerPoints([{
+          id: `vps_loyalty_${currentUser.customerId || currentUser.id}`,
+          companyId: currentUser.companyId,
+          customerId: currentUser.customerId,
+          availablePoints: loyalty.pointsBalance,
+          totalPoints: loyalty.pointsBalance,
+          earnedPoints: loyalty.lifetimePoints,
+          usedPoints: Math.max(0, parseLooseMoneyValue(loyalty.lifetimePoints) - parseLooseMoneyValue(loyalty.pointsBalance)),
+          redeemValuePerPoint: loyalty.redeemValuePerPoint,
+          sourceSystem: 'hd-connect-vps',
+          isArchived: false,
+        }]);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRealtimeStatus((previous) => ({
+          ...previous,
+          state: 'degraded',
+          collection: 'customer-portal-loyalty',
+          lastAt: new Date().toISOString(),
+          error: error?.message || 'Không thể tải công nợ hoặc điểm khách hàng từ VPS.',
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.accountType, currentUser?.companyId, currentUser?.customerId, currentUser?.id]);
 
   useEffect(() => {
     if (!isVpsApiMode || !currentUser?.companyId) return undefined;
@@ -17564,9 +17603,55 @@ export default function App() {
 
   const handleRedeemCustomerPoints = async ({
     customerId,
+    receivableId = '',
     pointsToUse = 0,
     amount = 0
   } = {}) => {
+    if (isVpsApiMode) {
+      if (!myCompanyId || !customerId || !receivableId) {
+        return { success: false, message: 'Chưa xác định được khoản phải thu VPS để dùng điểm.' };
+      }
+      const requestedPoints = Math.max(0, Math.floor(parseLooseMoneyValue(pointsToUse)));
+      if (requestedPoints <= 0) {
+        return { success: false, message: 'Số điểm dùng chưa hợp lệ.' };
+      }
+      const requestKey = `${customerId}:${receivableId}:${requestedPoints}`;
+      let requestId = pointRedemptionRequestRef.current.get(requestKey);
+      if (!requestId) {
+        requestId = globalThis.crypto?.randomUUID?.()
+          || `redeem_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+        pointRedemptionRequestRef.current.set(requestKey, requestId);
+      }
+      const result = await getHdConnectStagingApi().redeemCustomerPortalLoyalty({
+        requestId,
+        receivableId,
+        pointsToUse: requestedPoints,
+      });
+      setCustomerPortalReceivables(previous => previous.map(item => (
+        item.id === receivableId
+          ? {
+            ...item,
+            outstandingAmount: result.debtAfter,
+            settledAmount: parseLooseMoneyValue(item.originalAmount) - parseLooseMoneyValue(result.debtAfter),
+          }
+          : item
+      )));
+      setRawCustomerPoints([{
+        id: `vps_loyalty_${customerId}`,
+        companyId: myCompanyId,
+        customerId,
+        availablePoints: result.balanceAfter,
+        totalPoints: result.balanceAfter,
+        sourceSystem: 'hd-connect-vps',
+        isArchived: false,
+      }]);
+      pointRedemptionRequestRef.current.delete(requestKey);
+      return {
+        success: true,
+        message: `Đã dùng ${formatNumber(result.pointsUsed)} điểm để trừ ${formatCurrency(result.amount)} đ qua VPS.`,
+      };
+    }
+
     if (!firebaseUser || !myCompanyId || !customerId) {
       return { success: false, message: 'Chưa đủ thông tin để dùng điểm.' };
     }
@@ -23016,6 +23101,7 @@ export default function App() {
           employees={employees}
           messages={messages}
           customerPoints={customerPoints}
+          portalReceivables={customerPortalReceivables}
           rewardCatalog={rewardCatalog}
           promotions={promotions}
           notifications={notifications}
@@ -84544,6 +84630,7 @@ function CustomerPortalView({
   employees = [],
   messages = [],
   customerPoints = [],
+  portalReceivables = [],
   rewardCatalog = [],
   promotions = [],
   notifications = [],
@@ -84573,6 +84660,7 @@ function CustomerPortalView({
   const [isPaymentSheetOpen, setIsPaymentSheetOpen] = useState(false);
   const [selectedPaymentBankId, setSelectedPaymentBankId] = useState('BIDV');
   const [selectedPaymentOrderIds, setSelectedPaymentOrderIds] = useState([]);
+  const [selectedRedeemReceivableId, setSelectedRedeemReceivableId] = useState('');
   const [debtPaymentIntent, setDebtPaymentIntent] = useState(null);
   const [isPreparingDebtPayment, setIsPreparingDebtPayment] = useState(false);
   const [debtPaymentActionMessage, setDebtPaymentActionMessage] = useState('');
@@ -84637,6 +84725,11 @@ function CustomerPortalView({
   const safeEmployees = useMemo(() => Array.isArray(employees) ? employees : [], [employees]);
   const safeMessages = useMemo(() => Array.isArray(messages) ? messages : [], [messages]);
   const safeCustomerPoints = useMemo(() => Array.isArray(customerPoints) ? customerPoints : [], [customerPoints]);
+  const safePortalReceivables = useMemo(
+    () => (Array.isArray(portalReceivables) ? portalReceivables : [])
+      .filter(item => Math.max(0, parseLooseMoneyValue(item?.outstandingAmount)) > 0),
+    [portalReceivables]
+  );
   const safeRewardCatalog = useMemo(() => Array.isArray(rewardCatalog) ? rewardCatalog : [], [rewardCatalog]);
   const safePromotions = useMemo(() => Array.isArray(promotions) ? promotions : [], [promotions]);
   const safeNotifications = useMemo(() => Array.isArray(notifications) ? notifications : [], [notifications]);
@@ -85223,6 +85316,16 @@ function CustomerPortalView({
   const remainingDebtLimit = debtLimit > 0 ? Math.max(0, debtLimit - Math.max(0, ledger.currentDebt || 0)) : 0;
   const isOrderingLocked = noDebtAllowed && (ledger.currentDebt || 0) > 0;
   const debtPaymentAmount = Math.max(0, Math.round(ledger.currentDebt || 0));
+  const selectedRedeemReceivable = useMemo(
+    () => safePortalReceivables.find(item => item.id === selectedRedeemReceivableId) || null,
+    [safePortalReceivables, selectedRedeemReceivableId]
+  );
+  const loyaltyDebtAmount = isVpsApiMode
+    ? Math.max(0, Math.round(parseLooseMoneyValue(selectedRedeemReceivable?.outstandingAmount)))
+    : debtPaymentAmount;
+  const hasRedeemableDebt = isVpsApiMode
+    ? safePortalReceivables.length > 0
+    : debtPaymentAmount > 0;
   const unpaidCustomerOrdersForPayment = useMemo(() => {
     const ledgerOrders = Array.isArray(ledger.orders) ? ledger.orders : [];
     return ledgerOrders
@@ -85271,8 +85374,8 @@ function CustomerPortalView({
   )));
   const redeemablePointMoney = Math.max(0, roundMoneyValue(loyaltySummary.redeemValue ?? (availableCustomerPoints * loyaltyPointValue)));
   const redeemPointsNumber = Math.max(0, Math.floor(parseLooseMoneyValue(redeemPointsInput)));
-  const maxRedeemPointsForDebt = debtPaymentAmount > 0 && loyaltyPointValue > 0
-    ? Math.min(availableCustomerPoints, Math.floor(debtPaymentAmount / loyaltyPointValue))
+  const maxRedeemPointsForDebt = loyaltyDebtAmount > 0 && loyaltyPointValue > 0
+    ? Math.min(availableCustomerPoints, Math.floor(loyaltyDebtAmount / loyaltyPointValue))
     : 0;
   const redeemPointsToUse = Math.min(availableCustomerPoints, redeemPointsNumber, maxRedeemPointsForDebt);
   const redeemPointsMoney = redeemPointsToUse * loyaltyPointValue;
@@ -85860,8 +85963,8 @@ function CustomerPortalView({
   };
 
   const openPointWithdrawSheet = () => {
-    setPointWithdrawMode(debtPaymentAmount > 0 ? 'debt' : 'gift');
-    setPointWithdrawInput(debtPaymentAmount > 0 && maxRedeemPointsForDebt > 0 ? String(maxRedeemPointsForDebt) : '');
+    setPointWithdrawMode(hasRedeemableDebt ? 'debt' : 'gift');
+    setPointWithdrawInput(hasRedeemableDebt && maxRedeemPointsForDebt > 0 ? String(maxRedeemPointsForDebt) : '');
     setSelectedPointRewardId(activeRewardCatalog[0]?.id || '');
     setPointWithdrawNote('');
     setPointWithdrawMessage('');
@@ -85874,8 +85977,12 @@ function CustomerPortalView({
       setRedeemPointsMessage('Công ty chưa bật chức năng dùng điểm trừ công nợ.');
       return;
     }
-    if (debtPaymentAmount <= 0) {
+    if (!hasRedeemableDebt) {
       setRedeemPointsMessage('Hiện tại bạn không có công nợ cần trừ điểm.');
+      return;
+    }
+    if (isVpsApiMode && !selectedRedeemReceivable?.id) {
+      setRedeemPointsMessage('Vui lòng chọn khoản phải thu cần dùng điểm để trừ.');
       return;
     }
     const pointsToUse = redeemPointsToUse;
@@ -85891,6 +85998,7 @@ function CustomerPortalView({
         customerId: customerProfile.id,
         customerName: customerProfile.name || currentUser?.name || '',
         pointsInfo: redemptionPointsInfo,
+        receivableId: selectedRedeemReceivable?.id || '',
         pointsToUse,
         pointValue: loyaltyPointValue,
         amount
@@ -85917,8 +86025,12 @@ function CustomerPortalView({
         setPointWithdrawMessage('Công ty chưa bật chức năng dùng điểm trừ công nợ.');
         return;
       }
-      if (debtPaymentAmount <= 0) {
+      if (!hasRedeemableDebt) {
         setPointWithdrawMessage('Hiện tại bạn không có công nợ cần trừ điểm.');
+        return;
+      }
+      if (isVpsApiMode && !selectedRedeemReceivable?.id) {
+        setPointWithdrawMessage('Vui lòng chọn khoản phải thu cần dùng điểm để trừ.');
         return;
       }
       const pointsToUse = pointWithdrawPointsToUse;
@@ -85935,6 +86047,7 @@ function CustomerPortalView({
           customerId: customerProfile.id,
           customerName: customerProfile.name || currentUser?.name || '',
           pointsInfo: redemptionPointsInfo,
+          receivableId: selectedRedeemReceivable?.id || '',
           pointsToUse,
           pointValue: loyaltyPointValue,
           amount,
@@ -86063,7 +86176,11 @@ function CustomerPortalView({
   const renderPointWithdrawSheet = () => {
     if (!isPointWithdrawSheetOpen) return null;
     const isDebtMode = pointWithdrawMode === 'debt';
-    const canSubmitDebt = isDebtMode && debtPaymentAmount > 0 && pointWithdrawPointsNumber > 0 && pointWithdrawDebtAmount > 0;
+    const canSubmitDebt = isDebtMode
+      && hasRedeemableDebt
+      && (!isVpsApiMode || Boolean(selectedRedeemReceivable?.id))
+      && pointWithdrawPointsNumber > 0
+      && pointWithdrawDebtAmount > 0;
     const canSubmitGift = !isDebtMode && Boolean(selectedPointReward || activeRewardCatalog[0]);
     const withdrawMessageIsSuccess = pointWithdrawMessage.startsWith('Đã ');
 
@@ -86125,13 +86242,27 @@ function CustomerPortalView({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-3 text-center">
                     <p className="text-[10px] font-black uppercase text-emerald-700">Công nợ</p>
-                    <p className="mt-1 text-lg font-black text-gray-900">{formatCurrency(debtPaymentAmount)} đ</p>
+                    <p className="mt-1 text-lg font-black text-gray-900">{formatCurrency(loyaltyDebtAmount)} đ</p>
                   </div>
                   <div className="rounded-3xl border border-amber-100 bg-amber-50 p-3 text-center">
                     <p className="text-[10px] font-black uppercase text-amber-700">Sẽ trừ</p>
                     <p className="mt-1 text-lg font-black text-gray-900">{formatCurrency(pointWithdrawDebtAmount)} đ</p>
                   </div>
                 </div>
+                {isVpsApiMode && (
+                  <select
+                    value={selectedRedeemReceivableId}
+                    onChange={event => setSelectedRedeemReceivableId(event.target.value)}
+                    className="w-full rounded-3xl border border-amber-100 bg-white px-4 py-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300"
+                  >
+                    <option value="">Chọn khoản phải thu để trừ điểm</option>
+                    {safePortalReceivables.map(item => (
+                      <option key={item.id} value={item.id}>
+                        {(item.invoiceNumber || item.sourceAggregateId || 'Khoản phải thu')} - {formatCurrency(item.outstandingAmount)} đ
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="grid grid-cols-[1fr_auto] gap-2">
                   <input
                     type="number"
@@ -86151,7 +86282,7 @@ function CustomerPortalView({
                     Tối đa
                   </button>
                 </div>
-                {debtPaymentAmount <= 0 && (
+                {!hasRedeemableDebt && (
                   <p className="rounded-2xl bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-500">
                     Bạn chưa có công nợ cần trừ. Có thể chuyển sang lựa chọn đổi quà nếu công ty đã tạo quà tặng.
                   </p>
@@ -87434,8 +87565,22 @@ function CustomerPortalView({
               <p className="mt-1 text-lg font-black text-emerald-600">{formatCurrency(redeemablePointMoney)} đ</p>
             </div>
           </div>
-          {debtPaymentAmount > 0 && availableCustomerPoints > 0 ? (
+          {hasRedeemableDebt && availableCustomerPoints > 0 ? (
             <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+              {isVpsApiMode && (
+                <select
+                  value={selectedRedeemReceivableId}
+                  onChange={event => setSelectedRedeemReceivableId(event.target.value)}
+                  className="col-span-2 min-w-0 rounded-2xl border border-amber-100 bg-white px-3 py-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300"
+                >
+                  <option value="">Chọn khoản phải thu để trừ điểm</option>
+                  {safePortalReceivables.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {(item.invoiceNumber || item.sourceAggregateId || 'Khoản phải thu')} - {formatCurrency(item.outstandingAmount)} đ
+                    </option>
+                  ))}
+                </select>
+              )}
               <input
                 type="number"
                 min="0"
@@ -87465,7 +87610,7 @@ function CustomerPortalView({
             </div>
           ) : (
             <div className="mt-3 rounded-2xl bg-white/70 p-3 text-center text-xs font-semibold text-gray-500">
-              {debtPaymentAmount <= 0 ? 'Bạn chưa có công nợ cần trừ điểm.' : 'Bạn chưa có điểm khả dụng để sử dụng.'}
+          {!hasRedeemableDebt ? 'Bạn chưa có công nợ cần trừ điểm.' : 'Bạn chưa có điểm khả dụng để sử dụng.'}
             </div>
           )}
           {redeemPointsMessage && (
@@ -87782,8 +87927,22 @@ function CustomerPortalView({
           </div>
           <Percent size={20} className="shrink-0 text-emerald-600" />
         </div>
-        {debtPaymentAmount > 0 && availableCustomerPoints > 0 ? (
+        {hasRedeemableDebt && availableCustomerPoints > 0 ? (
           <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+            {isVpsApiMode && (
+              <select
+                value={selectedRedeemReceivableId}
+                onChange={event => setSelectedRedeemReceivableId(event.target.value)}
+                className="col-span-2 min-w-0 rounded-2xl border border-amber-100 bg-white px-3 py-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300"
+              >
+                <option value="">Chọn khoản phải thu để trừ điểm</option>
+                {safePortalReceivables.map(item => (
+                  <option key={item.id} value={item.id}>
+                    {(item.invoiceNumber || item.sourceAggregateId || 'Khoản phải thu')} - {formatCurrency(item.outstandingAmount)} đ
+                  </option>
+                ))}
+              </select>
+            )}
             <input
               type="number"
               min="0"
@@ -87813,7 +87972,7 @@ function CustomerPortalView({
           </div>
         ) : (
           <div className="mt-3 rounded-2xl bg-gray-50 p-3 text-center text-xs font-semibold text-gray-500">
-            {debtPaymentAmount <= 0 ? 'Bạn chưa có công nợ cần trừ điểm.' : 'Bạn chưa có điểm khả dụng để sử dụng.'}
+            {!hasRedeemableDebt ? 'Bạn chưa có công nợ cần trừ điểm.' : 'Bạn chưa có điểm khả dụng để sử dụng.'}
           </div>
         )}
         {redeemPointsMessage && (

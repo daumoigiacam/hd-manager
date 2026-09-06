@@ -107,6 +107,57 @@ test('keeps a customer VPS session and routes bank links without caller tenant o
   assert.equal(calls[1].options.retry, false);
 });
 
+test('reads and redeems customer loyalty against a selected native receivable only', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ method: 'GET', path, options });
+      if (path === '/cx-suite/loyalty') return { pointsBalance: 50 };
+      return {
+        items: [{ id: 'receivable-1', originalAmount: '50000', settledAmount: '12500' }],
+        pagination: { totalItems: 1 },
+      };
+    },
+    post: async (path, payload, options) => {
+      calls.push({ method: 'POST', path, payload, options });
+      return { id: 'redemption-1', ...payload };
+    },
+  });
+
+  const receivables = await api.listCustomerPortalReceivables({
+    companyId: 'attacker-company',
+    customerId: 'attacker-customer',
+    page: 1,
+  });
+  const loyalty = await api.getCustomerPortalLoyalty();
+  await api.redeemCustomerPortalLoyalty({
+    companyId: 'attacker-company',
+    customerId: 'attacker-customer',
+    receivableId: 'receivable-1',
+    pointsToUse: 20,
+    amount: 999999,
+    requestId: 'loyalty-redeem-1',
+  });
+
+  assert.equal(receivables.items[0].outstandingAmount, 37500);
+  assert.equal(loyalty.pointsBalance, 50);
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /cx-suite/portal/receivables',
+    'GET /cx-suite/loyalty',
+    'POST /cx-suite/loyalty/redeem',
+  ]);
+  assert.equal(Object.hasOwn(calls[0].options.query, 'companyId'), false);
+  assert.equal(Object.hasOwn(calls[0].options.query, 'customerId'), false);
+  assert.deepEqual(calls[2].payload, {
+    requestId: 'loyalty-redeem-1',
+    receivableId: 'receivable-1',
+    pointsToUse: 20,
+  });
+  assert.equal(Object.hasOwn(calls[2].payload, 'amount'), false);
+  assert.equal(calls[2].options.idempotencyKey, 'loyalty-redeem-1');
+  assert.equal(calls[2].options.retry, false);
+});
+
 test('stores an access and refresh token pair after VPS login', async () => {
   const storage = createStorage();
   const requests = [];

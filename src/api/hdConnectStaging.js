@@ -987,6 +987,51 @@ export class HdConnectStagingApi {
     );
   }
 
+  async listCustomerPortalReceivables(query = {}) {
+    const { customerId: _customerId, ...safeQuery } = query || {};
+    return normalizePage(
+      await this.client.get('/cx-suite/portal/receivables', {
+        query: toTenantSafeQuery(safeQuery),
+      }),
+      (item) => ({
+        ...item,
+        outstandingAmount: toFiniteNumber(item.outstandingAmount)
+          ?? Math.max(
+            0,
+            (toFiniteNumber(item.originalAmount) ?? 0)
+              - (toFiniteNumber(item.settledAmount) ?? 0),
+          ),
+      }),
+    );
+  }
+
+  async getCustomerPortalLoyalty() {
+    return this.client.get('/cx-suite/loyalty');
+  }
+
+  async redeemCustomerPortalLoyalty(record = {}) {
+    const receivableId = requireIdentityInput(
+      record.receivableId,
+      'LOYALTY_RECEIVABLE_REQUIRED',
+      'A receivable must be selected before redeeming loyalty points.',
+    );
+    const pointsToUse = Math.floor(toFiniteNumber(record.pointsToUse) ?? 0);
+    if (pointsToUse <= 0) {
+      throw new HdApiError('Loyalty points must be greater than zero.', {
+        code: 'LOYALTY_POINTS_INVALID',
+      });
+    }
+    const requestId = stringValue(record.requestId) || createRequestId();
+    return this.client.post('/cx-suite/loyalty/redeem', {
+      requestId,
+      receivableId,
+      pointsToUse,
+    }, {
+      idempotencyKey: requestId,
+      retry: false,
+    });
+  }
+
   async linkCustomerPortalBankAccount(record = {}) {
     const bankCode = stringValue(record.bankCode || record.bankId).toUpperCase();
     const bankName = stringValue(record.bankName);
