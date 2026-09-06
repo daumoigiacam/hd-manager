@@ -50,6 +50,82 @@ test('writes an idempotent tenant-scoped delivery report without creating a stoc
   assert.equal(saved.differenceKg, 2);
 });
 
+test('confirms map delivery only through the native departed-to-delivered transition', async () => {
+  const calls = [];
+  const saved = await saveVpsDeliveryReport({
+    createLogisticsDelivery: async (next) => ({
+      id: '55555555-5555-4555-8555-555555555555',
+      companyId: COMPANY,
+      status: 'DEPARTED',
+      deliveryNumber: next.deliveryNumber,
+      metadata: next.metadata,
+      lines: next.lines,
+    }),
+    transitionLogisticsDelivery: async (id, next) => {
+      calls.push({ id, ...next });
+      return {
+        id,
+        companyId: COMPANY,
+        status: 'DELIVERED',
+        deliveredAt: '2026-09-06T12:00:00.000Z',
+        deliveryNumber: 'HDM-DELIVERY-map-delivery-1',
+        metadata: { sourceRecordId: 'map-delivery-1' },
+        lines: [{ productId: PRODUCT }],
+      };
+    },
+  }, { companyId: COMPANY }, {
+    id: 'map-delivery-1',
+    deliveryStatus: 'delivered',
+    actualWeightKg: 12,
+    quantity: 12,
+  }, {
+    companyId: COMPANY,
+    productId: PRODUCT,
+    unitId: UNIT,
+    warehouseId: WAREHOUSE,
+    quantity: 12,
+  });
+
+  assert.deepEqual(calls, [{
+    id: '55555555-5555-4555-8555-555555555555',
+    transitionCode: 'DELIVER',
+    reason: 'Confirmed from HD Manager delivery map.',
+  }]);
+  assert.equal(saved.deliveryStatus, 'delivered');
+  assert.equal(saved.isDelivered, true);
+  assert.equal(saved.deliveredAt, '2026-09-06T12:00:00.000Z');
+});
+
+test('does not treat a draft delivery report as a completed delivery', async () => {
+  const saved = await saveVpsDeliveryReport({
+    createLogisticsDelivery: async (next) => ({
+      id: '55555555-5555-4555-8555-555555555555',
+      companyId: COMPANY,
+      status: 'DRAFT',
+      deliveryNumber: next.deliveryNumber,
+      metadata: next.metadata,
+      lines: next.lines,
+    }),
+    transitionLogisticsDelivery: async () => {
+      throw new Error('draft delivery must not transition directly to delivered');
+    },
+  }, { companyId: COMPANY }, {
+    id: 'map-delivery-draft',
+    deliveryStatus: 'delivered',
+    actualWeightKg: 12,
+    quantity: 12,
+  }, {
+    companyId: COMPANY,
+    productId: PRODUCT,
+    unitId: UNIT,
+    warehouseId: WAREHOUSE,
+    quantity: 12,
+  });
+
+  assert.equal(saved.deliveryStatus, 'draft');
+  assert.equal(saved.isDelivered, false);
+});
+
 test('rejects missing target product mapping instead of guessing a product or stock quantity', async () => {
   await assert.rejects(
     () => saveVpsDeliveryReport({}, { companyId: COMPANY }, { id: 'delivery-report-2' }, {

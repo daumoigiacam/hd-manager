@@ -53,6 +53,12 @@ const timestamp = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const deliveryLifecycleStatus = (delivery = {}) => text(delivery.status).toUpperCase();
+
+const isDeliveredLifecycleStatus = (status) => (
+  status === 'DELIVERED' || status === 'COMPLETED'
+);
+
 export const normalizeVpsDeliveryReport = (delivery = {}) => {
   const metadata = sourceData(delivery.metadata);
   const sourceReport = sourceData(metadata.sourceReport);
@@ -66,6 +72,7 @@ export const normalizeVpsDeliveryReport = (delivery = {}) => {
   const differenceKg = asNumber(
     metadata.differenceKg ?? sourceReport.differenceKg ?? actualWeightKg - expectedWeightKg,
   );
+  const lifecycleStatus = deliveryLifecycleStatus(delivery);
 
   return {
     ...sourceReport,
@@ -85,6 +92,9 @@ export const normalizeVpsDeliveryReport = (delivery = {}) => {
     createdAt: delivery.createdAt || sourceReport.createdAt || '',
     updatedAt: delivery.updatedAt || sourceReport.updatedAt || '',
     deliveryNumber: delivery.deliveryNumber || '',
+    deliveryStatus: lifecycleStatus.toLowerCase(),
+    isDelivered: isDeliveredLifecycleStatus(lifecycleStatus) || Boolean(delivery.deliveredAt),
+    deliveredAt: delivery.deliveredAt || sourceReport.deliveredAt || '',
     vpsDelivery: true,
     source: 'hd-connect-vps',
     isArchived: Boolean(delivery.deletedAt),
@@ -174,7 +184,7 @@ export async function saveVpsDeliveryReport(api, session, report = {}, dispatch 
   const sourceDispatchId = text(report.dispatchId || dispatch.sourceRecordId || dispatch.sourceDispatchId || dispatch.id);
   const expectedWeightKg = asNumber(report.expectedWeightKg ?? dispatch.weightKg);
   const differenceKg = actualWeightKg - expectedWeightKg;
-  const delivery = await api.createLogisticsDelivery({
+  let delivery = await api.createLogisticsDelivery({
     deliveryNumber: deliveryNumber(sourceRecordId),
     salesOrderId: optionalUuid(report.orderId || dispatch.orderId || dispatch.salesOrderId, 'VPS_DELIVERY_ORDER_MAPPING_INVALID', 'The linked sales order is not a VPS record.'),
     customerId: optionalUuid(report.customerId || dispatch.customerId, 'VPS_DELIVERY_CUSTOMER_MAPPING_INVALID', 'The linked customer is not a VPS record.'),
@@ -217,6 +227,22 @@ export async function saveVpsDeliveryReport(api, session, report = {}, dispatch 
   });
   if (delivery?.companyId !== companyId) {
     throw failure('The VPS delivery response belongs to a different tenant.', 'VPS_DELIVERY_REPORT_TENANT_MISMATCH');
+  }
+  // A map confirmation may only close a delivery that has already passed the
+  // assignment, loading, and departure controls in the native workflow.
+  // Weight reporting is deliberately not a substitute for physical delivery.
+  if (
+    text(report.deliveryStatus).toLowerCase() === 'delivered'
+    && deliveryLifecycleStatus(delivery) === 'DEPARTED'
+    && typeof api.transitionLogisticsDelivery === 'function'
+  ) {
+    delivery = await api.transitionLogisticsDelivery(delivery.id, {
+      transitionCode: 'DELIVER',
+      reason: text(report.note) || 'Confirmed from HD Manager delivery map.',
+    });
+    if (delivery?.companyId !== companyId) {
+      throw failure('The VPS delivery transition belongs to a different tenant.', 'VPS_DELIVERY_REPORT_TENANT_MISMATCH');
+    }
   }
   return normalizeVpsDeliveryReport(delivery);
 }

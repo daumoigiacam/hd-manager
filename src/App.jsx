@@ -20740,7 +20740,9 @@ export default function App() {
       setRawDeliveryReports(prev => [saved, ...(prev || []).filter(report => (
         report.id !== saved.id && report.sourceRecordId !== saved.sourceRecordId
       ))]);
-      return saved.id;
+      return reportData.source === 'map_delivery'
+        ? { id: saved.id, isDelivered: saved.isDelivered, deliveryStatus: saved.deliveryStatus }
+        : saved.id;
     }
     setRawDeliveryReports(prev => {
       const nextReports = (prev || []).filter(report => report.id !== id);
@@ -37617,7 +37619,7 @@ function MapManagementView({
         && isValidLatLng(Number(currentMapPosition.latitude), Number(currentMapPosition.longitude))
         ? currentMapPosition
         : null;
-      await onAddDeliveryReport({
+      const savedReport = await onAddDeliveryReport({
         idempotencyKey: `map_delivery:${mission.dispatchId}`,
         source: 'map_delivery',
         deliveryStatus: 'delivered',
@@ -37639,6 +37641,10 @@ function MapManagementView({
         deliveryGpsTimestamp: deliveryPosition?.timestampMs ?? null,
         note: 'Đánh dấu đã giao từ bản đồ',
       });
+      if (savedReport && typeof savedReport === 'object' && !savedReport.isDelivered) {
+        const lifecycle = savedReport.deliveryStatus || 'draft';
+        throw new Error(`Phiếu giao nhận VPS đang ở trạng thái ${lifecycle}. Cần phân công, chất hàng và xác nhận xe xuất phát trước khi xác nhận đã giao.`);
+      }
       setOptimisticDeliveredIds(prev => prev.includes(markerId) ? prev : [...prev, markerId]);
       const nextMission = getNextPendingDeliveryPoint([markerId], currentMapPosition);
       if (nextMission) {

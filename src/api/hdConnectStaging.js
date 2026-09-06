@@ -1138,6 +1138,33 @@ export class HdConnectStagingApi {
     );
   }
 
+  async transitionLogisticsDelivery(id, record = {}) {
+    const deliveryId = requireIdentityInput(
+      id,
+      'LOGISTICS_DELIVERY_ID_REQUIRED',
+      'A delivery id is required.',
+    );
+    if (!isUuid(deliveryId)) {
+      throw new HdApiError('The delivery id is invalid.', {
+        code: 'LOGISTICS_DELIVERY_ID_INVALID',
+      });
+    }
+    const transitionCode = stringValue(record.transitionCode).toUpperCase();
+    if (!transitionCode) {
+      throw new HdApiError('A delivery lifecycle transition is required.', {
+        code: 'LOGISTICS_DELIVERY_TRANSITION_REQUIRED',
+      });
+    }
+    return this.client.post(
+      `/logistics-suite/deliveries/${deliveryId}/transition`,
+      {
+        transitionCode,
+        ...(stringValue(record.reason) ? { reason: stringValue(record.reason) } : {}),
+      },
+      { retry: false },
+    );
+  }
+
   async listFinanceCashAccounts(query = {}) {
     return normalizePage(await this.client.get('/finance-suite/cash-accounts', { query: toTenantSafeQuery(query) }), (item) => item);
   }

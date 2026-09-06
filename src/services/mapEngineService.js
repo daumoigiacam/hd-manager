@@ -621,7 +621,16 @@ export const buildDeliveryMissions = ({ warehouseDispatches = [], customers = []
       // để tránh lấy nhầm vị trí cũ khi khách đã cập nhật GPS trong phần Khách hàng.
       const coordinates = customerCoordinates || dispatchCoordinates || {};
       const report = reportLookup.get(dispatch.id) || {};
-      const isDelivered = Boolean(report.id || dispatch.deliveryStatus === 'delivered' || dispatch.status === 'delivered');
+      // A report proves that someone recorded a result, not that the native
+      // logistics lifecycle reached DELIVERED. This distinction keeps a draft
+      // report from hiding a dispatch that still needs operational handling.
+      const isDelivered = Boolean(
+        report.isDelivered
+        || report.deliveryStatus === 'delivered'
+        || report.deliveryStatus === 'completed'
+        || dispatch.deliveryStatus === 'delivered'
+        || dispatch.status === 'delivered'
+      );
       const resolvedCustomerId = dispatch.customerId || dispatch.customerID || customer.id || customer.customerId || '';
       return {
         id: dispatch.id,

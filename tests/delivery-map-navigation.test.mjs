@@ -75,6 +75,17 @@ test('keeps delivered missions out of the active map and list', () => {
   assert.deepEqual(pending.map(point => point.id), ['pending-1']);
 });
 
+test('does not hide a dispatch merely because a draft VPS delivery report exists', () => {
+  const missions = buildDeliveryMissions({
+    warehouseDispatches: [{ id: 'dispatch-1', customerId: 'customer-1', date: '2026-09-06' }],
+    customers: [{ id: 'customer-1', name: 'Customer', location: { lat: 10.7, lng: 106.7 } }],
+    deliveryReports: [{ id: 'delivery-1', dispatchId: 'dispatch-1', deliveryStatus: 'draft', isDelivered: false }],
+    date: '2026-09-06',
+  });
+  assert.equal(missions.length, 1);
+  assert.equal(missions[0].isDelivered, false);
+});
+
 test('distinguishes a missing customer pin from a device GPS position that is still loading', () => {
   assert.deepEqual(
     getDeliveryCustomerLocationState({ customerPosition: { latitude: 10.7, longitude: 106.7 } }),
