@@ -210,6 +210,12 @@ test('đơn tham chiếu điền mặc định nhưng vẫn gửi giá trị nh�
   assert.match(warehouseModuleSource, /app không tự đổi số trên đơn hoặc số tồn/);
 });
 
+test('VPS báo rõ tồn âm thay vì che lỗi bằng thông báo API chung', () => {
+  assert.match(warehouseModuleSource, /NEGATIVE_STOCK_NOT_ALLOWED/);
+  assert.match(warehouseModuleSource, /Không thể lưu phiếu xuất vì tồn kho của đúng đơn vị chưa đủ/);
+  assert.match(warehouseModuleSource, /hệ thống không tự cho phép tồn âm/);
+});
+
 test('thanh tim kiem danh sach xuat kho khong ep dong tong so tren mobile', () => {
   assert.match(warehouseModuleSource, /flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center/);
   assert.match(warehouseModuleSource, /w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1/);
