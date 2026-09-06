@@ -4957,6 +4957,19 @@ const normalizeLookupText = (value = '') => `${value}`
 const collapseLookupText = (value = '') => normalizeLookupText(value).replace(/\s+/g, '');
 const tokenizeLookupText = (value = '') => normalizeLookupText(value).split(' ').filter(Boolean);
 const buildLookupInitials = (value = '') => tokenizeLookupText(value).map(token => token.charAt(0)).join('');
+const getPrimaryProductUnitLabel = (value = '') => `${value}`
+  .split(/[,;/|]+/)
+  .map(item => item.trim())
+  .find(Boolean) || '';
+const findVpsUnitByLabel = (units = [], label = '') => {
+  const normalizedLabel = normalizeLookupText(label);
+  if (!normalizedLabel) return null;
+  return (units || []).find((unit) => [unit?.name, unit?.symbol, unit?.code, unit?.label]
+    .some((candidate) => normalizeLookupText(candidate) === normalizedLabel)) || null;
+};
+const getVpsUnitDecimalPrecision = (label = '') => (
+  ['kg', 'kilogram', 'gram', 'g', 'tan', 'ton'].includes(normalizeLookupText(label)) ? 3 : 0
+);
 const normalizeCustomerPhone = (value = '') => `${value}`.replace(/\D/g, '');
 const buildCustomerPhoneDuplicateKey = (value = '') => normalizeCustomerPhone(value);
 const normalizeEmployeeLoginPhone = (value = '') => {
@@ -19050,10 +19063,7 @@ export default function App() {
 
   const handleAddCustomer = async (empId, customerData = {}) => {
     if (isVpsApiMode) {
-      const assignedEmpId = empId || customerData?.empId || currentUser?.id || '';
-      if (!assignedEmpId) {
-        throw new Error('Select a responsible employee before saving a customer.');
-      }
+      const assignedEmpId = empId || customerData?.empId || '';
       const customerName = toTitleCase(stripCustomerHonorificPrefix(customerData?.name || '')).trim();
       const normalizedPhone = buildCustomerPhoneDuplicateKey(customerData?.phone);
       if (!normalizedPhone) {
@@ -19071,7 +19081,7 @@ export default function App() {
       const savedCustomer = await getHdConnectStagingApi().createCustomer({
         ...customerData,
         name: customerName,
-        empId: assignedEmpId,
+        ...(assignedEmpId ? { empId: assignedEmpId } : {}),
         clientMutationId: customerData.clientMutationId || `customer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
       upsertLocalListRecord(setRawCustomers, savedCustomer);
@@ -19401,8 +19411,47 @@ export default function App() {
 
   const handleAddProduct = async (productData) => {
     if (isVpsApiMode) {
-      const savedProduct = await getHdConnectStagingApi().createProduct({
+      const api = getHdConnectStagingApi();
+      const unitLabel = getPrimaryProductUnitLabel(productData?.unit || productData?.stockUnit || '');
+      if (!unitLabel) {
+        throw new Error('Sản phẩm VPS cần một đơn vị tính chính xác trước khi lưu.');
+      }
+      let availableUnits = vpsMasterData?.units || [];
+      let unit = findVpsUnitByLabel(availableUnits, unitLabel);
+      if (!unit) {
+        const refreshed = await api.listUnits({ limit: 100 });
+        availableUnits = refreshed.items;
+        unit = findVpsUnitByLabel(availableUnits, unitLabel);
+      }
+      if (!unit) {
+        try {
+          unit = await api.createUnit({
+            name: unitLabel,
+            symbol: unitLabel,
+            decimalPrecision: getVpsUnitDecimalPrecision(unitLabel),
+            clientMutationId: `unit-${collapseLookupText(unitLabel)}`,
+          });
+        } catch (error) {
+          const refreshed = await api.listUnits({ limit: 100 });
+          availableUnits = refreshed.items;
+          unit = findVpsUnitByLabel(availableUnits, unitLabel);
+          if (!unit) throw error;
+        }
+      }
+      if (!unit?.id) {
+        throw new Error('Không thể xác nhận đơn vị tính master của sản phẩm.');
+      }
+      setVpsMasterData((previous) => ({
+        ...previous,
+        units: [...new Map([...(previous?.units || []), unit].map((item) => [item.id, item])).values()],
+      }));
+      const savedProduct = await api.createProduct({
         ...productData,
+        unitId: unit.id,
+        baseUnitId: unit.id,
+        salesUnitId: unit.id,
+        purchaseUnitId: unit.id,
+        inventoryUnitId: unit.id,
         clientMutationId: productData?.clientMutationId || `product-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
       upsertLocalListRecord(setRawProducts, savedProduct);
@@ -19424,9 +19473,24 @@ export default function App() {
     if (isVpsApiMode) {
       const currentProduct = rawProducts.find((product) => product.id === prodId);
       if (!currentProduct) throw new Error('The product was not found in the current tenant.');
-      const savedProduct = await getHdConnectStagingApi().updateProduct(prodId, {
+      const api = getHdConnectStagingApi();
+      const unitLabel = getPrimaryProductUnitLabel(updatedData?.unit || currentProduct?.unit || '');
+      let unit = findVpsUnitByLabel(vpsMasterData?.units || [], unitLabel);
+      if (!unit && unitLabel) {
+        const refreshed = await api.listUnits({ limit: 100 });
+        unit = findVpsUnitByLabel(refreshed.items, unitLabel);
+      }
+      if (!unit?.id) {
+        throw new Error('Không tìm thấy UOM master cho sản phẩm. Hãy tạo sản phẩm với đơn vị tính hợp lệ.');
+      }
+      const savedProduct = await api.updateProduct(prodId, {
         ...currentProduct,
         ...updatedData,
+        unitId: unit.id,
+        baseUnitId: unit.id,
+        salesUnitId: unit.id,
+        purchaseUnitId: unit.id,
+        inventoryUnitId: unit.id,
         clientMutationId: updatedData?.clientMutationId || `product-${prodId}-${Date.now()}`,
       });
       upsertLocalListRecord(setRawProducts, savedProduct);
@@ -63037,6 +63101,9 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
   onSelect
 }) {
   if (!product || variants.length === 0) return null;
+  const hasAttributeChoices = variants.some(({ variant = {} }) => Boolean(
+    `${variant.size || variant.sizeLabel || variant.attributeLabel || ''}`.trim(),
+  ));
   return (
     <div className="rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
@@ -63046,7 +63113,9 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
             {product.category || product.unit || 'Sản phẩm'}
           </p>
         </div>
-        <span className="shrink-0 text-[10px] font-bold text-slate-400">Chọn thuộc tính</span>
+        <span className="shrink-0 text-[10px] font-bold text-slate-400">
+          {hasAttributeChoices ? 'Chọn thuộc tính' : 'Chọn đơn vị'}
+        </span>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
         {variants.map(({ variant, key, selectionKey, product: optionProduct, displayAttributeLabel, displayPrice }) => {
@@ -63107,6 +63176,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const createDraftItem = (seed = {}) => ({
     localItemId: seed.localItemId || `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     productId: seed.productId || '',
+    unitId: seed.unitId || seed.salesUnitId || seed.baseUnitId || '',
     productSearch: seed.productSearch || '',
     attributeLabel: seed.attributeLabel ?? seed.productAttribute ?? seed.attribute ?? '',
     weightKg: seed.weightKg ?? seed.sizeLabel ?? '',
@@ -65172,8 +65242,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       const quantityUnit = selectedProduct
         ? resolveCustomerProductActualUnit(configuration, selectedProduct)
         : item.quantityUnit || defaultQuantityUnit;
-      return {
+    return {
       productId,
+      unitId: selectedProduct?.unitId || '',
       productSearch: selectedProduct?.name || '',
       attributeLabel: configuredAttribute
         || (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
@@ -65226,6 +65297,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ...existingItem,
       localItemId: existingItem.localItemId,
       productId: selectedProduct.id,
+      unitId: selectedProduct.unitId || '',
       productSearch: selectedProduct.name || existingItem.productSearch || '',
       attributeLabel: configuredAttribute
         || (attributeOptions.includes(existingItem.attributeLabel) ? existingItem.attributeLabel : ''),
@@ -67494,10 +67566,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                 ? getCustomerBranchFixedProductIds(selectedCustomer, draft.branchId, activeProducts)
                                 : getCustomerFixedProductIds(selectedCustomer, activeProducts)
                               : [];
-                            const branchScopedProducts = selectedCustomer
-                              ? activeProducts.filter(product => branchFixedProductIds.includes(product.id))
-                              : [];
-                            const branchScopedProductVariants = branchScopedProducts.flatMap(product => (
+                            // Fixed products are a shortcut, not an access-control list. Staff must be
+                            // able to add any active tenant product when a customer requests it.
+                            const catalogProducts = [...activeProducts].sort((left, right) => (
+                              Number(branchFixedProductIds.includes(right.id)) - Number(branchFixedProductIds.includes(left.id))
+                            ));
+                            const catalogProductVariants = catalogProducts.flatMap(product => (
                               getCustomerProductVariants(productConfigSource, product).map(variant => ({
                                 product,
                                 variant,
@@ -67505,12 +67579,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               }))
                             ));
                             const filteredProductVariants = productSearchKeyword
-                              ? branchScopedProductVariants.filter(({ product, variant }) => (
+                              ? catalogProductVariants.filter(({ product, variant }) => (
                                   productMatchesLookup(product, productSearchKeyword)
                                   || [variant.size, variant.attributeLabel, variant.unit]
                                     .some(value => normalizeLookupText(value || '').includes(productSearchKeyword))
                                 ))
-                              : branchScopedProductVariants;
+                              : catalogProductVariants;
                             const selectedConfiguration = selectedProduct
                               ? resolveCustomerProductBillingConfiguration(productConfigSource, selectedProduct, {
                                   configurationId: item.configurationId || '',
@@ -67577,7 +67651,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                         <div className="max-h-56 overflow-y-auto p-2 space-y-1">
                                           {selectedCustomer && (
                                             <p className="px-2 py-1 text-[10px] font-bold text-emerald-600">
-                                              Đang lọc theo sản phẩm cố định của chi nhánh.
+                                              Sản phẩm cố định được ưu tiên; bạn vẫn có thể chọn toàn bộ danh mục.
                                             </p>
                                           )}
                                           {filteredProductVariants.map(({ product, variant, key }) => {
@@ -74728,7 +74802,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const handleAddCustomerSubmit = async (e) => {
     e.preventDefault();
     const finalEmpId = isSales ? employee?.id || '' : newCus.empId;
-    if (!finalEmpId) {
+    if (!finalEmpId && !isOwnerCustomerAccount) {
       setCustomerContactStatus('Vui lòng chọn nhân viên phụ trách trước khi lưu khách hàng.');
       return;
     }

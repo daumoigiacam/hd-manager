@@ -12,6 +12,7 @@ import {
   normalizeVpsProduct,
   normalizeVpsSession,
   normalizeVpsStockMovement,
+  normalizeVpsUnit,
 } from '../src/api/hdConnectStaging.js';
 import { saveVpsCompanyReceivingBankAccount } from '../src/api/vpsCompanySettings.js';
 
@@ -492,6 +493,41 @@ test('normalizes relational VPS unit records to the legacy product unit label', 
   assert.equal(product.unitId, 'unit-1');
 });
 
+test('creates and normalizes a tenant-scoped unit of measure before product creation', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    post: async (path, payload, options) => {
+      calls.push({ path, payload, options });
+      return { id: 'unit-1', code: 'CON', name: 'Con', symbol: 'Con' };
+    },
+  });
+
+  const unit = await api.createUnit({
+    name: 'Con',
+    symbol: 'Con',
+    decimalPrecision: 0,
+    clientMutationId: 'unit-con',
+  });
+
+  assert.equal(unit.label, 'Con');
+  assert.deepEqual(calls[0].payload, {
+    name: 'Con',
+    symbol: 'Con',
+    decimalPrecision: 0,
+  });
+  assert.equal(calls[0].path, '/master-data/units');
+  assert.equal(calls[0].options.idempotencyKey, 'unit-con');
+  assert.equal(calls[0].options.retry, false);
+  assert.deepEqual(normalizeVpsUnit({ id: 'unit-2', name: 'Kg', symbol: null }), {
+    id: 'unit-2',
+    code: '',
+    name: 'Kg',
+    symbol: '',
+    label: 'Kg',
+  });
+  await assert.rejects(() => api.createUnit({}), { code: 'UNIT_NAME_REQUIRED' });
+});
+
 test('normalizes relational order-line units before the legacy UI renders them', () => {
   const order = normalizeVpsOrder({
     id: 'order-1',
@@ -898,6 +934,19 @@ test('customer assignments distinguish omitted HR fields, explicit unassignment 
   assert.equal(Object.hasOwn(body, 'salesOwnerId'), false);
   await api.createCustomer({ name: 'Explicit null', salesEmployeeId: null });
   assert.equal(body.salesEmployeeId, null);
+});
+
+test('allows an owner to create the first VPS customer without inventing a sales employee', async () => {
+  let body;
+  const api = createHdConnectStagingApi({
+    post: async (_path, payload) => {
+      body = payload;
+      return { id: 'customer-1', ...payload };
+    },
+  });
+
+  await api.createCustomer({ name: 'First customer', phone: '0900000000' });
+  assert.equal(Object.hasOwn(body, 'salesEmployeeId'), false);
 });
 
 test('customer assignment rejects non-UUID, ambiguous and unmapped historical HR references before transport', async () => {

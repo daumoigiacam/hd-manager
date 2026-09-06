@@ -90,6 +90,36 @@ test('catalog search groups one product and keeps its attributes as selectable c
   assert.match(appSource, /onSelect=\{handleQuickProductCardSelect\}/);
 });
 
+test('catalog selection distinguishes units from attributes and carries the target unit ID', () => {
+  assert.match(appSource, /const hasAttributeChoices = variants\.some/);
+  assert.match(appSource, /hasAttributeChoices \? 'Chọn thuộc tính' : 'Chọn đơn vị'/);
+  assert.match(appSource, /unitId: selectedProduct\.unitId \|\| ''/);
+  assert.match(appSource, /unitId: seed\.unitId \|\| seed\.salesUnitId \|\| seed\.baseUnitId \|\| ''/);
+});
+
+test('VPS product creation resolves a UOM master and assigns it to every product role', () => {
+  assert.match(appSource, /const getPrimaryProductUnitLabel/);
+  assert.match(appSource, /const findVpsUnitByLabel/);
+  assert.match(appSource, /await api\.createUnit\(/);
+  assert.match(appSource, /baseUnitId: unit\.id/);
+  assert.match(appSource, /salesUnitId: unit\.id/);
+  assert.match(appSource, /purchaseUnitId: unit\.id/);
+  assert.match(appSource, /inventoryUnitId: unit\.id/);
+});
+
+test('a company owner can create the first customer before a sales employee exists', () => {
+  assert.match(appSource, /if \(!finalEmpId && !isOwnerCustomerAccount\)/);
+  assert.match(appSource, /const assignedEmpId = empId \|\| customerData\?\.empId \|\| ''/);
+  assert.match(appSource, /\.\.\.\(assignedEmpId \? \{ empId: assignedEmpId \} : \{\}\)/);
+});
+
+test('manual order product search keeps the active catalog available beyond fixed products', () => {
+  assert.match(appSource, /const catalogProducts = \[\.\.\.activeProducts\]\.sort/);
+  assert.match(appSource, /const catalogProductVariants = catalogProducts\.flatMap/);
+  assert.match(appSource, /catalogProductVariants\.filter/);
+  assert.match(appSource, /Sản phẩm cố định được ưu tiên; bạn vẫn có thể chọn toàn bộ danh mục\./);
+});
+
 test('new product memory merges customer products once without replacing existing data', () => {
   const input = {
     customer: {

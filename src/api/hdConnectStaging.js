@@ -28,6 +28,15 @@ const unitLabel = (value) => (
     : stringValue(value)
 );
 
+export const normalizeVpsUnit = (record = {}) => ({
+  ...record,
+  id: record.id,
+  code: stringValue(record.code),
+  name: stringValue(record.name),
+  symbol: stringValue(record.symbol),
+  label: unitLabel(record),
+});
+
 const omitUndefined = (value) => Object.fromEntries(
   Object.entries(value).filter(([, item]) => item !== undefined),
 );
@@ -928,7 +937,26 @@ export class HdConnectStagingApi {
   }
 
   async listUnits(query = {}) {
-    return normalizePage(await this.client.get('/master-data/units', { query }), (unit) => unit);
+    return normalizePage(await this.client.get('/master-data/units', { query }), normalizeVpsUnit);
+  }
+
+  async createUnit(record = {}) {
+    const name = stringValue(record.name || record.label || record.unit);
+    if (!name) {
+      throw new HdApiError('A unit name is required.', { code: 'UNIT_NAME_REQUIRED' });
+    }
+
+    return normalizeVpsUnit(await this.client.post('/master-data/units', omitUndefined({
+      code: stringValue(record.code) || undefined,
+      name,
+      symbol: stringValue(record.symbol) || name,
+      decimalPrecision: Number.isInteger(record.decimalPrecision)
+        ? record.decimalPrecision
+        : 0,
+    }), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
   }
 
   async listProducts(query = {}) {
