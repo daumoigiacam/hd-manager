@@ -159,6 +159,44 @@ test('reads and redeems customer loyalty against a selected native receivable on
   assert.equal(calls[2].options.retry, false);
 });
 
+test('creates a portal transfer request from native receivables without caller tenant or customer scope', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    post: async (path, payload, options) => {
+      calls.push({ path, payload, options });
+      return { id: 'payment-1', ...payload };
+    },
+  });
+
+  await api.requestCustomerPortalPayment({
+    companyId: 'attacker-company',
+    customerId: 'attacker-customer',
+    receivableIds: [
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+      '11111111-1111-4111-8111-111111111111',
+    ],
+    clientMutationId: 'portal-transfer-1',
+  });
+
+  assert.equal(calls[0].path, '/cx-suite/portal/payment-requests');
+  assert.deepEqual(calls[0].payload, {
+    receivableIds: [
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ],
+    clientMutationId: 'portal-transfer-1',
+  });
+  assert.equal(Object.hasOwn(calls[0].payload, 'companyId'), false);
+  assert.equal(Object.hasOwn(calls[0].payload, 'customerId'), false);
+  assert.equal(calls[0].options.idempotencyKey, 'portal-transfer-1');
+  assert.equal(calls[0].options.retry, false);
+  await assert.rejects(
+    () => api.requestCustomerPortalPayment({ receivableIds: ['not-a-uuid'] }),
+    { code: 'PORTAL_PAYMENT_RECEIVABLE_REQUIRED' },
+  );
+});
+
 test('routes customer-support chat through scoped VPS contracts without caller tenant or customer IDs', async () => {
   const calls = [];
   const conversation = {

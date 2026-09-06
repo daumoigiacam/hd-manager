@@ -12122,6 +12122,7 @@ export default function App() {
   const orderRequestCreateInFlightRef = useRef(new Set());
   const customerProductPreferenceCacheRef = useRef(new Map());
   const pointRedemptionRequestRef = useRef(new Map());
+  const customerPaymentRequestRef = useRef(new Map());
   const refreshCollectionsInFlightRef = useRef(false);
   const activeTenantScopeRef = useRef('');
   const pendingFirebaseWritesRef = useRef([]);
@@ -17747,6 +17748,43 @@ export default function App() {
     };
   };
 
+  const handleRequestCustomerPortalPayment = async ({
+    customerId,
+    receivableIds = [],
+  } = {}) => {
+    if (!isVpsApiMode) {
+      return { success: false, message: 'Yêu cầu chuyển khoản VPS chưa được bật.' };
+    }
+    const normalizedReceivableIds = [...new Set(
+      (Array.isArray(receivableIds) ? receivableIds : [])
+        .map(value => `${value || ''}`.trim())
+        .filter(Boolean),
+    )].sort();
+    if (!customerId || normalizedReceivableIds.length === 0) {
+      return { success: false, message: 'Chưa xác định được khoản công nợ VPS cần thanh toán.' };
+    }
+    const requestKey = `${customerId}:${normalizedReceivableIds.join('|')}`;
+    let clientMutationId = customerPaymentRequestRef.current.get(requestKey);
+    if (!clientMutationId) {
+      clientMutationId = globalThis.crypto?.randomUUID?.()
+        || `payment_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+      customerPaymentRequestRef.current.set(requestKey, clientMutationId);
+    }
+    try {
+      const payment = await getHdConnectStagingApi().requestCustomerPortalPayment({
+        receivableIds: normalizedReceivableIds,
+        clientMutationId,
+      });
+      return { success: true, payment };
+    } catch (error) {
+      customerPaymentRequestRef.current.delete(requestKey);
+      return {
+        success: false,
+        message: error?.message || 'Chưa tạo được yêu cầu chuyển khoản qua VPS.',
+      };
+    }
+  };
+
   const handleEditPayment = async (paymentId, paymentData = {}) => {
     if (isVpsApiMode) {
       throw new Error('Payment editing is blocked in VPS staging until the finance payment contract is approved.');
@@ -23173,6 +23211,7 @@ export default function App() {
           onAddMessage={handleAddMessage}
           onMarkCustomerInboxItemsRead={handleMarkCustomerInboxItemsRead}
           onRedeemCustomerPoints={handleRedeemCustomerPoints}
+          onRequestCustomerPortalPayment={handleRequestCustomerPortalPayment}
           onLinkCustomerBankAccount={handleLinkCustomerBankAccount}
           onLogout={handleLogout}
         />
@@ -84702,6 +84741,7 @@ function CustomerPortalView({
   onAddMessage,
   onMarkCustomerInboxItemsRead,
   onRedeemCustomerPoints,
+  onRequestCustomerPortalPayment,
   onLinkCustomerBankAccount,
   onLogout
 }) {
@@ -85421,6 +85461,7 @@ function CustomerPortalView({
     : allPayableInvoiceAmount;
   const activeDebtPaymentAmount = Math.max(0, Math.round(parseLooseMoneyValue(debtPaymentIntent?.amount))) || customerPaymentAmount;
   const activeDebtPaymentOrderCount = Math.max(0, Math.floor(parseLooseMoneyValue(debtPaymentIntent?.orderCount)))
+    || (Array.isArray(debtPaymentIntent?.receivableIds) ? debtPaymentIntent.receivableIds.length : 0)
     || selectedPaymentOrders.length;
   const loyaltyPointValue = Math.max(1, parseLooseMoneyValue(loyaltySummary.redeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint);
   const availableCustomerPoints = Math.max(0, Math.floor(parseLooseMoneyValue(
@@ -85935,20 +85976,38 @@ function CustomerPortalView({
         : 'Hiện tại bạn không có công nợ cần thanh toán.');
       return;
     }
-    const payableOrders = selectedPaymentOrders.length > 0
-      ? selectedPaymentOrders
-      : unpaidCustomerOrdersForPayment;
-    const orderIds = payableOrders
-      .map(order => `${order.id || order.orderId || ''}`.trim())
-      .filter(Boolean);
-    if (!orderIds.length) {
-      setDebtPaymentActionMessage('Không tìm thấy hóa đơn hợp lệ để tạo QR thanh toán.');
-      return;
-    }
-
     setIsPreparingDebtPayment(true);
     setDebtPaymentActionMessage('');
     try {
+      const payableOrders = selectedPaymentOrders.length > 0
+        ? selectedPaymentOrders
+        : unpaidCustomerOrdersForPayment;
+      const orderIds = payableOrders
+        .map(order => `${order.id || order.orderId || ''}`.trim())
+        .filter(Boolean);
+      if (isVpsApiMode) {
+        const selectedOrderIds = new Set(orderIds);
+        const receivableIds = safePortalReceivables
+          .filter(receivable => (
+            selectedOrderIds.size === 0
+              || selectedOrderIds.has(`${receivable?.sourceAggregateId || ''}`)
+          ))
+          .map(receivable => `${receivable?.id || ''}`.trim())
+          .filter(Boolean);
+        const result = await onRequestCustomerPortalPayment?.({
+          customerId: customerProfile?.id || currentUser?.customerId || '',
+          receivableIds,
+        });
+        if (!result?.success || !result?.payment) {
+          throw new Error(result?.message || 'Chưa tạo được yêu cầu chuyển khoản qua VPS.');
+        }
+        setDebtPaymentIntent(result.payment);
+        setIsPaymentSheetOpen(true);
+        return;
+      }
+      if (!orderIds.length) {
+        throw new Error('Không tìm thấy hóa đơn hợp lệ để tạo QR thanh toán.');
+      }
       const payment = await requestCustomerDebtPaymentIntent({ firebaseUser, appId, orderIds });
       setDebtPaymentIntent(payment);
       setIsPaymentSheetOpen(true);
@@ -86584,17 +86643,23 @@ function CustomerPortalView({
           <div className="space-y-5">
             <section>
               <p className="text-sm font-black uppercase tracking-[0.18em] text-emerald-700">Thanh toán công nợ</p>
-              <h2 className="mt-1 text-2xl font-black text-slate-950">Quét QR hoặc mở app ngân hàng</h2>
-              <p className="mt-1 text-sm font-semibold text-slate-500">QR đã chứa đúng số tiền và nội dung để SePay tự đối soát.</p>
+              <h2 className="mt-1 text-2xl font-black text-slate-950">{debtPaymentQrUrl ? 'Quét QR hoặc mở app ngân hàng' : 'Chuyển khoản ngân hàng'}</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">{debtPaymentQrUrl ? 'QR đã chứa đúng số tiền và nội dung để SePay tự đối soát.' : 'VPS đã tạo yêu cầu chuyển khoản; công nợ chỉ được cập nhật sau khi ngân hàng được đối soát.'}</p>
             </section>
 
             <section className="rounded-[2rem] border border-emerald-100 bg-emerald-50/60 p-4 text-center">
               <div className="flex flex-col items-center">
-                <img
-                  src={debtPaymentQrUrl}
-                  alt="Mã QR thanh toán"
-                  className="h-56 w-56 rounded-3xl border border-white bg-white object-contain p-3 shadow-sm"
-                />
+                {debtPaymentQrUrl ? (
+                  <img
+                    src={debtPaymentQrUrl}
+                    alt="Mã QR thanh toán"
+                    className="h-56 w-56 rounded-3xl border border-white bg-white object-contain p-3 shadow-sm"
+                  />
+                ) : (
+                  <div className="flex h-56 w-56 items-center justify-center rounded-3xl border border-emerald-100 bg-white p-6 text-center text-sm font-bold leading-6 text-emerald-700 shadow-sm">
+                    Chuyển đúng số tiền và nội dung bên dưới để hệ thống đối soát an toàn.
+                  </div>
+                )}
                 <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">{formatNumber(activeDebtPaymentAmount)} đ</p>
                 <p className="mt-1 text-sm font-semibold text-emerald-700">{activeDebtPaymentOrderCount} hóa đơn</p>
               </div>

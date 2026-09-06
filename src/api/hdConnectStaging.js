@@ -1027,6 +1027,27 @@ export class HdConnectStagingApi {
     );
   }
 
+  async requestCustomerPortalPayment(record = {}) {
+    const receivableIds = [...new Set(
+      (Array.isArray(record.receivableIds) ? record.receivableIds : [])
+        .map(toTargetId)
+        .filter(Boolean),
+    )].sort();
+    if (receivableIds.length === 0) {
+      throw new HdApiError('At least one native receivable is required.', {
+        code: 'PORTAL_PAYMENT_RECEIVABLE_REQUIRED',
+      });
+    }
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
+    return this.client.post('/cx-suite/portal/payment-requests', {
+      receivableIds,
+      clientMutationId,
+    }, {
+      idempotencyKey: clientMutationId,
+      retry: false,
+    });
+  }
+
   async getCustomerPortalLoyalty() {
     return this.client.get('/cx-suite/loyalty');
   }
