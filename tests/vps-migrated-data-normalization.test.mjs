@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { normalizeVpsCustomer, normalizeVpsProduct, normalizeVpsOrder, normalizeVpsPayment, normalizeVpsFinanceExpense, normalizeVpsAttendance } from '../src/api/hdConnectStaging.js';
 
 const marker = { sourceRecordId: 'legacy-original', historicalOnly: true };
+test('customer source references and User ownership are not proof of a mapped HR assignment', () => {
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const hrId = '1c0fc8af-1bab-42af-b3e2-de71b11059f8';
+  const source = { id: 'native-customer', companyId: 'tenant', salesOwnerId: userId, salesEmployeeId: null, attributes: { __hdcoProjection: marker, empId: 'employee-legacy', salesEmpId: userId, customBusinessField: 3 } };
+  const historical = normalizeVpsCustomer(source);
+  assert.equal(historical.empId, '');
+  assert.equal(historical.salesEmpId, '');
+  assert.equal(historical.userSalesOwnerId, userId);
+  assert.equal(historical.salesOwnerId, undefined);
+  assert.equal(historical.salesEmployeeReconciliationRequired, true);
+  assert.equal(historical.attributes, source.attributes);
+  assert.equal(historical.legacySourceId, marker.sourceRecordId);
+  assert.equal(historical.customBusinessField, 3);
+  const mapped = normalizeVpsCustomer({ ...source, salesEmployeeId: hrId });
+  assert.equal(mapped.empId, hrId);
+  assert.equal(mapped.salesEmpId, hrId);
+  assert.equal(mapped.userSalesOwnerId, userId);
+  assert.equal(mapped.salesEmployeeReconciliationRequired, false);
+  assert.equal(mapped.attributes.empId, 'employee-legacy');
+});
 test('native master IDs stay canonical while original identity, archive and category/unit labels remain visible', () => {
   const customer = normalizeVpsCustomer({ id: 'native-customer', companyId: 'tenant', status: 'ARCHIVED', attributes: { __hdcoProjection: marker, customBusinessField: 3 } });
   assert.equal(customer.id, 'native-customer'); assert.equal(customer.legacySourceId, 'legacy-original'); assert.equal(customer.isArchived, true); assert.equal(customer.customBusinessField, 3);

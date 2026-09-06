@@ -5,6 +5,7 @@ import {
   buildVpsInventoryTransaction,
   createHdConnectStagingApi,
   normalizeVpsAttendance,
+  normalizeVpsCustomer,
   normalizeVpsFinanceExpense,
   normalizeVpsOrder,
   normalizeVpsProduct,
@@ -151,13 +152,21 @@ test('builds inventory mutations only from explicit target IDs and preserves wei
     packedQuantity: 12,
     billingQuantity: 24.5,
     clientMutationId: 'inventory-mutation-1',
+    sourceDispatchId: 'warehouse-dispatch-1',
+    orderId: '44444444-4444-4444-8444-444444444444',
+    orderLineId: '55555555-5555-4555-8555-555555555555',
+    reservationId: '66666666-6666-4666-8666-666666666666',
   });
 
   assert.equal(payload.warehouseId, '11111111-1111-4111-8111-111111111111');
   assert.equal(payload.productId, '22222222-2222-4222-8222-222222222222');
   assert.equal(payload.unitId, '33333333-3333-4333-8333-333333333333');
   assert.equal(payload.quantity, 12);
-  assert.equal(payload.actualWeightKg, 24.5);
+    assert.equal(payload.actualWeightKg, 24.5);
+    assert.equal(payload.sourceDispatchId, 'warehouse-dispatch-1');
+    assert.equal(payload.orderId, '44444444-4444-4444-8444-444444444444');
+    assert.equal(payload.orderLineId, '55555555-5555-4555-8555-555555555555');
+    assert.equal(payload.reservationId, '66666666-6666-4666-8666-666666666666');
   assert.equal(payload.metadata.packedQuantity, 12);
   assert.equal(payload.metadata.billingQuantity, 24.5);
 });
@@ -393,6 +402,146 @@ test('keeps company scope on the server when creating a customer', async () => {
   assert.equal(Object.hasOwn(capturedPayload, 'companyId'), false);
   assert.equal(capturedPayload.phones[0], '0900000000');
   assert.equal(capturedOptions.idempotencyKey, 'mutation-1');
+});
+
+const customerHrFixture = {
+  id: '11111111-1111-4111-8111-111111111111',
+  companyId: 'd1baaf33-cd5a-4b6a-84a6-d432c231a5c4',
+  name: 'Customer HR assignment fixture',
+  salesEmployeeId: '1c0fc8af-1bab-42af-b3e2-de71b11059f8',
+  salesOwnerId: '22222222-2222-4222-8222-222222222222',
+  status: 'ACTIVE',
+  attributes: { empId: 'legacy-sales-employee', customBusinessField: 3 },
+};
+
+test('customer read maps only typed HR assignment to UI aliases and keeps login owner in a separate read field', () => {
+  const customer = normalizeVpsCustomer(customerHrFixture);
+  assert.equal(customer.empId, customerHrFixture.salesEmployeeId);
+  assert.equal(customer.salesEmpId, customerHrFixture.salesEmployeeId);
+  assert.equal(customer.salesEmployeeId, customerHrFixture.salesEmployeeId);
+  assert.equal(customer.userSalesOwnerId, customerHrFixture.salesOwnerId);
+  assert.equal(customer.salesOwnerId, undefined);
+  assert.equal(customer.salesEmployeeReconciliationRequired, false);
+  assert.equal(customer.attributes, customerHrFixture.attributes);
+  assert.equal(customer.customBusinessField, 3);
+  const ownerOnly = normalizeVpsCustomer({ ...customerHrFixture, salesEmployeeId: null, attributes: {} });
+  assert.equal(ownerOnly.empId, '');
+  assert.equal(ownerOnly.salesEmpId, '');
+  assert.equal(ownerOnly.userSalesOwnerId, customerHrFixture.salesOwnerId);
+  assert.equal(ownerOnly.salesOwnerId, undefined);
+});
+
+test('customer POST serializes salesEmpId and actual App empId as salesEmployeeId, never as a login owner', async () => {
+  const requests = [];
+  const api = createHdConnectStagingApi(new HdApiClient({
+    baseUrl: 'https://staging-api.example.test/api/v1', storage: createStorage(),
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      requests.push({ url, init, body });
+      return envelope({ ...customerHrFixture, ...body, salesOwnerId: null });
+    },
+  }));
+  for (const key of ['empId', 'salesEmpId', 'salesEmployeeId']) {
+    const saved = await api.createCustomer({ name: 'Customer', [key]: customerHrFixture.salesEmployeeId, clientMutationId: 'stable-customer-hr' });
+    const { url, init, body } = requests.at(-1);
+    assert.match(url, /\/master-data\/customers$/);
+    assert.equal(init.method, 'POST');
+    assert.equal(body.salesEmployeeId, customerHrFixture.salesEmployeeId);
+    assert.equal(body.salesOwnerId, undefined);
+    assert.equal(body.empId, undefined);
+    assert.equal(body.salesEmpId, undefined);
+    assert.equal(body.companyId, undefined);
+    assert.equal(saved.empId, customerHrFixture.salesEmployeeId);
+  }
+});
+
+test('customer PATCH recognizes one edited UI alias without reusing stale normalized aliases or rewriting User ownership', async () => {
+  const newEmployee = '33333333-3333-4333-8333-333333333333';
+  const calls = [];
+  const api = createHdConnectStagingApi({ patch: async (path, body, options) => {
+    calls.push({ path, body, options });
+    return { ...customerHrFixture, ...body };
+  } });
+  for (const field of ['empId', 'salesEmpId', 'salesEmployeeId']) {
+    const saved = await api.updateCustomer(customerHrFixture.id, {
+      ...normalizeVpsCustomer(customerHrFixture), [field]: newEmployee, clientMutationId: 'same-retry',
+    });
+    assert.equal(calls.at(-1).path, `/master-data/customers/${customerHrFixture.id}`);
+    assert.equal(calls.at(-1).body.salesEmployeeId, newEmployee);
+    assert.equal(calls.at(-1).body.salesOwnerId, undefined);
+    assert.equal(calls.at(-1).body.userSalesOwnerId, undefined);
+    assert.equal(calls.at(-1).body.vpsSalesEmployeeId, undefined);
+    assert.equal(calls.at(-1).body.attributes.empId, 'legacy-sales-employee');
+    assert.equal(calls.at(-1).options.retry, false);
+    assert.equal(calls.at(-1).options.idempotencyKey, 'same-retry');
+    assert.equal(saved.empId, newEmployee);
+  }
+});
+
+test('customer assignments distinguish omitted HR fields, explicit unassignment and the existing User owner contract', async () => {
+  let body;
+  const api = createHdConnectStagingApi({ post: async (_path, payload) => { body = payload; return { ...customerHrFixture, ...payload }; } });
+  await api.createCustomer({ name: 'No HR assignment', salesOwnerId: customerHrFixture.salesOwnerId });
+  assert.equal(body.salesOwnerId, customerHrFixture.salesOwnerId);
+  assert.equal(Object.hasOwn(body, 'salesEmployeeId'), false);
+  await api.createCustomer({ name: 'Both separate targets', salesOwnerId: customerHrFixture.salesOwnerId, salesEmpId: customerHrFixture.salesEmployeeId });
+  assert.equal(body.salesOwnerId, customerHrFixture.salesOwnerId);
+  assert.equal(body.salesEmployeeId, customerHrFixture.salesEmployeeId);
+  await api.createCustomer({ ...normalizeVpsCustomer(customerHrFixture), empId: '' });
+  assert.equal(body.salesEmployeeId, null);
+  assert.equal(Object.hasOwn(body, 'salesOwnerId'), false);
+  await api.createCustomer({ name: 'Explicit null', salesEmployeeId: null });
+  assert.equal(body.salesEmployeeId, null);
+});
+
+test('customer assignment rejects non-UUID, ambiguous and unmapped historical HR references before transport', async () => {
+  const api = createHdConnectStagingApi({ post: () => assert.fail('Invalid HR mapping must not reach transport'), patch: () => assert.fail('Invalid HR mapping must not reach transport') });
+  for (const value of ['legacy-employee', 'undefined', ' ', 12, [], [customerHrFixture.salesEmployeeId], { id: customerHrFixture.salesEmployeeId }]) {
+    await assert.rejects(api.createCustomer({ name: 'Invalid assignment', salesEmpId: value }), { code: 'reconciliation_required' });
+  }
+  await assert.rejects(api.createCustomer({ name: 'Ambiguous', empId: customerHrFixture.salesEmployeeId, salesEmpId: customerHrFixture.salesOwnerId }), { code: 'reconciliation_required' });
+  for (const attributes of [
+    { empId: 'legacy-employee' },
+    { salesEmpId: customerHrFixture.salesOwnerId },
+    { salesEmployeeId: customerHrFixture.salesEmployeeId, legacyUi: { empId: 'legacy-employee' } },
+  ]) {
+    const historical = normalizeVpsCustomer({ ...customerHrFixture, salesEmployeeId: null, attributes });
+    assert.equal(historical.empId, '');
+    assert.equal(historical.salesEmpId, '');
+    assert.equal(historical.salesEmployeeReconciliationRequired, true);
+    assert.equal(historical.attributes, attributes);
+    await assert.rejects(api.updateCustomer(historical.id, historical), { code: 'reconciliation_required' });
+  }
+});
+
+test('explicit native HR selection reconciles a historical assignment without discarding the raw source reference', async () => {
+  const historical = normalizeVpsCustomer({ ...customerHrFixture, salesEmployeeId: null });
+  let body;
+  const api = createHdConnectStagingApi({ patch: async (_path, payload) => { body = payload; return { ...customerHrFixture, ...payload }; } });
+  const saved = await api.updateCustomer(historical.id, { ...historical, empId: customerHrFixture.salesEmployeeId });
+  assert.equal(body.salesEmployeeId, customerHrFixture.salesEmployeeId);
+  assert.equal(body.salesOwnerId, undefined);
+  assert.equal(body.attributes.empId, 'legacy-sales-employee');
+  assert.equal(saved.salesEmployeeReconciliationRequired, false);
+});
+
+test('customer HR assignment conflicts propagate without retries or implicit clearing of existing User ownership', async () => {
+  let calls = 0;
+  const current = normalizeVpsCustomer(customerHrFixture);
+  const api = createHdConnectStagingApi(new HdApiClient({
+    baseUrl: 'https://staging-api.example.test/api/v1', storage: createStorage(),
+    fetchImpl: async (_url, init) => {
+      calls++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.salesEmployeeId, '33333333-3333-4333-8333-333333333333');
+      assert.equal(Object.hasOwn(body, 'salesOwnerId'), false);
+      return errorEnvelope('Assignment conflicts with existing User ownership.', { status: 409, code: 'CUSTOMER_SALES_ASSIGNMENT_CONFLICT' });
+    },
+  }));
+  await assert.rejects(api.updateCustomer(current.id, { ...current, empId: '33333333-3333-4333-8333-333333333333' }), { code: 'CUSTOMER_SALES_ASSIGNMENT_CONFLICT' });
+  assert.equal(calls, 1);
+  assert.equal(current.empId, customerHrFixture.salesEmployeeId);
+  assert.equal(current.userSalesOwnerId, customerHrFixture.salesOwnerId);
 });
 
 test('routes VPS identity security contracts without Firebase tokens', async () => {

@@ -177,6 +177,30 @@ test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => 
   assert.doesNotMatch(warehouseModuleSource, /hasOrderRequest:/);
 });
 
+test('VPS xuất kho chỉ chọn dòng đơn còn chưa xuất và gửi lineage canonical', () => {
+  assert.match(appSource, /buildVpsPendingDispatchOrderRows/);
+  assert.match(appSource, /orders=\{orders\}/);
+  assert.match(warehouseModuleSource, /orderId: matchedOrderRow\?\.orderId \|\| ''/);
+  assert.match(warehouseModuleSource, /orderLineId: matchedOrderRow\?\.orderLineId \|\| ''/);
+  assert.match(warehouseModuleSource, /sourceType: isVpsMode/);
+  assert.match(warehouseModuleSource, /Đơn nguồn chưa có kho hoặc UOM đã xác định/);
+});
+
+test('đơn tham chiếu điền mặc định nhưng vẫn gửi giá trị nhân viên chỉnh sửa làm số thực xuất', () => {
+  assert.match(warehouseModuleSource, /plannedQuantity: orderDefaults\.pieceCount \|\| ''/);
+  assert.match(warehouseModuleSource, /plannedWeightKg: orderDefaults\.weightKg \|\| ''/);
+  assert.match(warehouseModuleSource, /placeholder="Số lượng xuất \(có thể sửa\)"/);
+  assert.match(warehouseModuleSource, /'Kg thực xuất'/);
+  assert.match(warehouseModuleSource, /pieceCount: orderDefaults\.pieceCount \|\| ''/);
+  assert.match(warehouseModuleSource, /weightKg: orderDefaults\.weightKg \|\| ''/);
+  assert.match(warehouseModuleSource, /pieceCount: pieceCountValue \|\| \(shouldReplaceDraft \? orderDefaults\.pieceCount : baseDraft\.pieceCount\)/);
+  assert.match(warehouseModuleSource, /weightKg: weightValue \|\| \(shouldReplaceDraft \? orderDefaults\.weightKg : baseDraft\.weightKg\)/);
+  assert.match(warehouseModuleSource, /số đang hiển thị sẽ được lưu là số thực xuất/);
+  assert.match(appSource, /actualCount: parseLooseQuantityValue\(dispatchData\?\.pieceCount \?\? dispatchData\?\.quantityCount\)/);
+  assert.match(warehouseModuleSource, /WAREHOUSE_DISPATCH_EXCEEDS_ORDER_LINE/);
+  assert.match(warehouseModuleSource, /app không tự đổi số trên đơn hoặc số tồn/);
+});
+
 test('thanh tim kiem danh sach xuat kho khong ep dong tong so tren mobile', () => {
   assert.match(warehouseModuleSource, /flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center/);
   assert.match(warehouseModuleSource, /w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1/);

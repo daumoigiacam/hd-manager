@@ -1,4 +1,8 @@
 import { HdApiClient, HdApiError, createRequestId } from './client.js';
+import { vpsAssetId, vpsAssetMutationPayload, vpsAssetQuery } from './vpsAssets.js';
+import { vpsHolidayId, vpsHolidayMutationPayload, vpsHolidayQuery } from './vpsHolidays.js';
+import { normalizeVpsEmployee } from './vpsEmployees.js';
+import { customerLoanEditablePayload, listVpsCustomerLoanPage } from './vpsCustomerLoans.js';
 
 const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
   ? import.meta.env
@@ -156,8 +160,10 @@ export const normalizeVpsCustomer = (record = {}) => {
   const attributes = normalizeAttributes(record);
   const phones = toStringArray(record.phones);
   const emails = toStringArray(record.emails);
+  const salesEmployeeId = typeof record.salesEmployeeId === 'string' && isUuid(record.salesEmployeeId)
+    ? stringValue(record.salesEmployeeId).toLowerCase() : null;
 
-  return {
+  const customer = {
     ...attributes,
     ...record,
     id: record.id,
@@ -168,7 +174,14 @@ export const normalizeVpsCustomer = (record = {}) => {
     phones,
     email: emails[0] || attributes.email || '',
     emails,
-    empId: record.salesOwnerId || attributes.empId || '',
+    empId: salesEmployeeId || '',
+    salesEmpId: salesEmployeeId || '',
+    salesEmployeeId,
+    vpsSalesEmployeeId: salesEmployeeId,
+    userSalesOwnerId: record.salesOwnerId ?? null,
+    salesEmployeeReconciliationRequired: !salesEmployeeId && Boolean(
+      record.salesEmployeeId || attributes.empId || attributes.salesEmpId || attributes.legacyUi?.empId || attributes.legacyUi?.salesEmpId,
+    ),
     creditLimit: toFiniteNumber(record.creditLimit) ?? attributes.creditLimit ?? 0,
     isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || attributes.isArchived === true,
     legacySourceId: attributes.__hdcoProjection?.sourceRecordId || attributes.legacySourceId || '',
@@ -176,6 +189,9 @@ export const normalizeVpsCustomer = (record = {}) => {
     updatedAt: record.updatedAt || attributes.updatedAt || '',
     sourceSystem: 'hd-connect-vps',
   };
+  // Legacy UI also interprets salesOwnerId as an employee alias; keep User identity separate.
+  delete customer.salesOwnerId;
+  return customer;
 };
 
 export const normalizeVpsProduct = (record = {}) => {
@@ -311,6 +327,30 @@ export const normalizeVpsAttendance = (record = {}) => {
   };
 };
 
+const toCustomerSalesEmployeeId = (record) => {
+  const reconcile = () => {
+    throw new HdApiError('Select a mapped native HR employee before saving this customer.', { code: 'reconciliation_required' });
+  };
+  const values = ['empId', 'salesEmpId', 'salesEmployeeId']
+    .filter(key => record[key] !== undefined)
+    .map(key => {
+      const value = record[key];
+      if (value === null || value === '') return null;
+      if (typeof value !== 'string' || !isUuid(value)) return reconcile();
+      return stringValue(value).toLowerCase();
+    });
+  // A normalized customer may retain old aliases while the form edits just empId.
+  const changed = record.sourceSystem === 'hd-connect-vps' && Object.hasOwn(record, 'vpsSalesEmployeeId')
+    ? values.filter(value => value !== record.vpsSalesEmployeeId) : values;
+  const targets = [...new Set(changed.length ? changed : values)];
+  if (targets.length > 1) return reconcile();
+  const target = targets[0];
+  const attributes = normalizeAttributes(record);
+  if (!target && (record.salesEmployeeReconciliationRequired || attributes.empId || attributes.salesEmpId || attributes.legacyUi?.empId || attributes.legacyUi?.salesEmpId)
+    && !record.vpsSalesEmployeeId) return reconcile();
+  return target;
+};
+
 const toCustomerPayload = (record = {}) => {
   const name = stringValue(record.name);
   if (!name) {
@@ -340,7 +380,8 @@ const toCustomerPayload = (record = {}) => {
     branchId: toTargetId(record.branchId),
     priceListId: toTargetId(record.priceListId),
     routeId: toTargetId(record.routeId),
-    salesOwnerId: toTargetId(record.salesOwnerId || record.empId),
+    salesOwnerId: toTargetId(record.salesOwnerId),
+    salesEmployeeId: toCustomerSalesEmployeeId(record),
     customerGroupId: toTargetId(record.customerGroupId),
     paymentTerm: stringValue(record.paymentTerm) || undefined,
     creditLimit: toFiniteNumber(record.creditLimit ?? record.debtLimitAmount),
@@ -572,6 +613,10 @@ export const buildVpsInventoryTransaction = (record = {}, { referenceType = 'HD_
     warehouseId,
     productId,
     unitId,
+    orderId: toTargetId(record.orderId),
+    orderLineId: toTargetId(record.orderLineId),
+    reservationId: toTargetId(record.reservationId),
+    sourceDispatchId: stringValue(record.sourceDispatchId) || undefined,
     zoneId: toTargetId(record.zoneId),
     binLocationId: toTargetId(record.binLocationId),
     variantId: toTargetId(record.variantId),
@@ -793,6 +838,32 @@ export class HdConnectStagingApi {
   async listCustomers(query = {}) {
     const result = await this.client.get('/master-data/customers', { query });
     return normalizePage(result, normalizeVpsCustomer);
+  }
+
+  async listCustomerLoans(query = {}) {
+    return listVpsCustomerLoanPage(this.client, query);
+  }
+
+  async createCustomerLoan({ requestId, customerId, ...record }) {
+    return this.client.post('/master-data/customer-goods-loans', {
+      requestId, customerId, ...customerLoanEditablePayload(record),
+    }, { retry: false, idempotencyKey: requestId });
+  }
+
+  async updateCustomerLoan(id, { version, ...record }) {
+    return this.client.patch(`/master-data/customer-goods-loans/${id}`, {
+      version, ...customerLoanEditablePayload(record),
+    }, { retry: false });
+  }
+
+  async returnCustomerLoan(id, { requestId, version, quantity, weightKg, returnDate, note }) {
+    return this.client.post(`/master-data/customer-goods-loans/${id}/returns`, {
+      requestId, version, quantity, weightKg, returnDate, note,
+    }, { retry: false, idempotencyKey: requestId });
+  }
+
+  async archiveCustomerLoan(id, { version }) {
+    return this.client.post(`/master-data/customer-goods-loans/${id}/archive`, { version }, { retry: false });
   }
 
   async getCustomer(id) {
@@ -1182,12 +1253,32 @@ export class HdConnectStagingApi {
     return this.client.get('/platform/config', { query: toTenantSafeQuery(query) });
   }
 
+  async getManagerSettings() {
+    return this.client.get('/company-settings/manager');
+  }
+
+  async updateManagerSettings({ version, settings }) {
+    return this.client.patch('/company-settings/manager', { version, settings }, { retry: false });
+  }
+
   async getPlatformFlags(query = {}) {
     return normalizePage(await this.client.get('/platform/flags', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listEmployees(query = {}) {
-    return normalizePage(await this.client.get('/hr-suite/employees', { query }), (item) => item);
+    return normalizePage(await this.client.get('/hr-suite/employees', { query: toTenantSafeQuery(query) }), normalizeVpsEmployee);
+  }
+
+  async getManagerEmployee(id) {
+    return this.client.get(`/hr-suite/manager-employees/${id}`);
+  }
+
+  async createManagerEmployee({ requestId, profile }) {
+    return this.client.post('/hr-suite/manager-employees', { requestId, profile }, { retry: false });
+  }
+
+  async updateManagerEmployee(id, { version, profile }) {
+    return this.client.patch(`/hr-suite/manager-employees/${id}`, { version, profile }, { retry: false });
   }
 
   async createEmployee(record = {}) {
@@ -1212,6 +1303,46 @@ export class HdConnectStagingApi {
 
   async listPayrolls(query = {}) {
     return normalizePage(await this.client.get('/hr-suite/payrolls', { query }), (item) => item);
+  }
+
+  async listManagerHolidays(query = {}) {
+    return this.client.get('/hr-suite/manager-holidays', { query: vpsHolidayQuery(query) });
+  }
+
+  async listManagerAssets(query = {}) {
+    return this.client.get('/logistics-suite/manager-assets', { query: vpsAssetQuery(query) });
+  }
+
+  async getManagerAsset(id, query = {}) {
+    return this.client.get(`/logistics-suite/manager-assets/${vpsAssetId(id)}`, { query: vpsAssetQuery(query, true) });
+  }
+
+  async createManagerAsset(record) {
+    return this.client.post('/logistics-suite/manager-assets', vpsAssetMutationPayload('create', record), { retry: false });
+  }
+
+  async updateManagerAsset(id, record) {
+    return this.client.patch(`/logistics-suite/manager-assets/${vpsAssetId(id)}`, vpsAssetMutationPayload('update', record), { retry: false });
+  }
+
+  async archiveManagerAsset(id, record) {
+    return this.client.post(`/logistics-suite/manager-assets/${vpsAssetId(id)}/archive`, vpsAssetMutationPayload('archive', record), { retry: false });
+  }
+
+  async getManagerHoliday(id) {
+    return this.client.get(`/hr-suite/manager-holidays/${vpsHolidayId(id)}`);
+  }
+
+  async createManagerHoliday(record) {
+    return this.client.post('/hr-suite/manager-holidays', vpsHolidayMutationPayload('create', record), { retry: false });
+  }
+
+  async updateManagerHoliday(id, record) {
+    return this.client.patch(`/hr-suite/manager-holidays/${vpsHolidayId(id)}`, vpsHolidayMutationPayload('update', record), { retry: false });
+  }
+
+  async archiveManagerHoliday(id, record) {
+    return this.client.post(`/hr-suite/manager-holidays/${vpsHolidayId(id)}/archive`, vpsHolidayMutationPayload('archive', record), { retry: false });
   }
 
   async listPayrollPeriods(query = {}) {

@@ -2,6 +2,11 @@ import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
+import { archiveVpsAsset, getVpsAssetFormDefaults, isVpsAssetHrEmployee, loadVpsAssetDetails, loadVpsAssets, mergeVpsAssets, saveVpsAsset, vpsAssetErrorMessage } from './api/vpsAssets.js';
+import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays } from './api/vpsHolidays.js';
+import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
+import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
+import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -27,6 +32,8 @@ import {
   selectLatestWarehouseStockCountMeasures
 } from './utils/warehouseInventory.js';
 import { buildWarehouseDispatchProductOptions } from './utils/warehouseDispatchProductOptions.js';
+import { buildVpsPendingDispatchOrderRows } from './utils/vpsWarehouseDispatchOrderSelection.js';
+import { resolveSingleActiveMainWarehouseId } from './utils/vpsWarehouseDefaultSelection.js';
 import {
   addWarehouseQuantityUnit,
   buildWarehouseQuantityUnitSuggestions,
@@ -12048,6 +12055,7 @@ export default function App() {
   // RAW DATA
   const [rawCompanies, setRawCompanies] = useState([]);
   const [rawEmployees, setRawEmployees] = useState([]);
+  const vpsEmployeeCreateRequest = useRef(null);
   const [rawEmployeeReviews, setRawEmployeeReviews] = useState([]);
   const [rawPayrollPeriods, setRawPayrollPeriods] = useState([]);
   const [rawPayrollDebtCarryovers, setRawPayrollDebtCarryovers] = useState([]);
@@ -13133,22 +13141,73 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
           readComplete('listOrders'),
-          readComplete('listEmployees'),
+          readComplete('listEmployees').then(async page => {
+            const items = [];
+            const profileFailures = [];
+            // A salary-profile failure must not erase the verified HR directory.
+            for (let offset = 0; offset < page.items.length; offset += 4) {
+              const batch = page.items.slice(offset, offset + 4);
+              const results = await Promise.allSettled(batch.map(item =>
+                hydrateVpsEmployeeProfiles(api, [item], currentUser.companyId, currentUser.permissions)));
+              results.forEach((result, index) => {
+                if (result.status === 'fulfilled') items.push({ ...result.value[0], vpsProfileLoadFailed: false });
+                else {
+                  profileFailures.push(batch[index].id);
+                  items.push({ ...batch[index], vpsProfileLoadFailed: true });
+                }
+              });
+            }
+            return { ...page, items, profileFailures };
+          }),
           readComplete('listNotifications'),
           readComplete('listAttendance', { sortBy: 'workDate' }),
           readComplete('listWarehouses'),
           readComplete('listPaymentHistory'),
           api.getInventoryReconciliationStatus(),
+          api.getManagerSettings(),
+          currentUser.permissions?.includes('master-data.read')
+            ? loadVpsCustomerLoans(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
+          currentUser.permissions?.includes('hr.payroll.read')
+            ? loadVpsHolidays(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
+          currentUser.permissions?.includes('logistics.read')
+            ? loadVpsAssets(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
         ]);
         if (cancelled) return;
 
         const failedDomains = [];
+        if (assetsResult.status === 'fulfilled' && assetsResult.value) {
+          setRawAssets(previous => mergeVpsAssets(previous, assetsResult.value.items, currentUser.companyId));
+        } else if (assetsResult.status === 'rejected') {
+          failedDomains.push('assets');
+        }
+        if (holidaysResult.status === 'fulfilled' && holidaysResult.value) {
+          setRawHolidays(previous => mergeVpsHolidays(previous, holidaysResult.value.items, currentUser.companyId));
+        } else if (holidaysResult.status === 'rejected') {
+          failedDomains.push('holidays');
+        }
+        if (managerSettingsResult.status === 'fulfilled' && managerSettingsResult.value.companyId === currentUser.companyId) {
+          const { settings, version } = managerSettingsResult.value;
+          setCurrentCompany(previous => previous?.id === currentUser.companyId
+            ? { ...previous, ...settings, vpsSettingsVersion: version } : previous);
+          setRawCompanies(previous => previous.map(company => company.id === currentUser.companyId
+            ? { ...company, ...settings, vpsSettingsVersion: version } : company));
+        } else {
+          failedDomains.push('company-settings');
+        }
         if (customersResult.status === 'fulfilled') setRawCustomers(customersResult.value.items);
+        if (customerLoansResult.status === 'fulfilled' && customerLoansResult.value) {
+          setRawCustomerLoans(previous => mergeVpsCustomerLoans(previous, customerLoansResult.value.items, currentUser.companyId));
+        } else if (customerLoansResult.status === 'rejected') {
+          failedDomains.push('customer-goods-loans');
+        }
         if (ordersResult.status === 'fulfilled') setRawOrders(ordersResult.value.items);
         if (paymentsResult.status === 'fulfilled') setRawPayments(paymentsResult.value.items);
         if (customersResult.status !== 'fulfilled') failedDomains.push('customers');
@@ -13172,8 +13231,13 @@ export default function App() {
         } else {
           failedDomains.push('warehouses');
         }
-        if (employeesResult.status === 'fulfilled' && employeesResult.value.items.length > 0) {
-          setRawEmployees(employeesResult.value.items);
+        if (employeesResult.status === 'fulfilled') {
+          setRawEmployees(previous => employeesResult.value.items.map(item => {
+            if (!item.vpsProfileLoadFailed) return item;
+            const known = previous.find(row => row.id === item.id && row.companyId === item.companyId);
+            return { ...known, ...item, vpsProfileVersion: undefined };
+          }));
+          if (employeesResult.value.profileFailures.length) failedDomains.push('employee-profiles');
         } else if (employeesResult.status !== 'fulfilled') {
           failedDomains.push('employees');
         }
@@ -13207,12 +13271,15 @@ export default function App() {
           ...previous,
           companies: true,
           customers: customersResult.status === 'fulfilled',
+          customerLoans: customerLoansResult.status === 'fulfilled' && Boolean(customerLoansResult.value),
           products: productsResult.status === 'fulfilled',
           orders: ordersResult.status === 'fulfilled',
           payments: paymentsResult.status === 'fulfilled',
-          employees: employeesResult.status === 'fulfilled',
+          employees: employeesResult.status === 'fulfilled' && employeesResult.value.profileFailures.length === 0,
           notifications: notificationsResult.status === 'fulfilled',
           attendance: attendanceResult.status === 'fulfilled',
+          holidays: holidaysResult.status === 'fulfilled' && Boolean(holidaysResult.value),
+          assets: assetsResult.status === 'fulfilled' && Boolean(assetsResult.value),
         }));
         setRealtimeStatus({
           state: failedDomains.length > 0 ? 'degraded' : 'polling',
@@ -13275,7 +13342,7 @@ export default function App() {
       cancelled = true;
       realtimeController.abort();
     };
-  }, [currentUser?.companyId]);
+  }, [currentUser?.companyId, currentUser?.id, currentUser?.permissions]);
 
   useEffect(() => {
     if (!isVpsApiMode || !currentUser?.companyId) return undefined;
@@ -16392,6 +16459,12 @@ export default function App() {
   };
 
   const handleUpdateCompanySettings = async (settingsData) => {
+    if (isVpsApiMode) {
+      const nextCompany = await updateVpsCompanySettings(getHdConnectStagingApi(), currentCompany, settingsData);
+      setCurrentCompany(nextCompany);
+      setRawCompanies(previous => previous.map(company => company.id === nextCompany.id ? nextCompany : company));
+      return { success: true };
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const currentTransferProfile = getInvoiceTransferProfile(currentCompany);
     const currentLoyaltySettings = getCustomerLoyaltySettings(currentCompany);
@@ -18246,6 +18319,15 @@ export default function App() {
   };
 
   const handleAddEmployee = async (newEmpData) => {
+    if (isVpsApiMode) {
+      const payloadKey = JSON.stringify(newEmpData);
+      if (vpsEmployeeCreateRequest.current?.payloadKey !== payloadKey) {
+        vpsEmployeeCreateRequest.current = { payloadKey, requestId: crypto.randomUUID() };
+      }
+      const result = await saveVpsEmployeeProfile(getHdConnectStagingApi(), myCompanyId, null, newEmpData, vpsEmployeeCreateRequest.current.requestId);
+      setRawEmployees(previous => [...previous.filter(item => item.id !== result.id), result]);
+      return { success: true, message: 'Đã lưu hồ sơ nhân sự trên VPS. Chưa cấp tài khoản đăng nhập.' };
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const id = Date.now().toString();
     const normalizedPosition = normalizeEmployeePosition(newEmpData.position);
@@ -18267,6 +18349,14 @@ export default function App() {
   };
 
   const handleEditEmployee = async (empId, updatedData) => {
+    if (isVpsApiMode) {
+      const current = rawEmployees.find(item => item.id === empId && item.companyId === myCompanyId);
+      if (!current) throw new Error('Không tìm thấy hồ sơ nhân sự thuộc công ty.');
+      const { vpsProfileVersion, ...profile } = updatedData;
+      const result = await saveVpsEmployeeProfile(getHdConnectStagingApi(), myCompanyId, { ...current, vpsProfileVersion }, profile);
+      setRawEmployees(previous => previous.map(item => item.id === result.id ? result : item));
+      return { success: true, message: 'Đã lưu hồ sơ VPS; không thay đổi tài khoản hoặc quyền đăng nhập.' };
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const employeePayload = { ...updatedData };
     if (updatedData?.phone !== undefined) {
@@ -18671,6 +18761,18 @@ export default function App() {
   };
 
   const handleAddCustomerLoan = async (customerId, loanData = {}) => {
+    if (isVpsApiMode) {
+      try {
+        const customer = rawCustomers.find(item => item.id === customerId && item.companyId === myCompanyId && !item.isArchived);
+        const saved = await createVpsCustomerLoan(getHdConnectStagingApi(), currentUser, customer, {
+          ...loanData, loanDate: loanData.loanDate || getTodayString(),
+        });
+        setRawCustomerLoans(previous => mergeVpsCustomerLoans(previous, [saved], myCompanyId));
+        return { success: true, id: saved.id };
+      } catch (error) {
+        return vpsCustomerLoanFailure(error);
+      }
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const customer = rawCustomers.find(item => item.id === customerId && item.companyId === myCompanyId && !item.isArchived);
     if (!customer) return { success: false, message: 'Không tìm thấy khách hàng để tạo phiếu vay.' };
@@ -18704,6 +18806,16 @@ export default function App() {
   };
 
   const handleEditCustomerLoan = async (loanId, patch = {}) => {
+    if (isVpsApiMode) {
+      try {
+        const currentLoan = rawCustomerLoans.find(item => item.id === loanId && item.companyId === myCompanyId);
+        const saved = await updateVpsCustomerLoan(getHdConnectStagingApi(), currentUser, currentLoan, patch);
+        setRawCustomerLoans(previous => mergeVpsCustomerLoans(previous, [saved], myCompanyId));
+        return { success: true, id: saved.id };
+      } catch (error) {
+        return vpsCustomerLoanFailure(error);
+      }
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const currentLoan = rawCustomerLoans.find(item => item.id === loanId && item.companyId === myCompanyId);
     if (!currentLoan) return { success: false, message: 'Không tìm thấy phiếu vay cần cập nhật.' };
@@ -18719,6 +18831,16 @@ export default function App() {
   };
 
   const handleDeleteCustomerLoan = async (loanId) => {
+    if (isVpsApiMode) {
+      try {
+        const currentLoan = rawCustomerLoans.find(item => item.id === loanId && item.companyId === myCompanyId);
+        const saved = await archiveVpsCustomerLoan(getHdConnectStagingApi(), currentUser, currentLoan);
+        setRawCustomerLoans(previous => mergeVpsCustomerLoans(previous, [saved], myCompanyId));
+        return { success: true, id: saved.id };
+      } catch (error) {
+        return vpsCustomerLoanFailure(error);
+      }
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const currentLoan = rawCustomerLoans.find(item => item.id === loanId && item.companyId === myCompanyId);
     if (!currentLoan) return { success: false, message: 'Không tìm thấy phiếu vay cần xóa.' };
@@ -19767,7 +19889,22 @@ export default function App() {
     await saveDataDocument('warehouseStockCounts', stockCountId, payload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi xóa tồn kho thực tế.');
   };
 
+  const handleGetAsset = async (assetId) => {
+    const current = rawAssets.find(item => item.id === assetId && item.companyId === myCompanyId);
+    if (!isVpsApiMode) return current;
+    if (!current?.vpsAsset) throw Object.assign(new Error('reconciliation_required'), { code: 'reconciliation_required' });
+    const saved = await loadVpsAssetDetails(getHdConnectStagingApi(), currentUser, assetId);
+    setRawAssets(previous => mergeVpsAssets(previous, [saved], myCompanyId));
+    return saved;
+  };
+
   const handleAddAsset = async (empId, assetData = {}) => {
+    if (isVpsApiMode) {
+      if (currentUser?.companyId !== myCompanyId) throw new Error('MANAGER_ASSET_SCOPE_MISMATCH');
+      const saved = await saveVpsAsset(getHdConnectStagingApi(), currentUser, null, assetData, rawEmployees);
+      setRawAssets(previous => mergeVpsAssets(previous, [saved], myCompanyId));
+      return saved.id;
+    }
     if (!firebaseUser) return null;
     const id = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const assignedDriverIds = getDeliveryAssignmentIds(assetData);
@@ -19812,6 +19949,13 @@ export default function App() {
   };
 
   const handleEditAsset = async (assetId, assetData = {}, empId = '') => {
+    if (isVpsApiMode) {
+      const current = rawAssets.find(item => item.id === assetId && item.companyId === myCompanyId);
+      if (!current) throw new Error('MANAGER_ASSET_SCOPE_MISMATCH');
+      const saved = await saveVpsAsset(getHdConnectStagingApi(), currentUser, current, assetData, rawEmployees);
+      setRawAssets(previous => mergeVpsAssets(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser || !assetId) return;
     const previousAsset = assets.find(asset => asset.id === assetId) || {};
     const assignedDriverIds = getDeliveryAssignmentIds(assetData);
@@ -19864,7 +20008,14 @@ export default function App() {
     }, { merge: true });
   };
 
-  const handleDeleteAsset = async (assetId) => {
+  const handleDeleteAsset = async (assetId, version) => {
+    if (isVpsApiMode) {
+      const current = rawAssets.find(item => item.id === assetId && item.companyId === myCompanyId);
+      if (current?.vpsAsset && version !== current.version) throw new Error('MANAGER_ASSET_CHANGED_RELOAD');
+      const saved = await archiveVpsAsset(getHdConnectStagingApi(), currentUser, current);
+      setRawAssets(previous => mergeVpsAssets(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser || !assetId) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'assets', assetId), {
       isArchived: true,
@@ -19874,6 +20025,7 @@ export default function App() {
   };
 
   const handleAddAssetCostLog = async (empId, logData = {}) => {
+    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
     if (!firebaseUser) return null;
     const id = `acl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const liters = parseLooseQuantityValue(logData.liters);
@@ -19958,6 +20110,7 @@ export default function App() {
   };
 
   const handleEditAssetCostLog = async (logId, logData = {}, empId = '') => {
+    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
     if (!firebaseUser || !logId) return;
     const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
     const liters = parseLooseQuantityValue(logData.liters);
@@ -20023,6 +20176,7 @@ export default function App() {
   };
 
   const handleDeleteAssetCostLog = async (logId) => {
+    if (isVpsApiMode) throw new Error('VPS asset cost logs are not supported. No finance entry was posted.');
     if (!firebaseUser || !logId) return;
     const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
     const linkedExpense = expenses.find(expense => (
@@ -20070,8 +20224,10 @@ export default function App() {
         ...dispatchData,
         quantity: quantity > 0 ? quantity : (normalizeLookupText(quantityUnit) === 'kg' ? weightKg : 0),
         quantityUnit,
+        actualCount: parseLooseQuantityValue(dispatchData?.pieceCount ?? dispatchData?.quantityCount),
         actualWeightKg: weightKg,
         clientMutationId,
+        sourceDispatchId: clientMutationId,
         referenceId: clientMutationId,
         reason: dispatchData?.note,
       }, { referenceType: 'HD_MANAGER_WAREHOUSE_DISPATCH' });
@@ -21967,12 +22123,25 @@ export default function App() {
   };
 
   const handleAddHoliday = async (holidayData) => {
+    if (isVpsApiMode) {
+      if (currentUser?.companyId !== myCompanyId) throw new Error('HR_HOLIDAY_SCOPE_MISMATCH');
+      const saved = await createVpsHoliday(getHdConnectStagingApi(), currentUser, holidayData);
+      setRawHolidays(previous => mergeVpsHolidays(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser) return;
     const id = `hol_${Date.now()}`;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'holidays', id), { ...holidayData, id, companyId: myCompanyId, isArchived: false });
   };
 
   const handleDeleteHoliday = async (holidayId) => {
+    if (isVpsApiMode) {
+      if (currentUser?.companyId !== myCompanyId) throw new Error('HR_HOLIDAY_SCOPE_MISMATCH');
+      const current = rawHolidays.find(item => item.id === holidayId && item.companyId === myCompanyId);
+      const saved = await archiveVpsHoliday(getHdConnectStagingApi(), currentUser, current);
+      setRawHolidays(previous => mergeVpsHolidays(previous, [saved], myCompanyId));
+      return { success: true, id: saved.id };
+    }
     if (!firebaseUser) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'holidays', holidayId), {
       isArchived: true,
@@ -22350,6 +22519,7 @@ export default function App() {
         onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onPostInventoryOpeningBalance={handlePostInventoryOpeningBalance} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
+        onGetAsset={handleGetAsset}
         onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport}
         onResolveDeliveryReportIssue={handleResolveDeliveryReportIssue}
         onAddPayment={handleAddPayment} onEditPayment={handleEditPayment} onDeletePayment={handleDeletePayment}
@@ -22909,7 +23079,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {}, vpsInventoryReconciliation = null,
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
-  onChangeDate,
+  onChangeDate, onGetAsset,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
@@ -24633,8 +24803,8 @@ function MainAppView({
           });
         }
         return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} vpsInventoryReconciliation={vpsInventoryReconciliation} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
-      case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
+      case 'asset_management': return <AssetManagementView onGetAsset={onGetAsset} employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
           return renderWorkflowGuide({
@@ -33929,6 +34099,7 @@ const getAssetMetrics = (asset = {}, logs = []) => {
 };
 
 function AssetManagementView({
+  onGetAsset,
   employee,
   employees = [],
   assets = [],
@@ -33956,7 +34127,8 @@ function AssetManagementView({
   const [activeSection, setActiveSection] = useState('assets');
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [editingAsset, setEditingAsset] = useState(null);
-  const [assetForm, setAssetForm] = useState(getAssetFormDefaults());
+  const [assetForm, setAssetForm] = useState(() => isVpsApiMode ? getVpsAssetFormDefaults() : getAssetFormDefaults());
+  const [assetSaveStatus, setAssetSaveStatus] = useState('');
   const [showCostForm, setShowCostForm] = useState(false);
   const [editingCostLog, setEditingCostLog] = useState(null);
   const [costForm, setCostForm] = useState(getAssetCostFormDefaults());
@@ -33969,8 +34141,8 @@ function AssetManagementView({
   const [showAssetOperationDetails, setShowAssetOperationDetails] = useState(false);
   const metricsByAsset = useMemo(() => Object.fromEntries(assets.map(asset => [asset.id, getAssetMetrics(asset, assetCostLogs)])), [assets, assetCostLogs]);
   const deliveryAssigneeOptions = useMemo(() => (employees || [])
-    .filter(emp => emp && !emp.isArchived && isEmployeeDeliveryParticipant(emp))
-    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi')), [employees]);
+    .filter(emp => isVpsApiMode ? isVpsAssetHrEmployee(emp, employee?.companyId) : emp && !emp.isArchived && isEmployeeDeliveryParticipant(emp))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi')), [employees, employee?.companyId]);
   const summary = useMemo(() => {
     const metricList = Object.values(metricsByAsset);
     const fuelCost = metricList.reduce((sum, item) => sum + item.fuelCost, 0);
@@ -33992,9 +34164,20 @@ function AssetManagementView({
       lowScoreDrivers: metricList.filter(item => item.driverScore < 80).length
     };
   }, [assets, metricsByAsset]);
-  const openAssetForm = (asset = null) => {
+  const openAssetForm = async (asset = null) => {
+    setAssetSaveStatus('');
+    if (isVpsApiMode && asset) {
+      try {
+        if (!asset.vpsAsset || asset.type !== 'VEHICLE') throw new Error('reconciliation_required');
+        if (!onGetAsset) throw new Error('MANAGER_ASSET_READ_REQUIRED');
+        asset = await onGetAsset(asset.id);
+      } catch (error) {
+        setAssetSaveStatus(vpsAssetErrorMessage(error));
+        return;
+      }
+    }
     setEditingAsset(asset);
-    setAssetForm(getAssetFormDefaults(asset || {}));
+    setAssetForm(isVpsApiMode ? getVpsAssetFormDefaults(asset || {}) : getAssetFormDefaults(asset || {}));
     setAssetDocumentFiles({ registration: [], inspection: [] });
     setAssetDocumentStatus('');
     setShowAssetDocumentDetails(false);
@@ -34002,8 +34185,9 @@ function AssetManagementView({
     setShowAssetForm(true);
   };
   const closeAssetForm = () => {
+    if (isSavingAsset) return;
     setEditingAsset(null);
-    setAssetForm(getAssetFormDefaults());
+    setAssetForm(isVpsApiMode ? getVpsAssetFormDefaults() : getAssetFormDefaults());
     setAssetDocumentFiles({ registration: [], inspection: [] });
     setAssetDocumentStatus('');
     setShowAssetDocumentDetails(false);
@@ -34021,6 +34205,7 @@ function AssetManagementView({
     setShowCostForm(false);
   };
   const handleAssetImage = async (event) => {
+    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ tải ảnh bằng chứng.'); return; }
     const file = event.target.files?.[0];
     if (!file) return;
     const imageUrl = await readImageFileAsDataUrl(file, 720, 0.78);
@@ -34028,6 +34213,7 @@ function AssetManagementView({
     event.target.value = '';
   };
   const handleAssetDocumentImage = async (field, fileType, event) => {
+    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ tải ảnh giấy tờ.'); return; }
     const selectedFiles = Array.from(event.target.files || []).filter(file => file?.type?.startsWith('image/'));
     if (!selectedFiles.length) return;
     setAssetDocumentStatus('');
@@ -34063,6 +34249,7 @@ function AssetManagementView({
     return assetForm[field] ? [assetForm[field]] : [];
   };
   const handleReadAssetDocuments = async () => {
+    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ OCR hoặc xác minh giấy tờ.'); return; }
     const docs = [
       ...(Array.isArray(assetDocumentFiles.registration) ? assetDocumentFiles.registration : []).map((file, index) => ({ type: 'registration', file, index })),
       ...(Array.isArray(assetDocumentFiles.inspection) ? assetDocumentFiles.inspection : []).map((file, index) => ({ type: 'inspection', file, index }))
@@ -34135,17 +34322,38 @@ function AssetManagementView({
   };
   const handleAssetSubmit = async (event) => {
     event.preventDefault();
+    if (isSavingAsset) return;
+    setAssetSaveStatus('');
     setIsSavingAsset(true);
     try {
-      if (editingAsset) await onEditAsset?.(editingAsset.id, assetForm);
-      else await onAddAsset?.(assetForm);
+      if (typeof (editingAsset ? onEditAsset : onAddAsset) !== 'function') throw new Error('Asset save handler unavailable.');
+      const result = editingAsset ? await onEditAsset(editingAsset.id, assetForm) : await onAddAsset(assetForm);
+      if (result?.success === false || (isVpsApiMode && !result)) throw new Error(result?.message || 'Asset save was not confirmed.');
       closeAssetForm();
+    } catch (error) {
+      setAssetSaveStatus(isVpsApiMode ? vpsAssetErrorMessage(error) : getFriendlyFirebaseErrorMessage(error));
+    } finally {
+      setIsSavingAsset(false);
+    }
+  };
+  const handleAssetArchive = async () => {
+    if (isSavingAsset || !editingAsset || !canDeleteAsset || !window.confirm('Xóa/ngừng sử dụng tài sản này?')) return;
+    setAssetSaveStatus('');
+    setIsSavingAsset(true);
+    try {
+      if (!onDeleteAsset) throw new Error('Asset archive handler unavailable.');
+      const result = await onDeleteAsset(editingAsset.id, isVpsApiMode ? editingAsset.version : undefined);
+      if (result?.success === false || (isVpsApiMode && !result)) throw new Error(result?.message || 'Asset archive was not confirmed.');
+      closeAssetForm();
+    } catch (error) {
+      setAssetSaveStatus(isVpsApiMode ? vpsAssetErrorMessage(error) : getFriendlyFirebaseErrorMessage(error));
     } finally {
       setIsSavingAsset(false);
     }
   };
   const handleCostSubmit = async (event) => {
     event.preventDefault();
+    if (isVpsApiMode) { setAssetSaveStatus('VPS chưa hỗ trợ nhật ký chi phí tài sản; chưa ghi sổ tài chính.'); return; }
     const nextForm = {
       ...costForm,
       amount: parseLooseMoneyValue(costForm.amount) || (parseLooseQuantityValue(costForm.liters) * parseLooseMoneyValue(costForm.unitPrice))
@@ -34159,15 +34367,18 @@ function AssetManagementView({
       setIsSavingCost(false);
     }
   };
-  const sectionItems = [
+  const sectionItems = (isVpsApiMode ? [
+    { id: 'assets', label: 'Xe', value: summary.totalAssets },
+  ] : [
     { id: 'assets', label: 'Tài sản', value: summary.totalAssets },
     { id: 'costs', label: 'Nhật ký chi phí', value: assetCostLogs.length },
     { id: 'report', label: 'Báo cáo tổng quát', value: summary.fuelWarningCount + summary.maintenanceOverdueCount + summary.inspectionWarningCount }
-  ];
+  ]);
   const latestLogs = [...assetCostLogs].sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0));
 
   return (
     <div className="space-y-4 animate-in fade-in">
+      {assetSaveStatus && !showAssetForm && <p role="alert" className="text-sm font-bold text-red-700">{assetSaveStatus}</p>}
       <div className="grid grid-cols-3 gap-2">
         {sectionItems.map(item => (
           <button
@@ -34205,16 +34416,17 @@ function AssetManagementView({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-black text-gray-900 text-lg">{asset.name || 'Xe chưa đặt tên'}</p>
+                    {isVpsApiMode && !asset.vpsAsset && <p className="text-xs font-bold text-amber-700">Cần đối soát dữ liệu cũ</p>}
                     <p className="text-sm text-gray-500">{asset.plateNumber || 'Chưa có biển số'} • {getAssetEmployeeNames(employees, asset)}</p>
                   </div>
                   <span className={`text-[11px] font-black px-3 py-1 rounded-full ${asset.status === 'maintenance' ? 'bg-amber-100 text-amber-700' : asset.status === 'inactive' ? 'bg-gray-100 text-gray-500' : 'bg-emerald-100 text-emerald-700'}`}>{getAssetStatusLabel(asset.status)}</span>
                 </div>
-                {canViewAssetWarnings && inspectionWarning && inspectionWarning.level !== 'green' && (
+                {!isVpsApiMode && canViewAssetWarnings && inspectionWarning && inspectionWarning.level !== 'green' && (
                   <div className={`mt-3 rounded-2xl px-3 py-2 text-sm font-black ${inspectionWarning.level === 'red' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-amber-50 text-amber-700 border border-amber-100'}`}>
                     {inspectionWarning.text}. Cần nhắc chủ xe/tài xế xử lý trước hạn.
                   </div>
                 )}
-                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                {!isVpsApiMode && <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                   <div className="rounded-2xl bg-gray-50 p-3">
                     <p className="text-[10px] uppercase font-black text-gray-400">Km chạy</p>
                     <p className="font-black">{Math.round(metrics.totalKm || 0)}</p>
@@ -34227,7 +34439,7 @@ function AssetManagementView({
                     <p className="text-[10px] uppercase font-black text-gray-400">Điểm TX</p>
                     <p className={`font-black ${metrics.driverScore < 80 ? 'text-red-600' : 'text-emerald-600'}`}>{metrics.driverScore || 100}</p>
                   </div>
-                </div>
+                </div>}
               </button>
             );
           })}
@@ -34350,22 +34562,33 @@ function AssetManagementView({
                 <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Tài sản</p>
                 <h3 className="text-xl font-black">{editingAsset ? 'Sửa tài sản' : 'Thêm tài sản'}</h3>
               </div>
-              <button type="button" onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
+              <button type="button" disabled={isSavingAsset} onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
+            {assetSaveStatus && <p role="alert" className="text-sm font-bold text-red-700">{assetSaveStatus}</p>}
             <div className="rounded-3xl border border-gray-100 bg-white p-3 space-y-3">
               <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Thông tin chính</p>
+              {isVpsApiMode && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="text-xs font-bold text-gray-600">Mã xe VPS
+                    <input required readOnly={Boolean(editingAsset)} maxLength={100} value={assetForm.code} onChange={e => { const value = e.target.value.toUpperCase(); setAssetForm(prev => ({ ...prev, code: value })); }} className="mt-1 w-full rounded-lg border p-3" />
+                  </label>
+                  <label className="text-xs font-bold text-gray-600">Loại xe VPS
+                    <input required maxLength={100} value={assetForm.vehicleType} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, vehicleType: value })); }} className="mt-1 w-full rounded-lg border p-3" placeholder="TRUCK" />
+                  </label>
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
                   Tên xe
-                  <input required value={assetForm.name} onChange={e => setAssetForm(prev => ({ ...prev, name: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Hino 3.5 tấn" />
+                  <input required value={assetForm.name} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, name: value })); }} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Hino 3.5 tấn" />
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
                   Biển số
-                  <input value={assetForm.plateNumber} onChange={e => setAssetForm(prev => ({ ...prev, plateNumber: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 88C-18771" />
+                  <input required={isVpsApiMode} value={assetForm.plateNumber} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, plateNumber: value })); }} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 88C-18771" />
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
                   Tình trạng xe
-                  <select value={assetForm.status} onChange={e => setAssetForm(prev => ({ ...prev, status: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100">
+                  <select value={assetForm.status} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, status: value })); }} className="mt-1 w-full rounded-2xl border border-gray-200 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100">
                     <option value="active">Đang hoạt động</option>
                     <option value="maintenance">Bảo dưỡng</option>
                     <option value="inactive">Ngừng sử dụng</option>
@@ -34378,12 +34601,12 @@ function AssetManagementView({
                 <p className="text-xs font-black uppercase tracking-widest text-emerald-700">Bàn giao xe</p>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <div className="space-y-1 text-[11px] font-black uppercase tracking-wide text-emerald-700 sm:col-span-2">
-                    <p>Nhân sự giao hàng</p>
+                    <p>{isVpsApiMode ? 'Nhân sự được phân công' : 'Nhân sự giao hàng'}</p>
                     <div className="mt-1 max-h-44 overflow-y-auto rounded-2xl border border-emerald-100 bg-white p-2">
                       {deliveryAssigneeOptions.length === 0 ? (
                         <p className="px-2 py-3 text-sm font-bold normal-case tracking-normal text-gray-500">Chưa có tài xế hoặc nhân sự sản xuất.</p>
                       ) : deliveryAssigneeOptions.map(emp => {
-                        const selectedAssigneeIds = Array.isArray(assetForm.assignedDriverIds) && assetForm.assignedDriverIds.length
+                        const selectedAssigneeIds = isVpsApiMode ? assetForm.driverIds : Array.isArray(assetForm.assignedDriverIds) && assetForm.assignedDriverIds.length
                           ? assetForm.assignedDriverIds
                           : [assetForm.assignedDriverId].filter(Boolean);
                         const checked = selectedAssigneeIds.includes(emp.id);
@@ -34393,6 +34616,7 @@ function AssetManagementView({
                               type="checkbox"
                               checked={checked}
                               onChange={() => setAssetForm(prev => {
+                                if (isVpsApiMode) return { ...prev, driverIds: prev.driverIds.includes(emp.id) ? prev.driverIds.filter(id => id !== emp.id) : [...prev.driverIds, emp.id] };
                                 const current = Array.isArray(prev.assignedDriverIds) && prev.assignedDriverIds.length
                                   ? prev.assignedDriverIds.filter(Boolean)
                                   : [prev.assignedDriverId].filter(Boolean);
@@ -34410,18 +34634,39 @@ function AssetManagementView({
                       })}
                     </div>
                   </div>
+                  {isVpsApiMode && (
+                    <label className="flex items-center gap-2 text-sm font-bold sm:col-span-2">
+                      <input type="checkbox" checked={assetForm.recordHandover} onChange={e => { const value = e.target.checked; setAssetForm(prev => ({ ...prev, recordHandover: value })); }} />
+                      Ghi sự kiện bàn giao mới
+                    </label>
+                  )}
+                  {(!isVpsApiMode || assetForm.recordHandover) && <>
+                  {isVpsApiMode && <label className="text-xs font-bold sm:col-span-2">Người nhận bàn giao
+                    <select multiple value={assetForm.handoverDriverIds} onChange={e => { const value = Array.from(e.target.selectedOptions, option => option.value); setAssetForm(prev => ({ ...prev, handoverDriverIds: value })); }} className="mt-1 w-full rounded-lg border p-2">
+                      {deliveryAssigneeOptions.map(emp => <option key={emp.id} value={emp.id}>{emp.name || emp.id}</option>)}
+                    </select>
+                  </label>}
                   <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-emerald-700">
                     Số km bàn giao
-                    <input type="tel" value={assetForm.handoverKm} onChange={e => setAssetForm(prev => ({ ...prev, handoverKm: e.target.value }))} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 240000" />
+                    <input type="tel" value={assetForm.handoverKm} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverKm: value })); }} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 240000" />
                   </label>
                   <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-emerald-700">
                     Tình trạng
-                    <input value={assetForm.handoverCondition} onChange={e => setAssetForm(prev => ({ ...prev, handoverCondition: e.target.value }))} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Tốt" />
+                    <input value={assetForm.handoverCondition} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverCondition: value })); }} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Tốt" />
                   </label>
                   <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-emerald-700">
                     Ngày bàn giao
-                    <input type="date" value={assetForm.handoverDate} onChange={e => setAssetForm(prev => ({ ...prev, handoverDate: e.target.value }))} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" />
+                    <input type="date" required={isVpsApiMode} value={assetForm.handoverDate} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverDate: value })); }} className="mt-1 w-full rounded-2xl border border-emerald-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" />
                   </label>
+                  {isVpsApiMode && <>
+                    <label className="text-xs font-bold sm:col-span-2">Ghi chú bàn giao
+                      <textarea maxLength={4000} value={assetForm.handoverNote} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverNote: value })); }} className="mt-1 w-full rounded-lg border p-2" />
+                    </label>
+                    <label className="text-xs font-bold sm:col-span-2">URL tham chiếu chưa xác minh
+                      <input type="url" value={assetForm.handoverImageUrl} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, handoverImageUrl: value })); }} className="mt-1 w-full rounded-lg border p-2" />
+                    </label>
+                  </>}
+                  </>}
                 </div>
               </div>
             )}
@@ -34430,21 +34675,35 @@ function AssetManagementView({
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-amber-700">
                   Ngày bảo dưỡng
-                  <input type="date" value={assetForm.lastMaintenanceDate} onChange={e => setAssetForm(prev => ({ ...prev, lastMaintenanceDate: e.target.value }))} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" />
+                  <input type="date" value={assetForm.lastMaintenanceDate} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, lastMaintenanceDate: value })); }} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" />
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-amber-700">
                   Ngày bảo dưỡng kế tiếp
-                  <input type="date" value={assetForm.nextMaintenanceDate} onChange={e => setAssetForm(prev => ({ ...prev, nextMaintenanceDate: e.target.value }))} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" />
+                  <input type="date" value={assetForm.nextMaintenanceDate} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, nextMaintenanceDate: value })); }} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" />
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-amber-700">
                   Số km bảo dưỡng kế tiếp
-                  <input type="tel" value={assetForm.nextMaintenanceKm} onChange={e => setAssetForm(prev => ({ ...prev, nextMaintenanceKm: e.target.value }))} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" placeholder="VD: 255000" />
+                  <input type="tel" value={assetForm.nextMaintenanceKm} onChange={e => { const value = e.target.value; setAssetForm(prev => ({ ...prev, nextMaintenanceKm: value })); }} className="mt-1 w-full rounded-2xl border border-amber-100 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100" placeholder="VD: 255000" />
                 </label>
               </div>
             </div>
+            {isVpsApiMode && editingAsset?.vpsHandoverHistory?.length > 0 && (
+              <section className="border-t pt-3 space-y-2">
+                <h4 className="text-sm font-bold">Lịch sử bàn giao VPS</h4>
+                {editingAsset.vpsHandoverHistory.map(event => (
+                  <div key={event.eventId} className="border-b py-2 text-sm">
+                    <p className="font-bold">{event.date} · {event.km} km</p>
+                    <p>{getAssetEmployeeNames(employees, { driverIds: event.driverIds })}</p>
+                    <p>{event.condition || ''}</p>
+                    <p className="whitespace-pre-wrap break-words">{event.note || ''}</p>
+                    {event.imageUrl && <p className="text-xs text-amber-700">Tham chiếu chưa xác minh</p>}
+                  </div>
+                ))}
+              </section>
+            )}
             <div className="sticky bottom-0 -mx-5 flex gap-2 border-t border-gray-100 bg-white/95 px-5 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur">
-              {editingAsset && canDeleteAsset && <button type="button" onClick={() => { if (window.confirm('Xóa/ngừng sử dụng tài sản này?')) { onDeleteAsset?.(editingAsset.id); closeAssetForm(); } }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
-              <button type="button" onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
+              {editingAsset && canDeleteAsset && <button type="button" disabled={isSavingAsset} onClick={handleAssetArchive} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
+              <button type="button" disabled={isSavingAsset} onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
               <button disabled={isSavingAsset} type="submit" className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-black">{isSavingAsset ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
           </form>
@@ -53665,6 +53924,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   const actualStockReasonOptions = ['Đếm sai', 'Bị mất', 'Hư hỏng', 'Bị lỗi', 'Bị chết', 'Bị loại', 'Trả nhà cung cấp', 'Khác'];
   const isVpsOpeningBalancePending = isVpsMode
     && vpsInventoryReconciliation?.state !== 'OPENING_BALANCE_RECONCILED';
+  const defaultVpsWarehouseId = useMemo(
+    () => resolveSingleActiveMainWarehouseId(vpsWarehouses),
+    [vpsWarehouses],
+  );
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [warehouseCalendarMonth, setWarehouseCalendarMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
   const [draft, setDraft] = useState({
@@ -53752,6 +54015,19 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   const warehouseCameraTimerRef = useRef(null);
   const warehouseScanInFlightRef = useRef(false);
   const warehouseMovementDetailRef = useRef(null);
+
+  useEffect(() => {
+    if (!isVpsMode || !defaultVpsWarehouseId) return;
+    setDraft(previous => previous.warehouseId
+      ? previous
+      : { ...previous, warehouseId: defaultVpsWarehouseId });
+    setVpsStockCountDraft(previous => previous.warehouseId
+      ? previous
+      : { ...previous, warehouseId: defaultVpsWarehouseId });
+    setVpsOpeningBalanceDraft(previous => previous.warehouseId
+      ? previous
+      : { ...previous, warehouseId: defaultVpsWarehouseId });
+  }, [defaultVpsWarehouseId, isVpsMode]);
   const focusNextWarehouseImportField = (fieldKey) => {
     const nextField = warehouseImportFieldRefs.current?.[fieldKey];
     if (!nextField) return;
@@ -57557,7 +57833,7 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 });
 
-function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
+function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orders = [], orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
@@ -57581,10 +57857,17 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const createEmptyDispatchDraft = (assignedDriverId = '') => ({
     warehouseId: '',
     unitId: '',
+    orderId: '',
+    orderLineId: '',
+    orderNumber: '',
+    reservationId: '',
     customerId: '',
     customerSearch: '',
     productId: '',
     productSearch: '',
+    plannedQuantity: '',
+    plannedQuantityUnit: '',
+    plannedWeightKg: '',
     pieceCount: '',
     quantityUnit: '',
     weightKg: '',
@@ -57600,6 +57883,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     billingSnapshotVersion: 0,
     billingSnapshotSource: '',
   });
+  const defaultVpsWarehouseId = useMemo(
+    () => resolveSingleActiveMainWarehouseId(vpsWarehouses),
+    [vpsWarehouses],
+  );
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
   const [dispatchDriverSelectionTouched, setDispatchDriverSelectionTouched] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState('');
@@ -57638,6 +57925,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchListSearchInputRef = useRef(null);
   const dispatchListWeightSaveLockRef = useRef(false);
   useDismissSearchOnOutsideClick(Boolean(dispatchPickerOpen), () => setDispatchPickerOpen(''));
+
+  useEffect(() => {
+    if (!isVpsMode || !defaultVpsWarehouseId) return;
+    setDispatchDraft(previous => previous.warehouseId
+      ? previous
+      : { ...previous, warehouseId: defaultVpsWarehouseId });
+  }, [defaultVpsWarehouseId, isVpsMode]);
 
   useEffect(() => {
     if (!isDispatchListSearchOpen || typeof window === 'undefined') return undefined;
@@ -57845,9 +58139,19 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       };
     }).filter(row => row.customerName || row.productName);
   }), [todayOrderRequests, customerLookup, productLookup, products]);
+  const dispatchOrderRows = useMemo(() => (
+    isVpsMode
+      ? buildVpsPendingDispatchOrderRows({ orders, customers, products })
+      : warehouseVoiceOrderRows
+  ), [customers, isVpsMode, orders, products, warehouseVoiceOrderRows]);
+  const dispatchCustomerOptions = useMemo(() => {
+    if (!isVpsMode) return requestCustomerOptions;
+    const pendingCustomerIds = new Set(dispatchOrderRows.map(row => row.customerId).filter(Boolean));
+    return (customers || []).filter(customer => pendingCustomerIds.has(customer.id));
+  }, [customers, dispatchOrderRows, isVpsMode, requestCustomerOptions]);
   const hasDispatchOrderRequestForCustomer = (customerId = '') => {
     const normalizedCustomerId = `${customerId || ''}`.trim();
-    return Boolean(normalizedCustomerId && warehouseVoiceOrderRows.some(
+    return Boolean(normalizedCustomerId && dispatchOrderRows.some(
       row => `${row.customerId || ''}`.trim() === normalizedCustomerId
     ));
   };
@@ -57919,6 +58223,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     };
   };
   const getMissingDispatchOrderRowsForCustomer = (customerId = '') => {
+    if (isVpsMode) return [];
     if (!customerId) return [];
     return (dispatchShortageSummary?.issueLines || [])
       .filter(line => line.customerId === customerId && Array.isArray(line.requestLines) && line.requestLines.length > 0)
@@ -57931,6 +58236,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   };
   const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '', dispatchLike = {}) => {
     if (!customerId || !productId) return null;
+    if (isVpsMode) {
+      return dispatchOrderRows.find(row => (
+        row.customerId === customerId && row.productId === productId
+      )) || null;
+    }
     const candidateRows = [];
     (dispatchShortageSummary?.issueLines || [])
       .filter(line => (
@@ -58087,12 +58397,19 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   };
   const getPreferredOrderRowForDispatchCustomer = (customerId = '') => {
     if (!customerId) return null;
+    if (isVpsMode) return dispatchOrderRows.find(row => row.customerId === customerId && row.productId) || null;
     const missingRows = getMissingDispatchOrderRowsForCustomer(customerId);
     if (missingRows.length > 0) return missingRows[0];
     return warehouseVoiceOrderRows.find(row => row.customerId === customerId && row.productId) || null;
   };
   const buildDispatchDefaultsFromOrderRow = (orderRow = null) => {
     if (!orderRow) return {
+      warehouseId: '',
+      unitId: '',
+      orderId: '',
+      orderLineId: '',
+      orderNumber: '',
+      reservationId: '',
       productId: '',
       productSearch: '',
       pieceCount: '',
@@ -58156,6 +58473,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       ? explicitWeight
       : 0;
     return {
+      warehouseId: orderRow.warehouseId || '',
+      unitId: orderRow.unitId || '',
+      orderId: orderRow.orderId || '',
+      orderLineId: orderRow.orderLineId || '',
+      orderNumber: orderRow.orderNumber || '',
+      reservationId: orderRow.reservationId || '',
       productId: product?.id || orderRow.productId || '',
       productSearch: productName,
       pieceCount: orderQuantity > 0 ? formatVoiceNumberValue(orderQuantity) : '',
@@ -58188,14 +58511,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchCustomerOrderRows = useMemo(() => {
     if (!selectedDispatchCustomer?.id) return [];
     const missingRows = getMissingDispatchOrderRowsForCustomer(selectedDispatchCustomer.id);
-    const allOrderRows = warehouseVoiceOrderRows.filter(row => row.customerId === selectedDispatchCustomer.id && row.productId);
+    const allOrderRows = dispatchOrderRows.filter(row => row.customerId === selectedDispatchCustomer.id && row.productId);
     const grouped = new Map();
     [...missingRows, ...allOrderRows].forEach((row) => {
       const key = row.productId || normalizeLookupText(row.productName || '');
       if (key && !grouped.has(key)) grouped.set(key, row);
     });
     return Array.from(grouped.values());
-  }, [selectedDispatchCustomer?.id, dispatchShortageSummary?.issueLines, productLookup, warehouseVoiceOrderRows]);
+  }, [dispatchOrderRows, selectedDispatchCustomer?.id, dispatchShortageSummary?.issueLines, productLookup]);
   const dispatchCustomerOrderedProducts = useMemo(() => {
     if (!dispatchCustomerOrderRows.length) return [];
     return Array.from(new Map(dispatchCustomerOrderRows
@@ -58270,7 +58593,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       .map(row => row.item);
   }, []);
   const filteredDispatchCustomers = useMemo(() => rankDispatchPickerOptions(
-    requestCustomerOptions,
+    dispatchCustomerOptions,
     dispatchCustomerSearchKeyword,
     (customer) => [
       customer.name,
@@ -58283,15 +58606,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       customer.group,
       customer.customerGroup
     ]
-  ), [dispatchCustomerSearchKeyword, rankDispatchPickerOptions, requestCustomerOptions]);
+  ), [dispatchCustomerOptions, dispatchCustomerSearchKeyword, rankDispatchPickerOptions]);
   const dispatchProductPickerOptions = useMemo(() => {
     if (!selectedDispatchCustomer) return [];
     return buildWarehouseDispatchProductOptions({
       orderedProducts: dispatchCustomerOrderedProducts,
       fixedProducts: dispatchCustomerFixedProducts,
       catalogProducts: activeDispatchCatalogProducts,
-      canBrowseCatalog: canBrowseDispatchCatalog,
-      canCreateWithoutOrderRequest: canCreateDispatchWithoutOrderRequest,
+      canBrowseCatalog: !isVpsMode && canBrowseDispatchCatalog,
+      canCreateWithoutOrderRequest: !isVpsMode && canCreateDispatchWithoutOrderRequest,
     });
   }, [
     activeDispatchCatalogProducts,
@@ -58299,6 +58622,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     canCreateDispatchWithoutOrderRequest,
     dispatchCustomerFixedProducts,
     dispatchCustomerOrderedProducts,
+    isVpsMode,
     selectedDispatchCustomer,
   ]);
   const isDispatchCatalogFallbackActive = Boolean(
@@ -59728,12 +60052,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         transcript: transcript || baseDraft.transcript,
         customerId: customerMatch?.id || baseDraft.customerId,
         customerSearch: customerMatch ? getCustomerDisplayName(customerMatch) : baseDraft.customerSearch,
-        productId: productMatch?.id || matchedOrderRow?.productId || baseDraft.productId,
-        productSearch: productLabel || baseDraft.productSearch,
-        pieceCount: pieceCountValue || baseDraft.pieceCount,
-        quantityUnit: (matchedOrderRow || productMatch || pieceCountValue) ? quantityUnit : baseDraft.quantityUnit,
-        weightKg: weightValue || (isKgQuantityUnit(quantityUnit) ? orderDefaults.weightKg : '') || baseDraft.weightKg,
-        weightEntries: weightEntries.length > 0 ? weightEntries : baseDraft.weightEntries
+      productId: productMatch?.id || matchedOrderRow?.productId || baseDraft.productId,
+      productSearch: productLabel || baseDraft.productSearch,
+      plannedQuantity: orderDefaults.pieceCount || baseDraft.plannedQuantity,
+      plannedQuantityUnit: orderDefaults.quantityUnit || baseDraft.plannedQuantityUnit,
+      plannedWeightKg: orderDefaults.weightKg || baseDraft.plannedWeightKg,
+      pieceCount: pieceCountValue || (shouldReplaceDraft ? orderDefaults.pieceCount : baseDraft.pieceCount),
+      quantityUnit: (matchedOrderRow || productMatch || pieceCountValue) ? quantityUnit : baseDraft.quantityUnit,
+      weightKg: weightValue || (shouldReplaceDraft ? orderDefaults.weightKg : baseDraft.weightKg),
+      weightEntries: weightEntries.length > 0 ? weightEntries : baseDraft.weightEntries
       };
     });
 
@@ -59949,8 +60276,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const orderDefaults = buildDispatchDefaultsFromOrderRow(preferredOrderRow);
     const customer = selectedCustomer || { name: '' };
     const product = { name: orderDefaults.productSearch || '' };
-    const pieceCount = parseLooseQuantityValue(orderDefaults.pieceCount);
-    const weightKg = 0;
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => ({
       ...prev,
@@ -59958,10 +60283,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       customerId,
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
       assignedDriverId: prev.customerId === customerId ? prev.assignedDriverId : '',
-      weightKg: orderDefaults.weightKg || ''
+      plannedQuantity: orderDefaults.pieceCount || '',
+      plannedQuantityUnit: orderDefaults.quantityUnit || '',
+      plannedWeightKg: orderDefaults.weightKg || '',
+      pieceCount: orderDefaults.pieceCount || '',
+      weightKg: orderDefaults.weightKg || '',
+      weightEntries: [],
     }));
-    setDispatchStatus(`Đã thêm phiếu xuất cho ${customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} con` : ''} • ${formatNumber(weightKg)} kg.`);
-    setDispatchStatus('');
+    setDispatchStatus(`Đã lấy số lượng mặc định từ đơn ${customer.name} • ${product.name}. Sửa lại nếu thực xuất khác; số đang hiển thị sẽ được lưu là số thực xuất.`);
     setDispatchError('');
     setDispatchPickerOpen('');
   };
@@ -59996,9 +60325,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       ...orderDefaults,
       productId,
       productSearch: selectedProduct?.name || orderDefaults.productSearch || '',
-      pieceCount: matchedOrderRow ? (orderDefaults.pieceCount || '') : '',
+      plannedQuantity: orderDefaults.pieceCount || '',
+      plannedQuantityUnit: orderDefaults.quantityUnit || fallbackUnit,
+      plannedWeightKg: orderDefaults.weightKg || '',
+      pieceCount: orderDefaults.pieceCount || '',
       quantityUnit: orderDefaults.quantityUnit || fallbackUnit,
-      weightKg: matchedOrderRow ? (orderDefaults.weightKg || '') : '',
+      weightKg: orderDefaults.weightKg || '',
       weightEntries: [],
     }));
     setDispatchError('');
@@ -60014,6 +60346,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       ...defaults,
       customerId,
       customerSearch: customer?.name || '',
+      pieceCount: defaults.pieceCount || '',
+      weightKg: defaults.weightKg || '',
+      weightEntries: [],
       assignedDriverId: prev.assignedDriverId || '',
       note: prev.note || '',
     }));
@@ -60051,6 +60386,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       ...defaults,
       productId,
       productSearch: product?.name || defaults.productSearch || '',
+      pieceCount: defaults.pieceCount || '',
+      weightKg: defaults.weightKg || '',
+      weightEntries: [],
       assignedDriverId: prev.assignedDriverId || '',
       note: prev.note || '',
     }));
@@ -60348,7 +60686,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const quantityUnit = normalizeDispatchQuantityUnit(dispatchDraft.quantityUnit || 'Con');
 
     if (!customer || !product || (weightKg <= 0 && pieceCount <= 0)) {
-      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le.');
+      setDispatchError('Vui lòng chọn đúng khách hàng, loại hàng và nhập số lượng hoặc số kg thực xuất lớn hơn 0.');
       return;
     }
 
@@ -60368,6 +60706,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     };
     const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
     const isOutsideOrderRequest = !matchedOrderRow;
+    if (isVpsMode && (!matchedOrderRow?.orderId || !matchedOrderRow?.orderLineId)) {
+      setDispatchError('Không tìm thấy dòng đơn VPS còn chưa xuất. Hãy chọn lại khách hàng và sản phẩm từ danh sách đơn chờ xuất.');
+      return;
+    }
+    if (isVpsMode && (!matchedOrderRow?.warehouseId || !matchedOrderRow?.unitId)) {
+      setDispatchError('Đơn nguồn chưa có kho hoặc UOM đã xác định. Chưa thể xuất kho an toàn cho đến khi hoàn tất mapping kho và tồn mở đầu.');
+      return;
+    }
     const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
     const billingSnapshot = buildDispatchBillingSnapshot({
@@ -60431,6 +60777,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       sourceOrderRequestDate: matchedOrderRow?.requestDate || selectedOrderRequestDateKey,
       sourceOrderRequestId: matchedOrderRow?.requestId || '',
       sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
+      orderId: matchedOrderRow?.orderId || '',
+      orderLineId: matchedOrderRow?.orderLineId || '',
+      reservationId: matchedOrderRow?.reservationId || '',
       price: billingSnapshot.unitPrice,
       sourceOrderRequestUnitPrice: billingSnapshot.unitPrice,
       orderRequestUnitPrice: billingSnapshot.unitPrice,
@@ -60438,7 +60787,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       isOutsideOrderRequest,
       createdWithoutOrderRequest: isOutsideOrderRequest,
       sourceOrderRequestMissing: isOutsideOrderRequest,
-      sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow)
+      sourceType: isVpsMode
+        ? 'vps_sales_order'
+        : buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow)
     });
 
     const savedLabel = `Đã lưu phiếu xuất cho ${getCustomerDisplayName(customer) || customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} ${quantityUnit}` : ''}${weightKg > 0 ? ` • ${formatNumber(weightKg)} kg` : ''}${assignedDriverName ? ` • Giao: ${assignedDriverName}` : ''}.`;
@@ -60451,10 +60802,18 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(createEmptyDispatchDraft(assignedDriverId));
     } catch (error) {
+      const dispatchErrorCode = `${error?.code || ''} ${error?.message || error || ''}`;
+      if (
+        dispatchErrorCode.includes('WAREHOUSE_DISPATCH_EXCEEDS_ORDER_LINE')
+        || dispatchErrorCode.includes('exceeds the undelivered order-line quantity')
+      ) {
+        setDispatchError('Số thực xuất vượt phần còn lại của đơn. Hãy điều chỉnh đơn có phê duyệt trước, rồi lưu lại phiếu xuất; app không tự đổi số trên đơn hoặc số tồn.');
+      } else {
       setDispatchError(getFriendlyFirebaseErrorMessage(
         error,
         'Không thể lưu phiếu xuất kho. Vui lòng kiểm tra mạng rồi thử lại.'
       ));
+      }
     } finally {
       dispatchSaveLockRef.current = false;
       setIsSavingDispatch(false);
@@ -60839,6 +61198,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 {(vpsWarehouses.length === 0 || vpsUnits.length === 0) && (
                   <p className="sm:col-span-2 text-xs font-semibold text-amber-700">Chưa có master kho/UOM VPS để chọn. Không thể ghi nhận xuất kho an toàn.</p>
                 )}
+                {dispatchDraft.orderNumber && (
+                  <p className="sm:col-span-2 text-xs font-semibold text-blue-800">
+                    Đơn nguồn VPS: {dispatchDraft.orderNumber}. App chỉ lấy phần còn chưa xuất của đơn này.
+                  </p>
+                )}
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
@@ -60959,6 +61323,19 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
             </div>
 
             <div className="grid grid-cols-3 gap-2">
+              {(dispatchDraft.plannedQuantity || dispatchDraft.plannedWeightKg) && (
+                <div className="col-span-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                  <span className="font-black">Đơn tham chiếu: </span>
+                  {dispatchDraft.plannedQuantity
+                    ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.plannedQuantity))} ${dispatchDraft.plannedQuantityUnit || dispatchDraft.quantityUnit || 'đơn vị'}`
+                    : ''}
+                  {dispatchDraft.plannedQuantity && dispatchDraft.plannedWeightKg ? ' • ' : ''}
+                  {dispatchDraft.plannedWeightKg
+                    ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.plannedWeightKg))} kg`
+                    : ''}
+                  <span className="block pt-1 font-medium text-amber-800">Số dưới đây được điền từ đơn; hãy sửa theo thực tế trước khi lưu.</span>
+                </div>
+              )}
               <input
                 type="number"
                 min="0"
@@ -60966,7 +61343,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 value={dispatchDraft.pieceCount}
                 onChange={(e) => setDispatchDraft(prev => ({ ...prev, pieceCount: e.target.value }))}
                 className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="Số lượng"
+                placeholder="Số lượng xuất (có thể sửa)"
+                aria-label="Số lượng thực xuất"
               />
               <div
                 className="flex w-full min-w-0 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700"
@@ -60981,7 +61359,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 aria-label="Nhập các lần cân kg"
               >
                 <span className={dispatchDraft.weightKg ? 'text-slate-900' : 'text-gray-400'}>
-                  {dispatchDraft.weightKg ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.weightKg))} kg` : 'Số kg'}
+                  {dispatchDraft.weightKg ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.weightKg))} kg` : 'Kg thực xuất'}
                 </span>
               </button>
             </div>
@@ -78105,7 +78483,9 @@ function HolidayConfigCard({
       setShowHolidayForm(false);
       setHolidaySaveStatus('Đã lưu ngày lễ. Nếu nhân sự có chấm công đúng ngày này, bảng lương sẽ tự cộng thưởng.');
     } catch (error) {
-      setHolidaySaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không lưu được ngày lễ.'));
+      setHolidaySaveStatus(isVpsApiMode
+        ? (error?.message || 'Chưa xác nhận lưu ngày lễ trên VPS. Vui lòng thử lại.')
+        : getFriendlyFirebaseErrorMessage(error, 'Không lưu được ngày lễ.'));
     }
   };
 
@@ -78117,7 +78497,9 @@ function HolidayConfigCard({
       await onDeleteHoliday(holidayId);
       setHolidaySaveStatus('Đã xóa cấu hình ngày lễ.');
     } catch (error) {
-      setHolidaySaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không xóa được ngày lễ.'));
+      setHolidaySaveStatus(isVpsApiMode
+        ? (error?.message || 'Chưa xác nhận xóa ngày lễ trên VPS. Vui lòng thử lại.')
+        : getFriendlyFirebaseErrorMessage(error, 'Không xóa được ngày lễ.'));
     }
   };
 
@@ -78607,8 +78989,17 @@ function EmployeeView({
     });
   };
 
-  const handleOpenEdit = (emp) => {
+  const handleOpenEdit = async (emp) => {
     if (!canEditEmployee) return;
+    if (isVpsApiMode) {
+      try {
+        const result = await getHdConnectStagingApi().getManagerEmployee(emp.id);
+        emp = applyVpsEmployeeProfile(emp, result, currentCompany.id);
+      } catch (error) {
+        setEmployeeStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tải đầy đủ hồ sơ VPS. Chưa mở biểu mẫu sửa.'));
+        return;
+      }
+    }
     setEditingEmp(emp);
     setEmployeeStatus('');
     const shiftPolicy = resolveEmployeeShiftPolicy(emp);
@@ -78681,6 +79072,7 @@ function EmployeeView({
     const normalizedShiftEnd = normalizeTimeInputValue(empData.shiftEnd) || shiftDefaults.shiftEnd;
     const pData = { 
       ...empData,
+      ...(isVpsApiMode && editingEmp ? { vpsProfileVersion: editingEmp.vpsProfileVersion } : {}),
       position: normalizedPosition,
       primaryPosition: normalizedPosition,
       secondaryPositions,
