@@ -13,6 +13,7 @@ import {
   normalizeVpsSession,
   normalizeVpsStockMovement,
 } from '../src/api/hdConnectStaging.js';
+import { saveVpsCompanyReceivingBankAccount } from '../src/api/vpsCompanySettings.js';
 
 const createStorage = () => {
   const values = new Map();
@@ -208,6 +209,10 @@ test('uses the tenant-scoped finance bank account default contract without accep
       calls.push({ method: 'POST', path, payload, options });
       return { id: 'bank-1' };
     },
+    patch: async (path, payload, options) => {
+      calls.push({ method: 'PATCH', path, payload, options });
+      return { id: 'bank-1', ...payload };
+    },
   });
 
   const accounts = await api.listFinanceBankAccounts({ companyId: 'attacker-company', page: 1 });
@@ -218,6 +223,9 @@ test('uses the tenant-scoped finance bank account default contract without accep
     accountName: 'HD CO LTD',
     accountNumber: '0123 456 789',
     isCustomerPaymentDefault: true,
+  });
+  await api.updateFinanceBankAccount('11111111-1111-4111-8111-111111111111', {
+    accountNumber: '9988 7766',
   });
   await api.setFinanceCustomerPaymentDefaultBankAccount('11111111-1111-4111-8111-111111111111');
 
@@ -231,12 +239,104 @@ test('uses the tenant-scoped finance bank account default contract without accep
     isCustomerPaymentDefault: true,
   });
   assert.equal(Object.hasOwn(calls[1].payload, 'companyId'), false);
-  assert.equal(calls[2].path, '/finance-suite/bank-accounts/11111111-1111-4111-8111-111111111111/customer-payment-default');
+  assert.equal(calls[2].path, '/finance-suite/bank-accounts/11111111-1111-4111-8111-111111111111');
+  assert.deepEqual(calls[2].payload, { accountNumber: '99887766' });
   assert.equal(calls[2].options.retry, false);
+  assert.equal(calls[3].path, '/finance-suite/bank-accounts/11111111-1111-4111-8111-111111111111/customer-payment-default');
+  assert.equal(calls[3].options.retry, false);
   await assert.rejects(
     () => api.setFinanceCustomerPaymentDefaultBankAccount('foreign-bank'),
     { code: 'FINANCE_BANK_ACCOUNT_INVALID' },
   );
+});
+
+test('saves the company receiving account through the explicit VPS finance contract', async () => {
+  const calls = [];
+  const api = {
+    listFinanceBankAccounts: async () => ({
+      items: [{
+        id: '11111111-1111-4111-8111-111111111111',
+        code: 'CUSTOMER_RECEIVING_BIDV',
+        isCustomerPaymentDefault: true,
+      }],
+    }),
+    updateFinanceBankAccount: async (id, payload) => {
+      calls.push({ id, payload });
+      return { id, ...payload, isCustomerPaymentDefault: true };
+    },
+    createFinanceBankAccount: async () => {
+      throw new Error('The existing default account should be updated.');
+    },
+    setFinanceCustomerPaymentDefaultBankAccount: async () => {
+      throw new Error('The existing default account should remain default.');
+    },
+  };
+
+  const company = await saveVpsCompanyReceivingBankAccount(api, { id: 'company-1' }, {
+    bankId: 'bidv',
+    bankName: 'BIDV',
+    bankAccountName: 'HD CO LTD',
+    bankAccountNumber: '0123 456 789',
+  });
+
+  assert.deepEqual(calls, [{
+    id: '11111111-1111-4111-8111-111111111111',
+    payload: {
+      bankName: 'BIDV',
+      accountName: 'HD CO LTD',
+      accountNumber: '0123456789',
+      status: 'ACTIVE',
+    },
+  }]);
+  assert.equal(company.bankId, 'BIDV');
+  assert.equal(company.bankAccountNumber, '0123456789');
+  assert.equal(company.vpsCustomerPaymentBankAccountId, '11111111-1111-4111-8111-111111111111');
+});
+
+test('creates a new receiving account before changing the company default bank', async () => {
+  const calls = [];
+  const api = {
+    listFinanceBankAccounts: async () => ({
+      items: [{
+        id: '11111111-1111-4111-8111-111111111111',
+        code: 'CUSTOMER_RECEIVING_VCB',
+        isCustomerPaymentDefault: true,
+      }],
+    }),
+    updateFinanceBankAccount: async () => {
+      throw new Error('A different bank must not overwrite the current default account.');
+    },
+    createFinanceBankAccount: async (payload) => {
+      calls.push({ method: 'CREATE', payload });
+      return {
+        id: '22222222-2222-4222-8222-222222222222',
+        ...payload,
+      };
+    },
+    setFinanceCustomerPaymentDefaultBankAccount: async () => {
+      throw new Error('Creating the new default account is atomic.');
+    },
+  };
+
+  const company = await saveVpsCompanyReceivingBankAccount(api, { id: 'company-1' }, {
+    bankId: 'bidv',
+    bankName: 'BIDV',
+    bankAccountName: 'HD CO LTD',
+    bankAccountNumber: '9988 7766',
+  });
+
+  assert.deepEqual(calls, [{
+    method: 'CREATE',
+    payload: {
+      code: 'CUSTOMER_RECEIVING_BIDV',
+      bankName: 'BIDV',
+      accountName: 'HD CO LTD',
+      accountNumber: '99887766',
+      status: 'ACTIVE',
+      isCustomerPaymentDefault: true,
+    },
+  }]);
+  assert.equal(company.vpsCustomerPaymentBankAccountId, '22222222-2222-4222-8222-222222222222');
 });
 
 test('routes customer-support chat through scoped VPS contracts without caller tenant or customer IDs', async () => {

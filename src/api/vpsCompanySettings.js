@@ -7,6 +7,53 @@ const settingFields = new Set([
   'salaryAdvancePercent', 'salaryAdvancePercentByDepartment',
 ]);
 
+const nativeBankFields = new Set([
+  'bankId',
+  'bankName',
+  'bankAccountName',
+  'bankAccountNumber',
+]);
+
+const stringValue = (value) => `${value ?? ''}`.trim();
+
+export function hasVpsCompanyBankSettings(input = {}) {
+  return Object.keys(input).some((key) => nativeBankFields.has(key));
+}
+
+export async function saveVpsCompanyReceivingBankAccount(api, company, input = {}) {
+  const bankId = stringValue(input.bankId).toUpperCase();
+  const bankName = stringValue(input.bankName);
+  const accountName = stringValue(input.bankAccountName).toUpperCase();
+  const accountNumber = stringValue(input.bankAccountNumber).replace(/\s+/g, '');
+  if (!bankId || !bankName || !accountName || !accountNumber) {
+    throw new Error('Vui long nhap du ma ngan hang, ten ngan hang, chu tai khoan va so tai khoan.');
+  }
+  const code = `CUSTOMER_RECEIVING_${bankId}`.slice(0, 60);
+  const page = await api.listFinanceBankAccounts({ page: 1, limit: 100 });
+  const existing = page.items.find(
+    (item) => `${item?.code || ''}`.trim().toUpperCase() === code,
+  );
+  const details = { bankName, accountName, accountNumber, status: 'ACTIVE' };
+  const bankAccount = existing
+    ? await api.updateFinanceBankAccount(existing.id, details)
+    : await api.createFinanceBankAccount({
+      code,
+      ...details,
+      isCustomerPaymentDefault: true,
+    });
+  const defaultBankAccount = bankAccount.isCustomerPaymentDefault === true
+    ? bankAccount
+    : await api.setFinanceCustomerPaymentDefaultBankAccount(bankAccount.id);
+  return {
+    ...company,
+    bankId,
+    bankName: defaultBankAccount.bankName || bankName,
+    bankAccountName: defaultBankAccount.accountName || accountName,
+    bankAccountNumber: defaultBankAccount.accountNumber || accountNumber,
+    vpsCustomerPaymentBankAccountId: defaultBankAccount.id,
+  };
+}
+
 export async function updateVpsCompanySettings(api, company, input) {
   if (!company?.id || !company.vpsSettingsVersion) {
     throw new Error('Cau hinh cong ty chua tai xong. Vui long tai lai.');

@@ -9,7 +9,7 @@ import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays 
 import { approveVpsSalaryAdvance, cancelVpsSalaryAdvance, createVpsSalaryAdvance, loadVpsSalaryAdvances, mergeVpsSalaryAdvanceFinancials, mergeVpsSalaryAdvances, rejectVpsSalaryAdvance, vpsSalaryAdvanceErrorMessage } from './api/vpsSalaryAdvances.js';
 import { loadVpsEmployeeReviews, mergeVpsEmployeeReviews, saveVpsEmployeeReview } from './api/vpsEmployeeReviews.js';
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
-import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
+import { hasVpsCompanyBankSettings, saveVpsCompanyReceivingBankAccount, updateVpsCompanySettings } from './api/vpsCompanySettings.js';
 import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
 import { adjustVpsLockedPayroll, loadVpsPayrollPeriod, lockVpsPayrollPeriod } from './api/vpsPayroll.js';
 import { loadVpsMessages, saveVpsMessage } from './api/vpsMessages.js';
@@ -16677,7 +16677,26 @@ export default function App() {
 
   const handleUpdateCompanySettings = async (settingsData) => {
     if (isVpsApiMode) {
-      const nextCompany = await updateVpsCompanySettings(getHdConnectStagingApi(), currentCompany, settingsData);
+      const api = getHdConnectStagingApi();
+      const bankSettingKeys = new Set([
+        'bankId',
+        'bankName',
+        'bankAccountName',
+        'bankAccountNumber',
+      ]);
+      const bankSettings = Object.fromEntries(
+        Object.entries(settingsData || {}).filter(([key]) => bankSettingKeys.has(key)),
+      );
+      const managerSettings = Object.fromEntries(
+        Object.entries(settingsData || {}).filter(([key]) => !bankSettingKeys.has(key)),
+      );
+      let nextCompany = currentCompany;
+      if (hasVpsCompanyBankSettings(bankSettings)) {
+        nextCompany = await saveVpsCompanyReceivingBankAccount(api, nextCompany, bankSettings);
+      }
+      if (Object.keys(managerSettings).length) {
+        nextCompany = await updateVpsCompanySettings(api, nextCompany, managerSettings);
+      }
       setCurrentCompany(nextCompany);
       setRawCompanies(previous => previous.map(company => company.id === nextCompany.id ? nextCompany : company));
       return { success: true };
@@ -25365,7 +25384,7 @@ function MainAppView({
       case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
-      case 'settings': return <SettingsView isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
+      case 'settings': return <SettingsView isVpsMode={isVpsApiMode} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
       case 'company_attendance':
@@ -32114,6 +32133,7 @@ function ZaloCampaignPanel({
 }
 
 function SettingsView({
+  isVpsMode = false,
   isAccounting,
   employee,
   currentCompany,
@@ -32363,11 +32383,13 @@ function SettingsView({
       bankName: bankForm.bankName.trim(),
       bankAccountName: bankForm.bankAccountName.trim().toUpperCase(),
       bankAccountNumber: normalizedBankAccountNumber,
-      sepayVirtualAccountNumber: normalizedVirtualAccountNumber,
-      sepayUseVirtualAccount: shouldUseVirtualAccount,
-      sepayReceivingAccountNumber: shouldUseVirtualAccount ? normalizedVirtualAccountNumber : normalizedBankAccountNumber,
-      invoiceQrTemplate: bankForm.invoiceQrTemplate || DEFAULT_INVOICE_TRANSFER_PROFILE.template,
-      autoReconcileByOrderCode: Boolean(bankForm.autoReconcileByOrderCode)
+      ...(isVpsMode ? {} : {
+        sepayVirtualAccountNumber: normalizedVirtualAccountNumber,
+        sepayUseVirtualAccount: shouldUseVirtualAccount,
+        sepayReceivingAccountNumber: shouldUseVirtualAccount ? normalizedVirtualAccountNumber : normalizedBankAccountNumber,
+        invoiceQrTemplate: bankForm.invoiceQrTemplate || DEFAULT_INVOICE_TRANSFER_PROFILE.template,
+        autoReconcileByOrderCode: Boolean(bankForm.autoReconcileByOrderCode)
+      })
     };
     if (!payload.bankId || !payload.bankName || !payload.bankAccountName || !payload.bankAccountNumber) {
       setBankSaveStatus('Vui lòng nhập đủ mã ngân hàng, tên ngân hàng, số tài khoản và chủ tài khoản.');
@@ -32662,6 +32684,11 @@ function SettingsView({
 
         {showBankSettings && (
           <form onSubmit={handleBankSettingSubmit} className="mt-4 space-y-3">
+            {isVpsMode && (
+              <p className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-800">
+                VPS lưu trực tiếp một tài khoản nhận tiền mặc định của công ty. QR/VA SePay và tự động đối soát chỉ bật khi connector nhà cung cấp đã được cấu hình riêng.
+              </p>
+            )}
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(76px,0.72fr)_minmax(0,1fr)] gap-2">
               <label className="block">
                 <span className="mb-1 block text-xs font-bold text-gray-500">Mã ngân hàng</span>
@@ -32711,6 +32738,7 @@ function SettingsView({
                   <span className="mb-1 block text-xs font-bold text-sky-700">Số tài khoản ảo SePay (VA)</span>
                   <input
                     value={bankForm.sepayVirtualAccountNumber}
+                    disabled={isVpsMode}
                     onChange={(event) => setBankForm(prev => ({ ...prev, sepayVirtualAccountNumber: event.target.value.replace(/\s+/g, '').toUpperCase() }))}
                     className="w-full rounded-xl border border-sky-200 bg-white p-3 text-sm font-black uppercase outline-none focus:ring-2 focus:ring-sky-500"
                     placeholder="VD: 96247HD"
@@ -32718,6 +32746,7 @@ function SettingsView({
                 </label>
                 <button
                   type="button"
+                  disabled={isVpsMode}
                   onClick={() => setBankForm(prev => ({ ...prev, sepayUseVirtualAccount: !prev.sepayUseVirtualAccount }))}
                   className={`mb-0.5 shrink-0 rounded-xl border px-3 py-3 text-xs font-black transition ${bankForm.sepayUseVirtualAccount ? 'border-sky-300 bg-sky-600 text-white shadow-sm shadow-sky-500/20' : 'border-gray-200 bg-white text-gray-500'}`}
                 >
@@ -32744,6 +32773,7 @@ function SettingsView({
                 <span className="mb-1 block text-xs font-bold text-gray-500">Mẫu QR</span>
                 <select
                   value={bankForm.invoiceQrTemplate}
+                  disabled={isVpsMode}
                   onChange={(event) => setBankForm(prev => ({ ...prev, invoiceQrTemplate: event.target.value }))}
                   className="w-full rounded-xl border border-gray-300 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
                 >
@@ -32761,6 +32791,7 @@ function SettingsView({
 
             <button
               type="button"
+              disabled={isVpsMode}
               onClick={() => setBankForm(prev => ({ ...prev, autoReconcileByOrderCode: !prev.autoReconcileByOrderCode }))}
               className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-left"
             >

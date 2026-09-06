@@ -1473,6 +1473,38 @@ export class HdConnectStagingApi {
     }, mutationOptions(record));
   }
 
+  async updateFinanceBankAccount(id, record = {}) {
+    const bankAccountId = requireIdentityInput(
+      id,
+      'FINANCE_BANK_ACCOUNT_REQUIRED',
+      'A bank account is required.',
+    );
+    if (!isUuid(bankAccountId)) {
+      throw new HdApiError('The bank account id is invalid.', {
+        code: 'FINANCE_BANK_ACCOUNT_INVALID',
+      });
+    }
+    const payload = {
+      ...(record.bankName !== undefined ? { bankName: stringValue(record.bankName) } : {}),
+      ...(record.accountName !== undefined ? { accountName: stringValue(record.accountName) } : {}),
+      ...(record.accountNumber !== undefined
+        ? { accountNumber: stringValue(record.accountNumber).replace(/\s+/g, '') }
+        : {}),
+      ...(record.currencyCode !== undefined ? { currencyCode: stringValue(record.currencyCode) } : {}),
+      ...(record.status !== undefined ? { status: stringValue(record.status) } : {}),
+    };
+    if (!Object.keys(payload).length) {
+      throw new HdApiError('At least one bank account change is required.', {
+        code: 'FINANCE_BANK_ACCOUNT_CHANGE_REQUIRED',
+      });
+    }
+    return this.client.patch(
+      `/finance-suite/bank-accounts/${encodeURIComponent(bankAccountId)}`,
+      payload,
+      { retry: false },
+    );
+  }
+
   async setFinanceCustomerPaymentDefaultBankAccount(id) {
     const bankAccountId = requireIdentityInput(
       id,
