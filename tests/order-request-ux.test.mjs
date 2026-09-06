@@ -104,10 +104,15 @@ test('catalog selection distinguishes units from attributes and carries the targ
   assert.match(appSource, /unitId: seed\.unitId \|\| seed\.salesUnitId \|\| seed\.baseUnitId \|\| ''/);
 });
 
-test('VPS product creation resolves a UOM master and assigns it to every product role', () => {
+test('VPS product create and edit resolve UOM and category masters before assigning product roles', () => {
   assert.match(appSource, /const getPrimaryProductUnitLabel/);
   assert.match(appSource, /const findVpsUnitByLabel/);
+  assert.match(appSource, /const findVpsProductCategoryByLabel/);
+  assert.match(appSource, /const resolveVpsProductMasters/);
   assert.match(appSource, /await api\.createUnit\(/);
+  assert.match(appSource, /await api\.listProductCategories\(/);
+  assert.match(appSource, /await api\.createProductCategory\(/);
+  assert.match(appSource, /categoryId: category\?\.id/);
   assert.match(appSource, /baseUnitId: unit\.id/);
   assert.match(appSource, /salesUnitId: unit\.id/);
   assert.match(appSource, /purchaseUnitId: unit\.id/);

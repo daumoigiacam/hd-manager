@@ -528,6 +528,94 @@ test('creates and normalizes a tenant-scoped unit of measure before product crea
   await assert.rejects(() => api.createUnit({}), { code: 'UNIT_NAME_REQUIRED' });
 });
 
+test('creates and normalizes a tenant-scoped product category before product creation', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ method: 'get', path, options });
+      return { items: [{ id: 'category-1', code: 'POULTRY', name: 'Gia cam' }] };
+    },
+    post: async (path, payload, options) => {
+      calls.push({ method: 'post', path, payload, options });
+      return { id: 'category-2', code: 'DUCK', name: 'Vit' };
+    },
+  });
+
+  const listed = await api.listProductCategories({ limit: 100 });
+  const created = await api.createProductCategory({
+    name: 'Vit',
+    clientMutationId: 'product-category-vit',
+  });
+
+  assert.equal(listed.items[0].label, 'Gia cam');
+  assert.deepEqual(calls[0], {
+    method: 'get',
+    path: '/master-data/product-categories',
+    options: { query: { limit: 100 } },
+  });
+  assert.deepEqual(calls[1].payload, { name: 'Vit' });
+  assert.equal(calls[1].path, '/master-data/product-categories');
+  assert.equal(calls[1].options.idempotencyKey, 'product-category-vit');
+  assert.equal(created.label, 'Vit');
+  await assert.rejects(() => api.createProductCategory({}), { code: 'PRODUCT_CATEGORY_NAME_REQUIRED' });
+});
+
+test('preserves product pricing and stock-unit metadata through the native VPS product contract', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    post: async (path, payload, options) => {
+      calls.push({ path, payload, options });
+      return {
+        id: 'product-kg',
+        companyId: 'company-1',
+        name: 'Duck by weight',
+        category: { id: '11111111-1111-4111-8111-111111111111', name: 'Poultry' },
+        salesUnit: { id: '22222222-2222-4222-8222-222222222222', name: 'Kg' },
+        metadata: payload.metadata,
+      };
+    },
+  });
+
+  const product = await api.createProduct({
+    name: 'Duck by weight',
+    categoryId: '11111111-1111-4111-8111-111111111111',
+    unitId: '22222222-2222-4222-8222-222222222222',
+    baseUnitId: '22222222-2222-4222-8222-222222222222',
+    salesUnitId: '22222222-2222-4222-8222-222222222222',
+    purchaseUnitId: '22222222-2222-4222-8222-222222222222',
+    inventoryUnitId: '22222222-2222-4222-8222-222222222222',
+    category: 'Poultry',
+    unit: 'Kg',
+    stockUnit: 'Kg',
+    pricingUnit: 'Kg',
+    billingUnit: 'Kg',
+    sellingPrice: 65_000,
+    costPrice: 51_000,
+    unitPrices: { Kg: 65_000 },
+    clientMutationId: 'product-kg',
+  });
+
+  assert.equal(calls[0].path, '/products');
+  assert.equal(calls[0].payload.categoryId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(calls[0].payload.salesUnitId, '22222222-2222-4222-8222-222222222222');
+  assert.equal(calls[0].payload.inventoryUnitId, '22222222-2222-4222-8222-222222222222');
+  assert.deepEqual(calls[0].payload.metadata.legacyUi, {
+    category: 'Poultry',
+    unit: 'Kg',
+    costPrice: 51_000,
+    sellingPrice: 65_000,
+    unitPrices: { Kg: 65_000 },
+    pricingUnit: 'Kg',
+    billingUnit: 'Kg',
+    stockUnit: 'Kg',
+  });
+  assert.equal(product.category, 'Poultry');
+  assert.equal(product.unit, 'Kg');
+  assert.equal(product.sellingPrice, 65_000);
+  assert.equal(product.costPrice, 51_000);
+  assert.deepEqual(product.unitPrices, { Kg: 65_000 });
+});
+
 test('normalizes relational order-line units before the legacy UI renders them', () => {
   const order = normalizeVpsOrder({
     id: 'order-1',

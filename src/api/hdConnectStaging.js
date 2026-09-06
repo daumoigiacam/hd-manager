@@ -221,11 +221,15 @@ export const normalizeVpsCustomer = (record = {}) => {
 
 export const normalizeVpsProduct = (record = {}) => {
   const metadata = normalizeMetadata(record);
+  const legacyUi = metadata.legacyUi && typeof metadata.legacyUi === 'object' && !Array.isArray(metadata.legacyUi)
+    ? metadata.legacyUi
+    : {};
   const primaryUnit = record.salesUnit || record.baseUnit || record.inventoryUnit || record.purchaseUnit;
-  const unit = unitLabel(record.unit) || unitLabel(primaryUnit) || unitLabel(metadata.unit);
+  const unit = unitLabel(record.unit) || unitLabel(primaryUnit) || unitLabel(metadata.unit) || unitLabel(legacyUi.unit);
 
   return {
     ...metadata,
+    ...legacyUi,
     ...record,
     id: record.id,
     companyId: record.companyId,
@@ -233,9 +237,13 @@ export const normalizeVpsProduct = (record = {}) => {
     productName: record.name || metadata.productName || '',
     category: typeof record.category === 'string'
       ? record.category
-      : (record.category?.name || (typeof metadata.category === 'string' ? metadata.category : '')),
+      : (record.category?.name || (typeof metadata.category === 'string' ? metadata.category : legacyUi.category || '')),
     unit,
     unitId: record.salesUnitId || record.baseUnitId || primaryUnit?.id || metadata.unitId || '',
+    costPrice: toFiniteNumber(record.costPrice ?? metadata.costPrice ?? legacyUi.costPrice ?? legacyUi.cost) ?? 0,
+    sellingPrice: toFiniteNumber(record.sellingPrice ?? metadata.sellingPrice ?? legacyUi.sellingPrice ?? legacyUi.price) ?? 0,
+    discount: toFiniteNumber(record.discount ?? metadata.discount ?? legacyUi.discount) ?? 0,
+    unitPrices: metadata.unitPrices || legacyUi.unitPrices || {},
     isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || metadata.isArchived === true,
     legacySourceId: metadata.__hdcoProjection?.sourceRecordId || metadata.legacySourceId || '',
     createdAt: record.createdAt || metadata.createdAt || '',
@@ -300,6 +308,14 @@ export const normalizeVpsPayment = (record = {}) => {
     readOnly: true,
   };
 };
+
+const normalizeVpsProductCategory = (record = {}) => ({
+  ...record,
+  id: record.id || '',
+  code: stringValue(record.code),
+  name: stringValue(record.name),
+  label: stringValue(record.name || record.code),
+});
 
 export const normalizeVpsCustomerSupportMessage = (record = {}, conversation = {}) => {
   const senderType = stringValue(record.senderType).toUpperCase();
@@ -450,10 +466,23 @@ const toProductPayload = (record = {}) => {
   }
 
   const legacyFields = preservedLegacyFields(record, [
+    'category',
     'unit',
     'unitName',
     'price',
     'cost',
+    'costPrice',
+    'sellingPrice',
+    'discount',
+    'unitPrices',
+    'pricingUnit',
+    'billingUnit',
+    'stockQuantity',
+    'stockUnit',
+    'attributes',
+    'productAttributes',
+    'attributeText',
+    'image',
     'imageUrl',
     'legacySourceId',
   ]);
@@ -953,6 +982,28 @@ export class HdConnectStagingApi {
       decimalPrecision: Number.isInteger(record.decimalPrecision)
         ? record.decimalPrecision
         : 0,
+    }), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
+  }
+
+  async listProductCategories(query = {}) {
+    return normalizePage(
+      await this.client.get('/master-data/product-categories', { query }),
+      normalizeVpsProductCategory,
+    );
+  }
+
+  async createProductCategory(record = {}) {
+    const name = stringValue(record.name || record.label || record.category);
+    if (!name) {
+      throw new HdApiError('A product category name is required.', { code: 'PRODUCT_CATEGORY_NAME_REQUIRED' });
+    }
+
+    return normalizeVpsProductCategory(await this.client.post('/master-data/product-categories', omitUndefined({
+      code: stringValue(record.code) || undefined,
+      name,
     }), {
       idempotencyKey: record.clientMutationId || createRequestId(),
       retry: false,

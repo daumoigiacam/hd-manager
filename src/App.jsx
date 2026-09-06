@@ -4973,6 +4973,12 @@ const findVpsUnitByLabel = (units = [], label = '') => {
   return (units || []).find((unit) => [unit?.name, unit?.symbol, unit?.code, unit?.label]
     .some((candidate) => normalizeLookupText(candidate) === normalizedLabel)) || null;
 };
+const findVpsProductCategoryByLabel = (categories = [], label = '') => {
+  const normalizedLabel = normalizeLookupText(label);
+  if (!normalizedLabel) return null;
+  return (categories || []).find((category) => [category?.name, category?.code, category?.label]
+    .some((candidate) => normalizeLookupText(candidate) === normalizedLabel)) || null;
+};
 const getVpsUnitDecimalPrecision = (label = '') => (
   ['kg', 'kilogram', 'gram', 'g', 'tan', 'ton'].includes(normalizeLookupText(label)) ? 3 : 0
 );
@@ -19421,44 +19427,84 @@ export default function App() {
     return { success: true };
   };
 
-  const handleAddProduct = async (productData) => {
-    if (isVpsApiMode) {
-      const api = getHdConnectStagingApi();
-      const unitLabel = getPrimaryProductUnitLabel(productData?.unit || productData?.stockUnit || '');
-      if (!unitLabel) {
-        throw new Error('Sản phẩm VPS cần một đơn vị tính chính xác trước khi lưu.');
-      }
-      let availableUnits = vpsMasterData?.units || [];
-      let unit = findVpsUnitByLabel(availableUnits, unitLabel);
-      if (!unit) {
+  const resolveVpsProductMasters = async (api, productData = {}) => {
+    const unitLabel = getPrimaryProductUnitLabel(productData?.unit || productData?.stockUnit || '');
+    if (!unitLabel) {
+      throw new Error('Sản phẩm VPS cần một đơn vị tính chính xác trước khi lưu.');
+    }
+
+    let availableUnits = vpsMasterData?.units || [];
+    let unit = findVpsUnitByLabel(availableUnits, unitLabel);
+    if (!unit) {
+      const refreshed = await api.listUnits({ limit: 100 });
+      availableUnits = refreshed.items;
+      unit = findVpsUnitByLabel(availableUnits, unitLabel);
+    }
+    if (!unit) {
+      try {
+        unit = await api.createUnit({
+          name: unitLabel,
+          symbol: unitLabel,
+          decimalPrecision: getVpsUnitDecimalPrecision(unitLabel),
+          clientMutationId: `unit-${collapseLookupText(unitLabel)}`,
+        });
+      } catch (error) {
         const refreshed = await api.listUnits({ limit: 100 });
         availableUnits = refreshed.items;
         unit = findVpsUnitByLabel(availableUnits, unitLabel);
+        if (!unit) throw error;
       }
-      if (!unit) {
+    }
+    if (!unit?.id) {
+      throw new Error('Không thể xác nhận đơn vị tính master của sản phẩm.');
+    }
+
+    const categoryLabel = normalizeLeadingLabel(productData?.category || '');
+    let category = null;
+    if (categoryLabel) {
+      let availableCategories = vpsMasterData?.productCategories || [];
+      category = findVpsProductCategoryByLabel(availableCategories, categoryLabel);
+      if (!category) {
+        const refreshed = await api.listProductCategories({ limit: 100 });
+        availableCategories = refreshed.items;
+        category = findVpsProductCategoryByLabel(availableCategories, categoryLabel);
+      }
+      if (!category) {
         try {
-          unit = await api.createUnit({
-            name: unitLabel,
-            symbol: unitLabel,
-            decimalPrecision: getVpsUnitDecimalPrecision(unitLabel),
-            clientMutationId: `unit-${collapseLookupText(unitLabel)}`,
+          category = await api.createProductCategory({
+            name: categoryLabel,
+            clientMutationId: `product-category-${collapseLookupText(categoryLabel)}`,
           });
         } catch (error) {
-          const refreshed = await api.listUnits({ limit: 100 });
-          availableUnits = refreshed.items;
-          unit = findVpsUnitByLabel(availableUnits, unitLabel);
-          if (!unit) throw error;
+          const refreshed = await api.listProductCategories({ limit: 100 });
+          availableCategories = refreshed.items;
+          category = findVpsProductCategoryByLabel(availableCategories, categoryLabel);
+          if (!category) throw error;
         }
       }
-      if (!unit?.id) {
-        throw new Error('Không thể xác nhận đơn vị tính master của sản phẩm.');
+      if (!category?.id) {
+        throw new Error('Không thể xác nhận nhóm hàng master của sản phẩm.');
       }
       setVpsMasterData((previous) => ({
         ...previous,
-        units: [...new Map([...(previous?.units || []), unit].map((item) => [item.id, item])).values()],
+        productCategories: [...new Map([...(previous?.productCategories || []), category].map((item) => [item.id, item])).values()],
       }));
+    }
+
+    setVpsMasterData((previous) => ({
+      ...previous,
+      units: [...new Map([...(previous?.units || []), unit].map((item) => [item.id, item])).values()],
+    }));
+    return { unit, category };
+  };
+
+  const handleAddProduct = async (productData) => {
+    if (isVpsApiMode) {
+      const api = getHdConnectStagingApi();
+      const { unit, category } = await resolveVpsProductMasters(api, productData);
       const savedProduct = await api.createProduct({
         ...productData,
+        categoryId: category?.id,
         unitId: unit.id,
         baseUnitId: unit.id,
         salesUnitId: unit.id,
@@ -19486,18 +19532,14 @@ export default function App() {
       const currentProduct = rawProducts.find((product) => product.id === prodId);
       if (!currentProduct) throw new Error('The product was not found in the current tenant.');
       const api = getHdConnectStagingApi();
-      const unitLabel = getPrimaryProductUnitLabel(updatedData?.unit || currentProduct?.unit || '');
-      let unit = findVpsUnitByLabel(vpsMasterData?.units || [], unitLabel);
-      if (!unit && unitLabel) {
-        const refreshed = await api.listUnits({ limit: 100 });
-        unit = findVpsUnitByLabel(refreshed.items, unitLabel);
-      }
-      if (!unit?.id) {
-        throw new Error('Không tìm thấy UOM master cho sản phẩm. Hãy tạo sản phẩm với đơn vị tính hợp lệ.');
-      }
+      const { unit, category } = await resolveVpsProductMasters(api, {
+        ...currentProduct,
+        ...updatedData,
+      });
       const savedProduct = await api.updateProduct(prodId, {
         ...currentProduct,
         ...updatedData,
+        categoryId: category?.id,
         unitId: unit.id,
         baseUnitId: unit.id,
         salesUnitId: unit.id,
@@ -73040,19 +73082,26 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const unit = getPrimaryProductUnitLabel(prodData.unit || prodData.stockUnit || '');
+    const sellingPrice = parseInt(prodData.sellingPrice) || 0;
     let pData = { 
       ...prodData,
       name: toTitleCase((prodData.name || '').trim()),
+      category: normalizeLeadingLabel(prodData.category || ''),
+      unit,
       shortName: `${prodData.shortName || ''}`.trim().toUpperCase(),
       productShortName: `${prodData.shortName || ''}`.trim().toUpperCase(),
       costPrice: parseInt(prodData.costPrice) || 0, 
-      sellingPrice: parseInt(prodData.sellingPrice) || 0,
+      sellingPrice,
       discount: parseInt(prodData.discount) || 0,
       attributes: getProductAttributes({ attributes: prodData.attributes }),
       productAttributes: getProductAttributes({ attributes: prodData.attributes }),
       attributeText: `${prodData.attributes || ''}`.trim(),
       stockQuantity: parseLooseQuantityValue(prodData.stockQuantity),
-      stockUnit: `${prodData.stockUnit || prodData.unit || ''}`.trim()
+      stockUnit: unit,
+      pricingUnit: unit,
+      billingUnit: unit,
+      unitPrices: putUnitPriceIntoMap(editingProd?.unitPrices || {}, unit, sellingPrice),
     };
     try {
       if (editingProd) {
