@@ -1,61 +1,43 @@
-import { HdApiClient, HdApiError, createRequestId } from "./client.js";
-import {
-  vpsAssetId,
-  vpsAssetMutationPayload,
-  vpsAssetQuery,
-} from "./vpsAssets.js";
-import {
-  vpsHolidayId,
-  vpsHolidayMutationPayload,
-  vpsHolidayQuery,
-} from "./vpsHolidays.js";
-import {
-  vpsSalaryAdvanceId,
-  vpsSalaryAdvanceMutationPayload,
-  vpsSalaryAdvanceQuery,
-} from "./vpsSalaryAdvances.js";
-import { normalizeVpsEmployee } from "./vpsEmployees.js";
-import {
-  customerLoanEditablePayload,
-  listVpsCustomerLoanPage,
-} from "./vpsCustomerLoans.js";
+import { HdApiClient, HdApiError, createRequestId } from './client.js';
+import { vpsAssetId, vpsAssetMutationPayload, vpsAssetQuery } from './vpsAssets.js';
+import { vpsHolidayId, vpsHolidayMutationPayload, vpsHolidayQuery } from './vpsHolidays.js';
+import { vpsSalaryAdvanceId, vpsSalaryAdvanceMutationPayload, vpsSalaryAdvanceQuery } from './vpsSalaryAdvances.js';
+import { normalizeVpsEmployee } from './vpsEmployees.js';
+import { customerLoanEditablePayload, listVpsCustomerLoanPage } from './vpsCustomerLoans.js';
 
-const runtimeEnv =
-  typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
+const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
+  ? import.meta.env
+  : {};
 
-export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ""}`.trim();
-export const isVpsProductionMode = vpsDataMode === "vps-production";
-export const isVpsStagingMode = vpsDataMode === "vps-staging";
+export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ''}`.trim();
+export const isVpsProductionMode = vpsDataMode === 'vps-production';
+export const isVpsStagingMode = vpsDataMode === 'vps-staging';
 export const isVpsApiMode = isVpsStagingMode || isVpsProductionMode;
 export const isVpsMode = isVpsApiMode;
-export const inventoryVpsEnabled =
-  runtimeEnv.VITE_INVENTORY_VPS_ENABLED === "true";
+export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const isUuid = (value) => UUID_PATTERN.test(`${value || ""}`.trim());
+const isUuid = (value) => UUID_PATTERN.test(`${value || ''}`.trim());
 
-const stringValue = (value) => `${value ?? ""}`.trim();
+const stringValue = (value) => `${value ?? ''}`.trim();
 
-const unitLabel = (value) =>
-  value && typeof value === "object"
+const unitLabel = (value) => (
+  value && typeof value === 'object'
     ? stringValue(value.symbol || value.name || value.code)
-    : stringValue(value);
+    : stringValue(value)
+);
 
-const omitUndefined = (value) =>
-  Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  );
+const omitUndefined = (value) => Object.fromEntries(
+  Object.entries(value).filter(([, item]) => item !== undefined),
+);
 
-const toStringArray = (...values) => [
-  ...new Set(
-    values
-      .flatMap((value) => (Array.isArray(value) ? value : [value]))
-      .map(stringValue)
-      .filter(Boolean),
-  ),
-];
+const toStringArray = (...values) => [...new Set(
+  values
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map(stringValue)
+    .filter(Boolean),
+)];
 
 const toFiniteNumber = (value) => {
   const number = Number(value);
@@ -69,29 +51,29 @@ const normalizeReconnectDelay = (value, fallback) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
-const waitForReconnect = (delayMs, signal) =>
-  new Promise((resolve) => {
-    if (signal?.aborted || delayMs <= 0) {
-      resolve();
-      return;
-    }
+const waitForReconnect = (delayMs, signal) => new Promise((resolve) => {
+  if (signal?.aborted || delayMs <= 0) {
+    resolve();
+    return;
+  }
 
-    const timer = globalThis.setTimeout(cleanup, delayMs);
-    const abort = () => cleanup();
+  const timer = globalThis.setTimeout(cleanup, delayMs);
+  const abort = () => cleanup();
 
-    function cleanup() {
-      globalThis.clearTimeout(timer);
-      signal?.removeEventListener?.("abort", abort);
-      resolve();
-    }
+  function cleanup() {
+    globalThis.clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
+    resolve();
+  }
 
-    signal?.addEventListener?.("abort", abort, { once: true });
-  });
+  signal?.addEventListener?.('abort', abort, { once: true });
+});
 
-const isAbortError = (error, signal) =>
-  Boolean(signal?.aborted || error?.name === "AbortError");
+const isAbortError = (error, signal) => Boolean(
+  signal?.aborted || error?.name === 'AbortError',
+);
 
-const toTargetId = (value) => (isUuid(value) ? `${value}` : undefined);
+const toTargetId = (value) => isUuid(value) ? `${value}` : undefined;
 
 const requireIdentityInput = (value, code, message) => {
   const normalized = stringValue(value);
@@ -105,16 +87,14 @@ const normalizeVpsIdentitySession = (session = {}) => ({
   ...session,
   id: session.id,
   deviceId: session.id,
-  name: session.deviceName || session.platform || "Thiết bị",
-  lastLoginAt: session.lastUsedAt || session.createdAt || "",
+  name: session.deviceName || session.platform || 'Thiết bị',
+  lastLoginAt: session.lastUsedAt || session.createdAt || '',
 });
 
 const normalizePage = (result, normalizeItem) => {
   const source = Array.isArray(result)
     ? result
-    : Array.isArray(result?.items)
-      ? result.items
-      : [];
+    : (Array.isArray(result?.items) ? result.items : []);
 
   return {
     items: source.map(normalizeItem),
@@ -122,81 +102,59 @@ const normalizePage = (result, normalizeItem) => {
   };
 };
 
-const normalizeAttributes = (record) =>
-  record?.attributes &&
-  typeof record.attributes === "object" &&
-  !Array.isArray(record.attributes)
+const normalizeAttributes = (record) => (
+  record?.attributes && typeof record.attributes === 'object' && !Array.isArray(record.attributes)
     ? record.attributes
-    : {};
+    : {}
+);
 
-const normalizeMetadata = (record) =>
-  record?.metadata &&
-  typeof record.metadata === "object" &&
-  !Array.isArray(record.metadata)
+const normalizeMetadata = (record) => (
+  record?.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
     ? record.metadata
-    : {};
+    : {}
+);
 
-const preservedLegacyFields = (record, allowedKeys) =>
-  Object.fromEntries(
-    allowedKeys
-      .filter((key) => record?.[key] !== undefined)
-      .map((key) => [key, record[key]]),
-  );
+const preservedLegacyFields = (record, allowedKeys) => Object.fromEntries(
+  allowedKeys
+    .filter((key) => record?.[key] !== undefined)
+    .map((key) => [key, record[key]]),
+);
 
 export const normalizeVpsSession = (session = {}, currentUser = null) => {
   const sourceUser = session.user || currentUser?.user || currentUser || {};
   const company = session.company || currentUser?.company || null;
   const branch = session.branch || currentUser?.branch || null;
-  const roles = Array.isArray(session.roles)
-    ? session.roles
-    : currentUser?.roles || [];
+  const roles = Array.isArray(session.roles) ? session.roles : (currentUser?.roles || []);
   const permissions = Array.isArray(session.permissions)
     ? session.permissions
-    : currentUser?.permissions || [];
-  const primaryRole = stringValue(
-    roles[0] || sourceUser.role || "employee",
-  ).toLowerCase();
-  const accountType =
-    stringValue(
-      sourceUser.accountType || sourceUser.type || primaryRole,
-    ).toLowerCase() === "customer"
-      ? "customer"
-      : "employee";
+    : (currentUser?.permissions || []);
+  const primaryRole = stringValue(roles[0] || sourceUser.role || 'employee').toLowerCase();
+  const accountType = stringValue(sourceUser.accountType || sourceUser.type || primaryRole).toLowerCase() === 'customer'
+    ? 'customer'
+    : 'employee';
 
   return {
     user: {
       id: sourceUser.id,
-      email: sourceUser.email || "",
-      phone: sourceUser.phone || sourceUser.phoneNormalized || "",
-      phoneNormalized: sourceUser.phoneNormalized || sourceUser.phone || "",
-      customerId: sourceUser.customerId || session.customerId || "",
-      name:
-        sourceUser.fullName ||
-        sourceUser.name ||
-        sourceUser.phone ||
-        sourceUser.email ||
-        "",
-      displayName:
-        sourceUser.fullName ||
-        sourceUser.name ||
-        sourceUser.phone ||
-        sourceUser.email ||
-        "",
-      companyId: company?.id || sourceUser.companyId || "",
-      branchId: branch?.id || sourceUser.branchId || "",
+      email: sourceUser.email || '',
+      phone: sourceUser.phone || sourceUser.phoneNormalized || '',
+      phoneNormalized: sourceUser.phoneNormalized || sourceUser.phone || '',
+      customerId: sourceUser.customerId || session.customerId || '',
+      name: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
+      displayName: sourceUser.fullName || sourceUser.name || sourceUser.phone || sourceUser.email || '',
+      companyId: company?.id || sourceUser.companyId || '',
+      branchId: branch?.id || sourceUser.branchId || '',
       role: primaryRole,
       roles,
       permissions,
       accountType,
-      authProvider: "hd-connect-vps",
+      authProvider: 'hd-connect-vps',
     },
-    company: company
-      ? {
-          ...company,
-          id: company.id,
-          name: company.name || company.displayName || company.code || "",
-        }
-      : null,
+    company: company ? {
+      ...company,
+      id: company.id,
+      name: company.name || company.displayName || company.code || '',
+    } : null,
     branch: branch || null,
     roles,
     permissions,
@@ -207,49 +165,34 @@ export const normalizeVpsCustomer = (record = {}) => {
   const attributes = normalizeAttributes(record);
   const phones = toStringArray(record.phones);
   const emails = toStringArray(record.emails);
-  const salesEmployeeId =
-    typeof record.salesEmployeeId === "string" && isUuid(record.salesEmployeeId)
-      ? stringValue(record.salesEmployeeId).toLowerCase()
-      : null;
+  const salesEmployeeId = typeof record.salesEmployeeId === 'string' && isUuid(record.salesEmployeeId)
+    ? stringValue(record.salesEmployeeId).toLowerCase() : null;
 
   const customer = {
     ...attributes,
     ...record,
     id: record.id,
     companyId: record.companyId,
-    branchId: record.branchId || "",
-    name: record.name || "",
-    phone: phones[0] || attributes.phone || "",
+    branchId: record.branchId || '',
+    name: record.name || '',
+    phone: phones[0] || attributes.phone || '',
     phones,
-    email: emails[0] || attributes.email || "",
+    email: emails[0] || attributes.email || '',
     emails,
-    empId: salesEmployeeId || "",
-    salesEmpId: salesEmployeeId || "",
+    empId: salesEmployeeId || '',
+    salesEmpId: salesEmployeeId || '',
     salesEmployeeId,
     vpsSalesEmployeeId: salesEmployeeId,
     userSalesOwnerId: record.salesOwnerId ?? null,
-    salesEmployeeReconciliationRequired:
-      !salesEmployeeId &&
-      Boolean(
-        record.salesEmployeeId ||
-        attributes.empId ||
-        attributes.salesEmpId ||
-        attributes.legacyUi?.empId ||
-        attributes.legacyUi?.salesEmpId,
-      ),
-    creditLimit:
-      toFiniteNumber(record.creditLimit) ?? attributes.creditLimit ?? 0,
-    isArchived:
-      Boolean(record.deletedAt) ||
-      record.status === "ARCHIVED" ||
-      attributes.isArchived === true,
-    legacySourceId:
-      attributes.__hdcoProjection?.sourceRecordId ||
-      attributes.legacySourceId ||
-      "",
-    createdAt: record.createdAt || attributes.createdAt || "",
-    updatedAt: record.updatedAt || attributes.updatedAt || "",
-    sourceSystem: "hd-connect-vps",
+    salesEmployeeReconciliationRequired: !salesEmployeeId && Boolean(
+      record.salesEmployeeId || attributes.empId || attributes.salesEmpId || attributes.legacyUi?.empId || attributes.legacyUi?.salesEmpId,
+    ),
+    creditLimit: toFiniteNumber(record.creditLimit) ?? attributes.creditLimit ?? 0,
+    isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || attributes.isArchived === true,
+    legacySourceId: attributes.__hdcoProjection?.sourceRecordId || attributes.legacySourceId || '',
+    createdAt: record.createdAt || attributes.createdAt || '',
+    updatedAt: record.updatedAt || attributes.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
   };
   // Legacy UI also interprets salesOwnerId as an employee alias; keep User identity separate.
   delete customer.salesOwnerId;
@@ -258,46 +201,26 @@ export const normalizeVpsCustomer = (record = {}) => {
 
 export const normalizeVpsProduct = (record = {}) => {
   const metadata = normalizeMetadata(record);
-  const primaryUnit =
-    record.salesUnit ||
-    record.baseUnit ||
-    record.inventoryUnit ||
-    record.purchaseUnit;
-  const unit =
-    unitLabel(record.unit) ||
-    unitLabel(primaryUnit) ||
-    unitLabel(metadata.unit);
+  const primaryUnit = record.salesUnit || record.baseUnit || record.inventoryUnit || record.purchaseUnit;
+  const unit = unitLabel(record.unit) || unitLabel(primaryUnit) || unitLabel(metadata.unit);
 
   return {
     ...metadata,
     ...record,
     id: record.id,
     companyId: record.companyId,
-    name: record.name || "",
-    productName: record.name || metadata.productName || "",
-    category:
-      typeof record.category === "string"
-        ? record.category
-        : record.category?.name ||
-          (typeof metadata.category === "string" ? metadata.category : ""),
+    name: record.name || '',
+    productName: record.name || metadata.productName || '',
+    category: typeof record.category === 'string'
+      ? record.category
+      : (record.category?.name || (typeof metadata.category === 'string' ? metadata.category : '')),
     unit,
-    unitId:
-      record.salesUnitId ||
-      record.baseUnitId ||
-      primaryUnit?.id ||
-      metadata.unitId ||
-      "",
-    isArchived:
-      Boolean(record.deletedAt) ||
-      record.status === "ARCHIVED" ||
-      metadata.isArchived === true,
-    legacySourceId:
-      metadata.__hdcoProjection?.sourceRecordId ||
-      metadata.legacySourceId ||
-      "",
-    createdAt: record.createdAt || metadata.createdAt || "",
-    updatedAt: record.updatedAt || metadata.updatedAt || "",
-    sourceSystem: "hd-connect-vps",
+    unitId: record.salesUnitId || record.baseUnitId || primaryUnit?.id || metadata.unitId || '',
+    isArchived: Boolean(record.deletedAt) || record.status === 'ARCHIVED' || metadata.isArchived === true,
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || metadata.legacySourceId || '',
+    createdAt: record.createdAt || metadata.createdAt || '',
+    updatedAt: record.updatedAt || metadata.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
   };
 };
 
@@ -309,41 +232,30 @@ export const normalizeVpsOrder = (record = {}) => {
     ...metadata,
     ...record,
     id: record.id,
-    code: record.orderNumber || metadata.code || "",
-    orderNumber: record.orderNumber || "",
+    code: record.orderNumber || metadata.code || '',
+    orderNumber: record.orderNumber || '',
     companyId: record.companyId,
     customerId: record.customerId,
     warehouseId: record.warehouseId,
-    salesEmpId: record.salespersonId || metadata.salesEmpId || "",
-    date: metadata.__hdcoProjection
-      ? metadata.date || record.orderDate || ""
-      : record.orderDate || metadata.date || "",
-    orderDate: record.orderDate || "",
+    salesEmpId: record.salespersonId || metadata.salesEmpId || '',
+    date: metadata.__hdcoProjection ? (metadata.date || record.orderDate || '') : (record.orderDate || metadata.date || ''),
+    orderDate: record.orderDate || '',
     items: lines.map((line) => ({
       ...normalizeMetadata(line),
       ...line,
       id: line.id,
       productId: line.productId,
       unitId: line.unitId,
-      unit:
-        unitLabel(line.unit) ||
-        unitLabel(line.unitName) ||
-        unitLabel(normalizeMetadata(line).unit) ||
-        unitLabel(normalizeMetadata(line).quantityUnit),
+      unit: unitLabel(line.unit) || unitLabel(line.unitName) || unitLabel(normalizeMetadata(line).unit) || unitLabel(normalizeMetadata(line).quantityUnit),
       quantity: toFiniteNumber(line.quantity) ?? 0,
       unitPrice: toFiniteNumber(line.unitPrice) ?? 0,
     })),
-    reviewStatus: metadata.__hdcoProjection
-      ? metadata.reviewStatus || record.status || ""
-      : record.status || metadata.reviewStatus || "",
+    reviewStatus: metadata.__hdcoProjection ? (metadata.reviewStatus || record.status || '') : (record.status || metadata.reviewStatus || ''),
     isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
-    legacySourceId:
-      metadata.__hdcoProjection?.sourceRecordId ||
-      metadata.legacySourceId ||
-      "",
-    createdAt: record.createdAt || metadata.createdAt || "",
-    updatedAt: record.updatedAt || metadata.updatedAt || "",
-    sourceSystem: "hd-connect-vps",
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || metadata.legacySourceId || '',
+    createdAt: record.createdAt || metadata.createdAt || '',
+    updatedAt: record.updatedAt || metadata.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
   };
 };
 
@@ -355,49 +267,38 @@ export const normalizeVpsPayment = (record = {}) => {
     ...record,
     id: record.id,
     companyId: record.companyId,
-    customerId: record.customerTargetId || record.customerId || "",
-    matchedOrderId: record.salesOrderTargetId || record.matchedOrderId || "",
-    reference:
-      record.reference ||
-      record.externalReference ||
-      record.externalPaymentId ||
-      "",
+    customerId: record.customerTargetId || record.customerId || '',
+    matchedOrderId: record.salesOrderTargetId || record.matchedOrderId || '',
+    reference: record.reference || record.externalReference || record.externalPaymentId || '',
     amount: toFiniteNumber(record.amount) ?? 0,
-    status: historical ? metadata.status || "" : record.status || "",
-    reconciliationStatus: historical
-      ? metadata.reconciliationStatus || ""
-      : record.reconciliationStatus || "",
-    projectionReconciliationStatus: historical
-      ? record.reconciliationStatus || ""
-      : "",
+    status: historical ? (metadata.status || '') : (record.status || ''),
+    reconciliationStatus: historical ? (metadata.reconciliationStatus || '') : (record.reconciliationStatus || ''),
+    projectionReconciliationStatus: historical ? (record.reconciliationStatus || '') : '',
     isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
-    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || "",
-    sourceSystem: "hd-connect-vps",
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
+    sourceSystem: 'hd-connect-vps',
     readOnly: true,
   };
 };
 
-export const normalizeVpsCustomerSupportMessage = (
-  record = {},
-  conversation = {},
-) => {
+export const normalizeVpsCustomerSupportMessage = (record = {}, conversation = {}) => {
   const senderType = stringValue(record.senderType).toUpperCase();
-  const isCustomer = senderType === "PORTAL_USER" || senderType === "CUSTOMER";
+  const isCustomer = senderType === 'PORTAL_USER' || senderType === 'CUSTOMER';
   return {
     ...record,
     id: record.id,
-    companyId: conversation.companyId || record.companyId || "",
-    customerId: conversation.customerId || record.customerId || "",
-    conversationId: conversation.id || record.conversationId || "",
-    conversationType: "customer_support",
-    type: isCustomer ? "customer_to_employee" : "employee_to_customer",
-    senderType: isCustomer ? "customer" : "employee",
-    text: record.body || "",
-    message: record.body || "",
-    createdAt: record.sentAt || record.createdAt || "",
-    updatedAt: record.updatedAt || record.sentAt || record.createdAt || "",
+    companyId: conversation.companyId || record.companyId || '',
+    customerId: conversation.customerId || record.customerId || '',
+    conversationId: conversation.id || record.conversationId || '',
+    conversationType: 'customer_support',
+    type: isCustomer ? 'customer_to_employee' : 'employee_to_customer',
+    senderType: isCustomer ? 'customer' : 'employee',
+    text: record.body || '',
+    message: record.body || '',
+    createdAt: record.sentAt || record.createdAt || '',
+    updatedAt: record.updatedAt || record.sentAt || record.createdAt || '',
     isArchived: Boolean(record.deletedAt),
-    source: "hd-connect-vps",
+    source: 'hd-connect-vps',
     vpsMessage: true,
   };
 };
@@ -406,45 +307,28 @@ export const normalizeVpsFinanceExpense = (record = {}) => {
   const status = stringValue(record.status).toUpperCase();
   const metadata = normalizeMetadata(record);
   const historical = metadata.__hdcoProjection?.historicalOnly === true;
-  const assetCost =
-    metadata.hdManagerAssetCost?.kind === "NATIVE_CREATE" &&
-    metadata.assetCostLogId === metadata.hdManagerAssetCost?.costId;
+  const assetCost = metadata.hdManagerAssetCost?.kind === 'NATIVE_CREATE' && metadata.assetCostLogId === metadata.hdManagerAssetCost?.costId;
 
   return {
     ...metadata,
     ...record,
     id: record.id,
     companyId: record.companyId,
-    branchId: record.branchId || "",
-    empId: historical
-      ? metadata.__hdcoProjection.references?.employee || metadata.empId || ""
-      : record.createdBy || "",
+    branchId: record.branchId || '',
+    empId: historical ? (metadata.__hdcoProjection.references?.employee || metadata.empId || '') : (record.createdBy || ''),
     amount: toFiniteNumber(record.amount) ?? 0,
-    category: record.expenseType || "Chi phí khác",
-    note: record.description || "",
+    category: record.expenseType || 'Chi phí khác',
+    note: record.description || '',
     date: stringValue(record.expenseDate || record.createdAt).slice(0, 10),
-    approvalStatus:
-      historical && metadata.approvalStatus
-        ? metadata.approvalStatus
-        : status === "APPROVED" || status === "POSTED"
-          ? "approved"
-          : "pending",
-    requiresApproval: assetCost
-      ? false
-      : historical
-        ? metadata.requiresApproval === true
-        : status !== "POSTED",
-    handoverStatus: assetCost
-      ? "confirmed"
-      : historical
-        ? metadata.handoverStatus || ""
-        : status === "POSTED"
-          ? "confirmed"
-          : "pending",
+    approvalStatus: historical && metadata.approvalStatus ? metadata.approvalStatus : status === 'APPROVED' || status === 'POSTED'
+      ? 'approved'
+      : 'pending',
+    requiresApproval: assetCost ? false : historical ? metadata.requiresApproval === true : status !== 'POSTED',
+    handoverStatus: assetCost ? 'confirmed' : historical ? (metadata.handoverStatus || '') : status === 'POSTED' ? 'confirmed' : 'pending',
     isArchived: Boolean(record.deletedAt) || metadata.isArchived === true,
-    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || "",
+    legacySourceId: metadata.__hdcoProjection?.sourceRecordId || '',
     readOnly: historical || assetCost,
-    sourceSystem: "hd-connect-vps",
+    sourceSystem: 'hd-connect-vps',
   };
 };
 
@@ -462,71 +346,51 @@ export const normalizeVpsAttendance = (record = {}) => {
     workDate,
     checkIn: record.checkInAt || null,
     checkOut: record.checkOutAt || null,
-    checkInMethod: record.checkInMethod || "",
-    checkOutMethod: record.checkOutMethod || "",
-    status:
-      status === "present" ||
-      status === "late" ||
-      status === "leave" ||
-      status === "absent"
-        ? status
-        : "present",
-    sourceSystem: "hd-connect-vps",
+    checkInMethod: record.checkInMethod || '',
+    checkOutMethod: record.checkOutMethod || '',
+    status: status === 'present' || status === 'late' || status === 'leave' || status === 'absent'
+      ? status
+      : 'present',
+    sourceSystem: 'hd-connect-vps',
   };
 };
 
 const toCustomerSalesEmployeeId = (record) => {
   const reconcile = () => {
-    throw new HdApiError(
-      "Select a mapped native HR employee before saving this customer.",
-      { code: "reconciliation_required" },
-    );
+    throw new HdApiError('Select a mapped native HR employee before saving this customer.', { code: 'reconciliation_required' });
   };
-  const values = ["empId", "salesEmpId", "salesEmployeeId"]
-    .filter((key) => record[key] !== undefined)
-    .map((key) => {
+  const values = ['empId', 'salesEmpId', 'salesEmployeeId']
+    .filter(key => record[key] !== undefined)
+    .map(key => {
       const value = record[key];
-      if (value === null || value === "") return null;
-      if (typeof value !== "string" || !isUuid(value)) return reconcile();
+      if (value === null || value === '') return null;
+      if (typeof value !== 'string' || !isUuid(value)) return reconcile();
       return stringValue(value).toLowerCase();
     });
   // A normalized customer may retain old aliases while the form edits just empId.
-  const changed =
-    record.sourceSystem === "hd-connect-vps" &&
-    Object.hasOwn(record, "vpsSalesEmployeeId")
-      ? values.filter((value) => value !== record.vpsSalesEmployeeId)
-      : values;
+  const changed = record.sourceSystem === 'hd-connect-vps' && Object.hasOwn(record, 'vpsSalesEmployeeId')
+    ? values.filter(value => value !== record.vpsSalesEmployeeId) : values;
   const targets = [...new Set(changed.length ? changed : values)];
   if (targets.length > 1) return reconcile();
   const target = targets[0];
   const attributes = normalizeAttributes(record);
-  if (
-    !target &&
-    (record.salesEmployeeReconciliationRequired ||
-      attributes.empId ||
-      attributes.salesEmpId ||
-      attributes.legacyUi?.empId ||
-      attributes.legacyUi?.salesEmpId) &&
-    !record.vpsSalesEmployeeId
-  )
-    return reconcile();
+  if (!target && (record.salesEmployeeReconciliationRequired || attributes.empId || attributes.salesEmpId || attributes.legacyUi?.empId || attributes.legacyUi?.salesEmpId)
+    && !record.vpsSalesEmployeeId) return reconcile();
   return target;
 };
 
 const toCustomerPayload = (record = {}) => {
   const name = stringValue(record.name);
   if (!name) {
-    throw new HdApiError("Customer name is required.", {
-      code: "CUSTOMER_NAME_REQUIRED",
-    });
+    throw new HdApiError('Customer name is required.', { code: 'CUSTOMER_NAME_REQUIRED' });
   }
 
   const legacyFields = preservedLegacyFields(record, [
-    "customerHonorific",
-    "debtLimitMode",
-    "debtLimitAmount",
-    "allowedDriverIds",
-    "legacySourceId",
+    'customerHonorific',
+    'debtLimitMode',
+    'debtLimitAmount',
+    'allowedDriverIds',
+    'legacySourceId',
   ]);
 
   return omitUndefined({
@@ -549,9 +413,7 @@ const toCustomerPayload = (record = {}) => {
     customerGroupId: toTargetId(record.customerGroupId),
     paymentTerm: stringValue(record.paymentTerm) || undefined,
     creditLimit: toFiniteNumber(record.creditLimit ?? record.debtLimitAmount),
-    status: ["ACTIVE", "INACTIVE", "BLOCKED"].includes(
-      stringValue(record.status).toUpperCase(),
-    )
+    status: ['ACTIVE', 'INACTIVE', 'BLOCKED'].includes(stringValue(record.status).toUpperCase())
       ? stringValue(record.status).toUpperCase()
       : undefined,
     attributes: {
@@ -564,18 +426,16 @@ const toCustomerPayload = (record = {}) => {
 const toProductPayload = (record = {}) => {
   const name = stringValue(record.name || record.productName);
   if (!name) {
-    throw new HdApiError("Product name is required.", {
-      code: "PRODUCT_NAME_REQUIRED",
-    });
+    throw new HdApiError('Product name is required.', { code: 'PRODUCT_NAME_REQUIRED' });
   }
 
   const legacyFields = preservedLegacyFields(record, [
-    "unit",
-    "unitName",
-    "price",
-    "cost",
-    "imageUrl",
-    "legacySourceId",
+    'unit',
+    'unitName',
+    'price',
+    'cost',
+    'imageUrl',
+    'legacySourceId',
   ]);
 
   return omitUndefined({
@@ -600,15 +460,13 @@ const toProductPayload = (record = {}) => {
 
 const toSalesOrderLinePayload = (line, index, clientMutationId) => {
   const productId = toTargetId(line?.productId || line?.id);
-  const unitId = toTargetId(
-    line?.unitId || line?.salesUnitId || line?.baseUnitId,
-  );
+  const unitId = toTargetId(line?.unitId || line?.salesUnitId || line?.baseUnitId);
   const quantity = toFiniteNumber(line?.quantity ?? line?.qty);
 
   if (!productId || !unitId || !quantity || quantity <= 0) {
     throw new HdApiError(
       `Order line ${index + 1} requires a target product, unit, and positive quantity.`,
-      { code: "ORDER_LINE_UNRESOLVED" },
+      { code: 'ORDER_LINE_UNRESOLVED' },
     );
   }
 
@@ -620,9 +478,7 @@ const toSalesOrderLinePayload = (line, index, clientMutationId) => {
     taxRateId: toTargetId(line?.taxRateId),
     quantity,
     unitPrice: toFiniteNumber(line?.unitPrice ?? line?.price),
-    discountType: ["PERCENTAGE", "AMOUNT"].includes(
-      stringValue(line?.discountType).toUpperCase(),
-    )
+    discountType: ['PERCENTAGE', 'AMOUNT'].includes(stringValue(line?.discountType).toUpperCase())
       ? stringValue(line.discountType).toUpperCase()
       : undefined,
     discountValue: toFiniteNumber(line?.discountValue),
@@ -639,44 +495,34 @@ const toSalesOrderPayload = (record = {}) => {
   const warehouseId = toTargetId(record.warehouseId);
   const sourceLines = Array.isArray(record.lines)
     ? record.lines
-    : Array.isArray(record.items)
-      ? record.items
-      : [];
+    : (Array.isArray(record.items) ? record.items : []);
 
   if (!customerId) {
-    throw new HdApiError(
-      "The selected customer does not have a target VPS ID.",
-      {
-        code: "ORDER_CUSTOMER_UNRESOLVED",
-      },
-    );
+    throw new HdApiError('The selected customer does not have a target VPS ID.', {
+      code: 'ORDER_CUSTOMER_UNRESOLVED',
+    });
   }
   if (!warehouseId) {
-    throw new HdApiError(
-      "Order creation is blocked until a target warehouse is selected.",
-      {
-        code: "ORDER_WAREHOUSE_UNRESOLVED",
-      },
-    );
+    throw new HdApiError('Order creation is blocked until a target warehouse is selected.', {
+      code: 'ORDER_WAREHOUSE_UNRESOLVED',
+    });
   }
   if (sourceLines.length === 0) {
-    throw new HdApiError("An order requires at least one item.", {
-      code: "ORDER_LINES_REQUIRED",
+    throw new HdApiError('An order requires at least one item.', {
+      code: 'ORDER_LINES_REQUIRED',
     });
   }
 
-  const lines = sourceLines.map((line, index) =>
-    toSalesOrderLinePayload(line, index, record.clientMutationId),
-  );
+  const lines = sourceLines.map((line, index) => (
+    toSalesOrderLinePayload(line, index, record.clientMutationId)
+  ));
 
   return omitUndefined({
     customerId,
     warehouseId,
     clientMutationId: stringValue(record.clientMutationId) || undefined,
     branchId: toTargetId(record.branchId),
-    salespersonId: toTargetId(
-      record.salespersonId || record.salesEmpId || record.empId,
-    ),
+    salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
     priceListId: toTargetId(record.priceListId),
     deliveryRouteId: toTargetId(record.deliveryRouteId),
     orderDate: stringValue(record.orderDate || record.date) || undefined,
@@ -687,7 +533,7 @@ const toSalesOrderPayload = (record = {}) => {
     metadata: {
       ...normalizeMetadata(record),
       clientMutationId: stringValue(record.clientMutationId),
-      sourceEntity: "hd-manager-ui",
+      sourceEntity: 'hd-manager-ui',
     },
     lines,
   });
@@ -696,44 +542,38 @@ const toSalesOrderPayload = (record = {}) => {
 const toSalesOrderUpdatePayload = (record = {}) => {
   const sourceLines = Array.isArray(record.lines)
     ? record.lines
-    : Array.isArray(record.items)
-      ? record.items
-      : undefined;
+    : (Array.isArray(record.items) ? record.items : undefined);
   if (sourceLines && sourceLines.length === 0) {
-    throw new HdApiError("An order requires at least one item.", {
-      code: "ORDER_LINES_REQUIRED",
+    throw new HdApiError('An order requires at least one item.', {
+      code: 'ORDER_LINES_REQUIRED',
     });
   }
 
   return omitUndefined({
     clientMutationId: stringValue(record.clientMutationId) || undefined,
     branchId: toTargetId(record.branchId),
-    salespersonId: toTargetId(
-      record.salespersonId || record.salesEmpId || record.empId,
-    ),
+    salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
     deliveryRouteId: toTargetId(record.deliveryRouteId),
     paymentTerm: stringValue(record.paymentTerm) || undefined,
     internalNote: stringValue(record.internalNote) || undefined,
     customerNote: stringValue(record.customerNote) || undefined,
-    discountType: ["PERCENTAGE", "AMOUNT"].includes(
-      stringValue(record.discountType).toUpperCase(),
-    )
+    discountType: ['PERCENTAGE', 'AMOUNT'].includes(stringValue(record.discountType).toUpperCase())
       ? stringValue(record.discountType).toUpperCase()
       : undefined,
     discountValue: toFiniteNumber(record.discountValue),
-    lines: sourceLines?.map((line, index) =>
-      toSalesOrderLinePayload(line, index, record.clientMutationId),
-    ),
+    lines: sourceLines?.map((line, index) => (
+      toSalesOrderLinePayload(line, index, record.clientMutationId)
+    )),
     metadata: {
       ...normalizeMetadata(record),
       clientMutationId: stringValue(record.clientMutationId),
-      sourceEntity: "hd-manager-ui",
+      sourceEntity: 'hd-manager-ui',
     },
   });
 };
 
 const toTenantSafePayload = (record = {}) => {
-  if (!record || typeof record !== "object" || Array.isArray(record)) return {};
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return {};
   const {
     companyId: _companyId,
     tenantId: _tenantId,
@@ -744,7 +584,7 @@ const toTenantSafePayload = (record = {}) => {
 };
 
 const toTenantSafeQuery = (query = {}) => {
-  if (!query || typeof query !== "object" || Array.isArray(query)) return {};
+  if (!query || typeof query !== 'object' || Array.isArray(query)) return {};
   const {
     companyId: _companyId,
     tenantId: _tenantId,
@@ -759,22 +599,18 @@ const mutationOptions = (record = {}) => ({
   retry: false,
 });
 
-const normalizeUnitKey = (value) =>
-  stringValue(value)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, "");
+const normalizeUnitKey = (value) => stringValue(value)
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, '');
 
 /**
  * Build the signed inventory transaction payload without inventing a unit,
  * warehouse, conversion, or quantity. Legacy UI callers must provide the
  * resolved target IDs explicitly.
  */
-export const buildVpsInventoryTransaction = (
-  record = {},
-  { referenceType = "HD_MANAGER" } = {},
-) => {
+export const buildVpsInventoryTransaction = (record = {}, { referenceType = 'HD_MANAGER' } = {}) => {
   const warehouseId = toTargetId(record.warehouseId);
   const productId = toTargetId(record.productId);
   const unitId = toTargetId(record.unitId);
@@ -782,24 +618,22 @@ export const buildVpsInventoryTransaction = (
 
   if (!warehouseId || !productId || !unitId) {
     throw new HdApiError(
-      "Inventory mutation requires resolved warehouseId, productId, and unitId.",
-      { code: "INVENTORY_TARGET_MAPPING_REQUIRED" },
+      'Inventory mutation requires resolved warehouseId, productId, and unitId.',
+      { code: 'INVENTORY_TARGET_MAPPING_REQUIRED' },
     );
   }
   if (!quantity || quantity <= 0) {
-    throw new HdApiError("Inventory mutation requires a positive quantity.", {
-      code: "INVENTORY_QUANTITY_REQUIRED",
+    throw new HdApiError('Inventory mutation requires a positive quantity.', {
+      code: 'INVENTORY_QUANTITY_REQUIRED',
     });
   }
 
   const requestedUnit = normalizeUnitKey(record.quantityUnit || record.unit);
-  const resolvedUnit = normalizeUnitKey(
-    record.unitLabel || record.unitName || record.unitSymbol,
-  );
+  const resolvedUnit = normalizeUnitKey(record.unitLabel || record.unitName || record.unitSymbol);
   if (requestedUnit && resolvedUnit && requestedUnit !== resolvedUnit) {
     throw new HdApiError(
-      "The selected quantity unit does not match the resolved VPS unit.",
-      { code: "INVENTORY_UNIT_MAPPING_MISMATCH" },
+      'The selected quantity unit does not match the resolved VPS unit.',
+      { code: 'INVENTORY_UNIT_MAPPING_MISMATCH' },
     );
   }
 
@@ -819,24 +653,17 @@ export const buildVpsInventoryTransaction = (
     quantity,
     inventoryStatus: stringValue(record.inventoryStatus) || undefined,
     referenceType: stringValue(record.referenceType) || referenceType,
-    referenceId:
-      stringValue(record.referenceId || record.sourceRecordId) || undefined,
+    referenceId: stringValue(record.referenceId || record.sourceRecordId) || undefined,
     reason: stringValue(record.reason || record.note) || undefined,
-    actualCount: toFiniteNumber(
-      record.actualCount ?? record.quantityCount ?? record.packedQuantity,
-    ),
-    actualWeightKg: toFiniteNumber(
-      record.actualWeightKg ?? record.weightKg ?? record.totalKg,
-    ),
+    actualCount: toFiniteNumber(record.actualCount ?? record.quantityCount ?? record.packedQuantity),
+    actualWeightKg: toFiniteNumber(record.actualWeightKg ?? record.weightKg ?? record.totalKg),
     lossWeightKg: toFiniteNumber(record.lossWeightKg),
     weightNotes: stringValue(record.weightNotes) || undefined,
     metadata: {
       ...normalizeMetadata(record),
-      sourceEntity: "hd-manager-ui",
-      sourceRecordId:
-        stringValue(record.sourceRecordId || record.id) || undefined,
-      quantityUnit:
-        stringValue(record.quantityUnit || record.unit) || undefined,
+      sourceEntity: 'hd-manager-ui',
+      sourceRecordId: stringValue(record.sourceRecordId || record.id) || undefined,
+      quantityUnit: stringValue(record.quantityUnit || record.unit) || undefined,
       packedQuantity: toFiniteNumber(record.packedQuantity),
       billingQuantity: toFiniteNumber(record.billingQuantity),
       billingUnit: stringValue(record.billingUnit) || undefined,
@@ -846,28 +673,19 @@ export const buildVpsInventoryTransaction = (
 
 export const normalizeVpsStockMovement = (record = {}, legacy = {}) => {
   const metadata = normalizeMetadata(record);
-  const unit =
-    unitLabel(record.unit) ||
-    unitLabel(record.unitOfMeasure) ||
-    metadata.quantityUnit ||
-    legacy.quantityUnit ||
-    "";
+  const unit = unitLabel(record.unit) || unitLabel(record.unitOfMeasure) || metadata.quantityUnit || legacy.quantityUnit || '';
   return {
     ...legacy,
     ...record,
-    id: record.id || legacy.id || "",
-    companyId: record.companyId || legacy.companyId || "",
-    warehouseId: record.warehouseId || legacy.warehouseId || "",
-    productId: record.productId || legacy.productId || "",
-    unitId: record.unitId || legacy.unitId || "",
-    quantity:
-      toFiniteNumber(record.quantity) ?? toFiniteNumber(legacy.quantity) ?? 0,
+    id: record.id || legacy.id || '',
+    companyId: record.companyId || legacy.companyId || '',
+    warehouseId: record.warehouseId || legacy.warehouseId || '',
+    productId: record.productId || legacy.productId || '',
+    unitId: record.unitId || legacy.unitId || '',
+    quantity: toFiniteNumber(record.quantity) ?? toFiniteNumber(legacy.quantity) ?? 0,
     quantityUnit: unit,
-    weightKg:
-      toFiniteNumber(
-        record.actualWeightKg ?? metadata.weightKg ?? legacy.weightKg,
-      ) ?? 0,
-    sourceSystem: "hd-connect-vps",
+    weightKg: toFiniteNumber(record.actualWeightKg ?? metadata.weightKg ?? legacy.weightKg) ?? 0,
+    sourceSystem: 'hd-connect-vps',
     readOnlyLedger: true,
   };
 };
@@ -875,55 +693,39 @@ export const normalizeVpsStockMovement = (record = {}, legacy = {}) => {
 // Historical warehouse rows preserve the legacy document verbatim in metadata.
 // They are display-only until a warehouse/product/unit target mapping exists;
 // source IDs must never be treated as mutable VPS master-data IDs.
-export const normalizeVpsWarehouseHistoryRecord = (
-  record = {},
-  type = "IMPORT",
-) => {
+export const normalizeVpsWarehouseHistoryRecord = (record = {}, type = 'IMPORT') => {
   const metadata = normalizeMetadata(record);
-  const quantity =
-    toFiniteNumber(record.quantity) ?? toFiniteNumber(metadata.quantity) ?? 0;
-  const weightKg =
-    toFiniteNumber(record.weight) ??
-    toFiniteNumber(metadata.weightKg ?? metadata.totalKg) ??
-    0;
-  const occurredAt =
-    record.occurredAt || metadata.date || record.createdAt || "";
+  const quantity = toFiniteNumber(record.quantity) ?? toFiniteNumber(metadata.quantity) ?? 0;
+  const weightKg = toFiniteNumber(record.weight) ?? toFiniteNumber(metadata.weightKg ?? metadata.totalKg) ?? 0;
+  const occurredAt = record.occurredAt || metadata.date || record.createdAt || '';
 
   return {
     ...metadata,
-    id: record.id || "",
-    companyId: record.companyId || "",
-    warehouseId: record.warehouseTargetId || "",
-    productId: record.productTargetId || "",
-    unitId: record.unitTargetId || "",
-    orderRequestId: record.orderRequestTargetId || "",
-    sourceWarehouseId: metadata.warehouseId || "",
-    sourceProductId: metadata.productId || "",
-    sourceUnitId: metadata.unitId || "",
-    legacySourceId: record.sourceDocumentId || metadata.id || "",
-    productName:
-      metadata.productName ||
-      metadata.productNameSnapshot ||
-      metadata.groupName ||
-      "",
-    productNameSnapshot:
-      metadata.productNameSnapshot ||
-      metadata.productName ||
-      metadata.groupName ||
-      "",
-    groupName: metadata.groupName || metadata.productGroup || "",
+    id: record.id || '',
+    companyId: record.companyId || '',
+    warehouseId: record.warehouseTargetId || '',
+    productId: record.productTargetId || '',
+    unitId: record.unitTargetId || '',
+    orderRequestId: record.orderRequestTargetId || '',
+    sourceWarehouseId: metadata.warehouseId || '',
+    sourceProductId: metadata.productId || '',
+    sourceUnitId: metadata.unitId || '',
+    legacySourceId: record.sourceDocumentId || metadata.id || '',
+    productName: metadata.productName || metadata.productNameSnapshot || metadata.groupName || '',
+    productNameSnapshot: metadata.productNameSnapshot || metadata.productName || metadata.groupName || '',
+    groupName: metadata.groupName || metadata.productGroup || '',
     quantity,
     totalQuantity: quantity,
-    quantityUnit: stringValue(metadata.quantityUnit || metadata.unit || ""),
+    quantityUnit: stringValue(metadata.quantityUnit || metadata.unit || ''),
     weightKg,
     totalKg: weightKg,
-    date: typeof occurredAt === "string" ? occurredAt.slice(0, 10) : "",
+    date: typeof occurredAt === 'string' ? occurredAt.slice(0, 10) : '',
     occurredAt,
-    status: record.status || metadata.status || "",
+    status: record.status || metadata.status || '',
     isArchived: false,
-    createdAt: record.createdAt || "",
-    updatedAt: record.updatedAt || "",
-    sourceSystem: "hd-connect-vps-history",
+    createdAt: record.createdAt || '',
+    updatedAt: record.updatedAt || '',
+    sourceSystem: 'hd-connect-vps-history',
     historyType: type,
     historicalOnly: true,
     readOnlyLedger: true,
@@ -936,29 +738,18 @@ export class HdConnectStagingApi {
   }
 
   async login({ phone, email, password, deviceName } = {}) {
-    return normalizeVpsSession(
-      await this.client.login({ phone, email, password, deviceName }),
-    );
+    return normalizeVpsSession(await this.client.login({ phone, email, password, deviceName }));
   }
 
-  async register({
-    companyCode,
-    companyName,
-    phone,
-    password,
-    fullName,
-    deviceName,
-  } = {}) {
-    return normalizeVpsSession(
-      await this.client.register({
-        companyCode,
-        companyName,
-        phone,
-        password,
-        fullName,
-        deviceName,
-      }),
-    );
+  async register({ companyCode, companyName, phone, password, fullName, deviceName } = {}) {
+    return normalizeVpsSession(await this.client.register({
+      companyCode,
+      companyName,
+      phone,
+      password,
+      fullName,
+      deviceName,
+    }));
   }
 
   async restoreSession() {
@@ -976,91 +767,71 @@ export class HdConnectStagingApi {
   }
 
   async requestPasswordReset(email) {
-    await this.client.post(
-      "/identity/password/forgot",
-      { email: stringValue(email) },
-      {
-        authenticate: false,
-        retry: false,
-        allowRefresh: false,
-      },
-    );
+    await this.client.post('/identity/password/forgot', { email: stringValue(email) }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
     return {
       success: true,
-      message:
-        "If the account exists, a password reset instruction has been requested.",
+      message: 'If the account exists, a password reset instruction has been requested.',
     };
   }
 
   async completePasswordReset({ token, newPassword } = {}) {
     const normalizedToken = requireIdentityInput(
       token,
-      "PASSWORD_RESET_TOKEN_REQUIRED",
-      "A password reset token is required.",
+      'PASSWORD_RESET_TOKEN_REQUIRED',
+      'A password reset token is required.',
     );
-    if (normalizedToken.length < 20 || `${newPassword || ""}`.length < 8) {
-      throw new HdApiError("The password reset input is invalid.", {
-        code: "PASSWORD_RESET_INPUT_INVALID",
+    if (normalizedToken.length < 20 || `${newPassword || ''}`.length < 8) {
+      throw new HdApiError('The password reset input is invalid.', {
+        code: 'PASSWORD_RESET_INPUT_INVALID',
       });
     }
-    return this.client.post(
-      "/identity/password/reset",
-      {
-        token: normalizedToken,
-        newPassword,
-      },
-      {
-        authenticate: false,
-        retry: false,
-        allowRefresh: false,
-      },
-    );
-  }
-
-  async getIdentityProfile() {
-    return this.client.get("/identity/me");
-  }
-
-  async updateIdentityProfile(record = {}) {
-    return this.client.patch("/identity/me/profile", record, { retry: false });
-  }
-
-  async updateIdentityPreferences(record = {}) {
-    return this.client.patch("/identity/me/preferences", record, {
+    return this.client.post('/identity/password/reset', {
+      token: normalizedToken,
+      newPassword,
+    }, {
+      authenticate: false,
       retry: false,
+      allowRefresh: false,
     });
   }
 
+  async getIdentityProfile() {
+    return this.client.get('/identity/me');
+  }
+
+  async updateIdentityProfile(record = {}) {
+    return this.client.patch('/identity/me/profile', record, { retry: false });
+  }
+
+  async updateIdentityPreferences(record = {}) {
+    return this.client.patch('/identity/me/preferences', record, { retry: false });
+  }
+
   async changeIdentityPassword({ currentPassword, newPassword } = {}) {
-    if (!currentPassword || `${newPassword || ""}`.length < 8) {
-      throw new HdApiError(
-        "Current password and a new password of at least 8 characters are required.",
-        {
-          code: "PASSWORD_CHANGE_INPUT_INVALID",
-        },
-      );
+    if (!currentPassword || `${newPassword || ''}`.length < 8) {
+      throw new HdApiError('Current password and a new password of at least 8 characters are required.', {
+        code: 'PASSWORD_CHANGE_INPUT_INVALID',
+      });
     }
-    return this.client.post(
-      "/identity/password/change",
-      {
-        currentPassword,
-        newPassword,
-      },
-      { retry: false },
-    );
+    return this.client.post('/identity/password/change', {
+      currentPassword,
+      newPassword,
+    }, { retry: false });
   }
 
   async getIdentityPasswordPolicy() {
-    return this.client.get("/identity/password/policy");
+    return this.client.get('/identity/password/policy');
   }
 
   async listIdentitySessions() {
-    const result = await this.client.get("/identity/sessions");
+    const result = await this.client.get('/identity/sessions');
     const items = Array.isArray(result)
       ? result
-      : Array.isArray(result?.items)
-        ? result.items
-        : [];
+      : (Array.isArray(result?.items) ? result.items : []);
     return {
       items: items.map(normalizeVpsIdentitySession),
       pagination: result?.pagination ?? null,
@@ -1070,26 +841,22 @@ export class HdConnectStagingApi {
   async revokeIdentitySession(sessionId) {
     const normalizedSessionId = requireIdentityInput(
       sessionId,
-      "IDENTITY_SESSION_ID_REQUIRED",
-      "A session id is required.",
+      'IDENTITY_SESSION_ID_REQUIRED',
+      'A session id is required.',
     );
     if (!isUuid(normalizedSessionId)) {
-      throw new HdApiError("The session id is invalid.", {
-        code: "IDENTITY_SESSION_ID_INVALID",
+      throw new HdApiError('The session id is invalid.', {
+        code: 'IDENTITY_SESSION_ID_INVALID',
       });
     }
-    return this.client.delete(`/identity/sessions/${normalizedSessionId}`, {
-      retry: false,
-    });
+    return this.client.delete(`/identity/sessions/${normalizedSessionId}`, { retry: false });
   }
 
   async listIdentityAudit(query = {}) {
-    const result = await this.client.get("/audit", { query });
+    const result = await this.client.get('/audit', { query });
     const entries = Array.isArray(result)
       ? result
-      : Array.isArray(result?.items)
-        ? result.items
-        : [];
+      : (Array.isArray(result?.items) ? result.items : []);
     return {
       entries,
       pagination: result?.pagination ?? null,
@@ -1097,7 +864,7 @@ export class HdConnectStagingApi {
   }
 
   async listCustomers(query = {}) {
-    const result = await this.client.get("/master-data/customers", { query });
+    const result = await this.client.get('/master-data/customers', { query });
     return normalizePage(result, normalizeVpsCustomer);
   }
 
@@ -1106,84 +873,43 @@ export class HdConnectStagingApi {
   }
 
   async createCustomerLoan({ requestId, customerId, ...record }) {
-    return this.client.post(
-      "/master-data/customer-goods-loans",
-      {
-        requestId,
-        customerId,
-        ...customerLoanEditablePayload(record),
-      },
-      { retry: false, idempotencyKey: requestId },
-    );
+    return this.client.post('/master-data/customer-goods-loans', {
+      requestId, customerId, ...customerLoanEditablePayload(record),
+    }, { retry: false, idempotencyKey: requestId });
   }
 
   async updateCustomerLoan(id, { version, ...record }) {
-    return this.client.patch(
-      `/master-data/customer-goods-loans/${id}`,
-      {
-        version,
-        ...customerLoanEditablePayload(record),
-      },
-      { retry: false },
-    );
+    return this.client.patch(`/master-data/customer-goods-loans/${id}`, {
+      version, ...customerLoanEditablePayload(record),
+    }, { retry: false });
   }
 
-  async returnCustomerLoan(
-    id,
-    { requestId, version, quantity, weightKg, returnDate, note },
-  ) {
-    return this.client.post(
-      `/master-data/customer-goods-loans/${id}/returns`,
-      {
-        requestId,
-        version,
-        quantity,
-        weightKg,
-        returnDate,
-        note,
-      },
-      { retry: false, idempotencyKey: requestId },
-    );
+  async returnCustomerLoan(id, { requestId, version, quantity, weightKg, returnDate, note }) {
+    return this.client.post(`/master-data/customer-goods-loans/${id}/returns`, {
+      requestId, version, quantity, weightKg, returnDate, note,
+    }, { retry: false, idempotencyKey: requestId });
   }
 
   async archiveCustomerLoan(id, { version }) {
-    return this.client.post(
-      `/master-data/customer-goods-loans/${id}/archive`,
-      { version },
-      { retry: false },
-    );
+    return this.client.post(`/master-data/customer-goods-loans/${id}/archive`, { version }, { retry: false });
   }
 
   async getCustomer(id) {
-    return normalizeVpsCustomer(
-      await this.client.get(`/master-data/customers/${id}`),
-    );
+    return normalizeVpsCustomer(await this.client.get(`/master-data/customers/${id}`));
   }
 
   async createCustomer(record) {
-    return normalizeVpsCustomer(
-      await this.client.post(
-        "/master-data/customers",
-        toCustomerPayload(record),
-        {
-          idempotencyKey: record.clientMutationId || createRequestId(),
-          retry: false,
-        },
-      ),
-    );
+    return normalizeVpsCustomer(await this.client.post('/master-data/customers', toCustomerPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
   }
 
   async updateCustomer(id, record) {
-    return normalizeVpsCustomer(
-      await this.client.patch(
-        `/master-data/customers/${id}`,
-        toCustomerPayload(record),
-        {
-          idempotencyKey: record.clientMutationId || createRequestId(),
-          retry: false,
-        },
-      ),
-    );
+    return normalizeVpsCustomer(await this.client.patch(`/master-data/customers/${id}`, toCustomerPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
   }
 
   async deleteCustomer(id) {
@@ -1191,17 +917,11 @@ export class HdConnectStagingApi {
   }
 
   async listUnits(query = {}) {
-    return normalizePage(
-      await this.client.get("/master-data/units", { query }),
-      (unit) => unit,
-    );
+    return normalizePage(await this.client.get('/master-data/units', { query }), (unit) => unit);
   }
 
   async listProducts(query = {}) {
-    return normalizePage(
-      await this.client.get("/products", { query }),
-      normalizeVpsProduct,
-    );
+    return normalizePage(await this.client.get('/products', { query }), normalizeVpsProduct);
   }
 
   async getProduct(id) {
@@ -1209,21 +929,17 @@ export class HdConnectStagingApi {
   }
 
   async createProduct(record) {
-    return normalizeVpsProduct(
-      await this.client.post("/products", toProductPayload(record), {
-        idempotencyKey: record.clientMutationId || createRequestId(),
-        retry: false,
-      }),
-    );
+    return normalizeVpsProduct(await this.client.post('/products', toProductPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
   }
 
   async updateProduct(id, record) {
-    return normalizeVpsProduct(
-      await this.client.patch(`/products/${id}`, toProductPayload(record), {
-        idempotencyKey: record.clientMutationId || createRequestId(),
-        retry: false,
-      }),
-    );
+    return normalizeVpsProduct(await this.client.patch(`/products/${id}`, toProductPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
   }
 
   async deleteProduct(id) {
@@ -1231,24 +947,15 @@ export class HdConnectStagingApi {
   }
 
   async listProductPrices(id, query = {}) {
-    return normalizePage(
-      await this.client.get(`/products/${id}/prices`, { query }),
-      (price) => price,
-    );
+    return normalizePage(await this.client.get(`/products/${id}/prices`, { query }), (price) => price);
   }
 
   async listProductUnits(id, query = {}) {
-    return normalizePage(
-      await this.client.get(`/products/${id}/units`, { query }),
-      (unit) => unit,
-    );
+    return normalizePage(await this.client.get(`/products/${id}/units`, { query }), (unit) => unit);
   }
 
   async listOrders(query = {}) {
-    return normalizePage(
-      await this.client.get("/sales/orders", { query }),
-      normalizeVpsOrder,
-    );
+    return normalizePage(await this.client.get('/sales/orders', { query }), normalizeVpsOrder);
   }
 
   async getOrder(id) {
@@ -1256,69 +963,48 @@ export class HdConnectStagingApi {
   }
 
   async createOrder(record) {
-    const clientMutationId =
-      stringValue(record.clientMutationId) || createRequestId();
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
     const payload = toSalesOrderPayload({ ...record, clientMutationId });
-    return normalizeVpsOrder(
-      await this.client.post("/sales/orders", payload, {
-        idempotencyKey: clientMutationId,
-        retry: false,
-      }),
-    );
+    return normalizeVpsOrder(await this.client.post('/sales/orders', payload, {
+      idempotencyKey: clientMutationId,
+      retry: false,
+    }));
   }
 
   async updateOrder(id, record) {
-    const clientMutationId =
-      stringValue(record.clientMutationId) || createRequestId();
-    return normalizeVpsOrder(
-      await this.client.patch(
-        `/sales/orders/${id}`,
-        toSalesOrderUpdatePayload({ ...record, clientMutationId }),
-        { idempotencyKey: clientMutationId, retry: false },
-      ),
-    );
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
+    return normalizeVpsOrder(await this.client.patch(
+      `/sales/orders/${id}`,
+      toSalesOrderUpdatePayload({ ...record, clientMutationId }),
+      { idempotencyKey: clientMutationId, retry: false },
+    ));
   }
 
-  async confirmOrder(id, note = "") {
-    return normalizeVpsOrder(
-      await this.client.post(
-        `/sales/orders/${id}/confirm`,
-        {
-          ...(stringValue(note) ? { note: stringValue(note) } : {}),
-        },
-        { retry: false },
-      ),
-    );
+  async confirmOrder(id, note = '') {
+    return normalizeVpsOrder(await this.client.post(`/sales/orders/${id}/confirm`, {
+      ...(stringValue(note) ? { note: stringValue(note) } : {}),
+    }, { retry: false }));
   }
 
   async cancelOrder(id, reason) {
     const normalizedReason = stringValue(reason);
     if (!normalizedReason) {
-      throw new HdApiError("A cancellation reason is required.", {
-        code: "ORDER_CANCEL_REASON_REQUIRED",
+      throw new HdApiError('A cancellation reason is required.', {
+        code: 'ORDER_CANCEL_REASON_REQUIRED',
       });
     }
-    return normalizeVpsOrder(
-      await this.client.post(
-        `/sales/orders/${id}/cancel`,
-        {
-          reason: normalizedReason,
-        },
-        { retry: false },
-      ),
-    );
+    return normalizeVpsOrder(await this.client.post(`/sales/orders/${id}/cancel`, {
+      reason: normalizedReason,
+    }, { retry: false }));
   }
 
   async listPayments(query = {}) {
-    return normalizePage(
-      await this.client.get("/cx-suite/payments", { query }),
-      normalizeVpsPayment,
-    );
+    return normalizePage(await this.client.get('/cx-suite/payments', { query }), normalizeVpsPayment);
   }
 
   async listCustomerPortalBankAccounts() {
     return normalizePage(
-      await this.client.get("/cx-suite/portal/bank-accounts"),
+      await this.client.get('/cx-suite/portal/bank-accounts'),
       (item) => item,
     );
   }
@@ -1326,91 +1012,75 @@ export class HdConnectStagingApi {
   async listCustomerPortalReceivables(query = {}) {
     const { customerId: _customerId, ...safeQuery } = query || {};
     return normalizePage(
-      await this.client.get("/cx-suite/portal/receivables", {
+      await this.client.get('/cx-suite/portal/receivables', {
         query: toTenantSafeQuery(safeQuery),
       }),
       (item) => ({
         ...item,
-        outstandingAmount:
-          toFiniteNumber(item.outstandingAmount) ??
-          Math.max(
+        outstandingAmount: toFiniteNumber(item.outstandingAmount)
+          ?? Math.max(
             0,
-            (toFiniteNumber(item.originalAmount) ?? 0) -
-              (toFiniteNumber(item.settledAmount) ?? 0),
+            (toFiniteNumber(item.originalAmount) ?? 0)
+              - (toFiniteNumber(item.settledAmount) ?? 0),
           ),
       }),
     );
   }
 
   async getCustomerPortalLoyalty() {
-    return this.client.get("/cx-suite/loyalty");
+    return this.client.get('/cx-suite/loyalty');
   }
 
   async redeemCustomerPortalLoyalty(record = {}) {
     const receivableId = requireIdentityInput(
       record.receivableId,
-      "LOYALTY_RECEIVABLE_REQUIRED",
-      "A receivable must be selected before redeeming loyalty points.",
+      'LOYALTY_RECEIVABLE_REQUIRED',
+      'A receivable must be selected before redeeming loyalty points.',
     );
     const pointsToUse = Math.floor(toFiniteNumber(record.pointsToUse) ?? 0);
     if (pointsToUse <= 0) {
-      throw new HdApiError("Loyalty points must be greater than zero.", {
-        code: "LOYALTY_POINTS_INVALID",
+      throw new HdApiError('Loyalty points must be greater than zero.', {
+        code: 'LOYALTY_POINTS_INVALID',
       });
     }
     const requestId = stringValue(record.requestId) || createRequestId();
-    return this.client.post(
-      "/cx-suite/loyalty/redeem",
-      {
-        requestId,
-        receivableId,
-        pointsToUse,
-      },
-      {
-        idempotencyKey: requestId,
-        retry: false,
-      },
-    );
+    return this.client.post('/cx-suite/loyalty/redeem', {
+      requestId,
+      receivableId,
+      pointsToUse,
+    }, {
+      idempotencyKey: requestId,
+      retry: false,
+    });
   }
 
   async linkCustomerPortalBankAccount(record = {}) {
-    const bankCode = stringValue(
-      record.bankCode || record.bankId,
-    ).toUpperCase();
+    const bankCode = stringValue(record.bankCode || record.bankId).toUpperCase();
     const bankName = stringValue(record.bankName);
-    const accountNumber = stringValue(
-      record.accountNumber || record.bankAccountNumber,
-    ).replace(/\s+/g, "");
-    const accountName = stringValue(
-      record.accountName || record.bankAccountName,
-    );
+    const accountNumber = stringValue(record.accountNumber || record.bankAccountNumber)
+      .replace(/\s+/g, '');
+    const accountName = stringValue(record.accountName || record.bankAccountName);
     if (!bankCode || !bankName || !accountNumber || !accountName) {
-      throw new HdApiError("Bank account details are required.", {
-        code: "CUSTOMER_BANK_ACCOUNT_INPUT_INVALID",
+      throw new HdApiError('Bank account details are required.', {
+        code: 'CUSTOMER_BANK_ACCOUNT_INPUT_INVALID',
       });
     }
-    return this.client.post(
-      "/cx-suite/portal/bank-accounts",
-      {
-        bankCode,
-        bankName,
-        accountNumber,
-        accountName,
-        isDefault: record.isDefault !== false,
-      },
-      { retry: false },
-    );
+    return this.client.post('/cx-suite/portal/bank-accounts', {
+      bankCode,
+      bankName,
+      accountNumber,
+      accountName,
+      isDefault: record.isDefault !== false,
+    }, { retry: false });
   }
 
   async getCustomerPortalSupportChat() {
-    const result = await this.client.get("/cx-suite/portal/support/chat");
+    const result = await this.client.get('/cx-suite/portal/support/chat');
     const conversation = result?.conversation || null;
     return {
       conversation,
       messages: Array.isArray(result?.messages)
-        ? result.messages.map((item) =>
-            normalizeVpsCustomerSupportMessage(item, conversation || {}),
-          )
+        ? result.messages.map((item) => normalizeVpsCustomerSupportMessage(item, conversation || {}))
         : [],
     };
   }
@@ -1418,23 +1088,16 @@ export class HdConnectStagingApi {
   async sendCustomerPortalSupportMessage(record = {}) {
     const body = requireIdentityInput(
       record.text || record.message || record.body,
-      "CUSTOMER_SUPPORT_MESSAGE_REQUIRED",
-      "A customer support message is required.",
+      'CUSTOMER_SUPPORT_MESSAGE_REQUIRED',
+      'A customer support message is required.',
     );
-    const clientMutationId =
-      stringValue(record.clientMutationId) || createRequestId();
-    const result = await this.client.post(
-      "/cx-suite/portal/support/messages",
-      {
-        body,
-        clientMutationId,
-        ...(record.messageType
-          ? { messageType: stringValue(record.messageType) }
-          : {}),
-        ...(record.attachments ? { attachments: record.attachments } : {}),
-      },
-      { idempotencyKey: clientMutationId, retry: false },
-    );
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
+    const result = await this.client.post('/cx-suite/portal/support/messages', {
+      body,
+      clientMutationId,
+      ...(record.messageType ? { messageType: stringValue(record.messageType) } : {}),
+      ...(record.attachments ? { attachments: record.attachments } : {}),
+    }, { idempotencyKey: clientMutationId, retry: false });
     return normalizeVpsCustomerSupportMessage(result, {
       id: result.conversationId,
       companyId: result.companyId,
@@ -1444,9 +1107,7 @@ export class HdConnectStagingApi {
 
   async listCustomerSupportChats(query = {}) {
     return normalizePage(
-      await this.client.get("/cx-suite/support/chats", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/cx-suite/support/chats', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
@@ -1454,58 +1115,49 @@ export class HdConnectStagingApi {
   async createCustomerSupportChat(customerId) {
     const targetCustomerId = requireIdentityInput(
       customerId,
-      "CUSTOMER_SUPPORT_CUSTOMER_REQUIRED",
-      "A customer is required to open a support conversation.",
+      'CUSTOMER_SUPPORT_CUSTOMER_REQUIRED',
+      'A customer is required to open a support conversation.',
     );
     if (!isUuid(targetCustomerId)) {
-      throw new HdApiError("The customer id is invalid.", {
-        code: "CUSTOMER_SUPPORT_CUSTOMER_INVALID",
+      throw new HdApiError('The customer id is invalid.', {
+        code: 'CUSTOMER_SUPPORT_CUSTOMER_INVALID',
       });
     }
-    return this.client.post(
-      "/cx-suite/support/chats",
-      { customerId: targetCustomerId },
-      { retry: false },
-    );
+    return this.client.post('/cx-suite/support/chats', { customerId: targetCustomerId }, { retry: false });
   }
 
   async listCustomerSupportMessages(conversation = {}) {
     const conversationId = requireIdentityInput(
       conversation.id || conversation.conversationId,
-      "CUSTOMER_SUPPORT_CONVERSATION_REQUIRED",
-      "A customer support conversation is required.",
+      'CUSTOMER_SUPPORT_CONVERSATION_REQUIRED',
+      'A customer support conversation is required.',
     );
     const messages = await this.client.get(
       `/cx-suite/support/chats/${encodeURIComponent(conversationId)}/messages`,
     );
     return Array.isArray(messages)
-      ? messages.map((item) =>
-          normalizeVpsCustomerSupportMessage(item, conversation),
-        )
+      ? messages.map((item) => normalizeVpsCustomerSupportMessage(item, conversation))
       : [];
   }
 
   async sendCustomerSupportReply(conversation = {}, record = {}) {
     const conversationId = requireIdentityInput(
       conversation.id || conversation.conversationId,
-      "CUSTOMER_SUPPORT_CONVERSATION_REQUIRED",
-      "A customer support conversation is required.",
+      'CUSTOMER_SUPPORT_CONVERSATION_REQUIRED',
+      'A customer support conversation is required.',
     );
     const body = requireIdentityInput(
       record.text || record.message || record.body,
-      "CUSTOMER_SUPPORT_MESSAGE_REQUIRED",
-      "A customer support message is required.",
+      'CUSTOMER_SUPPORT_MESSAGE_REQUIRED',
+      'A customer support message is required.',
     );
-    const clientMutationId =
-      stringValue(record.clientMutationId) || createRequestId();
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
     const result = await this.client.post(
       `/cx-suite/support/chats/${encodeURIComponent(conversationId)}/messages`,
       {
         body,
         clientMutationId,
-        ...(record.messageType
-          ? { messageType: stringValue(record.messageType) }
-          : {}),
+        ...(record.messageType ? { messageType: stringValue(record.messageType) } : {}),
         ...(record.attachments ? { attachments: record.attachments } : {}),
       },
       { idempotencyKey: clientMutationId, retry: false },
@@ -1514,305 +1166,168 @@ export class HdConnectStagingApi {
   }
 
   async listPaymentHistory(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/payments/history", {
-        query: toTenantSafeQuery(query),
-      }),
-      normalizeVpsPayment,
-    );
+    return normalizePage(await this.client.get('/finance-suite/payments/history', { query: toTenantSafeQuery(query) }), normalizeVpsPayment);
   }
 
   async getHistoricalCustomerLedger(id) {
-    const customerId = requireIdentityInput(
-      id,
-      "CUSTOMER_ID_REQUIRED",
-      "A customer id is required.",
-    );
-    return this.client.get(
-      `/finance-suite/customers/${encodeURIComponent(customerId)}/historical-ledger`,
-    );
+    const customerId = requireIdentityInput(id, 'CUSTOMER_ID_REQUIRED', 'A customer id is required.');
+    return this.client.get(`/finance-suite/customers/${encodeURIComponent(customerId)}/historical-ledger`);
   }
 
   // These methods intentionally mirror existing VPS contracts. They do not
   // translate legacy Firebase records or invent domain rules; callers must
   // provide already-resolved target IDs and domain-valid DTO fields.
   async listWarehouses(query = {}) {
-    return normalizePage(
-      await this.client.get("/warehouse-suite/warehouses", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/warehouse-suite/warehouses', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createWarehouse(record = {}) {
-    return this.client.post(
-      "/warehouse-suite/warehouses",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/warehouse-suite/warehouses', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async updateWarehouse(id, record = {}) {
-    return this.client.patch(
-      `/warehouse-suite/warehouses/${id}`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.patch(`/warehouse-suite/warehouses/${id}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async deleteWarehouse(id) {
-    return this.client.delete(`/warehouse-suite/warehouses/${id}`, {
-      retry: false,
-    });
+    return this.client.delete(`/warehouse-suite/warehouses/${id}`, { retry: false });
   }
 
   async restoreWarehouse(id) {
-    return this.client.post(
-      `/warehouse-suite/warehouses/${id}/restore`,
-      undefined,
-      { retry: false },
-    );
+    return this.client.post(`/warehouse-suite/warehouses/${id}/restore`, undefined, { retry: false });
   }
 
   async listWarehouseBalances(query = {}) {
-    return normalizePage(
-      await this.client.get("/warehouse-suite/balances", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/warehouse-suite/balances', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async getInventoryReconciliationStatus() {
-    return this.client.get("/inventory/reconciliation-status");
+    return this.client.get('/inventory/reconciliation-status');
   }
 
   async listWarehouseLedger(query = {}) {
-    return normalizePage(
-      await this.client.get("/warehouse-suite/ledger", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/warehouse-suite/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listWarehouseHistoryImports(query = {}) {
     return normalizePage(
-      await this.client.get("/warehouse-suite/history/imports", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => normalizeVpsWarehouseHistoryRecord(item, "IMPORT"),
+      await this.client.get('/warehouse-suite/history/imports', { query: toTenantSafeQuery(query) }),
+      (item) => normalizeVpsWarehouseHistoryRecord(item, 'IMPORT'),
     );
   }
 
   async listWarehouseHistoryDispatches(query = {}) {
     return normalizePage(
-      await this.client.get("/warehouse-suite/history/dispatches", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => normalizeVpsWarehouseHistoryRecord(item, "DISPATCH"),
+      await this.client.get('/warehouse-suite/history/dispatches', { query: toTenantSafeQuery(query) }),
+      (item) => normalizeVpsWarehouseHistoryRecord(item, 'DISPATCH'),
     );
   }
 
   async listWarehouseCountSessions(query = {}) {
-    return normalizePage(
-      await this.client.get("/warehouse-suite/counts", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/warehouse-suite/counts', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createWarehouseCountSession(record = {}) {
-    return this.client.post(
-      "/warehouse-suite/counts",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/warehouse-suite/counts', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async addWarehouseCountLine(sessionId, record = {}) {
-    const safeSessionId = requireIdentityInput(
-      sessionId,
-      "STOCK_COUNT_SESSION_ID_REQUIRED",
-      "A stock count session id is required.",
-    );
-    return this.client.post(
-      `/warehouse-suite/counts/${safeSessionId}/lines`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    const safeSessionId = requireIdentityInput(sessionId, 'STOCK_COUNT_SESSION_ID_REQUIRED', 'A stock count session id is required.');
+    return this.client.post(`/warehouse-suite/counts/${safeSessionId}/lines`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async postWarehouseCountSession(sessionId) {
-    const safeSessionId = requireIdentityInput(
-      sessionId,
-      "STOCK_COUNT_SESSION_ID_REQUIRED",
-      "A stock count session id is required.",
-    );
-    return this.client.post(
-      `/warehouse-suite/counts/${safeSessionId}/post`,
-      undefined,
-      { retry: false },
-    );
+    const safeSessionId = requireIdentityInput(sessionId, 'STOCK_COUNT_SESSION_ID_REQUIRED', 'A stock count session id is required.');
+    return this.client.post(`/warehouse-suite/counts/${safeSessionId}/post`, undefined, { retry: false });
   }
 
   async postWarehouseStockIn(record = {}) {
-    return this.client.post(
-      "/warehouse-suite/stock-in",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/warehouse-suite/stock-in', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async postWarehouseStockOut(record = {}) {
-    return this.client.post(
-      "/warehouse-suite/stock-out",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/warehouse-suite/stock-out', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listWarehouseTransfers(query = {}) {
-    return normalizePage(
-      await this.client.get("/warehouse-suite/transfers", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/warehouse-suite/transfers', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createWarehouseTransfer(record = {}) {
-    return this.client.post(
-      "/warehouse-suite/transfers",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/warehouse-suite/transfers', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async postWarehouseTransfer(transferId) {
-    const safeTransferId = requireIdentityInput(
-      transferId,
-      "WAREHOUSE_TRANSFER_ID_REQUIRED",
-      "A warehouse transfer id is required.",
-    );
-    return this.client.post(
-      `/warehouse-suite/transfers/${safeTransferId}/post`,
-      undefined,
-      { retry: false },
-    );
+    const safeTransferId = requireIdentityInput(transferId, 'WAREHOUSE_TRANSFER_ID_REQUIRED', 'A warehouse transfer id is required.');
+    return this.client.post(`/warehouse-suite/transfers/${safeTransferId}/post`, undefined, { retry: false });
   }
 
-  async createWarehouseAdjustment(record = {}, direction = "increase") {
-    if (!["increase", "decrease"].includes(direction)) {
-      throw new HdApiError("The warehouse adjustment direction is invalid.", {
-        code: "WAREHOUSE_ADJUSTMENT_DIRECTION_INVALID",
+  async createWarehouseAdjustment(record = {}, direction = 'increase') {
+    if (!['increase', 'decrease'].includes(direction)) {
+      throw new HdApiError('The warehouse adjustment direction is invalid.', {
+        code: 'WAREHOUSE_ADJUSTMENT_DIRECTION_INVALID',
       });
     }
-    return this.client.post(
-      `/warehouse-suite/adjustments/${direction}`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post(`/warehouse-suite/adjustments/${direction}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listInventory(query = {}) {
-    return normalizePage(
-      await this.client.get("/inventory/lookup", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/inventory/lookup', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listInventoryLedger(query = {}) {
-    return normalizePage(
-      await this.client.get("/inventory/ledger", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/inventory/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listInventoryBalances(query = {}) {
-    return normalizePage(
-      await this.client.get("/inventory/balances", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/inventory/balances', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async postInventoryOpeningBalance(record = {}) {
-    return this.client.post(
-      "/inventory/transactions/opening-balance",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/inventory/transactions/opening-balance', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async postInventoryStockIn(record = {}) {
-    return this.client.post(
-      "/inventory/transactions/stock-in",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/inventory/transactions/stock-in', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async postInventoryStockOut(record = {}) {
-    return this.client.post(
-      "/inventory/transactions/stock-out",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/inventory/transactions/stock-out', toTenantSafePayload(record), mutationOptions(record));
   }
 
-  async postInventoryAdjustment(record = {}, direction = "increase") {
-    if (!["increase", "decrease"].includes(direction)) {
-      throw new HdApiError("The inventory adjustment direction is invalid.", {
-        code: "INVENTORY_ADJUSTMENT_DIRECTION_INVALID",
+  async postInventoryAdjustment(record = {}, direction = 'increase') {
+    if (!['increase', 'decrease'].includes(direction)) {
+      throw new HdApiError('The inventory adjustment direction is invalid.', {
+        code: 'INVENTORY_ADJUSTMENT_DIRECTION_INVALID',
       });
     }
-    return this.client.post(
-      `/inventory/adjustments/${direction}`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post(`/inventory/adjustments/${direction}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listLogisticsDeliveries(query = {}) {
     return normalizePage(
-      await this.client.get("/logistics-suite/deliveries", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/logistics-suite/deliveries', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
 
   async listLogisticsVehicles(query = {}) {
     return normalizePage(
-      await this.client.get("/logistics-suite/vehicles", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/logistics-suite/vehicles', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
 
   async listLogisticsDrivers(query = {}) {
     return normalizePage(
-      await this.client.get("/logistics-suite/drivers", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/logistics-suite/drivers', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
 
   async listLogisticsTeams(query = {}) {
     return normalizePage(
-      await this.client.get("/logistics-suite/teams", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/logistics-suite/teams', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
@@ -1824,19 +1339,19 @@ export class HdConnectStagingApi {
   async assignLogisticsDelivery(id, record = {}) {
     const deliveryId = requireIdentityInput(
       id,
-      "LOGISTICS_DELIVERY_ID_REQUIRED",
-      "A delivery id is required.",
+      'LOGISTICS_DELIVERY_ID_REQUIRED',
+      'A delivery id is required.',
     );
     if (!isUuid(deliveryId)) {
-      throw new HdApiError("The delivery id is invalid.", {
-        code: "LOGISTICS_DELIVERY_ID_INVALID",
+      throw new HdApiError('The delivery id is invalid.', {
+        code: 'LOGISTICS_DELIVERY_ID_INVALID',
       });
     }
     const payload = {};
     for (const [field, code] of [
-      ["vehicleId", "LOGISTICS_VEHICLE_ID_INVALID"],
-      ["driverId", "LOGISTICS_DRIVER_ID_INVALID"],
-      ["teamId", "LOGISTICS_TEAM_ID_INVALID"],
+      ['vehicleId', 'LOGISTICS_VEHICLE_ID_INVALID'],
+      ['driverId', 'LOGISTICS_DRIVER_ID_INVALID'],
+      ['teamId', 'LOGISTICS_TEAM_ID_INVALID'],
     ]) {
       const value = stringValue(record[field]);
       if (!value) continue;
@@ -1857,7 +1372,7 @@ export class HdConnectStagingApi {
   async createLogisticsDelivery(record = {}) {
     const { clientMutationId, ...payload } = record;
     return this.client.post(
-      "/logistics-suite/deliveries",
+      '/logistics-suite/deliveries',
       toTenantSafePayload(payload),
       {
         idempotencyKey: clientMutationId || createRequestId(),
@@ -1869,228 +1384,141 @@ export class HdConnectStagingApi {
   async transitionLogisticsDelivery(id, record = {}) {
     const deliveryId = requireIdentityInput(
       id,
-      "LOGISTICS_DELIVERY_ID_REQUIRED",
-      "A delivery id is required.",
+      'LOGISTICS_DELIVERY_ID_REQUIRED',
+      'A delivery id is required.',
     );
     if (!isUuid(deliveryId)) {
-      throw new HdApiError("The delivery id is invalid.", {
-        code: "LOGISTICS_DELIVERY_ID_INVALID",
+      throw new HdApiError('The delivery id is invalid.', {
+        code: 'LOGISTICS_DELIVERY_ID_INVALID',
       });
     }
     const transitionCode = stringValue(record.transitionCode).toUpperCase();
     if (!transitionCode) {
-      throw new HdApiError("A delivery lifecycle transition is required.", {
-        code: "LOGISTICS_DELIVERY_TRANSITION_REQUIRED",
+      throw new HdApiError('A delivery lifecycle transition is required.', {
+        code: 'LOGISTICS_DELIVERY_TRANSITION_REQUIRED',
       });
     }
     return this.client.post(
       `/logistics-suite/deliveries/${deliveryId}/transition`,
       {
         transitionCode,
-        ...(stringValue(record.reason)
-          ? { reason: stringValue(record.reason) }
-          : {}),
+        ...(stringValue(record.reason) ? { reason: stringValue(record.reason) } : {}),
       },
       { retry: false },
     );
   }
 
   async listFinanceCashAccounts(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/cash-accounts", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/finance-suite/cash-accounts', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createFinanceCashAccount(record = {}) {
-    return this.client.post(
-      "/finance-suite/cash-accounts",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/finance-suite/cash-accounts', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listFinanceCashTransactions(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/cash-transactions", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/finance-suite/cash-transactions', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createFinanceCashTransaction(record = {}) {
-    return this.client.post(
-      "/finance-suite/cash-transactions",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/finance-suite/cash-transactions', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async createFinanceCustomerReceipt(record = {}) {
     const { clientMutationId, ...payload } = record;
-    return this.client.post(
-      "/finance-suite/receipts",
-      toTenantSafePayload(payload),
-      {
-        idempotencyKey: clientMutationId || createRequestId(),
-        retry: false,
-      },
-    );
-  }
-
-  async reverseFinanceCustomerReceipt(record = {}) {
-    const { clientMutationId, ...payload } = record;
-    return this.client.post(
-      "/finance-suite/receipts/reversals",
-      toTenantSafePayload(payload),
-      {
-        idempotencyKey: clientMutationId || createRequestId(),
-        retry: false,
-      },
-    );
-  }
-
-  async listFinanceReceivables(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/receivables", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
-  }
-
-  async createFinanceReceivable(record = {}) {
-    return this.client.post(
-      "/finance-suite/receivables",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
-  }
-
-  async listFinancePayables(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/payables", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
-  }
-
-  async createFinancePayable(record = {}) {
-    return this.client.post(
-      "/finance-suite/payables",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
-  }
-
-  async createFinanceDebtMovement(record = {}) {
-    return this.client.post(
-      "/finance-suite/debt-movements",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
-  }
-
-  async getFinanceAging() {
-    return this.client.get("/finance-suite/aging");
-  }
-
-  async listFinanceExpenses(query = {}) {
-    return normalizePage(
-      await this.client.get("/finance-suite/expenses", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
-  }
-
-  async createFinanceExpense(record = {}) {
-    return this.client.post(
-      "/finance-suite/expenses",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
-  }
-
-  async approveFinanceExpense(id) {
-    return this.client.post(
-      `/finance-suite/expenses/${id}/approve`,
-      undefined,
-      { retry: false },
-    );
-  }
-
-  async postFinanceExpense(id) {
-    return this.client.post(`/finance-suite/expenses/${id}/post`, undefined, {
+    return this.client.post('/finance-suite/receipts', toTenantSafePayload(payload), {
+      idempotencyKey: clientMutationId || createRequestId(),
       retry: false,
     });
   }
 
+  async reverseFinanceCustomerReceipt(record = {}) {
+    const { clientMutationId, ...payload } = record;
+    return this.client.post('/finance-suite/receipts/reversals', toTenantSafePayload(payload), {
+      idempotencyKey: clientMutationId || createRequestId(),
+      retry: false,
+    });
+  }
+
+  async listFinanceReceivables(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/receivables', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceReceivable(record = {}) {
+    return this.client.post('/finance-suite/receivables', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listFinancePayables(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/payables', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinancePayable(record = {}) {
+    return this.client.post('/finance-suite/payables', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async createFinanceDebtMovement(record = {}) {
+    return this.client.post('/finance-suite/debt-movements', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async getFinanceAging() {
+    return this.client.get('/finance-suite/aging');
+  }
+
+  async listFinanceExpenses(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/expenses', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceExpense(record = {}) {
+    return this.client.post('/finance-suite/expenses', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async approveFinanceExpense(id) {
+    return this.client.post(`/finance-suite/expenses/${id}/approve`, undefined, { retry: false });
+  }
+
+  async postFinanceExpense(id) {
+    return this.client.post(`/finance-suite/expenses/${id}/post`, undefined, { retry: false });
+  }
+
   async listNotifications(query = {}) {
-    return normalizePage(
-      await this.client.get("/notifications", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/notifications', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listUnreadNotifications() {
-    return this.client.get("/notifications/unread");
+    return this.client.get('/notifications/unread');
   }
 
   async markNotificationsRead({ notificationIds = [], all = false } = {}) {
-    return this.client.post(
-      "/notifications/read",
-      {
-        notificationIds: toStringArray(notificationIds),
-        all: Boolean(all),
-      },
-      { retry: false },
-    );
+    return this.client.post('/notifications/read', {
+      notificationIds: toStringArray(notificationIds),
+      all: Boolean(all),
+    }, { retry: false });
   }
 
   async archiveNotifications({ notificationIds = [], all = false } = {}) {
-    return this.client.post(
-      "/notifications/archive",
-      {
-        notificationIds: toStringArray(notificationIds),
-        all: Boolean(all),
-      },
-      { retry: false },
-    );
+    return this.client.post('/notifications/archive', {
+      notificationIds: toStringArray(notificationIds),
+      all: Boolean(all),
+    }, { retry: false });
   }
 
   async sendNotification(record = {}) {
-    return this.client.post(
-      "/notifications/send",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/notifications/send', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listLegacyBusiness(query = {}) {
     return normalizePage(
-      await this.client.get("/legacy-business", {
-        query: toTenantSafeQuery(query),
-      }),
+      await this.client.get('/legacy-business', { query: toTenantSafeQuery(query) }),
       (item) => item,
     );
   }
 
   async getLegacyBusinessSummary() {
-    return this.client.get("/legacy-business/summary");
+    return this.client.get('/legacy-business/summary');
   }
 
   async listStorage(query = {}) {
-    return normalizePage(
-      await this.client.get("/storage", { query: toTenantSafeQuery(query) }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/storage', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async getStorageMetadata(id) {
@@ -2102,87 +1530,54 @@ export class HdConnectStagingApi {
   }
 
   async getStorageSignedUrl(record = {}) {
-    return this.client.post(
-      "/storage/signed-url",
-      toTenantSafePayload(record),
-      { retry: false },
-    );
+    return this.client.post('/storage/signed-url', toTenantSafePayload(record), { retry: false });
   }
 
   async uploadStorageFile(record = {}) {
     const payload = toTenantSafePayload(record);
     if (!stringValue(payload.fileName) || !stringValue(payload.mimeType)) {
-      throw new HdApiError(
-        "Storage upload requires a file name and MIME type.",
-        {
-          code: "STORAGE_FILE_METADATA_REQUIRED",
-        },
-      );
-    }
-    if (
-      !stringValue(payload.contentBase64) &&
-      !stringValue(payload.contentText)
-    ) {
-      throw new HdApiError("Storage upload requires base64 or text content.", {
-        code: "STORAGE_FILE_CONTENT_REQUIRED",
+      throw new HdApiError('Storage upload requires a file name and MIME type.', {
+        code: 'STORAGE_FILE_METADATA_REQUIRED',
       });
     }
-    return this.client.post("/storage/upload", payload, { retry: false });
+    if (!stringValue(payload.contentBase64) && !stringValue(payload.contentText)) {
+      throw new HdApiError('Storage upload requires base64 or text content.', {
+        code: 'STORAGE_FILE_CONTENT_REQUIRED',
+      });
+    }
+    return this.client.post('/storage/upload', payload, { retry: false });
   }
 
   async archiveStorageFile(record = {}) {
-    return this.client.post("/storage/archive", toTenantSafePayload(record), {
-      retry: false,
-    });
+    return this.client.post('/storage/archive', toTenantSafePayload(record), { retry: false });
   }
 
   async getExecutiveDashboard(query = {}) {
-    return this.client.get("/executive/dashboard", { query });
+    return this.client.get('/executive/dashboard', { query });
   }
 
   async getExecutiveReports(query = {}) {
-    return normalizePage(
-      await this.client.get("/executive/reports", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/executive/reports', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async getPlatformConfig(query = {}) {
-    return this.client.get("/platform/config", {
-      query: toTenantSafeQuery(query),
-    });
+    return this.client.get('/platform/config', { query: toTenantSafeQuery(query) });
   }
 
   async getManagerSettings() {
-    return this.client.get("/company-settings/manager");
+    return this.client.get('/company-settings/manager');
   }
 
   async updateManagerSettings({ version, settings }) {
-    return this.client.patch(
-      "/company-settings/manager",
-      { version, settings },
-      { retry: false },
-    );
+    return this.client.patch('/company-settings/manager', { version, settings }, { retry: false });
   }
 
   async getPlatformFlags(query = {}) {
-    return normalizePage(
-      await this.client.get("/platform/flags", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/platform/flags', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async listEmployees(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/employees", {
-        query: toTenantSafeQuery(query),
-      }),
-      normalizeVpsEmployee,
-    );
+    return normalizePage(await this.client.get('/hr-suite/employees', { query: toTenantSafeQuery(query) }), normalizeVpsEmployee);
   }
 
   async getManagerEmployee(id) {
@@ -2190,80 +1585,43 @@ export class HdConnectStagingApi {
   }
 
   async createManagerEmployee({ requestId, profile }) {
-    return this.client.post(
-      "/hr-suite/manager-employees",
-      { requestId, profile },
-      { retry: false },
-    );
+    return this.client.post('/hr-suite/manager-employees', { requestId, profile }, { retry: false });
   }
 
   async updateManagerEmployee(id, { version, profile }) {
-    return this.client.patch(
-      `/hr-suite/manager-employees/${id}`,
-      { version, profile },
-      { retry: false },
-    );
+    return this.client.patch(`/hr-suite/manager-employees/${id}`, { version, profile }, { retry: false });
   }
 
   async createEmployee(record = {}) {
-    return this.client.post(
-      "/hr-suite/employees",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/hr-suite/employees', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async updateEmployee(id, record = {}) {
-    return this.client.patch(
-      `/hr-suite/employees/${id}`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.patch(`/hr-suite/employees/${id}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async terminateEmployee(id) {
-    return this.client.post(`/hr-suite/employees/${id}/terminate`, undefined, {
-      retry: false,
-    });
+    return this.client.post(`/hr-suite/employees/${id}/terminate`, undefined, { retry: false });
   }
 
   async listAttendance(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/attendance", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/hr-suite/attendance', { query }), (item) => item);
   }
 
   async recordAttendance(record = {}) {
-    return this.client.post(
-      "/hr-suite/attendance",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/hr-suite/attendance', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listHrPerformanceReviews(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/performance-reviews", {
-        query: toTenantSafeQuery(query),
-      }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/hr-suite/performance-reviews', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
   async createHrPerformanceReview(record = {}) {
-    return this.client.post(
-      "/hr-suite/performance-reviews",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/hr-suite/performance-reviews', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listPayrolls(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/payrolls", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/hr-suite/payrolls', { query }), (item) => item);
   }
 
   async getPayroll(id) {
@@ -2271,74 +1629,43 @@ export class HdConnectStagingApi {
   }
 
   async listManagerHolidays(query = {}) {
-    return this.client.get("/hr-suite/manager-holidays", {
-      query: vpsHolidayQuery(query),
-    });
+    return this.client.get('/hr-suite/manager-holidays', { query: vpsHolidayQuery(query) });
   }
 
   async listManagerAssets(query = {}) {
-    return this.client.get("/logistics-suite/manager-assets", {
-      query: vpsAssetQuery(query),
-    });
+    return this.client.get('/logistics-suite/manager-assets', { query: vpsAssetQuery(query) });
   }
 
   async listManagerAssetCosts(query = {}) {
-    return this.client.get("/logistics-suite/manager-asset-costs", {
-      query: vpsAssetQuery(query),
-    });
+    return this.client.get('/logistics-suite/manager-asset-costs', { query: vpsAssetQuery(query) });
   }
 
   async createManagerAssetCost(record) {
-    return this.client.post("/logistics-suite/manager-asset-costs", record, {
-      retry: false,
-    });
+    return this.client.post('/logistics-suite/manager-asset-costs', record, { retry: false });
   }
 
   async updateManagerAssetCost(id, record) {
-    return this.client.patch(
-      `/logistics-suite/manager-asset-costs/${vpsAssetId(id)}`,
-      record,
-      { retry: false },
-    );
+    return this.client.patch(`/logistics-suite/manager-asset-costs/${vpsAssetId(id)}`, record, { retry: false });
   }
 
   async archiveManagerAssetCost(id, record) {
-    return this.client.post(
-      `/logistics-suite/manager-asset-costs/${vpsAssetId(id)}/archive`,
-      record,
-      { retry: false },
-    );
+    return this.client.post(`/logistics-suite/manager-asset-costs/${vpsAssetId(id)}/archive`, record, { retry: false });
   }
 
   async getManagerAsset(id, query = {}) {
-    return this.client.get(
-      `/logistics-suite/manager-assets/${vpsAssetId(id)}`,
-      { query: vpsAssetQuery(query, true) },
-    );
+    return this.client.get(`/logistics-suite/manager-assets/${vpsAssetId(id)}`, { query: vpsAssetQuery(query, true) });
   }
 
   async createManagerAsset(record) {
-    return this.client.post(
-      "/logistics-suite/manager-assets",
-      vpsAssetMutationPayload("create", record),
-      { retry: false },
-    );
+    return this.client.post('/logistics-suite/manager-assets', vpsAssetMutationPayload('create', record), { retry: false });
   }
 
   async updateManagerAsset(id, record) {
-    return this.client.patch(
-      `/logistics-suite/manager-assets/${vpsAssetId(id)}`,
-      vpsAssetMutationPayload("update", record),
-      { retry: false },
-    );
+    return this.client.patch(`/logistics-suite/manager-assets/${vpsAssetId(id)}`, vpsAssetMutationPayload('update', record), { retry: false });
   }
 
   async archiveManagerAsset(id, record) {
-    return this.client.post(
-      `/logistics-suite/manager-assets/${vpsAssetId(id)}/archive`,
-      vpsAssetMutationPayload("archive", record),
-      { retry: false },
-    );
+    return this.client.post(`/logistics-suite/manager-assets/${vpsAssetId(id)}/archive`, vpsAssetMutationPayload('archive', record), { retry: false });
   }
 
   async getManagerHoliday(id) {
@@ -2346,169 +1673,91 @@ export class HdConnectStagingApi {
   }
 
   async createManagerHoliday(record) {
-    return this.client.post(
-      "/hr-suite/manager-holidays",
-      vpsHolidayMutationPayload("create", record),
-      { retry: false },
-    );
+    return this.client.post('/hr-suite/manager-holidays', vpsHolidayMutationPayload('create', record), { retry: false });
   }
 
   async updateManagerHoliday(id, record) {
-    return this.client.patch(
-      `/hr-suite/manager-holidays/${vpsHolidayId(id)}`,
-      vpsHolidayMutationPayload("update", record),
-      { retry: false },
-    );
+    return this.client.patch(`/hr-suite/manager-holidays/${vpsHolidayId(id)}`, vpsHolidayMutationPayload('update', record), { retry: false });
   }
 
   async archiveManagerHoliday(id, record) {
-    return this.client.post(
-      `/hr-suite/manager-holidays/${vpsHolidayId(id)}/archive`,
-      vpsHolidayMutationPayload("archive", record),
-      { retry: false },
-    );
+    return this.client.post(`/hr-suite/manager-holidays/${vpsHolidayId(id)}/archive`, vpsHolidayMutationPayload('archive', record), { retry: false });
   }
 
   async listManagerSalaryAdvances(query = {}) {
-    return this.client.get("/hr-suite/manager-salary-advances", {
-      query: vpsSalaryAdvanceQuery(query),
-    });
+    return this.client.get('/hr-suite/manager-salary-advances', { query: vpsSalaryAdvanceQuery(query) });
   }
 
   async createManagerSalaryAdvance(record) {
-    return this.client.post(
-      "/hr-suite/manager-salary-advances",
-      vpsSalaryAdvanceMutationPayload("create", record),
-      { retry: false },
-    );
+    return this.client.post('/hr-suite/manager-salary-advances', vpsSalaryAdvanceMutationPayload('create', record), { retry: false });
   }
 
   async approveManagerSalaryAdvance(id, record) {
-    return this.client.post(
-      `/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/approve`,
-      vpsSalaryAdvanceMutationPayload("approve", record),
-      { retry: false },
-    );
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/approve`, vpsSalaryAdvanceMutationPayload('approve', record), { retry: false });
   }
 
   async rejectManagerSalaryAdvance(id, record) {
-    return this.client.post(
-      `/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/reject`,
-      vpsSalaryAdvanceMutationPayload("reject", record),
-      { retry: false },
-    );
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/reject`, vpsSalaryAdvanceMutationPayload('reject', record), { retry: false });
   }
 
   async cancelManagerSalaryAdvance(id, record) {
-    return this.client.post(
-      `/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/cancel`,
-      vpsSalaryAdvanceMutationPayload("cancel", record),
-      { retry: false },
-    );
+    return this.client.post(`/hr-suite/manager-salary-advances/${vpsSalaryAdvanceId(id)}/cancel`, vpsSalaryAdvanceMutationPayload('cancel', record), { retry: false });
   }
 
   async listPayrollPeriods(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/payroll-periods", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/hr-suite/payroll-periods', { query }), (item) => item);
   }
 
   async createPayrollPeriod(record = {}) {
-    return this.client.post(
-      "/hr-suite/payroll-periods",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/hr-suite/payroll-periods', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async generatePayroll(record = {}) {
-    return this.client.post(
-      "/hr-suite/payrolls/generate",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/hr-suite/payrolls/generate', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async approvePayroll(id, record = {}) {
-    return this.client.post(
-      `/hr-suite/payrolls/${id}/approve`,
-      undefined,
-      mutationOptions(record),
-    );
+    return this.client.post(`/hr-suite/payrolls/${id}/approve`, undefined, mutationOptions(record));
   }
 
   async lockPayroll(id, record = {}) {
-    return this.client.post(
-      `/hr-suite/payrolls/${id}/lock`,
-      undefined,
-      mutationOptions(record),
-    );
+    return this.client.post(`/hr-suite/payrolls/${id}/lock`, undefined, mutationOptions(record));
   }
 
   async adjustLockedPayroll(id, record = {}) {
-    return this.client.post(
-      `/hr-suite/payrolls/${id}/adjustments`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post(`/hr-suite/payrolls/${id}/adjustments`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async listPayrollDebtCarryovers(query = {}) {
-    return normalizePage(
-      await this.client.get("/hr-suite/payroll-debt-carryovers", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/hr-suite/payroll-debt-carryovers', { query }), (item) => item);
   }
 
   async listDocuments(query = {}) {
-    return normalizePage(
-      await this.client.get("/documents", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/documents', { query }), (item) => item);
   }
 
   async createDocument(record = {}) {
-    return this.client.post(
-      "/documents",
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.post('/documents', toTenantSafePayload(record), mutationOptions(record));
   }
 
   async updateDocument(id, record = {}) {
-    return this.client.patch(
-      `/documents/${id}`,
-      toTenantSafePayload(record),
-      mutationOptions(record),
-    );
+    return this.client.patch(`/documents/${id}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
   async archiveDocument(id) {
-    return this.client.post(`/documents/${id}/archive`, undefined, {
-      retry: false,
-    });
+    return this.client.post(`/documents/${id}/archive`, undefined, { retry: false });
   }
 
   async listEvents(query = {}) {
-    return normalizePage(
-      await this.client.get("/events", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/events', { query }), (item) => item);
   }
 
   async listWorkerJobs(query = {}) {
-    return normalizePage(
-      await this.client.get("/worker/jobs", { query }),
-      (item) => item,
-    );
+    return normalizePage(await this.client.get('/worker/jobs', { query }), (item) => item);
   }
 
   async runWorkerJobs(query = {}) {
-    return this.client.post("/worker/jobs/run", undefined, {
-      query,
-      retry: false,
-    });
+    return this.client.post('/worker/jobs/run', undefined, { query, retry: false });
   }
 
   async subscribeRealtime({
@@ -2518,9 +1767,9 @@ export class HdConnectStagingApi {
     initialReconnectDelayMs = 500,
     maxReconnectDelayMs = 8_000,
   } = {}) {
-    if (typeof onEvent !== "function") {
-      throw new HdApiError("A realtime event callback is required.", {
-        code: "REALTIME_CALLBACK_REQUIRED",
+    if (typeof onEvent !== 'function') {
+      throw new HdApiError('A realtime event callback is required.', {
+        code: 'REALTIME_CALLBACK_REQUIRED',
       });
     }
 
@@ -2534,23 +1783,24 @@ export class HdConnectStagingApi {
     let refreshesSinceReady = 0;
 
     const emitState = (state, details = {}) => {
-      if (typeof onState !== "function") return;
+      if (typeof onState !== 'function') return;
       onState({ state, attempt: reconnectAttempt, ...details });
     };
 
     const handleEvent = (message) => {
-      if (message?.type === "ready") {
+      if (message?.type === 'ready') {
         reconnectAttempt = 0;
         refreshesSinceReady = 0;
-        emitState("connected");
+        emitState('connected');
       }
 
-      if (message?.type === "heartbeat") {
-        emitState("connected", { heartbeatAt: message?.data?.at || "" });
+      if (message?.type === 'heartbeat') {
+        emitState('connected', { heartbeatAt: message?.data?.at || '' });
       }
 
-      const eventId =
-        message?.type === "event" ? stringValue(message?.data?.eventId) : "";
+      const eventId = message?.type === 'event'
+        ? stringValue(message?.data?.eventId)
+        : '';
       if (eventId) {
         if (recentEventIds.has(eventId)) return;
         recentEventIds.add(eventId);
@@ -2564,48 +1814,40 @@ export class HdConnectStagingApi {
 
     while (!signal?.aborted) {
       try {
-        emitState(reconnectAttempt > 0 ? "reconnecting" : "connecting");
-        await this.client.stream("/realtime/stream", {
-          onEvent: handleEvent,
-          signal,
-        });
+        emitState(reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+        await this.client.stream('/realtime/stream', { onEvent: handleEvent, signal });
 
         if (signal?.aborted) return;
-        throw new HdApiError("The realtime stream closed unexpectedly.", {
-          code: "REALTIME_STREAM_CLOSED",
+        throw new HdApiError('The realtime stream closed unexpectedly.', {
+          code: 'REALTIME_STREAM_CLOSED',
           retryable: true,
         });
       } catch (error) {
         if (isAbortError(error, signal)) return;
 
-        if (
-          error?.status === 401 &&
-          typeof this.client.refresh === "function"
-        ) {
+        if (error?.status === 401 && typeof this.client.refresh === 'function') {
           if (refreshesSinceReady >= 1) {
-            emitState("authentication-failed", { error: error.message || "" });
+            emitState('authentication-failed', { error: error.message || '' });
             throw error;
           }
 
           refreshesSinceReady += 1;
-          emitState("reauthenticating");
+          emitState('reauthenticating');
           await this.client.refresh();
           continue;
         }
 
-        const retryable = Boolean(
-          error?.retryable || error?.status >= 500 || error?.status === 0,
-        );
+        const retryable = Boolean(error?.retryable || error?.status >= 500 || error?.status === 0);
         if (!retryable) {
-          emitState("failed", { error: error?.message || "" });
+          emitState('failed', { error: error?.message || '' });
           throw error;
         }
 
         const delayMs = Math.min(
           maximumDelay,
-          initialDelay * 2 ** Math.min(reconnectAttempt, 8),
+          initialDelay * (2 ** Math.min(reconnectAttempt, 8)),
         );
-        emitState("reconnecting", { delayMs, error: error?.message || "" });
+        emitState('reconnecting', { delayMs, error: error?.message || '' });
         reconnectAttempt += 1;
         await waitForReconnect(delayMs, signal);
       }
@@ -2617,26 +1859,17 @@ let vpsApi;
 
 export const getHdConnectApi = () => {
   if (!isVpsApiMode) {
-    throw new HdApiError(
-      "The VPS API client is only available in a VPS data mode.",
-      {
-        code: "VPS_MODE_REQUIRED",
-      },
-    );
+    throw new HdApiError('The VPS API client is only available in a VPS data mode.', {
+      code: 'VPS_MODE_REQUIRED',
+    });
   }
 
   if (!vpsApi) {
-    vpsApi = new HdConnectStagingApi(
-      new HdApiClient({
-        baseUrl: runtimeEnv.VITE_API_BASE_URL,
-        deviceName:
-          runtimeEnv.VITE_HD_DEVICE_NAME ||
-          `HD Manager web ${isVpsProductionMode ? "production" : "staging"}`,
-        tokenStorageNamespace: isVpsProductionMode
-          ? "vps-production"
-          : "vps-staging",
-      }),
-    );
+    vpsApi = new HdConnectStagingApi(new HdApiClient({
+      baseUrl: runtimeEnv.VITE_API_BASE_URL,
+      deviceName: runtimeEnv.VITE_HD_DEVICE_NAME || `HD Manager web ${isVpsProductionMode ? 'production' : 'staging'}`,
+      tokenStorageNamespace: isVpsProductionMode ? 'vps-production' : 'vps-staging',
+    }));
   }
 
   return vpsApi;
@@ -2646,8 +1879,7 @@ export const getHdConnectApi = () => {
 // VPS modes share one API adapter and never fall back to Firebase core paths.
 export const getHdConnectStagingApi = getHdConnectApi;
 export const createHdConnectApi = (client) => new HdConnectStagingApi(client);
-export const createHdConnectStagingApi = (client) =>
-  new HdConnectStagingApi(client);
+export const createHdConnectStagingApi = (client) => new HdConnectStagingApi(client);
 
 const unsupportedVpsIdentityOperation = (code, message) => async () => {
   throw new HdApiError(message, { status: 501, code });
@@ -2655,33 +1887,35 @@ const unsupportedVpsIdentityOperation = (code, message) => async () => {
 
 export const createVpsIdentitySecurityApi = (api = getHdConnectApi()) => ({
   getIdentityDevice: () => ({
-    deviceId: api.client.deviceName || "",
-    name: api.client.deviceName || "HD Manager",
-    platform: api.client.platform || "hd-manager-web",
+    deviceId: api.client.deviceName || '',
+    name: api.client.deviceName || 'HD Manager',
+    platform: api.client.platform || 'hd-manager-web',
   }),
-  identityChangePassword: ({ currentPassword, newPassword } = {}) =>
-    api.changeIdentityPassword({ currentPassword, newPassword }),
+  identityChangePassword: ({ currentPassword, newPassword } = {}) => (
+    api.changeIdentityPassword({ currentPassword, newPassword })
+  ),
   identityListDevices: async () => {
     const result = await api.listIdentitySessions();
     return { devices: result.items };
   },
   identityListAudit: (query = {}) => api.listIdentityAudit(query),
-  identityRevokeDevices: ({ deviceId, all = false } = {}) =>
-    all ? api.logoutAll() : api.revokeIdentitySession(deviceId),
+  identityRevokeDevices: ({ deviceId, all = false } = {}) => (
+    all ? api.logoutAll() : api.revokeIdentitySession(deviceId)
+  ),
   identityCompleteSetup: unsupportedVpsIdentityOperation(
-    "VPS_IDENTITY_SETUP_NOT_READY",
-    "Identity setup is managed by invitation acceptance in VPS mode.",
+    'VPS_IDENTITY_SETUP_NOT_READY',
+    'Identity setup is managed by invitation acceptance in VPS mode.',
   ),
   identityDeleteAccount: unsupportedVpsIdentityOperation(
-    "VPS_IDENTITY_DELETE_NOT_READY",
-    "Account deletion is not available in VPS mode until its retention contract is approved.",
+    'VPS_IDENTITY_DELETE_NOT_READY',
+    'Account deletion is not available in VPS mode until its retention contract is approved.',
   ),
   identitySetBiometric: unsupportedVpsIdentityOperation(
-    "VPS_IDENTITY_BIOMETRIC_NOT_READY",
-    "Biometric settings are not available in VPS mode.",
+    'VPS_IDENTITY_BIOMETRIC_NOT_READY',
+    'Biometric settings are not available in VPS mode.',
   ),
   identityVerifyPin: unsupportedVpsIdentityOperation(
-    "VPS_IDENTITY_PIN_NOT_READY",
-    "PIN verification is not available in VPS mode.",
+    'VPS_IDENTITY_PIN_NOT_READY',
+    'PIN verification is not available in VPS mode.',
   ),
 });
