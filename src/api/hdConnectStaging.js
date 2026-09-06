@@ -1243,6 +1243,14 @@ export class HdConnectStagingApi {
     });
   }
 
+  async reverseFinanceCustomerReceipt(record = {}) {
+    const { clientMutationId, ...payload } = record;
+    return this.client.post('/finance-suite/receipts/reversals', toTenantSafePayload(payload), {
+      idempotencyKey: clientMutationId || createRequestId(),
+      retry: false,
+    });
+  }
+
   async listFinanceReceivables(query = {}) {
     return normalizePage(await this.client.get('/finance-suite/receivables', { query: toTenantSafeQuery(query) }), (item) => item);
   }

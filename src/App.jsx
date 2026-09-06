@@ -15,7 +15,10 @@ import { adjustVpsLockedPayroll, loadVpsPayrollPeriod, lockVpsPayrollPeriod } fr
 import { loadVpsMessages, saveVpsMessage } from './api/vpsMessages.js';
 import { loadVpsDeliveryReports, saveVpsDeliveryReport } from './api/vpsDeliveryReports.js';
 import { advanceVpsDelivery, assignVpsDelivery, DELIVERY_LIFECYCLE_LABELS, loadVpsDeliveryMasters } from './api/vpsDeliveryLifecycle.js';
-import { saveVpsCustomerDebtReceipt } from './api/vpsDebtReceipts.js';
+import {
+  reverseVpsCustomerDebtReceipt,
+  saveVpsCustomerDebtReceipt,
+} from './api/vpsDebtReceipts.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -17396,6 +17399,7 @@ export default function App() {
         companyId: myCompanyId,
         receiptNumber: paymentData?.receiptNumber || localId,
         receivableId: paymentData?.receivableId,
+        cashAccountId: paymentData?.cashAccountId,
         source: 'hd-connect-vps',
         status: 'confirmed',
         createdAt: result.cashTransaction.createdAt || new Date().toISOString(),
@@ -17724,7 +17728,37 @@ export default function App() {
 
   const handleDeletePayment = async (paymentId) => {
     if (isVpsApiMode) {
-      throw new Error('Payment deletion is blocked in VPS staging until the finance payment contract is approved.');
+      const original = rawPayments.find(item => item.id === paymentId);
+      if (!original) throw new Error('Không tìm thấy phiếu thu cần hoàn.');
+      const reason = 'Hoàn phiếu thu từ màn hình công nợ';
+      const result = await reverseVpsCustomerDebtReceipt(
+        getHdConnectStagingApi(),
+        currentUser,
+        original,
+        reason,
+      );
+      const reversedAt = result.cashTransaction.occurredAt || new Date().toISOString();
+      upsertLocalListRecord(setRawPayments, {
+        ...original,
+        reversalId: result.cashTransaction.id,
+        reversalNumber: result.cashTransaction.transactionNumber,
+        reversedAt,
+        reversalReason: reason,
+        reversalStatus: 'reversed',
+      });
+      upsertLocalListRecord(setRawPayments, {
+        ...original,
+        id: result.cashTransaction.id,
+        amount: -Math.abs(parseLooseMoneyValue(original.amount)),
+        receiptNumber: result.cashTransaction.transactionNumber,
+        sourcePaymentId: original.id,
+        isReversal: true,
+        source: 'hd-connect-vps',
+        status: 'confirmed',
+        note: reason,
+        createdAt: reversedAt,
+      });
+      return { success: true, id: result.cashTransaction.id, reversal: result };
     }
     if (!firebaseUser) return;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), {

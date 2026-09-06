@@ -64,3 +64,37 @@ export async function saveVpsCustomerDebtReceipt(api, session, payment = {}) {
   }
   return response;
 }
+
+export async function reverseVpsCustomerDebtReceipt(api, session, payment = {}, reason) {
+  const companyId = requireUuid(
+    session?.companyId,
+    'VPS_RECEIPT_TENANT_REQUIRED',
+    'VPS tenant context is required.',
+  );
+  if (payment.companyId && text(payment.companyId) !== companyId) {
+    throw fail('Cannot reverse a receipt for another tenant.', 'VPS_RECEIPT_TENANT_MISMATCH');
+  }
+  if (payment.source !== 'hd-connect-vps' || !isUuid(payment.id)) {
+    throw fail(
+      'Only a verified VPS receipt can be reversed from this screen.',
+      'VPS_RECEIPT_REVERSAL_RECONCILIATION_REQUIRED',
+    );
+  }
+  const originalReceiptNumber = receiptNumber(payment.receiptNumber || payment.originalReceiptNumber);
+  const reversalReason = text(reason);
+  if (!reversalReason || reversalReason.length > 500) {
+    throw fail('A reversal reason is required.', 'VPS_RECEIPT_REVERSAL_REASON_REQUIRED');
+  }
+  const response = await api.reverseFinanceCustomerReceipt({
+    receiptNumber: originalReceiptNumber,
+    reversalNumber: `RV-${payment.id}`,
+    reason: reversalReason,
+    clientMutationId: `hdm-receipt-reversal:${payment.id}`,
+  });
+  const transaction = response?.cashTransaction;
+  const movement = response?.debtMovement;
+  if (transaction?.companyId !== companyId || movement?.companyId !== companyId) {
+    throw fail('The VPS reversal response belongs to a different tenant.', 'VPS_RECEIPT_TENANT_MISMATCH');
+  }
+  return response;
+}
