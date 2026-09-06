@@ -250,6 +250,47 @@ test('uses the tenant-scoped finance bank account default contract without accep
   );
 });
 
+test('uses the audited VPS attendance adjustment contract without caller tenant input', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    post: async (path, payload, options) => {
+      calls.push({ path, payload, options });
+      return { id: 'attendance-1', ...payload };
+    },
+  });
+
+  await api.adjustAttendance({
+    employeeId: '11111111-1111-4111-8111-111111111111',
+    workDate: '2026-09-06',
+    status: 'present',
+    checkInAt: new Date('2026-09-06T08:00:00.000Z'),
+    checkOutAt: '2026-09-06T17:00:00.000Z',
+    reason: 'Approved attendance correction',
+    companyId: 'attacker-company',
+  });
+
+  assert.equal(calls[0].path, '/hr-suite/attendance/adjustments');
+  assert.deepEqual(calls[0].payload, {
+    employeeId: '11111111-1111-4111-8111-111111111111',
+    workDate: '2026-09-06',
+    status: 'PRESENT',
+    checkInAt: '2026-09-06T08:00:00.000Z',
+    checkOutAt: '2026-09-06T17:00:00.000Z',
+    reason: 'Approved attendance correction',
+  });
+  assert.equal(Object.hasOwn(calls[0].payload, 'companyId'), false);
+  assert.equal(calls[0].options.retry, false);
+  await assert.rejects(
+    () => api.adjustAttendance({
+      employeeId: '11111111-1111-4111-8111-111111111111',
+      workDate: '2026-09-06',
+      status: 'present',
+      reason: '',
+    }),
+    { code: 'HR_ATTENDANCE_ADJUSTMENT_REASON_REQUIRED' },
+  );
+});
+
 test('saves the company receiving account through the explicit VPS finance contract', async () => {
   const calls = [];
   const api = {

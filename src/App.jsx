@@ -16392,7 +16392,20 @@ export default function App() {
 
   const handleEditAttendance = async (empId, targetDate, editData) => {
     if (isVpsApiMode) {
-      throw new Error('VPS attendance editing requires an approved adjustment contract; direct time overwrite is disabled.');
+      const record = await getHdConnectStagingApi().adjustAttendance({
+        employeeId: empId,
+        workDate: targetDate,
+        status: `${editData?.status || ''}`.trim().toUpperCase(),
+        checkInAt: editData?.checkIn ? editData.checkIn.toISOString() : null,
+        checkOutAt: editData?.checkOut ? editData.checkOut.toISOString() : null,
+        reason: `${editData?.reason || ''}`.trim(),
+      });
+      const normalizedRecord = normalizeVpsAttendance(record);
+      setRawAttendance((previous) => ({
+        ...previous,
+        [`${normalizedRecord.date}_${normalizedRecord.employeeId}`]: normalizedRecord,
+      }));
+      return normalizedRecord;
     }
     if (!firebaseUser) return;
     const key = `${targetDate}_${empId}`;
@@ -26834,7 +26847,8 @@ function AttendanceGpsMetaCard({ title, meta }) {
 function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings }) {
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [formData, setFormData] = useState({ status: 'present', checkIn: '', checkOut: '' });
+  const [formData, setFormData] = useState({ status: 'present', checkIn: '', checkOut: '', reason: '' });
+  const [editAttendanceError, setEditAttendanceError] = useState('');
   const [positionFilter, setPositionFilter] = useState('Tất cả');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [selfMethod, setSelfMethod] = useState('gps');
@@ -27023,22 +27037,25 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
     setFormData({
       status: record?.status || 'present',
       checkIn: record?.checkIn ? formatTime(record.checkIn) : '',
-      checkOut: record?.checkOut ? formatTime(record.checkOut) : ''
+      checkOut: record?.checkOut ? formatTime(record.checkOut) : '',
+      reason: '',
     });
+    setEditAttendanceError('');
     setShowEditModal(true);
   };
 
   const closeEditModal = () => {
     setShowEditModal(false);
     setSelectedEmployee(null);
-    setFormData({ status: 'present', checkIn: '', checkOut: '' });
+    setFormData({ status: 'present', checkIn: '', checkOut: '', reason: '' });
+    setEditAttendanceError('');
   };
 
   const buildDateTime = (timeValue, field = 'checkIn') => (
     buildAttendanceDateTimeForShift(safeDate, timeValue, selectedEmployee, field)
   );
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!selectedEmployee) return;
 
@@ -27046,11 +27063,17 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
     const editData = {
       status: nextStatus,
       checkIn: nextStatus === 'leave' ? null : buildDateTime(formData.checkIn, 'checkIn'),
-      checkOut: nextStatus === 'leave' ? null : buildDateTime(formData.checkOut, 'checkOut')
+      checkOut: nextStatus === 'leave' ? null : buildDateTime(formData.checkOut, 'checkOut'),
+      reason: formData.reason.trim(),
     };
 
-    if (typeof onEditAttendance === 'function') onEditAttendance(selectedEmployee.id, safeDate, editData);
-    closeEditModal();
+    try {
+      setEditAttendanceError('');
+      if (typeof onEditAttendance === 'function') await onEditAttendance(selectedEmployee.id, safeDate, editData);
+      closeEditModal();
+    } catch (error) {
+      setEditAttendanceError(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu điều chỉnh chấm công.'));
+    }
   };
 
   const handleSaveDefaultAttendanceWifi = async () => {
@@ -27555,6 +27578,24 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
                     />
                   </div>
                 </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Lý do điều chỉnh</label>
+                <textarea
+                  required
+                  maxLength={500}
+                  value={formData.reason}
+                  onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
+                  className="min-h-20 w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="Ví dụ: Đối chiếu theo bảng chấm công đã xác nhận"
+                />
+              </div>
+
+              {editAttendanceError && (
+                <p className="rounded-lg border border-rose-100 bg-rose-50 p-2 text-xs font-semibold text-rose-700">
+                  {editAttendanceError}
+                </p>
               )}
 
               <div className="flex gap-2 pt-2">

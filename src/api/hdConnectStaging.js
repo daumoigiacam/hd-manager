@@ -44,6 +44,17 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(number) ? number : undefined;
 };
 
+const optionalIsoTimestamp = (value, field) => {
+  if (value === undefined || value === null) return value;
+  const timestamp = value instanceof Date ? value : new Date(stringValue(value));
+  if (Number.isNaN(timestamp.getTime())) {
+    throw new HdApiError(`${field} must be a valid timestamp.`, {
+      code: 'HR_ATTENDANCE_TIMESTAMP_INVALID',
+    });
+  }
+  return timestamp.toISOString();
+};
+
 const REALTIME_EVENT_DEDUPE_LIMIT = 256;
 
 const normalizeReconnectDelay = (value, fallback) => {
@@ -1717,6 +1728,47 @@ export class HdConnectStagingApi {
 
   async recordAttendance(record = {}) {
     return this.client.post('/hr-suite/attendance', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async adjustAttendance(record = {}) {
+    const employeeId = requireIdentityInput(
+      record.employeeId,
+      'HR_ATTENDANCE_EMPLOYEE_REQUIRED',
+      'An employee is required.',
+    );
+    if (!isUuid(employeeId)) {
+      throw new HdApiError('The employee id is invalid.', {
+        code: 'HR_ATTENDANCE_EMPLOYEE_INVALID',
+      });
+    }
+    const workDate = requireIdentityInput(
+      record.workDate,
+      'HR_ATTENDANCE_WORK_DATE_REQUIRED',
+      'A work date is required.',
+    );
+    const status = stringValue(record.status).toUpperCase();
+    if (!['PRESENT', 'LATE', 'ABSENT', 'LEAVE', 'HALF_DAY'].includes(status)) {
+      throw new HdApiError('The attendance status is invalid.', {
+        code: 'HR_ATTENDANCE_STATUS_INVALID',
+      });
+    }
+    const reason = requireIdentityInput(
+      record.reason,
+      'HR_ATTENDANCE_ADJUSTMENT_REASON_REQUIRED',
+      'An adjustment reason is required.',
+    );
+    return this.client.post('/hr-suite/attendance/adjustments', {
+      employeeId,
+      workDate,
+      status,
+      ...(record.checkInAt !== undefined
+        ? { checkInAt: optionalIsoTimestamp(record.checkInAt, 'checkInAt') }
+        : {}),
+      ...(record.checkOutAt !== undefined
+        ? { checkOutAt: optionalIsoTimestamp(record.checkOutAt, 'checkOutAt') }
+        : {}),
+      reason,
+    }, mutationOptions(record));
   }
 
   async listHrPerformanceReviews(query = {}) {
