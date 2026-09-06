@@ -14,6 +14,7 @@ import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeePro
 import { loadVpsPayrollPeriod, lockVpsPayrollPeriod } from './api/vpsPayroll.js';
 import { loadVpsMessages, saveVpsMessage } from './api/vpsMessages.js';
 import { loadVpsDeliveryReports, saveVpsDeliveryReport } from './api/vpsDeliveryReports.js';
+import { advanceVpsDelivery, assignVpsDelivery, DELIVERY_LIFECYCLE_LABELS, loadVpsDeliveryMasters } from './api/vpsDeliveryLifecycle.js';
 import { saveVpsCustomerDebtReceipt } from './api/vpsDebtReceipts.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
@@ -20773,6 +20774,50 @@ export default function App() {
     return { success: true };
   };
 
+  const replaceVpsDeliveryReport = (saved) => {
+    if (!saved?.id || `${saved.companyId || ''}` !== `${myCompanyId}`) {
+      throw new Error('VPS_DELIVERY_REPORT_TENANT_MISMATCH');
+    }
+    setRawDeliveryReports((previous) => [
+      saved,
+      ...(previous || []).filter((report) => report.id !== saved.id && report.sourceRecordId !== saved.sourceRecordId),
+    ]);
+    return saved;
+  };
+
+  const handleLoadVpsDeliveryMasters = async () => {
+    if (!isVpsApiMode) throw new Error('VPS_DELIVERY_LIFECYCLE_REQUIRED');
+    return loadVpsDeliveryMasters(getHdConnectStagingApi(), currentUser);
+  };
+
+  const handleAssignVpsDelivery = async (reportId, assignment = {}) => {
+    if (!isVpsApiMode) throw new Error('VPS_DELIVERY_LIFECYCLE_REQUIRED');
+    const report = (deliveryReports || []).find((item) => item?.id === reportId);
+    if (!report || `${report.companyId || ''}` !== `${myCompanyId}`) {
+      throw new Error('VPS_DELIVERY_REPORT_TENANT_MISMATCH');
+    }
+    return replaceVpsDeliveryReport(await assignVpsDelivery(
+      getHdConnectStagingApi(),
+      currentUser,
+      report,
+      assignment,
+    ));
+  };
+
+  const handleAdvanceVpsDelivery = async (reportId, transitionCode, reason = '') => {
+    if (!isVpsApiMode) throw new Error('VPS_DELIVERY_LIFECYCLE_REQUIRED');
+    const report = (deliveryReports || []).find((item) => item?.id === reportId);
+    if (!report || `${report.companyId || ''}` !== `${myCompanyId}`) {
+      throw new Error('VPS_DELIVERY_REPORT_TENANT_MISMATCH');
+    }
+    return replaceVpsDeliveryReport(await advanceVpsDelivery(
+      getHdConnectStagingApi(),
+      currentUser,
+      report,
+      { transitionCode, reason },
+    ));
+  };
+
   const handleResolveDeliveryReportIssue = async ({ reportId, action = 'rejected', orderId = '', orderData = null, penaltyData = null, note = '' } = {}) => {
     if (isVpsApiMode) {
       throw new Error('Xử lý lệch cân VPS cần chứng từ điều chỉnh kho/công nợ đã được phê duyệt; app không tự sửa đơn hàng hoặc trừ lương.');
@@ -22899,6 +22944,7 @@ export default function App() {
         onGetAsset={handleGetAsset}
         onUploadAssetEvidence={handleUploadAssetEvidence}
         onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport}
+        onLoadVpsDeliveryMasters={handleLoadVpsDeliveryMasters} onAssignVpsDelivery={handleAssignVpsDelivery} onAdvanceVpsDelivery={handleAdvanceVpsDelivery}
         onResolveDeliveryReportIssue={handleResolveDeliveryReportIssue}
         onAddPayment={handleAddPayment} onEditPayment={handleEditPayment} onDeletePayment={handleDeletePayment}
         onAddExpense={handleAddExpense} onEditExpense={handleEditExpense} onDeleteExpense={handleDeleteExpense}
@@ -23458,7 +23504,7 @@ function MainAppView({
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {}, vpsInventoryReconciliation = null,
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate, onGetAsset, onUploadAssetEvidence,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onLoadVpsDeliveryMasters, onAssignVpsDelivery, onAdvanceVpsDelivery, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -25200,7 +25246,7 @@ function MainAppView({
             note: OnboardingHintService.deliveryNeedsDispatch
           });
         }
-        return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
+        return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onLoadVpsDeliveryMasters={onLoadVpsDeliveryMasters} onAssignVpsDelivery={onAssignVpsDelivery} onAdvanceVpsDelivery={onAdvanceVpsDelivery} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={canRoleAction('logistics', 'dispatch') || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
@@ -51603,7 +51649,154 @@ const DeliveryReconciliationCard = React.memo(function DeliveryReconciliationCar
   && previous.onOpen === next.onOpen
 ));
 
-function DeliveryReportView({ employee, customers = [], products = [], orderRequests = [], orders = [], payments = [], warehouseImports = [], warehouseDispatches = [], deliveryReports = [], expenses = [], assets = [], assetCostLogs = [], onAddDeliveryReport, onUpdateDeliveryReport, onEditOrder, onAddPayment, onAddExpense, onAddAssetCostLog, onEditAssetCostLog, canViewDeliveryReports = true, canCreateDeliveryReport = true, canEditDeliveryReport = false, canDeleteDeliveryReport = false, canUploadDeliveryPhoto = true, canDeleteOldDeliveryPhotos = false, canRecordDeliveryIncome = false, canRecordDeliveryExpense = false, canCreateAssetCostLog = false, canEditAssetCostLog = false }) {
+function VpsDeliveryLifecyclePanel({ deliveryReports = [], onLoadVpsDeliveryMasters, onAssignVpsDelivery, onAdvanceVpsDelivery }) {
+  const nativeReports = useMemo(() => (deliveryReports || [])
+    .filter((report) => report?.vpsDelivery && report?.id)
+    .sort((left, right) => getEntityTimestamp(right) - getEntityTimestamp(left)), [deliveryReports]);
+  const [selectedReportId, setSelectedReportId] = useState('');
+  const [masters, setMasters] = useState({ drivers: [], teams: [], vehicles: [] });
+  const [assignment, setAssignment] = useState({ driverId: '', vehicleId: '', teamId: '' });
+  const [loadingMasters, setLoadingMasters] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState('slate');
+
+  const selectedReport = useMemo(() => (
+    nativeReports.find((report) => report.id === selectedReportId)
+    || nativeReports.find((report) => !['completed', 'cancelled', 'failed'].includes(`${report.deliveryStatus || ''}`.toLowerCase()))
+    || nativeReports[0]
+    || null
+  ), [nativeReports, selectedReportId]);
+  const lifecycleStatus = `${selectedReport?.deliveryStatus || ''}`.trim().toUpperCase();
+  const nextAction = {
+    ASSIGNED: { code: 'LOAD', label: 'Xác nhận chất hàng' },
+    LOADING: { code: 'DEPART', label: 'Xác nhận xe xuất phát' },
+    DEPARTED: { code: 'DELIVER', label: 'Xác nhận đã giao' },
+    DELIVERED: { code: 'COMPLETE', label: 'Hoàn tất giao nhận' },
+  }[lifecycleStatus] || null;
+
+  const reloadMasters = useCallback(async () => {
+    if (!onLoadVpsDeliveryMasters) return;
+    setLoadingMasters(true);
+    try {
+      const loaded = await onLoadVpsDeliveryMasters();
+      setMasters({
+        drivers: Array.isArray(loaded?.drivers) ? loaded.drivers : [],
+        teams: Array.isArray(loaded?.teams) ? loaded.teams : [],
+        vehicles: Array.isArray(loaded?.vehicles) ? loaded.vehicles : [],
+      });
+      setMessage('Đã nạp master giao nhận VPS của tenant hiện tại.');
+      setMessageTone('emerald');
+    } catch (error) {
+      setMessage(getFriendlyFirebaseErrorMessage(error, 'Không đọc được master giao nhận VPS.'));
+      setMessageTone('red');
+    } finally {
+      setLoadingMasters(false);
+    }
+  }, [onLoadVpsDeliveryMasters]);
+
+  useEffect(() => {
+    if (!nativeReports.length || !onLoadVpsDeliveryMasters) return;
+    reloadMasters();
+  }, [nativeReports.length, onLoadVpsDeliveryMasters, reloadMasters]);
+
+  if (!nativeReports.length || !onLoadVpsDeliveryMasters || !onAssignVpsDelivery || !onAdvanceVpsDelivery) return null;
+
+  const selectedLabel = (report = {}) => {
+    const customer = report.customerNameSnapshot || report.customerName || 'Khách hàng';
+    const state = DELIVERY_LIFECYCLE_LABELS[`${report.deliveryStatus || ''}`.toUpperCase()] || report.deliveryStatus || 'Chờ xử lý';
+    return `${customer} - ${state}`;
+  };
+  const submitAssignment = async () => {
+    if (!selectedReport?.id || !assignment.driverId) {
+      setMessage('Chọn tài xế VPS trước khi phân công.');
+      setMessageTone('amber');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const saved = await onAssignVpsDelivery(selectedReport.id, assignment);
+      setSelectedReportId(saved.id);
+      setMessage('Đã phân công và chuyển phiếu sang trạng thái đã phân công.');
+      setMessageTone('emerald');
+    } catch (error) {
+      setMessage(getFriendlyFirebaseErrorMessage(error, 'Không phân công được phiếu giao nhận VPS.'));
+      setMessageTone('red');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  const submitTransition = async () => {
+    if (!selectedReport?.id || !nextAction) return;
+    setIsSaving(true);
+    try {
+      const saved = await onAdvanceVpsDelivery(selectedReport.id, nextAction.code);
+      setSelectedReportId(saved.id);
+      setMessage(`Đã xác nhận: ${nextAction.label.toLowerCase()}.`);
+      setMessageTone('emerald');
+    } catch (error) {
+      setMessage(getFriendlyFirebaseErrorMessage(error, 'Không chuyển được trạng thái giao nhận VPS.'));
+      setMessageTone('red');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <section className="rounded-3xl border border-cyan-100 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Giao nhận VPS</p>
+          <h3 className="mt-1 text-base font-black text-slate-900">Phân công và trạng thái giao hàng</h3>
+          <p className="mt-1 text-xs font-semibold text-slate-500">Phiếu chỉ chuyển từng bước trên VPS; báo cân, đơn hàng và xuất kho không tự xác nhận giao hàng.</p>
+        </div>
+        <button type="button" onClick={reloadMasters} disabled={loadingMasters || isSaving} className="rounded-xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs font-black text-cyan-700 disabled:opacity-60">
+          {loadingMasters ? 'Đang nạp...' : 'Nạp lại master'}
+        </button>
+      </div>
+
+      <label className="mt-4 block">
+        <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Phiếu VPS</span>
+        <select value={selectedReport?.id || ''} onChange={(event) => setSelectedReportId(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none focus:border-cyan-400">
+          {nativeReports.map((report) => <option key={report.id} value={report.id}>{selectedLabel(report)}</option>)}
+        </select>
+      </label>
+
+      <div className="mt-3 rounded-2xl bg-slate-50 p-3">
+        <p className="text-xs font-black text-slate-800">Trạng thái: {DELIVERY_LIFECYCLE_LABELS[lifecycleStatus] || lifecycleStatus || 'Chưa xác định'}</p>
+        {lifecycleStatus === 'DRAFT' ? (
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <select value={assignment.driverId} onChange={(event) => setAssignment((previous) => ({ ...previous, driverId: event.target.value }))} className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800">
+              <option value="">Chọn tài xế VPS</option>
+              {masters.drivers.map((driver) => <option key={driver.id} value={driver.id}>{[driver.code, driver.name, driver.phone].filter(Boolean).join(' - ')}</option>)}
+            </select>
+            <select value={assignment.vehicleId} onChange={(event) => setAssignment((previous) => ({ ...previous, vehicleId: event.target.value }))} className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800">
+              <option value="">Chưa gán xe</option>
+              {masters.vehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{[vehicle.code, vehicle.licensePlate, vehicle.name].filter(Boolean).join(' - ')}</option>)}
+            </select>
+            <select value={assignment.teamId} onChange={(event) => setAssignment((previous) => ({ ...previous, teamId: event.target.value }))} className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800">
+              <option value="">Chưa gán đội</option>
+              {masters.teams.map((team) => <option key={team.id} value={team.id}>{[team.code, team.name].filter(Boolean).join(' - ')}</option>)}
+            </select>
+            <button type="button" onClick={submitAssignment} disabled={isSaving || !assignment.driverId} className="sm:col-span-3 rounded-xl bg-cyan-600 px-3 py-3 text-sm font-black text-white disabled:opacity-60">
+              {isSaving ? 'Đang phân công...' : 'Phân công và xác nhận'}
+            </button>
+            {!masters.drivers.length && <p className="sm:col-span-3 text-xs font-bold text-amber-700">Tenant chưa có tài xế VPS đang hoạt động. App không tự tạo tài xế hoặc xe.</p>}
+          </div>
+        ) : nextAction ? (
+          <button type="button" onClick={submitTransition} disabled={isSaving} className="mt-3 w-full rounded-xl bg-cyan-600 px-3 py-3 text-sm font-black text-white disabled:opacity-60">
+            {isSaving ? 'Đang xác nhận...' : nextAction.label}
+          </button>
+        ) : (
+          <p className="mt-2 text-xs font-bold text-slate-500">Phiếu đã ở trạng thái kết thúc hoặc cần được điều phối xử lý theo quy trình VPS.</p>
+        )}
+      </div>
+      {message && <p className={`mt-3 rounded-xl px-3 py-2 text-xs font-bold ${messageTone === 'red' ? 'bg-red-50 text-red-700' : messageTone === 'amber' ? 'bg-amber-50 text-amber-700' : messageTone === 'emerald' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'}`}>{message}</p>}
+    </section>
+  );
+}
+
+function DeliveryReportView({ employee, customers = [], products = [], orderRequests = [], orders = [], payments = [], warehouseImports = [], warehouseDispatches = [], deliveryReports = [], expenses = [], assets = [], assetCostLogs = [], onAddDeliveryReport, onUpdateDeliveryReport, onLoadVpsDeliveryMasters, onAssignVpsDelivery, onAdvanceVpsDelivery, onEditOrder, onAddPayment, onAddExpense, onAddAssetCostLog, onEditAssetCostLog, canViewDeliveryReports = true, canCreateDeliveryReport = true, canEditDeliveryReport = false, canDeleteDeliveryReport = false, canUploadDeliveryPhoto = true, canDeleteOldDeliveryPhotos = false, canRecordDeliveryIncome = false, canRecordDeliveryExpense = false, canCreateAssetCostLog = false, canEditAssetCostLog = false }) {
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [customerSearch, setCustomerSearch] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
@@ -53807,6 +54000,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       </div>
 
       {deliveryReconciliationSection}
+
+      <VpsDeliveryLifecyclePanel
+        deliveryReports={dayReports}
+        onLoadVpsDeliveryMasters={onLoadVpsDeliveryMasters}
+        onAssignVpsDelivery={onAssignVpsDelivery}
+        onAdvanceVpsDelivery={onAdvanceVpsDelivery}
+      />
 
       {selectedReportCustomerGroup && (
         <div

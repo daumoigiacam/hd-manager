@@ -1122,8 +1122,62 @@ export class HdConnectStagingApi {
     );
   }
 
+  async listLogisticsVehicles(query = {}) {
+    return normalizePage(
+      await this.client.get('/logistics-suite/vehicles', { query: toTenantSafeQuery(query) }),
+      (item) => item,
+    );
+  }
+
+  async listLogisticsDrivers(query = {}) {
+    return normalizePage(
+      await this.client.get('/logistics-suite/drivers', { query: toTenantSafeQuery(query) }),
+      (item) => item,
+    );
+  }
+
+  async listLogisticsTeams(query = {}) {
+    return normalizePage(
+      await this.client.get('/logistics-suite/teams', { query: toTenantSafeQuery(query) }),
+      (item) => item,
+    );
+  }
+
   async getLogisticsDelivery(id) {
     return this.client.get(`/logistics-suite/deliveries/${id}`);
+  }
+
+  async assignLogisticsDelivery(id, record = {}) {
+    const deliveryId = requireIdentityInput(
+      id,
+      'LOGISTICS_DELIVERY_ID_REQUIRED',
+      'A delivery id is required.',
+    );
+    if (!isUuid(deliveryId)) {
+      throw new HdApiError('The delivery id is invalid.', {
+        code: 'LOGISTICS_DELIVERY_ID_INVALID',
+      });
+    }
+    const payload = {};
+    for (const [field, code] of [
+      ['vehicleId', 'LOGISTICS_VEHICLE_ID_INVALID'],
+      ['driverId', 'LOGISTICS_DRIVER_ID_INVALID'],
+      ['teamId', 'LOGISTICS_TEAM_ID_INVALID'],
+    ]) {
+      const value = stringValue(record[field]);
+      if (!value) continue;
+      if (!isUuid(value)) {
+        throw new HdApiError(`The ${field} is invalid.`, { code });
+      }
+      payload[field] = value;
+    }
+    const reason = stringValue(record.reason);
+    if (reason) payload.reason = reason;
+    return this.client.post(
+      `/logistics-suite/deliveries/${deliveryId}/assign`,
+      payload,
+      { retry: false },
+    );
   }
 
   async createLogisticsDelivery(record = {}) {
