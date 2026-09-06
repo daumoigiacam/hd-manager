@@ -617,6 +617,48 @@ export const normalizeVpsStockMovement = (record = {}, legacy = {}) => {
   };
 };
 
+// Historical warehouse rows preserve the legacy document verbatim in metadata.
+// They are display-only until a warehouse/product/unit target mapping exists;
+// source IDs must never be treated as mutable VPS master-data IDs.
+export const normalizeVpsWarehouseHistoryRecord = (record = {}, type = 'IMPORT') => {
+  const metadata = normalizeMetadata(record);
+  const quantity = toFiniteNumber(record.quantity) ?? toFiniteNumber(metadata.quantity) ?? 0;
+  const weightKg = toFiniteNumber(record.weight) ?? toFiniteNumber(metadata.weightKg ?? metadata.totalKg) ?? 0;
+  const occurredAt = record.occurredAt || metadata.date || record.createdAt || '';
+
+  return {
+    ...metadata,
+    id: record.id || '',
+    companyId: record.companyId || '',
+    warehouseId: record.warehouseTargetId || '',
+    productId: record.productTargetId || '',
+    unitId: record.unitTargetId || '',
+    orderRequestId: record.orderRequestTargetId || '',
+    sourceWarehouseId: metadata.warehouseId || '',
+    sourceProductId: metadata.productId || '',
+    sourceUnitId: metadata.unitId || '',
+    legacySourceId: record.sourceDocumentId || metadata.id || '',
+    productName: metadata.productName || metadata.productNameSnapshot || metadata.groupName || '',
+    productNameSnapshot: metadata.productNameSnapshot || metadata.productName || metadata.groupName || '',
+    groupName: metadata.groupName || metadata.productGroup || '',
+    quantity,
+    totalQuantity: quantity,
+    quantityUnit: stringValue(metadata.quantityUnit || metadata.unit || ''),
+    weightKg,
+    totalKg: weightKg,
+    date: typeof occurredAt === 'string' ? occurredAt.slice(0, 10) : '',
+    occurredAt,
+    status: record.status || metadata.status || '',
+    isArchived: false,
+    createdAt: record.createdAt || '',
+    updatedAt: record.updatedAt || '',
+    sourceSystem: 'hd-connect-vps-history',
+    historyType: type,
+    historicalOnly: true,
+    readOnlyLedger: true,
+  };
+};
+
 export class HdConnectStagingApi {
   constructor(client) {
     this.client = client;
@@ -899,6 +941,20 @@ export class HdConnectStagingApi {
 
   async listWarehouseLedger(query = {}) {
     return normalizePage(await this.client.get('/warehouse-suite/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listWarehouseHistoryImports(query = {}) {
+    return normalizePage(
+      await this.client.get('/warehouse-suite/history/imports', { query: toTenantSafeQuery(query) }),
+      (item) => normalizeVpsWarehouseHistoryRecord(item, 'IMPORT'),
+    );
+  }
+
+  async listWarehouseHistoryDispatches(query = {}) {
+    return normalizePage(
+      await this.client.get('/warehouse-suite/history/dispatches', { query: toTenantSafeQuery(query) }),
+      (item) => normalizeVpsWarehouseHistoryRecord(item, 'DISPATCH'),
+    );
   }
 
   async listWarehouseCountSessions(query = {}) {

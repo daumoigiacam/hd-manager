@@ -13266,6 +13266,45 @@ export default function App() {
     };
   }, [currentUser?.companyId]);
 
+  useEffect(() => {
+    if (!isVpsApiMode || !currentUser?.companyId) return undefined;
+    const historyMethod = activeTab === 'warehouse_import'
+      ? 'listWarehouseHistoryImports'
+      : (activeTab === 'warehouse_dispatch' ? 'listWarehouseHistoryDispatches' : '');
+    if (!historyMethod) return undefined;
+
+    let cancelled = false;
+    const api = getHdConnectStagingApi();
+    const loadWarehouseHistory = async () => {
+      try {
+        const result = await readCompleteVpsCollection(
+          (pageQuery) => api[historyMethod](pageQuery),
+          { companyId: currentUser.companyId, cancelled: () => cancelled },
+        );
+        if (cancelled) return;
+        if (activeTab === 'warehouse_import') {
+          setRawWarehouseImports(result.items);
+        } else {
+          setRawWarehouseDispatches(result.items);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setRealtimeStatus((previous) => ({
+          ...previous,
+          state: 'degraded',
+          collection: historyMethod,
+          lastAt: new Date().toISOString(),
+          error: error?.message || 'Warehouse history is unavailable from the VPS API.',
+        }));
+      }
+    };
+
+    void loadWarehouseHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, currentUser?.companyId]);
+
   const vpsReadModuleForActiveTab = isVpsApiMode
     ? VPS_UI_READ_MODULE_BY_TAB[activeTab] || ''
     : '';
