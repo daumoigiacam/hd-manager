@@ -1334,6 +1334,14 @@ export class HdConnectStagingApi {
     return this.client.post('/hr-suite/attendance', toTenantSafePayload(record), mutationOptions(record));
   }
 
+  async listHrPerformanceReviews(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/performance-reviews', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createHrPerformanceReview(record = {}) {
+    return this.client.post('/hr-suite/performance-reviews', toTenantSafePayload(record), mutationOptions(record));
+  }
+
   async listPayrolls(query = {}) {
     return normalizePage(await this.client.get('/hr-suite/payrolls', { query }), (item) => item);
   }

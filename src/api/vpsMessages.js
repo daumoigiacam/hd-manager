@@ -3,6 +3,7 @@ const MESSAGE_MODULE = 'HD_MANAGER_MESSAGING';
 
 const text = (value) => `${value ?? ''}`.trim();
 const isUuid = (value) => UUID_PATTERN.test(text(value));
+const uniqueText = (values = []) => [...new Set(values.map(text).filter(Boolean))];
 
 const required = (value, code, message) => {
   const normalized = text(value);
@@ -76,12 +77,17 @@ export async function loadVpsMessages(api, session, { cancelled = () => false } 
 export async function saveVpsMessage(api, session, record = {}) {
   const companyId = required(session?.companyId, 'VPS_MESSAGE_TENANT_REQUIRED', 'VPS tenant context is required.');
   const senderUserId = required(session?.id, 'VPS_MESSAGE_SENDER_REQUIRED', 'A signed-in sender is required.');
-  const recipientUserId = required(
+  const recipientUserIds = uniqueText([
+    ...(Array.isArray(record.recipientUserIds) ? record.recipientUserIds : []),
     record.recipientUserId,
-    'VPS_MESSAGE_RECIPIENT_MAPPING_REQUIRED',
-    'The target employee must have a mapped VPS user before a message can be sent.',
-  );
-  if (!isUuid(recipientUserId)) {
+    record.receiverUserId,
+  ]);
+  if (recipientUserIds.length === 0) {
+    const error = new Error('The target employee must have a mapped VPS user before a message can be sent.');
+    error.code = 'VPS_MESSAGE_RECIPIENT_MAPPING_REQUIRED';
+    throw error;
+  }
+  if (recipientUserIds.some((recipientUserId) => !isUuid(recipientUserId))) {
     const error = new Error('The target employee has no valid VPS user mapping.');
     error.code = 'VPS_MESSAGE_RECIPIENT_MAPPING_REQUIRED';
     throw error;
@@ -108,7 +114,7 @@ export async function saveVpsMessage(api, session, record = {}) {
     title: text(record.title) || 'Tin nhan noi bo',
     body,
     channels: ['IN_APP'],
-    recipientUserIds: [...new Set([senderUserId, recipientUserId])],
+    recipientUserIds: uniqueText([senderUserId, ...recipientUserIds]),
     module: MESSAGE_MODULE,
     eventName: 'StaffMessageSent',
     eventId: clientMutationId.slice(0, 160),
@@ -119,9 +125,17 @@ export async function saveVpsMessage(api, session, record = {}) {
       conversationType: text(record.conversationType) || 'internal',
       customerId: text(record.customerId),
       senderUserId,
-      recipientUserId,
+      recipientUserId: recipientUserIds[0],
+      recipientUserIds,
       senderEmpId: text(record.senderEmpId),
       receiverEmpId: text(record.receiverEmpId),
+      receiverEmpIds: uniqueText([
+        ...(Array.isArray(record.receiverEmpIds) ? record.receiverEmpIds : []),
+        record.receiverEmpId,
+      ]),
+      participantEmpIds: uniqueText(
+        Array.isArray(record.participantEmpIds) ? record.participantEmpIds : [],
+      ),
       senderName: text(record.senderName),
       type: text(record.type) || 'employee_to_employee',
       sourceRecordId: text(record.sourceRecordId || clientMutationId),

@@ -7,6 +7,7 @@ import { uploadVpsAssetEvidence } from './api/vpsAssetEvidence.js';
 import { loadVpsAssetCosts, mergeVpsAssetCosts, mergeVpsAssetCostExpenses, mergeVpsFinanceExpenseSnapshot, saveVpsAssetCost } from './api/vpsAssetCosts.js';
 import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays } from './api/vpsHolidays.js';
 import { approveVpsSalaryAdvance, cancelVpsSalaryAdvance, createVpsSalaryAdvance, loadVpsSalaryAdvances, mergeVpsSalaryAdvanceFinancials, mergeVpsSalaryAdvances, rejectVpsSalaryAdvance, vpsSalaryAdvanceErrorMessage } from './api/vpsSalaryAdvances.js';
+import { loadVpsEmployeeReviews, mergeVpsEmployeeReviews, saveVpsEmployeeReview } from './api/vpsEmployeeReviews.js';
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
 import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
 import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
@@ -13148,7 +13149,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, salaryAdvancesResult, assetsResult, assetCostsResult, messagesResult, deliveryReportsResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, employeeReviewsResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, salaryAdvancesResult, assetsResult, assetCostsResult, messagesResult, deliveryReportsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13173,6 +13174,9 @@ export default function App() {
           }),
           readComplete('listNotifications'),
           readComplete('listAttendance', { sortBy: 'workDate' }),
+          currentUser.permissions?.includes('hr.performance.read')
+            ? loadVpsEmployeeReviews(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
           readComplete('listWarehouses'),
           readComplete('listPaymentHistory'),
           api.getInventoryReconciliationStatus(),
@@ -13298,6 +13302,11 @@ export default function App() {
         } else {
           failedDomains.push('attendance');
         }
+        if (employeeReviewsResult.status === 'fulfilled' && employeeReviewsResult.value) {
+          setRawEmployeeReviews(previous => mergeVpsEmployeeReviews(previous, employeeReviewsResult.value.items, currentUser.companyId));
+        } else if (employeeReviewsResult.status === 'rejected') {
+          failedDomains.push('employee-reviews');
+        }
         if (inventoryReconciliationResult.status === 'fulfilled') {
           setVpsInventoryReconciliation(inventoryReconciliationResult.value);
         } else {
@@ -13317,6 +13326,7 @@ export default function App() {
           orders: ordersResult.status === 'fulfilled',
           payments: paymentsResult.status === 'fulfilled',
           employees: employeesResult.status === 'fulfilled' && employeesResult.value.profileFailures.length === 0,
+          employeeReviews: employeeReviewsResult.status === 'fulfilled' && Boolean(employeeReviewsResult.value),
           notifications: notificationsResult.status === 'fulfilled',
           attendance: attendanceResult.status === 'fulfilled',
           holidays: holidaysResult.status === 'fulfilled' && Boolean(holidaysResult.value),
@@ -18622,7 +18632,7 @@ export default function App() {
   };
 
   const handleAddEmployeeReview = async (reviewData = {}) => {
-    if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    if (!myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const targetEmployeeId = `${reviewData.targetEmployeeId || ''}`.trim();
     if (!targetEmployeeId) return { success: false, message: 'Vui lòng chọn nhân sự cần đánh giá.' };
     const targetEmployee = rawEmployees.find(emp => emp.id === targetEmployeeId && emp.companyId === myCompanyId && !emp.isArchived);
@@ -18664,6 +18674,23 @@ export default function App() {
       updatedAt: now,
       createdByEmpId: currentUser?.id || ''
     };
+
+    if (isVpsApiMode) {
+      try {
+        const saved = await saveVpsEmployeeReview(getHdConnectStagingApi(), currentUser, payload);
+        upsertLocalListRecord(setRawEmployeeReviews, saved);
+        return {
+          success: true,
+          message: source === 'peer'
+            ? 'Cảm ơn bạn đã đánh giá. Kết quả đã được ghi ẩn danh.'
+            : 'Đã lưu đánh giá nhân sự.',
+        };
+      } catch (error) {
+        return { success: false, message: error?.message || 'Không thể lưu đánh giá nhân sự trên VPS.' };
+      }
+    }
+
+    if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
 
     upsertLocalListRecord(setRawEmployeeReviews, payload);
     rememberRecentLocalWrite('employeeReviews', id, payload);
@@ -22440,25 +22467,55 @@ export default function App() {
       if (isCustomerMessage) {
         throw new Error('Hội thoại khách hàng cần customer-portal mapping VPS trước khi gửi.');
       }
-      const recipientEmployeeId = `${
-        messageData.receiverEmpId
-        || messageData.recipientEmpId
-        || messageData.targetEmpId
-        || messageData.assignedEmployeeId
-        || ''
-      }`.trim();
-      const recipient = rawEmployees.find(employee => (
-        `${employee?.id || ''}`.trim() === recipientEmployeeId
-        && `${employee?.companyId || ''}`.trim() === companyId
-        && !employee?.isArchived
-      ));
+      const senderEmployeeId = `${employeeInfo?.id || currentUser?.employeeId || ''}`.trim();
+      const recipientEmployeeIds = [...new Set([
+        messageData.receiverEmpId,
+        messageData.recipientEmpId,
+        messageData.targetEmpId,
+        messageData.assignedEmployeeId,
+        ...(Array.isArray(messageData.receiverEmpIds) ? messageData.receiverEmpIds : []),
+        ...(Array.isArray(messageData.recipientEmpIds) ? messageData.recipientEmpIds : []),
+        ...(Array.isArray(messageData.targetEmployeeIds) ? messageData.targetEmployeeIds : []),
+        ...(Array.isArray(messageData.participantEmpIds) ? messageData.participantEmpIds : []),
+      ].map(value => `${value || ''}`.trim()).filter(Boolean))]
+        .filter(employeeId => employeeId !== senderEmployeeId);
+      const recipients = recipientEmployeeIds.map((employeeId) => {
+        const employee = rawEmployees.find(candidate => (
+          `${candidate?.id || ''}`.trim() === employeeId
+          && `${candidate?.companyId || ''}`.trim() === companyId
+          && !candidate?.isArchived
+        ));
+        if (!employee) {
+          throw new Error('Không tìm thấy nhân sự nhận tin thuộc tenant VPS hiện tại.');
+        }
+        if (!employee.userId) {
+          throw new Error('Nhân sự nhận tin chưa có user mapping VPS.');
+        }
+        return employee;
+      });
+      const recipientUserIds = [...new Set([
+        messageData.recipientUserId,
+        messageData.receiverUserId,
+        ...(Array.isArray(messageData.recipientUserIds) ? messageData.recipientUserIds : []),
+        ...recipients.map(employee => employee.userId),
+      ].map(value => `${value || ''}`.trim()).filter(Boolean))];
+      if (recipientUserIds.length === 0) {
+        throw new Error('Hội thoại nội bộ cần ít nhất một người nhận có user mapping VPS.');
+      }
       const clientMutationId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const saved = await saveVpsMessage(getHdConnectStagingApi(), currentUser, {
         ...messageData,
         companyId,
-        recipientUserId: messageData.recipientUserId || messageData.receiverUserId || recipient?.userId,
-        receiverEmpId: recipientEmployeeId,
-        senderEmpId: employeeInfo?.id || currentUser?.employeeId || '',
+        recipientUserId: recipientUserIds[0],
+        recipientUserIds,
+        receiverEmpId: recipientEmployeeIds[0] || '',
+        receiverEmpIds: recipientEmployeeIds,
+        participantEmpIds: [...new Set([
+          ...(Array.isArray(messageData.participantEmpIds) ? messageData.participantEmpIds : []),
+          senderEmployeeId,
+          ...recipientEmployeeIds,
+        ].map(value => `${value || ''}`.trim()).filter(Boolean))],
+        senderEmpId: senderEmployeeId,
         senderName: messageData.senderName || employeeInfo?.name || currentUser?.name || currentUser?.phone || 'Nhân sự',
         clientMutationId,
         sourceRecordId: clientMutationId,

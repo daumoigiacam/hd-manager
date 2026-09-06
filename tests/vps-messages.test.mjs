@@ -5,6 +5,7 @@ import { loadVpsMessages, normalizeVpsMessage, saveVpsMessage } from '../src/api
 const COMPANY = '11111111-1111-4111-8111-111111111111';
 const SENDER = '22222222-2222-4222-8222-222222222222';
 const RECEIVER = '33333333-3333-4333-8333-333333333333';
+const GROUP_RECEIVER = '44444444-4444-4444-8444-444444444444';
 
 test('writes an idempotent tenant-scoped in-app message without requiring email', async () => {
   let payload;
@@ -39,6 +40,35 @@ test('writes an idempotent tenant-scoped in-app message without requiring email'
   assert.equal(payload.data.recipientUserId, RECEIVER);
   assert.equal(saved.text, 'Da giao hang xong.');
   assert.equal(saved.companyId, COMPANY);
+});
+
+test('preserves group recipients and participant lineage in one idempotent in-app message', async () => {
+  let payload;
+  await saveVpsMessage({
+    sendNotification: async (next) => {
+      payload = next;
+      return {
+        id: '55555555-5555-4555-8555-555555555555',
+        companyId: COMPANY,
+        body: next.body,
+        status: 'QUEUED',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        data: next.data,
+      };
+    },
+  }, { id: SENDER, companyId: COMPANY }, {
+    clientMutationId: 'message-group-001',
+    recipientUserIds: [RECEIVER, GROUP_RECEIVER, RECEIVER],
+    receiverEmpIds: ['employee-2', 'employee-3'],
+    participantEmpIds: ['employee-1', 'employee-2', 'employee-3'],
+    conversationType: 'internal_group',
+    text: 'Nhom giao nhan da cap nhat.',
+  });
+
+  assert.deepEqual(payload.recipientUserIds, [SENDER, RECEIVER, GROUP_RECEIVER]);
+  assert.deepEqual(payload.data.recipientUserIds, [RECEIVER, GROUP_RECEIVER]);
+  assert.deepEqual(payload.data.receiverEmpIds, ['employee-2', 'employee-3']);
+  assert.deepEqual(payload.data.participantEmpIds, ['employee-1', 'employee-2', 'employee-3']);
 });
 
 test('fails closed when an employee does not have a VPS user mapping or requests Zalo delivery', async () => {

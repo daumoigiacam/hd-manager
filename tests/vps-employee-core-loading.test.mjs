@@ -8,7 +8,7 @@ import { hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from '../src/api/v
 const COMPANY = 'd1baaf33-cd5a-4b6a-84a6-d432c231a5c4';
 const SALES = '1c0fc8af-1bab-42af-b3e2-de71b11059f8';
 const OTHER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const session = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', companyId: COMPANY, permissions: ['hr.employee.read', 'hr.payroll.read'] };
+const session = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', companyId: COMPANY, permissions: ['hr.employee.read', 'hr.payroll.read', 'hr.performance.read'] };
 const directoryRow = (patch = {}) => ({ id: SALES, companyId: COMPANY, fullName: 'Qa Sales Disposable', position: 'Kinh doanh', status: 'ACTIVE', deletedAt: null, hireDate: null, ...patch });
 const page = (items, patch = {}) => ({ items, pagination: { page: 1, limit: 100, totalItems: items.length, totalPages: 1, hasNextPage: false, hasPreviousPage: false, ...patch } });
 const profile = (id = SALES, patch = {}) => ({ id, companyId: COMPANY, userId: null, identityStatus: 'NO_LOGIN', version: '2026-09-06T01:00:00.000Z', profile: { name: 'Qa Sales Disposable', position: 'Kinh doanh', basicSalary: 10000000 }, ...patch });
@@ -42,12 +42,14 @@ async function coreLoad({ directory = async () => page([directoryRow()]), readPr
     loadVpsSalaryAdvances: async () => ({ items: [] }),
     mergeVpsSalaryAdvances: old => old,
     mergeVpsSalaryAdvanceFinancials: old => old,
+    loadVpsEmployeeReviews: async () => ({ items: [] }),
+    mergeVpsEmployeeReviews: old => old,
     normalizeVpsAttendance: item => item,
     setRawEmployees: update => { employees = typeof update === 'function' ? update(employees) : update; },
     setLoadedCollections: update => { loaded = update({}); },
     setRealtimeStatus: value => { status = value; },
   };
-  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawNotifications', 'setRawAttendance', 'setVpsInventoryReconciliation', 'setRawHolidays', 'setRawAdvanceRequests', 'setRawFinancials']) bindings[name] = () => {};
+  for (const name of ['setCurrentCompany', 'setRawCompanies', 'setRawCustomers', 'setRawCustomerLoans', 'setRawOrders', 'setRawPayments', 'setRawProducts', 'setVpsMasterData', 'setRawNotifications', 'setRawAttendance', 'setRawEmployeeReviews', 'setVpsInventoryReconciliation', 'setRawHolidays', 'setRawAdvanceRequests', 'setRawFinancials']) bindings[name] = () => {};
   await new Function(...Object.keys(bindings), `let cancelled = false; let loading = false;\n${core}\nreturn loadCoreVpsData();`)(...Object.values(bindings));
   return { employees, loaded, status, calls };
 }
