@@ -75,3 +75,24 @@ test('uses tenant-authenticated warehouse history endpoints without accepting ca
   assert.equal(page.items[0].orderRequestId, 'request-a');
   assert.equal(page.items[0].sourceSystem, 'hd-connect-vps-history');
 });
+
+test('reads the server-owned opening-balance reconciliation state without caller scope input', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    get: async (path, options) => {
+      calls.push({ path, options });
+      return {
+        state: 'OPENING_BALANCE_PENDING_RECONCILIATION',
+        unresolvedHistoricalRecords: 12,
+        readOnly: true,
+      };
+    },
+  });
+
+  const status = await api.getInventoryReconciliationStatus();
+
+  assert.equal(calls[0].path, '/inventory/reconciliation-status');
+  assert.equal(calls[0].options, undefined);
+  assert.equal(status.state, 'OPENING_BALANCE_PENDING_RECONCILIATION');
+  assert.equal(status.readOnly, true);
+});

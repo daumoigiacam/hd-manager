@@ -939,6 +939,10 @@ export class HdConnectStagingApi {
     return normalizePage(await this.client.get('/warehouse-suite/balances', { query: toTenantSafeQuery(query) }), (item) => item);
   }
 
+  async getInventoryReconciliationStatus() {
+    return this.client.get('/inventory/reconciliation-status');
+  }
+
   async listWarehouseLedger(query = {}) {
     return normalizePage(await this.client.get('/warehouse-suite/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
   }

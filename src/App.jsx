@@ -12142,6 +12142,7 @@ export default function App() {
   const [loadedCollections, setLoadedCollections] = useState({});
   const [vpsReadModels, setVpsReadModels] = useState({});
   const [vpsMasterData, setVpsMasterData] = useState({ warehouses: [], units: [] });
+  const [vpsInventoryReconciliation, setVpsInventoryReconciliation] = useState(null);
   const [loadedCollectionsTenantId, setLoadedCollectionsTenantId] = useState(
     () => `${persistedSession.currentUser?.companyId || ''}`.trim()
   );
@@ -13132,7 +13133,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13142,6 +13143,7 @@ export default function App() {
           readComplete('listAttendance', { sortBy: 'workDate' }),
           readComplete('listWarehouses'),
           readComplete('listPaymentHistory'),
+          api.getInventoryReconciliationStatus(),
         ]);
         if (cancelled) return;
 
@@ -13190,6 +13192,15 @@ export default function App() {
           setRawAttendance(attendanceByWorkDate);
         } else {
           failedDomains.push('attendance');
+        }
+        if (inventoryReconciliationResult.status === 'fulfilled') {
+          setVpsInventoryReconciliation(inventoryReconciliationResult.value);
+        } else {
+          setVpsInventoryReconciliation({
+            state: 'OPENING_BALANCE_PENDING_RECONCILIATION',
+            message: 'VPS inventory reconciliation status is unavailable; historical movements cannot be treated as opening stock.',
+          });
+          failedDomains.push('inventory-reconciliation');
         }
 
         setLoadedCollections((previous) => ({
@@ -22326,7 +22337,7 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
-        isVpsMode={isVpsApiMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
+        isVpsMode={isVpsApiMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData} vpsInventoryReconciliation={vpsInventoryReconciliation}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
@@ -22896,7 +22907,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 // --- MAIN LAYOUT ---
 function MainAppView({ 
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
-  isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
+  isVpsMode = false, vpsReadModels = {}, vpsMasterData = {}, vpsInventoryReconciliation = null,
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
@@ -24621,7 +24632,7 @@ function MainAppView({
             note: 'Sản phẩm tạo nhanh sẽ dùng được ngay cho nhập kho, xuất kho, báo giá và báo cáo lợi nhuận.'
           });
         }
-        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
+        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} vpsInventoryReconciliation={vpsInventoryReconciliation} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
@@ -53650,8 +53661,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   );
 }
 
-function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canPostVpsOpeningBalance = false, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
+function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], vpsInventoryReconciliation = null, employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canPostVpsOpeningBalance = false, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
   const actualStockReasonOptions = ['Đếm sai', 'Bị mất', 'Hư hỏng', 'Bị lỗi', 'Bị chết', 'Bị loại', 'Trả nhà cung cấp', 'Khác'];
+  const isVpsOpeningBalancePending = isVpsMode
+    && vpsInventoryReconciliation?.state !== 'OPENING_BALANCE_RECONCILED';
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [warehouseCalendarMonth, setWarehouseCalendarMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
   const [draft, setDraft] = useState({
@@ -54633,8 +54646,8 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   }, [getWarehouseStockGroupLabel, isAfterWarehouseStockReset, productLookup, warehouseDispatches, warehouseImports, warehouseStockCounts]);
 
   const warehouseStockRows = useMemo(
-    () => buildWarehouseStockRowsForDate(workingDate),
-    [buildWarehouseStockRowsForDate, workingDate]
+    () => (isVpsOpeningBalancePending ? [] : buildWarehouseStockRowsForDate(workingDate)),
+    [buildWarehouseStockRowsForDate, isVpsOpeningBalancePending, workingDate]
   );
 
   const warehouseStockVisibilitySettings = useMemo(
@@ -55712,9 +55725,26 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
         })}
       </div>
 
+      {isVpsOpeningBalancePending && (
+        <section className="rounded-[30px] border border-amber-200 bg-amber-50 p-4 shadow-sm">
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-800">Tồn đầu kỳ VPS đang chờ đối soát</p>
+          <p className="mt-1 text-xs font-semibold leading-5 text-amber-900">
+            {vpsInventoryReconciliation?.message || 'Lịch sử nhập/xuất được giữ để tra cứu, nhưng chưa đủ liên kết kho, sản phẩm và UOM để tạo tồn đầu kỳ.'}
+          </p>
+          <p className="mt-2 text-xs font-bold text-amber-800">
+            Hãy dùng “Kiểm tồn VPS” theo từng kho, sản phẩm và UOM cho số thực tế hôm nay. App không tự phân bổ lịch sử vào Kho chính HDCO và không dùng số âm theo nhóm hàng làm tồn thực tế.
+          </p>
+          {Number.isFinite(vpsInventoryReconciliation?.unresolvedHistoricalRecords) && (
+            <p className="mt-2 text-[11px] font-bold text-amber-700">
+              Bản ghi lịch sử cần đối soát: {formatNumber(vpsInventoryReconciliation.unresolvedHistoricalRecords)}.
+            </p>
+          )}
+        </section>
+      )}
+
       {warehouseInventoryTab === 'import' && (
         <>
-      {isVpsMode && canPostVpsOpeningBalance && (
+      {isVpsMode && canPostVpsOpeningBalance && !isVpsOpeningBalancePending && (
         <section className="mb-3 rounded-[30px] border border-violet-100 bg-violet-50/50 p-4 shadow-sm">
           <div className="mb-3">
             <p className="text-[11px] font-black uppercase tracking-[0.18em] text-violet-700">Tồn đầu kỳ VPS</p>
@@ -56427,7 +56457,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
           )}
         </section>
       )}
-      {canViewActualStockCount && (
+      {!isVpsOpeningBalancePending && canViewActualStockCount && (
         <section className="rounded-[30px] border border-cyan-100 bg-gradient-to-br from-white via-cyan-50/60 to-emerald-50 p-4 shadow-sm">
           <div className="mb-3 flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -56501,7 +56531,9 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       <section className="rounded-[30px] border border-rose-100 bg-gradient-to-br from-white via-rose-50/40 to-emerald-50/70 p-4 shadow-sm hd-soft-red-outline">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-rose-500">Tồn kho đối chiếu</p>
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-rose-500">
+              {isVpsOpeningBalancePending ? 'Tồn kho VPS chờ đối soát' : 'Tồn kho đối chiếu'}
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {hiddenWarehouseStockItemCount > 0 && (
@@ -56575,7 +56607,9 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
         {warehouseStockRows.length === 0 ? (
           <div className="rounded-3xl border border-dashed border-rose-100 bg-white/70 px-4 py-8 text-center text-sm font-bold text-slate-500">
-            Chưa có dữ liệu nhập kho hoặc xuất kho thực tế để đối chiếu tồn kho.
+            {isVpsOpeningBalancePending
+              ? 'Đã khóa phép tính tồn theo nhóm hàng lịch sử. Chỉ số kiểm tồn product/UOM đã post lên VPS mới là số tồn vận hành.'
+              : 'Chưa có dữ liệu nhập kho hoặc xuất kho thực tế để đối chiếu tồn kho.'}
           </div>
         ) : visibleWarehouseStockRows.length === 0 ? (
           <div className="rounded-3xl border border-dashed border-rose-100 bg-white/70 px-4 py-8 text-center text-sm font-bold text-slate-500">
