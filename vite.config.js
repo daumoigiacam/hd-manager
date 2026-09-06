@@ -97,7 +97,12 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), releaseManifestPlugin],
     base: './',
     envPrefix: isVpsApiBuild
-      ? ['VITE_API_BASE_URL', 'VITE_DATA_MODE', 'VITE_HD_BUILD_ID']
+      ? [
+          'VITE_API_BASE_URL',
+          'VITE_DATA_MODE',
+          'VITE_HD_BUILD_ID',
+          'VITE_INVENTORY_VPS_ENABLED',
+        ]
       : 'VITE_',
     define: {
       __firebase_config: JSON.stringify(JSON.stringify(firebaseConfig)),

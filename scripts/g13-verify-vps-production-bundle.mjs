@@ -9,17 +9,17 @@ const reportFile = path.resolve(
 const requiredDataMode = 'vps-production';
 const sourceAssertions = [
   {
-    name: 'VPS_STAGING_IS_THE_ONLY_API_ONLY_CUTOVER',
+    name: 'VPS_STAGING_AND_PRODUCTION_USE_THE_API_ONLY_RUNTIME',
     file: 'vite.config.js',
     pattern: /const isVpsStagingBuild = vpsDataMode === 'vps-staging';/,
   },
   {
-    name: 'VPS_PRODUCTION_KEEPS_THE_LEGACY_FIREBASE_BUNDLE',
+    name: 'VPS_PRODUCTION_EXCLUDES_THE_LEGACY_FIREBASE_RUNTIME',
     file: 'vite.config.js',
-    pattern: /const useCloudData = !usePreviewData && !isVpsStagingBuild;/,
+    pattern: /const useCloudData = !usePreviewData && !isVpsApiBuild;/,
   },
   {
-    name: 'FIREBASE_CUTOVER_IS_RESERVED_FOR_STAGING',
+    name: 'FIREBASE_INITIALIZATION_IS_DISABLED_FOR_VPS_BUILDS',
     file: 'src/App.jsx',
     pattern: /if \(isVpsMode\) \{[\s\S]*?isFirebaseConfigured = false;[\s\S]*?firebase\.initialization\.skipped/,
   },
@@ -32,6 +32,11 @@ const sourceAssertions = [
     name: 'PRODUCTION_TOKEN_NAMESPACE_REMAINS_ISOLATED',
     file: 'src/api/hdConnectStaging.js',
     pattern: /tokenStorageNamespace: isVpsProductionMode \? 'vps-production' : 'vps-staging'/,
+  },
+  {
+    name: 'INVENTORY_VPS_GUARD_IS_EXPOSED_TO_THE_VPS_BUILD',
+    file: 'vite.config.js',
+    pattern: /'VITE_INVENTORY_VPS_ENABLED'/,
   },
 ];
 
@@ -80,6 +85,9 @@ const bundleContents = bundleFiles.map((filePath) => ({
 const firebaseRuntimeFiles = bundleContents
   .filter(({ content }) => content.includes('hd-manager-c5839'))
   .map(({ file }) => file);
+const firebaseRuntimeAssets = bundleFiles
+  .map(relativePath)
+  .filter((file) => /(?:^|\/)vendor-firebase[-.]/i.test(file));
 const assertionFindings = sourceAssertions.map((assertion) => {
   const filePath = path.join(workspaceRoot, assertion.file);
   const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
@@ -91,19 +99,25 @@ const assertionFindings = sourceAssertions.map((assertion) => {
 });
 const failedAssertions = assertionFindings.filter(({ status }) => status !== 'PASS');
 const report = {
-  status: firebaseRuntimeFiles.length > 0 && failedAssertions.length === 0 ? 'PASS' : 'FAIL',
+  status:
+    firebaseRuntimeFiles.length === 0 &&
+    firebaseRuntimeAssets.length === 0 &&
+    failedAssertions.length === 0
+      ? 'PASS'
+      : 'FAIL',
   generatedAt: new Date().toISOString(),
   dataMode: requiredDataMode,
   bundleDirectory: relativePath(bundleDirectory),
   bundleFiles: bundleFiles.length,
   corePath: {
-    api: 'VPS API available only through explicitly approved capabilities',
-    firebaseFallback: 'active for legacy production capabilities',
-    firebaseInitialization: 'active',
-    tokenNamespace: 'hdconnect.vps-production.* when a VPS capability is used',
+    api: 'VPS API is the only core data and identity runtime',
+    firebaseFallback: 'disabled',
+    firebaseInitialization: 'skipped',
+    tokenNamespace: 'hdconnect.vps-production.*',
   },
   assertions: assertionFindings,
   firebaseRuntimeFiles,
+  firebaseRuntimeAssets,
 };
 
 fs.mkdirSync(path.dirname(reportFile), { recursive: true });
