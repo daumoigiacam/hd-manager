@@ -66,7 +66,7 @@
     "test:bank-app-deeplink": "node tests/bank-app-deeplink.test.mjs",
     "test:ai-gateway-security": "node tests/ai-gateway-security.test.mjs",
     "test:fetch-timeout": "node tests/fetch-timeout.test.mjs",
-    "test:vps-api": "node --test tests/vps-api-client.test.mjs tests/vps-migrated-data-normalization.test.mjs tests/vps-complete-collection.test.mjs tests/vps-manager-workflows.test.mjs tests/vps-employee-core-loading.test.mjs tests/vps-customer-loans.test.mjs tests/vps-holidays.test.mjs tests/vps-assets.test.mjs tests/vps-asset-costs.test.mjs",
+    "test:vps-api": "node --test tests/vps-api-client.test.mjs tests/vps-migrated-data-normalization.test.mjs tests/vps-complete-collection.test.mjs tests/vps-manager-workflows.test.mjs tests/vps-employee-core-loading.test.mjs tests/vps-customer-loans.test.mjs tests/vps-holidays.test.mjs tests/vps-assets.test.mjs tests/vps-asset-costs.test.mjs tests/vps-payroll.test.mjs tests/vps-messages.test.mjs tests/vps-delivery-reports.test.mjs tests/vps-debt-receipts.test.mjs",
     "test:vps-browser-smoke": "node --test scripts/vps-browser-smoke.test.mjs",
     "test:platform-sdk": "node --test tests/platform-sdk.test.mjs",
     "test:platform-admin-cutover": "node --test tests/platform-admin-cutover.test.mjs",

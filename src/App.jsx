@@ -8,6 +8,10 @@ import { archiveVpsHoliday, createVpsHoliday, loadVpsHolidays, mergeVpsHolidays 
 import { archiveVpsCustomerLoan, createVpsCustomerLoan, loadVpsCustomerLoans, mergeVpsCustomerLoans, updateVpsCustomerLoan, vpsCustomerLoanFailure } from './api/vpsCustomerLoans.js';
 import { updateVpsCompanySettings } from './api/vpsCompanySettings.js';
 import { applyVpsEmployeeProfile, hydrateVpsEmployeeProfiles, saveVpsEmployeeProfile } from './api/vpsEmployees.js';
+import { loadVpsPayrollPeriod, lockVpsPayrollPeriod } from './api/vpsPayroll.js';
+import { loadVpsMessages, saveVpsMessage } from './api/vpsMessages.js';
+import { loadVpsDeliveryReports, saveVpsDeliveryReport } from './api/vpsDeliveryReports.js';
+import { saveVpsCustomerDebtReceipt } from './api/vpsDebtReceipts.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -13142,7 +13146,7 @@ export default function App() {
       loading = true;
 
       try {
-        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult, assetCostsResult] = await Promise.allSettled([
+        const [customersResult, productsResult, unitsResult, ordersResult, employeesResult, notificationsResult, attendanceResult, warehousesResult, paymentsResult, inventoryReconciliationResult, managerSettingsResult, customerLoansResult, holidaysResult, assetsResult, assetCostsResult, messagesResult, deliveryReportsResult] = await Promise.allSettled([
           readComplete('listCustomers'),
           readComplete('listProducts'),
           readComplete('listUnits'),
@@ -13183,10 +13187,26 @@ export default function App() {
           ['logistics.read', 'finance.read'].every(permission => currentUser.permissions?.includes(permission))
             ? loadVpsAssetCosts(api, currentUser, { cancelled: () => cancelled })
             : Promise.resolve(null),
+          currentUser.permissions?.includes('notification.read')
+            ? loadVpsMessages(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
+          currentUser.permissions?.includes('logistics.read')
+            ? loadVpsDeliveryReports(api, currentUser, { cancelled: () => cancelled })
+            : Promise.resolve(null),
         ]);
         if (cancelled) return;
 
         const failedDomains = [];
+        if (deliveryReportsResult.status === 'fulfilled' && deliveryReportsResult.value) {
+          setRawDeliveryReports(deliveryReportsResult.value.items);
+        } else if (deliveryReportsResult.status === 'rejected') {
+          failedDomains.push('delivery-reports');
+        }
+        if (messagesResult.status === 'fulfilled' && messagesResult.value) {
+          setRawMessages(messagesResult.value.items);
+        } else if (messagesResult.status === 'rejected') {
+          failedDomains.push('messages');
+        }
         if (assetCostsResult.status === 'fulfilled' && assetCostsResult.value) {
           setRawAssetCostLogs(previous => mergeVpsAssetCosts(previous, assetCostsResult.value.items, currentUser.companyId));
           setRawExpenses(previous => mergeVpsAssetCostExpenses(previous, assetCostsResult.value.items, currentUser.companyId));
@@ -17273,7 +17293,29 @@ export default function App() {
 
   const handleAddPayment = async (paymentData) => {
     if (isVpsApiMode) {
-      throw new Error('Payment posting is blocked in VPS staging until the finance payment contract is approved.');
+      const localId = `${paymentData?.id || paymentData?.clientMutationId || `receipt-${Date.now()}`}`.trim();
+      const result = await saveVpsCustomerDebtReceipt(
+        getHdConnectStagingApi(),
+        currentUser,
+        {
+          ...paymentData,
+          id: localId,
+          companyId: myCompanyId,
+          receiptNumber: paymentData?.receiptNumber || localId,
+        },
+      );
+      const payment = {
+        ...paymentData,
+        id: result.cashTransaction.id,
+        companyId: myCompanyId,
+        receiptNumber: paymentData?.receiptNumber || localId,
+        receivableId: paymentData?.receivableId,
+        source: 'hd-connect-vps',
+        status: 'confirmed',
+        createdAt: result.cashTransaction.createdAt || new Date().toISOString(),
+      };
+      upsertLocalListRecord(setRawPayments, payment);
+      return { success: true, id: payment.id, receipt: result };
     }
     if (!firebaseUser) return;
     const id = `p_${Date.now()}`;
@@ -17782,7 +17824,54 @@ export default function App() {
 
   const handleLoadPayrollPeriodSnapshots = async ({ monthKey } = {}) => {
     if (isVpsApiMode) {
-      return { success: false, snapshots: [], message: 'VPS payroll snapshot UI is not yet mapped to the HR payroll contract; Firebase fallback is disabled.' };
+      try {
+        const result = await loadVpsPayrollPeriod(
+          getHdConnectStagingApi(),
+          myCompanyId,
+          monthKey,
+        );
+        if (result.period) {
+          const nativePeriod = {
+            ...result.period,
+            companyId: myCompanyId,
+            monthKey: normalizePayrollMonthKey(monthKey),
+            status: result.payroll?.status || result.period.status || 'DRAFT',
+            lockedAt: result.payroll?.lockedAt || result.period.lockedAt || '',
+            snapshotIds: result.snapshots.map(snapshot => snapshot.id),
+            isArchived: false,
+            sourceSystem: 'hd-connect-vps'
+          };
+          setRawPayrollPeriods(previous => [
+            ...(Array.isArray(previous) ? previous : []).filter(item => !(
+              item?.companyId === myCompanyId
+              && normalizePayrollMonthKey(item?.monthKey) === nativePeriod.monthKey
+            )),
+            nativePeriod
+          ]);
+        }
+        return {
+          success: true,
+          snapshots: result.snapshots,
+          adjustments: [],
+          integrityReport: auditPayrollHistoricalData({
+            periods: result.period ? [{
+              ...result.period,
+              id: result.period.id,
+              companyId: myCompanyId,
+              monthKey: normalizePayrollMonthKey(monthKey),
+              status: result.payroll?.status || result.period.status || 'DRAFT',
+              snapshotIds: result.snapshots.map(snapshot => snapshot.id)
+            }] : [],
+            snapshots: result.snapshots
+          })
+        };
+      } catch (error) {
+        return {
+          success: false,
+          snapshots: [],
+          message: error?.message || 'Không thể tải kỳ lương từ VPS.'
+        };
+      }
     }
     const safeMonthKey = normalizePayrollMonthKey(monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
@@ -17870,7 +17959,50 @@ export default function App() {
 
   const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
     if (isVpsApiMode) {
-      return { success: false, message: 'VPS payroll generate/approve/lock UI is not yet mapped to the HR payroll contract; no Firebase write was attempted.' };
+      if (!canCurrentUserManagePayrollByRole()) {
+        return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được khóa kỳ lương.' };
+      }
+      if ((Array.isArray(snapshots) ? snapshots : []).some(snapshot => Number(snapshot?.salaryDetails?.endingDebt || 0) !== 0)) {
+        return {
+          success: false,
+          message: 'Kỳ lương có dư nợ chuyển kỳ nên cần hợp đồng bút toán công nợ VPS trước khi khóa. Hệ thống chưa ghi dữ liệu nào.'
+        };
+      }
+      try {
+        const result = await lockVpsPayrollPeriod(
+          getHdConnectStagingApi(),
+          myCompanyId,
+          { period, snapshots },
+        );
+        const nativePeriod = {
+          ...result.period,
+          companyId: myCompanyId,
+          monthKey: normalizePayrollMonthKey(period?.monthKey),
+          status: result.payroll?.status || result.period?.status || 'LOCKED',
+          lockedAt: result.payroll?.lockedAt || result.period?.lockedAt || new Date().toISOString(),
+          snapshotIds: result.snapshots.map(snapshot => snapshot.id),
+          isArchived: false,
+          sourceSystem: 'hd-connect-vps'
+        };
+        setRawPayrollPeriods(previous => [
+          ...(Array.isArray(previous) ? previous : []).filter(item => !(
+            item?.companyId === myCompanyId
+            && normalizePayrollMonthKey(item?.monthKey) === nativePeriod.monthKey
+          )),
+          nativePeriod
+        ]);
+        return {
+          success: true,
+          period: nativePeriod,
+          snapshots: result.snapshots,
+          debtCarryovers: []
+        };
+      } catch (error) {
+        return {
+          success: false,
+          message: error?.message || 'Không thể khóa kỳ lương trên VPS. Dữ liệu chưa thay đổi.'
+        };
+      }
     }
     const safeMonthKey = normalizePayrollMonthKey(period?.monthKey);
     const periodId = buildPayrollPeriodId(myCompanyId, safeMonthKey);
@@ -20439,7 +20571,7 @@ export default function App() {
   };
 
   const handleAddDeliveryReport = async (empId, reportData = {}) => {
-    if (!firebaseUser) return null;
+    if (!isVpsApiMode && !firebaseUser) return null;
     const idempotencyKey = `${reportData.idempotencyKey || ''}`.trim();
     const mapDeliveryId = reportData.source === 'map_delivery' && reportData.dispatchId
       ? `dr_map_${reportData.dispatchId}`
@@ -20477,6 +20609,32 @@ export default function App() {
       isArchived: false,
       createdAt: new Date().toISOString()
     };
+    if (isVpsApiMode) {
+      if (!myCompanyId || `${currentUser?.companyId || ''}` !== `${myCompanyId}`) {
+        throw new Error('DELIVERY_REPORT_TENANT_CONTEXT_REQUIRED');
+      }
+      if (!dispatch || `${dispatch.companyId || ''}` !== `${myCompanyId}`) {
+        throw new Error('Không tìm thấy phiếu xuất kho VPS thuộc tenant hiện tại.');
+      }
+      const saved = await saveVpsDeliveryReport(
+        getHdConnectStagingApi(),
+        currentUser,
+        {
+          ...newReportDocument,
+          idempotencyKey: idempotencyKey || id,
+          quantity: reportData.actualQuantity ?? dispatch.quantity,
+          quantityUnit: reportData.actualQuantityUnit || dispatch.quantityUnit || dispatch.unit || '',
+          unitId: reportData.unitId || dispatch.unitId || '',
+          warehouseId: reportData.warehouseId || dispatch.warehouseId || '',
+          orderId: reportData.orderId || dispatch.orderId || dispatch.salesOrderId || '',
+        },
+        dispatch,
+      );
+      setRawDeliveryReports(prev => [saved, ...(prev || []).filter(report => (
+        report.id !== saved.id && report.sourceRecordId !== saved.sourceRecordId
+      ))]);
+      return saved.id;
+    }
     setRawDeliveryReports(prev => {
       const nextReports = (prev || []).filter(report => report.id !== id);
       return [newReportDocument, ...nextReports];
@@ -20492,6 +20650,9 @@ export default function App() {
   };
 
   const handleUpdateDeliveryReport = async (reportId, patch = {}) => {
+    if (isVpsApiMode) {
+      throw new Error('Báo cáo giao nhận VPS là immutable. Hãy tạo chứng từ điều chỉnh hoặc hoàn hàng riêng.');
+    }
     if (!firebaseUser || !reportId) return { success: false };
     const updatePayload = {
       ...patch,
@@ -20504,6 +20665,9 @@ export default function App() {
   };
 
   const handleResolveDeliveryReportIssue = async ({ reportId, action = 'rejected', orderId = '', orderData = null, penaltyData = null, note = '' } = {}) => {
+    if (isVpsApiMode) {
+      throw new Error('Xử lý lệch cân VPS cần chứng từ điều chỉnh kho/công nợ đã được phê duyệt; app không tự sửa đơn hàng hoặc trừ lương.');
+    }
     if (!firebaseUser || !reportId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const normalizedAction = ['accepted', 'rejected', 'lost_charged'].includes(action) ? action : 'rejected';
     const now = new Date().toISOString();
@@ -22182,6 +22346,49 @@ export default function App() {
   };
 
   const handleAddMessage = async (messageData = {}) => {
+    if (isVpsApiMode) {
+      const companyId = `${currentUser?.companyId || myCompanyId || ''}`.trim();
+      if (!companyId) throw new Error('Chưa xác định được tenant VPS để gửi tin nhắn.');
+      if (messageData.companyId && `${messageData.companyId}`.trim() !== companyId) {
+        throw new Error('Không thể gửi tin nhắn sang tenant khác.');
+      }
+      const isCustomerMessage = currentUser?.accountType === 'customer'
+        || currentUser?.role === 'customer'
+        || messageData.conversationType === 'customer_support'
+        || messageData.type === 'customer_to_employee'
+        || messageData.type === 'employee_to_customer';
+      if (isCustomerMessage) {
+        throw new Error('Hội thoại khách hàng cần customer-portal mapping VPS trước khi gửi.');
+      }
+      const recipientEmployeeId = `${
+        messageData.receiverEmpId
+        || messageData.recipientEmpId
+        || messageData.targetEmpId
+        || messageData.assignedEmployeeId
+        || ''
+      }`.trim();
+      const recipient = rawEmployees.find(employee => (
+        `${employee?.id || ''}`.trim() === recipientEmployeeId
+        && `${employee?.companyId || ''}`.trim() === companyId
+        && !employee?.isArchived
+      ));
+      const clientMutationId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const saved = await saveVpsMessage(getHdConnectStagingApi(), currentUser, {
+        ...messageData,
+        companyId,
+        recipientUserId: messageData.recipientUserId || messageData.receiverUserId || recipient?.userId,
+        receiverEmpId: recipientEmployeeId,
+        senderEmpId: employeeInfo?.id || currentUser?.employeeId || '',
+        senderName: messageData.senderName || employeeInfo?.name || currentUser?.name || currentUser?.phone || 'Nhân sự',
+        clientMutationId,
+        sourceRecordId: clientMutationId,
+      });
+      setRawMessages(previous => {
+        const list = Array.isArray(previous) ? previous : [];
+        return [saved, ...list.filter(item => item?.id !== saved.id)];
+      });
+      return saved.id;
+    }
     const isCustomerPortalMessage = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
     const trustedCustomerId = `${currentUser?.customerId || currentCustomerInfo?.id || currentCustomerInfo?.customerId || ''}`.trim();
     const trustedCustomerCompanyId = `${currentUser?.companyId || currentCustomerInfo?.companyId || myCompanyId || ''}`.trim();
@@ -22558,7 +22765,7 @@ export default function App() {
         onAddAdvanceRequest={handleAddAdvanceRequest} onEditAttendance={handleEditAttendance}
         onAddFinancial={addFinancialRecord} onEditFinancial={handleEditFinancialRecord} onDeleteFinancial={handleDeleteFinancialRecord} onUpdatePerformance={updatePerformance}
         onApproveAdvance={handleApproveAdvance} onRejectAdvance={handleRejectAdvance} onDeleteAdvance={handleDeleteAdvance}
-        onLockPayrollPeriod={handleLockPayrollPeriod} onAdjustLockedPayroll={handleAdjustLockedPayroll} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
+        onLockPayrollPeriod={handleLockPayrollPeriod} onAdjustLockedPayroll={isVpsApiMode ? undefined : handleAdjustLockedPayroll} onPreparePayrollAutoLockPlan={isVpsApiMode ? undefined : handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
         onAddEmployee={handleAddEmployee} onEditEmployee={handleEditEmployee} onDeleteEmployee={handleDeleteEmployee} onAddEmployeeReview={handleAddEmployeeReview}
         onOverrideCheckIn={handleCheckIn} onOverrideCheckOut={handleCheckOut}
         onAddProduct={handleAddProduct} onEditProduct={handleEditProduct} onDeleteProduct={handleDeleteProduct}

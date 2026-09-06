@@ -1114,6 +1114,29 @@ export class HdConnectStagingApi {
     return this.client.post(`/inventory/adjustments/${direction}`, toTenantSafePayload(record), mutationOptions(record));
   }
 
+  async listLogisticsDeliveries(query = {}) {
+    return normalizePage(
+      await this.client.get('/logistics-suite/deliveries', { query: toTenantSafeQuery(query) }),
+      (item) => item,
+    );
+  }
+
+  async getLogisticsDelivery(id) {
+    return this.client.get(`/logistics-suite/deliveries/${id}`);
+  }
+
+  async createLogisticsDelivery(record = {}) {
+    const { clientMutationId, ...payload } = record;
+    return this.client.post(
+      '/logistics-suite/deliveries',
+      toTenantSafePayload(payload),
+      {
+        idempotencyKey: clientMutationId || createRequestId(),
+        retry: false,
+      },
+    );
+  }
+
   async listFinanceCashAccounts(query = {}) {
     return normalizePage(await this.client.get('/finance-suite/cash-accounts', { query: toTenantSafeQuery(query) }), (item) => item);
   }
@@ -1128,6 +1151,14 @@ export class HdConnectStagingApi {
 
   async createFinanceCashTransaction(record = {}) {
     return this.client.post('/finance-suite/cash-transactions', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async createFinanceCustomerReceipt(record = {}) {
+    const { clientMutationId, ...payload } = record;
+    return this.client.post('/finance-suite/receipts', toTenantSafePayload(payload), {
+      idempotencyKey: clientMutationId || createRequestId(),
+      retry: false,
+    });
   }
 
   async listFinanceReceivables(query = {}) {
@@ -1306,6 +1337,10 @@ export class HdConnectStagingApi {
     return normalizePage(await this.client.get('/hr-suite/payrolls', { query }), (item) => item);
   }
 
+  async getPayroll(id) {
+    return this.client.get(`/hr-suite/payrolls/${id}`);
+  }
+
   async listManagerHolidays(query = {}) {
     return this.client.get('/hr-suite/manager-holidays', { query: vpsHolidayQuery(query) });
   }
@@ -1374,12 +1409,12 @@ export class HdConnectStagingApi {
     return this.client.post('/hr-suite/payrolls/generate', toTenantSafePayload(record), mutationOptions(record));
   }
 
-  async approvePayroll(id) {
-    return this.client.post(`/hr-suite/payrolls/${id}/approve`, undefined, { retry: false });
+  async approvePayroll(id, record = {}) {
+    return this.client.post(`/hr-suite/payrolls/${id}/approve`, undefined, mutationOptions(record));
   }
 
-  async lockPayroll(id) {
-    return this.client.post(`/hr-suite/payrolls/${id}/lock`, undefined, { retry: false });
+  async lockPayroll(id, record = {}) {
+    return this.client.post(`/hr-suite/payrolls/${id}/lock`, undefined, mutationOptions(record));
   }
 
   async listDocuments(query = {}) {
