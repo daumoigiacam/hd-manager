@@ -28,6 +28,11 @@ import {
 } from './utils/warehouseInventory.js';
 import { buildWarehouseDispatchProductOptions } from './utils/warehouseDispatchProductOptions.js';
 import {
+  buildWarehouseDispatchPresentationGroups,
+  getWarehouseDispatchPresentationGroupId,
+  resolveWarehouseDispatchDeliveryStatus,
+} from './utils/warehouseDispatchGrouping.js';
+import {
   addWarehouseQuantityUnit,
   buildWarehouseQuantityUnitSuggestions,
   dedupeWarehouseQuantityUnits,
@@ -24521,7 +24526,7 @@ function MainAppView({
           });
         }
         return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
@@ -57422,7 +57427,7 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 });
 
-function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
+function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
@@ -58225,11 +58230,24 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)),
     [warehouseDispatches, workingDate]
   );
+  const deliveryReportByDispatchId = useMemo(() => {
+    const reports = new Map();
+    (deliveryReports || [])
+      .filter(report => report && !report.isArchived)
+      .forEach((report) => {
+        const dispatchId = `${report.dispatchId || report.warehouseDispatchId || ''}`.trim();
+        if (!dispatchId) return;
+        const existing = reports.get(dispatchId);
+        if (!existing || getEntityTimestamp(report) >= getEntityTimestamp(existing)) reports.set(dispatchId, report);
+      });
+    return reports;
+  }, [deliveryReports]);
   const editableDispatchRows = useMemo(() => todayDispatchRows.map((item) => {
     const customer = customerLookup.get(item.customerId);
     const product = productLookup.get(item.productId);
     const assignedDriverId = getDispatchDriverId(item);
     const assignedDriverName = getDispatchDriverName(item);
+    const deliveryStatus = resolveWarehouseDispatchDeliveryStatus(item, deliveryReportByDispatchId.get(item.id));
     return {
       ...item,
       customerName: item.customerNameSnapshot || customer?.name || 'Khách hàng',
@@ -58238,10 +58256,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       assignedDriverId,
       driverId: assignedDriverId,
       assignedDriverName,
+      dispatchPresentationGroupId: getWarehouseDispatchPresentationGroupId(item),
+      deliveryStatusKey: deliveryStatus.key,
+      deliveryStatusLabel: deliveryStatus.label,
       assignedDriverNameSnapshot: item.assignedDriverNameSnapshot || assignedDriverName,
       driverNameSnapshot: item.driverNameSnapshot || assignedDriverName
     };
-  }), [todayDispatchRows, customerLookup, productLookup, employeeLookup]);
+  }), [todayDispatchRows, customerLookup, productLookup, employeeLookup, deliveryReportByDispatchId]);
   const compactEditableDispatchRows = useMemo(() => {
     const groups = new Map();
     editableDispatchRows.forEach((row, rowIndex) => {
@@ -58252,7 +58273,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       const branchKey = row.branchId || row.customerBranchId || normalizeLookupText(row.branchName || row.customerBranchName || '');
       const productKey = row.productId || normalizeLookupText(productName) || `product_${rowIndex}`;
       const driverKey = row.assignedDriverId || row.driverId || normalizeLookupText(row.assignedDriverName || row.assignedDriverNameSnapshot || row.driverNameSnapshot || '');
-      const mergeKey = [customerKey, branchKey, productKey, normalizeLookupText(quantityUnit || ''), driverKey].join('__');
+      const mergeKey = [
+        row.dispatchPresentationGroupId || getWarehouseDispatchPresentationGroupId(row),
+        customerKey,
+        branchKey,
+        productKey,
+        normalizeLookupText(quantityUnit || ''),
+        driverKey,
+        row.deliveryStatusKey || 'pending',
+      ].join('__');
       const weightKg = getDispatchRowWeight(row);
       const quantity = getDispatchRowQuantity(row);
       const existing = groups.get(mergeKey);
@@ -58394,106 +58423,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         });
       });
   }, [dispatchListSearch, compactEditableDispatchRows, customerLookup, productLookup, employeeLookup]);
-  const groupedEditableDispatchRows = useMemo(() => {
-    const groups = new Map();
-    filteredEditableDispatchRows.forEach((row, rowIndex) => {
-      const customerName = row.customerName || 'Khách hàng';
-      const customerKey = row.customerId || normalizeLookupText(customerName) || `customer_${rowIndex}`;
-      if (!groups.has(customerKey)) {
-        groups.set(customerKey, {
-          key: customerKey,
-          customerName,
-          rows: [],
-          totalWeight: 0,
-          quantityByUnit: {}
-        });
-      }
-      const group = groups.get(customerKey);
-      group.rows.push(row);
-      group.totalWeight += parseLooseQuantityValue(row.weightKg);
-      const quantity = getDispatchRowQuantity(row);
-      if (quantity > 0) {
-        const unit = getDispatchRowQuantityUnit(row) || 'SL';
-        group.quantityByUnit[unit] = (group.quantityByUnit[unit] || 0) + quantity;
-      }
-    });
-    return Array.from(groups.values()).map(group => ({
-      ...group,
-      quantitySummary: Object.entries(group.quantityByUnit)
-        .map(([unit, value]) => `${formatNumber(value)} ${unit}`.trim())
-        .join(' • ')
-    }));
-  }, [filteredEditableDispatchRows]);
-  const groupedEditableDispatchRowsByDriver = useMemo(() => {
-    const driverGroups = new Map();
-
-    filteredEditableDispatchRows.forEach((row, rowIndex) => {
-      const assignedDriverId = row.assignedDriverId || row.driverId || '';
-      const assignedDriverName = (
-        row.assignedDriverName
-        || row.assignedDriverNameSnapshot
-        || row.driverNameSnapshot
-        || (assignedDriverId ? employeeLookup.get(assignedDriverId)?.name : '')
-        || 'Chưa giao'
-      ).trim();
-      const driverKey = assignedDriverId || normalizeLookupText(assignedDriverName) || 'unassigned_driver';
-
-      if (!driverGroups.has(driverKey)) {
-        driverGroups.set(driverKey, {
-          key: driverKey,
-          assignedDriverId,
-          assignedDriverName,
-          rowsCount: 0,
-          totalWeight: 0,
-          quantityByUnit: {},
-          customerGroups: new Map()
-        });
-      }
-
-      const driverGroup = driverGroups.get(driverKey);
-      driverGroup.rowsCount += 1;
-      driverGroup.totalWeight += parseLooseQuantityValue(row.weightKg);
-
-      const quantity = getDispatchRowQuantity(row);
-      if (quantity > 0) {
-        const unit = getDispatchRowQuantityUnit(row) || 'SL';
-        driverGroup.quantityByUnit[unit] = (driverGroup.quantityByUnit[unit] || 0) + quantity;
-      }
-
-      const customerName = row.customerName || 'Khách hàng';
-      const customerKey = row.customerId || normalizeLookupText(customerName) || `customer_${rowIndex}`;
-      if (!driverGroup.customerGroups.has(customerKey)) {
-        driverGroup.customerGroups.set(customerKey, {
-          key: customerKey,
-          customerName,
-          rows: [],
-          totalWeight: 0,
-          quantityByUnit: {}
-        });
-      }
-
-      const customerGroup = driverGroup.customerGroups.get(customerKey);
-      customerGroup.rows.push(row);
-      customerGroup.totalWeight += parseLooseQuantityValue(row.weightKg);
-      if (quantity > 0) {
-        const unit = getDispatchRowQuantityUnit(row) || 'SL';
-        customerGroup.quantityByUnit[unit] = (customerGroup.quantityByUnit[unit] || 0) + quantity;
-      }
-    });
-
-    return Array.from(driverGroups.values()).map((driverGroup) => ({
-      ...driverGroup,
-      quantitySummary: Object.entries(driverGroup.quantityByUnit)
-        .map(([unit, value]) => `${formatNumber(value)} ${unit}`.trim())
-        .join(' • '),
-      customerGroups: Array.from(driverGroup.customerGroups.values()).map((customerGroup) => ({
-        ...customerGroup,
-        quantitySummary: Object.entries(customerGroup.quantityByUnit)
-          .map(([unit, value]) => `${formatNumber(value)} ${unit}`.trim())
-          .join(' • ')
-      }))
-    }));
-  }, [filteredEditableDispatchRows, employeeLookup]);
+  const groupedEditableDispatchRows = useMemo(() => buildWarehouseDispatchPresentationGroups({
+    rows: filteredEditableDispatchRows,
+    deliveryReports,
+  }), [filteredEditableDispatchRows, deliveryReports]);
 
   const historyDispatchGroups = useMemo(() => {
     const groups = (warehouseDispatches || []).reduce((acc, item) => {
@@ -61003,21 +60936,18 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                       Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.
                     </td>
                   </tr>
-                ) : groupedEditableDispatchRowsByDriver.flatMap(driverGroup => driverGroup.customerGroups.flatMap(group => group.rows.map((row, groupRowIndex) => {
+                ) : groupedEditableDispatchRows.flatMap(group => group.rows.map((row, groupRowIndex) => {
                   const isSelectedEditorRow = dispatchCellEditor?.displayRow?.id === row.id || dispatchCellEditor?.row?.id === row.id;
-                  const shouldShowCustomerCell = groupRowIndex === 0;
-                  const customerCellRowSpan = group.rows.length;
-                  const rowDriverName = row.assignedDriverName
-                    || row.assignedDriverNameSnapshot
-                    || row.driverNameSnapshot
-                    || (row.assignedDriverId ? employeeLookup.get(row.assignedDriverId)?.name : '')
-                    || 'Chưa giao';
+                  const shouldShowGroupCells = groupRowIndex === 0;
+                  const groupRowSpan = group.rowSpan;
+                  const rowDriverName = group.driverName;
                   return (
                     <React.Fragment key={row.id}>
                     <tr
                       className={`min-h-[56px] transition ${isSelectedEditorRow ? 'bg-emerald-50/70' : row.isMergedDispatchRow ? 'bg-sky-50/40' : ''}`}
                     >
-                      <td className="border border-slate-700 bg-sky-50/60 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                      {shouldShowGroupCells && (
+                      <td rowSpan={groupRowSpan} className="border border-slate-700 bg-sky-50/60 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
                         <button
                           type="button"
                           onClick={(event) => openDispatchCellEditor(row, 'assignedDriverId', event)}
@@ -61027,11 +60957,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                           aria-label={`Sửa người giao phiếu xuất của ${group.customerName || row.customerName || 'khách hàng'}`}
                         >
                           <span className="block text-[9px] font-medium uppercase tracking-[0.08em] text-sky-600">Giao hàng</span>
-                          <span className="mt-1 block font-medium text-slate-900">{rowDriverName}</span>
+                          {group.hasAssignedDriver && <span className="mt-1 block font-medium text-slate-900">{rowDriverName}</span>}
+                          <span className="mt-1 block text-[11px] font-semibold text-slate-600">{group.deliveryStatus.label}</span>
                         </button>
                       </td>
-                      {shouldShowCustomerCell && (
-                      <td rowSpan={customerCellRowSpan} className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
+                      )}
+                      {shouldShowGroupCells && (
+                      <td rowSpan={groupRowSpan} className="border border-slate-700 px-1.5 py-2 align-middle break-words whitespace-normal leading-tight">
                         <button
                           type="button"
                           onClick={(event) => openDispatchCellEditor(row, 'customerId', event)}
@@ -61080,7 +61012,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                     </tr>
                     </React.Fragment>
                   );
-                })))}
+                }))}
               </tbody>
             </table>
           </div>
