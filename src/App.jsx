@@ -124,6 +124,11 @@ import {
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import {
+  getCustomerRecentOrderPreferences,
+  getLatestCustomerOrderTemplate,
+  mergeCustomerOrderMemoryHistory,
+} from './utils/customerOrderMemory.js';
+import {
   AUTOMATIC_EVALUATION_CRITERIA,
   AUTOMATIC_EVALUATION_SCHEMA_VERSION,
   buildEvaluationSummary13,
@@ -7309,7 +7314,16 @@ const getCustomerProductVariants = (customer = null, product = null) => {
       size,
       attributeLabel,
       unit,
-      unitPrices
+      unitPrices,
+      orderUnit: normalizeProductPricingUnit(
+        variant.orderUnit ?? variant.defaultOrderUnit ?? variant.quantityUnit ?? '',
+      ),
+      defaultOrderUnit: normalizeProductPricingUnit(
+        variant.defaultOrderUnit ?? variant.orderUnit ?? variant.quantityUnit ?? '',
+      ),
+      lastUsedAt: variant.lastUsedAt || '',
+      lastOrderId: variant.lastOrderId || '',
+      lastOrderDate: variant.lastOrderDate || '',
     };
   };
   const variants = [];
@@ -61825,9 +61839,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const validProductIds = activeProducts.map(product => product.id).filter(Boolean);
 
     for (const [customerId, customerRequests] of requestsByCustomer.entries()) {
+      const customer = customerLookup.get(customerId);
+      const memoryRequests = mergeCustomerOrderMemoryHistory({
+        existingRequests: orderRequests,
+        savedRequests: customerRequests,
+        companyId: customer?.companyId || customer?.tenantId || '',
+        customerId,
+      });
       if (canSyncFixedProducts) {
         try {
-          const memoryUpdate = await onSyncCustomerFixedProductDefaults(customerId, customerRequests);
+          const memoryUpdate = await onSyncCustomerFixedProductDefaults(customerId, memoryRequests);
           if (memoryUpdate?.skippedBranchIds?.length > 0) {
             console.warn('Khong ghi nho san pham cho chi nhanh khong con ton tai.', {
               customerId,
@@ -61842,7 +61863,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         continue;
       }
 
-      const customer = customerLookup.get(customerId);
       if (!customer) continue;
       const canonicalCustomer = {
         ...customer,
@@ -61851,7 +61871,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
       const memoryUpdate = buildCustomerFixedProductMemoryPatch({
         customer: canonicalCustomer,
-        requests: customerRequests,
+        requests: memoryRequests,
         validProductIds,
       });
 
@@ -62604,6 +62624,58 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
   }), [manualFixedProductOptions, primaryProductConfigSource]);
+  const manualRecentProductVariantOptions = useMemo(() => {
+    if (!primarySelectedCustomer) return [];
+    return getCustomerRecentOrderPreferences({
+      requests: orderRequests,
+      companyId: primarySelectedCustomer.companyId || primarySelectedCustomer.tenantId || '',
+      customerId: primarySelectedCustomer.id,
+      branchId: primaryDraft?.branchId || '',
+      limit: 12,
+    })
+      .map((preference) => {
+        const product = productLookup.get(preference.productId);
+        if (!product) return null;
+        const variant = {
+          id: preference.configurationId || `${preference.productId}-recent-${preference.key}`,
+          size: preference.sizeLabel || '',
+          attributeLabel: preference.attributeLabel || '',
+          price: parseLooseMoneyValue(preference.unitPrice),
+          unit: normalizeProductPricingUnit(preference.billingUnit || preference.pricingUnit || ''),
+          orderUnit: normalizeProductPricingUnit(preference.orderUnit || preference.quantityUnit || ''),
+          defaultOrderUnit: normalizeProductPricingUnit(preference.orderUnit || preference.quantityUnit || ''),
+          lastUsedAt: preference.lastUsedAt || '',
+          lastOrderId: preference.lastOrderId || '',
+          lastOrderDate: preference.lastOrderDate || '',
+        };
+        return {
+          product,
+          variant,
+          key: `recent:${preference.key}`,
+          selectionKey: buildOrderRequestVariantKey(product.id, variant),
+        };
+      })
+      .filter(Boolean);
+  }, [orderRequests, primaryDraft?.branchId, primarySelectedCustomer, productLookup]);
+  const manualRecentSelectionKeys = useMemo(
+    () => new Set(manualRecentProductVariantOptions.map((option) => option.selectionKey)),
+    [manualRecentProductVariantOptions],
+  );
+  const manualOtherFixedProductVariantOptions = useMemo(
+    () => manualFixedProductVariantOptions.filter(
+      (option) => !manualRecentSelectionKeys.has(option.selectionKey),
+    ),
+    [manualFixedProductVariantOptions, manualRecentSelectionKeys],
+  );
+  const latestCustomerOrderTemplate = useMemo(() => {
+    if (!primarySelectedCustomer) return null;
+    return getLatestCustomerOrderTemplate({
+      requests: orderRequests,
+      companyId: primarySelectedCustomer.companyId || primarySelectedCustomer.tenantId || '',
+      customerId: primarySelectedCustomer.id,
+      branchId: primaryDraft?.branchId || '',
+    });
+  }, [orderRequests, primaryDraft?.branchId, primarySelectedCustomer]);
   const manualCatalogProductVariantOptions = useMemo(() => activeProducts.flatMap(product => {
     const variants = getCustomerProductVariants(primaryProductConfigSource, product);
     return variants.map((variant) => {
@@ -62691,6 +62763,25 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         billingSnapshotSource: item.billingSnapshotSource || (item.pricingUnit && item.unitPrice ? 'legacy_order_request' : '')
       }))
     });
+  };
+  const handleUseLatestCustomerOrder = () => {
+    if (!primaryDraft?.localId || !latestCustomerOrderTemplate?.items?.length) {
+      setRequestError('Khách này chưa có đơn gần nhất để sử dụng.');
+      return;
+    }
+    const templateDraft = buildRequestDraftFromExisting({
+      ...latestCustomerOrderTemplate,
+      customerId: primarySelectedCustomer?.id || primaryDraft.customerId,
+      note: '',
+      upfrontPayment: '',
+    });
+    updateDraft(primaryDraft.localId, {
+      items: templateDraft.items,
+      note: '',
+      upfrontPayment: '',
+    });
+    setRequestError('');
+    setRequestStatus('Đã lấy thông tin sản phẩm từ đơn gần nhất. Bạn vẫn có thể chỉnh sửa trước khi lưu.');
   };
 
   const calculateRequestAmount = (request = {}) => {
@@ -65045,17 +65136,34 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         }
 
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
-        await persistOrderRequestMemories(normalizedRequests);
+        const originalRequest = orderRequests.find(request => request?.id === editingRequestId);
+        await persistOrderRequestMemories([{
+          ...(originalRequest || {}),
+          ...normalizedRequests[0],
+          id: editingRequestId,
+          createdAt: originalRequest?.createdAt
+            || originalRequest?.requestedAt
+            || originalRequest?.date
+            || normalizedRequests[0].date,
+          updatedAt: new Date().toISOString(),
+        }]);
 
         setRequestStatus('');
         closeOrderRequestForm();
         return;
       }
 
+      const savedRequests = [];
       for (const requestPayload of normalizedRequests) {
-        await onAddOrderRequest(employee?.id || 'admin', requestPayload);
+        const savedRequestId = await onAddOrderRequest(employee?.id || 'admin', requestPayload);
+        savedRequests.push({
+          ...requestPayload,
+          id: savedRequestId || '',
+          companyId: customerLookup.get(requestPayload.customerId)?.companyId || '',
+          createdAt: new Date().toISOString(),
+        });
       }
-      await persistOrderRequestMemories(normalizedRequests);
+      await persistOrderRequestMemories(savedRequests);
 
       setRequestStatus('');
       closeOrderRequestForm();
@@ -65574,7 +65682,61 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       <div className="space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <div>
-                            <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm cố định</label>
+                            <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm đặt gần đây</label>
+                            <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                              Chọn nhanh theo size, đơn vị và giá khách đã dùng gần nhất.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleUseLatestCustomerOrder}
+                            disabled={!latestCustomerOrderTemplate?.items?.length}
+                            className="shrink-0 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                          >
+                            Dùng thông tin đơn gần nhất
+                          </button>
+                        </div>
+
+                        {manualRecentProductVariantOptions.length > 0 ? (
+                          <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-emerald-100 bg-emerald-50/50 p-2 sm:grid-cols-3">
+                            {manualRecentProductVariantOptions.map(({ product, variant, key, selectionKey }) => {
+                              const isActive = selectedQuickVariantKeys.has(selectionKey);
+                              const recentSize = `${variant.size || ''}`.trim();
+                              const recentAttribute = `${variant.attributeLabel || ''}`.trim();
+                              const recentOrderUnit = normalizeProductPricingUnit(
+                                variant.orderUnit || variant.defaultOrderUnit || '',
+                              );
+                              const recentPrice = parseLooseMoneyValue(variant.price);
+                              const recentDetails = [
+                                recentSize ? `Size ${recentSize}` : '',
+                                recentAttribute,
+                                recentOrderUnit,
+                                recentPrice > 0 ? `${formatCurrency(recentPrice)}đ/${variant.unit || product.unit || ''}` : '',
+                              ].filter(Boolean);
+                              return (
+                                <OrderRequestSelectableProductCard
+                                  key={key}
+                                  selectionKey={selectionKey}
+                                  productId={product.id}
+                                  title={product.name}
+                                  subtitle={recentDetails.join(' • ') || 'Đã đặt gần đây'}
+                                  variantConfig={variant}
+                                  isSelected={isActive}
+                                  isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
+                                  onSelect={handleQuickProductCardSelect}
+                                />
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-center text-xs font-semibold text-slate-500">
+                            Khách này chưa có sản phẩm đặt gần đây tại chi nhánh đã chọn.
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm cố định khác</label>
                             <p aria-live="polite" className="mt-1 text-[11px] font-semibold text-slate-400">
                               {pendingQuickProductSelectionKeys.size > 0
                                 ? 'Đang cập nhật sản phẩm đã chọn...'
@@ -65594,9 +65756,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </button>
                         </div>
 
-                        {manualFixedProductVariantOptions.length > 0 ? (
+                        {manualOtherFixedProductVariantOptions.length > 0 ? (
                           <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-slate-100 bg-slate-50 p-2 sm:grid-cols-3">
-                            {manualFixedProductVariantOptions.map(({ product, variant, key, selectionKey: resolvedSelectionKey }) => {
+                            {manualOtherFixedProductVariantOptions.map(({ product, variant, key, selectionKey: resolvedSelectionKey }) => {
                               const isActive = selectedQuickVariantKeys.has(resolvedSelectionKey);
                               const fixedPrice = parseLooseMoneyValue(variant.price) > 0 ? parseLooseMoneyValue(variant.price) : getCustomerProductPrice(primaryProductConfigSource, product);
                               const fixedSize = `${variant.size || ''}`.trim();
@@ -65619,7 +65781,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </div>
                         ) : (
                           <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50 px-3 py-4 text-center text-xs font-semibold text-emerald-700">
-                            Khách này chưa có sản phẩm cố định. Bấm nút + để tìm và thêm sản phẩm vào đơn.
+                            Không còn sản phẩm cố định khác. Bấm nút + để tìm và thêm sản phẩm vào đơn.
                           </div>
                         )}
 

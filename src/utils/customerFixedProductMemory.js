@@ -64,18 +64,63 @@ const getItemPrice = (item = {}) => (
 );
 
 const getVariantIndex = (variants = [], item = {}) => {
-  const configurationId = cleanId(item.configurationId || item.variantId || item.customerProductConfigurationId);
-  if (configurationId) {
-    return variants.findIndex((variant = {}) => cleanId(
-      variant.id || variant.configurationId || variant.variantId
-    ) === configurationId);
+  const sizeLabel = cleanId(item.sizeLabel || item.size || item.weightKg);
+  const attributeLabel = cleanId(item.attributeLabel || item.productAttribute || item.attribute || item.variant);
+  if (sizeLabel || attributeLabel) {
+    return variants.findIndex((variant = {}) => (
+      cleanId(variant.sizeLabel || variant.size) === sizeLabel
+      && cleanId(variant.attributeLabel || variant.productAttribute || variant.attribute) === attributeLabel
+    ));
   }
 
-  const sizeLabel = cleanId(item.sizeLabel || item.size || item.attributeLabel || item.productAttribute);
-  if (!sizeLabel) return -1;
+  const configurationId = cleanId(item.configurationId || item.variantId || item.customerProductConfigurationId);
+  if (!configurationId) return -1;
   return variants.findIndex((variant = {}) => cleanId(
-    variant.sizeLabel || variant.size || variant.attributeLabel || variant.productAttribute || variant.label
-  ) === sizeLabel);
+    variant.id || variant.configurationId || variant.variantId
+  ) === configurationId);
+};
+
+const getItemSizeLabel = (item = {}) => cleanId(
+  item.sizeLabel || item.size || item.weightKg
+);
+
+const getItemAttributeLabel = (item = {}) => cleanId(
+  item.attributeLabel || item.productAttribute || item.attribute || item.variant
+);
+
+const rememberRootConfiguration = (nextConfig = {}, item = {}) => {
+  const next = { ...nextConfig };
+  const sizeLabel = getItemSizeLabel(item);
+  const attributeLabel = getItemAttributeLabel(item);
+
+  if (sizeLabel) {
+    next.size = sizeLabel;
+    next.sizeLabel = sizeLabel;
+  }
+  if (attributeLabel) next.attributeLabel = attributeLabel;
+
+  return next;
+};
+
+const rememberVariantConfiguration = (nextConfig = {}, variant = {}, item = {}) => {
+  const next = { ...nextConfig };
+  const configurationId = cleanId(
+    variant.id || variant.configurationId || variant.variantId || item.configurationId || item.variantId
+  );
+
+  if (configurationId) next.defaultConfigurationId = configurationId;
+  return next;
+};
+
+const rememberUsageMetadata = (nextConfig = {}, item = {}) => {
+  const next = { ...nextConfig };
+  const lastUsedAt = item.memoryLastUsedAt || item.createdAt || item.requestedAt || item.orderDate || item.date;
+  const lastOrderId = cleanId(item.memoryLastOrderId || item.orderRequestId || item.orderId);
+  const lastOrderDate = item.memoryLastOrderDate || item.orderDate || item.date || lastUsedAt;
+  if (lastUsedAt) next.lastUsedAt = lastUsedAt;
+  if (lastOrderId) next.lastOrderId = lastOrderId;
+  if (lastOrderDate) next.lastOrderDate = lastOrderDate;
+  return next;
 };
 
 const updateConfiguration = (currentConfig = {}, item = {}) => {
@@ -114,6 +159,42 @@ const updateConfiguration = (currentConfig = {}, item = {}) => {
     }
   }
 
+  return rememberUsageMetadata(rememberRootConfiguration(next, item), item);
+};
+
+const buildVariantId = (item = {}, fallbackIndex = 0) => {
+  const explicitId = cleanId(item.configurationId || item.variantId || item.customerProductConfigurationId);
+  if (explicitId) return explicitId;
+  const productId = cleanId(item.productId || 'product');
+  const identity = cleanId(
+    item.sizeLabel || item.size || item.weightKg
+    || item.attributeLabel || item.productAttribute || item.attribute
+    || `variant_${fallbackIndex + 1}`,
+  ).toLocaleLowerCase('vi').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${productId}-${identity || `variant-${fallbackIndex + 1}`}`;
+};
+
+const getConfigurationIdentity = (config = {}) => ({
+  size: cleanId(config.sizeLabel || config.size || config.weightKg),
+  attribute: cleanId(config.attributeLabel || config.productAttribute || config.attribute),
+});
+
+const hasDifferentVariantIdentity = (current = {}, item = {}) => {
+  const currentIdentity = getConfigurationIdentity(current);
+  const itemIdentity = getConfigurationIdentity(item);
+  if (!currentIdentity.size && !currentIdentity.attribute) return false;
+  if (!itemIdentity.size && !itemIdentity.attribute) return false;
+  return currentIdentity.size !== itemIdentity.size || currentIdentity.attribute !== itemIdentity.attribute;
+};
+
+const omitRootVariantFields = (config = {}) => {
+  const next = { ...config };
+  [
+    'price', 'unitPrice', 'sellingPrice', 'unitPrices', 'pricesByUnit', 'priceByUnit',
+    'size', 'sizeLabel', 'weightKg', 'attributeLabel', 'productAttribute', 'attribute',
+    'orderUnit', 'defaultOrderUnit', 'orderUnits', 'allowedOrderUnits',
+    'lastUsedAt', 'lastOrderId', 'lastOrderDate',
+  ].forEach((key) => delete next[key]);
   return next;
 };
 
@@ -121,27 +202,70 @@ const updateProductConfiguration = (currentConfig = {}, item = {}) => {
   const current = isRecord(currentConfig) ? currentConfig : {};
   const variants = Array.isArray(current.variants) ? current.variants : [];
   const variantIndex = getVariantIndex(variants, item);
-  // Pass the original value through so legacy numeric price overrides are
-  // preserved before order-unit metadata is added.
-  if (variantIndex < 0) return updateConfiguration(currentConfig, item);
+  if (variantIndex < 0 && variants.length === 0 && !hasDifferentVariantIdentity(current, item)) {
+    // Pass the original value through so legacy numeric price overrides are
+    // preserved before order-unit metadata is added.
+    return updateConfiguration(currentConfig, item);
+  }
+
+  if (variantIndex < 0 && variants.length === 0) {
+    const previousVariant = {
+      ...current,
+      id: cleanId(current.id || current.configurationId) || buildVariantId(current, 0),
+    };
+    delete previousVariant.variants;
+    delete previousVariant.defaultConfigurationId;
+    const nextVariant = {
+      ...updateConfiguration({}, item),
+      id: buildVariantId(item, 1),
+    };
+    return rememberUsageMetadata(
+      rememberVariantConfiguration({
+        ...omitRootVariantFields(current),
+        variants: [previousVariant, nextVariant],
+      }, nextVariant, item),
+      item,
+    );
+  }
+
+  if (variantIndex < 0) {
+    const nextVariant = {
+      ...updateConfiguration({}, item),
+      id: buildVariantId(item, variants.length),
+    };
+    return rememberUsageMetadata(
+      rememberVariantConfiguration({
+        ...current,
+        variants: [...variants, nextVariant],
+      }, nextVariant, item),
+      item,
+    );
+  }
 
   const nextVariants = variants.map((variant, index) => (
     index === variantIndex ? updateConfiguration(variant, item) : variant
   ));
-  return { ...current, variants: nextVariants };
+  return rememberUsageMetadata(
+    rememberVariantConfiguration({ ...current, variants: nextVariants }, nextVariants[variantIndex], item),
+    item,
+  );
 };
 
 const isSameValue = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 const getRequestTimestamp = (request = {}) => {
-  const parsed = Date.parse(
-    request.updatedAt
-    || request.createdAt
+  const value = request.createdAt
     || request.requestedAt
     || request.orderDate
     || request.date
-    || 0
-  );
+    || request.updatedAt
+    || 0;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 100000000000 ? value * 1000 : value;
+  }
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (typeof value?.seconds === 'number') return value.seconds * 1000;
+  const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
@@ -200,6 +324,12 @@ export const buildCustomerFixedProductMemoryPatch = ({
     const branchId = cleanId(request.branchId || request.customerBranchId);
     if (!branchId) {
       items.forEach((item) => {
+        const memoryItem = {
+          ...item,
+          memoryLastUsedAt: request.createdAt || request.requestedAt || request.orderDate || request.date || request.updatedAt || '',
+          memoryLastOrderId: request.id || request.orderRequestId || '',
+          memoryLastOrderDate: request.date || request.orderDate || request.requestedAt || request.createdAt || '',
+        };
         const productId = cleanId(item.productId);
         if (!rootProductIds.includes(productId)) {
           rootProductIds.push(productId);
@@ -208,7 +338,7 @@ export const buildCustomerFixedProductMemoryPatch = ({
         }
 
         const currentConfig = rootConfigs[productId] || {};
-        const nextConfig = updateProductConfiguration(currentConfig, item);
+        const nextConfig = updateProductConfiguration(currentConfig, memoryItem);
         if (!isSameValue(currentConfig, nextConfig)) {
           rootConfigs[productId] = nextConfig;
           updatedProductIds.add(productId);
@@ -233,6 +363,12 @@ export const buildCustomerFixedProductMemoryPatch = ({
     let branchChanged = false;
 
     items.forEach((item) => {
+      const memoryItem = {
+        ...item,
+        memoryLastUsedAt: request.createdAt || request.requestedAt || request.orderDate || request.date || request.updatedAt || '',
+        memoryLastOrderId: request.id || request.orderRequestId || '',
+        memoryLastOrderDate: request.date || request.orderDate || request.requestedAt || request.createdAt || '',
+      };
       const productId = cleanId(item.productId);
       if (!branchProductIds.includes(productId)) {
         branchProductIds.push(productId);
@@ -242,7 +378,7 @@ export const buildCustomerFixedProductMemoryPatch = ({
 
       // A branch inherits root configuration until its first branch-specific update.
       const currentConfig = branchConfigs[productId] || rootConfigs[productId] || {};
-      const nextConfig = updateProductConfiguration(currentConfig, item);
+      const nextConfig = updateProductConfiguration(currentConfig, memoryItem);
       if (!isSameValue(currentConfig, nextConfig) || !isSameValue(branchConfigs[productId], nextConfig)) {
         branchConfigs[productId] = nextConfig;
         updatedProductIds.add(productId);

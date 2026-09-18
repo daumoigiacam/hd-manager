@@ -60,7 +60,8 @@ test('existing variant is toggled instead of creating a duplicate line', () => {
 test('plus picker exposes the active catalog and remembers new customer products after save', () => {
   assert.match(appSource, /const manualCatalogProductVariantOptions = useMemo\(\(\) => activeProducts\.flatMap/);
   assert.match(appSource, /const sourceVariants = manualCatalogProductVariantOptions\.filter/);
-  assert.match(appSource, /await persistOrderRequestMemories\(normalizedRequests\);/);
+  assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
+  assert.match(appSource, /await persistOrderRequestMemories\(savedRequests\);/);
   assert.match(appSource, /onEditCustomer=\{onEditCustomer\}/);
   assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
 });
@@ -352,8 +353,8 @@ test('saved request synchronizes customer defaults atomically only after the req
   assert.match(appSource, /await runTransaction\(db, async \(transaction\) =>/);
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{handleSyncCustomerFixedProductDefaults\}/);
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{onSyncCustomerFixedProductDefaults\}/);
-  assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, customerRequests\)/);
-  assert.match(appSource, /await persistOrderRequestMemories\(normalizedRequests\);/);
+  assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, memoryRequests\)/);
+  assert.match(appSource, /await persistOrderRequestMemories\(savedRequests\);/);
   assert.match(appSource, /orderUnit: quantityUnit,/);
   assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
   assert.match(
