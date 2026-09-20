@@ -673,7 +673,7 @@ export class HdConnectStagingApi {
   }
 
   async startEmailRegistration(email) {
-    return this.sendEmailOtp('/auth/email-registration/start', { email });
+    return this.sendEmailOtp('/auth/register/send-otp', { email });
   }
 
   async verifyEmailRegistration({ challengeId, code } = {}) {

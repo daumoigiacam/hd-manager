@@ -36,7 +36,7 @@ test('routes the email registration contract through Platform without a Firebase
   });
 
   assert.deepEqual(calls.map((call) => call.path), [
-    '/auth/email-registration/start',
+    '/auth/register/send-otp',
     '/auth/email-registration/verify',
     '/auth/email-registration/complete',
   ]);
