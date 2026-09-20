@@ -15374,9 +15374,9 @@ export default function App() {
     }
   };
 
-  const handleVpsEmailRegistrationVerify = async ({ challengeId, code }) => {
+  const handleVpsEmailRegistrationVerify = async ({ challengeId, code, email }) => {
     try {
-      return { success: true, ...(await getHdConnectStagingApi().verifyEmailRegistration({ challengeId, code })) };
+      return { success: true, ...(await getHdConnectStagingApi().verifyEmailRegistration({ challengeId, code, email })) };
     } catch (error) {
       return { success: false, message: error?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.' };
     }
@@ -87140,7 +87140,7 @@ function VpsEmailAuthView({
     setError('');
     try {
       const result = isRegister
-        ? await onVpsEmailRegistrationVerify({ challengeId, code: otp })
+        ? await onVpsEmailRegistrationVerify({ challengeId, code: otp, email })
         : await onVpsEmailPasswordResetVerify({ challengeId, code: otp });
       if (!result?.success || !result?.proof) throw new Error(result?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.');
       setProof(result.proof);
@@ -87178,6 +87178,7 @@ function VpsEmailAuthView({
         ? await onVpsEmailRegistrationComplete({
           challengeId,
           proof,
+          email,
           companyName: companyName.trim(),
           fullName: fullName.trim(),
           password,

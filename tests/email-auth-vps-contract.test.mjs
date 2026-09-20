@@ -26,23 +26,37 @@ test('routes the email registration contract through Platform without a Firebase
   });
 
   await api.startEmailRegistration(' Owner@Example.test ');
-  await api.verifyEmailRegistration({ challengeId, code: '123456' });
+  await api.verifyEmailRegistration({ challengeId, code: '123456', email: 'owner@example.test' });
   const session = await api.completeEmailRegistration({
     challengeId,
     proof,
+    email: 'owner@example.test',
     fullName: 'Disposable Owner',
     companyName: 'Disposable Company',
     password: 'StrongPass123!',
   });
 
   assert.deepEqual(calls.map((call) => call.path), [
-    '/auth/register/send-otp',
-    '/auth/email-registration/verify',
-    '/auth/email-registration/complete',
+    '/auth/otp/request',
+    '/auth/otp/verify',
+    '/auth/register/email',
   ]);
-  assert.equal(calls[0].payload.email, 'owner@example.test');
+  assert.deepEqual(calls[0].payload, {
+    channel: 'EMAIL',
+    email: 'owner@example.test',
+    purpose: 'REGISTRATION',
+  });
   assert.equal(calls[0].options.authenticate, false);
+  assert.deepEqual(calls[1].payload, {
+    challengeId,
+    channel: 'EMAIL',
+    email: 'owner@example.test',
+    otp: '123456',
+    purpose: 'REGISTRATION',
+  });
   assert.equal(calls[1].options.allowRefresh, false);
+  assert.equal(calls[2].payload.registrationToken, proof);
+  assert.equal(calls[2].payload.email, 'owner@example.test');
   assert.equal(calls[2].payload.password, 'StrongPass123!');
   assert.equal(calls[2].options.retry, false);
   assert.equal(storedSession.accessToken, 'access-token');

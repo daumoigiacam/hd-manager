@@ -673,25 +673,53 @@ export class HdConnectStagingApi {
   }
 
   async startEmailRegistration(email) {
-    return this.sendEmailOtp('/auth/register/send-otp', { email });
+    const response = await this.client.post('/auth/otp/request', {
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      purpose: 'REGISTRATION',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      resendAfterSeconds: response?.resendAfterSeconds ?? response?.cooldownSeconds ?? 0,
+    };
   }
 
-  async verifyEmailRegistration({ challengeId, code } = {}) {
-    return this.verifyEmailOtp('/auth/email-registration/verify', { challengeId, code });
+  async verifyEmailRegistration({ challengeId, code, email } = {}) {
+    const response = await this.client.post('/auth/otp/verify', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      otp: requireEmailOtpCode(code),
+      purpose: 'REGISTRATION',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      proof: response?.registrationToken,
+    };
   }
 
   async completeEmailRegistration({
     challengeId,
     proof,
+    email,
     companyName,
     companyCode,
     fullName,
     password,
     deviceName,
   } = {}) {
-    const response = await this.client.post('/auth/email-registration/complete', {
+    const response = await this.client.post('/auth/register/email', {
       challengeId: requireEmailOtpChallengeId(challengeId),
-      proof: requireEmailOtpProof(proof),
+      registrationToken: requireEmailOtpProof(proof),
+      email: requireEmailOtpEmail(email),
       companyName: requireIdentityInput(companyName, 'EMAIL_REGISTRATION_COMPANY_REQUIRED', 'A company name is required.'),
       ...(stringValue(companyCode) ? { companyCode: stringValue(companyCode) } : {}),
       fullName: requireIdentityInput(fullName, 'EMAIL_REGISTRATION_NAME_REQUIRED', 'A full name is required.'),
