@@ -414,6 +414,15 @@ const legacyIdentitySecurityApi = {
   identityRevokeDevices,
   identitySetBiometric,
   identityVerifyPin,
+  identityStartEmailChange: async () => {
+    throw new Error('Đổi email qua HD CONNECT VPS chưa được bật cho phiên Firebase.');
+  },
+  identityVerifyEmailChange: async () => {
+    throw new Error('Đổi email qua HD CONNECT VPS chưa được bật cho phiên Firebase.');
+  },
+  identityCompleteEmailChange: async () => {
+    throw new Error('Đổi email qua HD CONNECT VPS chưa được bật cho phiên Firebase.');
+  },
 };
 
 const identitySecurityApi = isVpsMode
@@ -15337,6 +15346,77 @@ export default function App() {
     return { success: true, ...session, identity: nextUser, company, activeTab: nextTab };
   };
 
+  const activateVpsSession = (session, { startedAt = Date.now(), source = 'login' } = {}) => {
+    const company = session.company || { id: session.user.companyId, name: '' };
+    setFirebaseUser(null);
+    setCurrentUser(session.user);
+    setCurrentCompany(company);
+    setRawCompanies([company]);
+    setRawEmployees([{ ...session.user, isArchived: false }]);
+    setActiveTab('home');
+    setRealtimeStatus({
+      state: 'polling',
+      collection: '',
+      lastAt: new Date().toISOString(),
+      error: '',
+    });
+    recordStartupEvent(`auth.vps_staging_${source}.completed`, {
+      durationMs: Date.now() - startedAt,
+    });
+    return { success: true, identity: session.user };
+  };
+
+  const handleVpsEmailRegistrationStart = async (email) => {
+    try {
+      return { success: true, ...(await getHdConnectStagingApi().startEmailRegistration(email)) };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể gửi mã xác minh email.' };
+    }
+  };
+
+  const handleVpsEmailRegistrationVerify = async ({ challengeId, code }) => {
+    try {
+      return { success: true, ...(await getHdConnectStagingApi().verifyEmailRegistration({ challengeId, code })) };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.' };
+    }
+  };
+
+  const handleVpsEmailRegistrationComplete = async (payload) => {
+    const startedAt = Date.now();
+    try {
+      const session = await getHdConnectStagingApi().completeEmailRegistration(payload);
+      return activateVpsSession(session, { startedAt, source: 'email_registration' });
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể hoàn tất tạo tài khoản.' };
+    }
+  };
+
+  const handleVpsEmailPasswordResetStart = async (email) => {
+    try {
+      return { success: true, ...(await getHdConnectStagingApi().startEmailPasswordReset(email)) };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể gửi yêu cầu đặt lại mật khẩu.' };
+    }
+  };
+
+  const handleVpsEmailPasswordResetVerify = async ({ challengeId, code }) => {
+    try {
+      return { success: true, ...(await getHdConnectStagingApi().verifyEmailPasswordReset({ challengeId, code })) };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.' };
+    }
+  };
+
+  const handleVpsEmailPasswordResetComplete = async (payload) => {
+    try {
+      await getHdConnectStagingApi().completeEmailPasswordReset(payload);
+      return { success: true, message: 'Đổi mật khẩu thành công. Bạn có thể đăng nhập bằng mật khẩu mới.' };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể đặt lại mật khẩu.' };
+    }
+  };
+
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
     if (isVpsStagingMode) {
@@ -15347,23 +15427,7 @@ export default function App() {
 
       try {
         const session = await getHdConnectStagingApi().login({ email, password });
-        const company = session.company || { id: session.user.companyId, name: '' };
-        setFirebaseUser(null);
-        setCurrentUser(session.user);
-        setCurrentCompany(company);
-        setRawCompanies([company]);
-        setRawEmployees([{ ...session.user, isArchived: false }]);
-        setActiveTab('home');
-        setRealtimeStatus({
-          state: 'polling',
-          collection: '',
-          lastAt: new Date().toISOString(),
-          error: '',
-        });
-        recordStartupEvent('auth.vps_staging_login.completed', {
-          durationMs: Date.now() - loginStartedAt,
-        });
-        return { success: true, identity: session.user };
+        return activateVpsSession(session, { startedAt: loginStartedAt });
       } catch (error) {
         recordStartupEvent('auth.vps_staging_login.failed', {
           durationMs: Date.now() - loginStartedAt,
@@ -22145,6 +22209,12 @@ export default function App() {
           onCompleteRecovery={handleIdentityCompleteRecovery}
           onCompleteIdentitySetup={handleIdentitySetup}
           onRequestOwnerReset={handleIdentityOwnerResetRequest}
+          onVpsEmailRegistrationStart={handleVpsEmailRegistrationStart}
+          onVpsEmailRegistrationVerify={handleVpsEmailRegistrationVerify}
+          onVpsEmailRegistrationComplete={handleVpsEmailRegistrationComplete}
+          onVpsEmailPasswordResetStart={handleVpsEmailPasswordResetStart}
+          onVpsEmailPasswordResetVerify={handleVpsEmailPasswordResetVerify}
+          onVpsEmailPasswordResetComplete={handleVpsEmailPasswordResetComplete}
           vpsStagingMode={isVpsStagingMode}
         />
       </>
@@ -86922,7 +86992,299 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, vpsStagingMode = false }) {
+function VpsEmailOtpInput({ value, onChange, disabled = false }) {
+  const refs = useRef([]);
+  const digits = `${value || ''}`.replace(/\D/g, '').slice(0, 6).padEnd(6, '').split('');
+
+  const setDigits = (nextDigits, focusIndex) => {
+    onChange(nextDigits.join('').replace(/\s/g, '').slice(0, 6));
+    if (Number.isInteger(focusIndex) && refs.current[focusIndex]) {
+      refs.current[focusIndex].focus();
+    }
+  };
+
+  const handleChange = (index, event) => {
+    const pasted = `${event.target.value || ''}`.replace(/\D/g, '');
+    const next = [...digits];
+    if (pasted.length > 1) {
+      pasted.slice(0, 6).split('').forEach((digit, offset) => {
+        if (index + offset < 6) next[index + offset] = digit;
+      });
+      setDigits(next, Math.min(index + pasted.length, 5));
+      return;
+    }
+    next[index] = pasted;
+    setDigits(next, pasted ? Math.min(index + 1, 5) : index);
+  };
+
+  return (
+    <div className="grid grid-cols-6 gap-2" aria-label="Mã xác minh gồm sáu chữ số">
+      {digits.map((digit, index) => (
+        <input
+          key={index}
+          ref={(element) => { refs.current[index] = element; }}
+          type="text"
+          inputMode="numeric"
+          autoComplete={index === 0 ? 'one-time-code' : 'off'}
+          maxLength={6}
+          value={digit}
+          disabled={disabled}
+          onChange={(event) => handleChange(index, event)}
+          onKeyDown={(event) => {
+            if (event.key === 'Backspace' && !digits[index] && index > 0) {
+              refs.current[index - 1]?.focus();
+            }
+          }}
+          className="min-w-0 rounded-xl border border-emerald-100 bg-white py-3 text-center text-lg font-extrabold tracking-normal outline-none focus:border-emerald-500 disabled:bg-slate-50"
+          aria-label={`Chữ số ${index + 1} của mã xác minh`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function VpsEmailAuthView({
+  onLogin,
+  onVpsEmailRegistrationStart,
+  onVpsEmailRegistrationVerify,
+  onVpsEmailRegistrationComplete,
+  onVpsEmailPasswordResetStart,
+  onVpsEmailPasswordResetVerify,
+  onVpsEmailPasswordResetComplete,
+}) {
+  const [screen, setScreen] = useState('login');
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [challengeId, setChallengeId] = useState('');
+  const [proof, setProof] = useState('');
+  const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resendAfter, setResendAfter] = useState(0);
+
+  const isRegister = screen.startsWith('register');
+  const isReset = screen.startsWith('reset');
+  const isOtpScreen = screen === 'register-otp' || screen === 'reset-otp';
+  const isPasswordScreen = screen === 'register-password' || screen === 'reset-password';
+
+  useEffect(() => {
+    if (!resendAfter) return undefined;
+    const timer = window.setInterval(() => {
+      setResendAfter((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendAfter]);
+
+  const clearSensitiveState = () => {
+    setOtp('');
+    setChallengeId('');
+    setProof('');
+    setPassword('');
+    setPasswordConfirm('');
+    setResendAfter(0);
+  };
+
+  const showScreen = (nextScreen) => {
+    setError('');
+    setMessage('');
+    if (nextScreen === 'login') clearSensitiveState();
+    setScreen(nextScreen);
+  };
+
+  const requireValidEmail = () => {
+    const normalized = `${email || ''}`.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      setError('Vui lòng nhập email hợp lệ.');
+      return null;
+    }
+    setEmail(normalized);
+    return normalized;
+  };
+
+  const beginOtp = async (flow) => {
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = flow === 'register'
+        ? await onVpsEmailRegistrationStart(normalizedEmail)
+        : await onVpsEmailPasswordResetStart(normalizedEmail);
+      if (!result?.success) throw new Error(result?.message || 'Không thể gửi mã xác minh.');
+      setChallengeId(result.challengeId || '');
+      setOtp('');
+      setProof('');
+      setResendAfter(Math.max(0, Number(result.resendAfterSeconds || 0)));
+      setMessage(flow === 'reset'
+        ? 'Nếu email này đã được đăng ký, chúng tôi đã gửi mã xác minh.'
+        : 'Mã xác minh đã được gửi đến email của bạn.');
+      setScreen(flow === 'register' ? 'register-otp' : 'reset-otp');
+    } catch (nextError) {
+      setError(nextError?.message || 'Không thể gửi mã xác minh. Vui lòng thử lại.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    if (!/^\d{6}$/.test(otp)) {
+      setError('Vui lòng nhập đủ 6 chữ số.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result = isRegister
+        ? await onVpsEmailRegistrationVerify({ challengeId, code: otp })
+        : await onVpsEmailPasswordResetVerify({ challengeId, code: otp });
+      if (!result?.success || !result?.proof) throw new Error(result?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.');
+      setProof(result.proof);
+      setOtp('');
+      setScreen(isRegister ? 'register-password' : 'reset-password');
+    } catch (nextError) {
+      setError(nextError?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendOtp = async () => {
+    if (resendAfter > 0 || busy) return;
+    await beginOtp(isRegister ? 'register' : 'reset');
+  };
+
+  const completePasswordStep = async () => {
+    if (password.length < 8) {
+      setError('Mật khẩu cần ít nhất 8 ký tự.');
+      return;
+    }
+    if (password !== passwordConfirm) {
+      setError('Mật khẩu xác nhận chưa khớp.');
+      return;
+    }
+    if (isRegister && (!companyName.trim() || !fullName.trim())) {
+      setError('Vui lòng nhập họ tên và tên công ty.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result = isRegister
+        ? await onVpsEmailRegistrationComplete({
+          challengeId,
+          proof,
+          companyName: companyName.trim(),
+          fullName: fullName.trim(),
+          password,
+        })
+        : await onVpsEmailPasswordResetComplete({ challengeId, proof, newPassword: password });
+      if (!result?.success) throw new Error(result?.message || 'Không thể hoàn tất xác minh email.');
+      if (isReset) {
+        setPassword('');
+        setPasswordConfirm('');
+        setProof('');
+        setChallengeId('');
+        setMessage(result.message || 'Đổi mật khẩu thành công. Bạn có thể đăng nhập lại.');
+        setScreen('login');
+      }
+    } catch (nextError) {
+      setError(nextError?.message || 'Không thể hoàn tất thao tác. Vui lòng xác minh lại email.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const login = async (event) => {
+    event.preventDefault();
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
+    if (!password) {
+      setError('Vui lòng nhập mật khẩu.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result = await onLogin(normalizedEmail, password);
+      if (!result?.success) throw new Error(result?.message || 'Không thể đăng nhập.');
+      setPassword('');
+    } catch (nextError) {
+      setError(nextError?.message || 'Không thể đăng nhập. Vui lòng thử lại.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const maskedEmail = email ? email.replace(/^(.)(.*)(@.*)$/, (_match, first, middle, domain) => `${first}${'*'.repeat(Math.min(Math.max(middle.length, 3), 8))}${domain}`) : 'email của bạn';
+  const title = screen === 'login' ? 'Đăng nhập' : isRegister ? 'Tạo tài khoản' : 'Đặt lại mật khẩu';
+  const submitLabel = screen === 'login'
+    ? 'Đăng nhập'
+    : isOtpScreen
+      ? 'Xác minh mã'
+      : isPasswordScreen
+        ? (isRegister ? 'Hoàn tất tạo tài khoản' : 'Đặt mật khẩu mới')
+        : 'Tiếp tục';
+
+  return (
+    <AppShell className="ios-web-login-shell hd-shell--auth flex flex-col items-center justify-center" data-auth-runtime="vps-staging">
+      <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
+        <div className="flex flex-col items-center justify-center mb-6">
+          <img src="/brand/hd-manager-logo-compact.png" alt="HD Manager" className="hd-login-brand-logo" />
+          <p className="mt-3 text-center text-[11px] font-semibold text-emerald-700">Đăng nhập an toàn bằng HD CONNECT</p>
+        </div>
+        <h1 className="text-xl font-bold text-center text-gray-800">{title}</h1>
+        {screen === 'login' && <p className="mt-2 text-center text-xs text-gray-500">Dùng email và mật khẩu tài khoản HD CONNECT của bạn.</p>}
+        {screen === 'register-email' && <p className="mt-2 text-center text-xs text-gray-500">Xác minh email trước khi tạo tài khoản và công ty.</p>}
+        {isOtpScreen && <p className="mt-2 text-center text-xs text-gray-500">Mã đã được gửi tới <strong>{maskedEmail}</strong>.</p>}
+        {isPasswordScreen && <p className="mt-2 text-center text-xs text-gray-500">Email đã được xác minh. Hãy hoàn tất thông tin an toàn.</p>}
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          if (screen === 'login') return login(event);
+          if (screen === 'register-email') return beginOtp('register');
+          if (screen === 'reset-email') return beginOtp('reset');
+          if (isOtpScreen) return verifyOtp();
+          return completePasswordStep();
+        }} className="mt-6 space-y-4">
+          {(screen === 'login' || screen === 'register-email' || screen === 'reset-email') && <>
+            <input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Email" autoComplete="email" inputMode="email" disabled={busy} />
+            {screen === 'login' && <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Mật khẩu" autoComplete="current-password" disabled={busy} />}
+          </>}
+          {isOtpScreen && <>
+            <VpsEmailOtpInput value={otp} onChange={(nextValue) => { setOtp(nextValue); setError(''); }} disabled={busy} />
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <button type="button" onClick={() => showScreen(isRegister ? 'register-email' : 'reset-email')} className="font-semibold text-gray-500 hover:text-gray-700">Đổi email</button>
+              <button type="button" onClick={resendOtp} disabled={busy || resendAfter > 0} className="font-extrabold text-emerald-700 disabled:text-gray-400">{resendAfter > 0 ? `Gửi lại sau ${resendAfter}s` : 'Gửi lại mã'}</button>
+            </div>
+          </>}
+          {isPasswordScreen && <>
+            {isRegister && <>
+              <input type="text" value={fullName} onChange={(event) => { setFullName(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Họ và tên" autoComplete="name" disabled={busy} />
+              <input type="text" value={companyName} onChange={(event) => { setCompanyName(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Tên công ty" autoComplete="organization" disabled={busy} />
+            </>}
+            <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder={isRegister ? 'Tạo mật khẩu' : 'Mật khẩu mới'} autoComplete="new-password" disabled={busy} />
+            <input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Nhập lại mật khẩu" autoComplete="new-password" disabled={busy} />
+          </>}
+          {error && <p className="rounded-xl bg-red-50 p-3 text-center text-xs font-semibold text-red-600" role="alert">{error}</p>}
+          {message && <p className="rounded-xl bg-emerald-50 p-3 text-center text-xs font-semibold text-emerald-700" role="status">{message}</p>}
+          <button type="submit" disabled={busy} className="w-full rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition active:scale-[0.98] disabled:bg-emerald-300">{busy ? 'Đang xử lý...' : submitLabel}</button>
+        </form>
+        {screen === 'login' && <div className="mt-5 flex items-center justify-between gap-3 text-xs">
+          <button type="button" onClick={() => showScreen('reset-email')} className="font-extrabold text-emerald-700 hover:text-emerald-800">Quên mật khẩu?</button>
+          <button type="button" onClick={() => showScreen('register-email')} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản</button>
+        </div>}
+        {screen !== 'login' && <button type="button" onClick={() => showScreen('login')} className="mt-5 w-full text-center text-xs font-extrabold text-gray-500 hover:text-gray-700">Quay lại đăng nhập</button>}
+      </div>
+      <p className="mt-6 px-8 text-center text-[10px] font-medium leading-relaxed text-gray-400">Mật khẩu và mã xác minh không được lưu trong ứng dụng.</p>
+    </AppShell>
+  );
+}
+
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -87096,6 +87458,20 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
 
   if (identitySetupContext) {
     return <IdentitySetupWizard context={identitySetupContext} onComplete={onCompleteIdentitySetup} />;
+  }
+
+  if (vpsStagingMode) {
+    return (
+      <VpsEmailAuthView
+        onLogin={onLogin}
+        onVpsEmailRegistrationStart={onVpsEmailRegistrationStart}
+        onVpsEmailRegistrationVerify={onVpsEmailRegistrationVerify}
+        onVpsEmailRegistrationComplete={onVpsEmailRegistrationComplete}
+        onVpsEmailPasswordResetStart={onVpsEmailPasswordResetStart}
+        onVpsEmailPasswordResetVerify={onVpsEmailPasswordResetVerify}
+        onVpsEmailPasswordResetComplete={onVpsEmailPasswordResetComplete}
+      />
+    );
   }
 
   return (

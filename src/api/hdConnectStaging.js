@@ -80,6 +80,62 @@ const requireIdentityInput = (value, code, message) => {
   return normalized;
 };
 
+const requireEmailOtpEmail = (value) => {
+  const email = requireIdentityInput(
+    value,
+    'EMAIL_OTP_EMAIL_REQUIRED',
+    'An email address is required.',
+  ).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HdApiError('The email address is invalid.', { code: 'EMAIL_OTP_EMAIL_INVALID' });
+  }
+  return email;
+};
+
+const requireEmailOtpChallengeId = (value) => {
+  const challengeId = requireIdentityInput(
+    value,
+    'EMAIL_OTP_CHALLENGE_REQUIRED',
+    'An email verification challenge is required.',
+  );
+  if (!isUuid(challengeId)) {
+    throw new HdApiError('The email verification challenge is invalid.', {
+      code: 'EMAIL_OTP_CHALLENGE_INVALID',
+    });
+  }
+  return challengeId;
+};
+
+const requireEmailOtpCode = (value) => {
+  const code = requireIdentityInput(value, 'EMAIL_OTP_CODE_REQUIRED', 'A six-digit verification code is required.');
+  if (!/^\d{6}$/.test(code)) {
+    throw new HdApiError('The verification code must contain six digits.', {
+      code: 'EMAIL_OTP_CODE_INVALID',
+    });
+  }
+  return code;
+};
+
+const requireEmailOtpProof = (value) => {
+  const proof = requireIdentityInput(value, 'EMAIL_OTP_PROOF_REQUIRED', 'A verified email proof is required.');
+  if (proof.length < 32) {
+    throw new HdApiError('The verified email proof is invalid.', {
+      code: 'EMAIL_OTP_PROOF_INVALID',
+    });
+  }
+  return proof;
+};
+
+const requireEmailOtpPassword = (value) => {
+  const password = requireIdentityInput(value, 'EMAIL_OTP_PASSWORD_REQUIRED', 'A password is required.');
+  if (password.length < 8) {
+    throw new HdApiError('The password must contain at least 8 characters.', {
+      code: 'EMAIL_OTP_PASSWORD_INVALID',
+    });
+  }
+  return password;
+};
+
 const normalizeVpsIdentitySession = (session = {}) => ({
   ...session,
   id: session.id,
@@ -614,6 +670,97 @@ export class HdConnectStagingApi {
 
   async logoutAll() {
     return this.client.logoutAll();
+  }
+
+  async startEmailRegistration(email) {
+    return this.sendEmailOtp('/auth/email-registration/start', { email });
+  }
+
+  async verifyEmailRegistration({ challengeId, code } = {}) {
+    return this.verifyEmailOtp('/auth/email-registration/verify', { challengeId, code });
+  }
+
+  async completeEmailRegistration({
+    challengeId,
+    proof,
+    companyName,
+    companyCode,
+    fullName,
+    password,
+    deviceName,
+  } = {}) {
+    const response = await this.client.post('/auth/email-registration/complete', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      proof: requireEmailOtpProof(proof),
+      companyName: requireIdentityInput(companyName, 'EMAIL_REGISTRATION_COMPANY_REQUIRED', 'A company name is required.'),
+      ...(stringValue(companyCode) ? { companyCode: stringValue(companyCode) } : {}),
+      fullName: requireIdentityInput(fullName, 'EMAIL_REGISTRATION_NAME_REQUIRED', 'A full name is required.'),
+      password: requireEmailOtpPassword(password),
+      ...(stringValue(deviceName) ? { deviceName: stringValue(deviceName) } : {}),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    this.client.setSession(response);
+    return normalizeVpsSession(response);
+  }
+
+  async startEmailPasswordReset(email) {
+    return this.sendEmailOtp('/auth/email-password-reset/start', { email });
+  }
+
+  async verifyEmailPasswordReset({ challengeId, code } = {}) {
+    return this.verifyEmailOtp('/auth/email-password-reset/verify', { challengeId, code });
+  }
+
+  async completeEmailPasswordReset({ challengeId, proof, newPassword } = {}) {
+    return this.client.post('/auth/email-password-reset/complete', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      proof: requireEmailOtpProof(proof),
+      newPassword: requireEmailOtpPassword(newPassword),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+  }
+
+  async startEmailChange(email) {
+    return this.sendEmailOtp('/auth/email-change/start', { email }, { authenticate: true });
+  }
+
+  async verifyEmailChange({ challengeId, code } = {}) {
+    return this.verifyEmailOtp('/auth/email-change/verify', { challengeId, code });
+  }
+
+  async completeEmailChange({ challengeId, proof } = {}) {
+    return this.client.post('/auth/email-change/complete', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      proof: requireEmailOtpProof(proof),
+    }, { retry: false });
+  }
+
+  async sendEmailOtp(path, { email } = {}, options = {}) {
+    return this.client.post(path, {
+      email: requireEmailOtpEmail(email),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+      ...options,
+    });
+  }
+
+  async verifyEmailOtp(path, { challengeId, code } = {}) {
+    return this.client.post(path, {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      code: requireEmailOtpCode(code),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
   }
 
   async requestPasswordReset(email) {
@@ -1280,6 +1427,13 @@ export const createVpsIdentitySecurityApi = (api = getHdConnectApi()) => ({
   }),
   identityChangePassword: ({ currentPassword, newPassword } = {}) => (
     api.changeIdentityPassword({ currentPassword, newPassword })
+  ),
+  identityStartEmailChange: (email) => api.startEmailChange(email),
+  identityVerifyEmailChange: ({ challengeId, code } = {}) => (
+    api.verifyEmailChange({ challengeId, code })
+  ),
+  identityCompleteEmailChange: ({ challengeId, proof } = {}) => (
+    api.completeEmailChange({ challengeId, proof })
   ),
   identityListDevices: async () => {
     const result = await api.listIdentitySessions();

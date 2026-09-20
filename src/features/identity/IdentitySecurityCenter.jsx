@@ -12,6 +12,9 @@ export default function IdentitySecurityCenter({
     getIdentityDevice,
     identityCompleteSetup,
     identityChangePassword,
+    identityStartEmailChange,
+    identityVerifyEmailChange,
+    identityCompleteEmailChange,
     identityDeleteAccount,
     identityListAudit,
     identityListDevices,
@@ -29,6 +32,10 @@ export default function IdentitySecurityCenter({
   const [currentPin, setCurrentPin] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [nextEmail, setNextEmail] = useState('');
+  const [emailChangeChallengeId, setEmailChangeChallengeId] = useState('');
+  const [emailChangeCode, setEmailChangeCode] = useState('');
+  const [emailChangeProof, setEmailChangeProof] = useState('');
   const [newPin, setNewPin] = useState('');
   const [newPinConfirm, setNewPinConfirm] = useState('');
   const [deletionPassword, setDeletionPassword] = useState('');
@@ -196,6 +203,82 @@ export default function IdentitySecurityCenter({
     }
   };
 
+  const resetEmailChangeState = () => {
+    setNextEmail('');
+    setEmailChangeChallengeId('');
+    setEmailChangeCode('');
+    setEmailChangeProof('');
+  };
+
+  const startEmailChange = async (event) => {
+    event.preventDefault();
+    const email = `${nextEmail || ''}`.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setSecurityStatus('Vui lòng nhập email mới hợp lệ.');
+      return;
+    }
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const result = await identityStartEmailChange(email);
+      setNextEmail(email);
+      setEmailChangeChallengeId(result.challengeId || '');
+      setEmailChangeCode('');
+      setEmailChangeProof('');
+      setActiveEditor('email-verify');
+      setSecurityStatus('Mã xác minh đã được gửi tới email mới.');
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể gửi mã xác minh email.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const verifyEmailChange = async (event) => {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(emailChangeCode)) {
+      setSecurityStatus('Mã xác minh cần gồm 6 chữ số.');
+      return;
+    }
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      const result = await identityVerifyEmailChange({
+        challengeId: emailChangeChallengeId,
+        code: emailChangeCode,
+      });
+      if (!result?.proof) throw new Error('Mã xác minh không hợp lệ hoặc đã hết hạn.');
+      setEmailChangeProof(result.proof);
+      setEmailChangeCode('');
+      setActiveEditor('email-complete');
+      setSecurityStatus('Email mới đã được xác minh.');
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Mã xác minh không hợp lệ hoặc đã hết hạn.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const completeEmailChange = async (event) => {
+    event.preventDefault();
+    setIsLoading(true);
+    setSecurityStatus('');
+    try {
+      await identityCompleteEmailChange({
+        challengeId: emailChangeChallengeId,
+        proof: emailChangeProof,
+      });
+      resetEmailChangeState();
+      setActiveEditor('');
+      setSecurityStatus('Đã đổi email. Vui lòng đăng nhập lại để tiếp tục.');
+      await onLogout?.();
+    } catch (error) {
+      setSecurityStatus(error?.message || 'Không thể đổi email. Vui lòng xác minh lại.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const formatAuditTime = (value) => {
     try {
       return new Date(value).toLocaleString('vi-VN');
@@ -224,16 +307,17 @@ export default function IdentitySecurityCenter({
             <>
               <div className="grid gap-2">
                 <div className="rounded-xl bg-slate-50 p-3 text-xs">
-                  <span className="block text-slate-500">Số điện thoại</span>
-                  <strong className="mt-1 block text-slate-800">{identityUser.phone || 'Chưa cập nhật'}</strong>
+                  <span className="block text-slate-500">{vpsMode ? 'Email' : 'Số điện thoại'}</span>
+                  <strong className="mt-1 block text-slate-800">{vpsMode ? (identityUser.email || 'Chưa cập nhật') : (identityUser.phone || 'Chưa cập nhật')}</strong>
                 </div>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
+                {vpsMode && <button type="button" onClick={() => { resetEmailChangeState(); setActiveEditor(activeEditor === 'email-start' ? '' : 'email-start'); }} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi email</button>}
                 {!vpsMode && <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>}
                 {!vpsMode && <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>}
               </div>
-              {activeEditor && (
+              {(activeEditor === 'password' || activeEditor === 'pin') && (
                 <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   {activeEditor === 'password' && (
                     <>
@@ -253,6 +337,24 @@ export default function IdentitySecurityCenter({
                     <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
                   )}
                   <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang lưu...' : 'Xác nhận thay đổi'}</button>
+                </form>
+              )}
+              {activeEditor === 'email-start' && (
+                <form onSubmit={startEmailChange} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <input type="email" value={nextEmail} onChange={event => setNextEmail(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="Email mới" autoComplete="email" />
+                  <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang gửi mã...' : 'Gửi mã xác minh'}</button>
+                </form>
+              )}
+              {activeEditor === 'email-verify' && (
+                <form onSubmit={verifyEmailChange} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <input type="text" inputMode="numeric" maxLength={6} value={emailChangeCode} onChange={event => setEmailChangeCode(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-center text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="Mã 6 số" autoComplete="one-time-code" />
+                  <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang xác minh...' : 'Xác minh email'}</button>
+                </form>
+              )}
+              {activeEditor === 'email-complete' && (
+                <form onSubmit={completeEmailChange} className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-xs leading-5 text-emerald-800">Email mới đã được xác minh. Xác nhận để cập nhật email và đăng xuất các phiên hiện có.</p>
+                  <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-emerald-700 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang cập nhật...' : 'Xác nhận đổi email'}</button>
                 </form>
               )}
               <div className="space-y-2">
