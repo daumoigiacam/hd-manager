@@ -13,8 +13,8 @@ test('routes the email registration contract through Platform without a Firebase
   const api = createHdConnectStagingApi({
     post: async (path, payload, options) => {
       calls.push({ path, payload, options });
-      if (path.endsWith('/start')) return { challengeId, resendAfterSeconds: 60 };
-      if (path.endsWith('/verify')) return { challengeId, proof };
+      if (path === '/auth/otp/request') return { challengeId, cooldownSeconds: 60 };
+      if (path === '/auth/otp/verify') return { challengeId, registrationToken: proof };
       return {
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
@@ -58,6 +58,7 @@ test('routes the email registration contract through Platform without a Firebase
   assert.equal(calls[2].payload.registrationToken, proof);
   assert.equal(calls[2].payload.email, 'owner@example.test');
   assert.equal(calls[2].payload.password, 'StrongPass123!');
+  assert.equal('companyCode' in calls[2].payload, false);
   assert.equal(calls[2].options.retry, false);
   assert.equal(storedSession.accessToken, 'access-token');
   assert.equal(session.user.companyId, 'company-1');
@@ -68,26 +69,44 @@ test('routes the neutral email password-reset contract and rejects bad OTP input
   const api = createHdConnectStagingApi({
     post: async (path, payload, options) => {
       calls.push({ path, payload, options });
-      if (path.endsWith('/start')) return { challengeId, resendAfterSeconds: 60 };
-      if (path.endsWith('/verify')) return { challengeId, proof };
+      if (path === '/auth/otp/request') return { challengeId, cooldownSeconds: 60 };
+      if (path === '/auth/otp/verify') return { challengeId, passwordResetToken: proof };
       return { reset: true };
     },
   });
 
   await api.startEmailPasswordReset('owner@example.test');
-  await api.verifyEmailPasswordReset({ challengeId, code: '123456' });
+  const verified = await api.verifyEmailPasswordReset({
+    challengeId,
+    code: '123456',
+    email: 'owner@example.test',
+  });
   await api.completeEmailPasswordReset({ challengeId, proof, newPassword: 'NewStrongPass123!' });
   await assert.rejects(
-    () => api.verifyEmailPasswordReset({ challengeId, code: '123' }),
+    () => api.verifyEmailPasswordReset({ challengeId, code: '123', email: 'owner@example.test' }),
     (error) => error instanceof HdApiError && error.code === 'EMAIL_OTP_CODE_INVALID',
   );
 
   assert.deepEqual(calls.map((call) => call.path), [
-    '/auth/email-password-reset/start',
-    '/auth/email-password-reset/verify',
-    '/auth/email-password-reset/complete',
+    '/auth/otp/request',
+    '/auth/otp/verify',
+    '/identity/password/reset',
   ]);
+  assert.deepEqual(calls[0].payload, {
+    channel: 'EMAIL',
+    email: 'owner@example.test',
+    purpose: 'PASSWORD_RESET',
+  });
+  assert.deepEqual(calls[1].payload, {
+    challengeId,
+    channel: 'EMAIL',
+    email: 'owner@example.test',
+    otp: '123456',
+    purpose: 'PASSWORD_RESET',
+  });
+  assert.equal(verified.proof, proof);
   assert.equal(calls[0].options.authenticate, false);
+  assert.equal(calls[2].payload.token, proof);
   assert.equal(calls[2].payload.newPassword, 'NewStrongPass123!');
 });
 

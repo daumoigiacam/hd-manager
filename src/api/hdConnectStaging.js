@@ -735,17 +735,42 @@ export class HdConnectStagingApi {
   }
 
   async startEmailPasswordReset(email) {
-    return this.sendEmailOtp('/auth/email-password-reset/start', { email });
+    const response = await this.client.post('/auth/otp/request', {
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      purpose: 'PASSWORD_RESET',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      resendAfterSeconds: response?.resendAfterSeconds ?? response?.cooldownSeconds ?? 0,
+    };
   }
 
-  async verifyEmailPasswordReset({ challengeId, code } = {}) {
-    return this.verifyEmailOtp('/auth/email-password-reset/verify', { challengeId, code });
-  }
-
-  async completeEmailPasswordReset({ challengeId, proof, newPassword } = {}) {
-    return this.client.post('/auth/email-password-reset/complete', {
+  async verifyEmailPasswordReset({ challengeId, code, email } = {}) {
+    const response = await this.client.post('/auth/otp/verify', {
       challengeId: requireEmailOtpChallengeId(challengeId),
-      proof: requireEmailOtpProof(proof),
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      otp: requireEmailOtpCode(code),
+      purpose: 'PASSWORD_RESET',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      proof: response?.passwordResetToken,
+    };
+  }
+
+  async completeEmailPasswordReset({ proof, newPassword } = {}) {
+    return this.client.post('/identity/password/reset', {
+      token: requireEmailOtpProof(proof),
       newPassword: requireEmailOtpPassword(newPassword),
     }, {
       authenticate: false,
