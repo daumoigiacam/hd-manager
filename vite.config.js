@@ -28,6 +28,9 @@ export default defineConfig(({ mode }) => {
   const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
   const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
   const vpsDataMode = `${env.VITE_DATA_MODE || ''}`.trim();
+  const devApiProxyTarget = `${env.HD_MANAGER_DEV_API_PROXY_TARGET || ''}`
+    .trim()
+    .replace(/\/+$/, '');
   // Only staging is allowed to replace the legacy Firebase core. A production
   // VPS flag is a compatibility mode: it keeps Firebase Auth/Firestore live so
   // unsupported VPS resources can never make the whole application unavailable.
@@ -132,6 +135,15 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       port: 5173,
+      proxy: devApiProxyTarget
+        ? {
+            '/api': {
+              target: devApiProxyTarget,
+              changeOrigin: true,
+              secure: true
+            }
+          }
+        : undefined,
       watch: {
         ignored: [
           '**/android/**',
