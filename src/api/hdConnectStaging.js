@@ -182,19 +182,27 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
     ? session.permissions
     : (currentUser?.permissions || []);
   const primaryRole = stringValue(roles[0] || sourceUser.role || 'employee').toLowerCase();
+  const isCustomerAccount = roles.some((role) => stringValue(role).toUpperCase() === 'CUSTOMER_PORTAL')
+    || primaryRole === 'customer'
+    || primaryRole === 'customer_portal';
+  const requiresPasswordChange = Boolean(sourceUser.mustChangePassword || session.requiresPasswordChange);
 
   return {
     user: {
       id: sourceUser.id,
       email: sourceUser.email || '',
+      phone: sourceUser.phone || '',
       name: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
       displayName: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
       companyId: company?.id || sourceUser.companyId || '',
       branchId: branch?.id || sourceUser.branchId || '',
-      role: primaryRole,
+      role: isCustomerAccount ? 'customer' : primaryRole,
       roles,
       permissions,
-      accountType: 'employee',
+      accountType: isCustomerAccount ? 'customer' : 'employee',
+      isCustomerAccount,
+      mustChangePassword: requiresPasswordChange,
+      securityPinConfigured: Boolean(sourceUser.securityPinConfigured),
       authProvider: 'hd-connect-vps',
     },
     company: company ? {
@@ -205,6 +213,7 @@ export const normalizeVpsSession = (session = {}, currentUser = null) => {
     branch: branch || null,
     roles,
     permissions,
+    requiresPasswordChange,
   };
 };
 
@@ -378,6 +387,12 @@ const toCustomerPayload = (record = {}) => {
     creditLimit: toFiniteNumber(record.creditLimit ?? record.debtLimitAmount),
     status: ['ACTIVE', 'INACTIVE', 'BLOCKED'].includes(stringValue(record.status).toUpperCase())
       ? stringValue(record.status).toUpperCase()
+      : undefined,
+    account: record.account?.password
+      ? {
+        phone: stringValue(record.account.phone || record.phone),
+        password: `${record.account.password}`,
+      }
       : undefined,
     attributes: {
       ...normalizeAttributes(record),
@@ -654,8 +669,12 @@ export class HdConnectStagingApi {
     this.client = client;
   }
 
-  async login({ email, password, deviceName } = {}) {
-    return normalizeVpsSession(await this.client.login({ email, password, deviceName }));
+  async login({ identifier, email, phone, password, deviceName } = {}) {
+    return normalizeVpsSession(await this.client.login({
+      identifier: identifier || email || phone,
+      password,
+      deviceName,
+    }));
   }
 
   async restoreSession() {
@@ -938,6 +957,17 @@ export class HdConnectStagingApi {
 
   async deleteCustomer(id) {
     return this.client.delete(`/master-data/customers/${id}`, { retry: false });
+  }
+
+  async createCustomerPortalAccount(customerId, { phone, password } = {}) {
+    return this.client.post('/cx-suite/portal/accounts', {
+      customerId,
+      phone: stringValue(phone),
+      password: `${password || ''}`,
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
   }
 
   async listUnits(query = {}) {
@@ -1277,6 +1307,37 @@ export class HdConnectStagingApi {
 
   async createEmployee(record = {}) {
     return this.client.post('/hr-suite/employees', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async createManagerEmployee({ requestId, profile, account } = {}) {
+    const mutationId = stringValue(requestId) || createRequestId();
+    return this.client.post('/hr-suite/manager-employees', omitUndefined({
+      requestId: mutationId,
+      profile: profile || {},
+      account: account?.password ? { password: `${account.password}` } : undefined,
+    }), {
+      idempotencyKey: mutationId,
+      retry: false,
+    });
+  }
+
+  async updateManagerEmployee(id, { version, profile } = {}) {
+    return this.client.patch(`/hr-suite/manager-employees/${id}`, {
+      version,
+      profile: profile || {},
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
+  }
+
+  async enrollManagerEmployeeAccount(id, { password } = {}) {
+    return this.client.post(`/hr-suite/manager-employees/${id}/account`, {
+      password: `${password || ''}`,
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
   }
 
   async updateEmployee(id, record = {}) {

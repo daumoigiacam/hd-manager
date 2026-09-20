@@ -13110,6 +13110,7 @@ export default function App() {
       try {
         const session = await getHdConnectStagingApi().restoreSession();
         if (cancelled || !session) return;
+        if (session.requiresPasswordChange) return;
 
         const company = session.company || {
           id: session.user.companyId,
@@ -15417,16 +15418,40 @@ export default function App() {
     }
   };
 
+  const handleVpsInitialPasswordChange = async ({ currentPassword, newPassword }) => {
+    try {
+      const api = getHdConnectStagingApi();
+      await api.changeIdentityPassword({ currentPassword, newPassword });
+      const session = await api.restoreSession();
+      if (!session || session.requiresPasswordChange) {
+        return { success: false, message: 'Mật khẩu đã đổi nhưng phiên đăng nhập chưa được xác nhận. Vui lòng đăng nhập lại.' };
+      }
+      return activateVpsSession(session, { source: 'initial_password_change' });
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không thể đổi mật khẩu tạm.' };
+    }
+  };
+
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
     if (isVpsStagingMode) {
-      const email = `${identifier || ''}`.trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || `${password || ''}`.length < 8) {
-        return { success: false, message: 'Enter a valid email address and a password with at least 8 characters.' };
+      const normalizedIdentifier = `${identifier || ''}`.trim();
+      const isEmailIdentifier = normalizedIdentifier.includes('@');
+      const loginIdentifier = isEmailIdentifier
+        ? normalizedIdentifier.toLowerCase()
+        : normalizeEmployeeLoginPhone(normalizedIdentifier);
+      const isValidIdentifier = isEmailIdentifier
+        ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginIdentifier)
+        : loginIdentifier.length >= 9 && loginIdentifier.length <= 11;
+      if (!isValidIdentifier || `${password || ''}`.length < 8) {
+        return { success: false, message: 'Nhập email hoặc số điện thoại hợp lệ và mật khẩu tối thiểu 8 ký tự.' };
       }
 
       try {
-        const session = await getHdConnectStagingApi().login({ email, password });
+        const session = await getHdConnectStagingApi().login({ identifier: loginIdentifier, password });
+        if (session.requiresPasswordChange) {
+          return { success: true, requiresPasswordChange: true };
+        }
         return activateVpsSession(session, { startedAt: loginStartedAt });
       } catch (error) {
         recordStartupEvent('auth.vps_staging_login.failed', {
@@ -18208,15 +18233,68 @@ export default function App() {
   };
 
   const handleAddEmployee = async (newEmpData) => {
+    if (isVpsStagingMode) {
+      const normalizedPosition = normalizeEmployeePosition(newEmpData.position);
+      const normalizedPhone = normalizeEmployeeLoginPhone(newEmpData.phone);
+      if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+      const duplicatedEmployee = rawEmployees.find(emp => isSameLoginPhone(emp.phone, normalizedPhone));
+      if (duplicatedEmployee) return { success: false, message: 'Số điện thoại này đã thuộc một nhân sự khác.' };
+      const {
+        account,
+        createLogin: _createLogin,
+        loginPassword: _loginPassword,
+        loginPasswordConfirm: _loginPasswordConfirm,
+        ...profile
+      } = newEmpData;
+      try {
+        const result = await getHdConnectStagingApi().createManagerEmployee({
+          requestId: globalThis.crypto?.randomUUID?.() || `employee-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          profile: {
+            ...profile,
+            phone: normalizedPhone,
+            position: normalizedPosition,
+          },
+          account,
+        });
+        const employeeData = {
+          ...profile,
+          ...(result.profile || {}),
+          id: result.id,
+          companyId: result.companyId || myCompanyId,
+          userId: result.userId || null,
+          identityStatus: result.identityStatus || (result.userId ? 'ACTIVE_PASSWORD_CHANGE_REQUIRED' : 'PROFILE_ONLY'),
+          version: result.version || '',
+          phone: normalizedPhone,
+          position: normalizedPosition,
+          isArchived: false,
+        };
+        setRawEmployees(prev => [...prev.filter(emp => emp.id !== employeeData.id), employeeData]);
+        return {
+          success: true,
+          message: account
+            ? 'Đã tạo nhân sự và cấp đăng nhập bằng số điện thoại. Nhân sự phải đổi mật khẩu ở lần đăng nhập đầu tiên.'
+            : 'Đã tạo hồ sơ nhân sự.',
+        };
+      } catch (error) {
+        return { success: false, message: error?.message || 'Không thể tạo nhân sự trên VPS.' };
+      }
+    }
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const {
+      account: _account,
+      createLogin: _createLogin,
+      loginPassword: _loginPassword,
+      loginPasswordConfirm: _loginPasswordConfirm,
+      ...safeEmployeeData
+    } = newEmpData;
     const id = Date.now().toString();
-    const normalizedPosition = normalizeEmployeePosition(newEmpData.position);
-    const normalizedPhone = normalizeEmployeeLoginPhone(newEmpData.phone);
+    const normalizedPosition = normalizeEmployeePosition(safeEmployeeData.position);
+    const normalizedPhone = normalizeEmployeeLoginPhone(safeEmployeeData.phone);
     if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ để nhân sự đăng nhập.' };
     const duplicatedEmployee = rawEmployees.find(emp => isSameLoginPhone(emp.phone, normalizedPhone));
     if (duplicatedEmployee) return { success: false, message: 'Số điện thoại này đã có tài khoản. Vui lòng dùng số khác.' };
     const employeeData = {
-      ...newEmpData,
+      ...safeEmployeeData,
       phone: normalizedPhone,
       position: normalizedPosition,
       role: newEmpData.role || (isOwnerPosition(normalizedPosition) ? 'super_admin' : 'employee'),
@@ -18229,8 +18307,61 @@ export default function App() {
   };
 
   const handleEditEmployee = async (empId, updatedData) => {
+    if (isVpsStagingMode) {
+      const currentEmployee = rawEmployees.find(emp => emp.id === empId);
+      if (!currentEmployee) return { success: false, message: 'Không tìm thấy nhân sự trong công ty hiện tại.' };
+      const {
+        account,
+        createLogin: _createLogin,
+        loginPassword: _loginPassword,
+        loginPasswordConfirm: _loginPasswordConfirm,
+        ...profilePatch
+      } = updatedData || {};
+      const nextPhone = normalizeEmployeeLoginPhone(profilePatch.phone ?? currentEmployee.phone);
+      if (!nextPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
+      const duplicatedEmployee = rawEmployees.find(emp => emp.id !== empId && isSameLoginPhone(emp.phone, nextPhone));
+      if (duplicatedEmployee) return { success: false, message: 'Số điện thoại này đã thuộc một nhân sự khác.' };
+      if (account && !isSameLoginPhone(currentEmployee.phone, nextPhone)) {
+        return { success: false, message: 'Hãy lưu số điện thoại mới trước, sau đó mở lại hồ sơ để cấp quyền đăng nhập.' };
+      }
+      try {
+        let result = await getHdConnectStagingApi().updateManagerEmployee(empId, {
+          version: currentEmployee.version || currentEmployee.updatedAt,
+          profile: { ...currentEmployee, ...profilePatch, phone: nextPhone },
+        });
+        if (account) {
+          result = await getHdConnectStagingApi().enrollManagerEmployeeAccount(empId, account);
+        }
+        const employeeData = {
+          ...currentEmployee,
+          ...profilePatch,
+          ...(result.profile || {}),
+          id: result.id || empId,
+          companyId: result.companyId || currentEmployee.companyId || myCompanyId,
+          userId: result.userId ?? currentEmployee.userId ?? null,
+          identityStatus: result.identityStatus || currentEmployee.identityStatus || 'PROFILE_ONLY',
+          version: result.version || currentEmployee.version || '',
+          phone: nextPhone,
+        };
+        setRawEmployees(prev => prev.map(emp => emp.id === empId ? employeeData : emp));
+        return {
+          success: true,
+          message: account
+            ? 'Đã liên kết tài khoản đăng nhập với hồ sơ nhân sự hiện tại.'
+            : 'Đã lưu hồ sơ nhân sự.',
+        };
+      } catch (error) {
+        return { success: false, message: error?.message || 'Không thể lưu hồ sơ nhân sự trên VPS.' };
+      }
+    }
     if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    const employeePayload = { ...updatedData };
+    const {
+      account: _account,
+      createLogin: _createLogin,
+      loginPassword: _loginPassword,
+      loginPasswordConfirm: _loginPasswordConfirm,
+      ...employeePayload
+    } = updatedData || {};
     if (updatedData?.phone !== undefined) {
       const normalizedPhone = normalizeEmployeeLoginPhone(updatedData.phone);
       if (!normalizedPhone) return { success: false, message: 'Vui lòng nhập số điện thoại hợp lệ.' };
@@ -18395,12 +18526,15 @@ export default function App() {
         throw new Error(`This phone number already belongs to ${duplicatedCustomer.name || 'an existing customer'}.`);
       }
 
-      const savedCustomer = await getHdConnectStagingApi().createCustomer({
+      const createdCustomer = await getHdConnectStagingApi().createCustomer({
         ...customerData,
         name: customerName,
         empId: assignedEmpId,
         clientMutationId: customerData.clientMutationId || `customer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
+      const savedCustomer = customerData.account
+        ? { ...createdCustomer, identityStatus: 'ACTIVE_PASSWORD_CHANGE_REQUIRED' }
+        : createdCustomer;
       upsertLocalListRecord(setRawCustomers, savedCustomer);
       return savedCustomer.id;
     }
@@ -18473,15 +18607,30 @@ export default function App() {
         throw new Error(`This phone number already belongs to ${duplicatedCustomer.name || 'an existing customer'}.`);
       }
 
-      const savedCustomer = await getHdConnectStagingApi().updateCustomer(customerId, {
+      const { account, ...customerPatch } = updatedData || {};
+      if (account && buildCustomerPhoneDuplicateKey(currentCustomer.phone) !== normalizedPhone) {
+        throw new Error('Hãy lưu số điện thoại mới trước, sau đó mở lại hồ sơ để cấp quyền đăng nhập.');
+      }
+      let savedCustomer = await getHdConnectStagingApi().updateCustomer(customerId, {
         ...currentCustomer,
-        ...updatedData,
-        name: updatedData?.name === undefined
+        ...customerPatch,
+        name: customerPatch?.name === undefined
           ? currentCustomer.name
-          : toTitleCase(stripCustomerHonorificPrefix(updatedData.name || '')).trim(),
+          : toTitleCase(stripCustomerHonorificPrefix(customerPatch.name || '')).trim(),
         phone: nextPhone,
-        clientMutationId: updatedData?.clientMutationId || `customer-${customerId}-${Date.now()}`,
+        clientMutationId: customerPatch?.clientMutationId || `customer-${customerId}-${Date.now()}`,
       });
+      if (account) {
+        const identity = await getHdConnectStagingApi().createCustomerPortalAccount(customerId, {
+          phone: nextPhone,
+          password: account.password,
+        });
+        savedCustomer = {
+          ...savedCustomer,
+          userId: identity.userId,
+          identityStatus: identity.identityStatus || 'ACTIVE_PASSWORD_CHANGE_REQUIRED',
+        };
+      }
       upsertLocalListRecord(setRawCustomers, savedCustomer);
       return savedCustomer;
     }
@@ -22215,6 +22364,7 @@ export default function App() {
           onVpsEmailPasswordResetStart={handleVpsEmailPasswordResetStart}
           onVpsEmailPasswordResetVerify={handleVpsEmailPasswordResetVerify}
           onVpsEmailPasswordResetComplete={handleVpsEmailPasswordResetComplete}
+          onVpsInitialPasswordChange={handleVpsInitialPasswordChange}
           vpsStagingMode={isVpsStagingMode}
         />
       </>
@@ -24532,6 +24682,7 @@ function MainAppView({
       );
       case 'employees': return (
         <EmployeeView
+          isVpsMode={isVpsMode}
           currentEmployee={employee}
           currentCompany={currentCompany}
           employees={employees}
@@ -71924,6 +72075,34 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
                   <span>Số điện thoại này đã có ở {getDuplicateCustomerDisplayName(newCustomerPhoneDuplicate)}. Vui lòng kiểm tra lại để tránh tạo trùng.</span>
                 </div>
               )}
+              {accountLoginEnabled && (
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
+                  <label className="flex cursor-pointer items-center justify-between gap-3">
+                    <span>
+                      <span className="block text-sm font-black text-slate-900">Cho phép khách hàng đăng nhập</span>
+                      <span className="mt-1 block text-[11px] leading-relaxed text-slate-500">Khách đăng nhập bằng số điện thoại trên hồ sơ và chỉ thấy dữ liệu được cấp cho cổng khách hàng.</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(newCus.createLogin)}
+                      onChange={(event) => setNewCus(prev => ({
+                        ...prev,
+                        createLogin: event.target.checked,
+                        loginPassword: event.target.checked ? prev.loginPassword : '',
+                        loginPasswordConfirm: event.target.checked ? prev.loginPasswordConfirm : '',
+                      }))}
+                      className="h-5 w-5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                  </label>
+                  {newCus.createLogin && (
+                    <div className="mt-3 grid gap-2">
+                      <input type="password" value={newCus.loginPassword} onChange={(event) => setNewCus(prev => ({ ...prev, loginPassword: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Mật khẩu tạm" autoComplete="new-password" />
+                      <input type="password" value={newCus.loginPasswordConfirm} onChange={(event) => setNewCus(prev => ({ ...prev, loginPasswordConfirm: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Nhập lại mật khẩu" autoComplete="new-password" />
+                      <p className="text-[11px] leading-relaxed text-emerald-700">Khách phải đổi mật khẩu ở lần đầu đăng nhập. Không cần SMS OTP.</p>
+                    </div>
+                  )}
+                </div>
+              )}
               <input type="text" value={newCus.address} onChange={e=>setNewCus({...newCus, address: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Địa chỉ giao hàng" />
               <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-2">
                 <div className="flex gap-2">
@@ -71977,7 +72156,8 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
   );
 }
 
-function CustomerCRMView({ employee, currentCompany, customers, orders, payments, paymentReconciliations = [], customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, onOpenOrder = () => false, canOpenOrderDetails = false, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
+function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customers, orders, payments, paymentReconciliations = [], customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, onOpenOrder = () => false, canOpenOrderDetails = false, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
+  const accountLoginEnabled = isVpsMode || isVpsStagingMode;
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
   const [showCustomerQuickActions, setShowCustomerQuickActions] = useState(false);
@@ -71995,7 +72175,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const [orderMonth, setOrderMonth] = useState('');
   const [orderSort, setOrderSort] = useState('newest');
   const [debtShareStatus, setDebtShareStatus] = useState('');
-  const [customerEditForm, setCustomerEditForm] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: '', zaloContact: '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', purchaseReconciliationEnabled: false, openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '' });
+  const [customerEditForm, setCustomerEditForm] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: '', zaloContact: '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', purchaseReconciliationEnabled: false, openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
   const [showCustomerEditForm, setShowCustomerEditForm] = useState(false);
   const [customerEditStatus, setCustomerEditStatus] = useState('');
   const [isSavingCustomerProfile, setIsSavingCustomerProfile] = useState(false);
@@ -72125,7 +72305,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
     }),
     [allActiveCustomers, canViewAssignedCustomerList, canViewEveryCustomer, driverAssignedCustomerIdSet, employee?.id, isDeliveryParticipant, isOwnerCustomerAccount, isSales, salesVisibleEmployeeIdSet]
   );
-  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '' });
+  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
   const [newCustomerProductIds, setNewCustomerProductIds] = useState([]);
   const [newCustomerProductSearch, setNewCustomerProductSearch] = useState('');
   const activeProductsForPricing = useMemo(() => products.filter(product => !product.isArchived), [products]);
@@ -72797,7 +72977,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       setSavingCustomerLoanReturnId('');
       setSavingCustomerLoanEditId('');
       setCustomerPriceDirty(false);
-      setCustomerEditForm({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloContact: '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '' });
+      setCustomerEditForm({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloContact: '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
       setShowCustomerEditForm(false);
       setIsCustomerFixedProductsOpen(true);
       setCustomerDetailOpenSections({});
@@ -72859,7 +73039,10 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         openingDebtAmount: getCustomerOpeningDebtAmount(sourceCustomer || {}),
         openingDebtNote: sourceCustomer?.openingDebtNote || sourceCustomer?.oldDebtNote || '',
         openingPayableAmount: getCustomerOpeningPayableAmount(sourceCustomer || {}),
-        openingPayableNote: sourceCustomer?.openingPayableNote || sourceCustomer?.oldPayableNote || sourceCustomer?.companyOpeningDebtNote || ''
+        openingPayableNote: sourceCustomer?.openingPayableNote || sourceCustomer?.oldPayableNote || sourceCustomer?.companyOpeningDebtNote || '',
+        createLogin: false,
+        loginPassword: '',
+        loginPasswordConfirm: ''
       });
     }
     if (!isSameCustomerRefresh) {
@@ -73239,7 +73422,7 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
   const closeAddCustomerModal = () => {
     setShowAddCustomer(false);
     setCustomerContactStatus('');
-    setNewCus({ customerHonorific: '', name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '' });
+    setNewCus({ customerHonorific: '', name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
     setNewCustomerProductIds([]);
     setNewCustomerProductSearch('');
     if (typeof window !== 'undefined' && window.history?.state?.modal === 'add_customer') {
@@ -73306,6 +73489,16 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       setCustomerContactStatus(`Số điện thoại này đã có trong danh sách khách hàng: ${getDuplicateCustomerDisplayName(newCustomerPhoneDuplicate)}. Vui lòng kiểm tra lại trước khi lưu.`);
       return;
     }
+    if (accountLoginEnabled && newCus.createLogin) {
+      if (`${newCus.loginPassword || ''}`.length < 8) {
+        setCustomerContactStatus('Mật khẩu tạm cần ít nhất 8 ký tự.');
+        return;
+      }
+      if (newCus.loginPassword !== newCus.loginPasswordConfirm) {
+        setCustomerContactStatus('Mật khẩu nhập lại chưa khớp.');
+        return;
+      }
+    }
     setCustomerContactStatus('');
     try {
       const validProductIds = new Set(activeProductsForPricing.map(product => product.id));
@@ -73332,10 +73525,13 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         openingPayableNote: `${newCus.openingPayableNote || ''}`.trim(),
         allowedDriverIds: [],
         driverDebtAccessEnabled: false,
-        customerProductIds: fixedProductIds
+        customerProductIds: fixedProductIds,
+        account: accountLoginEnabled && newCus.createLogin
+          ? { phone: newCus.phone, password: newCus.loginPassword }
+          : undefined
       });
       closeAddCustomerModal();
-      setNewCus({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '' });
+      setNewCus({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
       setNewCustomerProductIds([]);
       setNewCustomerProductSearch('');
       setCustomerContactStatus('');
@@ -73787,6 +73983,20 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       setCustomerEditStatus(`Số điện thoại này đã trùng với khách hàng: ${getDuplicateCustomerDisplayName(customerEditPhoneDuplicate)}. Vui lòng kiểm tra lại trước khi lưu.`);
       return;
     }
+    if (accountLoginEnabled && customerEditForm.createLogin) {
+      if (`${customerEditForm.loginPassword || ''}`.length < 8) {
+        setCustomerEditStatus('Mật khẩu tạm cần ít nhất 8 ký tự.');
+        return;
+      }
+      if (customerEditForm.loginPassword !== customerEditForm.loginPasswordConfirm) {
+        setCustomerEditStatus('Mật khẩu nhập lại chưa khớp.');
+        return;
+      }
+      if (buildCustomerPhoneDuplicateKey(selectedCustomer.phone) !== buildCustomerPhoneDuplicateKey(customerEditForm.phone)) {
+        setCustomerEditStatus('Hãy lưu số điện thoại mới trước, sau đó mở lại hồ sơ để cấp quyền đăng nhập.');
+        return;
+      }
+    }
     setIsSavingCustomerProfile(true);
     setCustomerEditStatus('');
     try {
@@ -73794,6 +74004,9 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
       const normalizedLocationFields = normalizeCustomerLocationFields(locationPayload || customerEditForm.locationInput, customerEditForm.address, 'company_customer_profile');
       const openingDebtAmount = normalizeCustomerOpeningDebtAmount(customerEditForm.openingDebtAmount);
       const openingPayableAmount = normalizeCustomerOpeningPayableAmount(customerEditForm.openingPayableAmount);
+      const loginAccount = accountLoginEnabled && customerEditForm.createLogin
+        ? { phone: customerEditForm.phone, password: customerEditForm.loginPassword }
+        : null;
       const updatedCustomerProfile = {
         name: toTitleCase(customerEditForm.name),
         phone: `${customerEditForm.phone || ''}`.trim(),
@@ -73813,13 +74026,20 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
         openingPayableNote: `${customerEditForm.openingPayableNote || ''}`.trim()
       };
       await onEditCustomer(selectedCustomer.id, {
-        ...updatedCustomerProfile
+        ...updatedCustomerProfile,
+        ...(loginAccount ? { account: loginAccount } : {})
       });
       selectedCustomerSnapshotRef.current = {
         ...(selectedCustomerSnapshotRef.current || selectedCustomer),
         ...updatedCustomerProfile
       };
       setCustomerEditStatus('Đã cập nhật thông tin khách hàng.');
+      setCustomerEditForm(prev => ({
+        ...prev,
+        createLogin: false,
+        loginPassword: '',
+        loginPasswordConfirm: '',
+      }));
     } catch (error) {
       setCustomerEditStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật thông tin khách hàng.'));
     } finally {
@@ -74679,6 +74899,43 @@ function CustomerCRMView({ employee, currentCompany, customers, orders, payments
                 placeholder="Ví dụ: Đại lý, VIP, Tạp hóa"
               />
             </div>
+            {accountLoginEnabled && (
+              <div className="col-span-2 rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
+                {selectedCustomer?.userId ? (
+                  <div>
+                    <p className="text-sm font-black text-emerald-800">Đã liên kết tài khoản</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-emerald-700">Khách hàng có thể đăng nhập bằng số điện thoại trong hồ sơ.</p>
+                  </div>
+                ) : (
+                  <>
+                    <label className="flex cursor-pointer items-center justify-between gap-3">
+                      <span>
+                        <span className="block text-sm font-black text-slate-900">Liên kết đăng nhập bằng số điện thoại</span>
+                        <span className="mt-1 block text-[11px] leading-relaxed text-slate-500">Tài khoản được gắn vào đúng khách hàng hiện tại; đơn hàng và công nợ không bị tách.</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(customerEditForm.createLogin)}
+                        onChange={(event) => setCustomerEditForm(prev => ({
+                          ...prev,
+                          createLogin: event.target.checked,
+                          loginPassword: event.target.checked ? prev.loginPassword : '',
+                          loginPasswordConfirm: event.target.checked ? prev.loginPasswordConfirm : '',
+                        }))}
+                        className="h-5 w-5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                    </label>
+                    {customerEditForm.createLogin && (
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <input type="password" value={customerEditForm.loginPassword} onChange={(event) => setCustomerEditForm(prev => ({ ...prev, loginPassword: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Mật khẩu tạm" autoComplete="new-password" />
+                        <input type="password" value={customerEditForm.loginPasswordConfirm} onChange={(event) => setCustomerEditForm(prev => ({ ...prev, loginPasswordConfirm: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Nhập lại mật khẩu" autoComplete="new-password" />
+                        <p className="sm:col-span-2 text-[11px] leading-relaxed text-emerald-700">Khách phải đổi mật khẩu ở lần đăng nhập đầu tiên. Không cần SMS OTP.</p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             <div className="col-span-2">
               <label className="block text-xs font-bold text-gray-500 mb-1">Địa chỉ giao hàng</label>
               <textarea
@@ -76849,6 +77106,9 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
   return {
     name: '',
     phone: '',
+    createLogin: false,
+    loginPassword: '',
+    loginPasswordConfirm: '',
     avatarUrl: '',
     position,
     secondaryPositions: [],
@@ -78248,6 +78508,7 @@ function HolidayConfigCard({
 }
 
 function EmployeeView({
+  isVpsMode = false,
   currentEmployee = null,
   currentCompany = {},
   employees,
@@ -78641,6 +78902,9 @@ function EmployeeView({
     ]).filter(position => position && position !== primaryPosition && !isOwnerPosition(position));
     setEmpData({ 
       name: emp.name, phone: emp.phone, position: primaryPosition,
+      createLogin: false,
+      loginPassword: '',
+      loginPasswordConfirm: '',
       secondaryPositions,
       roleSalaryComponents: salaryRows.map(row => ({ ...row, amount: row.amount ? `${row.amount}` : '' })),
       startDate: emp.startDate || getTodayString(), 
@@ -78691,6 +78955,24 @@ function EmployeeView({
       setEmployeeStatus('Vui lòng nhập tọa độ GPS hợp lệ cho vị trí chấm công cố định, ví dụ: 10.123456, 106.123456.');
       return;
     }
+    if (isVpsMode && empData.createLogin) {
+      if (`${empData.loginPassword || ''}`.length < 8) {
+        setEmployeeStatus('Mật khẩu tạm cần ít nhất 8 ký tự.');
+        return;
+      }
+      if (empData.loginPassword !== empData.loginPasswordConfirm) {
+        setEmployeeStatus('Mật khẩu nhập lại chưa khớp.');
+        return;
+      }
+      if (editingEmp?.userId) {
+        setEmployeeStatus('Nhân sự này đã có tài khoản đăng nhập.');
+        return;
+      }
+      if (editingEmp && !isSameLoginPhone(editingEmp.phone, empData.phone)) {
+        setEmployeeStatus('Hãy lưu số điện thoại mới trước, sau đó mở lại hồ sơ để cấp quyền đăng nhập.');
+        return;
+      }
+    }
     const shiftDefaults = getPositionShiftDefaults(normalizedPosition);
     const normalizedShiftStart = normalizeTimeInputValue(empData.shiftStart) || shiftDefaults.shiftStart;
     const normalizedShiftEnd = normalizeTimeInputValue(empData.shiftEnd) || shiftDefaults.shiftEnd;
@@ -78740,6 +79022,9 @@ function EmployeeView({
       attendanceLocationRadiusMeters: Math.max(1, parseInt(empData.attendanceLocationRadiusMeters, 10) || DEFAULT_ATTENDANCE_LOCATION_RADIUS_METERS),
       employeeDocuments: normalizeEmployeeDocuments(empData.employeeDocuments)
     };
+    if (isVpsMode && empData.createLogin) {
+      pData.account = { password: empData.loginPassword };
+    }
     if (editingEmp) {
       if (!canEditEmployeeSalaryPolicy) {
         Object.assign(pData, {
@@ -79374,6 +79659,43 @@ function EmployeeView({
                   </select>
                 )}
               </div>
+              {isVpsMode && !isEditingOwner && (
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
+                  {editingEmp?.userId ? (
+                    <div>
+                      <p className="text-sm font-black text-emerald-800">Đã liên kết tài khoản</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-emerald-700">Nhân sự có thể đăng nhập bằng số điện thoại trong hồ sơ và quyền được áp dụng theo bộ phận.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <label className="flex cursor-pointer items-center justify-between gap-3">
+                        <span>
+                          <span className="block text-sm font-black text-slate-900">Cho phép đăng nhập bằng số điện thoại</span>
+                          <span className="mt-1 block text-[11px] leading-relaxed text-slate-500">Tài khoản được gắn vào đúng hồ sơ này nên dữ liệu và vai trò vẫn được giữ nguyên.</span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(empData.createLogin)}
+                          onChange={(event) => setEmpData(prev => ({
+                            ...prev,
+                            createLogin: event.target.checked,
+                            loginPassword: event.target.checked ? prev.loginPassword : '',
+                            loginPasswordConfirm: event.target.checked ? prev.loginPasswordConfirm : '',
+                          }))}
+                          className="h-5 w-5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                      </label>
+                      {empData.createLogin && (
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <input type="password" value={empData.loginPassword} onChange={(event) => setEmpData(prev => ({ ...prev, loginPassword: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Mật khẩu tạm" autoComplete="new-password" />
+                          <input type="password" value={empData.loginPasswordConfirm} onChange={(event) => setEmpData(prev => ({ ...prev, loginPasswordConfirm: event.target.value }))} className="w-full rounded-xl border border-emerald-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400" placeholder="Nhập lại mật khẩu" autoComplete="new-password" />
+                          <p className="sm:col-span-2 text-[11px] leading-relaxed text-emerald-700">Người dùng phải đổi mật khẩu ở lần đăng nhập đầu tiên. Không cần SMS OTP.</p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
               <p className="text-[11px] text-gray-500 leading-relaxed">{isEditingOwner ? 'Tài khoản chủ doanh nghiệp là tài khoản gốc của công ty và không tạo thêm từ màn này.' : 'Bộ phận được chọn sẽ quyết định quyền truy cập và màn hình mặc định của tài khoản này.'}</p>
               {editingEmp && !isEditingOwner && canResetEmployeePassword && (
                 <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
@@ -87051,6 +87373,7 @@ function VpsEmailAuthView({
   onVpsEmailPasswordResetStart,
   onVpsEmailPasswordResetVerify,
   onVpsEmailPasswordResetComplete,
+  onVpsInitialPasswordChange,
 }) {
   const [screen, setScreen] = useState('login');
   const [email, setEmail] = useState('');
@@ -87065,11 +87388,13 @@ function VpsEmailAuthView({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resendAfter, setResendAfter] = useState(0);
+  const [temporaryPassword, setTemporaryPassword] = useState('');
 
   const isRegister = screen.startsWith('register');
   const isReset = screen.startsWith('reset');
   const isOtpScreen = screen === 'register-otp' || screen === 'reset-otp';
   const isPasswordScreen = screen === 'register-password' || screen === 'reset-password';
+  const isInitialPasswordChange = screen === 'initial-password-change';
 
   useEffect(() => {
     if (!resendAfter) return undefined;
@@ -87085,6 +87410,7 @@ function VpsEmailAuthView({
     setProof('');
     setPassword('');
     setPasswordConfirm('');
+    setTemporaryPassword('');
     setResendAfter(0);
   };
 
@@ -87202,8 +87528,18 @@ function VpsEmailAuthView({
 
   const login = async (event) => {
     event.preventDefault();
-    const normalizedEmail = requireValidEmail();
-    if (!normalizedEmail) return;
+    const normalizedIdentifier = `${email || ''}`.trim();
+    const isEmailIdentifier = normalizedIdentifier.includes('@');
+    const normalizedLogin = isEmailIdentifier
+      ? normalizedIdentifier.toLowerCase()
+      : normalizeEmployeeLoginPhone(normalizedIdentifier);
+    const isValidIdentifier = isEmailIdentifier
+      ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedLogin)
+      : normalizedLogin.length >= 9 && normalizedLogin.length <= 11;
+    if (!isValidIdentifier) {
+      setError('Vui lòng nhập email hoặc số điện thoại hợp lệ.');
+      return;
+    }
     if (!password) {
       setError('Vui lòng nhập mật khẩu.');
       return;
@@ -87211,8 +87547,15 @@ function VpsEmailAuthView({
     setBusy(true);
     setError('');
     try {
-      const result = await onLogin(normalizedEmail, password);
+      const result = await onLogin(normalizedLogin, password);
       if (!result?.success) throw new Error(result?.message || 'Không thể đăng nhập.');
+      if (result.requiresPasswordChange) {
+        setTemporaryPassword(password);
+        setPassword('');
+        setPasswordConfirm('');
+        setScreen('initial-password-change');
+        return;
+      }
       setPassword('');
     } catch (nextError) {
       setError(nextError?.message || 'Không thể đăng nhập. Vui lòng thử lại.');
@@ -87221,11 +87564,39 @@ function VpsEmailAuthView({
     }
   };
 
+  const completeInitialPasswordChange = async () => {
+    const passwordError = validateAccountPasswordInput(password, passwordConfirm);
+    if (passwordError) {
+      setError(passwordError);
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result = await onVpsInitialPasswordChange({
+        currentPassword: temporaryPassword,
+        newPassword: password,
+      });
+      if (!result?.success) throw new Error(result?.message || 'Không thể đổi mật khẩu tạm.');
+      clearSensitiveState();
+    } catch (nextError) {
+      setError(nextError?.message || 'Không thể đổi mật khẩu tạm. Vui lòng đăng nhập lại.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const maskedEmail = email ? email.replace(/^(.)(.*)(@.*)$/, (_match, first, middle, domain) => `${first}${'*'.repeat(Math.min(Math.max(middle.length, 3), 8))}${domain}`) : 'email của bạn';
-  const title = screen === 'login' ? 'Đăng nhập' : isRegister ? 'Tạo tài khoản' : 'Đặt lại mật khẩu';
+  const title = screen === 'login'
+    ? 'Đăng nhập'
+    : isInitialPasswordChange
+      ? 'Đổi mật khẩu lần đầu'
+      : isRegister ? 'Tạo tài khoản' : 'Đặt lại mật khẩu';
   const submitLabel = screen === 'login'
     ? 'Đăng nhập'
-    : isOtpScreen
+    : isInitialPasswordChange
+      ? 'Đổi mật khẩu và tiếp tục'
+      : isOtpScreen
       ? 'Xác minh mã'
       : isPasswordScreen
         ? (isRegister ? 'Hoàn tất tạo tài khoản' : 'Đặt mật khẩu mới')
@@ -87236,10 +87607,8 @@ function VpsEmailAuthView({
       <div className="ios-web-login-card bg-white w-full p-5 sm:p-7 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-50 animate-in fade-in zoom-in-95 duration-300">
         <div className="flex flex-col items-center justify-center mb-6">
           <img src="/brand/hd-manager-logo-compact.png" alt="HD Manager" className="hd-login-brand-logo" />
-          <p className="mt-3 text-center text-[11px] font-semibold text-emerald-700">Đăng nhập an toàn bằng HD CONNECT</p>
         </div>
         <h1 className="text-xl font-bold text-center text-gray-800">{title}</h1>
-        {screen === 'login' && <p className="mt-2 text-center text-xs text-gray-500">Dùng email và mật khẩu tài khoản HD CONNECT của bạn.</p>}
         {screen === 'register-email' && <p className="mt-2 text-center text-xs text-gray-500">Xác minh email trước khi tạo tài khoản và công ty.</p>}
         {isOtpScreen && <p className="mt-2 text-center text-xs text-gray-500">Mã đã được gửi tới <strong>{maskedEmail}</strong>.</p>}
         {isPasswordScreen && <p className="mt-2 text-center text-xs text-gray-500">Email đã được xác minh. Hãy hoàn tất thông tin an toàn.</p>}
@@ -87249,10 +87618,11 @@ function VpsEmailAuthView({
           if (screen === 'register-email') return beginOtp('register');
           if (screen === 'reset-email') return beginOtp('reset');
           if (isOtpScreen) return verifyOtp();
+          if (isInitialPasswordChange) return completeInitialPasswordChange();
           return completePasswordStep();
         }} className="mt-6 space-y-4">
           {(screen === 'login' || screen === 'register-email' || screen === 'reset-email') && <>
-            <input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Email" autoComplete="email" inputMode="email" disabled={busy} />
+            <input type={screen === 'login' ? 'text' : 'email'} value={email} onChange={(event) => { setEmail(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder={screen === 'login' ? 'Email hoặc số điện thoại' : 'Email'} autoComplete={screen === 'login' ? 'username' : 'email'} inputMode={screen === 'login' ? 'text' : 'email'} disabled={busy} />
             {screen === 'login' && <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Mật khẩu" autoComplete="current-password" disabled={busy} />}
           </>}
           {isOtpScreen && <>
@@ -87270,6 +87640,11 @@ function VpsEmailAuthView({
             <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder={isRegister ? 'Tạo mật khẩu' : 'Mật khẩu mới'} autoComplete="new-password" disabled={busy} />
             <input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Nhập lại mật khẩu" autoComplete="new-password" disabled={busy} />
           </>}
+          {isInitialPasswordChange && <>
+            <p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-800">Đây là lần đăng nhập đầu tiên bằng mật khẩu tạm. Hãy đặt mật khẩu riêng trước khi vào ứng dụng.</p>
+            <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Mật khẩu mới" autoComplete="new-password" disabled={busy} />
+            <input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError(''); }} className="w-full rounded-2xl border-2 border-gray-100 p-4 text-sm font-medium outline-none focus:border-emerald-500" placeholder="Nhập lại mật khẩu mới" autoComplete="new-password" disabled={busy} />
+          </>}
           {error && <p className="rounded-xl bg-red-50 p-3 text-center text-xs font-semibold text-red-600" role="alert">{error}</p>}
           {message && <p className="rounded-xl bg-emerald-50 p-3 text-center text-xs font-semibold text-emerald-700" role="status">{message}</p>}
           <button type="submit" disabled={busy} className="w-full rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition active:scale-[0.98] disabled:bg-emerald-300">{busy ? 'Đang xử lý...' : submitLabel}</button>
@@ -87280,12 +87655,11 @@ function VpsEmailAuthView({
         </div>}
         {screen !== 'login' && <button type="button" onClick={() => showScreen('login')} className="mt-5 w-full text-center text-xs font-extrabold text-gray-500 hover:text-gray-700">Quay lại đăng nhập</button>}
       </div>
-      <p className="mt-6 px-8 text-center text-[10px] font-medium leading-relaxed text-gray-400">Mật khẩu và mã xác minh không được lưu trong ứng dụng.</p>
     </AppShell>
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, vpsStagingMode = false }) {
+function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, onVpsInitialPasswordChange, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -87471,6 +87845,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
         onVpsEmailPasswordResetStart={onVpsEmailPasswordResetStart}
         onVpsEmailPasswordResetVerify={onVpsEmailPasswordResetVerify}
         onVpsEmailPasswordResetComplete={onVpsEmailPasswordResetComplete}
+        onVpsInitialPasswordChange={onVpsInitialPasswordChange}
       />
     );
   }

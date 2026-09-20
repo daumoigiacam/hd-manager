@@ -135,7 +135,7 @@ test('requires the authenticated Platform session for email change and preserves
   assert.equal(calls[2].options.retry, false);
 });
 
-test('keeps the VPS auth screen email-only and provides six OTP inputs with autofill support', () => {
+test('keeps email OTP flows while allowing email-or-phone password login', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   const otpInputStart = source.indexOf('function VpsEmailOtpInput');
   const start = source.indexOf('function VpsEmailAuthView');
@@ -149,7 +149,26 @@ test('keeps the VPS auth screen email-only and provides six OTP inputs with auto
   assert.match(otpInputSource, /aria-label=\{`Chữ số \$\{index \+ 1\} của mã xác minh`\}/);
   assert.match(vpsAuthSource, /data-auth-runtime="vps-staging"/);
   assert.match(vpsAuthSource, /VpsEmailOtpInput/);
-  assert.match(vpsAuthSource, /autoComplete="email"/);
-  assert.match(vpsAuthSource, /Mật khẩu và mã xác minh không được lưu trong ứng dụng/);
+  assert.match(vpsAuthSource, /Email hoặc số điện thoại/);
+  assert.match(vpsAuthSource, /autoComplete=\{screen === 'login' \? 'username' : 'email'\}/);
+  assert.doesNotMatch(vpsAuthSource, /Đăng nhập an toàn bằng HD CONNECT/);
+  assert.doesNotMatch(vpsAuthSource, /Dùng email và mật khẩu tài khoản HD CONNECT của bạn/);
+  assert.doesNotMatch(vpsAuthSource, /Mật khẩu và mã xác minh không được lưu trong ứng dụng/);
   assert.doesNotMatch(vpsAuthSource, /SMS|phone OTP|Phone OTP/i);
+});
+
+test('shows safe phone-login enrollment controls without persisting temporary passwords in legacy paths', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+
+  assert.match(source, /Cho phép đăng nhập bằng số điện thoại/);
+  assert.match(source, /Cho phép khách hàng đăng nhập/);
+  assert.match(source, /Liên kết đăng nhập bằng số điện thoại/);
+  assert.match(source, /pData\.account = \{ password: empData\.loginPassword \}/);
+  assert.match(source, /account: accountLoginEnabled && newCus\.createLogin/);
+  assert.match(source, /loginPasswordConfirm: _loginPasswordConfirm/);
+  assert.match(source, /Hãy lưu số điện thoại mới trước, sau đó mở lại hồ sơ để cấp quyền đăng nhập/);
+  assert.match(source, /session\.requiresPasswordChange/);
+  assert.match(source, /onVpsInitialPasswordChange/);
+  assert.match(source, /Đổi mật khẩu lần đầu/);
+  assert.match(source, /changeIdentityPassword\(\{ currentPassword, newPassword \}\)/);
 });

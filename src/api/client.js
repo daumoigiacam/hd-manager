@@ -224,10 +224,11 @@ export class HdApiClient {
     this.storage.setItem(this.tokenStorageKeys.refreshToken, refreshToken);
   }
 
-  async login({ email, password, deviceName = this.deviceName } = {}) {
-    const normalizedEmail = `${email || ''}`.trim();
-    if (!normalizedEmail || !password) {
-      throw new HdApiError('Email and password are required.', {
+  async login({ identifier, email, phone, password, deviceName = this.deviceName } = {}) {
+    const normalizedIdentifier = `${identifier || email || phone || ''}`.trim();
+    const isEmail = normalizedIdentifier.includes('@');
+    if (!normalizedIdentifier || !password) {
+      throw new HdApiError('Email or phone and password are required.', {
         code: 'LOGIN_INPUT_INVALID',
       });
     }
@@ -235,7 +236,9 @@ export class HdApiClient {
     const session = await this.request('/auth/login', {
       method: 'POST',
       body: {
-        email: normalizedEmail,
+        ...(isEmail
+          ? { email: normalizedIdentifier.toLowerCase() }
+          : { phone: normalizedIdentifier }),
         password,
         ...(deviceName ? { deviceName } : {}),
       },

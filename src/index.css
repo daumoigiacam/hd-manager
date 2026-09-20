@@ -1910,7 +1910,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
 
 .hd-login-brand-logo {
   display: block;
-  inline-size: min(13rem, 72vw);
+  inline-size: min(9.1rem, 50vw);
   block-size: auto;
   filter: drop-shadow(0 0.45rem 0.9rem rgb(15 23 42 / 0.1));
 }

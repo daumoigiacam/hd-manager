@@ -8,6 +8,7 @@ import {
   normalizeVpsFinanceExpense,
   normalizeVpsOrder,
   normalizeVpsProduct,
+  normalizeVpsSession,
   normalizeVpsStockMovement,
 } from '../src/api/hdConnectStaging.js';
 
@@ -55,6 +56,51 @@ test('stores an access and refresh token pair after VPS login', async () => {
   assert.equal(requests.length, 1);
   assert.match(requests[0].url, /\/api\/v1\/auth\/login$/);
   assert.equal(requests[0].init.headers.Authorization, undefined);
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    email: 'owner@example.test',
+    password: 'password-123',
+  });
+});
+
+test('sends phone and password without an email fallback for phone login', async () => {
+  const storage = createStorage();
+  let loginBody;
+  const client = new HdApiClient({
+    baseUrl: 'https://staging-api.example.test/api/v1',
+    storage,
+    fetchImpl: async (_url, init) => {
+      loginBody = JSON.parse(init.body);
+      return envelope({ accessToken: 'access-phone', refreshToken: 'refresh-phone', user: { id: 'user-phone' } });
+    },
+  });
+
+  await client.login({ identifier: '0901234567', password: 'password-123' });
+
+  assert.equal(loginBody.phone, '0901234567');
+  assert.equal(loginBody.email, undefined);
+  assert.equal(loginBody.password, 'password-123');
+});
+
+test('preserves first-login password enforcement and customer portal scope in normalized sessions', () => {
+  const session = normalizeVpsSession({
+    user: {
+      id: 'customer-user-1',
+      phone: '0901234567',
+      fullName: 'Disposable Customer',
+      mustChangePassword: true,
+    },
+    company: { id: 'tenant-a', name: 'Disposable Tenant A' },
+    roles: ['CUSTOMER_PORTAL'],
+    permissions: ['cx.portal.read'],
+  });
+
+  assert.equal(session.requiresPasswordChange, true);
+  assert.equal(session.user.mustChangePassword, true);
+  assert.equal(session.user.phone, '0901234567');
+  assert.equal(session.user.role, 'customer');
+  assert.equal(session.user.accountType, 'customer');
+  assert.equal(session.user.isCustomerAccount, true);
+  assert.equal(session.user.companyId, 'tenant-a');
 });
 
 test('normalizes relational VPS unit records to the legacy product unit label', () => {
@@ -377,6 +423,49 @@ test('keeps company scope on the server when creating a customer', async () => {
   assert.equal(Object.hasOwn(capturedPayload, 'companyId'), false);
   assert.equal(capturedPayload.phones[0], '0900000000');
   assert.equal(capturedOptions.idempotencyKey, 'mutation-1');
+});
+
+test('creates customer and employee login accounts through tenant-scoped Platform contracts', async () => {
+  const calls = [];
+  const api = createHdConnectStagingApi({
+    post: async (path, payload, options) => {
+      calls.push({ path, payload, options });
+      if (path === '/master-data/customers') return { id: 'customer-1', name: payload.name, phones: payload.phones };
+      return { id: 'employee-1', profile: payload.profile || {}, userId: 'user-1' };
+    },
+  });
+
+  await api.createCustomer({
+    name: 'Portal Customer',
+    phone: '0900000011',
+    account: { phone: '0900000011', password: 'TemporaryPass123!' },
+  });
+  await api.createCustomerPortalAccount('11111111-1111-4111-8111-111111111111', {
+    phone: '0900000012',
+    password: 'TemporaryPass123!',
+  });
+  await api.createManagerEmployee({
+    requestId: '22222222-2222-4222-8222-222222222222',
+    profile: { name: 'Phone Employee', phone: '0900000013', position: 'Kho' },
+    account: { password: 'TemporaryPass123!' },
+  });
+  await api.enrollManagerEmployeeAccount('33333333-3333-4333-8333-333333333333', {
+    password: 'TemporaryPass123!',
+  });
+
+  assert.deepEqual(calls.map((call) => call.path), [
+    '/master-data/customers',
+    '/cx-suite/portal/accounts',
+    '/hr-suite/manager-employees',
+    '/hr-suite/manager-employees/33333333-3333-4333-8333-333333333333/account',
+  ]);
+  assert.deepEqual(calls[0].payload.account, {
+    phone: '0900000011',
+    password: 'TemporaryPass123!',
+  });
+  assert.equal(calls[2].payload.account.password, 'TemporaryPass123!');
+  assert.equal('companyId' in calls[2].payload, false);
+  assert.equal(calls[3].payload.password, 'TemporaryPass123!');
 });
 
 test('routes VPS identity security contracts without Firebase tokens', async () => {
