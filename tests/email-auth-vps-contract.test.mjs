@@ -137,11 +137,16 @@ test('requires the authenticated Platform session for email change and preserves
 
 test('keeps the VPS auth screen email-only and provides six OTP inputs with autofill support', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const otpInputStart = source.indexOf('function VpsEmailOtpInput');
   const start = source.indexOf('function VpsEmailAuthView');
   const end = source.indexOf('function LoginRegisterView', start);
+  const otpInputSource = source.slice(otpInputStart, start);
   const vpsAuthSource = source.slice(start, end);
 
-  assert.ok(start >= 0 && end > start);
+  assert.ok(otpInputStart >= 0 && start > otpInputStart && end > start);
+  assert.match(otpInputSource, /padEnd\(6, ' '\)\.split\(''\)/);
+  assert.doesNotMatch(otpInputSource, /padEnd\(6, ''\)/);
+  assert.match(otpInputSource, /aria-label=\{`Chữ số \$\{index \+ 1\} của mã xác minh`\}/);
   assert.match(vpsAuthSource, /data-auth-runtime="vps-staging"/);
   assert.match(vpsAuthSource, /VpsEmailOtpInput/);
   assert.match(vpsAuthSource, /autoComplete="email"/);

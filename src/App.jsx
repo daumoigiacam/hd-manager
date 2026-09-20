@@ -86994,7 +86994,7 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
 
 function VpsEmailOtpInput({ value, onChange, disabled = false }) {
   const refs = useRef([]);
-  const digits = `${value || ''}`.replace(/\D/g, '').slice(0, 6).padEnd(6, '').split('');
+  const digits = `${value || ''}`.replace(/\D/g, '').slice(0, 6).padEnd(6, ' ').split('');
 
   const setDigits = (nextDigits, focusIndex) => {
     onChange(nextDigits.join('').replace(/\s/g, '').slice(0, 6));
