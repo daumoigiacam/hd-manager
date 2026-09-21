@@ -45,11 +45,15 @@ test('queued shared writes are retried once per document and remain tenant-scope
 test('order forms stay open while the server confirms the write', () => {
   const requestSubmitSection = getSection('const handleSubmitOrderRequests = async', 'const orderCellEditorConfig');
   const salesSubmitSection = getSection('const handleSubmitBulkOrders = async', 'const openAddOrderModal');
+  const singleOrderSubmitSection = getSection('const handleAddSubmit = async', 'const openAddOrderModal');
 
   assert.doesNotMatch(requestSubmitSection, /closeImmediatelyAfterSubmit/);
   assert.match(requestSubmitSection, /Dang luu \$\{normalizedRequests\.length\} don dat hang/);
   assert.doesNotMatch(salesSubmitSection, /flushSync\(\(\) => \{[\s\S]*?setShowAddOrder\(false\)/);
-  assert.match(salesSubmitSection, /Đang xác nhận đơn với máy chủ/);
+  assert.match(singleOrderSubmitSection, /setBulkOrderStatus\('Đang xác nhận đơn với máy chủ\.\.\.'\)/);
+  assert.match(singleOrderSubmitSection, /await submitOrderDraft\(newOrder, \{ allowDescriptionOnly: false \}\)/);
+  assert.match(singleOrderSubmitSection, /Đã tạo đơn hàng\. Máy chủ đã xác nhận và đồng bộ dữ liệu\./);
+  assert.match(singleOrderSubmitSection, /catch \(error\) \{\s*setBulkOrderStatus\(''\)/);
 });
 
 test('realtime confirmation compares the server version before removing the local edit guard', () => {

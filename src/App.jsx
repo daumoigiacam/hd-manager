@@ -69376,15 +69376,19 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setBulkOrderStatus('Đang xác nhận đơn với máy chủ...');
     try {
       const result = await submitOrderDraft(newOrder, { allowDescriptionOnly: false });
+      const postSaveWarnings = Array.isArray(result?.postSaveWarnings) ? result.postSaveWarnings : [];
       setShowAddOrder(false);
       setShowOrderSourcePicker(false);
       setSearchCus('');
       setNewOrder(createSingleOrderState());
       setOrderCreationSource('');
-      if (Array.isArray(result?.postSaveWarnings) && result.postSaveWarnings.length > 0) {
-        setBulkOrderStatus(result.postSaveWarnings.join(' '));
-      }
+      setBulkOrderStatus(
+        postSaveWarnings.length > 0
+          ? postSaveWarnings.join(' ')
+          : 'Đã tạo đơn hàng. Máy chủ đã xác nhận và đồng bộ dữ liệu.'
+      );
     } catch (error) {
+      setBulkOrderStatus('');
       if (isOrderSaveTimeoutError(error)) {
         setErrorMsg('Đơn chưa được máy chủ xác nhận. App giữ nguyên biểu mẫu để bạn kiểm tra kết nối và thử lại an toàn.');
       } else {

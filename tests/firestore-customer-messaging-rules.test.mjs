@@ -48,7 +48,13 @@ const customerContext = (customerId, contextSuffix = '') => environment.authenti
   customerId,
   accountType: 'customer',
   role: 'customer'
-}).firestore();
+}).firestore({
+  // The Firestore emulator's HTTP/2 stream can become unusable on Windows after
+  // expected permission-denied assertions. Long polling keeps this rules test on
+  // the same browser-compatible realtime transport used by constrained clients.
+  experimentalForceLongPolling: true,
+  experimentalAutoDetectLongPolling: false
+});
 
 const waitForSnapshot = (queryRef, predicate, timeoutMs = 5_000) => new Promise((resolve, reject) => {
   let unsubscribe = () => {};
