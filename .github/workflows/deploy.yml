@@ -87,10 +87,17 @@ jobs:
 
       - name: Build project
         env:
-          VITE_DATA_MODE: vps-production
-          VITE_API_BASE_URL: https://app.hdconnect.net/api/v1
-          VITE_INVENTORY_VPS_ENABLED: 'true'
+          VITE_DATA_MODE: cloud
+          VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
+          VITE_HD_APP_ID: hd-manager-production
         run: npm run build
+
+      - name: Verify Firebase-only production bundle
+        env:
+          VITE_DATA_MODE: cloud
+          VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
+          VITE_HD_APP_ID: hd-manager-production
+        run: npm run verify:firebase-production-bundle
 
       - name: Verify build output
         run: |
@@ -207,6 +214,5 @@ jobs:
             --retry 3 \
             --retry-delay 2 \
             --header "Cache-Control: no-cache" \
-            "https://app.hdconnect.net/api/v1/health" \
-            | jq -e '.success == true and .data.status == "ok" and .data.service == "hd-connect-platform"' >/dev/null
-          echo "HD Platform production API health verification successful"
+            "https://hd-manager-c5839.web.app/" >/dev/null
+          echo "Firebase project hosting endpoint is reachable"

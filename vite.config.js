@@ -70,6 +70,10 @@ export default defineConfig(({ mode }) => {
   const runtimeAliases = {
     ...firebaseAliases,
     '@hd/identity-center': identityCenterAlias,
+    '@hd/hd-connect-runtime': fileURLToPath(new URL(
+      isVpsStagingBuild ? './src/api/hdConnectStaging.js' : './src/config/firebase-only-runtime.js',
+      import.meta.url,
+    )),
     '@hd/firebase-runtime': fileURLToPath(new URL(
       isVpsStagingBuild ? './src/mocks/firebase-runtime-vps.js' : './src/config/firebase-runtime.js',
       import.meta.url,

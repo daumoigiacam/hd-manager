@@ -387,7 +387,7 @@ import {
   normalizeVpsFinanceExpense,
   normalizeVpsStockMovement,
   vpsDataMode,
-} from './api/hdConnectStaging.js';
+} from '@hd/hd-connect-runtime';
 import {
   resolveDataAppId,
   resolveFirebaseRuntimeConfig,
