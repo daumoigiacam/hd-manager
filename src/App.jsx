@@ -67372,6 +67372,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         getItemText: (order) => (order.items || [])
           .map(item => buildLineItemProductSearchText(item, products))
           .join(' '),
+        getCustomerText: (order) => {
+          const customer = customerLookup.get(order.customerId);
+          return [customer?.name, customer?.phone, customer?.code];
+        },
       })
       : source;
     return sortOrdersByNewest(rankedSource);

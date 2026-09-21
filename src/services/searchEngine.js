@@ -171,13 +171,19 @@ export const searchProducts = (products = [], query = '') => searchRecords(produ
 
 const getOrderCode = (order = {}) => order?.orderCode || order?.invoiceCode || order?.code || order?.paymentCode || order?.id || '';
 
-export const getOrderSearchFields = (order = {}, { getItemText } = {}) => {
+const getDisplayedOrderCode = (order = {}) => {
+  const orderId = `${order?.id || ''}`.trim();
+  return orderId ? `HD${orderId.slice(-6).toUpperCase()}` : '';
+};
+
+export const getOrderSearchFields = (order = {}, { getItemText, getCustomerText } = {}) => {
   const itemText = typeof getItemText === 'function'
     ? getItemText(order)
     : (order?.items || []).flatMap(item => [item?.description, item?.productName, item?.productNameSnapshot, item?.productCode, item?.sku, item?.barcode]);
+  const customerText = typeof getCustomerText === 'function' ? getCustomerText(order) : [];
   return [
-    { key: 'primary', priority: 100, values: [getOrderCode(order), order?.invoiceCode, order?.orderCode, order?.paymentCode] },
-    { key: 'customer', priority: 78, values: [order?.customerName, order?.customer?.name, order?.customerPhone, order?.customer?.phone, order?.branchName, order?.customerBranchName] },
+    { key: 'primary', priority: 100, values: [getOrderCode(order), getDisplayedOrderCode(order), order?.invoiceCode, order?.orderCode, order?.paymentCode] },
+    { key: 'customer', priority: 78, values: [order?.customerName, order?.customer?.name, order?.customerPhone, order?.customer?.phone, order?.branchName, order?.customerBranchName, customerText] },
     { key: 'product', priority: 68, values: itemText },
     { key: 'other', priority: 30, values: [order?.date, order?.salesOwner?.name, order?.salesEmpName, order?.note, order?.notes] },
   ];

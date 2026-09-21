@@ -64,6 +64,21 @@ const invoice = { id: 'order-1', invoiceCode: 'HD-2026-0001', customerName: 'Anh
 assert.equal(searchInvoices([invoice], 'xoai vit')[0]?.id, invoice.id);
 assert.equal(searchInvoices([invoice], '2026 0001')[0]?.id, invoice.id);
 
+const persistedOrder = { id: 'o_abc123sandyn', customerId: 'customer-test-1', items: [{ productName: 'G\u00e0 M\u00f3c S\u1ea1ch' }] };
+const persistedOrderOptions = {
+  getCustomerText: (order) => order.customerId === 'customer-test-1' ? ['Test 1', '0909 111 222'] : [],
+};
+assert.equal(
+  searchInvoices([persistedOrder], 'HDSANDYN', persistedOrderOptions)[0]?.id,
+  persistedOrder.id,
+  'the displayed HDxxxxxx order code should be searchable after a server reload'
+);
+assert.equal(
+  searchInvoices([persistedOrder], 'Test 1', persistedOrderOptions)[0]?.id,
+  persistedOrder.id,
+  'an order should remain searchable by its linked customer after a server reload'
+);
+
 const customerOrders = [
   { id: 'order-july-19', customerName: 'Tu\u1ea5n Anh BigC', date: '19/07/2026 12:02' },
   { id: 'order-august-10', customerName: 'Tu\u1ea5n Anh BigC', date: '10/08/2026 15:57' },
