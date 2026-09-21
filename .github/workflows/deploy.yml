@@ -1,6 +1,9 @@
 name: Deploy HD Manager
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -83,6 +86,10 @@ jobs:
         run: npm run test:kpi
 
       - name: Build project
+        env:
+          VITE_DATA_MODE: vps-production
+          VITE_API_BASE_URL: https://app.hdconnect.net/api/v1
+          VITE_INVENTORY_VPS_ENABLED: 'true'
         run: npm run build
 
       - name: Verify build output
@@ -101,7 +108,7 @@ jobs:
           retention-days: 14
 
       - name: Create deployment package
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         run: |
           set -euo pipefail
           cd dist
@@ -111,7 +118,7 @@ jobs:
           ls -lh hd-manager-dist.zip
 
       - name: Calculate build SHA
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         id: build-sha
         run: |
           set -euo pipefail
@@ -120,7 +127,7 @@ jobs:
           echo "Build index SHA: ${INDEX_SHA}"
 
       - name: Prepare VPS deployment package path
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -134,7 +141,7 @@ jobs:
             test ! -e /tmp/hd-manager-dist.zip
 
       - name: Upload frontend to VPS
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -145,7 +152,7 @@ jobs:
           overwrite: true
 
       - name: Deploy frontend to VPS
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         uses: appleboy/ssh-action@v1.2.2
         env:
           EXPECTED_INDEX_SHA: ${{ steps.build-sha.outputs.index_sha }}
@@ -166,7 +173,7 @@ jobs:
             EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
 
       - name: Verify production serves this release
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
         run: |
           set -euo pipefail
 
@@ -186,3 +193,20 @@ jobs:
 
           test "${LOCAL_INDEX_SHA}" = "${PRODUCTION_INDEX_SHA}"
           echo "Production verification successful"
+
+          VERSION_JSON="$(curl --fail --silent --show-error \
+            --retry 3 \
+            --retry-delay 2 \
+            --header "Cache-Control: no-cache" \
+            "https://app.hdconnect.net/version.json?release=${GITHUB_SHA}")"
+          SERVED_BUILD_ID="$(printf '%s' "${VERSION_JSON}" | jq -r '.buildId')"
+          test "${SERVED_BUILD_ID}" = "${GITHUB_SHA}"
+          echo "Served production build ID: ${SERVED_BUILD_ID}"
+
+          curl --fail --silent --show-error \
+            --retry 3 \
+            --retry-delay 2 \
+            --header "Cache-Control: no-cache" \
+            "https://app.hdconnect.net/api/v1/health" \
+            | jq -e '.success == true and .data.status == "ok" and .data.service == "hd-connect-platform"' >/dev/null
+          echo "HD Platform production API health verification successful"
