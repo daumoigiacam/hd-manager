@@ -322,7 +322,9 @@ test('order requests persist Smart Memory after successful writes', () => {
 
 test('order form keeps the selected input unit separate from the pricing unit', () => {
   assert.match(appSource, /onClick=\{\(\) => openDraftItemUnitEditor\(draft, item\)\}/);
-  assert.match(appSource, /handleDraftItemQuantityUnitChange\(\s*orderUnitEditor\.draftLocalId/);
+  assert.match(appSource, /updateDraftItem\(orderUnitEditor\.draftLocalId, orderUnitEditor\.itemLocalId, \{/);
+  assert.match(appSource, /quantityUnit,\s*actualUnit: quantityUnit,\s*pricingUnit,\s*billingUnit: pricingUnit/);
+  assert.match(appSource, /activeTarget === 'pricingUnit' \? 'pricingUnit' : 'orderUnit'/);
   assert.match(appSource, /item\.quantityUnit \|\| item\.actualUnit \|\| billingUnit/);
   assert.doesNotMatch(appSource, /Đơn vị số lượng của .* được cố định là/);
 });

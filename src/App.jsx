@@ -9,7 +9,7 @@ import {
   Package, Trash2, Wallet, Banknote, Target, CalendarDays, Filter, Building, Crown,
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
-  Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
+  Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Camera, Gift,
   MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint
 } from 'lucide-react';
 import {
@@ -128,11 +128,7 @@ import {
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
-import {
-  getCustomerRecentOrderPreferences,
-  getLatestCustomerOrderTemplate,
-  mergeCustomerOrderMemoryHistory,
-} from './utils/customerOrderMemory.js';
+import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
   AUTOMATIC_EVALUATION_SCHEMA_VERSION,
@@ -318,6 +314,7 @@ import {
   normalizeProductPricingUnit,
   normalizeUnitPriceMap,
   putUnitPriceIntoMap,
+  resolveProductUnitPrice,
 } from './services/productPricingUnits.js';
 import {
   buildCustomerProductPreferenceCacheKey,
@@ -24354,6 +24351,8 @@ function MainAppView({
     <button
       type="button"
       onClick={handleOpenNotifications}
+      aria-label="Thông báo"
+      title="Thông báo"
       className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${buttonClassName}`}
     >
       <Bell size={18} />
@@ -24463,6 +24462,7 @@ function MainAppView({
       else if (activeTab === 'products') setProductSearchOpen(false);
     };
     const isCompactHeaderAction = showHeaderSearchFilterActions;
+    const useFlatHeaderActions = activeTab === 'products' || activeTab === 'customers';
     const inlineHeaderSearchInputRef = activeTab === 'finance'
       ? financeHeaderSearchInputRef
       : activeTab === 'orders'
@@ -24522,7 +24522,7 @@ function MainAppView({
               onClick={toggleHeaderFilter}
               aria-label="Bộ lọc"
               title="Bộ lọc"
-              className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-[11px] font-bold transition-colors ${headerFilterOpen ? 'border-white bg-white text-emerald-700' : 'border-white/30 bg-white/10 text-white hover:bg-white/20'}`}
+              className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${useFlatHeaderActions ? (headerFilterOpen ? 'bg-white text-emerald-700' : 'bg-transparent text-white hover:bg-white/15') : (headerFilterOpen ? 'border border-white bg-white text-emerald-700' : 'border border-white/30 bg-white/10 text-white hover:bg-white/20')}`}
             >
               <Filter size={17} />
             </button>
@@ -24535,15 +24535,15 @@ function MainAppView({
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
-            <h1 className="hd-header-title text-lg font-bold">
+            <h1 className={`hd-header-title text-lg font-bold ${activeTab === 'products' ? 'text-white' : ''}`}>
               {activeTab === 'profile' ? 'Cá nhân' : 
                activeTab === 'customers' ? 'Khách hàng' : 
-               activeTab === 'order_requests' ? 'Đơn đặt hàng' : 
+               activeTab === 'order_requests' ? 'Đơn đặt' :
                activeTab === 'warehouse_import' ? 'Nhập Xuất Tồn' :
                activeTab === 'warehouse_dispatch' ? 'Phiếu xuất kho' : 
                activeTab === 'delivery_reports' ? 'Báo cáo giao hàng' : 
                activeTab === 'orders' ? 'Đơn hàng' : 
-               activeTab === 'products' ? 'Sản phẩm' : 
+               activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
                activeTab === 'maps' ? 'Bản đồ' :
                activeTab === 'report' ? 'Báo cáo' : 
@@ -24561,14 +24561,14 @@ function MainAppView({
           </div>
           {showHeaderSearchFilterActions ? (
             <div className="hd-header-actions flex items-center gap-2">
-              {activeTab !== 'orders' && renderNotificationBell()}
+              {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && renderNotificationBell()}
               <button
                 data-search-zone="true"
                 type="button"
                 onClick={toggleHeaderSearch}
                 aria-label="Tìm kiếm"
                 title="Tìm kiếm"
-                className={`inline-flex items-center justify-center rounded-full border text-[11px] font-bold transition-colors ${isCompactHeaderAction ? 'h-10 w-10 p-0' : 'gap-1.5 px-2.5 py-1.5'} ${(headerSearchOpen || headerSearchKeyword.trim()) ? 'border-white bg-white text-emerald-700' : 'border-white/30 bg-white/10 text-white hover:bg-white/20'}`}
+                className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold transition-colors ${isCompactHeaderAction ? 'h-10 w-10 p-0' : 'gap-1.5 px-2.5 py-1.5'} ${useFlatHeaderActions ? ((headerSearchOpen || headerSearchKeyword.trim()) ? 'bg-white text-emerald-700' : 'bg-transparent text-white hover:bg-white/15') : ((headerSearchOpen || headerSearchKeyword.trim()) ? 'border border-white bg-white text-emerald-700' : 'border border-white/30 bg-white/10 text-white hover:bg-white/20')}`}
               >
                 <Search size={isCompactHeaderAction ? 17 : 14} />
                 {!isCompactHeaderAction && 'Tìm kiếm'}
@@ -24578,7 +24578,7 @@ function MainAppView({
                 onClick={toggleHeaderFilter}
                 aria-label="Bộ lọc"
                 title="Bộ lọc"
-                className={`inline-flex items-center justify-center rounded-full border text-[11px] font-bold transition-colors ${isCompactHeaderAction ? 'h-10 w-10 p-0' : 'gap-1.5 px-2.5 py-1.5'} ${headerFilterOpen ? 'border-white bg-white text-emerald-700' : 'border-white/30 bg-white/10 text-white hover:bg-white/20'}`}
+                className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold transition-colors ${isCompactHeaderAction ? 'h-10 w-10 p-0' : 'gap-1.5 px-2.5 py-1.5'} ${useFlatHeaderActions ? (headerFilterOpen ? 'bg-white text-emerald-700' : 'bg-transparent text-white hover:bg-white/15') : (headerFilterOpen ? 'border border-white bg-white text-emerald-700' : 'border border-white/30 bg-white/10 text-white hover:bg-white/20')}`}
               >
                 <Filter size={isCompactHeaderAction ? 17 : 14} />
                 {!isCompactHeaderAction && 'Bộ lọc'}
@@ -24587,16 +24587,7 @@ function MainAppView({
             </div>
           ) : activeTab === 'order_requests' ? (
             <div className="hd-header-actions flex items-center gap-2">
-              {renderNotificationBell()}
-              <button
-                type="button"
-                onClick={() => setOrderRequestFilterOpen(prev => !prev)}
-                aria-label="Bộ lọc"
-                title="Bộ lọc"
-                className={`inline-flex h-10 w-10 items-center justify-center rounded-full border text-[11px] font-bold transition-colors ${orderRequestFilterOpen ? 'border-white bg-white text-emerald-700' : 'border-white/30 bg-white/10 text-white hover:bg-white/20'}`}
-              >
-                <Filter size={17} />
-              </button>
+              {renderNotificationBell('bg-transparent text-white hover:bg-white/15')}
               {renderHeaderIdentityActions()}
             </div>
           ) : !hideHeaderSearchFilter ? (
@@ -25720,7 +25711,7 @@ function FloatingQuickActionButton({ actions = [], onSelect = () => {}, containe
 
   return (
     <div
-      className="absolute z-50"
+      className="hd-floating-quick-action absolute z-50"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
     >
       {isOpen && (
@@ -61760,6 +61751,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const canManage = Boolean(canEdit || canEditDeposit || canDelete);
   const canAccess = Boolean(employee);
   const defaultQuantityUnit = 'Con';
+  const standardOrderUnitOptions = ['Kg', 'Con', 'Thùng', 'Bao'];
   const createDraftItem = (seed = {}) => ({
     localItemId: seed.localItemId || `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     productId: seed.productId || '',
@@ -62161,39 +62153,83 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const openDraftItemUnitEditor = (draft = {}, item = {}) => {
     const product = productLookup.get(item.productId);
     if (!product) return;
-    const options = quantityUnitOptions;
-    const value = normalizeProductPricingUnit(item.quantityUnit || item.actualUnit)
-      || options[0]
+    const orderUnit = normalizeProductPricingUnit(item.quantityUnit || item.actualUnit)
+      || getDraftItemUnitOptions(draft, item)[0]
       || defaultQuantityUnit;
     setOrderUnitEditor({
       draftLocalId: draft.localId,
       itemLocalId: item.localItemId,
       productName: product.name || 'Sản phẩm',
       pricingUnit: normalizeProductPricingUnit(item.billingUnit || item.pricingUnit || ''),
-      value,
-      options,
+      orderUnit,
+      activeTarget: 'orderUnit',
+      showCustomUnitInput: false,
+      customUnit: '',
       error: '',
     });
+  };
+  const selectOrderUnitEditorValue = (nextUnit) => {
+    const normalizedUnit = normalizeProductPricingUnit(nextUnit);
+    if (!normalizedUnit) return;
+    setOrderUnitEditor(previous => previous ? {
+      ...previous,
+      [previous.activeTarget === 'pricingUnit' ? 'pricingUnit' : 'orderUnit']: normalizedUnit,
+      customUnit: '',
+      showCustomUnitInput: false,
+      error: '',
+    } : previous);
+  };
+  const addCustomOrderUnitEditorValue = () => {
+    const normalizedUnit = normalizeProductPricingUnit(orderUnitEditor?.customUnit || '');
+    if (!normalizedUnit) {
+      setOrderUnitEditor(previous => previous ? { ...previous, error: 'Vui lòng nhập tên đơn vị mới.' } : previous);
+      return;
+    }
+    selectOrderUnitEditorValue(normalizedUnit);
   };
   const saveDraftItemUnitEditor = (event) => {
     event?.preventDefault?.();
     if (!orderUnitEditor) return;
-    const quantityUnit = normalizeProductPricingUnit(orderUnitEditor.value);
-    if (!quantityUnit) {
-      setOrderUnitEditor(previous => ({ ...previous, error: 'Vui lòng nhập tên đơn vị.' }));
+    const pricingUnit = normalizeProductPricingUnit(orderUnitEditor.pricingUnit);
+    const quantityUnit = normalizeProductPricingUnit(orderUnitEditor.orderUnit);
+    if (!pricingUnit || !quantityUnit) {
+      setOrderUnitEditor(previous => ({
+        ...previous,
+        error: !pricingUnit ? 'Vui lòng chọn ĐVT giá.' : 'Vui lòng chọn ĐV đặt.',
+      }));
       return;
     }
-    const isNewCatalogUnit = !quantityUnitOptions.some(unit => isSameBillingUnit(unit, quantityUnit));
-    const saved = handleDraftItemQuantityUnitChange(
-      orderUnitEditor.draftLocalId,
-      orderUnitEditor.itemLocalId,
-      quantityUnit
-    );
-    if (!saved) return;
-    setOrderUnitEditor(null);
-    if (isNewCatalogUnit) {
-      setRequestStatus(`Đã thêm đơn vị đặt "${quantityUnit}". Đơn vị này sẽ được ghi nhớ cho khách và sản phẩm sau khi lưu đơn.`);
+    const draft = requestDrafts.find(item => item.localId === orderUnitEditor.draftLocalId);
+    const item = draft?.items?.find(candidate => candidate.localItemId === orderUnitEditor.itemLocalId);
+    const product = productLookup.get(item?.productId);
+    if (!draft || !item || !product) {
+      setOrderUnitEditor(previous => ({ ...previous, error: 'Không tìm thấy dòng sản phẩm cần cập nhật.' }));
+      return;
     }
+    const selectedCustomer = draft.customerId ? customerLookup.get(draft.customerId) : null;
+    const configSource = getCustomerBranchProductConfigSource(selectedCustomer, draft.branchId || '', activeProducts);
+    const configuredPriceForUnit = resolveProductUnitPrice({
+      product,
+      customerConfig: getCustomerProductConfig(configSource, product),
+      unit: pricingUnit,
+    });
+    const currentUnitPrice = parseLooseMoneyValue(item.unitPrice);
+    const unitPrice = configuredPriceForUnit > 0 ? configuredPriceForUnit : currentUnitPrice;
+    updateDraftItem(orderUnitEditor.draftLocalId, orderUnitEditor.itemLocalId, {
+      quantityUnit,
+      actualUnit: quantityUnit,
+      pricingUnit,
+      billingUnit: pricingUnit,
+      unitPrice: unitPrice > 0 ? unitPrice : '',
+      inputUnitTouched: true,
+      rememberedDefaultInputUnit: quantityUnit,
+      billingQuantity: '',
+      amount: '',
+      billingSnapshotVersion: unitPrice > 0 ? 1 : 0,
+      billingSnapshotSource: unitPrice > 0 ? 'order_request_unit_editor' : '',
+    });
+    setRequestError('');
+    setOrderUnitEditor(null);
   };
   const getOrderRequestBranchRef = (customer = null, source = {}, fallbackSource = {}) => {
     if (!customer) return { branchId: '', branchName: '', branchAddress: '' };
@@ -62860,58 +62896,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
   }), [manualFixedProductOptions, primaryProductConfigSource]);
-  const manualRecentProductVariantOptions = useMemo(() => {
-    if (!primarySelectedCustomer) return [];
-    return getCustomerRecentOrderPreferences({
-      requests: orderRequests,
-      companyId: primarySelectedCustomer.companyId || primarySelectedCustomer.tenantId || '',
-      customerId: primarySelectedCustomer.id,
-      branchId: primaryDraft?.branchId || '',
-      limit: 12,
-    })
-      .map((preference) => {
-        const product = productLookup.get(preference.productId);
-        if (!product) return null;
-        const variant = {
-          id: preference.configurationId || `${preference.productId}-recent-${preference.key}`,
-          size: preference.sizeLabel || '',
-          attributeLabel: preference.attributeLabel || '',
-          price: parseLooseMoneyValue(preference.unitPrice),
-          unit: normalizeProductPricingUnit(preference.billingUnit || preference.pricingUnit || ''),
-          orderUnit: normalizeProductPricingUnit(preference.orderUnit || preference.quantityUnit || ''),
-          defaultOrderUnit: normalizeProductPricingUnit(preference.orderUnit || preference.quantityUnit || ''),
-          lastUsedAt: preference.lastUsedAt || '',
-          lastOrderId: preference.lastOrderId || '',
-          lastOrderDate: preference.lastOrderDate || '',
-        };
-        return {
-          product,
-          variant,
-          key: `recent:${preference.key}`,
-          selectionKey: buildOrderRequestVariantKey(product.id, variant),
-        };
-      })
-      .filter(Boolean);
-  }, [orderRequests, primaryDraft?.branchId, primarySelectedCustomer, productLookup]);
-  const manualRecentSelectionKeys = useMemo(
-    () => new Set(manualRecentProductVariantOptions.map((option) => option.selectionKey)),
-    [manualRecentProductVariantOptions],
+  const manualFixedProductIdSet = useMemo(
+    () => new Set(manualFixedProductOptions.map(product => product.id).filter(Boolean)),
+    [manualFixedProductOptions],
   );
-  const manualOtherFixedProductVariantOptions = useMemo(
-    () => manualFixedProductVariantOptions.filter(
-      (option) => !manualRecentSelectionKeys.has(option.selectionKey),
-    ),
-    [manualFixedProductVariantOptions, manualRecentSelectionKeys],
-  );
-  const latestCustomerOrderTemplate = useMemo(() => {
-    if (!primarySelectedCustomer) return null;
-    return getLatestCustomerOrderTemplate({
-      requests: orderRequests,
-      companyId: primarySelectedCustomer.companyId || primarySelectedCustomer.tenantId || '',
-      customerId: primarySelectedCustomer.id,
-      branchId: primaryDraft?.branchId || '',
-    });
-  }, [orderRequests, primaryDraft?.branchId, primarySelectedCustomer]);
   const manualCatalogProductVariantOptions = useMemo(() => activeProducts.flatMap(product => {
     const variants = getCustomerProductVariants(primaryProductConfigSource, product);
     return variants.map((variant) => {
@@ -62942,6 +62930,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const quickProductSearchKeyword = normalizeLookupText(quickProductSearch || '');
   const manualExtraProductVariantOptions = useMemo(() => {
     const sourceVariants = manualCatalogProductVariantOptions.filter(({ product, variant, selectionKey }) => {
+      if (manualFixedProductIdSet.has(product.id)) return false;
       if (quickProductSearchKeyword) {
         return productMatchesLookup(product, quickProductSearchKeyword)
           || [variant.size, variant.attributeLabel, variant.unit]
@@ -62956,7 +62945,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         return (a.product?.name || '').localeCompare(b.product?.name || '', 'vi');
       })
       .slice(0, quickProductSearchKeyword ? 80 : 16);
-  }, [manualCatalogProductVariantOptions, quickProductSearchKeyword, selectedQuickVariantKeys]);
+  }, [manualCatalogProductVariantOptions, manualFixedProductIdSet, quickProductSearchKeyword, selectedQuickVariantKeys]);
   const manualExtraProductVariantGroups = useMemo(
     () => groupOrderRequestProductVariants(manualExtraProductVariantOptions),
     [manualExtraProductVariantOptions]
@@ -63000,26 +62989,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       }))
     });
   };
-  const handleUseLatestCustomerOrder = () => {
-    if (!primaryDraft?.localId || !latestCustomerOrderTemplate?.items?.length) {
-      setRequestError('Khách này chưa có đơn gần nhất để sử dụng.');
-      return;
-    }
-    const templateDraft = buildRequestDraftFromExisting({
-      ...latestCustomerOrderTemplate,
-      customerId: primarySelectedCustomer?.id || primaryDraft.customerId,
-      note: '',
-      upfrontPayment: '',
-    });
-    updateDraft(primaryDraft.localId, {
-      items: templateDraft.items,
-      note: '',
-      upfrontPayment: '',
-    });
-    setRequestError('');
-    setRequestStatus('Đã lấy thông tin sản phẩm từ đơn gần nhất. Bạn vẫn có thể chỉnh sửa trước khi lưu.');
-  };
-
   const calculateRequestAmount = (request = {}) => {
     const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
     return requestItems.reduce((sum, item) => sum + getTransactionBillingPresentation(item).amount, 0);
@@ -65918,61 +65887,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       <div className="space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <div>
-                            <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm đặt gần đây</label>
-                            <p className="mt-1 text-[11px] font-semibold text-slate-400">
-                              Chọn nhanh theo size, đơn vị và giá khách đã dùng gần nhất.
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleUseLatestCustomerOrder}
-                            disabled={!latestCustomerOrderTemplate?.items?.length}
-                            className="shrink-0 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-                          >
-                            Dùng thông tin đơn gần nhất
-                          </button>
-                        </div>
-
-                        {manualRecentProductVariantOptions.length > 0 ? (
-                          <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-emerald-100 bg-emerald-50/50 p-2 sm:grid-cols-3">
-                            {manualRecentProductVariantOptions.map(({ product, variant, key, selectionKey }) => {
-                              const isActive = selectedQuickVariantKeys.has(selectionKey);
-                              const recentSize = `${variant.size || ''}`.trim();
-                              const recentAttribute = `${variant.attributeLabel || ''}`.trim();
-                              const recentOrderUnit = normalizeProductPricingUnit(
-                                variant.orderUnit || variant.defaultOrderUnit || '',
-                              );
-                              const recentPrice = parseLooseMoneyValue(variant.price);
-                              const recentDetails = [
-                                recentSize ? `Size ${recentSize}` : '',
-                                recentAttribute,
-                                recentOrderUnit,
-                                recentPrice > 0 ? `${formatCurrency(recentPrice)}đ/${variant.unit || product.unit || ''}` : '',
-                              ].filter(Boolean);
-                              return (
-                                <OrderRequestSelectableProductCard
-                                  key={key}
-                                  selectionKey={selectionKey}
-                                  productId={product.id}
-                                  title={product.name}
-                                  subtitle={recentDetails.join(' • ') || 'Đã đặt gần đây'}
-                                  variantConfig={variant}
-                                  isSelected={isActive}
-                                  isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
-                                  onSelect={handleQuickProductCardSelect}
-                                />
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-center text-xs font-semibold text-slate-500">
-                            Khách này chưa có sản phẩm đặt gần đây tại chi nhánh đã chọn.
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <label className="block text-[11px] font-bold uppercase text-gray-500">Sản phẩm cố định khác</label>
+                            <label className="block text-[11px] font-bold uppercase text-gray-500">SP khách lấy</label>
                             <p aria-live="polite" className="mt-1 text-[11px] font-semibold text-slate-400">
                               {pendingQuickProductSelectionKeys.size > 0
                                 ? 'Đang cập nhật sản phẩm đã chọn...'
@@ -65986,38 +65901,48 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               setOpenDraftPicker(prev => prev === manualExtraProductPickerKey ? null : manualExtraProductPickerKey);
                             }}
                             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-white shadow-sm transition ${isManualExtraProductPickerOpen ? 'border-red-200 bg-red-500' : 'border-emerald-200 bg-emerald-500 hover:bg-emerald-600'}`}
-                            aria-label="Thêm sản phẩm mới"
+                            aria-label="Thêm sản phẩm khác"
                           >
                             {isManualExtraProductPickerOpen ? <X size={18} /> : <Plus size={20} strokeWidth={3} />}
                           </button>
                         </div>
 
-                        {manualOtherFixedProductVariantOptions.length > 0 ? (
-                          <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-slate-100 bg-slate-50 p-2 sm:grid-cols-3">
-                            {manualOtherFixedProductVariantOptions.map(({ product, variant, key, selectionKey: resolvedSelectionKey }) => {
-                              const isActive = selectedQuickVariantKeys.has(resolvedSelectionKey);
-                              const fixedPrice = parseLooseMoneyValue(variant.price) > 0 ? parseLooseMoneyValue(variant.price) : getCustomerProductPrice(primaryProductConfigSource, product);
+                        {manualFixedProductVariantOptions.length > 0 ? (
+                          <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-2xl border border-emerald-100 bg-emerald-50/50 p-2 sm:grid-cols-3">
+                            {manualFixedProductVariantOptions.map(({ product, variant, key, selectionKey }) => {
+                              const isActive = selectedQuickVariantKeys.has(selectionKey);
                               const fixedSize = `${variant.size || ''}`.trim();
                               const fixedAttribute = `${variant.attributeLabel || ''}`.trim();
-                              const variantLabel = [fixedSize ? `Size ${fixedSize}` : '', fixedAttribute].filter(Boolean).join(' • ');
+                              const fixedOrderUnit = normalizeProductPricingUnit(
+                                variant.orderUnit || variant.defaultOrderUnit || '',
+                              );
+                              const fixedPrice = parseLooseMoneyValue(variant.price) > 0
+                                ? parseLooseMoneyValue(variant.price)
+                                : getCustomerProductPrice(primaryProductConfigSource, product);
+                              const fixedDetails = [
+                                fixedSize ? `Size ${fixedSize}` : '',
+                                fixedAttribute,
+                                fixedOrderUnit ? `ĐV đặt ${fixedOrderUnit}` : '',
+                                fixedPrice > 0 ? `${formatCurrency(fixedPrice)}đ/${variant.unit || product.unit || ''}` : '',
+                              ].filter(Boolean);
                               return (
                                 <OrderRequestSelectableProductCard
                                   key={key}
-                                  selectionKey={resolvedSelectionKey}
+                                  selectionKey={selectionKey}
                                   productId={product.id}
                                   title={product.name}
-                                  subtitle={`${variantLabel || product.category || product.unit || 'Sản phẩm'}${fixedPrice > 0 ? ` • ${formatCurrency(fixedPrice)}đ` : ''}`}
+                                  subtitle={fixedDetails.join(' • ') || product.category || product.unit || 'Sản phẩm'}
                                   variantConfig={variant}
                                   isSelected={isActive}
-                                  isPending={pendingQuickProductSelectionKeys.has(resolvedSelectionKey)}
+                                  isPending={pendingQuickProductSelectionKeys.has(selectionKey)}
                                   onSelect={handleQuickProductCardSelect}
                                 />
                               );
                             })}
                           </div>
                         ) : (
-                          <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50 px-3 py-4 text-center text-xs font-semibold text-emerald-700">
-                            Không còn sản phẩm cố định khác. Bấm nút + để tìm và thêm sản phẩm vào đơn.
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-center text-xs font-semibold text-slate-500">
+                            Khách này chưa cấu hình SP khách lấy. Bấm + để thêm sản phẩm khác.
                           </div>
                         )}
 
@@ -66330,6 +66255,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               ? (item.sizeLabel || item.weightKg || '')
                               : (selectedConfiguration?.sizeLabel || item.sizeLabel || item.weightKg || '')}`.trim();
                             const hasFixedAttribute = Boolean(fixedAttributeLabel);
+                            const attributePickerKey = `attribute:${draft.localId}:${item.localItemId}`;
+                            const isAttributePickerOpen = openDraftPicker === attributePickerKey;
+                            const attributeVariantOptions = selectedProduct
+                              ? getCustomerProductVariants(productConfigSource, selectedProduct)
+                                .filter(variant => `${variant.attributeLabel || ''}`.trim())
+                                .filter((variant, index, source) => source.findIndex(candidate => (
+                                  normalizeLookupText(candidate.attributeLabel) === normalizeLookupText(variant.attributeLabel)
+                                )) === index)
+                              : [];
+                            const hasAttributeSelection = attributeVariantOptions.length > 0;
                             const itemUnitOptions = getDraftItemUnitOptions(draft, item);
                             const selectedOrderUnit = itemUnitOptions.find(unit => isSameBillingUnit(unit, item.quantityUnit || item.actualUnit))
                               || itemUnitOptions[0]
@@ -66342,7 +66277,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               <div key={item.localItemId} className="border-t border-slate-300 bg-white">
                                 <div className={`grid ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1.75fr)_minmax(66px,0.6fr)_minmax(68px,0.62fr)]' : 'grid-cols-[minmax(260px,2.25fr)_minmax(120px,1fr)_minmax(120px,1fr)_minmax(140px,1fr)_minmax(160px,1fr)]'}`}>
                                   <div className={isCompactManualDetailStage ? 'relative min-w-0 border-r border-slate-200 p-1' : 'relative border-r border-slate-200 p-2'}>
-                                    <div className={hasFixedAttribute ? `grid items-stretch ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1fr)_minmax(62px,0.62fr)] gap-1.5' : 'grid-cols-[minmax(0,1fr)_minmax(118px,0.72fr)] gap-2'}` : ''}>
+                                    <div className={(hasFixedAttribute || hasAttributeSelection) ? `grid items-stretch ${isCompactManualDetailStage ? 'grid-cols-[minmax(0,1fr)_minmax(62px,0.62fr)] gap-1.5' : 'grid-cols-[minmax(0,1fr)_minmax(118px,0.72fr)] gap-2'}` : ''}>
                                       <button
                                         type="button"
                                         onClick={() => setOpenDraftPicker(prev => prev === productPickerKey ? null : productPickerKey)}
@@ -66355,15 +66290,43 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                         </span>
                                         {isProductPickerOpen ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
                                       </button>
-                                    {hasFixedAttribute && (
-                                      <div
-                                        className={`flex w-full min-w-0 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-center text-sky-800 ${isCompactManualDetailStage ? 'h-[42px] px-1 text-[10px] font-black' : 'h-[52px] px-2 text-xs font-bold'}`}
-                                        title="Thuộc tính theo cấu hình sản phẩm cố định"
+                                    {(hasFixedAttribute || hasAttributeSelection) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => hasAttributeSelection && setOpenDraftPicker(previous => previous === attributePickerKey ? null : attributePickerKey)}
+                                        disabled={!hasAttributeSelection}
+                                        className={`flex w-full min-w-0 items-center justify-center gap-1 rounded-xl border border-sky-100 bg-sky-50 text-center text-sky-800 outline-none focus:ring-2 focus:ring-sky-400 disabled:cursor-default ${isCompactManualDetailStage ? 'h-[42px] px-1 text-[10px] font-black' : 'h-[52px] px-2 text-xs font-bold'}`}
+                                        title={hasAttributeSelection ? 'Chọn thuộc tính sản phẩm' : 'Thuộc tính theo cấu hình sản phẩm'}
+                                        aria-label="Chọn thuộc tính sản phẩm"
                                       >
-                                        <span className="truncate">{fixedAttributeLabel}</span>
-                                      </div>
+                                        <span className="min-w-0 truncate">{fixedAttributeLabel || 'Thuộc tính'}</span>
+                                        {hasAttributeSelection && (isAttributePickerOpen
+                                          ? <ChevronUp size={12} className="shrink-0" />
+                                          : <ChevronDown size={12} className="shrink-0" />)}
+                                      </button>
                                     )}
                                     </div>
+                                    {isAttributePickerOpen && hasAttributeSelection && (
+                                      <div className="absolute right-1 top-[calc(100%+6px)] z-30 min-w-36 overflow-hidden rounded-2xl border border-sky-100 bg-white p-2 shadow-xl">
+                                        <p className="px-2 pb-1 text-[10px] font-black uppercase tracking-wide text-sky-600">Thuộc tính</p>
+                                        {attributeVariantOptions.map((variant) => {
+                                          const isSelectedAttribute = normalizeLookupText(variant.attributeLabel) === normalizeLookupText(fixedAttributeLabel);
+                                          return (
+                                            <button
+                                              key={`${selectedProduct.id}_${variant.id || variant.attributeLabel}`}
+                                              type="button"
+                                              onClick={() => {
+                                                handleProductChange(draft.localId, item.localItemId, selectedProduct.id, variant);
+                                                setOpenDraftPicker(null);
+                                              }}
+                                              className={`w-full rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${isSelectedAttribute ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                                            >
+                                              {variant.attributeLabel}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
                                     {isProductPickerOpen && (
                                       <div className="absolute left-2 right-2 top-[calc(100%+6px)] z-20 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
                                         <div className="p-3 border-b border-gray-100">
@@ -66433,9 +66396,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
                                   <div className={isCompactManualDetailStage ? 'border-r border-slate-200 p-1' : 'border-r border-slate-200 p-2'}>
                                     <input
-                                      type="number"
-                                      min="0"
-                                      step="0.01"
+                                      type="text"
+                                      inputMode="decimal"
                                       value={item.quantity}
                                       onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { quantity: e.target.value })}
                                       className={`w-full rounded-xl border border-gray-200 bg-white text-center outline-none focus:ring-2 focus:ring-emerald-500 ${isCompactManualDetailStage ? 'h-[42px] px-1.5 text-xs' : 'h-[52px] px-3 text-sm'}`}
@@ -66657,70 +66619,88 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Đơn vị đặt hàng</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Sản phẩm</p>
                 <h3 id="order-unit-editor-title" className="mt-1 truncate text-lg font-black text-slate-950">{orderUnitEditor.productName}</h3>
-                <p className="mt-1 text-xs font-semibold text-slate-500">
-                  {orderUnitEditor.pricingUnit
-                    ? `Đơn giá vẫn tính theo ${orderUnitEditor.pricingUnit}.`
-                    : 'Chỉ thay đổi đơn vị nhập của đơn đặt hàng.'}
-                </p>
               </div>
               <button type="button" onClick={() => setOrderUnitEditor(null)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500" aria-label="Đóng bảng sửa đơn vị">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mt-4">
-              <label htmlFor="order-request-unit-input" className="mb-1.5 block text-[11px] font-black uppercase tracking-wide text-slate-500">Chọn hoặc nhập đơn vị mới</label>
-              <input
-                id="order-request-unit-input"
-                list="order-request-unit-suggestions"
-                value={orderUnitEditor.value || ''}
-                onChange={(event) => setOrderUnitEditor(previous => ({
-                  ...previous,
-                  value: event.target.value,
-                  error: '',
-                }))}
-                autoFocus
-                autoComplete="off"
-                enterKeyHint="done"
-                className="h-12 w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 text-center text-base font-black text-emerald-800 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
-                placeholder="Ví dụ: Rổ"
-              />
-              <datalist id="order-request-unit-suggestions">
-                {(orderUnitEditor.options || []).map(unit => <option key={unit} value={unit} />)}
-              </datalist>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setOrderUnitEditor(previous => ({ ...previous, activeTarget: 'pricingUnit', error: '' }))}
+                className={`rounded-2xl border px-3 py-2.5 text-left transition-colors ${orderUnitEditor.activeTarget === 'pricingUnit' ? 'border-emerald-500 bg-emerald-50' : 'border-transparent bg-slate-50'}`}
+                aria-pressed={orderUnitEditor.activeTarget === 'pricingUnit'}
+              >
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">ĐVT giá</p>
+                <p className="mt-1 text-sm font-black text-slate-900">{orderUnitEditor.pricingUnit || '-'}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderUnitEditor(previous => ({ ...previous, activeTarget: 'orderUnit', error: '' }))}
+                className={`rounded-2xl border px-3 py-2.5 text-left transition-colors ${orderUnitEditor.activeTarget === 'orderUnit' ? 'border-emerald-500 bg-emerald-50' : 'border-transparent bg-slate-50'}`}
+                aria-pressed={orderUnitEditor.activeTarget === 'orderUnit'}
+              >
+                <p className="text-[10px] font-black uppercase tracking-wide text-emerald-600">ĐV đặt</p>
+                <p className="mt-1 text-sm font-black text-emerald-800">{orderUnitEditor.orderUnit || '-'}</p>
+              </button>
             </div>
 
-            {(orderUnitEditor.options || []).length > 0 && (
-              <div className="mt-3">
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Đơn vị đang có trong sản phẩm</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(orderUnitEditor.options || []).map(unit => {
-                    const isSelected = isSameBillingUnit(unit, orderUnitEditor.value);
-                    return (
-                      <button
-                        key={unit}
-                        type="button"
-                        onClick={() => setOrderUnitEditor(previous => ({ ...previous, value: unit, error: '' }))}
-                        className={`min-h-10 rounded-full border px-3 py-2 text-xs font-black transition-colors ${isSelected ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50'}`}
-                        aria-pressed={isSelected}
-                      >
-                        {unit}
-                      </button>
-                    );
-                  })}
-                </div>
+            <div className="mt-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                Chọn {orderUnitEditor.activeTarget === 'pricingUnit' ? 'ĐVT giá' : 'ĐV đặt'}
+              </p>
+              <div className="mt-2 grid grid-cols-[repeat(4,minmax(0,1fr))_40px] gap-1.5">
+                {standardOrderUnitOptions.map(unit => {
+                  const selectedValue = orderUnitEditor.activeTarget === 'pricingUnit'
+                    ? orderUnitEditor.pricingUnit
+                    : orderUnitEditor.orderUnit;
+                  const isSelected = isSameBillingUnit(unit, selectedValue);
+                  return (
+                    <button
+                      key={unit}
+                      type="button"
+                      onClick={() => selectOrderUnitEditorValue(unit)}
+                      className={`min-h-10 rounded-xl border px-1 py-2 text-[11px] font-black transition-colors ${isSelected ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50'}`}
+                      aria-pressed={isSelected}
+                    >
+                      {unit}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setOrderUnitEditor(previous => ({ ...previous, showCustomUnitInput: !previous.showCustomUnitInput, customUnit: '', error: '' }))}
+                  className={`flex min-h-10 items-center justify-center rounded-xl border text-slate-600 transition-colors ${orderUnitEditor.showCustomUnitInput ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white hover:border-emerald-200 hover:bg-emerald-50'}`}
+                  aria-label="Tạo thêm đơn vị mới"
+                  aria-expanded={orderUnitEditor.showCustomUnitInput}
+                >
+                  <Plus size={17} aria-hidden="true" />
+                </button>
               </div>
-            )}
+
+              {orderUnitEditor.showCustomUnitInput && (
+                <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                  <input
+                    type="text"
+                    value={orderUnitEditor.customUnit || ''}
+                    onChange={(event) => setOrderUnitEditor(previous => ({ ...previous, customUnit: capitalizeFirstPreservingSpacing(event.target.value), error: '' }))}
+                    className="min-h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none focus:border-emerald-400"
+                    placeholder="Tên đơn vị mới"
+                    autoFocus
+                  />
+                  <button type="button" onClick={addCustomOrderUnitEditorValue} className="min-h-10 rounded-xl bg-emerald-50 px-3 text-xs font-black text-emerald-700">
+                    Dùng
+                  </button>
+                </div>
+              )}
+            </div>
 
             {orderUnitEditor.error && (
               <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{orderUnitEditor.error}</p>
             )}
-
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-              Danh sách gợi ý chỉ lấy từ đơn vị đang dùng trong sản phẩm. Đơn vị mới sẽ được ghi nhớ cho khách và sản phẩm này sau khi lưu đơn.
-            </p>
 
             <div className="mt-4 grid grid-cols-2 gap-2 pb-[env(safe-area-inset-bottom)]">
               <button type="button" onClick={() => setOrderUnitEditor(null)} className="min-h-12 rounded-2xl bg-slate-100 px-4 text-sm font-black text-slate-700">Hủy</button>
@@ -71296,6 +71276,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
   const [productTab, setProductTab] = useState('products');
   const [selectedUnit, setSelectedUnit] = useState('Tất cả');
   const [discountFilter, setDiscountFilter] = useState('Tất cả');
+  const [isProductGroupCreateOpen, setIsProductGroupCreateOpen] = useState(false);
   const [newProductGroupName, setNewProductGroupName] = useState('');
   const [productGroupMessage, setProductGroupMessage] = useState('');
   const [isSavingProductGroup, setIsSavingProductGroup] = useState(false);
@@ -71347,9 +71328,6 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       archivedCount: groupProducts.filter(product => product.isArchived).length
     };
   }), [allCategories, products]);
-  const normalizedCategory = normalizeLookupText(prodData.category);
-  const isNewCategory = normalizedCategory && !allCategories.some(category => normalizeLookupText(category) === normalizedCategory);
-  
   const categories = useMemo(() => {
     const cats = activeProducts.map(p => p.category).filter(Boolean);
     return ['Tất cả', ...new Set(cats)];
@@ -71372,6 +71350,11 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       ? searchProductRecords(filtered, productSearch)
       : filtered;
   }, [activeProducts, activeCategory, selectedUnit, discountFilter, productSearch]);
+  const inventoryProducts = useMemo(
+    () => displayedProducts.filter(product => Number(inventoryByProductId.get(product.id)?.remainingStock || 0) > 0),
+    [displayedProducts, inventoryByProductId]
+  );
+  const visibleProducts = productTab === 'inventory' ? inventoryProducts : displayedProducts;
 
   useEffect(() => {
     if (!categories.includes(activeCategory)) setActiveCategory('Tất cả');
@@ -71419,6 +71402,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
         return;
       }
       setNewProductGroupName('');
+      setIsProductGroupCreateOpen(false);
       setProductGroupMessage(`Đã tạo nhóm hàng "${groupName}".`);
     } catch (error) {
       setProductGroupMessage(`Tạo nhóm hàng lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
@@ -71633,16 +71617,11 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
   };
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
-      <div className="flex justify-between items-center border-b border-gray-200 pb-2">
-        <div className="flex gap-4">
-          <button onClick={() => { setProductTab('products'); setShowArchived(false); }} className={`whitespace-nowrap pb-2 text-sm font-semibold border-b-2 ${!showArchived && productTab === 'products' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Sản phẩm</button>
-        <button onClick={() => { setProductTab('inventory'); setShowArchived(false); }} className={`flex-1 py-2 text-sm font-semibold border-b-2 ${!showArchived && productTab === 'inventory' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Tồn kho</button>
-          <button onClick={() => { setProductTab('groups'); setShowArchived(false); }} className={`whitespace-nowrap pb-2 text-sm font-semibold border-b-2 ${productTab === 'groups' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Nhóm hàng</button>
-        </div>
-        <div className="text-xs font-semibold text-gray-400">
-          {productTab === 'groups' ? `${productGroupRows.length} nhóm` : `${displayedProducts.length} sản phẩm`}
-        </div>
+    <div className="premium-data-module premium-products-module space-y-4 animate-in fade-in pb-16">
+      <div className="hd-section-tabs hd-product-tabs grid grid-cols-3 border-b border-gray-200" role="tablist" aria-label="Kho sản phẩm">
+        <button type="button" role="tab" aria-selected={!showArchived && productTab === 'products'} onClick={() => { setProductTab('products'); setShowArchived(false); }} className={`border-b-2 text-sm font-semibold ${!showArchived && productTab === 'products' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Sản phẩm</button>
+        <button type="button" role="tab" aria-selected={!showArchived && productTab === 'inventory'} onClick={() => { setProductTab('inventory'); setShowArchived(false); }} className={`border-b-2 text-sm font-semibold ${!showArchived && productTab === 'inventory' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Tồn kho</button>
+        <button type="button" role="tab" aria-selected={productTab === 'groups'} onClick={() => { setProductTab('groups'); setShowArchived(false); }} className={`border-b-2 text-sm font-semibold ${productTab === 'groups' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Nhóm hàng</button>
       </div>
 
       {showFilterPanel && productTab !== 'groups' && (
@@ -71700,51 +71679,56 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       )}
 
       {productTab === 'groups' ? (
-        <div className="space-y-3">
-          <form onSubmit={handleCreateProductGroup} className="rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-black text-gray-800">Tạo nhóm hàng</p>
-                <p className="mt-0.5 text-[11px] font-medium text-gray-400">Nhóm tạo ở đây sẽ xuất hiện trong ô Nhóm hàng khi thêm/sửa sản phẩm.</p>
+        <div className="hd-product-groups rounded-2xl border border-gray-100 bg-white p-3 shadow-sm">
+            <div className="hd-product-groups__header mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-black text-gray-800">Danh sách nhóm hàng</p>
+                <span className="text-[11px] font-bold text-gray-400">{productGroupRows.length} nhóm</span>
               </div>
-              <div className="rounded-2xl bg-emerald-50 p-2 text-emerald-600">
-                <Package size={18} />
-              </div>
+              {canManageProductGroups && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProductGroupCreateOpen(isOpen => !isOpen);
+                    setProductGroupMessage('');
+                  }}
+                  aria-label="Thêm nhóm hàng"
+                  title="Thêm nhóm hàng"
+                  className="hd-product-groups__add inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm transition-colors hover:bg-blue-700"
+                >
+                  <Plus size={18} />
+                </button>
+              )}
             </div>
-            <div className="flex gap-2">
-              <input
-                value={newProductGroupName}
-                onChange={event => {
-                  setNewProductGroupName(toTitleCase(event.target.value));
-                  if (productGroupMessage) setProductGroupMessage('');
-                }}
-                disabled={!canManageProductGroups || isSavingProductGroup}
-                className="min-w-0 flex-1 rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
-                placeholder="Ví dụ: Vịt, Gà, Heo..."
-              />
-              <button
-                type="submit"
-                disabled={!canManageProductGroups || isSavingProductGroup}
-                className="shrink-0 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-gray-300"
-              >
-                {isSavingProductGroup ? 'Đang lưu' : 'Tạo'}
-              </button>
-            </div>
+            {isProductGroupCreateOpen && canManageProductGroups && (
+              <form onSubmit={handleCreateProductGroup} className="mb-3 flex items-center gap-2 rounded-xl bg-slate-50 p-2">
+                <input
+                  autoFocus
+                  value={newProductGroupName}
+                  onChange={event => {
+                    setNewProductGroupName(toTitleCase(event.target.value));
+                    if (productGroupMessage) setProductGroupMessage('');
+                  }}
+                  disabled={isSavingProductGroup}
+                  aria-label="Tên nhóm hàng mới"
+                  className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:bg-gray-50 disabled:text-gray-400"
+                />
+                <button type="submit" disabled={isSavingProductGroup} aria-label="Lưu nhóm hàng" title="Lưu nhóm hàng" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white disabled:bg-gray-300">
+                  {isSavingProductGroup ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} strokeWidth={3} />}
+                </button>
+                <button type="button" onClick={() => { setIsProductGroupCreateOpen(false); setNewProductGroupName(''); setProductGroupMessage(''); }} aria-label="Hủy thêm nhóm hàng" title="Hủy" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-200">
+                  <X size={17} />
+                </button>
+              </form>
+            )}
             {productGroupMessage && (
-              <p className={`mt-2 text-xs font-semibold ${productGroupMessage.startsWith('Đã') ? 'text-emerald-600' : 'text-amber-600'}`}>
+              <p className={`mb-3 text-xs font-semibold ${productGroupMessage.startsWith('Đã') ? 'text-emerald-600' : 'text-amber-600'}`}>
                 {productGroupMessage}
               </p>
             )}
             {!canManageProductGroups && (
-              <p className="mt-2 text-xs font-semibold text-gray-400">Tài khoản này chỉ được xem nhóm hàng, chưa có quyền tạo nhóm mới.</p>
+              <p className="mb-3 text-xs font-semibold text-gray-400">Tài khoản này chỉ được xem nhóm hàng.</p>
             )}
-          </form>
-
-          <div className="rounded-2xl border border-gray-100 bg-white p-3 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm font-black text-gray-800">Danh sách nhóm hàng</p>
-              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-bold text-gray-500">{productGroupRows.length} nhóm</span>
-            </div>
             <div className="grid grid-cols-2 gap-2">
               {productGroupRows.map(group => {
                 const isEditingGroup = normalizeLookupText(editingProductGroupName) === normalizeLookupText(group.name);
@@ -71811,56 +71795,62 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 </div>
               )}
             </div>
-          </div>
         </div>
       ) : (
-      <div className="space-y-2">
-        {displayedProducts.map(p => {
+      <div className="hd-product-list" role="list" aria-label={productTab === 'inventory' ? 'Danh sách tồn kho sản phẩm' : 'Danh sách sản phẩm'}>
+        {visibleProducts.map(p => {
           const inventoryRow = inventoryByProductId.get(p.id) || {};
           const isInventoryTracked = (inventoryRow.openingStock || 0) > 0;
           const isLowStock = isInventoryTracked && (inventoryRow.remainingStock || 0) <= Math.max(1, (inventoryRow.openingStock || 0) * 0.12);
+          const productAttributes = getProductAttributes(p);
+          const productShortName = getProductShortName(p);
           return (
-          <div key={p.id} className={`bg-white p-3 rounded-xl shadow-sm border flex items-center gap-3 relative ${showArchived ? 'border-gray-200 opacity-75' : isLowStock ? 'border-rose-100' : 'border-gray-50'}`}>
-             {canDelete && (
-               <button onClick={() => { if(window.confirm('Xóa vĩnh viễn sản phẩm này?')) onDeleteProduct(p.id); }} className={`absolute top-2 right-2 p-1.5 rounded-lg transition-colors text-gray-300 hover:text-red-500 hover:bg-red-50`}>
-                 <Trash2 size={14}/>
-               </button>
-             )}
-            
-            <div className="w-16 h-16 bg-gray-100 rounded-lg flex justify-center items-center text-gray-300 shrink-0 overflow-hidden border border-gray-100">
-              {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" /> : <Package size={24}/>}
-            </div>
-            
-            <div className={`flex-1 pr-6 ${canEdit && !showArchived ? 'cursor-pointer' : ''}`} onClick={() => !showArchived && canEdit && handleOpenEdit(p)}>
-              <div className="flex min-w-0 items-center gap-2">
-                {getProductShortName(p) && (
-                  <span className="shrink-0 rounded-lg bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700 border border-emerald-100">
-                    {getProductShortName(p)}
-                  </span>
-                )}
-                <h3 className="min-w-0 flex-1 font-semibold text-gray-800 text-sm line-clamp-1">{p.barcode ? `[${p.barcode}] ` : ''}{p.name}</h3>
+          <div key={p.id} role="listitem" className={`hd-product-list__item ${showArchived ? 'hd-product-list__item--archived' : ''} ${isLowStock ? 'hd-product-list__item--low-stock' : ''}`}>
+            <div
+              className={`hd-product-list__primary ${canEdit && !showArchived ? 'cursor-pointer' : ''}`}
+              onClick={() => !showArchived && canEdit && handleOpenEdit(p)}
+              title={p.barcode ? `Mã: ${p.barcode}` : p.name}
+            >
+              <div className="hd-product-list__image">
+                {p.image ? <img src={p.image} alt={p.name} /> : <Package size={20}/>}
               </div>
-              <p className="text-xs text-gray-500 mt-0.5">{p.category} • ĐVT: {p.unit}</p>
-              <div className="flex items-center gap-2 mt-1">
-                <p className="font-bold text-emerald-600 text-sm">{formatCurrency(p.sellingPrice)} đ</p>
-                {p.discount > 0 && <span className="text-[9px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded font-bold">-{formatCurrency(p.discount)}</span>}
-              </div>
-              {getProductAttributes(p).length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {getProductAttributes(p).slice(0, 6).map(attribute => (
-                    <span key={attribute} className="rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-bold text-sky-700 border border-sky-100">
-                      {attribute}
-                    </span>
-                  ))}
-                  {getProductAttributes(p).length > 6 && (
-                    <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-                      +{getProductAttributes(p).length - 6}
-                    </span>
-                  )}
+
+              <div className="hd-product-list__info">
+                <h3 className="hd-product-list__name">{p.name}</h3>
+                <div className="hd-product-list__meta" title={`${productAttributes.join(', ')}${productAttributes.length > 0 ? ' • ' : ''}${p.unit || ''}`}>
+                  <span>{productAttributes.length > 0 ? productAttributes.slice(0, 3).join(' · ') : 'Không thuộc tính'}</span>
+                  <span aria-hidden="true">•</span>
+                  <span>{p.unit || 'Chưa có ĐVT'}</span>
                 </div>
-              )}
+              </div>
+
+              <span className="hd-product-list__short-name" title="Tên viết tắt">{productShortName || '—'}</span>
+
+              <div className="hd-product-list__price">
+                <span>{formatCurrency(p.sellingPrice)} đ</span>
+                {p.discount > 0 && <small>-{formatCurrency(p.discount)}</small>}
+              </div>
+
+              <div className="hd-product-list__action">
+                {canDelete ? (
+                  <button
+                    type="button"
+                    aria-label={`Xóa sản phẩm ${p.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if(window.confirm('Xóa vĩnh viễn sản phẩm này?')) onDeleteProduct(p.id);
+                    }}
+                  >
+                    <Trash2 size={14}/>
+                  </button>
+                ) : canEdit && !showArchived ? (
+                  <ChevronRight size={16} aria-hidden="true" />
+                ) : null}
+              </div>
+            </div>
+
               {productTab === 'inventory' && (
-                <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
+                <div className="hd-product-list__inventory">
                   <div className="rounded-xl bg-slate-50 px-2 py-1.5">
                     <p className="text-[9px] font-bold uppercase text-slate-400">Tồn đầu</p>
                     <p className="text-[11px] font-black text-slate-700">{formatNumber(inventoryRow.openingStock || 0)} {inventoryRow.stockUnit || getProductInventoryUnit(p)}</p>
@@ -71875,14 +71865,13 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                   </div>
                 </div>
               )}
-            </div>
           </div>
           );
         })}
-        {displayedProducts.length === 0 && (
+        {visibleProducts.length === 0 && (
           <div className="text-center py-10">
             <Package size={48} className="mx-auto text-gray-300 mb-3" />
-                <p className="text-sm text-gray-400">Không tìm thấy sản phẩm phù hợp.</p>
+                <p className="text-sm text-gray-400">{productTab === 'inventory' ? 'Chưa có sản phẩm còn tồn kho.' : 'Không tìm thấy sản phẩm phù hợp.'}</p>
           </div>
         )}
       </div>
@@ -71890,161 +71879,162 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
 
       {!showArchived && canCreate && (
         <div className="fixed bottom-[70px] right-4 pointer-events-none flex justify-end">
-           <button onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
+           <button aria-label="Thêm sản phẩm" onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
               <Plus size={28}/>
            </button>
         </div>
       )}
 
       {showForm && (
-        <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 px-0 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:p-4">
-          <div className="bg-white rounded-t-3xl sm:rounded-2xl p-5 w-full max-w-md animate-in slide-in-from-bottom-full duration-300 flex flex-col max-h-[calc(100dvh-120px)] sm:max-h-[90vh]">
-            <div className="flex justify-between items-center mb-4 shrink-0 border-b border-gray-100 pb-3">
-              <h3 className="font-bold text-lg text-gray-800">{editingProd ? 'Sửa Sản Phẩm' : 'Thêm Sản Phẩm Mới'}</h3>
-              <button onClick={()=>setShowForm(false)} className="bg-gray-100 p-1.5 rounded-full text-gray-500 hover:bg-gray-200"><X size={20}/></button>
+        <div className="hd-product-editor-layer fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 px-0 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:p-4">
+          <div className="hd-product-editor bg-white rounded-t-3xl sm:rounded-2xl p-5 w-full max-w-md animate-in slide-in-from-bottom-full duration-300 flex flex-col max-h-[calc(100dvh-120px)] sm:max-h-[90vh]">
+            <div className="hd-product-editor__header flex justify-between items-center mb-4 shrink-0 border-b border-gray-100 pb-3">
+              <button type="button" aria-label="Quay lại" onClick={()=>setShowForm(false)} className="hd-product-editor__back"><ChevronLeft size={24}/></button>
+              <h3 className="font-bold text-lg text-gray-800">{editingProd ? 'Sửa sản phẩm' : 'Tạo sản phẩm'}</h3>
             </div>
             
-            <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-              <div className="space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
+            <form onSubmit={handleSubmit} className="hd-product-editor__form flex min-h-0 flex-1 flex-col">
+              <div className="hd-product-editor__body space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
               
-              <div className="flex justify-center mb-2">
-                <label className="relative cursor-pointer group">
-                  <div className="w-24 h-24 rounded-2xl bg-gray-50 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 overflow-hidden hover:border-emerald-500 transition-colors">
-                    {prodData.image ? (
-                      <img src={prodData.image} alt="Preview" className="w-full h-full object-cover" />
-                    ) : (
-                      <><ImagePlus size={28} className="mb-1" /><span className="text-[10px] font-medium">Tải ảnh</span></>
-                    )}
-                  </div>
+              <div className="hd-product-editor__row hd-product-editor__row--barcode">
+                <label className="hd-product-editor__field">
+                  <Barcode size={19} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Mã vạch / SKU</span>
+                    <input aria-label="Mã vạch / SKU" type="text" value={prodData.barcode} onChange={e=>setProdData({...prodData, barcode: e.target.value})} className="hd-product-editor__field-input" />
+                  </span>
+                </label>
+                <button type="button" onClick={handleScanBarcode} className="hd-product-editor__scan-button" aria-label="Quét mã từ ảnh hoặc QR">
+                  <Scan size={18} />
+                  <span className="hd-product-editor__field-label">Quét ảnh/QR</span>
+                </button>
+                <input ref={barcodeImageInputRef} type="file" accept="image/*" onChange={e => handleBarcodeImageScan(e.target.files?.[0])} className="hidden" />
+                {barcodeScanStatus && <p className={`hd-product-editor__status ${barcodeScanStatus.startsWith('Đã nhận mã') ? 'text-emerald-600' : barcodeScanStatus.startsWith('Đang quét') ? 'text-blue-600' : 'text-orange-600'}`}>{barcodeScanStatus}</p>}
+              </div>
+
+              <div className="hd-product-editor__row hd-product-editor__row--name-image">
+                <label className="hd-product-editor__field">
+                  <ShoppingBag size={19} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Tên sản phẩm *</span>
+                    <input aria-label="Tên sản phẩm" required type="text" value={prodData.name} onChange={e=>setProdData({...prodData, name: toTitleCase(e.target.value)})} className="hd-product-editor__field-input" />
+                  </span>
+                </label>
+                <label className="hd-product-editor__image-picker" title="Chọn ảnh sản phẩm">
+                  {prodData.image ? (
+                    <img src={prodData.image} alt="Ảnh sản phẩm" className="w-full h-full object-cover" />
+                  ) : (
+                    <><ImagePlus size={18} /><span className="hd-product-editor__field-label">Ảnh sản phẩm</span></>
+                  )}
                   <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                 </label>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Mã vạch / SKU</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Barcode size={18} className="absolute left-3 top-3 text-gray-400" />
-                    <input type="text" value={prodData.barcode} onChange={e=>setProdData({...prodData, barcode: e.target.value})} className="w-full border border-gray-200 p-2.5 pl-10 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Nhập hoặc quét mã..."/>
-                  </div>
-                  <button type="button" onClick={handleScanBarcode} className="bg-emerald-50 text-emerald-600 px-4 rounded-xl border border-emerald-100 flex items-center justify-center font-bold hover:bg-emerald-100 transition-colors">
-                    <Camera size={20} />
-                  </button>
-                </div>
-                <input ref={barcodeImageInputRef} type="file" accept="image/*" capture="environment" onChange={e => handleBarcodeImageScan(e.target.files?.[0])} className="hidden" />
-                <div className="flex items-center justify-between mt-2 gap-3">
-                <p className="text-[11px] text-gray-500">Bạn có thể quét từ ảnh hoặc nhập tay mã vạch/SKU.</p>
-                  <button type="button" onClick={handleScanBarcode} className="shrink-0 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-100">Quét ảnh/QR</button>
-                </div>
-                {barcodeScanStatus && <p className={`text-[11px] mt-2 font-medium ${barcodeScanStatus.startsWith('Đã nhận mã') ? 'text-emerald-600' : barcodeScanStatus.startsWith('Đang quét') ? 'text-blue-600' : 'text-orange-600'}`}>{barcodeScanStatus}</p>}
-              </div>
-
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(86px,0.36fr)] gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Tên sản phẩm</label>
-                  <input required type="text" value={prodData.name} onChange={e=>setProdData({...prodData, name: toTitleCase(e.target.value)})} className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Ví dụ: Gà ta nguyên con"/>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Viết tắt SP</label>
-                  <input type="text" value={prodData.shortName || ''} onChange={e=>setProdData({...prodData, shortName: e.target.value.toUpperCase()})} className="w-full border border-gray-200 p-3 rounded-xl text-sm font-black uppercase outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="VD: GM"/>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Nhóm hàng</label>
-                  <input required type="text" value={prodData.category} onChange={e=>setProdData({...prodData, category: toTitleCase(e.target.value)})} list="category-list" className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Ví dụ: Gia cầm, Hóa phẩm..."/>
+              <div className="hd-product-editor__row hd-product-editor__row--short-category">
+                <label className="hd-product-editor__field">
+                  <FileText size={18} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Viết tắt</span>
+                    <input aria-label="Viết tắt" type="text" value={prodData.shortName || ''} onChange={e=>setProdData({...prodData, shortName: e.target.value.toUpperCase()})} className="hd-product-editor__field-input font-black uppercase" />
+                  </span>
+                </label>
+                <label className="hd-product-editor__field">
+                  <LayoutGrid size={18} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Nhóm hàng *</span>
+                    <input aria-label="Nhóm hàng" required type="text" value={prodData.category} onChange={e=>setProdData({...prodData, category: toTitleCase(e.target.value)})} list="category-list" className="hd-product-editor__field-input" />
+                  </span>
                   <datalist id="category-list">
                     {allCategories.map(c => <option key={c} value={c} />)}
                   </datalist>
-                  <p className={`text-[11px] mt-2 ${isNewCategory ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
-                    {isNewCategory ? `Nhóm hàng "${prodData.category}" chưa có sẵn. Hệ thống sẽ tự tạo nhóm này khi bạn lưu sản phẩm.` : 'Có thể chọn nhóm sẵn có hoặc nhập nhóm mới để tạo ngay.'}
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Đơn vị tính</label>
-                  <input required type="text" value={prodData.unit} onChange={e=>setProdData({...prodData, unit: toTitleCase(e.target.value)})} list="unit-list" className="w-full border border-gray-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all" placeholder="Ví dụ: Kg"/>
+                </label>
+              </div>
+
+              <div className={`hd-product-editor__row hd-product-editor__row--unit-attributes ${canManageAttributes ? '' : 'hd-product-editor__row--single'}`}>
+                <label className="hd-product-editor__field">
+                  <Store size={18} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Đơn vị tính *</span>
+                    <input aria-label="Đơn vị tính" required type="text" value={prodData.unit} onChange={e=>setProdData({...prodData, unit: toTitleCase(e.target.value)})} list="unit-list" className="hd-product-editor__field-input" />
+                  </span>
                   <datalist id="unit-list">
                     <option value="Cái" /><option value="Kg" /><option value="Con" /><option value="Lít" /><option value="Hộp" /><option value="Thùng" /><option value="Gói" />
                   </datalist>
-                  <p className="mt-1.5 text-[11px] leading-4 text-slate-500">Nếu có nhiều cách bán, nhập các đơn vị cách nhau bằng dấu phẩy, ví dụ: Kg, Con. Khi lên đơn sẽ chọn đúng đơn vị và ghi nhớ giá theo từng khách.</p>
-                </div>
-              </div>
-
-              {canManageAttributes && (
-                <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3">
-                  <label className="block text-xs font-black uppercase tracking-wide text-sky-700 mb-2">Thuộc tính sản phẩm</label>
-                  <textarea
-                    value={prodData.attributes || ''}
-                    onChange={e => setProdData({ ...prodData, attributes: e.target.value })}
-                    className="w-full min-h-[76px] border border-sky-100 bg-white p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition-all"
-                    placeholder="Ví dụ: To, Nhỏ, Vừa, Màu đỏ, Màu xanh..."
-                  />
-                  <p className="mt-2 text-[11px] leading-5 text-sky-700/80">
-                    Nhập nhiều thuộc tính, cách nhau bằng dấu phẩy hoặc xuống dòng. Khi lên đơn, thuộc tính sẽ hiện cùng ô sản phẩm để chọn nhanh.
-                  </p>
-                </div>
-              )}
-
-              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                <div className="grid grid-cols-2 gap-3 mb-3">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-1">Giá vốn</label>
-                    <input type="tel" value={formatInputCurrency(prodData.costPrice)} onChange={e=>setProdData({...prodData, costPrice: parseInputCurrency(e.target.value)})} className="w-full border border-gray-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" placeholder="0 ₫"/>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-1">Giá bán</label>
-                    <input required type="tel" value={formatInputCurrency(prodData.sellingPrice)} onChange={e=>setProdData({...prodData, sellingPrice: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white" placeholder="0 ₫"/>
-                  </div>
-                </div>
-                
-                <div className="relative">
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Giảm giá / khuyến mãi</label>
-                  <Percent size={14} className="absolute left-3 top-[26px] text-orange-400" />
-                  <input type="tel" value={formatInputCurrency(prodData.discount)} onChange={e=>setProdData({...prodData, discount: parseInputCurrency(e.target.value)})} className="w-full border border-orange-200 p-2.5 pl-9 rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500 bg-white" placeholder="Khuyến mãi giảm giá..."/>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <div className="mb-3">
-                  <p className="text-xs font-black uppercase tracking-wide text-emerald-700">Cấu hình tồn kho</p>
-                  <p className="mt-1 text-[11px] leading-5 text-emerald-700/80">Nhập số tồn ban đầu và loại tồn muốn theo dõi. Khi bán đúng đơn vị này, app sẽ tự trừ tồn còn lại.</p>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-1">Tồn đầu</label>
+                </label>
+                {canManageAttributes && (
+                  <label className="hd-product-editor__field">
+                    <Settings size={18} className="hd-product-editor__field-icon" />
+                    <span className="hd-product-editor__field-control">
+                      <span className="hd-product-editor__field-label">Thuộc tính</span>
                     <input
+                      aria-label="Thuộc tính"
+                      type="text"
+                      value={prodData.attributes || ''}
+                      onChange={e => setProdData({ ...prodData, attributes: e.target.value })}
+                      className="hd-product-editor__field-input"
+                    />
+                    </span>
+                  </label>
+                )}
+              </div>
+
+              <div className="hd-product-editor__row hd-product-editor__row--prices">
+                <label className="hd-product-editor__field">
+                  <Banknote size={19} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Giá vốn</span>
+                    <input aria-label="Giá vốn" type="tel" value={formatInputCurrency(prodData.costPrice)} onChange={e=>setProdData({...prodData, costPrice: parseInputCurrency(e.target.value)})} className="hd-product-editor__field-input" />
+                  </span>
+                </label>
+                <label className="hd-product-editor__field">
+                  <DollarSign size={19} className="hd-product-editor__field-icon" />
+                  <span className="hd-product-editor__field-control">
+                    <span className="hd-product-editor__field-label">Giá bán *</span>
+                    <input aria-label="Giá bán" required type="tel" value={formatInputCurrency(prodData.sellingPrice)} onChange={e=>setProdData({...prodData, sellingPrice: parseInputCurrency(e.target.value)})} className="hd-product-editor__field-input font-bold" />
+                  </span>
+                </label>
+              </div>
+
+              <div className="hd-product-editor__row hd-product-editor__row--inventory">
+                  <label className="hd-product-editor__field">
+                    <Package size={19} className="hd-product-editor__field-icon" />
+                    <span className="hd-product-editor__field-control">
+                      <span className="hd-product-editor__field-label">Tồn đầu</span>
+                    <input
+                      aria-label="Tồn đầu"
                       type="number"
                       min="0"
                       step="0.01"
                       value={prodData.stockQuantity}
                       onChange={e => setProdData({ ...prodData, stockQuantity: e.target.value })}
                       disabled={!canManageInventory}
-                      className="w-full border border-emerald-100 bg-white p-2.5 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                      placeholder="VD: 500"
+                      className="hd-product-editor__field-input"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-1">Loại tồn</label>
+                    </span>
+                  </label>
+                  <label className="hd-product-editor__field">
+                    <Store size={19} className="hd-product-editor__field-icon" />
+                    <span className="hd-product-editor__field-control">
+                      <span className="hd-product-editor__field-label">Loại tồn</span>
                     <input
+                      aria-label="Loại tồn"
                       type="text"
                       value={prodData.stockUnit}
                       onChange={e => setProdData({ ...prodData, stockUnit: toTitleCase(e.target.value) })}
                       list="stock-unit-list"
                       disabled={!canManageInventory}
-                      className="w-full border border-emerald-100 bg-white p-2.5 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                      placeholder="Con, Kg, Cái..."
+                      className="hd-product-editor__field-input"
                     />
+                    </span>
                     <datalist id="stock-unit-list">
                       <option value="Con" /><option value="Kg" /><option value="Cái" /><option value="Thùng" /><option value="Túi" /><option value="Bao" />
                     </datalist>
-                  </div>
-                </div>
+                  </label>
               </div>
 
               </div>
 
-              <div className="-mx-5 flex gap-3 shrink-0 border-t border-gray-100 bg-white px-5 pt-3 pb-[calc(8px+env(safe-area-inset-bottom))]">
+              <div className="hd-product-editor__actions -mx-5 flex gap-3 shrink-0 border-t border-gray-100 bg-white px-5 pt-3 pb-[calc(8px+env(safe-area-inset-bottom))]">
                 <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
                 <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
               </div>
@@ -72294,7 +72284,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const [isSavingCustomerBranches, setIsSavingCustomerBranches] = useState(false);
   const [customerDebtLimitStatus, setCustomerDebtLimitStatus] = useState('');
   const [customerOpeningDebtStatus, setCustomerOpeningDebtStatus] = useState('');
-  const [customerLoyaltyStatus, setCustomerLoyaltyStatus] = useState('');
   const [customerLoanDraft, setCustomerLoanDraft] = useState({ productName: '', quantity: '', unit: 'Kg', weightKg: '', loanDate: getTodayString(), dueDate: '', note: '' });
   const [customerLoanStatus, setCustomerLoanStatus] = useState('');
   const [customerLoanReturnDrafts, setCustomerLoanReturnDrafts] = useState({});
@@ -72305,7 +72294,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const [savingCustomerLoanEditId, setSavingCustomerLoanEditId] = useState('');
   const [isSavingCustomerDebtLimit, setIsSavingCustomerDebtLimit] = useState(false);
   const [isSavingCustomerOpeningDebt, setIsSavingCustomerOpeningDebt] = useState(false);
-  const [isSavingCustomerLoyalty, setIsSavingCustomerLoyalty] = useState(false);
   const [customerDetailOpenSections, setCustomerDetailOpenSections] = useState({});
   const [showCustomerDebtList, setShowCustomerDebtList] = useState(false);
   const [customerReconciliationFilter, setCustomerReconciliationFilter] = useState(CUSTOMER_RECONCILIATION_FILTERS.ALL);
@@ -72396,10 +72384,32 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     }),
     [allActiveCustomers, canViewAssignedCustomerList, canViewEveryCustomer, driverAssignedCustomerIdSet, employee?.id, isDeliveryParticipant, isOwnerCustomerAccount, isSales, salesVisibleEmployeeIdSet]
   );
-  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
+  const [newCus, setNewCus] = useState({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', openingBalanceType: 'receivable', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
   const [newCustomerProductIds, setNewCustomerProductIds] = useState([]);
   const [newCustomerProductSearch, setNewCustomerProductSearch] = useState('');
   const activeProductsForPricing = useMemo(() => products.filter(product => !product.isArchived), [products]);
+  const newCustomerProductSuggestionLimit = 10;
+  const newCustomerProductUsageById = useMemo(() => {
+    const usageByProductId = new Map();
+    (orders || [])
+      .filter(order => !order?.isArchived)
+      .forEach(order => {
+        const orderItems = Array.isArray(order?.items) && order.items.length > 0
+          ? order.items
+          : (order?.primaryItem ? [order.primaryItem] : []);
+        orderItems.forEach(item => {
+          const productId = item?.productId || '';
+          if (!productId) return;
+          const current = usageByProductId.get(productId) || { quantity: 0, count: 0, lastTime: 0 };
+          usageByProductId.set(productId, {
+            quantity: current.quantity + (parseLooseQuantityValue(item?.quantity) || 1),
+            count: current.count + 1,
+            lastTime: Math.max(current.lastTime, getEntityTimestamp(order) || 0)
+          });
+        });
+      });
+    return usageByProductId;
+  }, [orders]);
   const activeProductForPricingLookup = useMemo(
     () => new Map(activeProductsForPricing.map(product => [product.id, product])),
     [activeProductsForPricing]
@@ -72415,9 +72425,14 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       .sort((a, b) => {
         const selectedDiff = Number(selectedNewCustomerProductIdSet.has(b.id)) - Number(selectedNewCustomerProductIdSet.has(a.id));
         if (selectedDiff !== 0) return selectedDiff;
+        const aUsage = newCustomerProductUsageById.get(a.id) || { quantity: 0, count: 0, lastTime: 0 };
+        const bUsage = newCustomerProductUsageById.get(b.id) || { quantity: 0, count: 0, lastTime: 0 };
+        if (bUsage.quantity !== aUsage.quantity) return bUsage.quantity - aUsage.quantity;
+        if (bUsage.count !== aUsage.count) return bUsage.count - aUsage.count;
+        if (bUsage.lastTime !== aUsage.lastTime) return bUsage.lastTime - aUsage.lastTime;
         return (a.name || '').localeCompare(b.name || '', 'vi');
       });
-  }, [activeProductsForPricing, newCustomerProductSearch, selectedNewCustomerProductIdSet]);
+  }, [activeProductsForPricing, newCustomerProductSearch, newCustomerProductUsageById, selectedNewCustomerProductIdSet]);
   const toggleNewCustomerProduct = (productId) => {
     if (!productId) return;
     setNewCustomerProductIds(prev => (
@@ -72573,8 +72588,11 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         const scoreDiff = (customerSearchRankById.get(b.id) || 0) - (customerSearchRankById.get(a.id) || 0);
         if (scoreDiff !== 0) return scoreDiff;
       }
-      if (customerSortFilter === 'revenue' && canSeeCustomerStats) {
+      if ((customerSortFilter === 'revenue' || customerSortFilter === 'revenue_desc') && canSeeCustomerStats) {
         if (b.totalRevenue !== a.totalRevenue) return b.totalRevenue - a.totalRevenue;
+      }
+      if (customerSortFilter === 'revenue_asc' && canSeeCustomerStats) {
+        if (a.totalRevenue !== b.totalRevenue) return a.totalRevenue - b.totalRevenue;
       }
       if (customerSortFilter === 'date') {
         const timeDiff = getCustomerDateActivityTime(b) - getCustomerDateActivityTime(a);
@@ -73058,7 +73076,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       setCustomerPriceStatus('');
       setCustomerDebtLimitStatus('');
       setCustomerOpeningDebtStatus('');
-      setCustomerLoyaltyStatus('');
       setCustomerLoanDraft({ productName: '', quantity: '', unit: 'Kg', weightKg: '', loanDate: getTodayString(), dueDate: '', note: '' });
       setCustomerLoanStatus('');
       setCustomerLoanReturnDrafts({});
@@ -73097,7 +73114,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     setCustomerPriceStatus('');
     setCustomerDebtLimitStatus('');
     setCustomerOpeningDebtStatus('');
-    setCustomerLoyaltyStatus('');
     setCustomerLoanDraft({ productName: '', quantity: '', unit: 'Kg', weightKg: '', loanDate: getTodayString(), dueDate: '', note: '' });
     setCustomerLoanStatus('');
     setCustomerLoanReturnDrafts({});
@@ -73232,12 +73248,13 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     return activeProductsForPricing
       .filter(product => productMatchesLookup(product, keyword))
       .sort((a, b) => {
-        const selectedDiff = Number(selectedCustomerProductIdSet.has(b.id)) - Number(selectedCustomerProductIdSet.has(a.id));
-        if (selectedDiff !== 0) return selectedDiff;
-        const usageA = customerProductUsageStats.get(a.id) || { count: 0, quantity: 0 };
-        const usageB = customerProductUsageStats.get(b.id) || { count: 0, quantity: 0 };
+        const usageA = customerProductUsageStats.get(a.id) || { count: 0, quantity: 0, lastOrderTime: 0 };
+        const usageB = customerProductUsageStats.get(b.id) || { count: 0, quantity: 0, lastOrderTime: 0 };
         if (usageB.quantity !== usageA.quantity) return usageB.quantity - usageA.quantity;
         if (usageB.count !== usageA.count) return usageB.count - usageA.count;
+        if (usageB.lastOrderTime !== usageA.lastOrderTime) return usageB.lastOrderTime - usageA.lastOrderTime;
+        const selectedDiff = Number(selectedCustomerProductIdSet.has(b.id)) - Number(selectedCustomerProductIdSet.has(a.id));
+        if (selectedDiff !== 0) return selectedDiff;
         return (a.name || '').localeCompare(b.name || '', 'vi');
       });
   }, [activeProductsForPricing, customerProductPickerSearch, customerProductUsageStats, selectedCustomerProductIdSet]);
@@ -73496,9 +73513,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   useEffect(() => {
     if (!showAddCustomer || typeof window === 'undefined' || !window.history?.pushState) return;
     try {
-      window.history.pushState({ ...(window.history.state || {}), hdManager: true, tab: 'customers', modal: 'add_customer' }, '', window.location.href);
+      window.history.pushState({ ...(window.history.state || {}), hdManager: true, tab: 'customers', view: 'create_customer' }, '', window.location.href);
     } catch (error) {
-      console.warn('Failed to push customer modal history.', error);
+      console.warn('Failed to push customer create-view history.', error);
     }
 
     const handleCustomerModalBack = () => {
@@ -73513,10 +73530,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const closeAddCustomerModal = () => {
     setShowAddCustomer(false);
     setCustomerContactStatus('');
-    setNewCus({ customerHonorific: '', name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
+    setNewCus({ customerHonorific: '', name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', openingBalanceType: 'receivable', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
     setNewCustomerProductIds([]);
     setNewCustomerProductSearch('');
-    if (typeof window !== 'undefined' && window.history?.state?.modal === 'add_customer') {
+    if (typeof window !== 'undefined' && window.history?.state?.view === 'create_customer') {
       window.setTimeout(() => window.history.back(), 0);
     }
   };
@@ -73622,7 +73639,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
           : undefined
       });
       closeAddCustomerModal();
-      setNewCus({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
+      setNewCus({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', openingBalanceType: 'receivable', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
       setNewCustomerProductIds([]);
       setNewCustomerProductSearch('');
       setCustomerContactStatus('');
@@ -74182,23 +74199,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       setCustomerOpeningDebtStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu nợ cũ của khách hàng.'));
     } finally {
       setIsSavingCustomerOpeningDebt(false);
-    }
-  };
-
-  const handleToggleCustomerLoyalty = async () => {
-    if (!selectedCustomer || !onEditCustomer) return;
-    const nextEnabled = !selectedCustomer.loyalty?.enabled;
-    setIsSavingCustomerLoyalty(true);
-    setCustomerLoyaltyStatus('');
-    try {
-      await onEditCustomer(selectedCustomer.id, {
-        customerLoyaltyEnabledOverride: nextEnabled ? 'enabled' : 'disabled'
-      });
-      setCustomerLoyaltyStatus(nextEnabled ? 'Đã bật tích điểm riêng cho khách hàng này.' : 'Đã tắt tích điểm riêng cho khách hàng này.');
-    } catch (error) {
-      setCustomerLoyaltyStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật tích điểm cho khách hàng.'));
-    } finally {
-      setIsSavingCustomerLoyalty(false);
     }
   };
 
@@ -74762,7 +74762,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                   type="button"
                   onClick={() => canEditCustomerProfile && setShowCustomerEditForm(true)}
                   disabled={!canEditCustomerProfile}
-                  className={`min-w-0 max-w-full truncate whitespace-nowrap text-left text-xl font-bold leading-tight text-gray-800 ${canEditCustomerProfile ? 'underline decoration-emerald-200 underline-offset-4' : ''}`}
+                  className={`hd-customer-detail__title min-w-0 max-w-full truncate whitespace-nowrap text-left font-bold leading-tight text-gray-800 ${canEditCustomerProfile ? 'underline decoration-emerald-200 underline-offset-4' : ''}`}
                   title={canEditCustomerProfile ? 'Bấm để chỉnh sửa thông tin khách hàng' : 'Bạn chỉ được xem thông tin khách hàng'}
                 >
                   {selectedCustomer.displayName || getCustomerDisplayName(selectedCustomer)}
@@ -74928,50 +74928,49 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         </div>
 
         {showCustomerEditForm && canEditCustomerProfile && (
-        <form onSubmit={handleSaveCustomerProfile} className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm space-y-3">
+        <form data-customer-edit-form="true" onSubmit={handleSaveCustomerProfile} className="hd-customer-edit-form bg-white rounded-2xl border border-gray-100 p-4 shadow-sm space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="font-bold text-lg text-gray-800">Chỉnh sửa khách hàng</h3>
-              <p className="text-xs text-gray-500 mt-1">Cập nhật tên, số điện thoại, địa chỉ và nhân viên phụ trách.</p>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2 grid grid-cols-[92px_minmax(0,1fr)] gap-2">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Xưng hô</label>
+            <div data-customer-edit-row="identity" className="col-span-2 grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+              <label className="hd-customer-edit-field">
+                <span className="hd-customer-edit-field__label">Xưng hô</span>
                 <select
+                  aria-label="Xưng hô"
                   value={customerEditForm.customerHonorific || ''}
                   onChange={e => setCustomerEditForm(prev => ({ ...prev, customerHonorific: e.target.value }))}
                   disabled={!canEditCustomer}
-                  className="w-full border border-gray-300 rounded-xl p-3 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
                 >
                   {CUSTOMER_HONORIFIC_OPTIONS.map(option => <option key={option.value || 'empty'} value={option.value}>{option.label}</option>)}
                 </select>
-              </div>
-              <div>
-              <label className="block text-xs font-bold text-gray-500 mb-1">Tên khách hàng</label>
-              <input
-                required
-                type="text"
-                value={customerEditForm.name}
-                onChange={e => setCustomerEditForm(prev => ({ ...prev, name: formatCustomerNameDraft(e.target.value), customerHonorific: prev.customerHonorific || inferCustomerHonorificFromName(e.target.value) }))}
-                disabled={!canEditCustomer}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
-                placeholder="Nhập tên khách hàng hoặc công ty"
-              />
-              </div>
+              </label>
+              <label className="hd-customer-edit-field">
+                <span className="hd-customer-edit-field__label">Tên khách hàng</span>
+                <input
+                  aria-label="Tên khách hàng"
+                  required
+                  type="text"
+                  value={customerEditForm.name}
+                  onChange={e => setCustomerEditForm(prev => ({ ...prev, name: formatCustomerNameDraft(e.target.value), customerHonorific: prev.customerHonorific || inferCustomerHonorificFromName(e.target.value) }))}
+                  disabled={!canEditCustomer}
+                />
+              </label>
             </div>
             <div>
-              <label className="block text-xs font-bold text-gray-500 mb-1">Số điện thoại</label>
-              <input
-                type="tel"
-                value={customerEditForm.phone}
-                onChange={e => setCustomerEditForm(prev => ({ ...prev, phone: e.target.value }))}
-                disabled={!canEditCustomerContactFields}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
-                placeholder="Nhập số điện thoại"
-              />
+              <label className="hd-customer-edit-field">
+                <span className="hd-customer-edit-field__label">Số điện thoại</span>
+                <input
+                  aria-label="Số điện thoại"
+                  type="tel"
+                  value={customerEditForm.phone}
+                  onChange={e => setCustomerEditForm(prev => ({ ...prev, phone: e.target.value }))}
+                  disabled={!canEditCustomerContactFields}
+                />
+              </label>
               {customerEditPhoneDuplicate && (
                 <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-amber-700">
                   <AlertCircle size={13} className="mt-0.5 shrink-0" />
@@ -74980,15 +74979,16 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               )}
             </div>
             <div>
-              <label className="block text-xs font-bold text-gray-500 mb-1">Nhóm KH</label>
-              <input
-                type="text"
-                value={customerEditForm.customerGroup}
-                onChange={e => setCustomerEditForm(prev => ({ ...prev, customerGroup: e.target.value }))}
-                disabled={!canEditCustomer}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
-                placeholder="Ví dụ: Đại lý, VIP, Tạp hóa"
-              />
+              <label className="hd-customer-edit-field">
+                <span className="hd-customer-edit-field__label">Nhóm khách hàng</span>
+                <input
+                  aria-label="Nhóm khách hàng"
+                  type="text"
+                  value={customerEditForm.customerGroup}
+                  onChange={e => setCustomerEditForm(prev => ({ ...prev, customerGroup: e.target.value }))}
+                  disabled={!canEditCustomer}
+                />
+              </label>
             </div>
             {accountLoginEnabled && (
               <div className="col-span-2 rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
@@ -75027,71 +75027,50 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 )}
               </div>
             )}
-            <div className="col-span-2">
-              <label className="block text-xs font-bold text-gray-500 mb-1">Địa chỉ giao hàng</label>
-              <textarea
-                rows={3}
-                value={customerEditForm.address}
-                onChange={e => setCustomerEditForm(prev => ({ ...prev, address: e.target.value }))}
-                disabled={!canEditCustomerContactFields}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 resize-none disabled:bg-gray-50 disabled:text-gray-500"
-                placeholder="Nhập địa chỉ giao hàng"
-              />
-            </div>
-            <div className="col-span-2">
-              <label className="block text-xs font-bold text-gray-500 mb-1">Link nhóm Zalo</label>
-              <input
-                type="url"
-                data-customer-zalo-group-link-input="true"
-                value={customerEditForm.zaloGroupLink || ''}
-                onChange={e => setCustomerEditForm(prev => ({ ...prev, zaloGroupLink: e.target.value }))}
-                disabled={!canEditCustomerContactFields}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
-                placeholder="Dán link nhóm Zalo của khách"
-              />
-            </div>
-            {canEditCustomerLocationFields && (
-            <div className="col-span-2 rounded-2xl border border-blue-100 bg-blue-50/60 p-3">
-              <label className="block text-xs font-bold text-blue-700 mb-2">GPS / định vị vị trí khách</label>
-              <div className="flex gap-2">
+            <div data-customer-edit-row="location" className={`col-span-2 hd-customer-edit-form__paired-row ${canEditCustomerLocationFields ? '' : 'hd-customer-edit-form__paired-row--single'}`}>
+              <label className="hd-customer-edit-field">
+                <span className="hd-customer-edit-field__label">Địa chỉ giao hàng</span>
                 <input
+                  aria-label="Địa chỉ giao hàng"
                   type="text"
-                  value={customerEditForm.locationInput || ''}
-                  onChange={e => setCustomerEditForm(prev => ({ ...prev, locationInput: e.target.value }))}
-                  className="min-w-0 flex-1 rounded-xl border border-blue-100 bg-white px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-400"
-                  placeholder="Dán link Maps hoặc 10.123456, 106.123456"
+                  value={customerEditForm.address}
+                  onChange={e => setCustomerEditForm(prev => ({ ...prev, address: e.target.value }))}
+                  disabled={!canEditCustomerContactFields}
                 />
-                <button
-                  type="button"
-                  onClick={handleApplyCustomerEditLocationInput}
-                  className="rounded-xl border border-blue-100 bg-white px-3 py-2 text-[11px] font-black text-blue-700"
-                >
-                  Lưu
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCaptureCustomerEditLocation}
-                  disabled={isUpdatingSelectedCustomerLocation}
-                  className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white disabled:opacity-60"
-                >
-                  {isUpdatingSelectedCustomerLocation ? <Loader2 size={13} className="animate-spin" /> : 'GPS'}
-                </button>
-              </div>
-              {customerEditForm.location && (
-                <p className="mt-2 truncate text-[11px] font-semibold text-blue-700">{formatCustomerLocationForDisplay(customerEditForm.location)}</p>
-              )}
-              {customerLocationStatus && (
-                <p className="mt-2 rounded-xl border border-blue-100 bg-white px-3 py-2 text-[11px] font-bold text-blue-700">{customerLocationStatus}</p>
+              </label>
+              {canEditCustomerLocationFields && (
+                <div className="hd-customer-edit-field hd-customer-edit-field--maps">
+                  <span className="hd-customer-edit-field__label">Maps</span>
+                  <div className="hd-customer-edit-field__maps-controls">
+                    <input
+                      aria-label="Maps"
+                      type="text"
+                      value={customerEditForm.locationInput || ''}
+                      onChange={e => setCustomerEditForm(prev => ({ ...prev, locationInput: e.target.value }))}
+                    />
+                    <button type="button" onClick={handleApplyCustomerEditLocationInput} aria-label="Lưu vị trí Maps" title="Lưu vị trí Maps">
+                      <Check size={14} />
+                    </button>
+                    <button type="button" onClick={handleCaptureCustomerEditLocation} disabled={isUpdatingSelectedCustomerLocation} aria-label="Lấy GPS hiện tại" title="Lấy GPS hiện tại">
+                      {isUpdatingSelectedCustomerLocation ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                    </button>
+                  </div>
+                  {customerEditForm.location && (
+                    <small>{formatCustomerLocationForDisplay(customerEditForm.location)}</small>
+                  )}
+                </div>
               )}
             </div>
+            {customerLocationStatus && (
+              <p className="col-span-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] font-bold text-blue-700">{customerLocationStatus}</p>
             )}
-            <div className="col-span-2">
-              <label className="block text-xs font-bold text-gray-500 mb-1">Nhân viên phụ trách</label>
+            <label className="col-span-2 hd-customer-edit-field">
+              <span className="hd-customer-edit-field__label">Nhân viên phụ trách</span>
               <select
+                aria-label="Nhân viên phụ trách"
                 value={customerEditForm.empId}
                 onChange={e => setCustomerEditForm(prev => ({ ...prev, empId: e.target.value }))}
                 disabled={!canReassignCustomerManager}
-                className="w-full border border-gray-300 rounded-xl p-3 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-50 disabled:text-gray-500"
               >
                 <option value="">-- Chọn Sales phụ trách --</option>
                 {salesEmployees.map(salesEmp => <option key={salesEmp.id} value={salesEmp.id}>{salesEmp.name}</option>)}
@@ -75099,7 +75078,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               {!canReassignCustomerManager && (
                 <p className="mt-2 text-xs text-gray-500">Tài khoản hiện tại không có quyền đổi nhân viên phụ trách.</p>
               )}
-            </div>
+            </label>
           </div>
 
           {customerEditStatus && (
@@ -75121,23 +75100,38 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         {((canManageFixedProducts || canManageCustomerPrices) || (canManageFixedProducts || canEditCustomerProfile)) && (
         <div className="grid grid-cols-2 gap-2">
         {(canManageFixedProducts || canManageCustomerPrices) && (
-        <div className={`bg-white rounded-2xl border border-gray-100 p-3 shadow-sm space-y-3 ${isCustomerFixedProductsOpen ? 'col-span-2' : ''}`}>
+        <div
+          data-customer-detail-products="true"
+          className="hd-customer-detail-products col-span-2 bg-white rounded-2xl border border-gray-100 p-3 shadow-sm space-y-3"
+        >
           <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-3">
-            <button
-              type="button"
-              onClick={() => setIsCustomerFixedProductsOpen(prev => !prev)}
-              className="flex w-full items-center justify-between gap-2 text-left"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-black text-slate-900">Sản Phẩm cố định</p>
-                <p className="mt-1 truncate text-[11px] font-semibold text-emerald-700">
-                  {customerPricingProducts.length > 0
-                    ? `${customerPricingProducts.length} sản phẩm`
-                    : 'Chưa cài'}
-                </p>
-              </div>
-              {isCustomerFixedProductsOpen ? <ChevronUp size={18} className="shrink-0 text-emerald-600" /> : <ChevronDown size={18} className="shrink-0 text-emerald-600" />}
-            </button>
+            <div className="hd-customer-detail-products__heading-row">
+              <button
+                type="button"
+                onClick={() => setIsCustomerFixedProductsOpen(prev => !prev)}
+                className="hd-customer-detail-products__toggle"
+              >
+                <span className="hd-customer-detail-products__title">SP khách lấy</span>
+                <span className="hd-customer-detail-products__count">
+                  {customerPricingProducts.length > 0 ? `${customerPricingProducts.length} SP` : 'Chưa cài'}
+                </span>
+                {isCustomerFixedProductsOpen ? <ChevronUp size={18} className="shrink-0 text-emerald-600" /> : <ChevronDown size={18} className="shrink-0 text-emerald-600" />}
+              </button>
+
+              {isCustomerFixedProductsOpen && (
+                <label className="hd-customer-detail-products__search">
+                  <Search size={15} className="shrink-0 text-emerald-500" />
+                  <input
+                    data-customer-product-search="true"
+                    type="text"
+                    value={customerProductPickerSearch}
+                    onChange={(e) => setCustomerProductPickerSearch(e.target.value)}
+                    disabled={!canManageFixedProducts}
+                    placeholder="Tìm SP"
+                  />
+                </label>
+              )}
+            </div>
 
             {!isCustomerFixedProductsOpen && customerPricingProducts.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -75156,33 +75150,28 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
             {isCustomerFixedProductsOpen && (
             <>
-
-            <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-white px-3 py-2">
-              <Search size={15} className="text-emerald-500" />
-              <input
-                type="text"
-                value={customerProductPickerSearch}
-                onChange={(e) => setCustomerProductPickerSearch(e.target.value)}
-                disabled={!canManageFixedProducts}
-                className="w-full bg-transparent text-sm outline-none"
-                placeholder="Tìm sản phẩm để thêm cho khách này"
-              />
-            </div>
-
-            <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
-              {availableCustomerProductOptions.slice(0, 24).map(product => {
+            <div
+              data-customer-product-suggestions="true"
+              data-suggestion-limit="10"
+              className="hd-customer-detail-products__suggestions"
+            >
+              {availableCustomerProductOptions.slice(0, 10).map(product => {
                 const usageStats = customerProductUsageStats.get(product.id);
                 const isSelectedProduct = selectedCustomerProductIdSet.has(product.id);
                 return (
                   <button
                     key={product.id}
+                    data-product-short-name={getProductShortName(product) || product.name || ''}
+                    data-product-usage-quantity={usageStats?.quantity || 0}
+                    data-product-usage-count={usageStats?.count || 0}
+                    data-product-usage-last-time={usageStats?.lastOrderTime || 0}
                     type="button"
                     onClick={() => canManageFixedProducts && toggleCustomerProductForPricing(product.id)}
                     disabled={!canManageFixedProducts}
-                    className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
+                    className={`hd-customer-detail-products__suggestion ${
                       isSelectedProduct
-                        ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
-                        : 'border-white bg-white text-slate-700 hover:border-emerald-200 hover:bg-emerald-50'
+                        ? 'is-selected'
+                        : ''
                     }`}
                   >
                     <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
@@ -75191,8 +75180,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                       <Check size={13} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate">
-                        {getProductShortName(product) ? `${getProductShortName(product)} - ${product.name}` : product.name}
+                      <span className="hd-customer-detail-products__suggestion-title block truncate">
+                        {getProductShortName(product) || product.name}
                       </span>
                       <span className={`block truncate text-[11px] font-semibold ${isSelectedProduct ? 'text-emerald-700/80' : 'text-slate-400'}`}>
                         {usageStats ? `Hay lấy ${formatNumber(usageStats.quantity)} ${product.unit || 'lần'}` : product.category || 'Tick để cài giá và size'}
@@ -75202,7 +75191,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 );
               })}
               {availableCustomerProductOptions.length === 0 && (
-                <p className="rounded-xl border border-dashed border-emerald-200 bg-white px-3 py-3 text-center text-xs font-semibold text-slate-400">
+                <p className="hd-customer-detail-products__empty">
                   Không tìm thấy sản phẩm phù hợp.
                 </p>
               )}
@@ -75219,10 +75208,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             </div>
           ) : customerPricingProducts.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/50 px-4 py-5 text-center text-sm font-semibold text-emerald-700">
-              Bạn hãy chọn sản phẩm cố định của khách ở phía trên. Khi chưa chọn sản phẩm nào, app sẽ không chia sẻ bảng giá cho khách này để tránh gửi nhầm toàn bộ sản phẩm.
+              Bạn hãy chọn SP khách lấy ở phía trên. Khi chưa chọn sản phẩm nào, app sẽ không chia sẻ bảng giá cho khách này để tránh gửi nhầm toàn bộ sản phẩm.
             </div>
           ) : (
-            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+            <div data-customer-product-config-list="true" className="hd-customer-product-config-list space-y-2">
               {filteredPricingProducts.map(product => {
                 const rawCustomConfig = customerPriceDrafts[product.id] ?? null;
                 const customConfig = typeof rawCustomConfig === 'object' && rawCustomConfig !== null
@@ -75245,11 +75234,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 const pricingUnitOptions = PRODUCT_PRICING_UNIT_OPTIONS.includes(customPricingUnit)
                   ? PRODUCT_PRICING_UNIT_OPTIONS
                   : [customPricingUnit, ...PRODUCT_PRICING_UNIT_OPTIONS].filter(Boolean);
-                const configuredOrderUnitOptions = [...new Set([
-                  customDefaultOrderUnit,
-                  ...`${customOrderUnits}`.split(/[;,/&+|]/).map(normalizeProductPricingUnit),
-                  ...pricingUnitOptions,
-                ].filter(Boolean))];
                 const productAttributeOptions = getProductAttributes(product);
                 const customAttributeLabel = productAttributeOptions.find(attribute => normalizeLookupText(attribute) === normalizeLookupText(customConfig.attributeLabel || '')) || '';
                 const customVariants = (Array.isArray(customConfig.variants) ? customConfig.variants : []).map((variant, index) => ({
@@ -75267,17 +75251,16 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                   || customDefaultOrderUnit
                   || hasCustomerOrderConfigurationValue(customUnitConversions)
                   || customVariants.length > 0;
-                const usageStats = customerProductUsageStats.get(product.id);
                 return (
-                  <div key={product.id} className={`rounded-2xl border p-3 ${hasCustomConfig ? 'border-emerald-100 bg-emerald-50/60' : 'border-gray-100 bg-gray-50'}`}>
+                  <div
+                    key={product.id}
+                    data-customer-product-config="true"
+                    data-product-short-name={getProductShortName(product) || product.name || ''}
+                    className={`hd-customer-product-config rounded-2xl border p-3 ${hasCustomConfig ? 'border-emerald-100 bg-emerald-50/60' : 'border-gray-100 bg-gray-50'}`}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-bold text-gray-800">{product.name}</p>
-                        <p className="mt-1 text-[11px] text-gray-500">
-                          Giá mặc định: {formatCurrency(product.sellingPrice || 0)} đ/{product.unit || 'đv'}
-                          {product.category ? ` • ${product.category}` : ''}
-                          {usageStats ? ` • Hay lấy: ${formatNumber(usageStats.quantity)} ${product.unit || 'lần'} / ${usageStats.count} lần` : ''}
-                        </p>
+                        <p className="hd-customer-detail-products__product-title">{getProductShortName(product) || product.name}</p>
                       </div>
                       {hasCustomConfig && (
                         <button type="button" onClick={() => clearCustomerPriceDraft(product.id)} className="shrink-0 rounded-full border border-red-100 bg-white px-2.5 py-1 text-[10px] font-bold text-red-500">
@@ -75285,108 +75268,81 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                         </button>
                       )}
                     </div>
-                    <div className={`mt-3 grid grid-cols-2 items-end gap-2 ${hasProductAttributes ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
-                      <label className="min-w-0 space-y-1">
-                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Size</span>
-                        <input
-                          type="text"
-                          value={customSize}
-                          onChange={(e) => updateCustomerPriceDraft(product.id, 'size', e.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
-                          placeholder="Size"
-                        />
-                      </label>
-                      {hasProductAttributes && (
-                        <label className="min-w-0 space-y-1">
-                          <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Thuộc tính</span>
+                    <div className="hd-customer-product-config__fields">
+                      <div data-config-row="size-price" className="hd-customer-product-config__field-row">
+                        <label className="hd-customer-config-field">
+                          <span className="hd-customer-config-field__label">Size</span>
+                          <input
+                            aria-label={`Size của ${product.name}`}
+                            type="text"
+                            value={customSize}
+                            onChange={(e) => updateCustomerPriceDraft(product.id, 'size', e.target.value)}
+                            className="hd-customer-config-field__control"
+                          />
+                        </label>
+                        <label className="hd-customer-config-field">
+                          <span className="hd-customer-config-field__label">Giá</span>
+                          <span className="hd-customer-config-field__value-row">
+                            <input
+                              aria-label={`Giá của ${product.name}`}
+                              type="tel"
+                              value={formatInputCurrency(customPrice)}
+                              onChange={(e) => updateCustomerPriceDraft(product.id, 'price', e.target.value)}
+                              className="hd-customer-config-field__control"
+                            />
+                            <span className="hd-customer-config-field__suffix">đ/{customPricingUnit || 'đv'}</span>
+                          </span>
+                        </label>
+                      </div>
+                      <div data-config-row="pricing-order-units" className="hd-customer-product-config__field-row">
+                        <label className="hd-customer-config-field">
+                          <span className="hd-customer-config-field__label">ĐV tính giá</span>
                           <select
-                            value={customAttributeLabel}
-                            onChange={(e) => updateCustomerPriceDraft(product.id, 'attributeLabel', e.target.value)}
-                            className="w-full rounded-xl border border-sky-100 bg-white px-2 py-2.5 text-sm font-bold text-sky-800 outline-none focus:ring-2 focus:ring-sky-500"
+                            aria-label={`Đơn vị tính giá của ${product.name}`}
+                            value={customPricingUnit}
+                            onChange={(e) => updateCustomerPriceDraft(product.id, 'pricingUnit', e.target.value)}
+                            className="hd-customer-config-field__control"
                           >
-                            <option value="">Không chọn</option>
-                            {productAttributeOptions.map(attribute => (
-                              <option key={attribute} value={attribute}>{attribute}</option>
+                            {pricingUnitOptions.map(unit => (
+                              <option key={unit} value={unit}>{unit}</option>
                             ))}
                           </select>
                         </label>
-                      )}
-                      <label className="min-w-0 space-y-1">
-                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị tính giá</span>
-                        <select
-                          value={customPricingUnit}
-                          onChange={(e) => updateCustomerPriceDraft(product.id, 'pricingUnit', e.target.value)}
-                          className="w-full rounded-xl border border-emerald-100 bg-white px-2 py-2.5 text-sm font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
-                        >
-                          {pricingUnitOptions.map(unit => (
-                            <option key={unit} value={unit}>{unit}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <label className="min-w-0 flex-1 space-y-1">
-                          <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Giá</span>
+                        <label className="hd-customer-config-field">
+                          <span className="hd-customer-config-field__label">ĐV đặt</span>
                           <input
-                            type="tel"
-                            value={formatInputCurrency(customPrice)}
-                            onChange={(e) => updateCustomerPriceDraft(product.id, 'price', e.target.value)}
-                            className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
-                            placeholder="Giá"
+                            aria-label={`Đơn vị đặt của ${product.name}`}
+                            type="text"
+                            value={customOrderUnits}
+                            onChange={(e) => updateCustomerPriceDraft(product.id, 'orderUnits', e.target.value)}
+                            className="hd-customer-config-field__control"
                           />
                         </label>
-                        <span className="text-xs font-bold text-gray-400">đ/{customPricingUnit || 'đv'}</span>
                       </div>
                     </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <label className="min-w-0 space-y-1">
-                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị khách đặt</span>
-                        <input
-                          type="text"
-                          value={customOrderUnits}
-                          onChange={(e) => updateCustomerPriceDraft(product.id, 'orderUnits', e.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
-                          placeholder="VD: Kg, Con, Thùng"
-                        />
-                      </label>
-                      <label className="min-w-0 space-y-1">
-                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">Đơn vị đặt mặc định</span>
-                        <select
-                          value={customDefaultOrderUnit}
-                          onChange={(e) => updateCustomerPriceDraft(product.id, 'defaultOrderUnit', e.target.value)}
-                          className="w-full rounded-xl border border-emerald-100 bg-white px-2.5 py-2.5 text-sm font-bold text-emerald-800 outline-none focus:ring-2 focus:ring-emerald-500"
-                        >
-                          <option value="">Theo đơn vị đầu tiên</option>
-                          {configuredOrderUnitOptions.map(unit => (
-                            <option key={unit} value={unit}>{unit}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="min-w-0 space-y-1 sm:col-span-2">
-                        <span className="block text-[10px] font-black uppercase tracking-wide text-slate-400">
-                          Quy đổi sang {customPricingUnit || 'đơn vị tính giá'}
-                        </span>
-                        <input
-                          type="text"
-                          value={customUnitConversions}
-                          onChange={(e) => updateCustomerPriceDraft(product.id, 'unitConversions', e.target.value)}
-                          className="w-full rounded-xl border border-amber-100 bg-amber-50/40 px-2.5 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                          placeholder="VD: Con=2,5; Thùng=10"
-                        />
-                      </label>
-                    </div>
-                    <p className="mt-2 text-[10px] font-semibold leading-relaxed text-amber-700">
-                      Ví dụ: giá theo Kg, 1 Con = 2,5 Kg thì nhập Con=2,5. Không có quy đổi, app sẽ chặn gửi đơn để tránh tính sai tiền.
-                    </p>
-                    <div className="mt-3 rounded-2xl border border-white/70 bg-white/75 p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-black uppercase tracking-wide text-slate-600">Size / thuộc tính khác</p>
-                          <p className="mt-0.5 text-[10px] font-semibold text-slate-400">Cùng một sản phẩm có thể thêm nhiều size, thuộc tính và giá riêng.</p>
-                        </div>
+                    <div className="hd-customer-product-config__attributes">
+                      <div className="hd-customer-product-config__attribute-header">
+                        <p>Thuộc tính</p>
+                        {hasProductAttributes && (
+                          <label className="hd-customer-config-field hd-customer-config-field--compact">
+                            <span className="hd-customer-config-field__label">Thuộc tính</span>
+                            <select
+                              aria-label={`Thuộc tính của ${product.name}`}
+                              value={customAttributeLabel}
+                              onChange={(e) => updateCustomerPriceDraft(product.id, 'attributeLabel', e.target.value)}
+                              className="hd-customer-config-field__control"
+                            >
+                              <option value="">Không chọn</option>
+                              {productAttributeOptions.map(attribute => (
+                                <option key={attribute} value={attribute}>{attribute}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                         <button
                           type="button"
                           onClick={() => addCustomerPriceVariantDraft(product.id)}
-                          className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100"
+                          className="hd-customer-product-config__add-attribute"
                         >
                           + Thêm
                         </button>
@@ -75395,27 +75351,25 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                       {customVariants.length > 0 && (
                         <div className="mt-2 space-y-2">
                           {customVariants.map((variant, variantIndex) => (
-                            <div
-                              key={variant.id}
-                              className={`grid items-end gap-2 rounded-2xl border border-emerald-50 bg-white p-2 shadow-sm ${hasProductAttributes ? 'grid-cols-[minmax(0,0.8fr)_minmax(82px,0.8fr)_minmax(0,1fr)_36px]' : 'grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_36px]'}`}
-                            >
-                              <label className="min-w-0 space-y-1">
-                                <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Size {variantIndex + 1}</span>
+                            <div key={variant.id} className={`hd-customer-product-variant ${hasProductAttributes ? 'has-product-attributes' : ''}`}>
+                              <label className="hd-customer-config-field">
+                                <span className="hd-customer-config-field__label">Size {variantIndex + 1}</span>
                                 <input
+                                  aria-label={`Size ${variantIndex + 1} của ${product.name}`}
                                   type="text"
                                   value={variant.size}
                                   onChange={(e) => updateCustomerPriceVariantDraft(product.id, variant.id, 'size', e.target.value)}
-                                  className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
-                                  placeholder="Size"
+                                  className="hd-customer-config-field__control"
                                 />
                               </label>
                               {hasProductAttributes && (
-                                <label className="min-w-0 space-y-1">
-                                  <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Thuộc tính</span>
+                                <label className="hd-customer-config-field">
+                                  <span className="hd-customer-config-field__label">Thuộc tính</span>
                                   <select
+                                    aria-label={`Thuộc tính ${variantIndex + 1} của ${product.name}`}
                                     value={variant.attributeLabel}
                                     onChange={(e) => updateCustomerPriceVariantDraft(product.id, variant.id, 'attributeLabel', e.target.value)}
-                                    className="w-full rounded-xl border border-sky-100 bg-white px-2 py-2 text-sm font-bold text-sky-800 outline-none focus:ring-2 focus:ring-sky-500"
+                                    className="hd-customer-config-field__control"
                                   >
                                     <option value="">Không</option>
                                     {productAttributeOptions.map(attribute => (
@@ -75424,14 +75378,14 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                                   </select>
                                 </label>
                               )}
-                              <label className="min-w-0 space-y-1">
-                                <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Giá</span>
+                              <label className="hd-customer-config-field">
+                                <span className="hd-customer-config-field__label">Giá</span>
                                 <input
+                                  aria-label={`Giá thuộc tính ${variantIndex + 1} của ${product.name}`}
                                   type="tel"
                                   value={formatInputCurrency(variant.price)}
                                   onChange={(e) => updateCustomerPriceVariantDraft(product.id, variant.id, 'price', e.target.value)}
-                                  className="w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
-                                  placeholder="Giá"
+                                  className="hd-customer-config-field__control"
                                 />
                               </label>
                               <button
@@ -75485,7 +75439,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         )}
 
         {(canManageFixedProducts || canEditCustomerProfile) && (
-        <div className={`bg-white rounded-2xl border border-sky-100 p-3 shadow-sm space-y-3 ${isCustomerDetailSectionOpen('branches') ? 'col-span-2' : ''}`}>
+        <div
+          data-customer-detail-branches="true"
+          className="col-span-2 bg-white rounded-2xl border border-sky-100 p-3 shadow-sm space-y-3"
+        >
           <button type="button" onClick={() => toggleCustomerDetailSection('branches')} className="flex w-full items-center justify-between gap-2 text-left">
             <div className="min-w-0">
               <h3 className="flex items-center gap-1.5 truncate font-bold text-gray-800"><MapPin size={15} className="shrink-0 text-sky-500" /> <span className="truncate">Chi nhánh</span></h3>
@@ -75630,11 +75587,13 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               <h3 className="font-bold text-gray-800 flex items-center gap-2"><Wallet size={16} className="text-rose-500" /> Nợ cũ</h3>
             </div>
             <span className="flex shrink-0 items-center gap-2">
-              <span className="rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 text-[11px] font-black text-rose-700">
-                Khách nợ {formatCurrency(getCustomerOpeningDebtAmount(selectedCustomer))} đ
-              </span>
-              <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700">
-                Cty nợ {formatCurrency(getCustomerOpeningPayableAmount(selectedCustomer))} đ
+              <span data-customer-opening-debt-summary="true" className="flex flex-col items-stretch gap-1 text-right">
+                <span data-debt-side="receivable" className="rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 text-[11px] font-black text-rose-700">
+                  Khách nợ: {formatCurrency(getCustomerOpeningDebtAmount(selectedCustomer))} đ
+                </span>
+                <span data-debt-side="payable" className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700">
+                  Công ty nợ: {formatCurrency(getCustomerOpeningPayableAmount(selectedCustomer))} đ
+                </span>
               </span>
               {isCustomerDetailSectionOpen('openingDebt') ? <ChevronUp size={17} className="text-rose-500" /> : <ChevronDown size={17} className="text-rose-500" />}
             </span>
@@ -76293,8 +76252,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         )}
 
         {canViewCustomerLoyalty && (
-        <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm space-y-3">
-          <button type="button" onClick={() => toggleCustomerDetailSection('loyalty')} className="flex w-full items-start justify-between gap-3 text-left">
+        <div data-customer-loyalty-section="true" className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm space-y-3">
+          <button data-customer-loyalty-heading="true" type="button" aria-expanded={isCustomerDetailSectionOpen('loyalty')} onClick={() => toggleCustomerDetailSection('loyalty')} className="flex w-full items-start justify-between gap-3 text-left">
             <div className="min-w-0">
               <h3 className="font-bold text-gray-800 flex items-center gap-2"><Gift size={16} className="text-amber-500" /> Tích điểm khách hàng</h3>
             </div>
@@ -76308,37 +76267,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             </div>
           </button>
           {isCustomerDetailSectionOpen('loyalty') && (
-          <>
-          {selectedCustomer.loyalty?.enabled && (
-            <p className="text-xs text-gray-500">
-              {selectedCustomer.loyalty?.customerOverrideEnabled ? 'Khách này đang bật tích điểm riêng.' : 'Khách hàng đang được tích điểm theo cấu hình công ty.'}
-            </p>
-          )}
-          <div className="flex justify-end">
-              {canEditCustomer && (
-                <button
-                  type="button"
-                  onClick={handleToggleCustomerLoyalty}
-                  disabled={isSavingCustomerLoyalty}
-                  className={`rounded-full border px-3 py-1.5 text-[11px] font-black transition disabled:opacity-60 ${
-                    selectedCustomer.loyalty?.enabled
-                      ? 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                      : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
-                  }`}
-                >
-                  {isSavingCustomerLoyalty ? 'Đang lưu...' : selectedCustomer.loyalty?.enabled ? 'Tắt riêng' : 'Bật riêng'}
-                </button>
-              )}
-          </div>
-          </>
-          )}
-          {isCustomerDetailSectionOpen('loyalty') && (
-          <>
-          {customerLoyaltyStatus && (
-            <p className="rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">{customerLoyaltyStatus}</p>
-          )}
-
-          {selectedCustomer.loyalty?.enabled && (
+          <div data-customer-loyalty-content="true">
           <div className="grid grid-cols-3 gap-3">
             <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
               <p className="text-xs font-bold uppercase text-amber-700 mb-1">Điểm hiện có</p>
@@ -76353,8 +76282,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               <p className="text-lg font-black text-emerald-700">{formatCurrency(selectedCustomer.loyaltyRedeemValue || 0)} VNĐ</p>
             </div>
           </div>
-          )}
-          </>
+          </div>
           )}
         </div>
         )}
@@ -76375,7 +76303,6 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
             {isCustomerDetailSectionOpen('driverDebt') && (
             <>
-            <p className="text-xs text-gray-500">Chọn tài xế được xem công nợ của khách hàng này.</p>
             <button
               type="button"
               onClick={toggleDriverDebtAccess}
@@ -76631,8 +76558,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
   return (
     <div className="premium-data-module premium-customer-module space-y-4 animate-in fade-in pb-16">
-      {(canSeeCustomerStats || canSeeCustomerDebt) && (
-      <div className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-2xl p-4 shadow-md">
+      {!showFilterPanel && (canSeeCustomerStats || canSeeCustomerDebt) && (
+      <div data-customer-summary="true" className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-2xl p-4 shadow-md">
         <div className={`grid gap-2 ${canSeeCustomerStats && canSeeCustomerDebt ? 'grid-cols-3' : canSeeCustomerStats ? 'grid-cols-2' : 'grid-cols-1'}`}>
           {canSeeCustomerStats && (
             <div className="rounded-2xl bg-white/10 px-2.5 py-3 text-center">
@@ -76676,13 +76603,14 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             </div>
           )}
           {showFilterPanel && (
-            <div className="space-y-3">
+            <div data-customer-filter-panel="true" className="space-y-3">
               <div className="grid grid-cols-3 gap-2">
                 {canSeeCustomerDebt && (
                   <button
                     type="button"
                     onClick={() => setCustomerStatusFilter(prev => (prev === 'debt' ? 'all' : 'debt'))}
-                    className={`rounded-xl border px-2 py-3 text-xs font-bold transition-colors ${customerStatusFilter === 'debt' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+                    aria-pressed={customerStatusFilter === 'debt'}
+                    className={`hd-customer-filter-chip rounded-xl px-2 py-3 text-xs font-bold transition-colors ${customerStatusFilter === 'debt' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
                   >
                     Còn nợ
                   </button>
@@ -76690,10 +76618,14 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 {canSeeCustomerStats && (
                   <button
                     type="button"
-                    onClick={() => setCustomerSortFilter(prev => (prev === 'revenue' ? 'default' : 'revenue'))}
-                    className={`rounded-xl border px-2 py-3 text-xs font-bold transition-colors ${customerSortFilter === 'revenue' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+                    onClick={() => setCustomerSortFilter(prev => (prev === 'revenue' || prev === 'revenue_desc' ? 'revenue_asc' : 'revenue_desc'))}
+                    aria-label={`Doanh thu${customerSortFilter === 'revenue_asc' ? ' tăng dần' : customerSortFilter === 'revenue' || customerSortFilter === 'revenue_desc' ? ' giảm dần' : ''}`}
+                    aria-pressed={customerSortFilter === 'revenue' || customerSortFilter === 'revenue_desc' || customerSortFilter === 'revenue_asc'}
+                    data-sort-direction={customerSortFilter === 'revenue_asc' ? 'asc' : customerSortFilter === 'revenue' || customerSortFilter === 'revenue_desc' ? 'desc' : 'none'}
+                    className={`hd-customer-filter-chip flex items-center justify-center gap-1 rounded-xl px-2 py-3 text-xs font-bold transition-colors ${customerSortFilter === 'revenue' || customerSortFilter === 'revenue_desc' || customerSortFilter === 'revenue_asc' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
                   >
-                    Doanh thu cao nhất
+                    <span>Doanh thu</span>
+                    {customerSortFilter === 'revenue_asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   </button>
                 )}
                 <button
@@ -76702,7 +76634,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                     if (!customerDateFilter) setCustomerDateFilter(getTodayString());
                     setCustomerSortFilter(prev => (prev === 'date' ? 'default' : 'date'));
                   }}
-                  className={`rounded-xl border px-2 py-3 text-xs font-bold transition-colors ${customerSortFilter === 'date' ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+                  aria-pressed={customerSortFilter === 'date'}
+                  className={`hd-customer-filter-chip rounded-xl px-2 py-3 text-xs font-bold transition-colors ${customerSortFilter === 'date' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
                 >
                   Lọc theo ngày
                 </button>
@@ -76762,63 +76695,63 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
         {visibleFilteredCustomers.map(cus => {
           const displayName = cus.displayName || getCustomerDisplayName(cus) || cus.name || '';
-          const initials = displayName.split(' ').map(part => part[0]).join('').substring(0, 2).toUpperCase();
           const isDuplicatePhone = duplicateCustomerPhoneKeySet.has(buildCustomerPhoneDuplicateKey(cus.phone));
           const needsImmediateCollection = shouldCollectCustomerDebtImmediately(cus.debtLimitStatus);
-          const contactPreview = [
-            canSeeCustomerPhone ? cus.phone : '',
-            canSeeCustomerLocation ? cus.address : ''
-          ].filter(Boolean).join(' • ');
+          const customerPhone = canSeeCustomerPhone ? (cus.phone || 'Chưa có') : 'Đã ẩn theo quyền';
+          const customerAddress = canSeeCustomerLocation ? (cus.address || 'Chưa có') : 'Đã ẩn theo quyền';
           return (
-            <div key={cus.id} onClick={() => handleOpenCustomer(cus.id)} className="hd-render-contained bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:bg-gray-50 transition">
-              <div className="flex items-start gap-3">
-                <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0">
-                  {initials}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="font-bold text-gray-800 text-sm">{displayName}</h3>
-                      <p className="text-xs text-gray-500 mt-1">{contactPreview || 'Thông tin liên hệ ẩn theo quyền'}</p>
-                    </div>
-                    <ChevronRight size={16} className="text-gray-300 shrink-0 mt-1" />
-                  </div>
+            <div
+              key={cus.id}
+              data-customer-card="true"
+              data-customer-revenue={cus.totalRevenue || 0}
+              onClick={() => handleOpenCustomer(cus.id)}
+              className="hd-customer-card hd-render-contained bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:bg-gray-50 transition"
+            >
+              <div className="hd-customer-card__identity-row">
+                <h3 className="hd-customer-card__name font-bold text-gray-800 text-sm">{displayName}</h3>
+                <span className="hd-customer-card__manager text-[11px] bg-gray-100 text-gray-600 px-2 py-1 rounded-full font-medium">NVKD: {cus.managerName || 'Chưa phân công'}</span>
+                <ChevronRight size={16} className="hd-customer-card__chevron text-gray-300 shrink-0" />
+              </div>
 
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {cus.customerGroup && <span className="text-[11px] bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full font-medium">Nhóm: {cus.customerGroup}</span>}
-                    <span className="text-[11px] bg-gray-100 text-gray-600 px-2 py-1 rounded-full font-medium">NVKD: {cus.managerName}</span>
-                    {isDuplicatePhone && <span className="text-[11px] bg-amber-50 text-amber-700 px-2 py-1 rounded-full font-bold border border-amber-100">Trùng SĐT</span>}
-                    {canSeeCustomerDebtLimitAlerts && needsImmediateCollection && (
-                      <span className="text-[11px] bg-rose-50 text-rose-700 px-2 py-1 rounded-full font-black border border-rose-100">
-                        Giao hàng - Phải thu tiền ngay{canSeeCustomerDebt && cus.currentDebt > 0 ? ` • ${formatCurrency(cus.currentDebt)} đ` : ''}
-                      </span>
-                    )}
-                  </div>
+              <div className="hd-customer-card__contact-row">
+                <p><span>SĐT</span><strong>{customerPhone}</strong></p>
+                <p><span>Địa chỉ</span><strong>{customerAddress}</strong></p>
+              </div>
 
-                  {(canSeeCustomerStats || canSeeCustomerDebt) && (
-                  <div className="grid grid-cols-3 gap-2 mt-3">
-                    {canSeeCustomerStats && (
+              {(canSeeCustomerStats || canSeeCustomerDebt) && (
+                <div className="hd-customer-card__stats-row">
+                  {canSeeCustomerStats && (
                     <div className="bg-gray-50 rounded-xl p-2.5">
-                      <p className="text-[10px] uppercase text-gray-500 font-bold mb-1">Doanh thu</p>
+                      <p className="text-[10px] uppercase text-gray-500 font-bold mb-1">DT</p>
                       <p className="font-bold text-emerald-600 text-xs">{formatCurrency(cus.totalRevenue)}</p>
                     </div>
-                    )}
-                    {canSeeCustomerStats && (
+                  )}
+                  {canSeeCustomerStats && (
                     <div className="bg-gray-50 rounded-xl p-2.5">
                       <p className="text-[10px] uppercase text-gray-500 font-bold mb-1">Đơn hàng</p>
                       <p className="font-bold text-gray-800 text-xs">{cus.orderCount}</p>
                     </div>
-                    )}
-                    {canSeeCustomerDebt && (
+                  )}
+                  {canSeeCustomerDebt && (
                     <div className="bg-gray-50 rounded-xl p-2.5">
                       <p className={`text-[10px] uppercase font-bold ${cus.currentDebt > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>Còn nợ</p>
                       <p className={`font-bold text-xs ${cus.currentDebt > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatCurrency(cus.currentDebt)}</p>
                     </div>
-                    )}
-                  </div>
                   )}
                 </div>
-              </div>
+              )}
+
+              {(cus.customerGroup || isDuplicatePhone || (canSeeCustomerDebtLimitAlerts && needsImmediateCollection)) && (
+                <div className="hd-customer-card__badges">
+                  {cus.customerGroup && <span className="text-[11px] bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full font-medium">Nhóm: {cus.customerGroup}</span>}
+                  {isDuplicatePhone && <span className="text-[11px] bg-amber-50 text-amber-700 px-2 py-1 rounded-full font-bold border border-amber-100">Trùng SĐT</span>}
+                  {canSeeCustomerDebtLimitAlerts && needsImmediateCollection && (
+                    <span className="text-[11px] bg-rose-50 text-rose-700 px-2 py-1 rounded-full font-black border border-rose-100">
+                      Giao hàng - Phải thu tiền ngay{canSeeCustomerDebt && cus.currentDebt > 0 ? ` • ${formatCurrency(cus.currentDebt)} đ` : ''}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
@@ -76865,26 +76798,23 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       )}
 
       {showAddCustomer && (
-        <div className="fixed inset-0 z-[80] bg-black/60 flex items-start justify-center overflow-y-auto px-3 py-3 pb-[calc(env(safe-area-inset-bottom)+92px)] sm:items-center sm:p-4">
-          <div className="bg-white rounded-3xl p-4 w-full max-w-sm max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain animate-in zoom-in-95 sm:p-5">
-            <h3 className="font-bold text-lg mb-4">Thêm Khách Hàng</h3>
-            <form onSubmit={handleAddCustomerSubmit} className="space-y-3 text-[14px] sm:space-y-4">
-              <button
-                type="button"
-                onClick={handlePickCustomerContact}
-                disabled={isPickingCustomerContact}
-                title={canPickCustomerContact ? undefined : 'Mở bằng ứng dụng HD Manager trên Android để chọn danh bạ'}
-                className="w-full border border-sky-200 bg-sky-50 text-sky-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <Phone size={16} />
-                {isPickingCustomerContact ? 'Đang mở danh bạ...' : 'Lấy từ danh bạ điện thoại'}
+        <div className="hd-customer-create-view animate-in fade-in" aria-label="Tạo khách hàng">
+          <div className="hd-customer-create-view__surface">
+            <div className="hd-customer-create-view__header">
+              <button type="button" onClick={closeAddCustomerModal} aria-label="Quay lại danh sách khách hàng">
+                <ChevronLeft size={22} />
               </button>
+              <div>
+                <h3>Tạo khách hàng</h3>
+              </div>
+            </div>
+            <form onSubmit={handleAddCustomerSubmit} className="hd-customer-create-view__form space-y-3 text-[14px]">
               {customerContactStatus && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700">
                   {customerContactStatus}
                 </div>
               )}
-              <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+              <div className="hd-customer-create-view__identity-row grid grid-cols-[92px_minmax(0,1fr)] gap-2">
                 <select
                   value={newCus.customerHonorific || ''}
                   onChange={e => setNewCus(prev => ({ ...prev, customerHonorific: e.target.value }))}
@@ -76893,202 +76823,222 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 >
                   {CUSTOMER_HONORIFIC_OPTIONS.map(option => <option key={option.value || 'empty'} value={option.value}>{option.label}</option>)}
                 </select>
-                <input required type="text" value={newCus.name} onChange={e=>setNewCus({...newCus, name: formatCustomerNameDraft(e.target.value), customerHonorific: newCus.customerHonorific || inferCustomerHonorificFromName(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Tên khách / Công ty" />
+                <input aria-label="Tên khách hoặc công ty" required type="text" value={newCus.name} onChange={e=>setNewCus({...newCus, name: formatCustomerNameDraft(e.target.value), customerHonorific: newCus.customerHonorific || inferCustomerHonorificFromName(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Tên khách / Công ty" />
               </div>
-              <input required type="tel" value={newCus.phone} onChange={e=>setNewCus({...newCus, phone: e.target.value})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Số điện thoại" />
+              <div className="hd-customer-create-view__phone-row">
+                <input aria-label="Số điện thoại khách hàng" required type="tel" value={newCus.phone} onChange={e=>setNewCus({...newCus, phone: e.target.value})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Số điện thoại" />
+                <button
+                  type="button"
+                  onClick={handlePickCustomerContact}
+                  disabled={isPickingCustomerContact}
+                  title={canPickCustomerContact ? undefined : getCustomerContactPickerUnavailableMessage()}
+                  className="hd-customer-create-view__contact-button"
+                  aria-label="Lấy từ danh bạ điện thoại"
+                >
+                  <Phone size={16} />
+                  <span>{isPickingCustomerContact ? 'Đang mở' : 'Danh bạ'}</span>
+                </button>
+              </div>
               {newCustomerPhoneDuplicate && (
                 <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-700 flex items-start gap-2">
                   <AlertCircle size={15} className="mt-0.5 shrink-0" />
                   <span>Số điện thoại này đã có ở {getDuplicateCustomerDisplayName(newCustomerPhoneDuplicate)}. Vui lòng kiểm tra lại để tránh tạo trùng.</span>
                 </div>
               )}
-              <input type="text" value={newCus.address} onChange={e=>setNewCus({...newCus, address: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Địa chỉ giao hàng" />
-              <input
-                type="url"
-                value={newCus.zaloGroupLink || ''}
-                onChange={e => setNewCus(prev => ({ ...prev, zaloGroupLink: e.target.value }))}
-                className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                placeholder="Link nhóm Zalo của khách"
-              />
-              {canAddCustomerLocationFields && (
-              <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newCus.locationInput || ''}
-                    onChange={e => setNewCus(prev => ({ ...prev, locationInput: e.target.value }))}
-                    className="min-w-0 flex-1 rounded-xl border border-blue-100 bg-white px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-400"
-                    placeholder="Dán link Maps hoặc 10.123456, 106.123456"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleApplyNewCustomerLocationInput}
-                    className="rounded-xl border border-blue-100 bg-white px-3 py-2 text-[11px] font-black text-blue-700"
-                  >
-                    Lưu
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCaptureNewCustomerLocation}
-                    disabled={isCapturingNewCustomerLocation}
-                    className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white disabled:opacity-60"
-                  >
-                    {isCapturingNewCustomerLocation ? <Loader2 size={13} className="animate-spin" /> : 'GPS'}
-                  </button>
-                </div>
-                {newCus.location && (
-                  <p className="mt-1 truncate text-[11px] font-semibold text-blue-700">{formatCustomerLocationForDisplay(newCus.location)}</p>
+              <div className={`hd-customer-create-view__paired-row ${canAddCustomerLocationFields ? '' : 'hd-customer-create-view__paired-row--single'}`}>
+                <label className="hd-customer-create-view__compact-field">
+                  <input aria-label="Địa chỉ giao hàng" type="text" value={newCus.address} onChange={e=>setNewCus({...newCus, address: toTitleCase(e.target.value)})} placeholder="Địa chỉ giao hàng" />
+                </label>
+                {canAddCustomerLocationFields && (
+                  <div className="hd-customer-create-view__compact-field hd-customer-create-view__maps-field">
+                    <div>
+                      <input
+                        aria-label="Vị trí Maps"
+                        type="text"
+                        value={newCus.locationInput || ''}
+                        onChange={e => setNewCus(prev => ({ ...prev, locationInput: e.target.value }))}
+                        placeholder="Maps"
+                      />
+                      <button type="button" onClick={handleApplyNewCustomerLocationInput} aria-label="Lưu vị trí Maps" title="Lưu vị trí Maps">
+                        <Check size={14} />
+                      </button>
+                      <button type="button" onClick={handleCaptureNewCustomerLocation} disabled={isCapturingNewCustomerLocation} aria-label="Lấy GPS hiện tại" title="Lấy GPS hiện tại">
+                        {isCapturingNewCustomerLocation ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                      </button>
+                    </div>
+                    {newCus.location && <small>{formatCustomerLocationForDisplay(newCus.location)}</small>}
+                  </div>
                 )}
               </div>
-              )}
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Nhóm KH</label>
-                <input type="text" value={newCus.customerGroup} onChange={e=>setNewCus({...newCus, customerGroup: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm" placeholder="Ví dụ: Đại lý, VIP, Tạp hóa" />
+              <div className={`hd-customer-create-view__paired-row ${isSales ? 'hd-customer-create-view__paired-row--single' : ''}`}>
+                <label className="hd-customer-create-view__compact-field">
+                  <input aria-label="Nhóm khách hàng" type="text" value={newCus.customerGroup} onChange={e=>setNewCus({...newCus, customerGroup: toTitleCase(e.target.value)})} placeholder="Nhóm KH" />
+                </label>
+                {!isSales && (
+                  <label className="hd-customer-create-view__compact-field">
+                    <select aria-label="Nhân viên phụ trách" required value={newCus.empId} onChange={e=>setNewCus({...newCus, empId: e.target.value})}>
+                      <option value="" disabled>NV phụ trách</option>
+                      {salesEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  </label>
+                )}
               </div>
               {canSeeCustomerDebt && (
-                <div className="rounded-2xl border border-rose-100 bg-rose-50/50 p-3">
-                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-rose-600">Nợ cũ</p>
-                  <div className="grid grid-cols-1 gap-2">
-                    <p className="text-[11px] font-black uppercase tracking-wide text-rose-600">Khách nợ công ty</p>
-                    <input
-                      type="tel"
-                      value={formatInputCurrency(newCus.openingDebtAmount)}
-                      onChange={e => setNewCus(prev => ({ ...prev, openingDebtAmount: parseInputCurrency(e.target.value) }))}
-                      className="w-full rounded-xl border border-rose-100 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-rose-300"
-                      placeholder="Số tiền khách còn nợ"
-                    />
-                    <input
-                      type="text"
-                      value={newCus.openingDebtNote || ''}
-                      onChange={e => setNewCus(prev => ({ ...prev, openingDebtNote: e.target.value }))}
-                      className="w-full rounded-xl border border-rose-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-rose-300"
-                      placeholder="Ghi chú nếu cần"
-                    />
-                    <p className="mt-2 text-[11px] font-black uppercase tracking-wide text-indigo-600">Công ty nợ khách</p>
-                    <input
-                      type="tel"
-                      value={formatInputCurrency(newCus.openingPayableAmount)}
-                      onChange={e => setNewCus(prev => ({ ...prev, openingPayableAmount: parseInputCurrency(e.target.value) }))}
-                      className="w-full rounded-xl border border-indigo-100 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-300"
-                      placeholder="Số tiền công ty còn nợ"
-                    />
-                    <input
-                      type="text"
-                      value={newCus.openingPayableNote || ''}
-                      onChange={e => setNewCus(prev => ({ ...prev, openingPayableNote: e.target.value }))}
-                      className="w-full rounded-xl border border-indigo-100 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
-                      placeholder="Ghi chú nếu cần"
-                    />
+                <div className="hd-customer-create-view__opening-balance">
+                  <div className="hd-customer-create-view__opening-balance-header">
+                    <p>Nợ cũ</p>
+                    <div className="hd-customer-create-view__debt-tabs" role="tablist" aria-label="Loại nợ cũ">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={(newCus.openingBalanceType || 'receivable') === 'receivable'}
+                        className={(newCus.openingBalanceType || 'receivable') === 'receivable' ? 'is-active is-receivable' : ''}
+                        onClick={() => setNewCus(prev => ({ ...prev, openingBalanceType: 'receivable' }))}
+                      >
+                        Khách nợ
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={newCus.openingBalanceType === 'payable'}
+                        className={newCus.openingBalanceType === 'payable' ? 'is-active is-payable' : ''}
+                        onClick={() => setNewCus(prev => ({ ...prev, openingBalanceType: 'payable' }))}
+                      >
+                        Công ty nợ
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
-              {!isSales && (
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Nhân viên phụ trách</label>
-                  <select required value={newCus.empId} onChange={e=>setNewCus({...newCus, empId: e.target.value})} className="w-full border p-3 rounded-xl outline-none bg-white text-sm">
-                    <option value="">-- Chọn Sales phụ trách --</option>
-                    {salesEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                  </select>
+                  {(newCus.openingBalanceType || 'receivable') === 'receivable' ? (
+                    <div className="hd-customer-create-view__debt-panel is-receivable" role="tabpanel">
+                      <input
+                        aria-label="Số tiền khách nợ công ty"
+                        type="tel"
+                        value={formatInputCurrency(newCus.openingDebtAmount)}
+                        onChange={e => setNewCus(prev => ({ ...prev, openingDebtAmount: parseInputCurrency(e.target.value) }))}
+                        placeholder="Số tiền khách còn nợ"
+                      />
+                      <input
+                        aria-label="Ghi chú khách nợ công ty"
+                        type="text"
+                        value={newCus.openingDebtNote || ''}
+                        onChange={e => setNewCus(prev => ({ ...prev, openingDebtNote: e.target.value }))}
+                        placeholder="Ghi chú nếu cần"
+                      />
+                    </div>
+                  ) : (
+                    <div className="hd-customer-create-view__debt-panel is-payable" role="tabpanel">
+                      <input
+                        aria-label="Số tiền công ty nợ khách"
+                        type="tel"
+                        value={formatInputCurrency(newCus.openingPayableAmount)}
+                        onChange={e => setNewCus(prev => ({ ...prev, openingPayableAmount: parseInputCurrency(e.target.value) }))}
+                        placeholder="Số tiền công ty còn nợ"
+                      />
+                      <input
+                        aria-label="Ghi chú công ty nợ khách"
+                        type="text"
+                        value={newCus.openingPayableNote || ''}
+                        onChange={e => setNewCus(prev => ({ ...prev, openingPayableNote: e.target.value }))}
+                        placeholder="Ghi chú nếu cần"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
               {canManageCustomerDebtLimit && (
-                <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-3 space-y-3">
-                  <div>
-                    <p className="text-sm font-black text-slate-900">Hạn mức công nợ</p>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">Cài trước để tránh khách mới phát sinh nợ vượt kiểm soát.</p>
+                <div className="hd-customer-create-view__debt-limit">
+                  <div className="hd-customer-create-view__debt-limit-row">
+                    <p>Hạn mức nợ</p>
+                    <select
+                      aria-label="Hạn mức nợ"
+                      value={newCus.debtLimitMode || 'no_debt'}
+                      onChange={e => setNewCus(prev => ({ ...prev, debtLimitMode: e.target.value, debtLimitAmount: e.target.value === 'limited' ? prev.debtLimitAmount : '' }))}
+                    >
+                      <option value="unlimited">Không giới hạn</option>
+                      <option value="no_debt">Không cho nợ</option>
+                      <option value="limited">Cho nợ tối đa</option>
+                    </select>
                   </div>
-                  <select
-                    value={newCus.debtLimitMode || 'no_debt'}
-                    onChange={e => setNewCus(prev => ({ ...prev, debtLimitMode: e.target.value, debtLimitAmount: e.target.value === 'limited' ? prev.debtLimitAmount : '' }))}
-                    className="w-full rounded-xl border border-amber-100 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-400"
-                  >
-                    <option value="unlimited">Không giới hạn</option>
-                    <option value="no_debt">Không cho nợ</option>
-                    <option value="limited">Cho nợ tối đa</option>
-                  </select>
                   {newCus.debtLimitMode === 'limited' && (
                     <input
+                      aria-label="Số tiền cho nợ tối đa"
                       type="tel"
                       value={formatInputCurrency(newCus.debtLimitAmount)}
                       onChange={e => setNewCus(prev => ({ ...prev, debtLimitAmount: parseInputCurrency(e.target.value) }))}
-                      className="w-full rounded-xl border border-amber-100 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-400"
                       placeholder="Số tiền cho nợ tối đa"
                     />
                   )}
                 </div>
               )}
 
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3 space-y-3">
-                <div>
-                  <p className="text-sm font-black text-slate-900">Sản phẩm cố định</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">Tick sản phẩm khách thường lấy. Sau khi lưu, sản phẩm này sẽ nằm sẵn trong hồ sơ khách để báo giá và lên đơn nhanh hơn.</p>
-                </div>
-
-                <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-white px-3 py-2">
-                  <Search size={15} className="text-emerald-500" />
-                  <input
-                    type="text"
-                    value={newCustomerProductSearch}
-                    onChange={(e) => setNewCustomerProductSearch(e.target.value)}
-                    className="w-full bg-transparent text-sm outline-none"
-                    placeholder="Tìm sản phẩm cố định"
-                  />
-                  {newCustomerProductSearch && (
-                    <button type="button" onClick={() => setNewCustomerProductSearch('')} className="text-slate-400">
-                      <X size={15} />
-                    </button>
-                  )}
+              <div className="hd-customer-create-view__products">
+                <div className="hd-customer-create-view__products-header">
+                  <p className="hd-customer-create-view__products-title">SP khách lấy</p>
+                  <div className="hd-customer-create-view__product-search">
+                    <Search size={15} className="text-emerald-500" />
+                    <input
+                      aria-label="Tìm SP khách lấy"
+                      type="text"
+                      value={newCustomerProductSearch}
+                      onChange={(e) => setNewCustomerProductSearch(e.target.value)}
+                      placeholder="Tìm sản phẩm"
+                    />
+                    {newCustomerProductSearch && (
+                      <button type="button" onClick={() => setNewCustomerProductSearch('')} aria-label="Xóa tìm kiếm sản phẩm" className="text-slate-400">
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {newCustomerProductIds.length > 0 && (
-                  <p className="text-[11px] font-bold text-emerald-700">Đã chọn {newCustomerProductIds.length} sản phẩm cố định</p>
+                  <p className="hd-customer-create-view__product-count">Đã chọn {newCustomerProductIds.length} sản phẩm</p>
                 )}
 
-                <div className="max-h-[26dvh] min-h-[120px] overflow-y-auto space-y-1 pr-1">
-                  {newCustomerProductOptions.slice(0, 24).map(product => {
+                <div className="hd-customer-create-view__product-grid" data-suggestion-limit={newCustomerProductSuggestionLimit}>
+                  {newCustomerProductOptions.slice(0, newCustomerProductSuggestionLimit).map(product => {
                     const isSelected = selectedNewCustomerProductIdSet.has(product.id);
+                    const usage = newCustomerProductUsageById.get(product.id) || { quantity: 0, count: 0, lastTime: 0 };
                     return (
                       <button
                         key={product.id}
                         type="button"
                         onClick={() => toggleNewCustomerProduct(product.id)}
-                        className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
-                          isSelected
-                            ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
-                            : 'border-white bg-white text-slate-700 hover:border-emerald-200 hover:bg-emerald-50'
-                        }`}
+                        aria-pressed={isSelected}
+                        data-product-usage-quantity={usage.quantity}
+                        data-product-usage-count={usage.count}
+                        data-product-usage-last-time={usage.lastTime}
+                        className={isSelected ? 'is-selected' : ''}
                       >
-                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
-                          isSelected ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-200 bg-white text-transparent'
-                        }`}>
+                        <span className="hd-customer-create-view__product-check">
                           <Check size={13} />
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate">{product.name}</span>
-                          <span className={`block truncate text-[11px] font-semibold ${isSelected ? 'text-emerald-700/80' : 'text-slate-400'}`}>
+                        <span className="hd-customer-create-view__product-copy">
+                          <strong>{product.name}</strong>
+                          <small>
                             {product.category || product.unit || 'Sản phẩm'}
-                          </span>
+                          </small>
                         </span>
                       </button>
                     );
                   })}
                   {activeProductsForPricing.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-emerald-200 bg-white px-3 py-3 text-center text-xs font-semibold text-slate-400">
+                    <p className="hd-customer-create-view__product-empty">
                       Chưa có sản phẩm trong danh mục.
                     </p>
                   )}
                   {activeProductsForPricing.length > 0 && newCustomerProductOptions.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-emerald-200 bg-white px-3 py-3 text-center text-xs font-semibold text-slate-400">
+                    <p className="hd-customer-create-view__product-empty">
                       Không tìm thấy sản phẩm phù hợp.
                     </p>
                   )}
                 </div>
               </div>
 
-              <div className="sticky bottom-0 -mx-4 space-y-2 border-t border-gray-100 bg-white/95 px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+10px)] backdrop-blur sm:-mx-5 sm:px-5">
-                <button type="submit" disabled={!!newCustomerPhoneDuplicate} className="w-full bg-emerald-500 text-white py-3 rounded-xl font-bold disabled:opacity-60 disabled:cursor-not-allowed">Lưu Khách Hàng</button>
-                <button type="button" onClick={closeAddCustomerModal} className="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold">Hủy</button>
+              <div className="hd-customer-create-view__actions">
+                <button type="button" onClick={closeAddCustomerModal}>Hủy</button>
+                <button type="submit" disabled={!!newCustomerPhoneDuplicate}>Lưu khách hàng</button>
               </div>
             </form>
           </div>

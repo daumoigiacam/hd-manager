@@ -107,6 +107,45 @@ test('newer order UOM becomes the recent default', () => {
   assert.equal(preference.orderUnit, 'Bo');
 });
 
+test('latest saved order remembers pricing unit, order unit and price together', () => {
+  const result = buildCustomerFixedProductMemoryPatch({
+    customer: {
+      id: 'customer-a',
+      customerProductIds: ['duck'],
+      priceOverrides: {
+        duck: {
+          price: 65000,
+          unitPrice: 65000,
+          billingUnit: 'Kg',
+          pricingUnit: 'Kg',
+          unitPrices: { Kg: 65000 },
+          defaultOrderUnit: 'Con',
+        },
+      },
+    },
+    requests: [request({
+      id: 'latest',
+      createdAt: '2026-09-20T08:00:00.000Z',
+      items: [duck({
+        billingUnit: 'Con',
+        pricingUnit: 'Con',
+        quantityUnit: 'Thùng',
+        orderUnit: 'Thùng',
+        unitPrice: 72000,
+      })],
+    })],
+    validProductIds: ['duck'],
+  });
+
+  const config = result.patch.priceOverrides.duck;
+  assert.equal(config.billingUnit, 'Con');
+  assert.equal(config.pricingUnit, 'Con');
+  assert.equal(config.defaultOrderUnit, 'Thùng');
+  assert.equal(config.orderUnit, 'Thùng');
+  assert.equal(config.unitPrice, 72000);
+  assert.deepEqual(config.unitPrices, { Kg: 65000, Con: 72000 });
+});
+
 test('building memory never mutates historical orders', () => {
   const historical = request({ items: [duck()] });
   const before = structuredClone(historical);
@@ -268,13 +307,13 @@ test('preference key uses variant attributes rather than price or order UOM', ()
   );
 });
 
-test('UI exposes recent products and a safe latest-order action', () => {
-  assert.match(appSource, /Sản phẩm đặt gần đây/);
-  assert.match(appSource, /Dùng thông tin đơn gần nhất/);
-  assert.match(appSource, /getCustomerRecentOrderPreferences\(/);
-  assert.match(appSource, /getLatestCustomerOrderTemplate\(/);
-  assert.match(appSource, /note:\s*''/);
-  assert.match(appSource, /upfrontPayment:\s*''/);
+test('order request UI exposes only configured customer products before the plus picker', () => {
+  assert.match(appSource, />SP khách lấy<\/label>/);
+  assert.match(appSource, /manualFixedProductVariantOptions\.map/);
+  assert.match(appSource, /manualFixedProductIdSet\.has\(product\.id\)/);
+  assert.match(appSource, /aria-label="Thêm sản phẩm khác"/);
+  assert.doesNotMatch(appSource, /Sản phẩm đặt gần đây/);
+  assert.doesNotMatch(appSource, /Dùng thông tin đơn gần nhất/);
 });
 
 test('successful save records the new order ID before updating memory', () => {

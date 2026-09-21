@@ -21,7 +21,7 @@ assert.equal(isWebContactPickerSupported(webContacts), true);
 assert.equal(canPickCustomerContact({ platform: 'web', navigatorLike: webContacts }), true);
 assert.equal(canPickCustomerContact({ platform: 'android', navigatorLike: {} }), true);
 assert.equal(canPickCustomerContact({ platform: 'web', navigatorLike: {} }), false);
-assert.match(getCustomerContactPickerUnavailableMessage(), /Android/);
+assert.equal(getCustomerContactPickerUnavailableMessage(), 'Thiết bị này chưa hỗ trợ chọn danh bạ');
 
 assert.deepEqual(
   normalizePickedCustomerContact({

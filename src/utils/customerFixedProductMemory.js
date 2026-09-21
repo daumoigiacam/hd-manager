@@ -41,12 +41,12 @@ const getConfigMap = (source = {}) => {
 };
 
 const getItemBillingUnit = (item = {}, currentConfig = {}) => normalizeUnit(
-  currentConfig.billingUnit
-  || currentConfig.pricingUnit
-  || currentConfig.defaultUnit
-  || item.billingUnit
+  item.billingUnit
   || item.pricingUnit
   || item.defaultUnit
+  || currentConfig.billingUnit
+  || currentConfig.pricingUnit
+  || currentConfig.defaultUnit
 );
 
 const getItemOrderUnit = (item = {}) => normalizeUnit(
@@ -132,11 +132,12 @@ const updateConfiguration = (currentConfig = {}, item = {}) => {
     : (legacyPrice !== null ? { price: legacyPrice, unitPrice: legacyPrice } : {});
   const next = { ...current };
   const billingUnit = getItemBillingUnit(item, current);
+  const explicitBillingUnit = normalizeUnit(item.billingUnit || item.pricingUnit || item.defaultUnit);
   const orderUnit = getItemOrderUnit(item);
   const price = getItemPrice(item);
 
   // The billing unit comes from a billing snapshot only; the order-entry unit never changes it.
-  if (!normalizeUnit(current.billingUnit || current.pricingUnit || current.defaultUnit) && billingUnit) {
+  if (billingUnit && (explicitBillingUnit || !normalizeUnit(current.billingUnit || current.pricingUnit || current.defaultUnit))) {
     next.billingUnit = billingUnit;
     next.pricingUnit = billingUnit;
   }

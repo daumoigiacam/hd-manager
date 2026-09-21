@@ -33,6 +33,10 @@ assert(foundation.includes('--hd-gradient: linear-gradient(120deg'), 'Brand grad
 assert(foundation.includes('.hd-dashboard-kpi[data-tone="good"]') && foundation.includes('var(--hd-color-success-surface)'), 'Positive dashboard tone must keep semantic success colors');
 assert(foundation.includes('.premium-data-module :where(table thead th)'), 'Operational tables must use the shared data-surface language');
 assert(foundation.includes('[class~="bg-emerald-600"]'), 'Legacy command buttons must be mapped to the shared brand treatment');
+assert(foundation.includes('2026 quiet workspace refresh'), 'Staff shell must include the flat phone-first visual refresh');
+assert(foundation.includes('.hd-product-editor__actions'), 'Product editor must keep its actions reachable in the shared visual system');
+assert(app.includes('hd-product-editor__body'), 'Product creation must use the structured mobile editor layout');
+assert(app.includes('premium-products-module'), 'Product lists must opt into the shared operational surface language');
 
 for (const selector of [
   '[data-hd-theme="dark"]',

@@ -43,7 +43,7 @@ export const canPickCustomerContact = ({
 } = {}) => platform === 'android' || isWebContactPickerSupported(navigatorLike);
 
 export const getCustomerContactPickerUnavailableMessage = () =>
-  'Thiết bị này chưa hỗ trợ chọn danh bạ. Hãy mở bằng ứng dụng HD Manager trên Android hoặc nhập tay.';
+  'Thiết bị này chưa hỗ trợ chọn danh bạ';
 
 export const pickWebCustomerContact = async (navigatorLike = globalThis?.navigator) => {
   if (!isWebContactPickerSupported(navigatorLike)) {

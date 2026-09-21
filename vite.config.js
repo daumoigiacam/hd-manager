@@ -64,7 +64,7 @@ export default defineConfig(({ mode }) => {
         './services/identityCenter.js': fileURLToPath(new URL('./src/mocks/identity-center-vps.js', import.meta.url))
       };
   const identityCenterAlias = fileURLToPath(new URL(
-    isVpsStagingBuild ? './src/mocks/identity-center-vps.js' : './src/services/identityCenter.js',
+    (usePreviewData || isVpsStagingBuild) ? './src/mocks/identity-center-vps.js' : './src/services/identityCenter.js',
     import.meta.url,
   ));
   const runtimeAliases = {

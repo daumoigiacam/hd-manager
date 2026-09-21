@@ -47,7 +47,7 @@ test('order product cards expose selected, pending and memoized states', () => {
   assert.match(appSource, /aria-selected=\{isSelected\}/);
   assert.match(appSource, /aria-busy=\{isPending\}/);
   assert.match(appSource, /data-selected=\{isSelected \? 'true' : 'false'\}/);
-  assert.match(appSource, /pendingQuickProductSelectionKeys\.has\(resolvedSelectionKey\)/);
+  assert.match(appSource, /pendingQuickProductSelectionKeys\.has\(selectionKey\)/);
 });
 
 test('existing variant is toggled instead of creating a duplicate line', () => {
@@ -435,14 +435,38 @@ test('order search results are sorted by order recency after relevance filtering
   assert.match(displayOrdersSource, /return sortOrdersByNewest\(rankedSource\);/);
 });
 
-test('order unit editor suggests catalog units and accepts a new custom unit', () => {
+test('order unit editor configures pricing and order units from one compact choice row', () => {
   assert.match(appSource, /getProductCatalogUnitSuggestions\(activeProducts\)/);
   assert.match(appSource, /openDraftItemUnitEditor\(draft, item\)/);
-  assert.match(appSource, /const options = quantityUnitOptions;/);
-  assert.match(appSource, /list="order-request-unit-suggestions"/);
-  assert.match(appSource, /Đơn vị đang có trong sản phẩm/);
+  assert.match(appSource, /const standardOrderUnitOptions = \['Kg', 'Con', 'Thùng', 'Bao'\]/);
+  assert.match(appSource, /activeTarget: 'orderUnit'/);
+  assert.match(appSource, /activeTarget: 'pricingUnit'/);
+  assert.match(appSource, />ĐVT giá<\/p>/);
+  assert.match(appSource, />ĐV đặt<\/p>/);
+  assert.match(appSource, /grid-cols-\[repeat\(4,minmax\(0,1fr\)\)_40px\]/);
+  assert.match(appSource, /aria-label="Tạo thêm đơn vị mới"/);
+  assert.match(appSource, /placeholder="Tên đơn vị mới"/);
+  assert.match(appSource, /billingSnapshotSource: unitPrice > 0 \? 'order_request_unit_editor' : ''/);
   assert.match(appSource, />Lưu ĐVT<\/button>/);
-  assert.match(appSource, /Đơn vị mới sẽ được ghi nhớ cho khách và sản phẩm này sau khi lưu đơn/);
+  assert.doesNotMatch(appSource, /Danh sách gợi ý chỉ lấy từ đơn vị đang dùng trong sản phẩm/);
+});
+
+test('manual order rows expose product attributes and a spinner-free quantity field', () => {
+  assert.match(appSource, /const attributePickerKey = `attribute:\$\{draft\.localId\}:\$\{item\.localItemId\}`/);
+  assert.match(appSource, /aria-label="Chọn thuộc tính sản phẩm"/);
+  assert.match(appSource, /handleProductChange\(draft\.localId, item\.localItemId, selectedProduct\.id, variant\)/);
+  assert.match(appSource, /type="text"\s*inputMode="decimal"\s*value=\{item\.quantity\}/);
+});
+
+test('order request header is compact and has no filter control', () => {
+  assert.match(appSource, /activeTab === 'order_requests' \? 'Đơn đặt'/);
+  const headerSource = appSource.slice(
+    appSource.indexOf(") : activeTab === 'order_requests' ? ("),
+    appSource.indexOf(") : !hideHeaderSearchFilter ? ("),
+  );
+  assert.match(headerSource, /renderNotificationBell\('bg-transparent text-white hover:bg-white\/15'\)/);
+  assert.doesNotMatch(headerSource, /<Filter/);
+  assert.doesNotMatch(headerSource, /aria-label="Bộ lọc"/);
 });
 
 test('shared order sheet keeps every customer and all products together', () => {

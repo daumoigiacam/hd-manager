@@ -11,6 +11,7 @@ const [viteSource, vpsSource, firebaseOnlySource, appSource, mainSource] = await
 
 assert.match(viteSource, /const isVpsStagingBuild = vpsDataMode === 'vps-staging';/);
 assert.match(viteSource, /const useCloudData = !usePreviewData && !isVpsStagingBuild;/);
+assert.match(viteSource, /\(usePreviewData \|\| isVpsStagingBuild\) \? '\.\/src\/mocks\/identity-center-vps\.js' : '\.\/src\/services\/identityCenter\.js'/);
 assert.match(viteSource, /isVpsStagingBuild \? '\.\/src\/mocks\/firebase-runtime-vps\.js' : '\.\/src\/config\/firebase-runtime\.js'/);
 assert.match(viteSource, /isVpsStagingBuild \? '\.\/src\/api\/hdConnectStaging\.js' : '\.\/src\/config\/firebase-only-runtime\.js'/);
 assert.match(vpsSource, /export const isVpsStagingMode = vpsDataMode === 'vps-staging';/);
