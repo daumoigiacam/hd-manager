@@ -6,6 +6,8 @@ const DEVICE_KEY = 'hd-identity-device-v1';
 const WEB_SECRET_PREFIX = 'hd-identity-device-secret-v1:';
 const NATIVE_SECRET_PREFIX = 'hd.identity.device.v1.';
 const DEVICE_ACCOUNT_INDEX_KEY = 'hd-identity-device-accounts-v2';
+const BIOMETRIC_LOGIN_PROFILE_KEY = 'hd-identity-biometric-login-v1';
+const BIOMETRIC_LOGIN_SUPPRESSED_KEY = 'hd-identity-biometric-login-suppressed-v1';
 const IDENTITY_REQUEST_TIMEOUT_MS = 30000;
 const IDENTITY_WARMUP_TIMEOUT_MS = 8000;
 const IDENTITY_WARMUP_TTL_MS = 60 * 1000;
@@ -16,6 +18,7 @@ const AI_REQUEST_TIMEOUT_MS = 55000;
 const DEFAULT_IDENTITY_API_BASE_URL = 'https://us-central1-hd-manager-c5839.cloudfunctions.net';
 const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/login': 'identityLogin',
+  '/api/identity/biometric-login': 'identityBiometricLogin',
   '/api/identity/register-company': 'identityRegisterCompany',
   '/api/identity/complete-setup': 'identityCompleteSetup',
   '/api/identity/request-recovery': 'identityRequestRecovery',
@@ -172,6 +175,58 @@ const rememberIdentityAccountScope = (identity = {}) => {
   return accountScope;
 };
 
+const readBiometricLoginProfile = () => {
+  if (typeof window === 'undefined' || !isNativeRuntime()) return null;
+  const profile = readJson(BIOMETRIC_LOGIN_PROFILE_KEY);
+  if (!profile?.enabled || !profile?.accountScope || !profile?.identifier) return null;
+  return profile;
+};
+
+const rememberBiometricLoginProfile = ({ identity = {}, identifier = '', enabled = false } = {}) => {
+  if (typeof window === 'undefined' || !isNativeRuntime()) return;
+  const accountScope = rememberIdentityAccountScope(identity);
+  const normalizedIdentifier = `${identifier || identity?.phone || identity?.username || ''}`.trim();
+  if (!enabled || !accountScope || !normalizedIdentifier) {
+    window.localStorage.removeItem(BIOMETRIC_LOGIN_PROFILE_KEY);
+    return;
+  }
+  writeJson(BIOMETRIC_LOGIN_PROFILE_KEY, {
+    accountScope,
+    identifier: normalizedIdentifier,
+    enabled: true,
+    updatedAt: new Date().toISOString(),
+  });
+};
+
+export const getBiometricAutoLoginProfile = () => {
+  if (typeof window === 'undefined' || !isNativeRuntime()) return null;
+  if (window.sessionStorage?.getItem(BIOMETRIC_LOGIN_SUPPRESSED_KEY) === '1') return null;
+  return readBiometricLoginProfile();
+};
+
+export const shouldRequireBiometricUnlock = (identity = {}) => {
+  const profile = getBiometricAutoLoginProfile();
+  return Boolean(profile && profile.accountScope === getIdentityAccountScope(identity));
+};
+
+export const suppressBiometricAutoLoginForSession = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage?.setItem(BIOMETRIC_LOGIN_SUPPRESSED_KEY, '1');
+  } catch {
+    // Explicit logout still succeeds when session storage is unavailable.
+  }
+};
+
+export const clearBiometricAutoLoginSuppression = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage?.removeItem(BIOMETRIC_LOGIN_SUPPRESSED_KEY);
+  } catch {
+    // A missing session store must not block password login.
+  }
+};
+
 const resolveIdentityAccountScope = (identifier = '') => {
   if (typeof window === 'undefined') return '';
   const alias = normalizeIdentityAlias(identifier);
@@ -271,7 +326,7 @@ export const storeTrustedDeviceSecret = async ({ deviceId, secret, biometricEnab
     await NativeBiometric.setData({
       key: getNativeSecretKey(deviceId, accountScope),
       value: secret,
-      accessControl: biometricEnabled ? AccessControl.BIOMETRY_ANY : AccessControl.NONE,
+      accessControl: biometricEnabled ? AccessControl.BIOMETRY_CURRENT_SET : AccessControl.NONE,
       title: 'Bảo vệ thiết bị tin cậy',
       negativeButtonText: 'Hủy',
     });
@@ -283,12 +338,24 @@ export const storeTrustedDeviceSecret = async ({ deviceId, secret, biometricEnab
   window.localStorage.setItem(getWebSecretKey(deviceId, accountScope), secret);
 };
 
-export const readTrustedDeviceSecret = async ({ deviceId, requireBiometric = false, accountScope = '' }) => {
+export const readTrustedDeviceSecret = async ({
+  deviceId,
+  requireBiometric = false,
+  accountScope = '',
+  reason = 'Xác thực để tiếp tục',
+}) => {
   if (!deviceId) return '';
   if (isNativeRuntime()) {
     try {
       const result = requireBiometric
-        ? await NativeBiometric.getSecureData({ key: getNativeSecretKey(deviceId, accountScope), reason: 'Xác thực để khôi phục tài khoản', title: 'HD Manager' })
+        ? await NativeBiometric.getSecureData({
+            key: getNativeSecretKey(deviceId, accountScope),
+            reason,
+            title: 'HD Manager',
+            subtitle: 'Face ID / Vân tay',
+            description: reason,
+            negativeButtonText: 'Dùng mật khẩu',
+          })
         : await NativeBiometric.getData({ key: getNativeSecretKey(deviceId, accountScope) });
       return `${result?.value || ''}`;
     } catch {
@@ -368,7 +435,48 @@ export const identityLogin = async ({ identifier, password, appId }) => {
     device: getIdentityDevice(),
   });
   rememberIdentitySessionAccount(result);
+  rememberBiometricLoginProfile({
+    identity: { ...(result.identity || {}), identityKey: result.identityKey || result.identity?.identityKey || '' },
+    identifier,
+    enabled: Boolean(result.setup?.biometricEnabled),
+  });
+  clearBiometricAutoLoginSuppression();
   return result;
+};
+
+export const identityBiometricLogin = async ({ appId }) => {
+  const profile = getBiometricAutoLoginProfile();
+  if (!profile) return { success: false, unavailable: true };
+  const availability = await getBiometricAvailability();
+  if (!availability.available) return { success: false, unavailable: true };
+
+  const device = getIdentityDevice();
+  const deviceSecret = await readTrustedDeviceSecret({
+    deviceId: device.deviceId,
+    requireBiometric: true,
+    accountScope: profile.accountScope,
+    reason: 'Xác thực để tự động đăng nhập HD Manager',
+  });
+  if (!deviceSecret) return { success: false, cancelled: true };
+
+  try {
+    const result = await requestIdentityApi('/api/identity/biometric-login', {
+      identifier: profile.identifier,
+      appId,
+      device,
+      deviceSecret,
+      biometricProof: true,
+    });
+    rememberIdentitySessionAccount(result);
+    clearBiometricAutoLoginSuppression();
+    return result;
+  } catch (error) {
+    if ([401, 403].includes(Number(error?.statusCode))) {
+      rememberBiometricLoginProfile({ enabled: false });
+      await removeTrustedDeviceSecret(device.deviceId, profile.accountScope);
+    }
+    throw error;
+  }
 };
 
 export const identityRegisterCompany = async ({ companyName, phone, password, appId, companySettings }) => {
@@ -403,6 +511,11 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
       accountScope,
     });
   }
+  rememberBiometricLoginProfile({
+    identity: { ...(result.identity || {}), identityKey: result.identityKey || result.identity?.identityKey || '' },
+    enabled: Boolean(biometricEnabled && result.setup?.biometricEnabled),
+  });
+  clearBiometricAutoLoginSuppression();
   return result;
 };
 
@@ -433,6 +546,10 @@ export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) 
     secret,
     biometricEnabled: Boolean(enabled),
     accountScope: confirmedAccountScope,
+  });
+  rememberBiometricLoginProfile({
+    identity: { ...(result.identity || identity || {}), identityKey: result.identityKey || identity?.identityKey || '' },
+    enabled: Boolean(enabled && result.setup?.biometricEnabled),
   });
   return result;
 };
@@ -493,6 +610,7 @@ export const identityRevokeDevices = async ({ idToken, deviceId = '', all = fals
       deviceId || getIdentityDevice().deviceId,
       getIdentityAccountScope(identity),
     );
+    rememberBiometricLoginProfile({ enabled: false });
   }
   return result;
 };
@@ -506,6 +624,7 @@ export const identityDeleteAccount = async ({ idToken, currentPassword, confirma
   const device = getIdentityDevice();
   const accountScope = getIdentityAccountScope(identity);
   await removeTrustedDeviceSecret(device.deviceId, accountScope);
+  rememberBiometricLoginProfile({ enabled: false });
   if (typeof window !== 'undefined') {
     const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
     getIdentityAliases(identity).forEach(alias => delete index[alias]);

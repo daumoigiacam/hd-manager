@@ -18,6 +18,7 @@ const {
   buildPhoneVariants,
   createRecoveryToken,
   getRecoveryIdentityIdFromToken,
+  isBiometricDeviceCredentialValid,
   isOwnerIdentity,
   normalizePhone,
   normalizeUsername,
@@ -50,6 +51,37 @@ const recoveryToken = createRecoveryToken('employee_emp_123');
 assert.equal(getRecoveryIdentityIdFromToken(recoveryToken), 'employee_emp_123');
 assert.equal(getRecoveryIdentityIdFromToken('legacy-token-without-routing'), '');
 assert.equal(getRecoveryIdentityIdFromToken('bad.identity.extra.parts'), '');
+const biometricSecret = 'device-secret-123';
+const biometricDeviceRecord = {
+  trusted: true,
+  biometricEnabled: true,
+  revokedAt: null,
+  deviceSecretHash: require('node:crypto').createHash('sha256').update(biometricSecret).digest('hex'),
+};
+assert.equal(isBiometricDeviceCredentialValid({
+  identity: { status: 'active', setup: { biometricEnabled: true } },
+  deviceRecord: biometricDeviceRecord,
+  deviceSecret: biometricSecret,
+  biometricProof: true,
+}), true);
+assert.equal(isBiometricDeviceCredentialValid({
+  identity: { status: 'active', setup: { biometricEnabled: true } },
+  deviceRecord: biometricDeviceRecord,
+  deviceSecret: 'wrong-secret',
+  biometricProof: true,
+}), false);
+assert.equal(isBiometricDeviceCredentialValid({
+  identity: { status: 'active', setup: { biometricEnabled: true } },
+  deviceRecord: { ...biometricDeviceRecord, revokedAt: new Date() },
+  deviceSecret: biometricSecret,
+  biometricProof: true,
+}), false);
+assert.equal(isBiometricDeviceCredentialValid({
+  identity: { status: 'active', setup: { biometricEnabled: true } },
+  deviceRecord: biometricDeviceRecord,
+  deviceSecret: biometricSecret,
+  biometricProof: false,
+}), false);
 
 assert.equal(getIdentityAccountScope({ identityKey: 'employee_emp_a' }), 'employee_emp_a');
 assert.notEqual(
@@ -106,6 +138,7 @@ const identityRewriteSources = firebaseConfig.hosting.rewrites
   .map(item => item.source);
 for (const expectedPath of [
   '/api/identity/login',
+  '/api/identity/biometric-login',
   '/api/identity/register-company',
   '/api/identity/complete-setup',
   '/api/identity/request-recovery',
@@ -125,6 +158,11 @@ assert.match(identityClientSource, /https:\/\/us-central1-hd-manager-c5839\.clou
 assert.match(identityClientSource, /VITE_IDENTITY_API_BASE_URL/);
 assert.doesNotMatch(identityClientSource, /VITE_SEPAY_API_BASE_URL/);
 assert.match(identityClientSource, /'\/api\/identity\/login': 'identityLogin'/);
+assert.match(identityClientSource, /'\/api\/identity\/biometric-login': 'identityBiometricLogin'/);
+assert.match(identityClientSource, /export const identityBiometricLogin/);
+assert.match(identityClientSource, /AccessControl\.BIOMETRY_CURRENT_SET/);
+assert.match(identityClientSource, /getSecureData\(\{[\s\S]*?Xác thực để tự động đăng nhập HD Manager/);
+assert.doesNotMatch(identityClientSource, /setCredentials\(|getCredentials\(/, 'Biometric login must not store the account password');
 assert.match(identityClientSource, /export const warmIdentityLoginService/);
 assert.match(identityClientSource, /'\/api\/identity\/register-company': 'identityRegisterCompany'/);
 assert.match(identityClientSource, /export const identityRegisterCompany/);
@@ -138,7 +176,7 @@ assert.match(identityClientSource, /accountScope/);
 assert.match(identityClientSource, /rememberIdentitySessionAccount\(result\)/);
 assert.match(identityClientSource, /resetToken,\s*password,\s*identifier,\s*device:/);
 const passwordLoginStart = identityFunctionSource.indexOf('const login = async');
-const passwordLoginEnd = identityFunctionSource.indexOf('const completeSetup = async', passwordLoginStart);
+const passwordLoginEnd = identityFunctionSource.indexOf('const biometricLogin = async', passwordLoginStart);
 const passwordLoginSource = identityFunctionSource.slice(passwordLoginStart, passwordLoginEnd);
 assert.ok(passwordLoginStart >= 0 && passwordLoginEnd > passwordLoginStart, 'Identity password login must exist');
 assert.doesNotMatch(passwordLoginSource, /\.trusted|deviceSecret|biometric/i, 'Trusted-device state must never block normal password login');
@@ -207,6 +245,15 @@ assert.match(identitySessionSource, /auth\.identity_login\.shell_released/);
 assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
 assert.match(identityFunctionSource, /const \[customToken\] = await Promise\.all\([\s\S]*?batch\.commit\(\)/);
 assert.match(identityFunctionSource, /loginRateRef: rate\.ref/);
+const biometricLoginStart = identityFunctionSource.indexOf('const biometricLogin = async');
+const biometricLoginEnd = identityFunctionSource.indexOf('const completeSetup = async', biometricLoginStart);
+const biometricLoginSource = identityFunctionSource.slice(biometricLoginStart, biometricLoginEnd);
+assert.ok(biometricLoginStart >= 0 && biometricLoginEnd > biometricLoginStart, 'Biometric login handler must exist');
+assert.match(biometricLoginSource, /isBiometricDeviceCredentialValid/);
+assert.match(biometricLoginSource, /issueSession\(\{/);
+assert.match(biometricLoginSource, /biometric_login/);
+assert.doesNotMatch(biometricLoginSource, /passwordHash|verifyPassword/);
+assert.match(functionsIndexSource, /exports\.identityBiometricLogin/);
 assert.match(identityFunctionSource, /const registerCompany = async/);
 assert.match(identityFunctionSource, /await db\.runTransaction/);
 assert.match(identityFunctionSource, /transaction\.create\(companyRef, company\)/);
@@ -294,6 +341,12 @@ assert.match(loginViewSource, /Xin lại mật khẩu/);
 assert.match(loginViewSource, /setLoginPhone\(nextLoginIdentifier\)/);
 assert.match(loginViewSource, /setLoginPassword\(nextLoginPassword\)/);
 assert.match(loginViewSource, /setShowForgotPassword\(false\)/);
+assert.match(loginViewSource, /biometricAutoLoginStartedRef/);
+assert.match(loginViewSource, /void runBiometricLogin\(\)/);
+assert.match(appSource, /onBiometricLogin=\{handleIdentityBiometricLogin\}/);
+assert.match(appSource, /shouldRequireBiometricUnlock\(persistedSession\.currentUser\)/);
+assert.match(appSource, /authenticateBiometric\('Xác thực để mở HD Manager'\)/);
+assert.match(appSource, /suppressBiometricAutoLoginForSession\(\)/);
 
 const identitySetupStart = appSource.indexOf('function IdentitySetupWizard');
 const identitySetupEnd = appSource.indexOf('function LoginRegisterView', identitySetupStart);

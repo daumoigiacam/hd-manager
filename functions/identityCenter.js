@@ -78,6 +78,23 @@ const timingSafeTextEqual = (left = '', right = '') => {
 };
 const hashOpaqueSecret = (value = '') => crypto.createHash('sha256').update(`${value || ''}`).digest('hex');
 const makeOpaqueSecret = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
+const isBiometricDeviceCredentialValid = ({
+  identity = {},
+  deviceRecord = {},
+  deviceSecret = '',
+  biometricProof = false
+} = {}) => Boolean(
+  biometricProof
+  && identity.status === 'active'
+  && !identity.lockedAt
+  && identity.setup?.biometricEnabled
+  && deviceRecord.trusted
+  && deviceRecord.biometricEnabled
+  && !deviceRecord.revokedAt
+  && deviceSecret
+  && deviceRecord.deviceSecretHash
+  && timingSafeTextEqual(deviceRecord.deviceSecretHash, hashOpaqueSecret(deviceSecret))
+);
 const createRecoveryToken = (identityId = '') => {
   const safeIdentityId = safeIdPart(identityId);
   if (!safeIdentityId || safeIdentityId !== identityId) throw new Error('Invalid recovery identity.');
@@ -627,6 +644,34 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       return { success: false, statusCode: 401, message: 'Số điện thoại hoặc mật khẩu không đúng.' };
     }
     const session = await issueSession({ identityId, identity, device, loginRateRef: rate.ref });
+    return { success: true, ...session };
+  };
+
+  const biometricLogin = async ({ identifier, device, deviceSecret, biometricProof = false }) => {
+    const rate = await enforceLoginRateLimit(`biometric:${identifier}`);
+    if (rate.blocked) {
+      return { success: false, statusCode: 429, message: `Đăng nhập sinh trắc học bị tạm khóa. Vui lòng thử lại sau ${Math.ceil(rate.waitMs / 60000)} phút.` };
+    }
+    const generic = { success: false, statusCode: 401, message: 'Không thể xác minh Face ID hoặc vân tay trên thiết bị này.' };
+    const identity = await findIdentity(identifier);
+    if (!identity) {
+      await recordLoginAttempt(rate.ref, false);
+      return generic;
+    }
+    const cleanDevice = sanitizeDevice(device);
+    const deviceSnap = await getIdentityRef(identity.id).collection('devices').doc(cleanDevice.deviceId).get();
+    const deviceRecord = deviceSnap.exists ? deviceSnap.data() : {};
+    if (!isBiometricDeviceCredentialValid({ identity, deviceRecord, deviceSecret, biometricProof })) {
+      await recordLoginAttempt(rate.ref, false);
+      return generic;
+    }
+    const session = await issueSession({
+      identityId: identity.id,
+      identity,
+      device: cleanDevice,
+      loginRateRef: rate.ref
+    });
+    await logAudit(identity.id, 'biometric_login', { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform });
     return { success: true, ...session };
   };
 
@@ -1383,6 +1428,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
   return {
     registerCompany,
     login,
+    biometricLogin,
     completeSetup,
     requestRecovery,
     completeRecovery,
@@ -1412,6 +1458,7 @@ module.exports = {
   normalizePhone,
   normalizeUsername,
   isOwnerIdentity,
+  isBiometricDeviceCredentialValid,
   validatePassword,
   validatePin,
   verifyLegacyPassword,

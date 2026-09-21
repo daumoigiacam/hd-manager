@@ -10,7 +10,7 @@ import {
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Percent, Camera, Gift,
-  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound
+  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -351,7 +351,9 @@ import {
   resolveCustomerPortalOrderSelection,
 } from './utils/customerPortalOrderDetail.js';
 import {
+  authenticateBiometric,
   findIdentitySessionOwner,
+  getBiometricAutoLoginProfile,
   getBiometricAvailability,
   getIdentityDevice,
   identityApproveOwnerReset,
@@ -359,6 +361,7 @@ import {
   identityCompleteSetup,
   identityOwnerResetPassword,
   identityLogin,
+  identityBiometricLogin,
   identityRegisterCompany,
   identityLogout,
   identityRequestOwnerReset,
@@ -370,6 +373,8 @@ import {
   identitySetBiometric,
   identityVerifyPin,
   shouldInvalidateIdentitySession,
+  shouldRequireBiometricUnlock,
+  suppressBiometricAutoLoginForSession,
   warmIdentityLoginService,
   customerPortalBootstrap,
   customerRedeemPoints,
@@ -12065,6 +12070,11 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
   const [activeTab, setActiveTab] = useState(persistedSession.activeTab || 'home');
+  const [biometricUnlockState, setBiometricUnlockState] = useState(() => (
+    !isVpsStagingMode && shouldRequireBiometricUnlock(persistedSession.currentUser)
+      ? 'pending'
+      : 'unlocked'
+  ));
   const [currentDate, setCurrentDate] = useState(getTodayString());
   const [recoverableSyncNotice, setRecoverableSyncNotice] = useState(null);
 
@@ -12206,6 +12216,16 @@ export default function App() {
       platform: typeof Capacitor !== 'undefined' ? Capacitor.getPlatform?.() : 'web',
     });
   }, [persistedSession.currentUser]);
+
+  useEffect(() => {
+    if (biometricUnlockState !== 'pending') return undefined;
+    let active = true;
+    authenticateBiometric('Xác thực để mở HD Manager').then(result => {
+      if (!active) return;
+      setBiometricUnlockState(result.success ? 'unlocked' : 'blocked');
+    });
+    return () => { active = false; };
+  }, [biometricUnlockState]);
 
   useEffect(() => {
     if (!firebaseUser) return;
@@ -15432,6 +15452,39 @@ export default function App() {
     }
   };
 
+  const handleIdentityBiometricLogin = async () => {
+    if (isVpsStagingMode || !getBiometricAutoLoginProfile()) {
+      return { success: false, unavailable: true };
+    }
+    const loginStartedAt = Date.now();
+    try {
+      recordStartupEvent('auth.biometric_login.started');
+      const session = await identityBiometricLogin({ appId });
+      if (!session?.success) return session;
+      identitySetupPendingRef.current = Boolean(session.requiresSetup);
+      const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
+      if (!established.success) return established;
+      recordStartupEvent('auth.biometric_login.completed', {
+        durationMs: Date.now() - loginStartedAt,
+      });
+      return {
+        success: true,
+        requiresSetup: Boolean(session.requiresSetup),
+        setup: session.setup || {},
+        identity: established.identity,
+      };
+    } catch (error) {
+      recordStartupEvent('auth.biometric_login.failed', {
+        durationMs: Date.now() - loginStartedAt,
+        code: `${error?.code || error?.statusCode || ''}`,
+      }, 'error');
+      return {
+        success: false,
+        message: error?.message || 'Không thể đăng nhập bằng Face ID hoặc vân tay. Vui lòng dùng mật khẩu.',
+      };
+    }
+  };
+
   const handleIdentityLogin = async (identifier, password) => {
     const loginStartedAt = Date.now();
     if (isVpsStagingMode) {
@@ -16024,6 +16077,8 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    suppressBiometricAutoLoginForSession();
+    setBiometricUnlockState('unlocked');
     if (isVpsStagingMode) {
       try {
         await getHdConnectStagingApi().logout();
@@ -16051,6 +16106,8 @@ export default function App() {
   };
 
   const handleSwitchToCustomerLogin = async () => {
+    suppressBiometricAutoLoginForSession();
+    setBiometricUnlockState('unlocked');
     if (isVpsStagingMode) {
       await handleLogout();
       return;
@@ -22326,6 +22383,31 @@ export default function App() {
   if (!isFirebaseConfigured && !isVpsStagingMode) return <MissingFirebaseError />;
   if (isFirebaseLoading || isVpsSessionLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
 
+  if (!isVpsStagingMode && firebaseUser && currentUser && biometricUnlockState !== 'unlocked') {
+    const isCheckingBiometric = biometricUnlockState === 'pending';
+    return (
+      <AppShell className="ios-web-login-shell hd-shell--auth flex flex-col items-center justify-center">
+        <div className="ios-web-login-card w-full rounded-3xl border border-emerald-100 bg-white p-6 text-center shadow-xl sm:p-8">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+            {isCheckingBiometric ? <Loader2 size={27} className="animate-spin" /> : <Fingerprint size={29} />}
+          </div>
+          <h1 className="text-lg font-extrabold text-slate-800">Mở HD Manager</h1>
+          <p className="mt-2 text-sm leading-relaxed text-slate-500">
+            {isCheckingBiometric
+              ? 'Đang chờ Face ID hoặc vân tay trên thiết bị.'
+              : 'Chưa xác thực được sinh trắc học. Bạn có thể thử lại hoặc dùng mật khẩu.'}
+          </p>
+          {!isCheckingBiometric && (
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <button type="button" onClick={() => setBiometricUnlockState('pending')} className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">Thử lại</button>
+              <button type="button" onClick={() => void handleLogout()} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-600">Dùng mật khẩu</button>
+            </div>
+          )}
+        </div>
+      </AppShell>
+    );
+  }
+
   if (!isVpsStagingMode && !firebaseUser && currentUser) {
     return (
       <div className="min-h-screen bg-[#f4f6f8] flex items-center justify-center p-6">
@@ -22353,6 +22435,7 @@ export default function App() {
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
         <LoginRegisterView
           onLogin={handleIdentityLogin}
+          onBiometricLogin={handleIdentityBiometricLogin}
           onRegister={handleRegisterCompany}
           onForgotPassword={handleIdentityRecovery}
           onCompleteRecovery={handleIdentityCompleteRecovery}
@@ -87659,7 +87742,7 @@ function VpsEmailAuthView({
   );
 }
 
-function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, onVpsInitialPasswordChange, vpsStagingMode = false }) {
+function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, onVpsInitialPasswordChange, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -87686,6 +87769,7 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
   const [identitySetupContext, setIdentitySetupContext] = useState(null);
+  const biometricAutoLoginStartedRef = useRef(false);
 
   useEffect(() => {
     // Warm the auth Function while the user is entering credentials so the
@@ -87694,6 +87778,36 @@ function LoginRegisterView({ onLogin, onRegister, onForgotPassword, onRequestOwn
     // the legacy Firebase Function during initial page load.
     if (!isVpsMode) void warmIdentityLoginService();
   }, []);
+
+  useEffect(() => {
+    if (vpsStagingMode || biometricAutoLoginStartedRef.current || typeof onBiometricLogin !== 'function') return undefined;
+    if (!getBiometricAutoLoginProfile()) return undefined;
+    biometricAutoLoginStartedRef.current = true;
+    let active = true;
+    const runBiometricLogin = async () => {
+      setIsLoggingIn(true);
+      setLoginError('');
+      setLoginMessage('Đang xác thực Face ID / vân tay...');
+      try {
+        const result = await onBiometricLogin();
+        if (!active) return;
+        if (result?.success && result?.requiresSetup) {
+          setIdentitySetupContext(result);
+        } else if (!result?.success && !result?.cancelled && !result?.unavailable) {
+          setLoginError(result?.message || 'Không thể đăng nhập bằng sinh trắc học. Vui lòng dùng mật khẩu.');
+        }
+      } catch (error) {
+        if (active) setLoginError(error?.message || 'Không thể đăng nhập bằng sinh trắc học. Vui lòng dùng mật khẩu.');
+      } finally {
+        if (active) {
+          setLoginMessage('');
+          setIsLoggingIn(false);
+        }
+      }
+    };
+    void runBiometricLogin();
+    return () => { active = false; };
+  }, [onBiometricLogin, vpsStagingMode]);
 
   const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
   const registrationPasswordsMatch = hasRegistrationPasswordConfirmation && regPassword === regPasswordConfirm;

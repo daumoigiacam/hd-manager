@@ -956,6 +956,13 @@ exports.identityLogin = functions.https.onRequest(runIdentityRequest((req) => id
   appId: req.body?.appId
 })));
 
+exports.identityBiometricLogin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.biometricLogin({
+  identifier: req.body?.identifier,
+  device: req.body?.device,
+  deviceSecret: req.body?.deviceSecret,
+  biometricProof: Boolean(req.body?.biometricProof)
+})));
+
 exports.identityRegisterCompany = functions.https.onRequest(runIdentityRequest((req) => identityCenter.registerCompany({
   companyName: req.body?.companyName,
   phone: req.body?.phone,

@@ -26,6 +26,10 @@
         "function": "identityLogin"
       },
       {
+        "source": "/api/identity/biometric-login",
+        "function": "identityBiometricLogin"
+      },
+      {
         "source": "/api/identity/register-company",
         "function": "identityRegisterCompany"
       },

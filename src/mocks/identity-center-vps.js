@@ -17,6 +17,11 @@ export const getBiometricAvailability = async () => ({
   available: false,
   reason: 'vps-staging',
 });
+export const authenticateBiometric = async () => ({ success: false, message: 'Biometric login is unavailable in VPS staging.' });
+export const getBiometricAutoLoginProfile = () => null;
+export const shouldRequireBiometricUnlock = () => false;
+export const suppressBiometricAutoLoginForSession = () => undefined;
+export const clearBiometricAutoLoginSuppression = () => undefined;
 
 export const getIdentityDevice = () => ({
   deviceId: 'hd-manager-vps-staging-web',
@@ -30,6 +35,7 @@ export const shouldInvalidateIdentitySession = () => false;
 export const warmIdentityLoginService = () => Promise.resolve(false);
 
 export const identityLogin = () => blocked('Legacy Firebase login');
+export const identityBiometricLogin = async () => ({ success: false, unavailable: true });
 export const identityRegisterCompany = () => blocked('Legacy Firebase registration');
 export const identityCompleteSetup = () => blocked('Legacy Firebase identity setup');
 export const identityRequestRecovery = () => blocked('Legacy Firebase password recovery');
