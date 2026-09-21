@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   buildSepayTransactionsUrl,
+  calculatePaymentSettlement,
   createLegacyOrderLookup,
   fetchSepayTransactions,
   formatSepayDateTime,
@@ -148,6 +149,52 @@ const makeResponse = (payload, status = 200) => ({
     assert.equal(results[0].outcomes[1].status, 'ignored_not_money_in');
     assert.ok(results.slice(1).every(result => result.outcomes[0].status === 'duplicate_ignored'));
     assert.deepEqual(applications, ['order-97g:sepay-transaction-97g']);
+  });
+
+  await test('calculates exact, partial, sequential, and overpaid settlements without losing prior payments', () => {
+    assert.deepEqual(calculatePaymentSettlement({
+      expectedAmount: 1000000,
+      previousPaidAmount: 0,
+      outstandingAmount: 1000000,
+      paidAmount: 400000
+    }), {
+      previousPaidAmount: 0,
+      dueAmount: 1000000,
+      appliedAmount: 400000,
+      overpaidAmount: 0,
+      outstandingAmount: 600000,
+      status: 'partial',
+      settlementType: 'partial'
+    });
+
+    const secondPayment = calculatePaymentSettlement({
+      expectedAmount: 600000,
+      previousPaidAmount: 400000,
+      outstandingAmount: 600000,
+      paidAmount: 700000
+    });
+    assert.equal(secondPayment.appliedAmount, 600000);
+    assert.equal(secondPayment.overpaidAmount, 100000);
+    assert.equal(secondPayment.outstandingAmount, 0);
+    assert.equal(secondPayment.status, 'paid');
+    assert.equal(secondPayment.settlementType, 'overpaid');
+    assert.equal(secondPayment.previousPaidAmount + secondPayment.appliedAmount, 1000000);
+  });
+
+  await test('uses one Firestore transaction for the payment idempotency check and all settlement writes', () => {
+    const functionsSource = fs.readFileSync(path.join(__dirname, '..', 'functions', 'index.js'), 'utf8');
+    const start = functionsSource.indexOf('const applyPayosPaymentToOrder = async');
+    const end = functionsSource.indexOf('exports.createPayosPaymentLink', start);
+    const settlementSource = functionsSource.slice(start, end);
+
+    assert.ok(start >= 0 && end > start, 'The shared SePay settlement function must exist.');
+    assert.match(settlementSource, /db\.runTransaction\(async \(transaction\) =>/);
+    assert.match(settlementSource, /transaction\.get\(paymentRef\)/);
+    assert.match(settlementSource, /transaction\.get\(orderDoc\.ref\)/);
+    assert.match(settlementSource, /transaction\.create\(paymentRef,/);
+    assert.match(settlementSource, /transaction\.set\(latestOrderDoc\.ref,/);
+    assert.doesNotMatch(settlementSource, /await paymentRef\.get\(\)/);
+    assert.doesNotMatch(settlementSource, /await paymentRef\.set\(/);
   });
 
   await assert.rejects(

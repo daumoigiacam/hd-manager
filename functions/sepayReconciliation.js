@@ -14,6 +14,38 @@ const toPositiveInteger = (value, fallback, maximum = Number.MAX_SAFE_INTEGER) =
   return Math.min(parsed, maximum);
 };
 
+const calculatePaymentSettlement = ({
+  expectedAmount = 0,
+  previousPaidAmount = 0,
+  outstandingAmount,
+  paidAmount = 0
+} = {}) => {
+  const expected = parseMoney(expectedAmount);
+  const previousPaid = parseMoney(previousPaidAmount);
+  const incoming = parseMoney(paidAmount);
+  const currentOutstanding = Math.max(
+    0,
+    outstandingAmount === undefined || outstandingAmount === null
+      ? expected - previousPaid
+      : parseMoney(outstandingAmount)
+  );
+  const dueAmount = currentOutstanding > 0 ? currentOutstanding : expected;
+  const appliedAmount = Math.min(incoming, dueAmount);
+  const overpaidAmount = Math.max(0, incoming - dueAmount);
+  const nextOutstanding = Math.max(0, dueAmount - appliedAmount);
+  const status = nextOutstanding <= 0 ? 'paid' : 'partial';
+
+  return {
+    previousPaidAmount: previousPaid,
+    dueAmount,
+    appliedAmount,
+    overpaidAmount,
+    outstandingAmount: nextOutstanding,
+    status,
+    settlementType: nextOutstanding > 0 ? 'partial' : (overpaidAmount > 0 ? 'overpaid' : 'exact')
+  };
+};
+
 const formatSepayDateTime = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(value);
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
@@ -284,6 +316,7 @@ const reconcileSepayTransactions = async ({
 module.exports = {
   SEPAY_TRANSACTIONS_API_URL,
   buildSepayTransactionsUrl,
+  calculatePaymentSettlement,
   createLegacyOrderLookup,
   fetchSepayTransactions,
   formatSepayDateTime,

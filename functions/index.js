@@ -58,6 +58,7 @@ const {
   runEmployeeEvaluationAggregation
 } = require('./employeeEvaluation');
 const {
+  calculatePaymentSettlement,
   createLegacyOrderLookup,
   fetchSepayTransactions,
   reconcileSepayTransactions
@@ -2601,10 +2602,10 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
   const providerStatusField = providerKey === 'sepay' ? 'sepayPaymentStatus' : 'payosPaymentStatus';
   const providerWebhookAtField = providerKey === 'sepay' ? 'lastSepayWebhookAt' : 'lastPayosWebhookAt';
   const providerSyncAtField = providerKey === 'sepay' ? 'lastSepaySyncAt' : 'lastPayosSyncAt';
-  const order = { id: orderDoc.id, ...orderDoc.data() };
-  const expectedAmount = resolveOrderPaymentDueAmount(order);
-  const expectedOrderCode = `${getOrderPaymentDisplayCode(order)}`.trim();
-  const cleanDescription = `${description || expectedOrderCode || ''}`.trim();
+  const initialOrder = { id: orderDoc.id, ...orderDoc.data() };
+  const initialExpectedAmount = resolveOrderPaymentDueAmount(initialOrder);
+  const initialExpectedOrderCode = `${getOrderPaymentDisplayCode(initialOrder)}`.trim();
+  const cleanDescription = `${description || initialExpectedOrderCode || ''}`.trim();
   const matchDataSource = rawPayload?.data || rawPayload?.paymentLink || rawPayload || {};
   const matchData = {
     ...matchDataSource,
@@ -2614,10 +2615,10 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
   };
 
   if (!isPayosPaymentMatchedToOrder({
-    order,
+    order: initialOrder,
     data: matchData,
     description: cleanDescription,
-    expectedOrderCode,
+    expectedOrderCode: initialExpectedOrderCode,
     paymentLinkId,
     payosOrderCode
   })) {
@@ -2627,7 +2628,7 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
       webhookData: rawPayload,
       orderDoc,
       provider: providerKey,
-      extra: { expectedOrderCode, description: cleanDescription, paidAmount }
+      extra: { expectedOrderCode: initialExpectedOrderCode, description: cleanDescription, paidAmount }
     });
     return { success: true, status: 'need_reconciliation', reason: 'missing_or_mismatched_order_code' };
   }
@@ -2640,7 +2641,7 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
       webhookData: rawPayload,
       orderDoc,
       provider: providerKey,
-      extra: { expectedAmount, paidAmount: safePaidAmount }
+      extra: { expectedAmount: initialExpectedAmount, paidAmount: safePaidAmount }
     });
     return { success: true, status: 'need_reconciliation', reason: 'invalid_amount' };
   }
@@ -2651,131 +2652,175 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
   const paymentDateKey = getVietnamDateKey(transactionDate);
   const payosTransactionDateTime = resolvePayosTransactionDateText(rawPayload);
   const paymentIdentity = safeDocIdPart(reference || paymentLinkId || payosOrderCode || now);
-  const paymentId = `${providerKey}_${order.id}_${paymentIdentity}`;
+  const paymentId = `${providerKey}_${initialOrder.id}_${paymentIdentity}`;
   const paymentRef = db.collection(collectionPath(appId, 'payments')).doc(paymentId);
-  markPaymentTrace(trace, 'payment_duplicate_check_start', { paymentId });
-  const existingPayment = await paymentRef.get();
-  if (existingPayment.exists) {
-    markPaymentTrace(trace, 'payment_duplicate_ignored', { paymentId });
-    return { success: true, status: 'duplicate_ignored', paymentId };
-  }
-
-  if (order.paymentStatus === 'paid' || order[providerStatusField] === 'paid') {
-    await writeReconciliation({ appId, reason: 'order_already_paid', webhookData: rawPayload, orderDoc, provider: providerKey });
-    return { success: true, status: 'need_reconciliation', reason: 'order_already_paid' };
-  }
-
-  const previousPaidAmount = parseMoney(order.paidAmount || order.appliedAmount || 0);
-  const currentOutstanding = Math.max(0, parseMoney(order.outstandingAmount ?? (expectedAmount - previousPaidAmount)));
-  const dueAmount = currentOutstanding > 0 ? currentOutstanding : expectedAmount;
-  const appliedAmount = Math.min(safePaidAmount, dueAmount);
-  const overpaidAmount = Math.max(0, safePaidAmount - dueAmount);
-  const nextOutstanding = Math.max(0, dueAmount - appliedAmount);
-  const nextPaymentStatus = nextOutstanding <= 0 ? 'paid' : 'partial';
-  const settlementType = nextOutstanding > 0 ? 'partial' : overpaidAmount > 0 ? 'overpaid' : 'exact';
   const receivingBank = providerKey === 'sepay'
-    ? await resolveSepayReceivingProfile(appId, order, matchData, rawPayload)
-    : await resolvePayosReceivingBank(appId, order, matchData, rawPayload);
+    ? await resolveSepayReceivingProfile(appId, initialOrder, matchData, rawPayload)
+    : await resolvePayosReceivingBank(appId, initialOrder, matchData, rawPayload);
 
-  markPaymentTrace(trace, 'payment_firestore_write_start', {
-    paymentId,
-    appliedAmount,
-    overpaidAmount,
-    outstandingAmount: nextOutstanding
-  });
-  await retryPaymentOperation('payment_firestore_write', async () => {
-    await paymentRef.set({
-    id: paymentId,
-    companyId: order.companyId || '',
-    customerId: order.customerId || '',
-    customerName: order.customerNameSnapshot || order.customerName || '',
-    amount: safePaidAmount,
-    appliedAmount,
-    overpaidAmount,
-    outstandingAmount: nextOutstanding,
-    remainingDebt: nextOutstanding,
-    paymentStatus: nextPaymentStatus,
-    paymentSettlementType: settlementType,
-    method: providerLabel,
-    bankName: receivingBank.bankName,
-    bankCode: receivingBank.bankCode,
-    receivingBankName: receivingBank.bankName,
-    receivingBankCode: receivingBank.bankCode,
-    paymentProvider: providerKey,
-    paymentLinkId: paymentLinkId || order.paymentLinkId || '',
-    payosOrderCode: payosOrderCode || order.payosOrderCode || '',
-    sepayPaymentCode: providerKey === 'sepay' ? (expectedOrderCode || order.sepayPaymentCode || '') : (order.sepayPaymentCode || ''),
-    referenceCode: reference || '',
-    bankContent: cleanDescription,
-    note: `${providerLabel} ${expectedOrderCode}`,
-    date: paymentDateKey,
-    paymentDate: paymentDateKey,
-    transactionDate: paymentDateKey,
-    transactionDateTime: payosTransactionDateTime || transactionAt,
-    paidAt: transactionAt,
-    transactionAt,
-    matchedOrderId: order.id,
-    matchedOrderCode: expectedOrderCode,
-    targetOrderId: order.id,
-    autoMatchedByOrderCode: true,
-    sourceType,
-    sourceLabel: receivingBank.bankName || providerLabel,
-    sourceOrderId: order.id,
-    createdByEmpId: `system_${providerKey}`,
-    empId: `system_${providerKey}`,
-    createdByRole: 'system',
-    status: 'paid',
-    approvalStatus: 'approved',
-    handoverStatus: 'confirmed',
-    isConfirmed: true,
-    confirmedAt: now,
-    createdAt: now,
-    updatedAt: now,
-    webhookReceivedAt: now,
-    isArchived: false,
-    rawWebhook: rawPayload
-    }, { merge: true });
+  markPaymentTrace(trace, 'payment_duplicate_check_start', { paymentId });
+  const result = await retryPaymentOperation('payment_firestore_transaction', () => db.runTransaction(async (transaction) => {
+    const [existingPayment, latestOrderDoc] = await Promise.all([
+      transaction.get(paymentRef),
+      transaction.get(orderDoc.ref)
+    ]);
+    if (existingPayment.exists) {
+      return { success: true, status: 'duplicate_ignored', paymentId };
+    }
+    if (!latestOrderDoc.exists) {
+      return { success: true, status: 'need_reconciliation', reason: 'order_not_found' };
+    }
 
-    await orderDoc.ref.set({
-    paymentStatus: nextPaymentStatus,
-    [providerStatusField]: nextPaymentStatus,
-    paymentSettlementType: settlementType,
-    paidAt: nextPaymentStatus === 'paid' ? transactionAt : (order.paidAt || ''),
-    partialPaidAt: nextPaymentStatus === 'partial' ? transactionAt : (order.partialPaidAt || ''),
-    paidAmount: previousPaidAmount + appliedAmount,
-    appliedAmount: previousPaidAmount + appliedAmount,
-    overpaidAmount,
-    outstandingAmount: nextOutstanding,
-    lastPaymentId: paymentId,
-    [providerWebhookAtField]: sourceType.includes('webhook') ? now : (order[providerWebhookAtField] || ''),
-    [providerSyncAtField]: !sourceType.includes('webhook') ? now : (order[providerSyncAtField] || ''),
-    updatedAt: now
+    const order = { id: latestOrderDoc.id, ...latestOrderDoc.data() };
+    const expectedAmount = resolveOrderPaymentDueAmount(order);
+    const expectedOrderCode = `${getOrderPaymentDisplayCode(order)}`.trim();
+    if (!isPayosPaymentMatchedToOrder({
+      order,
+      data: matchData,
+      description: cleanDescription,
+      expectedOrderCode,
+      paymentLinkId,
+      payosOrderCode
+    })) {
+      return { success: true, status: 'need_reconciliation', reason: 'missing_or_mismatched_order_code', orderDoc: latestOrderDoc };
+    }
+    if (order.paymentStatus === 'paid' || order[providerStatusField] === 'paid') {
+      return { success: true, status: 'need_reconciliation', reason: 'order_already_paid', orderDoc: latestOrderDoc };
+    }
+
+    const allocation = calculatePaymentSettlement({
+      expectedAmount,
+      previousPaidAmount: order.paidAmount || order.appliedAmount || 0,
+      outstandingAmount: order.outstandingAmount,
+      paidAmount: safePaidAmount
+    });
+    const nextPaidAmount = allocation.previousPaidAmount + allocation.appliedAmount;
+    markPaymentTrace(trace, 'payment_firestore_write_start', {
+      paymentId,
+      appliedAmount: allocation.appliedAmount,
+      overpaidAmount: allocation.overpaidAmount,
+      outstandingAmount: allocation.outstandingAmount
+    });
+
+    transaction.create(paymentRef, {
+      id: paymentId,
+      companyId: order.companyId || '',
+      customerId: order.customerId || '',
+      customerName: order.customerNameSnapshot || order.customerName || '',
+      amount: safePaidAmount,
+      appliedAmount: allocation.appliedAmount,
+      overpaidAmount: allocation.overpaidAmount,
+      outstandingAmount: allocation.outstandingAmount,
+      remainingDebt: allocation.outstandingAmount,
+      paymentStatus: allocation.status,
+      paymentSettlementType: allocation.settlementType,
+      method: providerLabel,
+      bankName: receivingBank.bankName,
+      bankCode: receivingBank.bankCode,
+      receivingBankName: receivingBank.bankName,
+      receivingBankCode: receivingBank.bankCode,
+      paymentProvider: providerKey,
+      paymentLinkId: paymentLinkId || order.paymentLinkId || '',
+      payosOrderCode: payosOrderCode || order.payosOrderCode || '',
+      sepayPaymentCode: providerKey === 'sepay' ? (expectedOrderCode || order.sepayPaymentCode || '') : (order.sepayPaymentCode || ''),
+      referenceCode: reference || '',
+      bankContent: cleanDescription,
+      note: `${providerLabel} ${expectedOrderCode}`,
+      date: paymentDateKey,
+      paymentDate: paymentDateKey,
+      transactionDate: paymentDateKey,
+      transactionDateTime: payosTransactionDateTime || transactionAt,
+      paidAt: transactionAt,
+      transactionAt,
+      matchedOrderId: order.id,
+      matchedOrderCode: expectedOrderCode,
+      targetOrderId: order.id,
+      autoMatchedByOrderCode: true,
+      sourceType,
+      sourceLabel: receivingBank.bankName || providerLabel,
+      sourceOrderId: order.id,
+      createdByEmpId: `system_${providerKey}`,
+      empId: `system_${providerKey}`,
+      createdByRole: 'system',
+      status: 'paid',
+      approvalStatus: 'approved',
+      handoverStatus: 'confirmed',
+      isConfirmed: true,
+      confirmedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      webhookReceivedAt: now,
+      isArchived: false,
+      rawWebhook: rawPayload
+    });
+
+    transaction.set(latestOrderDoc.ref, {
+      paymentStatus: allocation.status,
+      [providerStatusField]: allocation.status,
+      paymentSettlementType: allocation.settlementType,
+      paidAt: allocation.status === 'paid' ? transactionAt : (order.paidAt || ''),
+      partialPaidAt: allocation.status === 'partial' ? transactionAt : (order.partialPaidAt || ''),
+      paidAmount: nextPaidAmount,
+      appliedAmount: nextPaidAmount,
+      overpaidAmount: allocation.overpaidAmount,
+      outstandingAmount: allocation.outstandingAmount,
+      lastPaymentId: paymentId,
+      [providerWebhookAtField]: sourceType.includes('webhook') ? now : (order[providerWebhookAtField] || ''),
+      [providerSyncAtField]: !sourceType.includes('webhook') ? now : (order[providerSyncAtField] || ''),
+      updatedAt: now
     }, { merge: true });
 
     const customerId = `${order.customerId || ''}`.trim();
     if (customerId) {
-      await db.collection(collectionPath(appId, 'customers')).doc(customerId).set({
+      transaction.set(db.collection(collectionPath(appId, 'customers')).doc(customerId), {
         lastPaymentAt: transactionAt,
         lastPaymentDate: paymentDateKey,
         lastPaymentAmount: safePaidAmount,
-        lastPaymentAppliedAmount: appliedAmount,
-        lastPaymentOverpaidAmount: overpaidAmount,
-        lastPaymentRemainingDebt: nextOutstanding,
-        lastPaymentSettlementType: settlementType,
+        lastPaymentAppliedAmount: allocation.appliedAmount,
+        lastPaymentOverpaidAmount: allocation.overpaidAmount,
+        lastPaymentRemainingDebt: allocation.outstandingAmount,
+        lastPaymentSettlementType: allocation.settlementType,
         updatedAt: now
       }, { merge: true });
     }
-  }, { trace });
+
+    return {
+      success: true,
+      status: allocation.status,
+      paymentId,
+      appliedAmount: allocation.appliedAmount,
+      overpaidAmount: allocation.overpaidAmount,
+      outstandingAmount: allocation.outstandingAmount,
+      order,
+      orderDoc: latestOrderDoc
+    };
+  }), { trace });
+
+  if (result.status === 'duplicate_ignored') {
+    markPaymentTrace(trace, 'payment_duplicate_ignored', { paymentId });
+    return result;
+  }
+  if (result.status === 'need_reconciliation') {
+    await writeReconciliation({
+      appId,
+      reason: result.reason,
+      webhookData: rawPayload,
+      orderDoc: result.orderDoc || orderDoc,
+      provider: providerKey,
+      extra: { description: cleanDescription, paidAmount: safePaidAmount }
+    });
+    return { success: true, status: 'need_reconciliation', reason: result.reason };
+  }
 
   await enqueuePaymentNotificationJob({
     appId,
-    order,
+    order: result.order,
     paymentId,
     paidAmount: safePaidAmount,
-    appliedAmount,
-    overpaidAmount,
-    outstandingAmount: nextOutstanding,
-    status: nextPaymentStatus,
+    appliedAmount: result.appliedAmount,
+    overpaidAmount: result.overpaidAmount,
+    outstandingAmount: result.outstandingAmount,
+    status: result.status,
     receivingBankName: receivingBank.bankName,
     paymentDateKey,
     transactionAt,
@@ -2785,18 +2830,18 @@ const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, descripti
   });
   markPaymentTrace(trace, 'payment_updated', {
     paymentId,
-    status: nextPaymentStatus,
+    status: result.status,
     notificationQueued: true,
-    outstandingAmount: nextOutstanding
+    outstandingAmount: result.outstandingAmount
   });
 
   return {
     success: true,
-    status: nextPaymentStatus,
+    status: result.status,
     paymentId,
-    appliedAmount,
-    overpaidAmount,
-    outstandingAmount: nextOutstanding
+    appliedAmount: result.appliedAmount,
+    overpaidAmount: result.overpaidAmount,
+    outstandingAmount: result.outstandingAmount
   };
 };
 
