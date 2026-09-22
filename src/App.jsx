@@ -127,6 +127,7 @@ import {
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
+import DeliveryRedesignWorkspace from './features/delivery/DeliveryRedesignWorkspace.jsx';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
 import {
@@ -22897,7 +22898,7 @@ const APP_NAV_ITEM_MAP = {
   order_requests: { id: 'order_requests', label: 'Đơn đặt', icon: <Receipt /> },
   orders: { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList /> },
   warehouse_dispatch: { id: 'warehouse_dispatch', label: 'Xuất kho', icon: <ClipboardList /> },
-  delivery_reports: { id: 'delivery_reports', label: 'Báo cáo', icon: <Camera /> },
+  delivery_reports: { id: 'delivery_reports', label: 'Giao hàng', icon: <Camera /> },
   warehouse_import: { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package /> },
   customers: { id: 'customers', label: 'Khách hàng', icon: <Users /> },
   debt: { id: 'debt', label: 'Sổ nợ', icon: <BookText /> },
@@ -24541,7 +24542,7 @@ function MainAppView({
                activeTab === 'order_requests' ? 'Đơn đặt' :
                activeTab === 'warehouse_import' ? 'Nhập Xuất Tồn' :
                activeTab === 'warehouse_dispatch' ? 'Phiếu xuất kho' : 
-               activeTab === 'delivery_reports' ? 'Báo cáo giao hàng' : 
+               activeTab === 'delivery_reports' ? 'Giao hàng' :
                activeTab === 'orders' ? 'Đơn hàng' : 
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
@@ -24824,22 +24825,6 @@ function MainAppView({
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
-        if (!hasWorkflowDispatchToday && hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')) {
-          return renderWorkflowGuide({
-            icon: <Truck size={18} />,
-            title: isDriver ? 'Chưa có đơn được giao' : 'Chưa có phiếu xuất cần giao hôm nay',
-            description: isDriver ? 'Khi kho phân công phiếu xuất cho bạn, danh sách báo cáo giao hàng sẽ tự hiện tại đây.' : 'Báo cáo giao hàng lấy dữ liệu từ phiếu xuất kho trong ngày để tránh nhập nhầm khách hoặc nhầm hàng.',
-            steps: [
-              { label: 'Tạo phiếu xuất kho', done: false, hint: 'Chọn khách, sản phẩm và người giao.' },
-              { label: 'Tài xế báo cáo thực tế', done: false, hint: 'Thu, chi, trả hàng và trạng thái giao sẽ cập nhật về đơn/công nợ.' }
-            ],
-            actions: [
-              ...(tabPermissions.warehouse_dispatch ? [{ label: 'Mở xuất kho', primary: true, onClick: () => setActiveTab('warehouse_dispatch') }] : []),
-              ...(tabPermissions.order_requests ? [{ label: 'Xem đơn đặt hàng', onClick: () => setActiveTab('order_requests') }] : [])
-            ],
-            note: OnboardingHintService.deliveryNeedsDispatch
-          });
-        }
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
@@ -25032,6 +25017,11 @@ function MainAppView({
     if (remainingItems.length > 0) groups.push({ id: 'other', label: 'Khác', items: remainingItems });
     return groups;
   }, [desktopSidebarItems]);
+  const displayedFooterNavItems = activeTab === 'delivery_reports'
+    ? ['home', 'delivery_reports', 'customers', 'report', 'more']
+      .filter((id) => id === 'more' || Boolean(tabPermissions[id]))
+      .map((id) => APP_NAV_ITEM_MAP[id])
+    : footerNavItems;
   const shellSearchResults = useMemo(() => {
     const keyword = collapseLookupText(shellSearchKeyword);
     const sourceItems = desktopSidebarItems.filter((item) => item.id !== 'more');
@@ -25061,7 +25051,7 @@ function MainAppView({
     window.addEventListener('keydown', handleShellSearchShortcut);
     return () => window.removeEventListener('keydown', handleShellSearchShortcut);
   }, []);
-  const directFooterTabIds = new Set(footerNavItems.filter(item => item.id !== 'more').map(item => item.id));
+  const directFooterTabIds = new Set(displayedFooterNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
     && (['more','profile','customers','products','pricing','maps','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','report','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
       || (!isAccounting && !isSales && !isDriver && !isWarehouseScale));
@@ -25465,7 +25455,7 @@ function MainAppView({
         </div>
       )}
 
-      {canShowFloatingQuickActionButton && quickActionItems.length > 0 && (
+      {canShowFloatingQuickActionButton && quickActionItems.length > 0 && activeTab !== 'delivery_reports' && (
         <FloatingQuickActionButton
           actions={quickActionItems}
           containerRef={appShellRef}
@@ -25485,7 +25475,7 @@ function MainAppView({
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
         <HDBottomNavigation className="hd-bottom-navigation mobile-footer-nav flex justify-around items-center px-1 py-1.5">
-          {footerNavItems.map((item) => (
+          {displayedFooterNavItems.map((item) => (
             <NavButton
               key={item.id}
               icon={item.icon}
@@ -51835,6 +51825,80 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   ), [isReconciliationExpanded, pendingReconciliationGroups]);
   const hasMorePendingReconciliationCustomers = basePendingReconciliationGroups.length
     > DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT;
+  const getDeliveryWorkspaceArea = (customer = {}) => {
+    const locationText = `${getCustomerLocationDisplayText(customer) || ''}`.trim();
+    return /^https?:\/\//i.test(locationText)
+      ? customer.address || 'Đã định vị'
+      : locationText || customer.address || '';
+  };
+  const deliveryWorkspaceGroups = useMemo(() => {
+    const seen = new Set();
+    const fromDispatches = dispatchReconciliationGroups.map((group) => {
+      const orderedRows = [...(group.rows || [])].sort((left, right) => (
+        (getEntityTimestamp(right.report || right.dispatch) || 0) - (getEntityTimestamp(left.report || left.dispatch) || 0)
+      ));
+      const primaryRow = orderedRows[0] || {};
+      const customer = primaryRow.customer || customerLookup.get(group.customerId) || {};
+      const latestReport = orderedRows.find((row) => row.report)?.report || null;
+      const latestTimestamp = Math.max(0, ...orderedRows.map((row) => getEntityTimestamp(row.report || row.dispatch) || 0));
+      seen.add(group.key);
+      return {
+        key: group.key,
+        customerId: group.customerId || customer.id || '',
+        customerName: group.customerName || customer.name || 'Khách hàng',
+        phone: customer.phone || customer.phoneNumber || '',
+        address: customer.address || '',
+        area: getDeliveryWorkspaceArea(customer),
+        time: latestTimestamp || workingDate,
+        latestTimestamp,
+        pendingCount: group.pendingCount || 0,
+        reportCount: group.reportCount || 0,
+        rowCount: (group.rows || []).length,
+        totalAmount: group.paymentSummaryTotal || 0,
+        collectedAmount: latestReport?.collectedAmount || 0,
+        collectedMethod: latestReport?.collectedMethod || 'Tiền mặt',
+        note: latestReport?.note || customer.deliveryNote || customer.note || '',
+        productLines: (group.productWeights ? Array.from(group.productWeights.values()) : []).map((line) => ({
+          productLabel: line.productLabel || 'Hàng hóa',
+          quantity: line.pricingQuantity || line.weight || 0,
+          unit: line.pricingUnit || 'đv',
+          amount: line.totalAmount || 0,
+        })),
+        rows: group.rows || [],
+      };
+    });
+    const reportOnlyGroups = reportCustomerGroups
+      .filter((group) => !seen.has(group.key))
+      .map((group) => {
+        const latestReport = group.reports?.[0] || {};
+        const customer = customerLookup.get(group.customerId) || {};
+        return {
+          key: group.key,
+          customerId: group.customerId || customer.id || '',
+          customerName: group.customerName || customer.name || 'Khách hàng',
+          phone: customer.phone || customer.phoneNumber || '',
+          address: customer.address || '',
+          area: getDeliveryWorkspaceArea(customer),
+          time: group.latestTimestamp || getEntityTimestamp(latestReport) || workingDate,
+          latestTimestamp: group.latestTimestamp || getEntityTimestamp(latestReport) || 0,
+          pendingCount: 0,
+          reportCount: group.reports?.length || 1,
+          rowCount: group.reports?.length || 1,
+          totalAmount: group.totalCollectedAmount || latestReport.collectedAmount || 0,
+          collectedAmount: latestReport.collectedAmount || 0,
+          collectedMethod: latestReport.collectedMethod || 'Tiền mặt',
+          note: latestReport.note || customer.deliveryNote || customer.note || '',
+          productLines: (group.tableProductRows || []).map((line) => ({
+            productLabel: line.productLabel || 'Hàng hóa',
+            quantity: line.weight || line.quantity || 0,
+            unit: line.quantity ? 'Con' : 'Kg',
+            amount: 0,
+          })),
+          rows: [],
+        };
+      });
+    return [...fromDispatches, ...reportOnlyGroups];
+  }, [customerLookup, dispatchReconciliationGroups, reportCustomerGroups, workingDate]);
   const stageReportedReconciliationRows = useCallback((dispatchIds = []) => {
     const completedDispatchIds = new Set(dispatchIds.map(value => `${value || ''}`.trim()).filter(Boolean));
     if (completedDispatchIds.size === 0) return;
@@ -52211,6 +52275,14 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setActualRows(rows);
     setSelectedDispatchId(rows.find(row => row.dispatchId)?.dispatchId || '');
   };
+  const handleSelectDeliveryWorkspaceGroup = useCallback((group) => {
+    const sourceGroup = dispatchReconciliationGroups.find((item) => item.key === group?.key);
+    const primaryRow = sourceGroup?.rows?.[0] || group?.rows?.[0];
+    const customer = primaryRow?.customer || customerLookup.get(group?.customerId);
+    if (customer) handleSelectCustomer(customer);
+    const dispatchId = primaryRow?.dispatch?.id || primaryRow?.dispatchId || '';
+    if (dispatchId) setSelectedDispatchId(dispatchId);
+  }, [customerLookup, dispatchReconciliationGroups]);
   openPendingReconciliationGroupRef.current = (groupKey) => {
     const group = basePendingReconciliationGroups.find(item => item.key === groupKey);
     const primaryRow = group?.rows?.[0];
@@ -52782,17 +52854,17 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     if (!isEditingReport && !canCreateDeliveryReport) {
       setStatusTone('red');
       setStatusMessage('Tài khoản này chưa được cấp quyền tạo báo cáo giao hàng.');
-      return;
+      return false;
     }
     if (isEditingReport && !canEditDeliveryReport) {
       setStatusTone('red');
       setStatusMessage('Tài khoản này chưa được cấp quyền sửa báo cáo giao hàng.');
-      return;
+      return false;
     }
     if (!selectedCustomerId) {
       setStatusTone('red');
       setStatusMessage('Bạn hãy chọn khách hàng trước khi lưu báo cáo.');
-      return;
+      return false;
     }
     setIsSaving(true);
     setStatusMessage('');
@@ -52801,7 +52873,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       if (rowsToSave.length === 0) {
         setStatusTone('red');
         setStatusMessage('Bạn hãy nhập ít nhất một mặt hàng thực tế giao hàng.');
-        return;
+        return false;
       }
       const firstRow = rowsToSave[0];
       const mismatchRows = rowsToSave.filter(row => getDeliveryReportWeightStatus({
@@ -53059,9 +53131,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           ? `Đã lưu báo cáo. Có ${mismatchRows.length} mặt hàng lệch kg so với phiếu xuất kho.`
           : `Đã lưu báo cáo giao hàng cho ${rowsToSave.length} mặt hàng.`);
       resetReportForm();
+      return true;
     } catch (error) {
       setStatusTone('red');
       setStatusMessage(getFriendlyFirebaseErrorMessage(error, 'Không lưu được báo cáo giao hàng.'));
+      return false;
     } finally {
       setIsSaving(false);
     }
@@ -53201,6 +53275,54 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         <p className="mt-3 text-sm font-bold text-slate-600">Bạn chưa được cấp quyền báo cáo giao hàng.</p>
         <p className="mt-1 text-xs text-slate-400">Chủ doanh nghiệp có thể bật quyền này trong mục Vai trò.</p>
       </div>
+    );
+  }
+
+  const deliveryRedesignEnabled = Boolean(DeliveryRedesignWorkspace);
+  if (deliveryRedesignEnabled) {
+    return (
+      <DeliveryRedesignWorkspace
+        workingDate={workingDate}
+        onChangeDate={(nextDate) => setWorkingDate(nextDate || getTodayString())}
+        groups={deliveryWorkspaceGroups}
+        stats={{
+          required: dayDispatches.length,
+          waiting: pendingReconciliationDispatchCount,
+          completed: reportedDispatchCount,
+          collectedTotal: dayDeliveryCollectedTotal,
+        }}
+        canCreate={canCreateDeliveryReport}
+        selectedCustomer={selectedCustomer}
+        note={note}
+        onNoteChange={setNote}
+        photoUrl={photoUrl}
+        onPhotoChange={handlePhotoChange}
+        onRemovePhoto={() => setPhotoUrl('')}
+        photoInputRef={photoInputRef}
+        isReadingPhoto={isReadingPhoto}
+        collectedAmount={collectedAmount}
+        onCollectedAmountChange={(value) => {
+          setCollectedAmount(value);
+          setCollectedAmountManuallyEdited(true);
+        }}
+        collectedMethod={collectedMethod}
+        onCollectedMethodChange={setCollectedMethod}
+        onSelectGroup={handleSelectDeliveryWorkspaceGroup}
+        onComplete={() => handleSubmitReport({ preventDefault() {} })}
+        onOpenDirections={(group) => {
+          const customer = customerLookup.get(group?.customerId);
+          const destination = customer ? buildCustomerDirectionsUrl(customer) : '';
+          if (destination) {
+            window.open(destination, '_blank', 'noopener,noreferrer');
+          } else {
+            setStatusTone('amber');
+            setStatusMessage('Khách hàng chưa có địa chỉ để chỉ đường.');
+          }
+        }}
+        statusMessage={statusMessage}
+        statusTone={statusTone}
+        isSaving={isSaving}
+      />
     );
   }
 
