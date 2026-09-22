@@ -1444,7 +1444,12 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 }
 
 .hd-shell--staff .hd-app-content {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   background: var(--hd-color-canvas);
+  -webkit-overflow-scrolling: touch;
 }
 
 .hd-shell--staff .hd-section-tabs {
@@ -1629,6 +1634,49 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 .hd-shell--staff .hd-product-list::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgb(100 116 139 / 0.28);
+}
+
+.hd-shell--staff .hd-module-fab {
+  bottom: calc(var(--hd-footer-height) + var(--hd-space-3));
+  z-index: 50 !important;
+}
+
+@media (max-width: 599px) {
+  .hd-shell--staff .hd-product-list {
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+    scrollbar-gutter: auto;
+  }
+}
+
+/* Search controls keep their resting surface without adding a second focus frame. */
+.hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(
+  input[data-hd-search-input="true"],
+  input[type="search"],
+  input[role="searchbox"]
+):is(:focus, :focus-visible) {
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+}
+
+.hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[data-hd-search-input="true"]):focus-within,
+.hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[type="search"]):focus-within,
+.hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[role="searchbox"]):focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+}
+
+.hd-enterprise-app-shell[data-hd-shell="enterprise"] .hd-shell-search-input-wrap > button {
+  flex: 0 0 1.75rem !important;
+  inline-size: 1.75rem !important;
+  min-inline-size: 1.75rem !important;
+  max-inline-size: 1.75rem !important;
 }
 
 .hd-shell--staff .hd-product-list__item {

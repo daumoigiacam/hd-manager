@@ -346,6 +346,9 @@ assert.match(loginViewSource, /void runBiometricLogin\(\)/);
 assert.match(appSource, /onBiometricLogin=\{handleIdentityBiometricLogin\}/);
 assert.match(appSource, /shouldRequireBiometricUnlock\(persistedSession\.currentUser\)/);
 assert.match(appSource, /authenticateBiometric\('Xác thực để mở HD Manager'\)/);
+assert.match(appSource, /CapacitorApp\.addListener\('appStateChange'/);
+assert.match(appSource, /biometricVerifiedIdentityRef\.current = getIdentityAccountScope\(established\.identity/);
+assert.match(appSource, /setBiometricUnlockState\('unlocked'\)/);
 assert.match(appSource, /suppressBiometricAutoLoginForSession\(\)/);
 
 const identitySetupStart = appSource.indexOf('function IdentitySetupWizard');

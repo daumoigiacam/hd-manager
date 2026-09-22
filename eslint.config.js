@@ -17,7 +17,12 @@ export default [
     }
   },
   {
-    files: ['src/features/delivery/**/*.{jsx,js}', 'tests/delivery-redesign-layout.test.mjs'],
+    files: [
+      'src/features/assets/**/*.{jsx,js}',
+      'src/features/delivery/**/*.{jsx,js}',
+      'tests/asset-management-redesign.test.mjs',
+      'tests/delivery-redesign-layout.test.mjs'
+    ],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

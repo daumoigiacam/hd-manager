@@ -48,11 +48,21 @@ try {
     const productChrome = await page.locator('.premium-products-module').evaluate((module) => {
       const tabs = Array.from(module.querySelectorAll('[role="tab"]'));
       const header = document.querySelector('.hd-app-header');
+      const main = document.querySelector('.hd-app-content');
+      const footer = document.querySelector('[data-hd-navigation="bottom"]');
+      const addButton = module.querySelector('button[aria-label="Thêm sản phẩm"]');
       const searchButton = header?.querySelector('button[aria-label="Tìm kiếm"]');
       const filterButton = header?.querySelector('button[aria-label="Bộ lọc"]');
+      const tabTop = tabs.length > 0 ? Math.min(...tabs.map(tab => tab.getBoundingClientRect().top)) : 0;
       return {
         tabCount: tabs.length,
         tabWidths: tabs.map(tab => tab.getBoundingClientRect().width),
+        tabTop,
+        headerBottom: header?.getBoundingClientRect().bottom || 0,
+        mainScrollTop: main?.scrollTop || 0,
+        mainOverflowY: main ? getComputedStyle(main).overflowY : '',
+        addButtonBottom: addButton?.getBoundingClientRect().bottom || 0,
+        footerTop: footer?.getBoundingClientRect().top || 0,
         title: header?.querySelector('.hd-header-title')?.textContent?.trim() || '',
         titleColor: header?.querySelector('.hd-header-title') ? getComputedStyle(header.querySelector('.hd-header-title')).color : '',
         searchBorderWidth: searchButton ? getComputedStyle(searchButton).borderTopWidth : '',
@@ -68,6 +78,12 @@ try {
     assert.equal(productChrome.searchBorderWidth, '0px', `${viewport.name}: product search icon must not have a border`);
     assert.equal(productChrome.filterBorderWidth, '0px', `${viewport.name}: product filter icon must not have a border`);
     assert.equal(productChrome.notificationCount, 0, `${viewport.name}: product header must not show notifications`);
+    assert(productChrome.tabTop >= productChrome.headerBottom - 1, `${viewport.name}: product tabs must start below the app header`);
+    assert.equal(productChrome.mainScrollTop, 0, `${viewport.name}: opening the product module must start at its first row`);
+    assert.equal(productChrome.mainOverflowY, 'auto', `${viewport.name}: app content must own vertical scrolling`);
+    if (viewport.name === 'mobile') {
+      assert(productChrome.addButtonBottom <= productChrome.footerTop - 4, 'mobile: add-product action must remain fully above the footer');
+    }
 
     const productListLayout = await page.locator('.hd-product-list').evaluate((list) => {
       const primary = list.querySelector('.hd-product-list__primary');
@@ -96,7 +112,7 @@ try {
     });
 
     assert(productListLayout.itemCount > 0, `${viewport.name}: product list must render rows`);
-    assert.equal(productListLayout.overflowY, 'auto', `${viewport.name}: product list must support its own vertical scroll`);
+    assert.equal(productListLayout.overflowY, viewport.name === 'mobile' ? 'visible' : 'auto', `${viewport.name}: product list must use the correct scroll owner`);
     assert.equal(productListLayout.scrollBehavior, 'smooth', `${viewport.name}: product list scrolling must be smooth`);
     assert(productListLayout.gridTemplateColumns.split(' ').length >= 5, `${viewport.name}: image, name, short name, price and action must share one row`);
     assert(Math.abs(productListLayout.imageCenterY - productListLayout.primaryCenterY) <= 1, `${viewport.name}: image must align on the primary row`);
@@ -128,15 +144,18 @@ try {
         return primaryRect.height >= 50 && nameStyle.display !== 'none' && nameStyle.visibility !== 'hidden';
       }).length;
       const contentVisibility = rows[0] ? getComputedStyle(rows[0]).contentVisibility : '';
-      const scrollable = list.scrollHeight > list.clientHeight;
-      const previousScrollBehavior = list.style.scrollBehavior;
-      list.style.scrollBehavior = 'auto';
-      list.scrollTop = Math.min(240, Math.max(0, list.scrollHeight - list.clientHeight));
-      const scrolled = list.scrollTop > 0;
+      const scrollOwner = window.matchMedia('(max-width: 599px)').matches
+        ? list.closest('.hd-app-content')
+        : list;
+      const scrollable = scrollOwner.scrollHeight > scrollOwner.clientHeight;
+      const previousScrollBehavior = scrollOwner.style.scrollBehavior;
+      scrollOwner.style.scrollBehavior = 'auto';
+      scrollOwner.scrollTop = Math.min(240, Math.max(0, scrollOwner.scrollHeight - scrollOwner.clientHeight));
+      const scrolled = scrollOwner.scrollTop > 0;
 
       clones.forEach(clone => clone.remove());
-      list.scrollTop = 0;
-      list.style.scrollBehavior = previousScrollBehavior;
+      scrollOwner.scrollTop = 0;
+      scrollOwner.style.scrollBehavior = previousScrollBehavior;
 
       return {
         contentVisibility,
@@ -145,6 +164,7 @@ try {
         paintedRows,
         scrollable,
         scrolled,
+        scrollOwnerClass: scrollOwner.className,
       };
     });
 
@@ -152,6 +172,9 @@ try {
     assert.equal(longListLayout.contentVisibility, 'visible', `${viewport.name}: product rows must not use browser paint skipping`);
     assert(longListLayout.minRowHeight >= 50, `${viewport.name}: long product rows must keep their readable height (${JSON.stringify(longListLayout)})`);
     assert.equal(longListLayout.paintedRows, 37, `${viewport.name}: every long-list row must retain visible content`);
+    if (viewport.name === 'mobile') {
+      assert.match(longListLayout.scrollOwnerClass, /hd-app-content/, 'mobile: the app content must own product scrolling');
+    }
     assert(longListLayout.scrollable, `${viewport.name}: a 37-product list must be scrollable`);
     assert(longListLayout.scrolled, `${viewport.name}: a 37-product list must accept vertical scrolling`);
     await page.screenshot({ path: `${outputDir}/${viewport.name}-list.png`, fullPage: false });

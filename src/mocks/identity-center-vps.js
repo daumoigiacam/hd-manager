@@ -19,6 +19,14 @@ export const getBiometricAvailability = async () => ({
 });
 export const authenticateBiometric = async () => ({ success: false, message: 'Biometric login is unavailable in VPS staging.' });
 export const getBiometricAutoLoginProfile = () => null;
+export const getIdentityAccountScope = (identity = {}) => {
+  const identityKey = `${identity?.identityKey || ''}`.trim();
+  if (identityKey) return identityKey;
+  const accountType = `${identity?.accountType || identity?.role || 'account'}`.trim().toLowerCase();
+  const companyId = `${identity?.companyId || ''}`.trim();
+  const accountId = `${identity?.id || identity?.accountId || identity?.customerId || ''}`.trim();
+  return accountId ? `${accountType}:${companyId}:${accountId}` : '';
+};
 export const shouldRequireBiometricUnlock = () => false;
 export const suppressBiometricAutoLoginForSession = () => undefined;
 export const clearBiometricAutoLoginSuppression = () => undefined;

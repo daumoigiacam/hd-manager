@@ -40,9 +40,24 @@ assert.equal(sorted.length, transactions.length, 'sorting must not drop reconcil
 assert.ok(sorted.some(transaction => transaction.id === 'today'), 'today transaction must remain visible');
 
 const appSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'App.jsx'), 'utf8');
+const bankPaymentCenterSource = appSource.slice(
+  appSource.indexOf('function BankPaymentCenterView'),
+  appSource.indexOf('const MAP_TILE_SIZE')
+);
 assert.match(appSource, /sortBankTransactionsByTransactionDate/);
 assert.match(appSource, /sortedTransactions\.map\(transaction =>/);
 assert.doesNotMatch(appSource, /sortedTransactions\.slice\(0,\s*12\)/);
+assert.match(bankPaymentCenterSource, />Trung tâm giao dịch<\/h2>/);
+assert.match(bankPaymentCenterSource, /Danh sách TK/);
+assert.match(bankPaymentCenterSource, /scrollToTransactionList/);
+assert.match(bankPaymentCenterSource, /ref=\{transactionListRef\}/);
+assert.match(bankPaymentCenterSource, /aria-label="Cài đặt tài khoản ngân hàng"/);
+assert.match(bankPaymentCenterSource, /Danh sách TK/);
+assert.match(bankPaymentCenterSource, /TK Khách hàng/);
+assert.match(bankPaymentCenterSource, /bankSettingsView === 'customers'/);
+assert.doesNotMatch(bankPaymentCenterSource, />Tài khoản KH liên kết<\/h3>/);
+assert.doesNotMatch(bankPaymentCenterSource, /Ngân hàng gần nhất/);
+assert.doesNotMatch(bankPaymentCenterSource, /Có quyền đối soát/);
 
 for (let run = 0; run < 100; run += 1) {
   assert.deepEqual(

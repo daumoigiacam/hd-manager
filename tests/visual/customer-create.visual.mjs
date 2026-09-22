@@ -295,6 +295,23 @@ try {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('hd-manager-screen-back', { cancelable: true, detail: { handled: false } })));
     await page.locator('.premium-customer-module:not(.premium-customer-detail)').waitFor({ state: 'visible', timeout: 5000 });
 
+    if (viewport.name === 'mobile') {
+      const customerFabLayout = await page.getByRole('button', { name: 'Mở thao tác khách hàng', exact: true }).evaluate((button) => {
+        const footer = document.querySelector('[data-hd-navigation="bottom"]');
+        const footerLayer = footer?.closest('nav') || footer;
+        const buttonRect = button.getBoundingClientRect();
+        const footerRect = footer?.getBoundingClientRect();
+        return {
+          buttonBottom: buttonRect.bottom,
+          footerTop: footerRect?.top || 0,
+          buttonZIndex: Number(getComputedStyle(button.parentElement).zIndex || 0),
+          footerZIndex: Number(footerLayer && getComputedStyle(footerLayer).zIndex !== 'auto' ? getComputedStyle(footerLayer).zIndex : 0),
+        };
+      });
+      assert(customerFabLayout.buttonBottom <= customerFabLayout.footerTop - 4, 'mobile: add-customer action must remain fully above the footer');
+      assert(customerFabLayout.buttonZIndex > customerFabLayout.footerZIndex, 'mobile: add-customer action must paint above the footer');
+    }
+
     await headerFilterButton.click();
     const customerFilterPanel = page.locator('[data-customer-filter-panel="true"]');
     await customerFilterPanel.waitFor({ state: 'visible', timeout: 10000 });

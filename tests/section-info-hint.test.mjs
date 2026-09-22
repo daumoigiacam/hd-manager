@@ -12,7 +12,6 @@ assert.match(appSource, /setIsOpen\(prev => !prev\)/);
 assert.match(appSource, /className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-transparent/);
 assert.match(appSource, /<span className="text-sm font-black leading-none" aria-hidden="true">i<\/span>/);
 assert.match(appSource, /<SectionInfoHint description=\{subtitle\} label=\{title\} \/>/);
-assert.match(appSource, /<span>Ngân hàng & Thanh toán<\/span>[\s\S]*?<SectionInfoHint/);
 assert.match(appSource, /<span>Ngày lễ trong năm<\/span>[\s\S]*?<SectionInfoHint/);
 assert.match(appSource, /<span>Mô hình tài khoản<\/span>[\s\S]*?<SectionInfoHint/);
 assert.match(appSource, /<span>Doanh thu<\/span>[\s\S]*?<SectionInfoHint/);
@@ -27,6 +26,15 @@ const employeeHeaderSource = appSource.slice(
   appSource.indexOf('function EmployeeView'),
   appSource.indexOf('function SalaryViewLegacy')
 );
+const bankPaymentCenterSource = appSource.slice(
+  appSource.indexOf('function BankPaymentCenterView'),
+  appSource.indexOf('const MAP_TILE_SIZE')
+);
+assert.match(bankPaymentCenterSource, />Trung tâm giao dịch<\/h2>/);
+assert.match(bankPaymentCenterSource, /aria-label="Cài đặt tài khoản ngân hàng"/);
+assert.match(bankPaymentCenterSource, /Danh sách TK/);
+assert.match(bankPaymentCenterSource, /TK Khách hàng/);
+assert.doesNotMatch(bankPaymentCenterSource, /<SectionInfoHint/);
 assert.doesNotMatch(
   holidayCardSource,
   /<h2 className="mt-1 text-base font-black text-slate-900">Cài một lần, bảng lương tự tính<\/h2>[\s\S]*?<p className="mt-1 text-xs leading-relaxed text-slate-500">/,

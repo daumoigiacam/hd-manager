@@ -91,7 +91,7 @@ export const HDPasswordInput = React.forwardRef(function HDPasswordInput(props, 
 });
 
 export const HDSearchInput = React.forwardRef(function HDSearchInput(props, ref) {
-  return <HDInput ref={ref} type="search" inputMode="search" {...props} />;
+  return <HDInput ref={ref} type="search" inputMode="search" data-hd-search-input="true" {...props} />;
 });
 
 export const HDSelect = React.forwardRef(function HDSelect({ label, hint, error, className = '', selectClassName = '', children, ...props }, ref) {

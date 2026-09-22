@@ -8,9 +8,10 @@ import {
   Edit3, LogOut, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star, 
   Package, Trash2, Wallet, Banknote, Target, CalendarDays, Filter, Building, Crown,
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
-  Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, MoreVertical, LayoutGrid, Download, Copy, Mic,
+  Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Camera, Gift,
-  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint
+  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint,
+  Pin, RefreshCw
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -127,6 +128,7 @@ import {
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
+import AssetManagementWorkspace from './features/assets/AssetManagementWorkspace.jsx';
 import DeliveryRedesignWorkspace from './features/delivery/DeliveryRedesignWorkspace.jsx';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
@@ -354,6 +356,7 @@ import {
   getBiometricAutoLoginProfile,
   getBiometricAvailability,
   getIdentityDevice,
+  getIdentityAccountScope,
   identityApproveOwnerReset,
   identityCompleteRecovery,
   identityCompleteSetup,
@@ -12073,6 +12076,8 @@ export default function App() {
       ? 'pending'
       : 'unlocked'
   ));
+  const biometricVerifiedIdentityRef = useRef('');
+  const biometricPromptInFlightRef = useRef(false);
   const [currentDate, setCurrentDate] = useState(getTodayString());
   const [recoverableSyncNotice, setRecoverableSyncNotice] = useState(null);
 
@@ -12215,15 +12220,57 @@ export default function App() {
     });
   }, [persistedSession.currentUser]);
 
+  const biometricIdentityScope = getIdentityAccountScope(currentUser || {});
+
   useEffect(() => {
-    if (biometricUnlockState !== 'pending') return undefined;
+    if (biometricUnlockState !== 'pending' || !shouldRequireBiometricUnlock(currentUser)) return undefined;
     let active = true;
+    biometricPromptInFlightRef.current = true;
     authenticateBiometric('Xác thực để mở HD Manager').then(result => {
+      biometricPromptInFlightRef.current = false;
       if (!active) return;
+      if (result.success) biometricVerifiedIdentityRef.current = biometricIdentityScope;
       setBiometricUnlockState(result.success ? 'unlocked' : 'blocked');
     });
-    return () => { active = false; };
-  }, [biometricUnlockState]);
+    return () => {
+      active = false;
+      biometricPromptInFlightRef.current = false;
+    };
+  }, [biometricIdentityScope, biometricUnlockState, currentUser]);
+
+  useEffect(() => {
+    if (isVpsStagingMode || !firebaseUser || !currentUser || !shouldRequireBiometricUnlock(currentUser)) return;
+    if (biometricVerifiedIdentityRef.current === biometricIdentityScope) return;
+    setBiometricUnlockState('pending');
+  }, [biometricIdentityScope, currentUser, firebaseUser]);
+
+  useEffect(() => {
+    if (isVpsStagingMode || !isNativeRuntime() || !currentUser || !shouldRequireBiometricUnlock(currentUser)) return undefined;
+    let disposed = false;
+    let listenerHandle = null;
+    const listenerPromise = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (disposed || biometricPromptInFlightRef.current) return;
+      if (!isActive) {
+        biometricVerifiedIdentityRef.current = '';
+        setBiometricUnlockState('blocked');
+        return;
+      }
+      if (biometricVerifiedIdentityRef.current !== biometricIdentityScope) {
+        setBiometricUnlockState('pending');
+      }
+    });
+    void listenerPromise.then(handle => {
+      if (disposed) {
+        void handle.remove();
+        return;
+      }
+      listenerHandle = handle;
+    });
+    return () => {
+      disposed = true;
+      void listenerHandle?.remove();
+    };
+  }, [biometricIdentityScope, currentUser]);
 
   useEffect(() => {
     if (!firebaseUser) return;
@@ -15462,6 +15509,8 @@ export default function App() {
       identitySetupPendingRef.current = Boolean(session.requiresSetup);
       const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
       if (!established.success) return established;
+      biometricVerifiedIdentityRef.current = getIdentityAccountScope(established.identity || session.identity || {});
+      setBiometricUnlockState('unlocked');
       recordStartupEvent('auth.biometric_login.completed', {
         durationMs: Date.now() - loginStartedAt,
       });
@@ -16076,6 +16125,7 @@ export default function App() {
 
   const handleLogout = async () => {
     suppressBiometricAutoLoginForSession();
+    biometricVerifiedIdentityRef.current = '';
     setBiometricUnlockState('unlocked');
     if (isVpsStagingMode) {
       try {
@@ -16105,6 +16155,7 @@ export default function App() {
 
   const handleSwitchToCustomerLogin = async () => {
     suppressBiometricAutoLoginForSession();
+    biometricVerifiedIdentityRef.current = '';
     setBiometricUnlockState('unlocked');
     if (isVpsStagingMode) {
       await handleLogout();
@@ -23315,6 +23366,7 @@ function MainAppView({
   const orderHeaderSearchInputRef = useRef(null);
   const productHeaderSearchInputRef = useRef(null);
   const appShellRef = useRef(null);
+  const mainContentRef = useRef(null);
   const [tabHistory, setTabHistory] = useState([]);
   const activeTabRef = useRef(activeTab);
   const rolePriorityAppliedRef = useRef('');
@@ -23951,6 +24003,13 @@ function MainAppView({
   }, [activeTab]);
 
   useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      if (mainContentRef.current) mainContentRef.current.scrollTop = 0;
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!employee?.id || !primaryWorkTab || primaryWorkTab === 'home') return;
     const applyKey = `${employee.id}:${primaryWorkTab}`;
     if (rolePriorityAppliedRef.current === applyKey) return;
@@ -24492,6 +24551,7 @@ function MainAppView({
             <div data-search-zone="true" className="hd-header-search-field flex h-11 min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded-full bg-white px-2.5 text-emerald-700">
               <Search size={16} className="shrink-0 text-emerald-500" />
               <input
+                data-hd-search-input="true"
                 ref={inlineHeaderSearchInputRef}
                 type="search"
                 value={headerSearchKeyword}
@@ -24532,24 +24592,25 @@ function MainAppView({
       );
     }
     return (
-      <HDHeader className="hd-app-header hd-safe-header bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 shadow-sm shrink-0">
+      <HDHeader className={`hd-app-header hd-safe-header bg-gradient-to-r text-white p-4 shadow-sm shrink-0 ${activeTab === 'asset_management' ? 'from-blue-600 to-sky-500' : 'from-emerald-500 to-emerald-600'}`}>
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
             <h1 className={`hd-header-title text-lg font-bold ${activeTab === 'products' ? 'text-white' : ''}`}>
-              {activeTab === 'profile' ? 'Cá nhân' : 
-               activeTab === 'customers' ? 'Khách hàng' : 
+              {activeTab === 'asset_management' ? 'Tài sản' :
+               activeTab === 'profile' ? 'Cá nhân' :
+               activeTab === 'customers' ? 'Khách hàng' :
                activeTab === 'order_requests' ? 'Đơn đặt' :
                activeTab === 'warehouse_import' ? 'Nhập Xuất Tồn' :
-               activeTab === 'warehouse_dispatch' ? 'Phiếu xuất kho' : 
+               activeTab === 'warehouse_dispatch' ? 'Phiếu xuất kho' :
                activeTab === 'delivery_reports' ? 'Giao hàng' :
-               activeTab === 'orders' ? 'Đơn hàng' : 
+               activeTab === 'orders' ? 'Đơn hàng' :
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
                activeTab === 'maps' ? 'Bản đồ' :
-               activeTab === 'report' ? 'Báo cáo' : 
-               activeTab === 'debt' ? 'Sổ nợ' : 
-               activeTab === 'bank_payments' ? 'Ngân hàng & Thanh toán' :
+               activeTab === 'report' ? 'Báo cáo' :
+               activeTab === 'debt' ? 'Sổ nợ' :
+               activeTab === 'bank_payments' ? 'Ngân Hàng' :
                activeTab === 'finance' ? 'Thu chi' : 
                activeTab === 'company_attendance' ? 'Chấm công' : 
                activeTab === 'payroll' ? 'Bảng lương' : 
@@ -24846,7 +24907,7 @@ function MainAppView({
             note: OnboardingHintService.bankNeedsSetup
           });
         }
-        return <BankPaymentCenterView currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} bankAccounts={bankAccounts} bankTransactions={bankTransactions} setActiveTab={setActiveTab} canManageBankAccounts={canRoleAction('bank_payments', 'manage_customer_bank_accounts') || canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canReconcileBankTransactions={canRoleAction('bank_payments', 'reconcile_bank_transactions') || canRoleAction('finance', 'auto_reconcile_bank')} />;
+        return <BankPaymentCenterView currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} bankAccounts={bankAccounts} bankTransactions={bankTransactions} />;
       case 'finance': return <FinanceView isAccounting={isAccounting} isDriver={isDriver} employee={employee} expenses={expenses} payments={payments} orders={orders} assets={assets} deliveryReports={deliveryReports} onAddExpense={(data) => onAddExpense(employee.id, data)} onEditExpense={onEditExpense} onAddPayment={onAddPayment} onEditPayment={onEditPayment} onToggleArchiveExpense={onToggleArchiveExpense} onToggleArchivePayment={onToggleArchivePayment} onDeleteExpense={onDeleteExpense} onDeletePayment={onDeletePayment} employees={employees} customers={customers} canViewAllTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'view_all_cashflow')} canEditTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_cashflow')} canEditIncomeVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_income_voucher')} canEditExpenseVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_expense_voucher')} canDeleteTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_cashflow')} canDeleteIncomeVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_income_voucher')} canDeleteExpenseVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_expense_voucher')} canCreateIncome={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'create_income')} canCreateExpense={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'create_expense')} canApproveCashflow={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'approve_driver_cashflow')} searchKeyword={financeSearchKeyword} setSearchKeyword={setFinanceSearchKeyword} showSearchBox={financeSearchOpen} setShowSearchBox={setFinanceSearchOpen} showFilterPanel={financeFilterOpen} setShowFilterPanel={setFinanceFilterOpen} quickActionIntent={activeTab === 'finance' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'payroll':
         if (!hasWorkflowEmployeeData) {
@@ -25256,7 +25317,7 @@ function MainAppView({
       />
       {renderHeader()}
       
-      <main className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
+      <main ref={mainContentRef} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
         <AppSectionErrorBoundary
           name={`staff_${activeTab}`}
@@ -25392,20 +25453,15 @@ function MainAppView({
       {showNotificationCenter && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="hd-dialog-surface w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl overflow-hidden animate-in slide-in-from-bottom-10">
-            <div className="hd-dialog-header flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
-              <div>
-                <p className="text-xs font-bold uppercase mb-1">Thông báo</p>
-                <h3 className="font-bold text-lg">Trung tâm thông báo</h3>
+            <div className="hd-dialog-header relative grid grid-cols-3 items-center gap-1 border-b border-slate-100 px-3 py-3 pr-12">
+              <p className="whitespace-nowrap text-center text-[9px] font-black text-slate-900">Thông báo</p>
+              <div className="hd-notification-filter col-span-2 grid grid-cols-2 gap-1" role="tablist" aria-label="Bộ lọc thông báo">
+                <button type="button" role="tab" aria-selected={notificationFilter === 'all'} className={`min-h-9 w-full whitespace-nowrap rounded-lg px-1 text-[9px] font-black transition ${notificationFilter === 'all' ? 'is-active' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`} onClick={() => setNotificationFilter('all')}>Tất cả</button>
+                <button type="button" role="tab" aria-selected={notificationFilter === 'unread'} className={`min-h-9 w-full whitespace-nowrap rounded-lg px-1 text-[9px] font-black transition ${notificationFilter === 'unread' ? 'is-active' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`} onClick={() => setNotificationFilter('unread')}>Chưa đọc</button>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="hd-notification-filter" role="tablist" aria-label="Bộ lọc thông báo">
-                  <button type="button" role="tab" aria-selected={notificationFilter === 'all'} className={notificationFilter === 'all' ? 'is-active' : ''} onClick={() => setNotificationFilter('all')}>Tất cả</button>
-                  <button type="button" role="tab" aria-selected={notificationFilter === 'unread'} className={notificationFilter === 'unread' ? 'is-active' : ''} onClick={() => setNotificationFilter('unread')}>Chưa đọc</button>
-                </div>
-                <button type="button" onClick={handleCloseNotifications} className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200" aria-label="Đóng thông báo">
-                  <X size={16} />
-                </button>
-              </div>
+              <button type="button" onClick={handleCloseNotifications} className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200" aria-label="Đóng thông báo">
+                <X size={15} />
+              </button>
             </div>
             <div className="hd-dialog-body max-h-[70vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
               {notificationDialogItems.length > 0 ? visibleNotificationItemsForDialog.map((item) => {
@@ -25545,6 +25601,7 @@ function MainAppView({
                 <div className="hd-shell-search-input-wrap">
                   <Search size={15} aria-hidden="true" />
                   <input
+                    data-hd-search-input="true"
                     ref={shellSearchInputRef}
                     type="search"
                     value={shellSearchKeyword}
@@ -26648,7 +26705,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
         </div>
         <div className="bg-gray-50 px-3 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
           <Search size={18} className="text-gray-400" />
-          <input type="text" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} placeholder="Tìm theo tên, SĐT, vị trí..." className="flex-1 text-sm bg-transparent outline-none" />
+          <input data-hd-search-input="true" type="text" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} placeholder="Tìm theo tên, SĐT, vị trí..." className="flex-1 text-sm bg-transparent outline-none" />
         </div>
         <select value={positionFilter} onChange={(e) => setPositionFilter(e.target.value)} className="w-full border border-gray-200 rounded-xl p-3 text-sm bg-white outline-none">
           {positions.map(position => <option key={position} value={position}>{position}</option>)}
@@ -31127,7 +31184,7 @@ function ZaloCampaignPanel({
                 <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Chọn khách</p>
                 <button type="button" onClick={() => setPriceForm(prev => ({ ...prev, targetCustomerIds: [...new Set([...(prev.targetCustomerIds || []), ...visiblePriceCustomers.map(customer => customer.id)])] }))} className="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-black text-emerald-700">Chọn hiện tại</button>
               </div>
-              <input value={priceCustomerSearch} onChange={(event) => setPriceCustomerSearch(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="Tìm khách để tick chọn" />
+              <input data-hd-search-input="true" value={priceCustomerSearch} onChange={(event) => setPriceCustomerSearch(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="Tìm khách để tick chọn" />
               <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
                 {visiblePriceCustomers.map(customer => {
                   const checked = priceSelectedCustomerSet.has(customer.id);
@@ -31253,6 +31310,7 @@ function ZaloCampaignPanel({
             </div>
           </div>
           <input
+            data-hd-search-input="true"
             value={customerSearch}
             onChange={(event) => setCustomerSearch(event.target.value)}
             className="mt-2 w-full rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-200"
@@ -33928,6 +33986,19 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
 const getAssetFormDefaults = (asset = {}) => ({
   name: asset.name || '',
   type: asset.type || '',
+  assetCode: asset.assetCode || asset.code || '',
+  group: asset.group || asset.assetGroup || '',
+  brand: asset.brand || asset.vehicleBrand || '',
+  model: asset.model || asset.vehicleModel || '',
+  manufactureYear: asset.manufactureYear || asset.year || asset.productionYear || '',
+  purchaseDate: asset.purchaseDate || asset.acquisitionDate || '',
+  inUseDate: asset.inUseDate || '',
+  unitName: asset.unitName || asset.usingUnit || asset.department || '',
+  currentLocation: asset.currentLocation || asset.location || '',
+  condition: asset.condition || '',
+  operatingHours: asset.operatingHours || asset.currentOperatingHours || asset.runningHours || '',
+  power: asset.power || asset.capacity || '',
+  imageUrl: asset.imageUrl || asset.photoUrl || asset.assetImageUrl || '',
   plateNumber: asset.plateNumber || '',
   vehicleOwner: asset.vehicleOwner || '',
   vehicleBrand: asset.vehicleBrand || '',
@@ -34346,6 +34417,27 @@ function AssetManagementView({
 
   return (
     <div className="space-y-4 animate-in fade-in">
+      <AssetManagementWorkspace
+        employees={employees}
+        assets={assets}
+        assetCostLogs={assetCostLogs}
+        metricsByAsset={metricsByAsset}
+        canViewAssets={canViewAssets}
+        canCreateAsset={canCreateAsset}
+        canEditAsset={canEditAsset}
+        canViewAssetCostLogs={canViewAssetCostLogs}
+        canCreateAssetCostLog={canCreateAssetCostLog}
+        onCreateAsset={() => openAssetForm()}
+        onEditAsset={openAssetForm}
+        onAddCost={(asset) => openCostForm(asset ? { assetId: asset.id, driverId: getPrimaryDeliveryAssignmentId(asset) || '' } : null)}
+        onEditCost={openCostForm}
+        onUpdateAsset={(assetId, patch) => onEditAsset?.(assetId, patch)}
+        formatCurrency={formatCurrency}
+        getEmployeeNames={getAssetEmployeeNames}
+        getCostTypeLabel={getAssetCostTypeLabel}
+      />
+      {false && (
+        <>
       <div className="grid grid-cols-3 gap-2">
         {sectionItems.map(item => (
           <button
@@ -34519,6 +34611,8 @@ function AssetManagementView({
           )}
         </div>
       )}
+        </>
+      )}
 
       {showAssetForm && (
         <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/40 px-3 pt-3 pb-[calc(96px+env(safe-area-inset-bottom))] sm:items-center sm:p-4" onClick={closeAssetForm}>
@@ -34532,22 +34626,57 @@ function AssetManagementView({
             </div>
             <div className="rounded-3xl border border-gray-100 bg-white p-3 space-y-3">
               <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Thông tin chính</p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
-                  Tên xe
-                  <input required value={assetForm.name} onChange={e => setAssetForm(prev => ({ ...prev, name: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Hino 3.5 tấn" />
+                  Tên tài sản
+                  <input required value={assetForm.name} onChange={e => setAssetForm(prev => ({ ...prev, name: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Xe tải, máy phát điện" />
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
-                  Biển số
-                  <input value={assetForm.plateNumber} onChange={e => setAssetForm(prev => ({ ...prev, plateNumber: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 88C-18771" />
+                  Loại tài sản
+                  <select value={assetForm.type} onChange={e => setAssetForm(prev => ({ ...prev, type: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100">
+                    <option value="">Chọn loại tài sản</option>
+                    <option value="Xe tải">Xe tải</option>
+                    <option value="Xe con">Xe con</option>
+                    <option value="Xe máy">Xe máy</option>
+                    <option value="Máy móc">Máy móc</option>
+                    <option value="Máy phát điện">Máy phát điện</option>
+                    <option value="Thiết bị">Thiết bị</option>
+                    <option value="Máy tính">Máy tính</option>
+                    <option value="Điện thoại">Điện thoại</option>
+                    <option value="Nội thất">Nội thất</option>
+                    <option value="Công cụ">Công cụ</option>
+                    <option value="Văn phòng">Văn phòng</option>
+                    <option value="Tài sản khác">Tài sản khác</option>
+                  </select>
                 </label>
                 <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
-                  Tình trạng xe
+                  Mã tài sản / biển số
+                  <input value={assetForm.assetCode || assetForm.plateNumber} onChange={e => setAssetForm(prev => ({ ...prev, assetCode: e.target.value, plateNumber: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: TS-001 hoặc 88C-187.71" />
+                </label>
+                <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
+                  Trạng thái
                   <select value={assetForm.status} onChange={e => setAssetForm(prev => ({ ...prev, status: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 bg-white p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100">
                     <option value="active">Đang hoạt động</option>
-                    <option value="maintenance">Bảo dưỡng</option>
-                    <option value="inactive">Ngừng sử dụng</option>
+                    <option value="maintenance">Đang bảo trì</option>
+                    <option value="inactive">Tạm ngưng</option>
+                    <option value="disposed">Thanh lý</option>
                   </select>
+                </label>
+                <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
+                  Thương hiệu / model
+                  <input value={assetForm.brand || assetForm.vehicleBrand} onChange={e => setAssetForm(prev => ({ ...prev, brand: e.target.value, vehicleBrand: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Hino, Honda, Dell" />
+                </label>
+                <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
+                  Năm sản xuất
+                  <input inputMode="numeric" value={assetForm.manufactureYear} onChange={e => setAssetForm(prev => ({ ...prev, manufactureYear: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: 2024" />
+                </label>
+                <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
+                  Đơn vị sử dụng
+                  <input value={assetForm.unitName} onChange={e => setAssetForm(prev => ({ ...prev, unitName: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Đội vận chuyển" />
+                </label>
+                <label className="space-y-1 text-[11px] font-black uppercase tracking-wide text-gray-500">
+                  Vị trí hiện tại
+                  <input value={assetForm.currentLocation} onChange={e => setAssetForm(prev => ({ ...prev, currentLocation: e.target.value }))} className="mt-1 w-full rounded-2xl border border-gray-200 p-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="VD: Bình Dương" />
                 </label>
               </div>
             </div>
@@ -34707,11 +34836,7 @@ function BankPaymentCenterView({
   orders = [],
   payments = [],
   bankAccounts = [],
-  bankTransactions = [],
-  setActiveTab,
-  canManageBankAccounts = false,
-  canManagePaymentQr = false,
-  canReconcileBankTransactions = false
+  bankTransactions = []
 }) {
   const toLocalDateKey = (value) => {
     if (!value) return '';
@@ -34726,13 +34851,51 @@ function BankPaymentCenterView({
   const safePayments = useMemo(() => (Array.isArray(payments) ? payments.filter(Boolean) : []), [payments]);
   const safeBankAccounts = useMemo(() => (Array.isArray(bankAccounts) ? bankAccounts.filter(Boolean) : []), [bankAccounts]);
   const safeBankTransactions = useMemo(() => (Array.isArray(bankTransactions) ? bankTransactions.filter(Boolean) : []), [bankTransactions]);
+  const [isBankSettingsOpen, setIsBankSettingsOpen] = useState(false);
+  const [bankSettingsView, setBankSettingsView] = useState(null);
+  const transactionListRef = useRef(null);
 
   const customerMap = useMemo(() => new Map(safeCustomers.map(customer => [customer.id, customer])), [safeCustomers]);
   const orderMap = useMemo(() => new Map(safeOrders.map(order => [order.id, order])), [safeOrders]);
   const transferProfile = useMemo(() => getInvoiceTransferProfile(currentCompany || {}), [currentCompany]);
   const transferAccountNumber = transferProfile.sepayReceivingAccountNumber || transferProfile.accountNumber;
-  const hasCompanyBank = Boolean(transferProfile.bankId && transferAccountNumber && transferProfile.accountName);
   const todayKey = getTodayString();
+
+  const receivingAccounts = useMemo(() => {
+    const configuredAccountKeys = ['receivingAccounts', 'bankReceivingAccounts', 'paymentAccounts', 'companyBankAccounts'];
+    const configuredAccounts = configuredAccountKeys.flatMap(key => (
+      Array.isArray(currentCompany?.[key]) ? currentCompany[key] : []
+    ));
+    const candidates = [
+      {
+        bankId: transferProfile.bankId,
+        bankName: transferProfile.bankName,
+        accountNumber: transferAccountNumber,
+        accountName: transferProfile.accountName
+      },
+      ...configuredAccounts
+    ];
+    const seenBanks = new Set();
+
+    return candidates.reduce((items, account = {}) => {
+      const bankId = `${account.bankId || account.bankCode || account.code || ''}`.trim().toUpperCase();
+      const bankName = `${account.bankName || account.name || getBankOptionLabel(bankId) || ''}`.trim();
+      const accountNumber = `${account.sepayReceivingAccountNumber || account.accountNumber || account.bankAccountNumber || ''}`
+        .replace(/[^\dA-Za-z]/g, '')
+        .trim()
+        .toUpperCase();
+      const bankKey = bankId || bankName.toLowerCase();
+      if (!bankKey || !accountNumber || seenBanks.has(bankKey)) return items;
+      seenBanks.add(bankKey);
+      items.push({
+        id: account.id || `${bankKey}-${accountNumber}`,
+        bankName: bankName || bankId,
+        accountNumber,
+        accountName: `${account.accountName || account.bankAccountName || ''}`.trim()
+      });
+      return items;
+    }, []);
+  }, [currentCompany, transferAccountNumber, transferProfile]);
 
   const linkedAccounts = useMemo(() => (
     safeBankAccounts.filter(account => !account.isArchived)
@@ -34810,122 +34973,132 @@ function BankPaymentCenterView({
     };
   }, [bankPaymentRows, linkedAccounts, sortedTransactions, todayKey]);
 
-  const openSettings = () => setActiveTab?.('settings');
+  const toggleBankSettings = () => {
+    setIsBankSettingsOpen(previous => {
+      if (previous) setBankSettingsView(null);
+      return !previous;
+    });
+  };
+  const scrollToTransactionList = () => {
+    transactionListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
     <div className="space-y-4 pb-[calc(96px+env(safe-area-inset-bottom))] animate-in fade-in">
-      <section className="rounded-[1.75rem] border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-emerald-50 p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-sky-700">Trung tâm thanh toán</p>
-            <h2 className="mt-2 flex items-center gap-1 text-2xl font-black text-slate-900">
-              <span>Ngân hàng & Thanh toán</span>
-              <SectionInfoHint
-                description="Theo dõi QR, giao dịch chuyển khoản và đối soát công nợ trong một màn hình."
-                label="Ngân hàng & Thanh toán"
-              />
-            </h2>
-          </div>
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-sky-600 shadow-sm">
-            <CreditCard size={24} />
-          </div>
-        </div>
-
-        <div className="mt-5 rounded-2xl border border-white/80 bg-white/90 p-4 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Tài khoản công ty nhận tiền</p>
-              <p className="mt-1 text-lg font-black text-slate-900">{hasCompanyBank ? `${transferProfile.bankName || getBankOptionLabel(transferProfile.bankId)} • ${transferAccountNumber}` : 'Chưa cấu hình tài khoản nhận tiền'}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">{hasCompanyBank ? transferProfile.accountName : 'Cần cài tài khoản để QR/hóa đơn dùng đúng số nhận tiền.'}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`rounded-full border px-3 py-1 text-xs font-black ${hasCompanyBank ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-amber-100 bg-amber-50 text-amber-700'}`}>
-                {hasCompanyBank ? 'Đã cấu hình' : 'Cần cài đặt'}
-              </span>
-              {(canManagePaymentQr || canManageBankAccounts) && (
-                <button type="button" onClick={openSettings} className="rounded-full bg-slate-900 px-3 py-2 text-xs font-black text-white shadow-sm">
-                  Cài đặt
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid grid-cols-2 gap-3">
-        {[
-          { label: 'Khách liên kết', value: stats.linkedAccountCount, suffix: 'TK', icon: Wallet, tone: 'emerald' },
-          { label: 'Chờ xử lý', value: stats.pendingTransactionCount, suffix: 'GD', icon: AlertCircle, tone: 'amber' },
-          { label: 'Đã đối soát', value: stats.matchedTransactionCount, suffix: 'GD', icon: CheckCircle, tone: 'sky' },
-          { label: 'Thu QR hôm nay', value: `${formatCurrency(stats.todayQrAmount)} đ`, suffix: '', icon: Banknote, tone: 'rose' }
-        ].map(item => {
-          const Icon = item.icon;
-          const toneClass = item.tone === 'emerald'
-            ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-            : item.tone === 'amber'
-              ? 'bg-amber-50 text-amber-700 border-amber-100'
-              : item.tone === 'rose'
-                ? 'bg-rose-50 text-rose-700 border-rose-100'
-                : 'bg-sky-50 text-sky-700 border-sky-100';
-          return (
-            <div key={item.label} className={`rounded-2xl border p-4 shadow-sm ${toneClass}`}>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] font-black uppercase tracking-[0.14em] opacity-80">{item.label}</p>
-                <Icon size={18} />
-              </div>
-              <p className="mt-3 text-2xl font-black text-slate-900">{item.value}</p>
-              {item.suffix && <p className="mt-1 text-xs font-bold opacity-70">{item.suffix}</p>}
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="rounded-[1.5rem] border border-slate-100 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Tài khoản khách</p>
-            <h3 className="text-lg font-black text-slate-900">Đã liên kết ngân hàng</h3>
-          </div>
-          {canManageBankAccounts && (
-            <button type="button" onClick={openSettings} className="rounded-full bg-sky-50 px-3 py-2 text-xs font-black text-sky-700">
-              Quản lý
+      <section className="rounded-[1.5rem] border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-emerald-50 p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-lg font-black text-slate-900">Trung tâm giao dịch</h2>
+          <div className="relative">
+            <button
+              type="button"
+              aria-label="Cài đặt tài khoản ngân hàng"
+              aria-controls="bank-settings-menu"
+              aria-expanded={isBankSettingsOpen}
+              title="Cài đặt"
+              onClick={toggleBankSettings}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sky-700 shadow-sm transition hover:bg-sky-50"
+            >
+              <Settings size={19} aria-hidden="true" />
             </button>
-          )}
-        </div>
-        <div className="mt-4 space-y-3">
-          {linkedAccounts.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">
-              Chưa có tài khoản khách hàng nào liên kết ngân hàng.
-            </div>
-          ) : linkedAccounts.slice(0, 8).map(account => {
-            const customer = customerMap.get(account.customerId);
-            const status = accountStatusMeta(account);
-            const customerName = account.customerName || getCustomerDisplayName(customer) || 'Khách hàng';
-            return (
-              <div key={account.id || `${account.customerId}-${account.accountNumber}`} className="rounded-2xl border border-slate-100 bg-slate-50/60 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-slate-900">{customerName}</p>
-                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">{account.bankName || getBankOptionLabel(account.bankCode || account.bankId)} • {account.accountNumber || account.bankAccountNumber || 'Chưa có số TK'}</p>
-                    <p className="mt-1 truncate text-xs text-slate-400">{account.accountName || account.bankAccountName || 'Chưa có tên chủ TK'}</p>
-                  </div>
-                  <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${status.className}`}>{status.label}</span>
-                </div>
+
+            {isBankSettingsOpen && (
+              <div id="bank-settings-menu" className="absolute right-0 top-[calc(100%+0.5rem)] z-20 w-56 rounded-2xl border border-slate-100 bg-white p-2 shadow-xl">
+                <p className="px-3 pb-1 pt-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Cài đặt</p>
+                {[
+                  { id: 'receiving', label: 'Danh sách TK', icon: CreditCard },
+                  { id: 'customers', label: 'TK Khách hàng', icon: Users }
+                ].map(item => {
+                  const Icon = item.icon;
+                  const isSelected = bankSettingsView === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => setBankSettingsView(item.id)}
+                      className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-black transition ${
+                        isSelected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Icon size={18} aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-            );
-          })}
+            )}
+          </div>
         </div>
+
+        {bankSettingsView === 'receiving' && (
+          <div className="mt-4 border-t border-sky-100 pt-4">
+            <h3 className="text-sm font-black text-slate-900">Danh sách TK</h3>
+            <div className="mt-2 space-y-1.5">
+              {receivingAccounts.length === 0 ? (
+                <p className="rounded-xl bg-white/80 px-3 py-2.5 text-sm font-semibold text-slate-500">Chưa có tài khoản nhận tiền.</p>
+              ) : receivingAccounts.map(account => (
+                <div key={account.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-white/80 px-3 py-2.5">
+                  <p className="truncate text-sm font-black text-slate-800">{account.bankName}</p>
+                  <p className="text-sm font-black tabular-nums text-slate-900">{account.accountNumber}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {bankSettingsView === 'customers' && (
+          <div className="mt-4 border-t border-sky-100 pt-4">
+            <h3 className="text-sm font-black text-slate-900">TK Khách hàng</h3>
+            <div className="mt-2 space-y-2">
+              {linkedAccounts.length === 0 ? (
+                <div className="rounded-xl bg-white/80 px-3 py-3 text-sm font-semibold text-slate-500">
+                  Chưa có tài khoản khách hàng liên kết ngân hàng.
+                </div>
+              ) : linkedAccounts.map(account => {
+                const customer = customerMap.get(account.customerId);
+                const status = accountStatusMeta(account);
+                const customerName = account.customerName || getCustomerDisplayName(customer) || 'Khách hàng';
+                return (
+                  <div key={account.id || `${account.customerId}-${account.accountNumber}`} className="rounded-xl bg-white/80 px-3 py-2.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-black text-slate-900">{customerName}</p>
+                        <p className="mt-1 truncate text-xs font-semibold text-slate-500">{account.bankName || getBankOptionLabel(account.bankCode || account.bankId)} • {account.accountNumber || account.bankAccountNumber || 'Chưa có số TK'}</p>
+                        <p className="mt-1 truncate text-xs text-slate-400">{account.accountName || account.bankAccountName || 'Chưa có tên chủ TK'}</p>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${status.className}`}>{status.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </section>
 
-      <section className="rounded-[1.5rem] border border-slate-100 bg-white p-4 shadow-sm">
+      <section className="grid grid-cols-2 gap-2">
+        {[
+          { label: 'Đã đối soát', value: stats.matchedTransactionCount, suffix: 'GD', toneClass: 'border-sky-100 bg-sky-50 text-sky-700' },
+          { label: 'Thu QR hôm nay', value: `${formatCurrency(stats.todayQrAmount)} đ`, suffix: '', toneClass: 'border-rose-100 bg-rose-50 text-rose-700' }
+        ].map(item => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={scrollToTransactionList}
+            className={`min-h-[4.75rem] rounded-xl border px-2.5 py-2 text-center transition hover:brightness-95 ${item.toneClass}`}
+          >
+            <p className="text-[10px] font-black uppercase tracking-[0.1em] opacity-80">{item.label}</p>
+            <p className="mt-1 flex items-baseline justify-center gap-1 text-lg font-black tabular-nums text-slate-900">
+              <span>{item.value}</span>
+              {item.suffix && <span className="text-xs font-bold opacity-70">{item.suffix}</span>}
+            </p>
+          </button>
+        ))}
+      </section>
+
+      <section ref={transactionListRef} className="rounded-[1.5rem] border border-slate-100 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Giao dịch</p>
-            <h3 className="text-lg font-black text-slate-900">Ngân hàng gần nhất</h3>
-          </div>
-          {canReconcileBankTransactions && (
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Có quyền đối soát</span>
-          )}
+          <h3 className="text-lg font-black text-slate-900">Giao dịch</h3>
         </div>
         <div className="mt-4 space-y-3">
           {sortedTransactions.length === 0 ? (
@@ -41577,6 +41750,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
             <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
               <Search size={16} className="shrink-0 text-gray-400" />
               <input
+                data-hd-search-input="true"
                 value={batchCustomerSearch}
                 onChange={(event) => setBatchCustomerSearch(event.target.value)}
                 className="w-full bg-transparent text-sm outline-none"
@@ -41695,7 +41869,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
         </div>
         <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
           <Search size={16} className="text-gray-400" />
-          <input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm sản phẩm để chọn báo giá" />
+          <input data-hd-search-input="true" value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm sản phẩm để chọn báo giá" />
         </div>
         <div className="flex gap-2 overflow-x-auto pb-1">
           {filteredProducts.map(product => {
@@ -41730,7 +41904,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
         </div>
         <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
           <Search size={16} className="text-gray-400" />
-          <input value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm khách trong danh sách nhận" />
+          <input data-hd-search-input="true" value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm khách trong danh sách nhận" />
         </div>
         <div className="max-h-44 overflow-y-auto space-y-2 pr-1">
           {filteredCustomers.slice(0, 80).map(customer => {
@@ -44367,6 +44541,7 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
           <div data-search-zone="true" className="mt-3 bg-white/20 rounded-full flex items-center px-4 py-2 text-white shadow-inner">
             <Search size={18} className="opacity-80" />
             <input
+              data-hd-search-input="true"
               type="text"
               value={dashboardSearchKeyword}
               onChange={(e) => setDashboardSearchKeyword(e.target.value)}
@@ -47564,6 +47739,8 @@ function MessageCenterView({
   const [chatSearchKeyword, setChatSearchKeyword] = useState('');
   const deferredChatSearchKeyword = useDeferredValue(chatSearchKeyword);
   const [showChatSearch, setShowChatSearch] = useState(false);
+  const [activeChatTab, setActiveChatTab] = useState('priority');
+  const [isRefreshingChats, setIsRefreshingChats] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('');
@@ -47590,6 +47767,8 @@ function MessageCenterView({
   const codeScannerStreamRef = useRef(null);
   const codeScannerZxingControlsRef = useRef(null);
   const codeScannerTimerRef = useRef(null);
+  const chatListRefreshTimerRef = useRef(null);
+  const chatListTouchStartRef = useRef(null);
   useDismissSearchOnOutsideClick(
     showChatSearch || showAttachMenu || showMessageFilterMenu || showCreateConversationPanel,
     () => {
@@ -48153,11 +48332,25 @@ function MessageCenterView({
     if (!listKeyword) return true;
     return normalizeKeyword(getConversationSearchText(item)).includes(listKeyword);
   }).sort(sortConversationsByPriority);
+  const isPinnedConversation = (conversation = {}) => Boolean(
+    conversation.isPinned
+    || conversation.pinned
+    || conversation.isPinnedChat
+    || conversation.metadata?.isPinned
+  );
+  const isPriorityConversation = (conversation = {}) => (
+    isPinnedConversation(conversation) || getConversationUnreadCount(conversation) > 0
+  );
+  const priorityConversations = filteredConversations.filter(isPriorityConversation);
+  const otherConversations = filteredConversations.filter((conversation) => !isPriorityConversation(conversation));
+  const tabConversations = activeChatTab === 'priority'
+    ? (priorityConversations.length > 0 ? priorityConversations : filteredConversations)
+    : otherConversations;
   const visibleFilteredConversations = useChunkedList(
-    filteredConversations,
+    tabConversations,
     60,
     80,
-    `${safeActiveType}|${messageFilter}|${listKeyword}`
+    `${safeActiveType}|${activeChatTab}|${messageFilter}|${listKeyword}`
   );
   const unreadFilteredConversations = filteredConversations.filter((conversation) => getConversationUnreadCount(conversation) > 0);
   const canMarkFilteredUnreadAsRead = messageFilter === 'unread' && unreadFilteredConversations.length > 0;
@@ -48172,6 +48365,28 @@ function MessageCenterView({
       return next;
     });
     setShowMessageFilterMenu(false);
+  };
+  const handleRefreshChats = () => {
+    if (isRefreshingChats) return;
+    setIsRefreshingChats(true);
+    if (chatListRefreshTimerRef.current) window.clearTimeout(chatListRefreshTimerRef.current);
+    chatListRefreshTimerRef.current = window.setTimeout(() => {
+      setIsRefreshingChats(false);
+      setStatus('Danh sách tin nhắn đã được làm mới.');
+      chatListRefreshTimerRef.current = null;
+    }, 450);
+  };
+  const handleChatListTouchStart = (event) => {
+    if (event.currentTarget.scrollTop <= 0) {
+      chatListTouchStartRef.current = event.touches?.[0]?.clientY ?? null;
+    }
+  };
+  const handleChatListTouchEnd = (event) => {
+    const startY = chatListTouchStartRef.current;
+    const endY = event.changedTouches?.[0]?.clientY;
+    chatListTouchStartRef.current = null;
+    if (startY === null || startY === undefined || endY === undefined) return;
+    if (endY - startY > 56) handleRefreshChats();
   };
   const baseMessages = selectedConversation?.messages || [];
   const sentMessages = selectedConversation ? (localReplies[selectedConversation.id] || []) : [];
@@ -48532,6 +48747,10 @@ function MessageCenterView({
       setDraft('');
     }
   }, [selectedConversationId]);
+
+  useEffect(() => () => {
+    if (chatListRefreshTimerRef.current) window.clearTimeout(chatListRefreshTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -49056,7 +49275,7 @@ function MessageCenterView({
   };
 
   const renderAvatar = (conversation, large = false) => {
-    const sizeClass = large ? 'w-12 h-12 text-base' : 'w-11 h-11 text-sm';
+    const sizeClass = large ? 'h-[50px] w-[50px] text-base' : 'h-11 w-11 text-sm';
     if (conversation?.avatarUrl) {
       return <img src={conversation.avatarUrl} alt="" className={`${sizeClass} rounded-full object-cover bg-white/80`} />;
     }
@@ -49115,6 +49334,7 @@ function MessageCenterView({
             <div data-search-zone="true" className="mt-2 flex items-center gap-2 rounded-2xl bg-white/95 px-3 py-2 text-gray-800 shadow-sm">
               <Search size={18} className="text-gray-400" />
               <input
+                data-hd-search-input="true"
                 autoFocus
                 value={chatSearchKeyword}
                 onChange={(event) => setChatSearchKeyword(event.target.value)}
@@ -49278,19 +49498,7 @@ function MessageCenterView({
           <button type="button" onClick={onGoBack} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/95 transition hover:bg-white/15">
             <ChevronLeft size={18} />
           </button>
-          {safeActiveType !== 'zalo_ai' ? (
-            <div data-search-zone="true" className="min-w-0 flex-1 rounded-xl bg-white/15 px-2 py-0.5 ring-1 ring-white/20 backdrop-blur flex items-center gap-1.5">
-              <Search size={16} className="shrink-0 text-white/90" />
-              <input
-                value={searchKeyword}
-                onChange={(event) => setSearchKeyword(event.target.value)}
-                placeholder="Tìm kiếm"
-                className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-white outline-none placeholder:text-white/85"
-              />
-            </div>
-          ) : (
-            <h1 className="min-w-0 flex-1 truncate text-lg font-black">Hộp thư</h1>
-          )}
+          <h1 className="min-w-0 flex-1 truncate text-base font-black">{safeActiveType === 'zalo_ai' ? 'Hộp thư' : 'Tin nhắn'}</h1>
           <button
             type="button"
             onClick={openHeaderCodeScanner}
@@ -49352,44 +49560,70 @@ function MessageCenterView({
       </div>
 
       {safeActiveType !== 'zalo_ai' && (
-        <div className="relative border-b border-slate-100 bg-white px-3 py-1.5">
-          <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-              {messageFilterOptions.filter((item) => ['all', 'unread', 'customer'].includes(item.id) || item.id === messageFilter).map((item) => {
-                const active = item.id === messageFilter;
+        <div className="relative border-b border-slate-100 bg-white px-4 pt-3">
+          <div data-search-zone="true" className="flex h-11 items-center gap-2 rounded-full bg-[#F3F4F6] px-3.5">
+            <Search size={18} className="shrink-0 text-slate-400" />
+            <input
+              data-hd-search-input="true"
+              value={searchKeyword}
+              onChange={(event) => setSearchKeyword(event.target.value)}
+              placeholder="Tìm kiếm tin nhắn"
+              className="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-800 outline-none placeholder:text-slate-400"
+            />
+            {searchKeyword && (
+              <button type="button" onClick={() => setSearchKeyword('')} className="flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-white" aria-label="Xóa tìm kiếm">
+                <X size={15} />
+              </button>
+            )}
+            <button type="button" onClick={handleRefreshChats} disabled={isRefreshingChats} className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-sky-600 disabled:opacity-60" aria-label="Làm mới tin nhắn" data-chat-list-refresh="true">
+              <RefreshCw size={16} className={isRefreshingChats ? 'animate-spin' : ''} />
+            </button>
+          </div>
+          <div className="mt-2 flex min-h-11 items-center border-b border-slate-100">
+            <div className="grid flex-1 grid-cols-2 self-stretch">
+              {[
+                { id: 'priority', label: 'Ưu tiên' },
+                { id: 'other', label: 'Khác' }
+              ].map((tab) => {
+                const active = activeChatTab === tab.id;
                 return (
                   <button
-                    key={item.id}
+                    key={tab.id}
                     type="button"
-                    onClick={() => setMessageFilter(item.id)}
-                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-black transition ${active ? 'bg-sky-600 text-white shadow-sm shadow-sky-100' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
+                    onClick={() => setActiveChatTab(tab.id)}
+                    className={`relative flex items-center justify-center gap-1.5 text-[15px] font-semibold transition ${active ? 'text-sky-600' : 'text-slate-500 hover:text-slate-800'}`}
+                    aria-selected={active}
+                    role="tab"
                   >
-                    {item.shortLabel}
+                    <span>{tab.label}</span>
+                    {active && <span className="absolute inset-x-7 bottom-0 h-[3px] rounded-full bg-[#3B82F6]" />}
                   </button>
                 );
               })}
             </div>
-            {canMarkFilteredUnreadAsRead && (
+            <div className="flex items-center gap-1 pl-2">
+              {canMarkFilteredUnreadAsRead && (
+                <button
+                  type="button"
+                  onClick={handleMarkFilteredUnreadAsRead}
+                  className="hidden rounded-xl bg-red-50 px-2 py-1 text-[11px] font-black text-red-600 transition hover:bg-red-100 sm:inline-flex"
+                >
+                  Đọc hết {unreadFilteredConversations.length}
+                </button>
+              )}
               <button
+                data-search-zone="true"
                 type="button"
-                onClick={handleMarkFilteredUnreadAsRead}
-                className="shrink-0 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-600 transition hover:bg-red-100"
+                onClick={() => {
+                  setShowCreateConversationPanel(false);
+                  setShowMessageFilterMenu((prev) => !prev);
+                }}
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${messageFilter === 'all' ? 'text-slate-400 hover:bg-slate-50' : 'bg-sky-50 text-sky-700'}`}
+                aria-label="Lọc tin nhắn"
               >
-                Đọc hết {unreadFilteredConversations.length}
+                <Filter size={18} />
               </button>
-            )}
-            <button
-              data-search-zone="true"
-              type="button"
-              onClick={() => {
-                setShowCreateConversationPanel(false);
-                setShowMessageFilterMenu((prev) => !prev);
-              }}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition ${messageFilter === 'all' ? 'bg-slate-50 text-slate-600' : 'bg-sky-50 text-sky-700'}`}
-              aria-label="Lọc tin nhắn"
-            >
-              <Filter size={20} />
-            </button>
+            </div>
           </div>
           {showMessageFilterMenu && (
             <div data-search-zone="true" className="absolute right-3 top-12 z-[70] w-64 overflow-hidden rounded-2xl bg-white py-2 text-slate-900 shadow-2xl ring-1 ring-slate-200">
@@ -49607,6 +49841,7 @@ function MessageCenterView({
               <div className="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 flex items-center gap-2">
                 <Search size={18} className="text-slate-400" />
                 <input
+                  data-hd-search-input="true"
                   value={groupSearchKeyword}
                   onChange={(event) => setGroupSearchKeyword(event.target.value)}
                   placeholder="Tìm nhân sự"
@@ -49674,44 +49909,68 @@ function MessageCenterView({
           />
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto px-4 py-3 pb-24">
+      <div
+        className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 pb-24"
+        data-chat-list="true"
+        onTouchStart={handleChatListTouchStart}
+        onTouchEnd={handleChatListTouchEnd}
+      >
+        {isRefreshingChats && (
+          <div className="mb-3 flex items-center justify-center gap-2 text-xs font-semibold text-sky-600" data-chat-refresh-indicator="true">
+            <RefreshCw size={14} className="animate-spin" />
+            <span>Đang làm mới tin nhắn...</span>
+          </div>
+        )}
+        {visibleFilteredConversations.length === 0 && !listKeyword && messageFilter === 'all' && activeChatTab === 'priority' && filteredConversations.length > 0 && (
+          <div className="mb-3 rounded-xl bg-slate-50 px-3 py-2 text-center text-xs font-medium text-slate-500">
+            Chưa có tin ưu tiên, đang hiển thị các cuộc trò chuyện gần đây.
+          </div>
+        )}
         {visibleFilteredConversations.map((conversation) => {
           const unreadCount = getConversationUnreadCount(conversation);
           const isUnread = unreadCount > 0;
-           const displayName = getConversationDisplayName(conversation);
-           const previewText = getConversationPreview(conversation, displayName);
-           const listTime = formatConversationListTime(getConversationActivityAt(conversation));
-           const typeLabel = getConversationTypeLabel(conversation, displayName);
-           const previewLine = previewText || typeLabel || 'Tin nhắn mới';
-           return (
-             <button
-               key={conversation.id}
-               type="button"
-               onClick={() => handleSelectConversation(conversation)}
-               className={`hd-render-contained mb-1.5 flex w-full items-center gap-2 rounded-2xl border px-2.5 py-2 text-left transition ${isUnread ? 'border-emerald-100 bg-white shadow-sm shadow-emerald-50' : 'border-transparent bg-white hover:bg-gray-50'}`}
-             >
-               {renderAvatar(conversation)}
-               <div className="min-w-0 flex-1">
-                 <p className={`truncate text-sm leading-5 text-gray-900 ${isUnread ? 'font-semibold' : 'font-normal'}`}>
-                   <span className={isUnread ? 'font-black' : 'font-bold'}>{displayName}</span>
-                   <span className="mx-1 text-gray-300">-</span>
-                   <span className={isUnread ? 'font-semibold' : 'font-normal'}>{previewLine}</span>
-                 </p>
-                 <p className={`mt-0.5 truncate text-[11px] leading-4 ${isUnread ? 'font-semibold text-gray-500' : 'font-normal text-gray-400'}`}>
-                   {listTime || 'Mới cập nhật'}
-                 </p>
-               </div>
-               {isUnread && (
-                 <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-black text-white">
-                   {unreadCount > 9 ? '9+' : unreadCount}
-                 </span>
-               )}
-             </button>
+          const displayName = getConversationDisplayName(conversation);
+          const previewText = getConversationPreview(conversation, displayName);
+          const listTime = formatConversationListTime(getConversationActivityAt(conversation));
+          const typeLabel = getConversationTypeLabel(conversation, displayName);
+          const previewLine = previewText || typeLabel || 'Tin nhắn mới';
+          const pinned = isPinnedConversation(conversation);
+          return (
+            <button
+              key={conversation.id}
+              type="button"
+              onClick={() => handleSelectConversation(conversation)}
+              className={`hd-render-contained mb-3 flex min-h-[74px] w-full items-center gap-3 border-b border-slate-100 pb-3 text-left transition hover:bg-slate-50/80 ${isUnread ? 'bg-sky-50/25' : 'bg-white'}`}
+              data-chat-item="true"
+            >
+              <div className="h-[50px] w-[50px] shrink-0">
+                {renderAvatar(conversation, true)}
+              </div>
+              <div className="min-w-0 flex-1 self-stretch py-0.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className={`min-w-0 truncate text-base leading-5 text-[#111827] ${isUnread ? 'font-bold' : 'font-semibold'}`}>
+                    {displayName}
+                  </p>
+                  <span className="shrink-0 pt-0.5 text-xs font-medium text-[#9CA3AF]">{listTime || 'Mới'}</span>
+                </div>
+                <div className="mt-1 flex min-w-0 items-center gap-2">
+                  <p className={`min-w-0 flex-1 truncate text-sm leading-5 ${isUnread ? 'font-medium text-slate-600' : 'text-[#6B7280]'}`}>
+                    {previewLine}
+                  </p>
+                  {pinned && <Pin size={14} className="shrink-0 rotate-45 text-sky-500" aria-label="Đã ghim" />}
+                  {isUnread && (
+                    <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#EF4444] px-1.5 text-[11px] font-bold text-white" aria-label={`${unreadCount} tin chưa đọc`}>
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
           );
         })}
-        {filteredConversations.length === 0 && (
+        {tabConversations.length === 0 && (
           <div className="mt-10 rounded-3xl bg-gray-50 p-6 text-center text-sm text-gray-500">
-            {listKeyword ? 'Không tìm thấy hội thoại phù hợp.' : (messageFilter !== 'all' ? `Chưa có tin thuộc bộ lọc ${selectedMessageFilter.shortLabel}.` : 'Chưa có tin nhắn phát sinh.')}
+            {listKeyword ? 'Không tìm thấy hội thoại phù hợp.' : (messageFilter !== 'all' ? `Chưa có tin thuộc bộ lọc ${selectedMessageFilter.shortLabel}.` : activeChatTab === 'other' ? 'Chưa có cuộc trò chuyện khác.' : 'Chưa có tin nhắn phát sinh.')}
           </div>
         )}
       </div>
@@ -49751,7 +50010,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const [localShowFilterPanel, setLocalShowFilterPanel] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [expandedCashflowGroupIds, setExpandedCashflowGroupIds] = useState(() => new Set());
+  const [showCashflowCreateMenu, setShowCashflowCreateMenu] = useState(false);
   const [editingCashflowTransaction, setEditingCashflowTransaction] = useState(null);
   const [rejectingCashflowTransaction, setRejectingCashflowTransaction] = useState(null);
   const [cashflowEditForm, setCashflowEditForm] = useState({
@@ -50130,48 +50389,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const pendingIncome = pendingTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingExpense = pendingTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
   const balance = totalIncome - totalExpense;
-  const groupedCashflowJournal = useMemo(() => {
-    const groupMap = new Map();
-    filteredTransactions.forEach((transaction) => {
-      const isExpense = transaction.transactionType === 'expense';
-      const label = isExpense
-        ? normalizeExpenseCategoryLabel(transaction.category || transaction.note || 'Chi phí khác')
-        : getIncomeCashflowGroupLabel(transaction);
-      const key = `${transaction.transactionType}_${normalizeLookupText(label) || 'khac'}`;
-      if (!groupMap.has(key)) {
-        groupMap.set(key, {
-          id: key,
-          transactionType: transaction.transactionType,
-          title: `${isExpense ? 'Chi' : 'Thu'} - ${label}`,
-          label,
-          totalAmount: 0,
-          officialAmount: 0,
-          pendingCount: 0,
-          records: []
-        });
-      }
-      const group = groupMap.get(key);
-      const amount = Number(transaction.amount || 0);
-      group.totalAmount += amount;
-      if (isCashflowOfficial(transaction)) group.officialAmount += amount;
-      else group.pendingCount += 1;
-      group.records.push(transaction);
-    });
-    return Array.from(groupMap.values())
-      .map(group => ({
-        ...group,
-        records: group.records.sort((a, b) => {
-          if ((b.date || '') !== (a.date || '')) return (b.date || '').localeCompare(a.date || '');
-          const timestampDiff = getCashflowSortTimestamp(b) - getCashflowSortTimestamp(a);
-          if (timestampDiff) return timestampDiff;
-          return (b.id || '').localeCompare(a.id || '');
-        })
-      }))
-      .sort((a, b) => {
-        if (a.transactionType !== b.transactionType) return a.transactionType === 'payment' ? -1 : 1;
-        return b.totalAmount - a.totalAmount;
-      });
-  }, [filteredTransactions, customerNameMap, orderByIdMap, orderByCodeMap]);
 
   const handleResetFilters = () => {
     setFilterDate(getTodayString());
@@ -50318,15 +50535,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     closeRejectCashflowModal();
   };
 
-  const toggleCashflowGroup = (groupId) => {
-    setExpandedCashflowGroupIds(prev => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
-  };
-
   const canEditCashflowTransaction = (transaction) => {
     if (!transaction) return false;
     if (canEditTransactions) return true;
@@ -50425,6 +50633,33 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     closeCashflowEditor();
   };
 
+  const openExpenseComposer = () => {
+    setShowCashflowCreateMenu(false);
+    setNewExpense(prev => ({
+      ...prev,
+      category: isDriverFinanceMode ? '' : (prev.category || 'Chi mua hàng hóa'),
+      note: isDriverFinanceMode ? '' : prev.note,
+      date: getTodayString()
+    }));
+    setShowExpenseModal(true);
+  };
+
+  const openIncomeComposer = () => {
+    setShowCashflowCreateMenu(false);
+    setPaymentCustomerSearch('');
+    setShowPaymentCustomerDropdown(false);
+    setNewPayment(prev => ({
+      ...prev,
+      customerId: '',
+      amount: '',
+      note: '',
+      date: getTodayString(),
+      method: 'Tiền mặt',
+      sourceType: 'driver_cash'
+    }));
+    setShowPaymentModal(true);
+  };
+
   return (
     <div className="space-y-4 animate-in fade-in pb-16">
       {showFilterPanel && (
@@ -50486,6 +50721,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                 </select>
               </div>
               <input
+                data-hd-search-input="true"
                 value={expenseKeywordFilter}
                 onChange={(event) => {
                   setExpenseKeywordFilter(event.target.value);
@@ -50504,24 +50740,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       )}
 
       <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 text-white rounded-2xl p-3 shadow-md">
-        <div className="mb-0.5 flex flex-wrap items-center justify-center gap-1.5 text-center leading-tight">
+        <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-200">Tổng kết ngày</p>
-          <label className="relative inline-flex cursor-pointer items-center rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[11px] font-black text-white shadow-inner transition hover:bg-white/15">
-            {formatCompactDateLabel(filterDate)}
-            <input
-              type="date"
-              value={filterDate}
-              onChange={(event) => {
-                setFilterDate(event.target.value);
-                setPeriodType('day');
-              }}
-              aria-label="Chọn ngày tổng kết thu chi"
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            />
-          </label>
+          <h3 className="shrink-0 text-2xl font-black leading-tight !text-white">{formatCurrency(balance)} đ</h3>
         </div>
-        <h3 className={`text-center text-2xl font-black leading-tight ${balance < 0 ? 'text-red-300' : 'text-white'}`}>{formatCurrency(balance)} đ</h3>
-        <p className="mt-0.5 text-center text-[11px] leading-tight text-emerald-100">Chênh lệch thu chi trong ngày</p>
         <div className="mt-2 grid grid-cols-2 gap-2">
           <div className="rounded-xl border border-orange-200/30 bg-orange-400/15 p-2 text-center">
             <p className="mb-0 text-[10px] uppercase font-bold leading-tight text-orange-200">Tổng chi</p>
@@ -50541,42 +50763,13 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100">
-          <h3 className="font-bold text-gray-800">Nhật ký thu chi trong ngày</h3>
-          <p className="mt-1 text-[11px] font-medium text-gray-400">Bấm vào từng loại để xem các phiếu bên trong.</p>
+          <h3 className="font-bold text-gray-800">Danh sách thu chi</h3>
         </div>
-        {groupedCashflowJournal.length === 0 ? (
+        {filteredTransactions.length === 0 ? (
           <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch nào trong ngày đã chọn.</p>
         ) : (
-          <div className="divide-y divide-gray-50">
-            {groupedCashflowJournal.map(group => {
-              const isExpenseGroup = group.transactionType === 'expense';
-              const isExpanded = expandedCashflowGroupIds.has(group.id);
-              return (
-                <div key={group.id} className="bg-white">
-                  <button
-                    type="button"
-                    onClick={() => toggleCashflowGroup(group.id)}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-slate-50"
-                  >
-                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border ${isExpenseGroup ? 'border-orange-100 bg-orange-50 text-orange-500' : 'border-emerald-100 bg-emerald-50 text-emerald-500'}`}>
-                      {isExpenseGroup ? <MinusCircle size={17} /> : <PlusCircle size={17} />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-black text-slate-800">{group.title}</p>
-                      <p className="mt-0.5 text-[11px] font-semibold text-slate-400">
-                        {group.records.length} phiếu{group.pendingCount > 0 ? ` • ${group.pendingCount} chờ xác nhận` : ''}
-                      </p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className={`text-sm font-black ${isExpenseGroup ? 'text-orange-600' : 'text-emerald-600'}`}>
-                        {isExpenseGroup ? '-' : '+'}{formatCurrency(group.totalAmount)} đ
-                      </p>
-                      {isExpanded ? <ChevronUp size={16} className="ml-auto mt-1 text-slate-400" /> : <ChevronDown size={16} className="ml-auto mt-1 text-slate-400" />}
-                    </div>
-                  </button>
-                  {isExpanded && (
-                    <div className="space-y-2 border-t border-slate-100 bg-slate-50/70 p-3">
-                      {group.records.map(transaction => {
+          <div className="space-y-2 bg-slate-50/70 p-3">
+            {filteredTransactions.map(transaction => {
                         const isExpense = transaction.transactionType === 'expense';
                         const empName = employees.find(emp => emp.id === transaction.empId)?.name || 'Kế toán';
                         const customerName = resolvePaymentCustomerName(transaction) || customerNameMap[transaction.customerId] || 'Khách hàng';
@@ -50670,45 +50863,59 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                               </div>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
               );
             })}
           </div>
         )}
       </div>
 
-      <div className="fixed bottom-[calc(96px+env(safe-area-inset-bottom))] left-0 z-40 w-full px-4 flex gap-3 pointer-events-none">
-        <div className="w-full max-w-md mx-auto flex gap-3 pointer-events-auto">
+      {(canCreateExpense || canCreateIncome) && (
+        <div className="fixed bottom-[calc(76px+env(safe-area-inset-bottom))] left-0 z-40 flex w-full px-4 sm:bottom-4 pointer-events-none">
+          <div className="relative mx-auto flex w-full max-w-md items-center gap-2 pointer-events-auto">
           {canCreateExpense && (
             <button
-              onClick={() => {
-                setNewExpense(prev => ({ ...prev, category: isDriverFinanceMode ? '' : (prev.category || 'Chi mua hàng hóa'), note: isDriverFinanceMode ? '' : prev.note, date: getTodayString() }));
-                setShowExpenseModal(true);
-              }}
-              className="flex-1 bg-orange-500 text-white rounded-xl py-3 font-bold shadow-lg flex items-center justify-center gap-2 hover:bg-orange-600"
+              onClick={openExpenseComposer}
+              className="min-w-0 flex-1 rounded-xl bg-orange-500 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-orange-600"
             >
-              <MinusCircle size={18}/> Khoản chi
+              Khoản chi
             </button>
           )}
           {canCreateIncome && (
             <button
-              onClick={() => {
-                setPaymentCustomerSearch('');
-                setShowPaymentCustomerDropdown(false);
-                setNewPayment(prev => ({ ...prev, customerId: '', amount: '', note: '', date: getTodayString(), method: 'Tiền mặt', sourceType: 'driver_cash' }));
-                setShowPaymentModal(true);
-              }}
-              className="flex-1 bg-emerald-500 text-white rounded-xl py-3 font-bold shadow-lg flex items-center justify-center gap-2 hover:bg-emerald-600"
+              onClick={openIncomeComposer}
+              className="min-w-0 flex-1 rounded-xl bg-emerald-500 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-600"
             >
-              <PlusCircle size={18}/> Khoản thu
+              Khoản thu
             </button>
           )}
+            <div className="relative shrink-0">
+              {showCashflowCreateMenu && (
+                <div className="absolute bottom-full right-0 mb-3 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  {canCreateIncome && (
+                    <button type="button" onClick={openIncomeComposer} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-emerald-700 transition hover:bg-emerald-50">
+                      <PlusCircle size={16} /> Khoản thu
+                    </button>
+                  )}
+                  {canCreateExpense && (
+                    <button type="button" onClick={openExpenseComposer} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-orange-600 transition hover:bg-orange-50">
+                      <MinusCircle size={16} /> Khoản chi
+                    </button>
+                  )}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowCashflowCreateMenu(value => !value)}
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition hover:bg-blue-700"
+                aria-label="Mở thao tác thu chi"
+                aria-expanded={showCashflowCreateMenu}
+              >
+                <Plus size={22} />
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {editingCashflowTransaction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -50872,6 +51079,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="absolute left-3 top-3 text-gray-400" />
                 <input
+                  data-hd-search-input="true"
                   required
                   type="text"
                   value={paymentCustomerSearch}
@@ -53445,6 +53653,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           <div className="relative">
             <Search size={17} className="absolute left-3 top-3.5 text-emerald-500" />
             <input
+              data-hd-search-input="true"
               type="search"
               value={customerSearch}
               onFocus={() => setShowCustomerList(true)}
@@ -56442,6 +56651,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
             <div data-search-zone="true" className="relative min-w-0">
               <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-gray-500">Nhà cung cấp</span>
               <input
+                data-hd-search-input="true"
                 type="text"
                 value={draft.supplier || ''}
                 onFocus={() => {
@@ -61060,6 +61270,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
                 <input
+                  data-hd-search-input="true"
                   ref={dispatchCustomerSearchInputRef}
                   type="text"
                   value={dispatchDraft.customerSearch || ''}
@@ -61117,6 +61328,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
               <div data-search-zone="true" className="relative">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
                 <input
+                  data-hd-search-input="true"
                   ref={dispatchProductSearchInputRef}
                   type="text"
                   value={dispatchDraft.productSearch || ''}
@@ -61287,6 +61499,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm sm:min-w-[180px] sm:max-w-[58vw] sm:flex-none">
                   <Search size={15} className="shrink-0 text-emerald-600" />
                   <input
+                    data-hd-search-input="true"
                     ref={dispatchListSearchInputRef}
                     type="search"
                     value={dispatchListSearch}
@@ -65937,6 +66150,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                       <div className={`hd-order-request-customer-search flex h-11 w-full items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition-colors duration-200 focus-within:border-emerald-500 ${primaryDraft.customerId ? 'border-emerald-300 bg-emerald-50/40' : 'border-gray-200 bg-white'}`}>
                         <Search size={15} className="shrink-0 text-emerald-600" />
                         <input
+                          data-hd-search-input="true"
                           type="text"
                           value={primaryDraft.customerSearch || ''}
                           onFocus={(event) => {
@@ -66074,6 +66288,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                               <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                                 <Search size={14} className="text-emerald-600 shrink-0" />
                                 <input
+                                  data-hd-search-input="true"
                                   type="text"
                                   value={quickProductSearch}
                                   onChange={(e) => setQuickProductSearch(e.target.value)}
@@ -66242,6 +66457,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                 <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                                   <Search size={14} className="text-emerald-600 shrink-0" />
                                   <input
+                                    data-hd-search-input="true"
                                     type="text"
                                     value={draft.customerSearch || ''}
                                     onChange={(e) => updateDraft(draft.localId, { customerSearch: capitalizeFirstPreservingSpacing(e.target.value) })}
@@ -66455,6 +66671,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                           <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                                             <Search size={14} className="text-emerald-600 shrink-0" />
                                             <input
+                                              data-hd-search-input="true"
                                               type="text"
                                               value={item.productSearch || ''}
                                               onChange={(e) => updateDraftItem(draft.localId, item.localItemId, { productSearch: capitalizeFirstPreservingSpacing(e.target.value) })}
@@ -66907,6 +67124,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                 <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                                   <Search size={14} className="text-emerald-600 shrink-0" />
                                   <input
+                                    data-hd-search-input="true"
                                     type="text"
                                     value={draft.customerSearch || ''}
                                     onChange={(e) => updateDraft(draft.localId, { customerSearch: capitalizeFirstPreservingSpacing(e.target.value) })}
@@ -66956,6 +67174,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                 <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                                   <Search size={14} className="text-emerald-600 shrink-0" />
                                   <input
+                                    data-hd-search-input="true"
                                     type="text"
                                     value={draft.productSearch || ''}
                                     onChange={(e) => updateDraft(draft.localId, { productSearch: capitalizeFirstPreservingSpacing(e.target.value) })}
@@ -71147,7 +71366,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   <div className="flex gap-2 items-center">
                     <div data-search-zone="true" className="relative flex-1">
                       <Search size={18} className="absolute left-3 top-3 text-gray-400" />
-                      <input type="text" value={searchCus} onChange={e => { setSearchCus(e.target.value); setShowCusDropdown(true); setNewOrder({...newOrder, customerId: ''}); }} onFocus={() => setShowCusDropdown(true)} className="w-full border border-gray-300 p-2.5 pl-10 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tìm tên khách hàng..." />
+                      <input data-hd-search-input="true" type="text" value={searchCus} onChange={e => { setSearchCus(e.target.value); setShowCusDropdown(true); setNewOrder({...newOrder, customerId: ''}); }} onFocus={() => setShowCusDropdown(true)} className="w-full border border-gray-300 p-2.5 pl-10 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tìm tên khách hàng..." />
                       {showCusDropdown && (
                         <ul className="absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-48 overflow-y-auto">
                           {filteredCustomers.map(c => (
@@ -72000,7 +72219,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       )}
 
       {!showArchived && canCreate && (
-        <div className="fixed bottom-[70px] right-4 pointer-events-none flex justify-end">
+        <div className="hd-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
            <button aria-label="Thêm sản phẩm" onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
               <Plus size={28}/>
            </button>
@@ -72213,7 +72432,7 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
 
       <div className="bg-white px-3 py-2 rounded-lg border border-gray-100 shadow-sm flex items-center gap-2 mb-2">
         <Search size={18} className="text-gray-400" />
-        <input type="text" placeholder="Tìm kiếm khách nợ..." className="flex-1 text-sm outline-none" />
+        <input data-hd-search-input="true" type="text" placeholder="Tìm kiếm khách nợ..." className="flex-1 text-sm outline-none" />
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-50 overflow-hidden divide-y divide-gray-50">
@@ -72235,7 +72454,7 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
         })}
       </div>
 
-      <div className="fixed bottom-[70px] right-4 pointer-events-none flex justify-end">
+      <div className="hd-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
          <button onClick={() => setShowAddCustomer(true)} className="pointer-events-auto bg-blue-600 text-white rounded-full px-5 py-3 font-bold shadow-lg flex items-center gap-2 hover:bg-blue-700">
             <Plus size={18}/> Tạo khách hàng
          </button>
@@ -75244,6 +75463,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 <label className="hd-customer-detail-products__search">
                   <Search size={15} className="shrink-0 text-emerald-500" />
                   <input
+                    data-hd-search-input="true"
                     data-customer-product-search="true"
                     type="text"
                     value={customerProductPickerSearch}
@@ -76711,6 +76931,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             <div className="bg-gray-50 border border-gray-100 rounded-2xl px-3 py-2 flex items-center gap-2">
               <Search size={16} className="text-gray-400 shrink-0" />
               <input
+                data-hd-search-input="true"
                 type="text"
                 value={customerSearch}
                 onChange={(e) => setCustomerSearch(e.target.value)}
@@ -76880,7 +77101,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       </div>
 
       {(canAddCustomer || canBulkImportCustomers) && (
-      <div className="fixed bottom-[76px] right-4 z-40 pointer-events-none flex flex-col items-end gap-2">
+      <div className="hd-module-fab fixed right-4 z-50 pointer-events-none flex flex-col items-end gap-2">
         {showCustomerQuickActions && (
           <div className="pointer-events-auto w-52 rounded-2xl border border-gray-100 bg-white p-2 shadow-2xl">
             {canAddCustomer && (
@@ -77100,6 +77321,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                   <div className="hd-customer-create-view__product-search">
                     <Search size={15} className="text-emerald-500" />
                     <input
+                      data-hd-search-input="true"
                       aria-label="Tìm SP khách lấy"
                       type="text"
                       value={newCustomerProductSearch}
@@ -82869,7 +83091,7 @@ function DebtManagementViewLegacy({ isAccounting, isDriver, employee, customers,
       
       <div className="bg-white px-3 py-2 rounded-lg border border-gray-100 shadow-sm flex items-center gap-2 mb-4">
         <Search size={18} className="text-gray-400" />
-        <input type="text" placeholder="Tìm kiếm khách nợ..." className="flex-1 text-sm outline-none" />
+        <input data-hd-search-input="true" type="text" placeholder="Tìm kiếm khách nợ..." className="flex-1 text-sm outline-none" />
       </div>
 
       <div className="space-y-3">
@@ -83156,14 +83378,6 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     return acc;
   }, { totalDebt: 0, totalCredit: 0, debtCustomerCount: 0, creditCustomerCount: 0 }), [debtOverviewCustomers]);
 
-  const debtOverviewEmployeeLabel = debtSalesEmpId === 'all'
-    ? ''
-    : (debtManagerOptions.find(emp => emp.id === debtSalesEmpId)?.name || 'NVKD đã chọn');
-
-  const debtOverviewScopeLabel = canViewAllDebtRecords
-    ? 'Tổng công nợ toàn bộ khách'
-    : (isDriver ? 'Tổng công nợ khách được cấp' : 'Tổng công nợ khách bạn quản lý');
-
   const resetPaymentDraft = () => {
     setShowPaymentModal(false);
     setPaymentTargetOrderId('');
@@ -83422,8 +83636,6 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
     return (
       <div className="premium-data-module premium-debt-module premium-debt-detail space-y-4 animate-in fade-in pb-16">
-        <button onClick={() => setSelectedCustomerId(null)} className="text-gray-500 flex items-center text-sm font-semibold mb-2"><ChevronLeft size={18} className="mr-1" /> Trở về danh sách</button>
-
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -83668,16 +83880,20 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   return (
     <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16">
       {(canViewAllDebtRecords || accessibleCustomers.length > 0) && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-gradient-to-r from-red-500 to-orange-500 p-5 rounded-[26px] shadow-md text-white border border-white/10 min-h-[120px] flex flex-col items-center justify-center text-center">
-            <p className="text-red-100 text-[10px] font-bold uppercase tracking-[0.18em]">Khách nợ</p>
-            <h3 className="text-[26px] font-black mt-2 leading-none">{formatCurrency(debtOverviewSummary.totalDebt)} đ</h3>
-            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.debtCustomerCount} khách • {debtOverviewEmployeeLabel || debtOverviewScopeLabel}</p>
+        <div className="-mx-4 grid grid-cols-2 overflow-hidden border-y border-slate-100 shadow-sm">
+          <div className="flex min-h-[96px] flex-col justify-center bg-gradient-to-r from-rose-600 to-orange-500 px-4 py-3 text-left text-white" style={{ fontFamily: '"Roboto Flex", Roboto, sans-serif' }}>
+            <div className="flex items-center justify-between gap-2 text-[11px] font-bold leading-tight">
+              <span>Khách nợ</span>
+              <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.debtCustomerCount} khách</span>
+            </div>
+            <p className="mt-2 whitespace-nowrap text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalDebt)} đ</p>
           </div>
-          <div className="bg-gradient-to-r from-blue-500 to-cyan-500 p-5 rounded-[26px] shadow-md text-white border border-white/10 min-h-[120px] flex flex-col items-center justify-center text-center">
-            <p className="text-blue-100 text-[10px] font-bold uppercase tracking-[0.18em]">Nợ khách</p>
-            <h3 className="text-[26px] font-black mt-2 leading-none">{formatCurrency(debtOverviewSummary.totalCredit)} đ</h3>
-            <p className="mt-2 text-[10px] font-bold text-white/80">{debtOverviewSummary.creditCustomerCount} khách • {debtOverviewEmployeeLabel || 'Tiền dư cần theo dõi'}</p>
+          <div className="flex min-h-[96px] flex-col items-end justify-center bg-gradient-to-l from-sky-600 to-cyan-500 px-4 py-3 text-right text-white" style={{ fontFamily: '"Roboto Flex", Roboto, sans-serif' }}>
+            <div className="flex w-full items-center justify-between gap-2 text-[11px] font-bold leading-tight">
+              <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.creditCustomerCount} khách</span>
+              <span>Nợ khách</span>
+            </div>
+            <p className="mt-2 whitespace-nowrap text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalCredit)} đ</p>
           </div>
         </div>
       )}
@@ -86257,7 +86473,7 @@ function CustomerPortalView({
       <div className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm">
         <div className="flex items-center gap-2 bg-gray-50 rounded-2xl px-3 py-2 border border-gray-100">
           <Search size={18} className="text-gray-400" />
-          <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Tìm sản phẩm hoặc tên viết tắt" className="bg-transparent outline-none flex-1 text-sm" />
+          <input data-hd-search-input="true" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Tìm sản phẩm hoặc tên viết tắt" className="bg-transparent outline-none flex-1 text-sm" />
         </div>
         {customerBranches.length > 0 && (
           <div className="mt-3 rounded-2xl border border-sky-100 bg-sky-50/60 p-3">

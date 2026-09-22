@@ -187,6 +187,38 @@ const inspectLayout = async (page, route = '') => page.evaluate((currentRoute) =
   const sidebar = document.querySelector('[data-hd-navigation="sidebar"]');
   const bottomNavigation = document.querySelector('[data-hd-navigation="bottom"]');
   const modal = [...document.querySelectorAll('[role="dialog"], .fixed.inset-0')].some(visible);
+  const searchFocusChecks = [...document.querySelectorAll('input[data-hd-search-input="true"]')]
+    .filter((node) => visible(node) && !node.disabled)
+    .map((node, index) => {
+      const parent = node.parentElement;
+      const before = getComputedStyle(node);
+      const beforeParentShadow = parent ? getComputedStyle(parent).boxShadow : 'none';
+      const restingBorderWidths = [before.borderTopWidth, before.borderRightWidth, before.borderBottomWidth, before.borderLeftWidth];
+      const wasActive = document.activeElement === node;
+      node.focus({ preventScroll: true });
+      const focused = getComputedStyle(node);
+      const focusedParentShadow = parent ? getComputedStyle(parent).boxShadow : 'none';
+      const focusedBorderWidths = [focused.borderTopWidth, focused.borderRightWidth, focused.borderBottomWidth, focused.borderLeftWidth];
+      const result = {
+        index,
+        placeholder: node.getAttribute('placeholder') || '',
+        ariaLabel: node.getAttribute('aria-label') || '',
+        outlineStyle: focused.outlineStyle,
+        outlineWidth: focused.outlineWidth,
+        boxShadow: focused.boxShadow,
+        parentShadowBefore: beforeParentShadow,
+        parentShadowFocused: focusedParentShadow,
+        borderWidthsUnchanged: JSON.stringify(restingBorderWidths) === JSON.stringify(focusedBorderWidths),
+      };
+      if (!wasActive) node.blur();
+      return {
+        ...result,
+        passed: (result.outlineStyle === 'none' || result.outlineWidth === '0px')
+          && result.boxShadow === 'none'
+          && (result.parentShadowFocused === 'none' || result.parentShadowFocused === result.parentShadowBefore)
+          && result.borderWidthsUnchanged,
+      };
+    });
   return {
     route: currentRoute,
     scrollWidth: root.scrollWidth,
@@ -202,6 +234,8 @@ const inspectLayout = async (page, route = '') => page.evaluate((currentRoute) =
     textPreview: (document.body?.innerText || '').slice(0, 320),
     visibleInputs: [...document.querySelectorAll('input, textarea, select')]
       .filter((node) => visible(node)).length,
+    searchFocusChecked: searchFocusChecks.length,
+    searchFocusFailures: searchFocusChecks.filter((result) => !result.passed),
   };
 }, route);
 
@@ -322,6 +356,7 @@ const routeGate = (result) => (
   && result.layout.shellVisible
   && result.layout.scrollWidth <= result.layout.clientWidth
   && result.layout.scrollHeight >= result.layout.clientHeight
+  && result.layout.searchFocusFailures.length === 0
   && result.consoleErrors.length === 0
   && result.pageErrors.length === 0
   && result.failedRequests.length === 0
@@ -415,14 +450,17 @@ try {
   await searchTrigger.click();
   const moduleSearch = desktopSession.page.getByRole('searchbox', { name: 'Tìm module' });
   await moduleSearch.fill('Khách hàng');
-  const searchResult = desktopSession.page.getByRole('button', { name: 'Khách hàng', exact: true }).last();
+  const moduleSearchFocus = await inspectLayout(desktopSession.page, 'shell search');
+  const searchResult = desktopSession.page
+    .locator('.hd-shell-search-results')
+    .getByRole('button', { name: 'Khách hàng', exact: true });
   const searchWorked = await searchResult.isVisible();
   if (searchWorked) await searchResult.click();
   const shellSearchPopover = desktopSession.page.locator('.hd-shell-search-popover');
   if (await shellSearchPopover.isVisible().catch(() => false)) {
     await desktopSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
   }
-  interactionResults.push({ interaction: 'sidebar module search', passed: searchWorked && (await desktopSession.page.getByRole('button', { name: 'Tìm kiếm', exact: true }).count()) >= 0 });
+  interactionResults.push({ interaction: 'sidebar module search', passed: searchWorked && moduleSearchFocus.searchFocusChecked > 0 && moduleSearchFocus.searchFocusFailures.length === 0 });
 
   await navigateRoute(desktopSession.page, 'customers');
   const headerSearch = desktopSession.page.getByRole('button', { name: 'Tìm kiếm', exact: true });
@@ -435,7 +473,8 @@ try {
       await visibleSearchInputs.last().press('Escape').catch(() => {});
     }
   }
-  interactionResults.push({ interaction: 'customer search', passed: headerSearchAvailable });
+  const customerSearchFocus = await inspectLayout(desktopSession.page, 'customer search');
+  interactionResults.push({ interaction: 'customer search', passed: headerSearchAvailable && customerSearchFocus.searchFocusChecked > 0 && customerSearchFocus.searchFocusFailures.length === 0 });
 
   await navigateRoute(desktopSession.page, 'more');
   const moreButton = desktopSession.page.getByRole('button', { name: 'Đơn hàng', exact: true }).last();
