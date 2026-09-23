@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Capacitor } from '@capacitor/core';
 import App from './App.jsx';
+import { HDThemeProvider } from './design-system/ThemeProvider.jsx';
 import './index.css';
 import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
@@ -523,11 +524,13 @@ installReleaseFreshnessMonitor({
 recordStartupEvent('first.ui.render.requested');
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <AppErrorBoundary>
-    <React.Profiler id="HDManagerRoot" onRender={recordReactRender}>
-      <App />
-    </React.Profiler>
-  </AppErrorBoundary>
+  <HDThemeProvider>
+    <AppErrorBoundary>
+      <React.Profiler id="HDManagerRoot" onRender={recordReactRender}>
+        <App />
+      </React.Profiler>
+    </AppErrorBoundary>
+  </HDThemeProvider>
 );
 
 if (shouldEnableVisibleTextRepairObserver()) {

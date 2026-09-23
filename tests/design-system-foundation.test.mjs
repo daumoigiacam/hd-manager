@@ -6,6 +6,8 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf
 const app = read('src/App.jsx');
 const main = read('src/main.jsx');
 const shell = read('src/layout/AppShell.jsx');
+const themeProvider = read('src/design-system/ThemeProvider.jsx');
+const themePreferences = read('src/design-system/themePreferences.js');
 const tokens = read('src/design-system/tokens.js');
 const foundation = read('src/design-system/foundation.css');
 const components = read('src/design-system/components.jsx');
@@ -14,6 +16,12 @@ const indexCss = read('src/index.css');
 assert(!app.includes('fonts.googleapis.com'), 'UI must not depend on remote Google Fonts');
 assert(!main.includes('@fontsource-variable/'), 'The app must use one platform-native system font instead of bundled font families');
 assert(main.includes('./design-system/foundation.css'), 'Design System foundation must load globally');
+assert(main.includes('<HDThemeProvider>'), 'The full app must be wrapped in the shared theme provider');
+assert(shell.includes('useHDTheme()') && shell.includes('preferredTheme'), 'All shared app shells must use the current global theme');
+assert(themeProvider.includes('prefers-color-scheme: dark') && themeProvider.includes('root.dataset.hdTheme = theme'), 'System preference must drive a document-wide theme attribute');
+assert(themeProvider.includes("event.key === 'hd_manager_theme_preference'"), 'Theme selection must sync across open tabs');
+assert(app.includes("{ id: 'light', label: 'Sáng'") && app.includes("{ id: 'dark', label: 'Tối'") && app.includes("{ id: 'system', label: 'Hệ thống'"), 'Users must be able to select Light, Dark, and System themes');
+assert(themePreferences.includes("HD_THEME_STORAGE_KEY = 'hd_manager_theme_preference'"), 'Appearance preference must persist locally without changing business data');
 
 assert(shell.includes('data-hd-shell'), 'AppShell must expose its shared shell boundary');
 assert(shell.includes('data-hd-theme'), 'AppShell must expose the active theme');
@@ -57,6 +65,12 @@ assert(app.includes('premium-products-module'), 'Product lists must opt into the
 
 for (const selector of [
   '[data-hd-theme="dark"]',
+  '[data-hd-theme="dark"] :is(.bg-white',
+  '[data-hd-theme="dark"] :is(.bg-gray-50',
+  '[data-hd-theme="dark"] :is(.text-gray-500',
+  '--hd-color-success-surface: #052e1b',
+  '--hd-color-warning-surface: #422006',
+  '--hd-color-danger-surface: #450a0a',
   '@media (prefers-reduced-motion: reduce)',
   'env(safe-area-inset-top',
   '--hd-space-4',

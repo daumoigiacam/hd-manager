@@ -540,6 +540,53 @@ try {
   const moreWorked = await moreButton.isVisible().catch(() => false);
   if (moreWorked) await moreButton.click();
   interactionResults.push({ interaction: 'more menu navigation', passed: moreWorked });
+
+  await navigateRoute(interactionSession.page, 'more');
+  const darkThemeButton = interactionSession.page.getByRole('button', { name: 'Giao diện Tối', exact: true });
+  const themeControlAvailable = await darkThemeButton.isVisible().catch(() => false);
+  if (themeControlAvailable) await darkThemeButton.click();
+  await interactionSession.page.waitForTimeout(300);
+  const darkThemeState = await interactionSession.page.evaluate(() => {
+    const shell = document.querySelector('[data-hd-shell="enterprise"]');
+    const neutralSurface = shell?.querySelector('.bg-white');
+    return {
+      documentTheme: document.documentElement.dataset.hdTheme,
+      shellTheme: shell?.dataset.hdTheme,
+      preference: window.localStorage.getItem('hd_manager_theme_preference'),
+      surfaceColor: neutralSurface ? getComputedStyle(neutralSurface).backgroundColor : '',
+    };
+  });
+  const darkThemeWorked = themeControlAvailable
+    && darkThemeState.documentTheme === 'dark'
+    && darkThemeState.shellTheme === 'dark'
+    && darkThemeState.preference === 'dark'
+    && darkThemeState.surfaceColor === 'rgb(17, 27, 46)';
+  interactionResults.push({ interaction: 'dark theme palette and persistence', passed: darkThemeWorked, details: darkThemeState });
+
+  await interactionSession.page.emulateMedia({ colorScheme: 'dark' });
+  const systemThemeButton = interactionSession.page.getByRole('button', { name: 'Giao diện Hệ thống', exact: true });
+  const systemThemeAvailable = await systemThemeButton.isVisible().catch(() => false);
+  if (systemThemeAvailable) await systemThemeButton.click();
+  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'dark', null, { timeout: 2500 }).catch(() => {});
+  const systemDarkState = await interactionSession.page.evaluate(() => document.documentElement.dataset.hdTheme);
+  await interactionSession.page.emulateMedia({ colorScheme: 'light' });
+  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'light', null, { timeout: 2500 }).catch(() => {});
+  const systemThemeTracksDevice = await interactionSession.page.evaluate(() => (
+    window.localStorage.getItem('hd_manager_theme_preference') === 'system'
+    && document.documentElement.dataset.hdTheme === 'light'
+    && document.querySelector('[data-hd-shell="enterprise"]')?.dataset.hdTheme === 'light'
+  ));
+  interactionResults.push({ interaction: 'system theme tracks device changes', passed: systemThemeAvailable && systemDarkState === 'dark' && systemThemeTracksDevice });
+
+  if (themeControlAvailable) await darkThemeButton.click();
+  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'dark', null, { timeout: 2500 }).catch(() => {});
+  await interactionSession.page.reload({ waitUntil: 'commit' });
+  await waitForApplication(interactionSession.page);
+  const darkThemeRestored = await interactionSession.page.evaluate(() => (
+    document.documentElement.dataset.hdTheme === 'dark'
+    && document.querySelector('[data-hd-shell="enterprise"]')?.dataset.hdTheme === 'dark'
+  ));
+  interactionResults.push({ interaction: 'theme survives app reload', passed: darkThemeRestored });
 } finally {
   await interactionSession.context.close();
 }

@@ -1,6 +1,10 @@
 import React from 'react';
+import { useHDTheme } from '../design-system/ThemeProvider.jsx';
 
-export const AppShell = React.forwardRef(function AppShell({ children, className = '', theme = 'light', ...props }, ref) {
+export const AppShell = React.forwardRef(function AppShell({ children, className = '', theme: themeOverride, ...props }, ref) {
+  const { theme: preferredTheme } = useHDTheme();
+  const theme = themeOverride || preferredTheme;
+
   return (
     <div
       ref={ref}

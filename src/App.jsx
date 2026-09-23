@@ -11,7 +11,7 @@ import {
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Camera, Gift,
   MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint,
-  Pin, RefreshCw, Command
+  Pin, RefreshCw, Command, Sun, Moon, Monitor
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -331,6 +331,7 @@ import {
   HDSidebar,
 } from './layout/index.js';
 import { HDButton, HDBadge, HDWidgetCustomizer } from './design-system/index.js';
+import { useHDTheme } from './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
   getProductCatalogUnitSuggestions,
@@ -38076,7 +38077,13 @@ function MapManagementView({
 }
 
 function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee, attendanceAlerts = [], currentAttendanceAlert = null }) {
+  const { preference: themePreference, theme: resolvedTheme, setPreference: setThemePreference } = useHDTheme();
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
+  const themeOptions = [
+    { id: 'light', label: 'Sáng', icon: Sun },
+    { id: 'dark', label: 'Tối', icon: Moon },
+    { id: 'system', label: 'Hệ thống', icon: Monitor },
+  ];
   const menuItems = [
     { id: 'executive_dashboard', label: 'Điều hành', icon: <PieChart className="text-blue-500" />, show: tabPermissions.executive_dashboard },
     { id: 'order_requests', label: 'Lên đơn đặt hàng', icon: <Receipt className="text-sky-500" />, show: tabPermissions.order_requests },
@@ -38124,6 +38131,28 @@ function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWare
         </div>
         <ChevronRight size={16} className="text-gray-300" />
       </button>
+
+      <section className="rounded-xl border border-gray-100 bg-white p-3" aria-label="Giao diện">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-gray-800">Giao diện</p>
+          <span className="text-xs text-gray-500" aria-live="polite">Đang dùng: {resolvedTheme === 'dark' ? 'Tối' : 'Sáng'}</span>
+        </div>
+        <div className="grid grid-cols-3 gap-2" role="group" aria-label="Chọn giao diện">
+          {themeOptions.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={themePreference === id}
+              aria-label={`Giao diện ${label}`}
+              onClick={() => setThemePreference(id)}
+              className={`flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors ${themePreference === id ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+            >
+              <Icon size={16} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      </section>
 
       {(currentAttendanceAlert || (isAccounting && attendanceAlerts.length > 0)) && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">

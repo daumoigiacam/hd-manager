@@ -20,8 +20,13 @@ export default [
     files: [
       'src/features/assets/**/*.{jsx,js}',
       'src/features/delivery/**/*.{jsx,js}',
+      'src/design-system/ThemeProvider.jsx',
+      'src/design-system/themePreferences.js',
+      'src/layout/AppShell.jsx',
       'tests/asset-management-redesign.test.mjs',
-      'tests/delivery-redesign-layout.test.mjs'
+      'tests/delivery-redesign-layout.test.mjs',
+      'tests/design-system-foundation.test.mjs',
+      'tests/theme-preferences.test.mjs'
     ],
     languageOptions: {
       ecmaVersion: 'latest',
@@ -29,7 +34,8 @@ export default [
       parserOptions: { ecmaFeatures: { jsx: true } },
       globals: {
         console: 'readonly',
-        window: 'readonly'
+        window: 'readonly',
+        document: 'readonly'
       }
     },
     rules: {
