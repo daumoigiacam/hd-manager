@@ -6,10 +6,14 @@ const baseUrl = process.env.HD_MANAGER_VISUAL_QA_URL || 'http://127.0.0.1:5174/'
 const outputDir = process.env.HD_MANAGER_VISUAL_QA_OUTPUT || 'test-results/visual-qa';
 const browserPath = process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const viewports = [
+  ['mobile-minimum', 320, 720],
   ['mobile-narrow', 360, 800],
+  ['mobile-compact', 375, 812],
   ['mobile-standard', 390, 844],
   ['mobile-wide', 412, 915],
+  ['mobile-extra-wide', 430, 932],
   ['tablet', 768, 1024],
+  ['desktop-compact', 1024, 768],
   ['desktop', 1366, 768],
   ['desktop-wide', 1440, 900],
 ];
@@ -646,7 +650,25 @@ try {
   await desktopWideSession.context.close();
 }
 
-for (const [name, width, height] of [['mobile-narrow', 360, 800], ['mobile-wide', 412, 915]]) {
+const desktopCompactSession = await startPage({ width: 1024, height: 768 });
+try {
+  await recordRouteSnapshots({
+    session: desktopCompactSession,
+    routes: routeDefinitions.map((definition) => definition.route),
+    navigate: navigateRoute,
+    viewport: { name: 'desktop-compact', width: 1024, height: 768 },
+  });
+} finally {
+  await desktopCompactSession.context.close();
+}
+
+for (const [name, width, height] of [
+  ['mobile-minimum', 320, 720],
+  ['mobile-narrow', 360, 800],
+  ['mobile-compact', 375, 812],
+  ['mobile-wide', 412, 915],
+  ['mobile-extra-wide', 430, 932],
+]) {
   const session = await startPage({ width, height });
   try {
     await recordRouteSnapshots({
@@ -1001,7 +1023,9 @@ const authFailures = authShellResults.filter((result) => (
   || result.pageErrors.length > 0
   || result.failedRequests.length > 0
 ));
-const expectedRouteViewports = ['desktop', 'desktop-wide', 'mobile-narrow', 'mobile-standard', 'mobile-wide', 'tablet'];
+const desktopViewportNames = ['desktop-compact', 'desktop', 'desktop-wide'];
+const responsiveViewportNames = ['mobile-minimum', 'mobile-narrow', 'mobile-compact', 'mobile-standard', 'mobile-wide', 'mobile-extra-wide'];
+const expectedRouteViewports = [...desktopViewportNames, ...responsiveViewportNames, 'tablet'];
 const routeCoverageFailures = routeDefinitions.flatMap(({ route }) => expectedRouteViewports
   .filter((viewportName) => !allResults.some((result) => result.route === route && result.viewport.name === viewportName))
   .map((viewportName) => `${route}:${viewportName}`));
@@ -1026,19 +1050,19 @@ const report = {
   routeCoverageFailures,
   sectionMapping: sectionDefinitions.map(([section, route, screen]) => {
     const routeResults = allResults.filter((result) => result.route === route);
-    const desktopResults = routeResults.filter((result) => ['desktop', 'desktop-wide'].includes(result.viewport.name));
-    const responsiveResults = routeResults.filter((result) => ['mobile-narrow', 'mobile-standard', 'mobile-wide'].includes(result.viewport.name));
+    const desktopResults = routeResults.filter((result) => desktopViewportNames.includes(result.viewport.name));
+    const responsiveResults = routeResults.filter((result) => responsiveViewportNames.includes(result.viewport.name));
     const tabletResults = routeResults.filter((result) => result.viewport.name === 'tablet');
     const isAuth = section === 'Authentication';
     const isPortal = section === 'Customer portal';
-    const authDesktop = authShellResults.filter((result) => ['desktop', 'desktop-wide'].includes(result.viewport.name));
-    const authResponsive = authShellResults.filter((result) => ['mobile-narrow', 'mobile-standard', 'mobile-wide'].includes(result.viewport.name));
+    const authDesktop = authShellResults.filter((result) => desktopViewportNames.includes(result.viewport.name));
+    const authResponsive = authShellResults.filter((result) => responsiveViewportNames.includes(result.viewport.name));
     return {
       section,
       route,
       screen,
-      desktop: isAuth ? authDesktop.length === 2 && authDesktop.every((result) => !authFailures.includes(result)) : isPortal ? false : desktopResults.length === 2 && desktopResults.every(routeGate),
-      mobile: isAuth ? authResponsive.length === 3 && authResponsive.every((result) => !authFailures.includes(result)) : isPortal ? routeResults.length === 1 && routeResults.every(routeGate) : responsiveResults.length === 3 && responsiveResults.every(routeGate),
+      desktop: isAuth ? authDesktop.length === desktopViewportNames.length && authDesktop.every((result) => !authFailures.includes(result)) : isPortal ? false : desktopResults.length === desktopViewportNames.length && desktopResults.every(routeGate),
+      mobile: isAuth ? authResponsive.length === responsiveViewportNames.length && authResponsive.every((result) => !authFailures.includes(result)) : isPortal ? routeResults.length === 1 && routeResults.every(routeGate) : responsiveResults.length === responsiveViewportNames.length && responsiveResults.every(routeGate),
       tablet: isAuth || isPortal ? true : tabletResults.length === 1 && tabletResults.every(routeGate),
       testStatus: isAuth ? (authFailures.length === 0 ? 'PASS' : 'FAIL') : isPortal ? (routeResults.length === 1 && routeResults.every(routeGate) ? 'PASS' : 'FAIL') : (routeResults.length >= expectedRouteViewports.length && routeResults.every(routeGate) ? 'PASS' : 'FAIL'),
       screenshots: routeResults.map((result) => result.screenshotPath),

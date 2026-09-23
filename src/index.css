@@ -947,8 +947,8 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-/* Desktop shell: keep the compact phone layout below this breakpoint. */
-@media (min-width: 1100px) {
+/* Desktop shell: switch from the tablet rail to full desktop navigation at 1024px. */
+@media (min-width: 1024px) {
   :root {
     --hd-app-max-width: 92rem;
     --hd-desktop-sidebar-width: 17.5rem;
@@ -1259,7 +1259,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   --hd-motion-standard: 200ms;
   --hd-motion-slow: 250ms;
   --hd-breakpoint-tablet: 600px;
-  --hd-breakpoint-desktop: 1100px;
+  --hd-breakpoint-desktop: 1024px;
   --hd-content-max-width: 84rem;
 }
 
@@ -1418,7 +1418,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   min-width: 0;
 }
 
-@media (min-width: 600px) and (max-width: 1099px) {
+@media (min-width: 600px) and (max-width: 1023px) {
   :root {
     --hd-app-max-width: 48rem;
     --hd-header-height: 48px;
@@ -1437,7 +1437,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1024px) {
   :root {
     --hd-app-max-width: 120rem;
     --hd-header-height: 48px;
@@ -1658,7 +1658,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1024px) {
   .mobile-app-shell > main {
     overflow-x: hidden;
     overflow-y: auto;
@@ -1770,7 +1770,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (min-width: 600px) and (max-width: 1099px) {
+@media (min-width: 600px) and (max-width: 1023px) {
   .mobile-app-shell.hd-enterprise-app-shell {
     display: grid !important;
     grid-template-columns: var(--hd-ui-rail-width) minmax(0, 1fr);
@@ -1837,7 +1837,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1024px) {
   .mobile-app-shell.hd-enterprise-app-shell > .hd-enterprise-navigation > .tablet-navigation-rail {
     display: none !important;
   }
@@ -2434,7 +2434,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   box-shadow: 0 1px 3px rgb(15 23 42 / 0.12);
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1024px) {
   .mobile-app-shell.hd-navigation-collapsed {
     grid-template-columns: 5.25rem minmax(0, 1fr) !important;
   }
@@ -2449,7 +2449,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (max-width: 1099px) {
+@media (max-width: 1023px) {
   .hd-sidebar-navigation,
   .hd-sidebar-brand,
   .hd-shell-search,
@@ -2600,7 +2600,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   }
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1024px) {
   .premium-data-module {
     gap: 1.25rem;
   }

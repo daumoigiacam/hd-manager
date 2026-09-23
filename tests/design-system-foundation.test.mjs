@@ -62,6 +62,10 @@ assert(foundation.includes('2026 quiet workspace refresh'), 'Staff shell must in
 assert(foundation.includes('.hd-product-editor__actions'), 'Product editor must keep its actions reachable in the shared visual system');
 assert(app.includes('hd-product-editor__body'), 'Product creation must use the structured mobile editor layout');
 assert(app.includes('premium-products-module'), 'Product lists must opt into the shared operational surface language');
+assert(indexCss.includes('--hd-breakpoint-desktop: 1024px'), 'Desktop shell must start at the specified 1024px breakpoint');
+assert(indexCss.includes('@media (min-width: 1024px)'), 'Desktop navigation and content must activate at 1024px');
+assert(indexCss.includes('@media (min-width: 600px) and (max-width: 1023px)'), 'Tablet rail and capped layout must stop before desktop width');
+assert(!indexCss.includes('max-width: 1099px'), 'Legacy 1100px breakpoint must not leave 1024px layouts in tablet mode');
 
 for (const selector of [
   '[data-hd-theme="dark"]',
