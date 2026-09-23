@@ -335,7 +335,7 @@ import {
   HDNavigationRail,
   HDSidebar,
 } from './layout/index.js';
-import { HDButton, HDBadge, HDWidgetCustomizer } from './design-system/index.js';
+import { HDButton, HDBadge, HDIconButton, HDWidgetCustomizer } from './design-system/index.js';
 import { useHDTheme } from './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
@@ -24542,10 +24542,9 @@ function MainAppView({
     }
   };
   const renderNotificationBell = (buttonClassName = 'bg-white/10 border border-white/30 text-white hover:bg-white/20') => (
-    <button
-      type="button"
+    <HDIconButton
       onClick={handleOpenNotifications}
-      aria-label="Thông báo"
+      label="Thông báo"
       title="Thông báo"
       className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${buttonClassName}`}
     >
@@ -24555,19 +24554,18 @@ function MainAppView({
           {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
         </span>
       )}
-    </button>
+    </HDIconButton>
   );
 
   const renderGlobalSearchTrigger = () => (
-    <button
-      type="button"
+    <HDIconButton
+      label="Tìm kiếm toàn ứng dụng"
       className="hd-header-global-search-button"
       onClick={() => setShellSearchOpen(true)}
-      aria-label="Tìm kiếm toàn ứng dụng"
       title="Tìm kiếm toàn ứng dụng"
     >
       <Command size={18} aria-hidden="true" />
-    </button>
+    </HDIconButton>
   );
 
   const renderHeader = () => {

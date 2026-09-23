@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 
 const baseUrl = process.env.HD_MANAGER_VISUAL_QA_URL || 'http://127.0.0.1:5174/';
+const authShellUrl = process.env.HD_MANAGER_VISUAL_QA_AUTH_URL || baseUrl;
 const outputDir = process.env.HD_MANAGER_VISUAL_QA_OUTPUT || 'test-results/visual-qa';
 const browserPath = process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const viewports = [
@@ -463,7 +464,7 @@ const authShellResults = [];
 for (const [name, width, height] of viewports) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   const diagnostics = attachDiagnostics(page);
-  const response = await page.goto(baseUrl, { waitUntil: 'commit', timeout: 20000 });
+  const response = await page.goto(authShellUrl, { waitUntil: 'commit', timeout: 20000 });
   await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
   await page.waitForTimeout(350);
   const layout = await inspectLayout(page, 'auth shell');
@@ -1028,7 +1029,8 @@ const authFailures = authShellResults.filter((result) => (
   || result.layout.scrollWidth > result.layout.clientWidth
   || result.consoleErrors.length > 0
   || result.pageErrors.length > 0
-  || result.failedRequests.length > 0
+  // Closing an unauthenticated capture context can cancel its pending session probe.
+  || result.failedRequests.some(({ error }) => error !== 'net::ERR_ABORTED')
 ));
 const desktopViewportNames = ['desktop-compact', 'desktop', 'desktop-wide'];
 const responsiveViewportNames = ['mobile-minimum', 'mobile-narrow', 'mobile-compact', 'mobile-standard', 'mobile-wide', 'mobile-extra-wide'];
