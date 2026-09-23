@@ -23,8 +23,15 @@ const browser = await chromium.launch({ executablePath: browserPath, headless: t
 
 try {
   for (const viewport of [
-    { name: 'mobile', width: 390, height: 844 },
-    { name: 'desktop', width: 1366, height: 768 },
+    { name: 'mobile-320', width: 320, height: 700 },
+    { name: 'mobile-360', width: 360, height: 780 },
+    { name: 'mobile-375', width: 375, height: 812 },
+    { name: 'mobile-390', width: 390, height: 844 },
+    { name: 'mobile-412', width: 412, height: 915 },
+    { name: 'mobile-430', width: 430, height: 932 },
+    { name: 'tablet-768', width: 768, height: 1024 },
+    { name: 'desktop-1024', width: 1024, height: 768 },
+    { name: 'desktop-1366', width: 1366, height: 768 },
   ]) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
     const page = await context.newPage();
@@ -39,11 +46,41 @@ try {
     if (viewport.width < 600) {
       await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Thêm', exact: true }).click();
       await page.getByRole('button', { name: 'Khách hàng', exact: true }).click();
+    } else if (viewport.width < 1024) {
+      await page.locator('[data-hd-navigation="rail"]').getByRole('button', { name: 'Khách hàng', exact: true }).click();
     } else {
       await page.locator('[data-hd-navigation="sidebar"]').getByRole('button', { name: 'Khách hàng', exact: true }).click();
     }
 
     await page.locator('.premium-customer-module').waitFor({ state: 'visible', timeout: 10000 });
+    const shellOverflow = await page.evaluate(() => {
+      const shell = document.querySelector('.mobile-app-shell');
+      const main = shell?.querySelector(':scope > main');
+      const footer = document.querySelector('[data-hd-navigation="bottom"]');
+      const bounds = element => {
+        const rect = element?.getBoundingClientRect();
+        return rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+      };
+      return {
+        viewportWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        shellWidth: shell?.clientWidth || 0,
+        shellContentWidth: shell?.scrollWidth || 0,
+        mainWidth: main?.clientWidth || 0,
+        mainContentWidth: main?.scrollWidth || 0,
+        footer: bounds(footer),
+      };
+    });
+    assert(shellOverflow.documentWidth <= shellOverflow.viewportWidth + 1, `${viewport.name}: document must not overflow horizontally (${JSON.stringify(shellOverflow)})`);
+    assert(shellOverflow.shellContentWidth <= shellOverflow.shellWidth + 1, `${viewport.name}: app shell must not overflow horizontally (${JSON.stringify(shellOverflow)})`);
+    assert(shellOverflow.mainContentWidth <= shellOverflow.mainWidth + 1, `${viewport.name}: module viewport must not overflow horizontally (${JSON.stringify(shellOverflow)})`);
+    if (viewport.width < 600) {
+      const footerLabelMetrics = await page.locator('[data-hd-navigation="bottom"] [data-nav-label="true"]').evaluateAll(labels => labels.map(label => ({
+        size: getComputedStyle(label).fontSize,
+        fits: label.scrollWidth <= label.parentElement.clientWidth,
+      })));
+      assert(footerLabelMetrics.length >= 4 && footerLabelMetrics.every(label => label.size === '12px' && label.fits), `${viewport.name}: footer labels must use caption typography and fit each touch target (${JSON.stringify(footerLabelMetrics)})`);
+    }
     const appHeader = page.locator('.hd-app-header');
     const headerSearchButton = appHeader.getByRole('button', { name: 'Tìm kiếm', exact: true });
     const headerFilterButton = appHeader.getByRole('button', { name: 'Bộ lọc', exact: true });
@@ -378,7 +415,7 @@ try {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('hd-manager-screen-back', { cancelable: true, detail: { handled: false } })));
     await page.locator('.premium-customer-module:not(.premium-customer-detail)').waitFor({ state: 'visible', timeout: 5000 });
 
-    if (viewport.name === 'mobile') {
+    if (viewport.width < 600) {
       const customerFabLayout = await page.getByRole('button', { name: 'Mở thao tác khách hàng', exact: true }).evaluate((button) => {
         const footer = document.querySelector('[data-hd-navigation="bottom"]');
         const footerLayer = footer?.closest('nav') || footer;
@@ -393,6 +430,7 @@ try {
       });
       assert(customerFabLayout.buttonBottom <= customerFabLayout.footerTop - 4, 'mobile: add-customer action must remain fully above the footer');
       assert(customerFabLayout.buttonZIndex > customerFabLayout.footerZIndex, 'mobile: add-customer action must paint above the footer');
+      assert(shellOverflow.footer, `${viewport.name}: bottom navigation must remain available on phone layouts`);
     }
 
     await headerFilterButton.click();

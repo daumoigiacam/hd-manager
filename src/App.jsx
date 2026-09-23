@@ -50790,7 +50790,7 @@ function NavButton({ icon, label, active, onClick, ariaLabel, badge = 0, collaps
     <button type="button" data-nav-collapsed={collapsed ? 'true' : 'false'} aria-label={ariaLabel || visibleLabel || 'Mở mục'} onClick={onClick} className={`hd-nav-button relative flex flex-col items-center justify-center ${displayLabel ? 'space-y-1' : ''} w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'} ${className}`.trim()}>
       {React.cloneElement(icon, { size: displayLabel ? 22 : 25, className: iconClassName })}
       {displayLabel ? (
-        <span data-nav-label="true" className={`text-[10px] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{displayLabel}</span>
+        <span data-nav-label="true" className={`text-[length:var(--hd-type-caption)] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{displayLabel}</span>
       ) : (
         <span className="sr-only">{ariaLabel || 'Mở mục'}</span>
       )}
