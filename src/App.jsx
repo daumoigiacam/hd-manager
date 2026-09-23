@@ -145,6 +145,11 @@ import {
 } from './utils/orderRequestShare.js';
 import { getFixedFooterNavIds } from './utils/footerNavigation.js';
 import {
+  normalizeCompanyDepartments,
+  removeCompanyDepartment,
+  upsertCompanyDepartment,
+} from './utils/companyDepartments.js';
+import {
   buildGlobalSearchSections,
   readGlobalSearchHistory,
   writeGlobalSearchHistory,
@@ -16638,6 +16643,10 @@ export default function App() {
         ? normalizeEmployeeRolePermissionActions(settingsData.employeeRolePermissionActions, settingsData.employeeRolePermissions ?? currentCompany?.employeeRolePermissions ?? {}, employees)
         : normalizeEmployeeRolePermissionActions(currentCompany?.employeeRolePermissionActions || {}, currentCompany?.employeeRolePermissions || {}, employees),
       employeeReviewCriteriaLabels: normalizedEmployeeReviewCriteriaLabels,
+      employeeDepartments:
+        settingsData.employeeDepartments !== undefined
+          ? normalizeCompanyDepartments(settingsData.employeeDepartments)
+          : normalizeCompanyDepartments(currentCompany?.employeeDepartments),
       dailyInventorySnapshots: settingsData.dailyInventorySnapshots !== undefined
         ? normalizeProcessingInventorySnapshots(settingsData.dailyInventorySnapshots)
         : normalizeProcessingInventorySnapshots(currentCompany?.dailyInventorySnapshots || currentCompany?.processingInventorySnapshots || {}),
@@ -25119,6 +25128,7 @@ function MainAppView({
           onAddEmployeeReview={onAddEmployeeReview}
           onAddHoliday={onAddHoliday}
           onDeleteHoliday={onDeleteHoliday}
+          onUpdateCompanySettings={onUpdateCompanySettings}
           isSuperAdmin={isSuperAdmin}
           canViewEmployees={canRoleAction('employees', 'view_employees')}
           canCreateEmployee={canRoleAction('employees', 'create_employee')}
@@ -78327,6 +78337,8 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
     loginPasswordConfirm: '',
     avatarUrl: '',
     position,
+    companyDepartmentId: '',
+    companyDepartmentName: '',
     secondaryPositions: [],
     roleSalaryComponents: [],
     startDate: getTodayString(),
@@ -79745,6 +79757,7 @@ function EmployeeView({
   onAddEmployeeReview,
   onAddHoliday,
   onDeleteHoliday,
+  onUpdateCompanySettings,
   isSuperAdmin,
   canViewEmployees = false,
   canCreateEmployee = false,
@@ -79774,6 +79787,10 @@ function EmployeeView({
   const [avatarUploadEmp, setAvatarUploadEmp] = useState(null);
   const [documentUploadEmp, setDocumentUploadEmp] = useState(null);
   const [documentUploadType, setDocumentUploadType] = useState('id_card');
+  const [companyDepartmentNameDraft, setCompanyDepartmentNameDraft] = useState('');
+  const [editingCompanyDepartmentId, setEditingCompanyDepartmentId] = useState('');
+  const [companyDepartmentStatus, setCompanyDepartmentStatus] = useState('');
+  const [isSavingCompanyDepartment, setIsSavingCompanyDepartment] = useState(false);
   const [reviewMonth, setReviewMonth] = useState(getTodayString().slice(0, 7));
   const [salesRevenueMonth, setSalesRevenueMonth] = useState(getTodayString().slice(0, 7));
   const [reviewTargetEmp, setReviewTargetEmp] = useState(null);
@@ -79846,6 +79863,86 @@ function EmployeeView({
     if (canCreateSalesCollaborator || canKeepCurrentCollaborator) return DEPARTMENT_ACCOUNT_OPTIONS;
     return DEPARTMENT_ACCOUNT_OPTIONS.filter(option => !isSalesCollaboratorPosition(option));
   }, [canCreateSalesCollaborator, empData.position]);
+  const companyDepartments = useMemo(
+    () => normalizeCompanyDepartments(currentCompany?.employeeDepartments),
+    [currentCompany?.employeeDepartments],
+  );
+  const companyDepartmentById = useMemo(
+    () => new Map(companyDepartments.map((department) => [department.id, department])),
+    [companyDepartments],
+  );
+  const getEmployeeCompanyDepartment = (employee) => {
+    const departmentId = `${employee?.companyDepartmentId || ''}`;
+    const matchedById = companyDepartmentById.get(departmentId);
+    if (matchedById) return matchedById;
+    const legacyName = `${employee?.companyDepartmentName || employee?.companyDepartment || ''}`.trim();
+    return companyDepartments.find(
+      (department) => department.name.localeCompare(legacyName, 'vi', { sensitivity: 'base' }) === 0,
+    );
+  };
+  const canManageCompanyDepartments = Boolean(isSuperAdmin || canEditEmployee);
+  const handleSaveCompanyDepartment = async (event) => {
+    event.preventDefault();
+    if (!canManageCompanyDepartments || isSavingCompanyDepartment) return;
+    const result = upsertCompanyDepartment(companyDepartments, {
+      id: editingCompanyDepartmentId,
+      name: companyDepartmentNameDraft,
+      now: new Date().toISOString(),
+      nextId: `department_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    });
+    if (result.error) {
+      setCompanyDepartmentStatus(result.error);
+      return;
+    }
+    setIsSavingCompanyDepartment(true);
+    setCompanyDepartmentStatus('');
+    try {
+      const saved = await onUpdateCompanySettings?.({ employeeDepartments: result.departments });
+      if (!saved || saved.success === false)
+        throw new Error(saved?.message || 'Không thể lưu bộ phận công ty.');
+      setCompanyDepartmentNameDraft('');
+      setEditingCompanyDepartmentId('');
+      setCompanyDepartmentStatus('Đã lưu bộ phận công ty.');
+    } catch (error) {
+      setCompanyDepartmentStatus(
+        getFriendlyFirebaseErrorMessage(error, 'Không thể lưu bộ phận công ty.'),
+      );
+    } finally {
+      setIsSavingCompanyDepartment(false);
+    }
+  };
+  const handleRemoveCompanyDepartment = async (departmentId) => {
+    if (!canManageCompanyDepartments || isSavingCompanyDepartment) return;
+    const assignedDepartmentIds = (employees || [])
+      .filter((employee) => !employee?.isArchived)
+      .map((employee) => getEmployeeCompanyDepartment(employee)?.id || '');
+    const result = removeCompanyDepartment(companyDepartments, {
+      id: departmentId,
+      assignedDepartmentIds,
+    });
+    if (result.error) {
+      setCompanyDepartmentStatus(result.error);
+      return;
+    }
+    setIsSavingCompanyDepartment(true);
+    setCompanyDepartmentStatus('');
+    try {
+      const saved = await onUpdateCompanySettings?.({ employeeDepartments: result.departments });
+      if (!saved || saved.success === false)
+        throw new Error(saved?.message || 'Không thể xóa bộ phận công ty.');
+      if (editingCompanyDepartmentId === departmentId) {
+        setEditingCompanyDepartmentId('');
+        setCompanyDepartmentNameDraft('');
+      }
+      setCompanyDepartmentStatus('Đã xóa bộ phận công ty.');
+    } catch (error) {
+      setCompanyDepartmentStatus(
+        getFriendlyFirebaseErrorMessage(error, 'Không thể xóa bộ phận công ty.'),
+      );
+    } finally {
+      setIsSavingCompanyDepartment(false);
+    }
+  };
   const draftLatePenaltyTiers = normalizeLatePenaltyTiers(empData.latePenaltyTiers);
   const updateLatePenaltyTier = (index, patch) => {
     if (!canManageLatePenaltyPolicy) return;
@@ -80118,6 +80215,8 @@ function EmployeeView({
     ]).filter(position => position && position !== primaryPosition && !isOwnerPosition(position));
     setEmpData({ 
       name: emp.name, phone: emp.phone, position: primaryPosition,
+      companyDepartmentId: getEmployeeCompanyDepartment(emp)?.id || '',
+      companyDepartmentName: getEmployeeCompanyDepartment(emp)?.name || '',
       createLogin: false,
       loginPassword: '',
       loginPasswordConfirm: '',
@@ -80192,10 +80291,15 @@ function EmployeeView({
     const shiftDefaults = getPositionShiftDefaults(normalizedPosition);
     const normalizedShiftStart = normalizeTimeInputValue(empData.shiftStart) || shiftDefaults.shiftStart;
     const normalizedShiftEnd = normalizeTimeInputValue(empData.shiftEnd) || shiftDefaults.shiftEnd;
+    const assignedCompanyDepartment = companyDepartmentById.get(
+      `${empData.companyDepartmentId || ''}`,
+    );
     const pData = { 
       ...empData,
       position: normalizedPosition,
       primaryPosition: normalizedPosition,
+      companyDepartmentId: assignedCompanyDepartment?.id || '',
+      companyDepartmentName: assignedCompanyDepartment?.name || '',
       secondaryPositions,
       additionalPositions: secondaryPositions,
       departments: positionSet,
@@ -80565,6 +80669,97 @@ function EmployeeView({
           />
         </p>
       </div>
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-black text-slate-900">Bộ phận công ty</h3>
+            <p className="mt-1 text-xs text-slate-500">{companyDepartments.length} bộ phận</p>
+          </div>
+          <Building size={19} className="shrink-0 text-emerald-600" />
+        </div>
+        {canManageCompanyDepartments && (
+          <form onSubmit={handleSaveCompanyDepartment} className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <input
+              type="text"
+              value={companyDepartmentNameDraft}
+              onChange={(event) => setCompanyDepartmentNameDraft(event.target.value)}
+              placeholder="Tên bộ phận"
+              aria-label="Tên bộ phận công ty"
+              maxLength={60}
+              className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-400"
+            />
+            <div className="flex gap-2">
+              {editingCompanyDepartmentId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCompanyDepartmentId('');
+                    setCompanyDepartmentNameDraft('');
+                    setCompanyDepartmentStatus('');
+                  }}
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600"
+                >Hủy</button>
+              )}
+              <button
+                type="submit"
+                disabled={isSavingCompanyDepartment || !companyDepartmentNameDraft.trim()}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+              >
+                {editingCompanyDepartmentId ? <Save size={14} /> : <Plus size={14} />}
+                {editingCompanyDepartmentId ? 'Lưu' : 'Thêm'}
+              </button>
+            </div>
+          </form>
+        )}
+        {companyDepartmentStatus && (
+          <p
+            role="status"
+            className={`mt-2 text-xs font-semibold ${companyDepartmentStatus.startsWith('Đã') ? 'text-emerald-700' : 'text-rose-600'}`}
+          >{companyDepartmentStatus}</p>
+        )}
+        <div className="mt-3 space-y-2">
+          {companyDepartments.length ? companyDepartments.map((department) => {
+            const assignedCount = (employees || []).filter(
+              (employee) => !employee?.isArchived && getEmployeeCompanyDepartment(employee)?.id === department.id,
+            ).length;
+            return (
+              <div key={department.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold text-slate-800">{department.name}</p>
+                  <p className="text-[11px] text-slate-500">{assignedCount} nhân sự</p>
+                </div>
+                {canManageCompanyDepartments && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCompanyDepartmentId(department.id);
+                        setCompanyDepartmentNameDraft(department.name);
+                        setCompanyDepartmentStatus('');
+                      }}
+                      className="rounded-lg p-2 text-slate-500 hover:bg-white hover:text-emerald-700"
+                      aria-label={`Sửa bộ phận ${department.name}`}
+                      title="Sửa"
+                    ><Edit3 size={15} /></button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCompanyDepartment(department.id)}
+                      disabled={isSavingCompanyDepartment}
+                      className="rounded-lg p-2 text-rose-500 hover:bg-white disabled:opacity-50"
+                      aria-label={`Xóa bộ phận ${department.name}`}
+                      title={assignedCount ? 'Chuyển nhân sự trước khi xóa' : 'Xóa'}
+                    ><Trash2 size={15} /></button>
+                  </div>
+                )}
+              </div>
+            );
+          }) : (
+            <p className="rounded-xl bg-slate-50 px-3 py-3 text-xs text-slate-500">
+              Chưa có bộ phận. Thêm bộ phận để phân loại hồ sơ nhân sự của công ty.
+            </p>
+          )}
+        </div>
+      </section>
       {employeeStatus && (
         <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           {employeeStatus}
@@ -80619,6 +80814,11 @@ function EmployeeView({
                   <div className="min-w-0">
                     <h3 className="font-semibold text-gray-800 truncate">{emp.name}</h3>
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full inline-block mt-1 ${isOwnerPosition(emp.position) || emp.role === 'super_admin' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>{getEmployeePositionSummary(emp)}</span>
+                    {(getEmployeeCompanyDepartment(emp)?.name || emp.companyDepartmentName) && (
+                      <span className="ml-1 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        {getEmployeeCompanyDepartment(emp)?.name || emp.companyDepartmentName}
+                      </span>
+                    )}
                     {salesRevenueSummary && (
                       <div className="mt-1 text-[10px] font-semibold text-emerald-700">
                         {formatMonthYearLabel(salesRevenueMonth)}: <strong>{formatCurrency(salesRevenueSummary.revenue)} đ</strong>
@@ -80875,6 +81075,29 @@ function EmployeeView({
                   </select>
                 )}
               </div>
+              {!isEditingOwner && (
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-bold text-slate-600">Bộ phận công ty</span>
+                  <select
+                    value={empData.companyDepartmentId || ''}
+                    onChange={(event) => {
+                      const department = companyDepartmentById.get(event.target.value);
+                      setEmpData((previous) => ({
+                        ...previous,
+                        companyDepartmentId: department?.id || '',
+                        companyDepartmentName: department?.name || '',
+                      }));
+                    }}
+                    aria-label="Bộ phận công ty"
+                    className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-emerald-400"
+                  >
+                    <option value="">Chưa phân bộ phận</option>
+                    {companyDepartments.map((department) => (
+                      <option key={department.id} value={department.id}>{department.name}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {isVpsMode && !isEditingOwner && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
                   {editingEmp?.userId ? (
