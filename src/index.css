@@ -67,7 +67,11 @@ textarea {
 input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
-  font-size: max(16px, 1rem);
+  font-size: var(--hd-type-body, 14px);
+}
+
+:root[data-hd-ios-input-zoom-guard="true"] :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  font-size: max(16px, var(--hd-type-body, 14px));
 }
 
 input,

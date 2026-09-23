@@ -43,6 +43,15 @@ try {
     await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
     await page.waitForTimeout(1200);
 
+    const defaultInputFontSize = await page.locator('.hd-enterprise-app-shell').evaluate(shell => {
+      const probe = document.createElement('input');
+      shell.append(probe);
+      const fontSize = getComputedStyle(probe).fontSize;
+      probe.remove();
+      return fontSize;
+    });
+    assert.equal(defaultInputFontSize, '14px', `${viewport.name}: unstyled form controls must use the shared 14px body token`);
+
     if (viewport.width < 600) {
       await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Thêm', exact: true }).click();
       await page.getByRole('button', { name: 'Khách hàng', exact: true }).click();

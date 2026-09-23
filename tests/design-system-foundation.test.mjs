@@ -50,6 +50,9 @@ assert(!foundation.includes('font-size: clamp('), 'Typography scale must not gro
 assert(!/font-size\s*:\s*clamp\(/i.test(indexCss), 'App typography must use fixed sizes instead of viewport-scaled font sizes');
 assert.match(indexCss, /html\s*\{[^}]*font-size:\s*16px/s, 'Root font size must remain fixed across viewport widths');
 assert.match(indexCss, /\.mobile-app-shell\s*\{[^}]*font-size:\s*var\(--hd-type-body,\s*14px\)/s, 'Mobile shell must use the shared fixed body text size');
+assert.match(indexCss, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\s*select,\s*textarea\s*\{\s*font-size:\s*var\(--hd-type-body,\s*14px\)/s, 'Form controls must use the shared 14px body size by default');
+assert.match(indexCss, /data-hd-ios-input-zoom-guard="true"[\s\S]*?font-size:\s*max\(16px,\s*var\(--hd-type-body,\s*14px\)\)/, 'iOS form controls must retain a 16px minimum to prevent focus zoom');
+assert.match(main, /const isIosInputZoomGuard = platform === 'ios' \|\| isIosWeb;[\s\S]*root\.dataset\.hdIosInputZoomGuard = isIosInputZoomGuard \? 'true' : 'false';/, 'Runtime must enable the input zoom guard only on iOS');
 assert(foundation.includes('.hd-customer-create-view__header h3') && foundation.includes('font-size: var(--hd-type-h1)'), 'Customer create title must use the shared page title scale');
 for (const token of ['--hd-type-kpi-lg: 24px', '--hd-type-kpi-md: 20px', '--hd-type-kpi-sm: 16px', '--hd-type-h1: 20px', '--hd-type-section-title: 16px', '--hd-type-card-title: 14px']) {
   assert(foundation.includes(token), `Missing CSS typography token: ${token}`);

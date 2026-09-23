@@ -61,6 +61,7 @@ function installResponsiveViewportVars() {
     const platform = getPlatform();
     const isAndroidNative = isNativePlatform() && platform === 'android';
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
+    const isIosInputZoomGuard = platform === 'ios' || isIosWeb;
     const isStandalone = isStandaloneWebApp();
     const topFallback = isAndroidNative ? '24px' : isIosWeb ? (isStandalone ? '18px' : '12px') : '0px';
     const bottomFallback = isAndroidNative
@@ -72,6 +73,7 @@ function installResponsiveViewportVars() {
     // Some WebView/Safari surfaces report env(safe-area-inset-*) as 0 while drawing under system bars.
     root.style.setProperty('--hd-safe-top-fallback', topFallback);
     root.style.setProperty('--hd-safe-bottom-fallback', bottomFallback);
+    root.dataset.hdIosInputZoomGuard = isIosInputZoomGuard ? 'true' : 'false';
   };
 
   const isKeyboardEditableElement = (element) => {
