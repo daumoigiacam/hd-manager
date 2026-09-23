@@ -23,6 +23,9 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
+import { HDIconButton } from '../../design-system/index.js';
+import { useHDTheme } from '../../design-system/ThemeProvider.jsx';
+import './DeliveryRedesignWorkspace.css';
 import {
   DELIVERY_STATUS_TABS,
   filterDeliveryWorkspaceGroups,
@@ -68,11 +71,23 @@ function Avatar({ name, large = false }) {
   );
 }
 
-function IconButton({ label, children, className = '', ...props }) {
+function IconButton({ label, children, className = '', style, ...props }) {
   return (
-    <button type="button" title={label} aria-label={label} className={`inline-flex h-10 w-10 items-center justify-center rounded-xl transition active:scale-95 ${className}`} {...props}>
+    <HDIconButton
+      label={label}
+      title={label}
+      className={`inline-flex h-11 w-11 items-center justify-center rounded-xl transition active:scale-95 ${className}`}
+      style={{
+        width: 'var(--hd-touch-target)',
+        minWidth: 'var(--hd-touch-target)',
+        height: 'var(--hd-touch-target)',
+        minHeight: 'var(--hd-touch-target)',
+        ...(style || {}),
+      }}
+      {...props}
+    >
       {children}
-    </button>
+    </HDIconButton>
   );
 }
 
@@ -103,7 +118,7 @@ function DeliveryRow({ group, onOpen, darkMode = false, compact = false }) {
   );
 }
 
-function ActionTile({ icon: Icon, label, onClick, tone = 'blue' }) {
+function ActionTile({ icon: Icon, label, onClick, tone = 'blue', darkMode = false }) {
   const tones = {
     green: 'bg-emerald-50 text-emerald-600',
     blue: 'bg-blue-50 text-blue-600',
@@ -111,7 +126,7 @@ function ActionTile({ icon: Icon, label, onClick, tone = 'blue' }) {
     violet: 'bg-violet-50 text-violet-600',
   };
   return (
-    <button type="button" onClick={onClick} className="flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl bg-white px-2 text-xs font-bold text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.05)] transition active:scale-95">
+    <button type="button" onClick={onClick} className={`flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl px-2 text-xs font-bold shadow-[0_8px_22px_rgba(15,23,42,0.05)] transition active:scale-95 ${darkMode ? 'bg-slate-800 text-slate-100' : 'bg-white text-slate-700'}`}>
       <span className={`flex h-11 w-11 items-center justify-center rounded-xl ${tones[tone] || tones.blue}`}><Icon size={22} /></span>
       {label}
     </button>
@@ -153,6 +168,7 @@ export default function DeliveryRedesignWorkspace({
   statusTone = 'emerald',
   isSaving = false,
 }) {
+  const { theme, setPreference } = useHDTheme();
   const [screen, setScreen] = useState('overview');
   const [selectedGroupKey, setSelectedGroupKey] = useState('');
   const [activeTab, setActiveTab] = useState('pending');
@@ -160,7 +176,6 @@ export default function DeliveryRedesignWorkspace({
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState('all');
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
   const [completedSummary, setCompletedSummary] = useState(null);
 
   const normalizedGroups = useMemo(() => [...groups].sort((left, right) => (right.latestTimestamp || 0) - (left.latestTimestamp || 0)), [groups]);
@@ -171,7 +186,7 @@ export default function DeliveryRedesignWorkspace({
     keyword,
   }), [activeTab, filterStatus, keyword, normalizedGroups]);
   const recentGroups = normalizedGroups.slice(0, 4);
-  const isDark = darkMode;
+  const isDark = theme === 'dark';
   const shellClass = isDark ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900';
 
   const openGroup = (group, target = 'detail') => {
@@ -211,7 +226,7 @@ export default function DeliveryRedesignWorkspace({
 
   const overview = (
     <div className="space-y-4">
-      <section className="overflow-hidden rounded-[28px] bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-500 px-5 pb-5 pt-4 text-white shadow-[0_18px_42px_rgba(5,150,105,0.24)]">
+      <section className="hd-delivery-overview-hero overflow-hidden rounded-[28px] bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-500 px-5 pb-5 pt-4 text-white shadow-[0_18px_42px_rgba(5,150,105,0.24)]">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-emerald-100">Giao hàng</p>
@@ -220,22 +235,22 @@ export default function DeliveryRedesignWorkspace({
           <div className="flex items-center gap-1">
             <IconButton label="Báo cáo nhanh" onClick={() => setScreen('stats')} className="text-white hover:bg-white/15"><BarChart3 size={19} /></IconButton>
             <IconButton label="Thao tác nhanh" onClick={() => setQuickActionsOpen(true)} className="text-white hover:bg-white/15"><MoreHorizontal size={20} /></IconButton>
-            <label title="Chọn ngày" className="relative inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl text-white hover:bg-white/15">
+          <label title="Chọn ngày" className="relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-white hover:bg-white/15">
               <input type="date" value={workingDate} onChange={(event) => onChangeDate?.(event.target.value)} className="absolute inset-0 cursor-pointer opacity-0" aria-label="Chọn ngày giao hàng" />
               <FileText size={19} />
             </label>
           </div>
         </div>
-        <div className="mt-5 flex items-center justify-between gap-4">
-          <div className="max-w-[11rem]">
-            <p className="text-2xl font-black leading-tight">Giao đúng hẹn</p>
+        <div className="hd-delivery-overview-heading mt-5 flex items-center justify-between gap-4">
+          <div className="hd-delivery-overview-copy max-w-[11rem]">
+            <p className="hd-delivery-overview-title text-2xl font-black leading-tight">Giao đúng hẹn</p>
             <p className="mt-1 text-sm font-semibold text-emerald-50">Vững niềm tin</p>
           </div>
-          <div className="flex h-28 w-28 shrink-0 items-center justify-center rounded-[24px] border border-white/20 bg-white/15 shadow-inner">
+          <div className="hd-delivery-overview-illustration flex h-28 w-28 shrink-0 items-center justify-center rounded-[24px] border border-white/20 bg-white/15 shadow-inner">
             <Truck size={61} strokeWidth={1.65} aria-hidden="true" />
           </div>
         </div>
-        <div className="mt-5 grid grid-cols-3 gap-2">
+        <div className="hd-delivery-overview-stats mt-5 grid grid-cols-3 gap-2">
           {[
             { label: 'Cần giao', value: displayStats.required, tone: 'bg-white/18' },
             { label: 'Chờ báo cáo', value: displayStats.waiting, tone: 'bg-orange-300/20' },
@@ -415,10 +430,10 @@ export default function DeliveryRedesignWorkspace({
 
   const content = screen === 'overview' ? overview : screen === 'list' ? list : screen === 'detail' ? detail : screen === 'confirm' ? confirm : screen === 'success' ? success : screen === 'map' ? map : statsView;
   return (
-    <section className={`relative min-h-full px-3 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-3 sm:px-4 ${shellClass}`} aria-label="Module giao hàng">
+    <section data-hd-module="delivery" data-hd-theme={theme} className={`relative min-h-full px-3 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-3 sm:px-4 ${shellClass}`} aria-label="Module giao hàng">
       {content}
-      {filterOpen && <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] top-0 z-30 flex items-end bg-slate-950/35" role="dialog" aria-modal="true" aria-label="Bộ lọc giao hàng" onClick={() => setFilterOpen(false)}><div className="w-full rounded-t-[28px] bg-white p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))]" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h3 className="text-[17px] font-black">Bộ lọc</h3><IconButton label="Đóng bộ lọc" onClick={() => setFilterOpen(false)} className="bg-slate-100 text-slate-600"><X size={18} /></IconButton></div><div className="mt-4 grid grid-cols-3 gap-2">{filterOptions.map((option) => <button type="button" key={option.id} onClick={() => setFilterStatus(option.id)} className={`rounded-xl px-2 py-3 text-xs font-bold ${filterStatus === option.id ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{option.label}</button>)}</div><button type="button" onClick={() => setFilterOpen(false)} className="mt-4 w-full rounded-2xl bg-emerald-600 py-3.5 text-sm font-black text-white">Áp dụng</button></div></div>}
-      {quickActionsOpen && <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] top-0 z-30 flex items-end bg-slate-950/35" role="dialog" aria-modal="true" aria-label="Thao tác nhanh" onClick={() => setQuickActionsOpen(false)}><div className="w-full rounded-t-[28px] bg-white p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))]" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h3 className="text-[17px] font-black">Thao tác nhanh</h3><IconButton label="Đóng thao tác nhanh" onClick={() => setQuickActionsOpen(false)} className="bg-slate-100 text-slate-600"><X size={18} /></IconButton></div><div className="mt-4 grid grid-cols-2 gap-3"><ActionTile icon={ScanLine} label="Quét khách" onClick={() => { setQuickActionsOpen(false); openList(); }} tone="green" /><ActionTile icon={FileText} label="Hóa đơn" onClick={() => { setQuickActionsOpen(false); openList(); }} /><ActionTile icon={ImagePlus} label="Chụp ảnh" onClick={() => { setQuickActionsOpen(false); triggerPhotoPicker(); }} tone="orange" /><ActionTile icon={Send} label="Ghi chú" onClick={() => { setQuickActionsOpen(false); selectedGroup ? setScreen('confirm') : openList(); }} tone="violet" /></div><button type="button" onClick={() => setDarkMode((current) => !current)} className="mt-3 w-full rounded-xl bg-slate-100 py-3 text-sm font-bold text-slate-700">{darkMode ? 'Dùng giao diện sáng' : 'Dùng giao diện tối'}</button></div></div>}
+      {filterOpen && <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] top-0 z-30 flex items-end bg-slate-950/35" role="dialog" aria-modal="true" aria-label="Bộ lọc giao hàng" onClick={() => setFilterOpen(false)}><div className={`w-full rounded-t-[28px] p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] ${isDark ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'}`} onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h3 className="text-[17px] font-black">Bộ lọc</h3><IconButton label="Đóng bộ lọc" onClick={() => setFilterOpen(false)} className={isDark ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'}><X size={18} /></IconButton></div><div className="mt-4 grid grid-cols-3 gap-2">{filterOptions.map((option) => <button type="button" key={option.id} onClick={() => setFilterStatus(option.id)} className={`min-h-11 rounded-xl px-2 py-3 text-xs font-bold ${filterStatus === option.id ? 'bg-emerald-600 text-white' : isDark ? 'bg-slate-800 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>{option.label}</button>)}</div><button type="button" onClick={() => setFilterOpen(false)} className="mt-4 min-h-11 w-full rounded-2xl bg-emerald-600 py-3.5 text-sm font-black text-white">Áp dụng</button></div></div>}
+      {quickActionsOpen && <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] top-0 z-30 flex items-end bg-slate-950/35" role="dialog" aria-modal="true" aria-label="Thao tác nhanh" onClick={() => setQuickActionsOpen(false)}><div className={`w-full rounded-t-[28px] p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] ${isDark ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'}`} onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h3 className="text-[17px] font-black">Thao tác nhanh</h3><IconButton label="Đóng thao tác nhanh" onClick={() => setQuickActionsOpen(false)} className={isDark ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'}><X size={18} /></IconButton></div><div className="mt-4 grid grid-cols-2 gap-3"><ActionTile icon={ScanLine} label="Quét khách" onClick={() => { setQuickActionsOpen(false); openList(); }} tone="green" darkMode={isDark} /><ActionTile icon={FileText} label="Hóa đơn" onClick={() => { setQuickActionsOpen(false); openList(); }} darkMode={isDark} /><ActionTile icon={ImagePlus} label="Chụp ảnh" onClick={() => { setQuickActionsOpen(false); triggerPhotoPicker(); }} tone="orange" darkMode={isDark} /><ActionTile icon={Send} label="Ghi chú" onClick={() => { setQuickActionsOpen(false); selectedGroup ? setScreen('confirm') : openList(); }} tone="violet" darkMode={isDark} /></div><button type="button" onClick={() => setPreference(isDark ? 'light' : 'dark')} className={`mt-3 min-h-11 w-full rounded-xl py-3 text-sm font-bold ${isDark ? 'bg-slate-800 text-slate-100' : 'bg-slate-100 text-slate-700'}`}>{isDark ? 'Dùng giao diện sáng' : 'Dùng giao diện tối'}</button></div></div>}
     </section>
   );
 }
