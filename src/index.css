@@ -14,7 +14,7 @@ body,
 }
 
 html {
-  font-size: clamp(13px, 3.9vw, 16px);
+  font-size: 16px;
   -webkit-tap-highlight-color: transparent;
   color-scheme: light;
 }
@@ -98,7 +98,7 @@ svg {
   max-height: var(--hd-viewport-height);
   isolation: isolate;
   overflow: hidden;
-  font-size: clamp(0.92rem, 3.7vw, 1rem);
+  font-size: var(--hd-type-body, 14px);
   container-type: inline-size;
 }
 
@@ -224,7 +224,7 @@ svg {
 
 .platform-admin-main { min-width: 0; }
 .platform-admin-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding: 1.45rem clamp(1rem, 3vw, 2.5rem); border-bottom: 1px solid #dce8e4; background: #ffffff; }
-.platform-admin-header h1 { margin: 0.2rem 0 0; font-size: clamp(1.35rem, 2vw, 1.8rem); letter-spacing: 0; }
+.platform-admin-header h1 { margin: 0.2rem 0 0; font-size: var(--hd-type-h1, 20px); letter-spacing: 0; }
 .platform-admin-eyebrow { margin: 0; color: #0f766e; font-size: 0.7rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
 .platform-admin-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 .platform-admin-last-updated { color: #64748b; font-size: 0.72rem; }
@@ -495,7 +495,7 @@ svg {
   max-width: 100%;
   table-layout: auto;
   border-collapse: collapse;
-  font-size: clamp(0.78rem, 3vw, 0.92rem);
+  font-size: var(--hd-type-label, 13px);
 }
 
 .mobile-app-shell :where(th, td) {
@@ -660,10 +660,6 @@ svg {
 }
 
 @media (max-width: 380px) {
-  html {
-    font-size: clamp(12.25px, 3.75vw, 14px);
-  }
-
   .mobile-app-shell > main {
     padding-left: 0.75rem;
     padding-right: 0.75rem;
@@ -684,10 +680,6 @@ svg {
 }
 
 @media (max-width: 340px) {
-  html {
-    font-size: 12px;
-  }
-
   .mobile-app-shell :where(.grid.grid-cols-2, .grid.grid-cols-3, .grid.grid-cols-4) {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -758,7 +750,7 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: clamp(0.56rem, 2.45vw, 0.68rem);
+  font-size: var(--hd-type-caption, 12px);
   font-weight: 800;
 }
 

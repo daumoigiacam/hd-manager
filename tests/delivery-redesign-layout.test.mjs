@@ -40,7 +40,7 @@ assert.match(app, /<DeliveryRedesignWorkspace[\s\S]*groups=\{deliveryWorkspaceGr
 assert.match(app, /onComplete=\{\(\) => handleSubmitReport\(\{ preventDefault\(\) \{\} \}\)\}/, 'The redesign must preserve the existing save workflow.');
 assert.match(app, /case 'delivery_reports':\s*return <DeliveryReportView/, 'The redesigned workspace must also render when the selected day has no dispatches.');
 assert.match(app, /activeTab === 'delivery_reports'[\s\S]*\['home', 'delivery_reports', 'customers', 'report', 'more'\]/, 'The delivery workspace must use its approved contextual mobile navigation.');
-assert.match(app, /canShowFloatingQuickActionButton && quickActionItems\.length > 0 && activeTab !== 'delivery_reports'/, 'The global quick action must not overlap the delivery redesign.');
+assert.match(app, /canShowFloatingQuickActionButton && quickActionItems\.length > 0 && !\['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management'\]\.includes\(activeTab\)/, 'The global quick action must not duplicate or overlap module-specific creation actions.');
 assert.match(app, /activeTab === 'delivery_reports' \? 'Giao hàng'/, 'The delivery header must use the approved title.');
 assert.match(app, /delivery_reports: \{ id: 'delivery_reports', label: 'Giao hàng'/, 'The mobile navigation must use the delivery label.');
 

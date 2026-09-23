@@ -219,6 +219,35 @@ const inspectLayout = async (page, route = '') => page.evaluate((currentRoute) =
           && result.borderWidthsUnchanged,
       };
     });
+  const floatingActionButtons = [...document.querySelectorAll([
+    'button[aria-label="Mở phím tắt nhanh"]',
+    'button[aria-label="Mở thao tác khách hàng"]',
+    'button[aria-label="Mở thao tác thu chi"]',
+    'button[aria-label="Thêm sản phẩm"]',
+    'button[aria-label="Tạo đơn bán hàng"]',
+    'button[aria-label="Thêm nhân viên"]',
+    'button[aria-label="Thêm tài sản"]',
+    'button[aria-label="Thêm bạn hoặc tạo nhóm"]'
+  ].join(','))].filter(visible).map((button) => {
+    const rect = button.getBoundingClientRect();
+    return {
+      label: button.getAttribute('aria-label') || '',
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom
+    };
+  });
+  const floatingActionOverlaps = [];
+  for (let leftIndex = 0; leftIndex < floatingActionButtons.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < floatingActionButtons.length; rightIndex += 1) {
+      const left = floatingActionButtons[leftIndex];
+      const right = floatingActionButtons[rightIndex];
+      if (left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top) {
+        floatingActionOverlaps.push([left.label, right.label]);
+      }
+    }
+  }
   return {
     route: currentRoute,
     scrollWidth: root.scrollWidth,
@@ -234,6 +263,8 @@ const inspectLayout = async (page, route = '') => page.evaluate((currentRoute) =
     textPreview: (document.body?.innerText || '').slice(0, 320),
     visibleInputs: [...document.querySelectorAll('input, textarea, select')]
       .filter((node) => visible(node)).length,
+    floatingActionButtons,
+    floatingActionOverlaps,
     searchFocusChecked: searchFocusChecks.length,
     searchFocusFailures: searchFocusChecks.filter((result) => !result.passed),
   };
@@ -257,7 +288,7 @@ const routeNavigation = {
   price_quotes: { label: 'Báo giá' },
   warehouse_dispatch: { label: 'Xuất kho' },
   warehouse_import: { label: 'Nhập Xuất Tồn' },
-  delivery_reports: { label: 'Báo cáo', occurrence: 0 },
+  delivery_reports: { label: 'Báo cáo giao hàng' },
   maps: { label: 'Bản đồ' },
   debt: { label: 'Sổ nợ' },
   finance: { label: 'Thu chi' },
@@ -268,7 +299,7 @@ const routeNavigation = {
   employee_reviews: { label: 'Đánh giá' },
   asset_management: { label: 'Tài sản' },
   products: { label: 'Sản phẩm' },
-  report: { label: 'Báo cáo', occurrence: 1 },
+  report: { label: 'Báo cáo' },
   settings: { label: 'Cài đặt' },
   role_permissions: { label: 'Vai trò' },
   billing: { label: 'Gói dịch vụ' },
@@ -287,6 +318,15 @@ const navigateRoute = async (page, route) => {
   if (await shellSearchPopover.isVisible().catch(() => false)) {
     await page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
     await shellSearchPopover.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
+  }
+  if (route === 'delivery_reports') {
+    const moreButton = page.locator('[data-hd-navigation="sidebar"] button[aria-label="Thêm"]');
+    if (!await moreButton.isVisible().catch(() => false)) throw new Error('Sidebar More navigation is unavailable for delivery reports.');
+    await moreButton.click();
+    await page.waitForTimeout(450);
+    if (!await clickVisibleButton(page, 'Báo cáo giao hàng')) throw new Error('Delivery report entry is missing from More.');
+    await page.waitForTimeout(450);
+    return;
   }
   const buttons = page.locator(`[data-hd-navigation="sidebar"] button[aria-label="${target.label}"]`);
   const count = await buttons.count();
@@ -325,12 +365,13 @@ const mobileMoreLabels = {
 const navigateMobileRoute = async (page, route) => {
   const bottom = page.locator('[data-hd-navigation="bottom"]');
   const direct = bottom.getByRole('button', { name: routeNavigation[route]?.label || route, exact: true });
-  if (route === 'more' || await direct.count()) {
+  const directVisible = await direct.isVisible().catch(() => false);
+  if (route === 'more' || directVisible) {
     await bottom.getByRole('button', { name: route === 'more' ? 'Thêm' : routeNavigation[route].label, exact: true }).click();
     await page.waitForTimeout(450);
     return;
   }
-  await bottom.getByRole('button', { name: 'Thêm', exact: true }).click();
+  if (!await clickVisibleButton(page, 'Thêm')) throw new Error('Mobile bottom navigation is unavailable while opening More.');
   await page.waitForTimeout(300);
   const label = mobileMoreLabels[route];
   if (!label) throw new Error(`No mobile More mapping for ${route}`);
@@ -342,6 +383,15 @@ const navigateMobileRoute = async (page, route) => {
 const navigateTabletRoute = async (page, route) => {
   const target = routeNavigation[route];
   if (!target) throw new Error(`No visual QA navigation mapping for ${route}`);
+  if (route === 'delivery_reports') {
+    const moreButton = page.locator('[data-hd-navigation="rail"] button[aria-label="Thêm"]');
+    if (!await moreButton.isVisible().catch(() => false)) throw new Error('Tablet More navigation is unavailable for delivery reports.');
+    await moreButton.click();
+    await page.waitForTimeout(450);
+    if (!await clickVisibleButton(page, 'Báo cáo giao hàng')) throw new Error('Delivery report entry is missing from More on tablet.');
+    await page.waitForTimeout(450);
+    return;
+  }
   const buttons = page.locator(`[data-hd-navigation="rail"] button[aria-label="${target.label}"]`);
   const count = await buttons.count();
   const occurrence = target.occurrence || 0;
@@ -357,6 +407,9 @@ const routeGate = (result) => (
   && result.layout.scrollWidth <= result.layout.clientWidth
   && result.layout.scrollHeight >= result.layout.clientHeight
   && result.layout.searchFocusFailures.length === 0
+  && result.layout.floatingActionOverlaps.length === 0
+  && (!['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management'].includes(result.route)
+    || !result.layout.floatingActionButtons.some((button) => button.label === 'Mở phím tắt nhanh'))
   && result.consoleErrors.length === 0
   && result.pageErrors.length === 0
   && result.failedRequests.length === 0
@@ -446,45 +499,61 @@ try {
     });
   }
 
-  const searchTrigger = desktopSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true });
+} finally {
+  await desktopSession.context.close();
+}
+
+const interactionSession = await startPage({ width: 1366, height: 768 });
+try {
+  const searchTrigger = interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true });
   await searchTrigger.click();
-  const moduleSearch = desktopSession.page.getByRole('searchbox', { name: 'Tìm module' });
+  const moduleSearch = interactionSession.page.getByRole('searchbox', { name: /Tìm kiếm khách hàng, sản phẩm/ });
   await moduleSearch.fill('Khách hàng');
-  const moduleSearchFocus = await inspectLayout(desktopSession.page, 'shell search');
-  const searchResult = desktopSession.page
+  const moduleSearchFocus = await inspectLayout(interactionSession.page, 'shell search');
+  const searchResult = interactionSession.page
     .locator('.hd-shell-search-results')
     .getByRole('button', { name: 'Khách hàng', exact: true });
   const searchWorked = await searchResult.isVisible();
   if (searchWorked) await searchResult.click();
-  const shellSearchPopover = desktopSession.page.locator('.hd-shell-search-popover');
+  const shellSearchPopover = interactionSession.page.locator('.hd-shell-search-popover');
   if (await shellSearchPopover.isVisible().catch(() => false)) {
-    await desktopSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
+    await interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
   }
   interactionResults.push({ interaction: 'sidebar module search', passed: searchWorked && moduleSearchFocus.searchFocusChecked > 0 && moduleSearchFocus.searchFocusFailures.length === 0 });
 
-  await navigateRoute(desktopSession.page, 'customers');
-  const headerSearch = desktopSession.page.getByRole('button', { name: 'Tìm kiếm', exact: true });
+  await navigateRoute(interactionSession.page, 'customers');
+  const headerSearch = interactionSession.page.getByRole('button', { name: 'Tìm kiếm', exact: true });
   const headerSearchAvailable = await headerSearch.isVisible().catch(() => false);
   if (headerSearchAvailable) {
     await headerSearch.click();
-    const visibleSearchInputs = desktopSession.page.locator('input[type="search"]:visible');
+    const visibleSearchInputs = interactionSession.page.locator('input[type="search"]:visible');
     if (await visibleSearchInputs.count()) {
       await visibleSearchInputs.last().fill('Lan Anh');
       await visibleSearchInputs.last().press('Escape').catch(() => {});
     }
   }
-  const customerSearchFocus = await inspectLayout(desktopSession.page, 'customer search');
+  const customerSearchFocus = await inspectLayout(interactionSession.page, 'customer search');
   interactionResults.push({ interaction: 'customer search', passed: headerSearchAvailable && customerSearchFocus.searchFocusChecked > 0 && customerSearchFocus.searchFocusFailures.length === 0 });
 
-  await navigateRoute(desktopSession.page, 'more');
-  const moreButton = desktopSession.page.getByRole('button', { name: 'Đơn hàng', exact: true }).last();
+  await navigateRoute(interactionSession.page, 'more');
+  const moreButton = interactionSession.page.getByRole('button', { name: 'Đơn hàng', exact: true }).last();
   const moreWorked = await moreButton.isVisible().catch(() => false);
   if (moreWorked) await moreButton.click();
   interactionResults.push({ interaction: 'more menu navigation', passed: moreWorked });
-  await navigateRoute(desktopSession.page, 'home');
-  interactionResults.push({ interaction: 'sidebar back navigation', passed: (await desktopSession.page.getByRole('button', { name: 'Trang chủ', exact: true }).count()) > 0 });
 } finally {
-  await desktopSession.context.close();
+  await interactionSession.context.close();
+}
+
+const backNavigationSession = await startPage({ width: 1366, height: 768 });
+try {
+  await navigateRoute(backNavigationSession.page, 'customers');
+  await navigateRoute(backNavigationSession.page, 'home');
+  interactionResults.push({
+    interaction: 'sidebar back navigation',
+    passed: await backNavigationSession.page.locator('[data-hd-navigation="sidebar"] button[aria-label="Trang chủ"]').isVisible(),
+  });
+} finally {
+  await backNavigationSession.context.close();
 }
 
 const mobileRoutes = routeDefinitions.map((definition) => definition.route);
@@ -737,16 +806,22 @@ const sendCustomerReply = async ({ store, text, expectedVisibleText = '' }) => {
   }
 };
 
-const inspectEmployeeMessageAccess = async ({ employeeId, name, phone, store, expectedText = '', forbiddenText = '' }) => {
+const inspectEmployeeMessageAccess = async ({ employeeId, name, phone, store, expectedText = '', forbiddenText = '', customerName = '' }) => {
   const session = await openEmployeeMessages({ employeeId, name, phone, store });
   try {
-    const bodyText = await session.page.locator('body').innerText();
+    let bodyText = await session.page.locator('body').innerText();
+    let openedConversation = false;
+    if (expectedText && !bodyText.includes(expectedText) && customerName) {
+      openedConversation = await clickConversationByText(session.page, customerName);
+      if (openedConversation) bodyText = await session.page.locator('body').innerText();
+    }
     const result = {
       employeeId,
       expectedText,
       forbiddenText,
       seesExpected: expectedText ? bodyText.includes(expectedText) : true,
       hidesForbidden: forbiddenText ? !bodyText.includes(forbiddenText) : true,
+      openedConversation,
       ...session.diagnostics
     };
     return result;
@@ -809,7 +884,8 @@ const newEmployeeAccess = await inspectEmployeeMessageAccess({
   phone: '0909000003',
   store: reassignedStore,
   expectedText: 'Tin QA từ khách hàng A',
-  forbiddenText: ''
+  forbiddenText: '',
+  customerName: 'Cửa hàng Lan Anh'
 });
 messagingChecks.push({
   check: 'assignment change revokes former employee history access',
@@ -899,7 +975,7 @@ const report = {
   baseUrl,
   browserPath,
   authenticatedSections: 'PREVIEW AUTH — isolated mock claims for employees/customers in comp_preview; production auth untouched',
-  nativeAndroidStatusBar: 'NOT VERIFIED — no Android emulator/device available',
+  nativeAndroidStatusBar: 'NOT VERIFIED — emulator launches, but Google Play Services account setup blocks authenticated app screens',
   routeCoverageFailures,
   sectionMapping: sectionDefinitions.map(([section, route, screen]) => {
     const routeResults = allResults.filter((result) => result.route === route);

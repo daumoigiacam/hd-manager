@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -85,12 +86,59 @@ test('catalog search groups one product and keeps its attributes as selectable c
   assert.match(appSource, /const groupOrderRequestProductVariants = \(options = \[\]\) =>/);
   assert.match(appSource, /const attributeLabels = \[\.\.\.new Set\(\[/);
   assert.match(appSource, /const getFamily = \(product = \{\}\) =>/);
+  assert.match(appSource, /const groupKey = family\.key;/);
+  assert.doesNotMatch(appSource, /const groupKey = `\$\{family\.key\}__\$\{normalizeLookupText\(product\?\.category/);
   assert.match(appSource, /displayAttributeLabel/);
   assert.match(appSource, /const visibleLabels = new Set\(\)/);
   assert.match(appSource, /const manualExtraProductVariantGroups = useMemo\(/);
   assert.match(appSource, /<OrderRequestSelectableProductGroup/);
   assert.match(appSource, /data-order-product-attribute=\{selectionKey\}/);
   assert.match(appSource, /onSelect=\{handleQuickProductCardSelect\}/);
+});
+
+test('configured duplicate products across categories appear as one suggestion with all variants', () => {
+  const start = appSource.indexOf('const groupOrderRequestProductVariants = (options = []) =>');
+  const end = appSource.indexOf('const OrderRequestSelectableProductGroup', start);
+  assert.ok(start >= 0 && end > start, 'product variant grouping function should be present');
+  const groupProductVariants = vm.runInNewContext(
+    `${appSource.slice(start, end)}; groupOrderRequestProductVariants`,
+    {
+      normalizeLookupText: value => `${value}`
+        .normalize('NFD')
+        .replace(/[\\u0300-\\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'D')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim(),
+      getProductAttributes: product => product.attributes || [],
+    },
+  );
+  const groups = groupProductVariants([
+    {
+      product: { id: 'duck-main', name: 'Vịt Không Móc', category: 'Vịt tươi' },
+      variant: { size: 'To', attributeLabel: 'To' },
+      selectionKey: 'duck-main-to',
+    },
+    {
+      product: { id: 'duck-duplicate', name: 'Vịt Không Móc', category: 'Gia cầm' },
+      variant: { size: 'Nhỏ', attributeLabel: 'Nhỏ' },
+      selectionKey: 'duck-duplicate-small',
+    },
+    {
+      product: { id: 'chicken-main', name: 'Gà Móc', category: 'Gia cầm' },
+      variant: { size: 'To', attributeLabel: 'To' },
+      selectionKey: 'chicken-main-to',
+    },
+  ]);
+
+  assert.equal(groups.length, 2);
+  const duckGroup = groups.find(group => group.variants.some(option => option.product.id === 'duck-main'));
+  assert.equal(duckGroup.variants.length, 2);
+  assert.deepEqual(
+    Array.from(duckGroup.variants, option => option.product.id).sort(),
+    ['duck-duplicate', 'duck-main'],
+  );
 });
 
 test('new product memory merges customer products once without replacing existing data', () => {

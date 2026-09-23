@@ -39,6 +39,9 @@ assert(foundation.includes('--hd-font-weight-regular: 400') && foundation.includ
 assert(foundation.includes('.hd-enterprise-header.hd-app-header') && foundation.includes('background-color: var(--hd-primary) !important'), 'Business app headers must use the shared primary brand color');
 assert(!foundation.includes('font-family: "Times New Roman"'), 'Business screens must not introduce a second display font');
 assert(!foundation.includes('font-size: clamp('), 'Typography scale must not grow with viewport width');
+assert(!/font-size\s*:\s*clamp\(/i.test(indexCss), 'App typography must use fixed sizes instead of viewport-scaled font sizes');
+assert.match(indexCss, /html\s*\{[^}]*font-size:\s*16px/s, 'Root font size must remain fixed across viewport widths');
+assert.match(indexCss, /\.mobile-app-shell\s*\{[^}]*font-size:\s*var\(--hd-type-body,\s*14px\)/s, 'Mobile shell must use the shared fixed body text size');
 assert(foundation.includes('.hd-customer-create-view__header h3') && foundation.includes('font-size: var(--hd-type-h1)'), 'Customer create title must use the shared page title scale');
 for (const token of ['--hd-type-kpi-lg: 24px', '--hd-type-kpi-md: 20px', '--hd-type-kpi-sm: 16px', '--hd-type-h1: 20px', '--hd-type-section-title: 16px', '--hd-type-card-title: 14px']) {
   assert(foundation.includes(token), `Missing CSS typography token: ${token}`);
