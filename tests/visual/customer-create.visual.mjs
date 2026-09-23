@@ -54,6 +54,47 @@ try {
     ]);
     assert.deepEqual(headerActionBorders, ['0px', '0px'], `${viewport.name}: search and filter header actions must be borderless`);
     assert.equal(await page.locator('[data-customer-summary="true"]').count(), 1, `${viewport.name}: customer summary must be visible before filtering`);
+    const customerSummary = page.locator('[data-customer-summary="true"]');
+    const summaryLayout = await customerSummary.evaluate((summary) => {
+      const cards = Array.from(summary.querySelectorAll('.hd-ds-card--kpi'));
+      const centerDelta = element => {
+        const rect = element.getBoundingClientRect();
+        const parent = element.parentElement.getBoundingClientRect();
+        return Math.abs((rect.left + rect.width / 2) - (parent.left + parent.width / 2));
+      };
+      return {
+        columns: getComputedStyle(summary).gridTemplateColumns.split(' ').length,
+        backgroundImage: getComputedStyle(summary).backgroundImage,
+        cards: cards.map((card) => {
+          const style = getComputedStyle(card);
+          const label = card.querySelector('.hd-ds-card__eyebrow');
+          const value = card.querySelector('.hd-ds-card__value');
+          return {
+            label: label?.textContent?.trim(),
+            labelSize: getComputedStyle(label).fontSize,
+            valueSize: getComputedStyle(value).fontSize,
+            textAlign: style.textAlign,
+            backgroundImage: style.backgroundImage,
+            borderWidth: style.borderTopWidth,
+            valueCenterDelta: centerDelta(value),
+            valueFits: value.scrollWidth <= value.clientWidth + 1,
+          };
+        }),
+        debtWidth: cards[2]?.getBoundingClientRect().width || 0,
+        summaryWidth: summary.getBoundingClientRect().width,
+      };
+    });
+    assert.equal(summaryLayout.backgroundImage, 'none', `${viewport.name}: summary must not use a decorative gradient`);
+    assert.equal(summaryLayout.cards.length, 3, `${viewport.name}: all three permitted customer metrics must render as shared KPI cards`);
+    assert.deepEqual(summaryLayout.cards.map(card => card.label), ['Doanh thu', 'Đơn hàng', 'Công nợ'], `${viewport.name}: KPI labels must preserve metric order`);
+    assert.equal(summaryLayout.columns, viewport.width < 640 ? 2 : 3, `${viewport.name}: customer KPIs must use a compact responsive grid`);
+    assert.equal(summaryLayout.cards[2].backgroundImage, 'none', `${viewport.name}: KPI cards must use the neutral shared surface`);
+    assert(summaryLayout.cards.every(card => card.labelSize === '13px' && card.valueSize === '16px'), `${viewport.name}: KPI typography must use design-system label and small-KPI tokens`);
+    assert(summaryLayout.cards.every(card => card.textAlign === 'center' && card.valueCenterDelta <= 1 && card.valueFits), `${viewport.name}: KPI values must stay centered and fit without overflow`);
+    assert(summaryLayout.cards.every(card => Number.parseFloat(card.borderWidth) > 0), `${viewport.name}: KPI cards must retain the shared surface border`);
+    if (viewport.width < 640) {
+      assert(Math.abs(summaryLayout.debtWidth - summaryLayout.summaryWidth) <= 1, `${viewport.name}: the third KPI must span the mobile grid width`);
+    }
 
     const firstCustomerCard = page.locator('[data-customer-card="true"]').first();
     const customerCardLayout = await firstCustomerCard.evaluate((card) => {
@@ -115,8 +156,10 @@ try {
       const style = getComputedStyle(element);
       return { fontFamily: style.fontFamily, fontSize: style.fontSize };
     });
-    assert.match(detailTitleStyle.fontFamily, /Times New Roman|Liberation Serif/i, `${viewport.name}: customer detail title must use the requested serif heading font`);
-    assert.equal(detailTitleStyle.fontSize, '17px', `${viewport.name}: customer detail titles must use the requested 17px size`);
+    const designSystemFont = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--hd-font-sans').trim());
+    const pageTitleSize = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--hd-type-h1').trim());
+    assert.equal(detailTitleStyle.fontFamily, designSystemFont, `${viewport.name}: customer detail title must use the shared application font`);
+    assert.equal(detailTitleStyle.fontSize, pageTitleSize, `${viewport.name}: customer detail title must use the shared page-title token`);
     assert.equal(await customerDetail.evaluate(element => getComputedStyle(element).fontSize), '14px', `${viewport.name}: customer detail body must use the requested 14px size`);
 
     await customerDetail.locator('.hd-customer-detail__title').click();
@@ -425,8 +468,7 @@ try {
     assert.equal(layout.overlayBackground, 'rgba(0, 0, 0, 0)', `${viewport.name}: child view must not add a dark modal overlay`);
     assert.equal(layout.moduleChildrenVisible, 0, `${viewport.name}: customer list content must yield to the child view`);
     const floatingQuickAction = page.locator('.hd-floating-quick-action');
-    assert.equal(await floatingQuickAction.count(), 1, `${viewport.name}: global quick action must remain mounted`);
-    assert.equal(await floatingQuickAction.isVisible(), false, `${viewport.name}: global quick action must not overlap the customer child view`);
+    assert.equal(await floatingQuickAction.count(), 0, `${viewport.name}: customer module must use its own actions without a duplicate global FAB`);
     assert.equal(layout.heading, 'Tạo khách hàng', `${viewport.name}: child view must expose a clear title`);
     assert(layout.phoneTopDelta <= 1 && layout.phoneHeightDelta <= 1, `${viewport.name}: phone and contact picker must share one aligned row`);
     assert.equal(layout.hasZaloGroupField, false, `${viewport.name}: customer creation must not show the Zalo group field`);

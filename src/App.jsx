@@ -335,7 +335,7 @@ import {
   HDNavigationRail,
   HDSidebar,
 } from './layout/index.js';
-import { HDButton, HDBadge, HDIconButton, HDWidgetCustomizer } from './design-system/index.js';
+import { HDButton, HDBadge, HDIconButton, HDKpiCard, HDWidgetCustomizer } from './design-system/index.js';
 import { useHDTheme } from './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
@@ -77740,27 +77740,25 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   return (
     <div className="premium-data-module premium-customer-module space-y-4 animate-in fade-in pb-16">
       {!showFilterPanel && (canSeeCustomerStats || canSeeCustomerDebt) && (
-      <div data-customer-summary="true" className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-2xl p-4 shadow-md">
-        <div className={`grid gap-2 ${canSeeCustomerStats && canSeeCustomerDebt ? 'grid-cols-3' : canSeeCustomerStats ? 'grid-cols-2' : 'grid-cols-1'}`}>
+      <div
+        data-customer-summary="true"
+        role="group"
+        aria-label="Tổng quan khách hàng"
+        className={`grid min-w-0 gap-3 ${canSeeCustomerStats && canSeeCustomerDebt ? 'grid-cols-2 sm:grid-cols-3' : canSeeCustomerStats ? 'grid-cols-2' : 'grid-cols-1'}`}
+      >
           {canSeeCustomerStats && (
-            <div className="rounded-2xl bg-white/10 px-2.5 py-3 text-center">
-              <p className="text-[10px] text-emerald-100 uppercase mb-1">Doanh thu</p>
-              <p className="font-bold text-xs leading-tight">{formatCurrency(dashboardStats.totalRevenue)}</p>
-            </div>
+            <HDKpiCard label="Doanh thu" value={formatCurrency(dashboardStats.totalRevenue)} className="min-w-0 text-center" />
           )}
           {canSeeCustomerStats && (
-            <div className="rounded-2xl bg-white/10 px-2.5 py-3 text-center">
-              <p className="text-[10px] text-emerald-100 uppercase mb-1">Đơn hàng</p>
-              <p className="font-bold text-xs leading-tight">{dashboardStats.totalOrders}</p>
-            </div>
+            <HDKpiCard label="Đơn hàng" value={dashboardStats.totalOrders} className="min-w-0 text-center" />
           )}
           {canSeeCustomerDebt && (
-            <div className="rounded-2xl bg-white/10 px-2.5 py-3 text-center">
-              <p className="text-[10px] text-emerald-100 uppercase mb-1">Công nợ</p>
-              <p className="font-bold text-xs leading-tight">{formatCurrency(dashboardStats.totalDebt)}</p>
-            </div>
+            <HDKpiCard
+              label="Công nợ"
+              value={formatCurrency(dashboardStats.totalDebt)}
+              className={`min-w-0 text-center ${canSeeCustomerStats ? 'col-span-2 sm:col-span-1' : ''}`}
+            />
           )}
-        </div>
       </div>
       )}
 
