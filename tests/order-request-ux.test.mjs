@@ -76,7 +76,9 @@ test('catalog product attributes become selectable order-request variants', () =
   assert.match(variantSource, /productAttributes\.forEach\(\(attribute, index\) =>/);
   assert.match(variantSource, /attributeLabel: attribute/);
   assert.match(appSource, /const manualFixedProductVariantOptions = useMemo\(\(\) => manualFixedProductOptions\.flatMap/);
-  assert.match(appSource, /const fixedAttribute = `\$\{variant\.attributeLabel \|\| ''\}`\.trim\(\)/);
+  assert.match(appSource, /const manualFixedProductVariantGroups = useMemo\(/);
+  assert.match(appSource, /manualFixedProductVariantGroups\.map\(\(\{ product, variants \}\)/);
+  assert.doesNotMatch(appSource, /manualFixedProductVariantOptions\.map/);
 });
 
 test('catalog search groups one product and keeps its attributes as selectable chips', () => {

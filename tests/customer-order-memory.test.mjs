@@ -309,7 +309,8 @@ test('preference key uses variant attributes rather than price or order UOM', ()
 
 test('order request UI exposes only configured customer products before the plus picker', () => {
   assert.match(appSource, />SP khách lấy<\/label>/);
-  assert.match(appSource, /manualFixedProductVariantOptions\.map/);
+  assert.match(appSource, /manualFixedProductVariantGroups\.map\(\(\{ product, variants \}\)/);
+  assert.match(appSource, /key=\{`fixed-group:\$\{product\.id\}`\}/);
   assert.match(appSource, /manualFixedProductIdSet\.has\(product\.id\)/);
   assert.match(appSource, /aria-label="Thêm sản phẩm khác"/);
   assert.doesNotMatch(appSource, /Sản phẩm đặt gần đây/);

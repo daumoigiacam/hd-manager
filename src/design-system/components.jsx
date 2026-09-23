@@ -1,4 +1,5 @@
 import React from 'react';
+import { ChevronDown, ChevronLeft, ChevronUp, GripVertical, Plus, Search, X } from 'lucide-react';
 
 const cx = (...values) => values.filter(Boolean).join(' ');
 
@@ -23,6 +24,119 @@ export function HDButton({ variant = 'primary', size = 'md', loading = false, ic
 
 export function HDIconButton({ label, children, className = '', ...props }) {
   return <HDButton variant="icon" iconOnly className={className} aria-label={label} {...props}>{children}</HDButton>;
+}
+
+export function HDPageHeader({ title, description, onBack, backLabel = 'Quay lại', actions = [], className = '', ...props }) {
+  return (
+    <header className={cx('hd-ds-page-header', className)} {...props}>
+      <div className="hd-ds-page-header__identity">
+        {onBack ? <HDIconButton label={backLabel} onClick={onBack}><ChevronLeft aria-hidden="true" /></HDIconButton> : null}
+        <div className="hd-ds-page-header__copy">
+          <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
+        </div>
+      </div>
+      {actions.length ? <div className="hd-ds-page-header__actions">{actions.map(({ label, icon, onClick, ...actionProps }) => <HDIconButton key={label} label={label} onClick={onClick} {...actionProps}>{icon}</HDIconButton>)}</div> : null}
+    </header>
+  );
+}
+
+export const HDSearchBar = React.forwardRef(function HDSearchBar({
+  label = 'Tìm kiếm',
+  placeholder = 'Tìm kiếm',
+  value = '',
+  onChange,
+  onClear,
+  className = '',
+  ...props
+}, ref) {
+  return (
+    <div className={cx('hd-ds-searchbar', className)} role="search">
+      <Search aria-hidden="true" className="hd-ds-searchbar__icon" />
+      <input ref={ref} type="search" aria-label={label} placeholder={placeholder} value={value} onChange={onChange} {...props} />
+      {value && onClear ? <button className="hd-ds-searchbar__clear" type="button" aria-label="Xóa nội dung tìm kiếm" onClick={onClear}><X aria-hidden="true" /></button> : null}
+    </div>
+  );
+});
+
+export function HDFilterBar({ children, label = 'Bộ lọc', className = '', ...props }) {
+  return <div className={cx('hd-ds-filterbar', className)} role="group" aria-label={label} {...props}>{children}</div>;
+}
+
+export function HDFilterChip({ selected = false, children, className = '', type = 'button', ...props }) {
+  return <button type={type} className={cx('hd-ds-filter-chip', className)} aria-pressed={selected} data-selected={selected || undefined} {...props}>{children}</button>;
+}
+
+export function HDFAB({ label, icon, className = '', type = 'button', ...props }) {
+  const accessibleLabel = label || 'Tạo mới';
+  return <button type={type} className={cx('hd-ds-fab', className)} aria-label={accessibleLabel} title={accessibleLabel} {...props}>{icon || <Plus aria-hidden="true" />}</button>;
+}
+
+export function HDStepper({ steps = [], activeIndex = 0, className = '', ...props }) {
+  return (
+    <ol className={cx('hd-ds-stepper', className)} aria-label="Tiến trình" {...props}>
+      {steps.map((step, index) => (
+        <li key={typeof step === 'string' ? step : step.label} data-complete={index < activeIndex || undefined} data-active={index === activeIndex || undefined}>
+          <span className="hd-ds-stepper__number" aria-hidden="true">{index + 1}</span>
+          <span className="hd-ds-stepper__label" aria-current={index === activeIndex ? 'step' : undefined}>{typeof step === 'string' ? step : step.label}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+export function HDAccordion({ title, children, className = '', defaultOpen = false, ...props }) {
+  return <details className={cx('hd-ds-accordion', className)} open={defaultOpen || undefined} {...props}><summary>{title}</summary><div className="hd-ds-accordion__content">{children}</div></details>;
+}
+
+export function HDWidgetCustomizer({ widgets = [], hiddenIds = [], onToggle, onMove, onMoveBefore, onReset, title = 'Tùy chỉnh widget', description = 'Bật/tắt hoặc sắp xếp các mục hiển thị.' }) {
+  const [draggedId, setDraggedId] = React.useState('');
+  return (
+    <section className="hd-ds-widget-customizer" aria-label={title}>
+      <div className="hd-ds-widget-customizer__header">
+        <div>
+          <h2>{title}</h2>
+          <p>{description}</p>
+        </div>
+        {onReset ? <button type="button" onClick={onReset}>Đặt lại</button> : null}
+      </div>
+      <div className="hd-ds-widget-customizer__list">
+        {widgets.map((widget, index) => {
+          const visible = !hiddenIds.includes(widget.id);
+          return (
+            <div
+              key={widget.id}
+              className={`hd-ds-widget-customizer__row${draggedId === widget.id ? ' is-dragging' : ''}`}
+              draggable
+              onDragStart={(event) => {
+                setDraggedId(widget.id);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', widget.id);
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId = draggedId || event.dataTransfer.getData('text/plain');
+                if (sourceId) onMoveBefore?.(sourceId, widget.id);
+                setDraggedId('');
+              }}
+              onDragEnd={() => setDraggedId('')}
+            >
+              <GripVertical className="hd-ds-widget-customizer__grip" size={17} aria-hidden="true" />
+              <input type="checkbox" checked={visible} onChange={() => onToggle?.(widget.id)} aria-label={`${visible ? 'Ẩn' : 'Hiện'} ${widget.label}`} />
+              <span className="hd-ds-widget-customizer__label">{widget.label}</span>
+              <button type="button" disabled={index === 0} onClick={() => onMove?.(widget.id, 'up')} aria-label={`Đưa ${widget.label} lên trên`}>
+                <ChevronUp size={17} aria-hidden="true" />
+              </button>
+              <button type="button" disabled={index === widgets.length - 1} onClick={() => onMove?.(widget.id, 'down')} aria-label={`Đưa ${widget.label} xuống dưới`}>
+                <ChevronDown size={17} aria-hidden="true" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 export function HDField({ label, hint, error, className = '', children, ...props }) {

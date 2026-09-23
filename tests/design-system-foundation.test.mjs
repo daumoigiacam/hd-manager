@@ -12,8 +12,7 @@ const components = read('src/design-system/components.jsx');
 const indexCss = read('src/index.css');
 
 assert(!app.includes('fonts.googleapis.com'), 'UI must not depend on remote Google Fonts');
-assert(main.includes('@fontsource-variable/inter'), 'Inter Variable must be loaded locally');
-assert(main.includes('@fontsource-variable/roboto-flex'), 'Roboto Flex must be loaded locally');
+assert(!main.includes('@fontsource-variable/'), 'The app must use one platform-native system font instead of bundled font families');
 assert(main.includes('./design-system/foundation.css'), 'Design System foundation must load globally');
 
 assert(shell.includes('data-hd-shell'), 'AppShell must expose its shared shell boundary');
@@ -28,7 +27,22 @@ for (const token of ['colors', 'spacing', 'typography', 'radius', 'elevation', '
 }
 
 assert(tokens.includes("primary: Object.freeze({ 50: '#eff6ff'"), 'Primary brand palette must be HD Blue');
+assert(tokens.includes("500: '#2563eb'"), 'Primary 500 must use the specified HD blue');
+assert(tokens.includes("fontSans: 'system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif'"), 'Typography must use platform-native fonts');
+for (const token of ['kpiLarge', 'kpiMedium', 'kpiSmall', 'pageTitle', 'sectionTitle', 'cardTitle', 'bodyStrong', 'micro']) {
+  assert(tokens.includes(`${token}: Object.freeze`), `Missing semantic typography token: ${token}`);
+}
 assert(tokens.includes("secondary: Object.freeze({ 50: '#ecfeff'"), 'Secondary brand palette must be HD Cyan');
+assert(foundation.includes('--hd-control-height: 3rem'), 'Standard fields and controls must be 48px high');
+assert(foundation.includes('--hd-type-body-strong: 14px'), 'Body strong text must share the standard 14px body scale');
+assert(foundation.includes('--hd-font-weight-regular: 400') && foundation.includes('--hd-font-weight-bold: 700'), 'Foundation font weights must use the shared 400-700 scale');
+assert(foundation.includes('.hd-enterprise-header.hd-app-header') && foundation.includes('background-color: var(--hd-primary) !important'), 'Business app headers must use the shared primary brand color');
+assert(!foundation.includes('font-family: "Times New Roman"'), 'Business screens must not introduce a second display font');
+assert(!foundation.includes('font-size: clamp('), 'Typography scale must not grow with viewport width');
+assert(foundation.includes('.hd-customer-create-view__header h3') && foundation.includes('font-size: var(--hd-type-h1)'), 'Customer create title must use the shared page title scale');
+for (const token of ['--hd-type-kpi-lg: 24px', '--hd-type-kpi-md: 20px', '--hd-type-kpi-sm: 16px', '--hd-type-h1: 20px', '--hd-type-section-title: 16px', '--hd-type-card-title: 14px']) {
+  assert(foundation.includes(token), `Missing CSS typography token: ${token}`);
+}
 assert(foundation.includes('--hd-gradient: linear-gradient(120deg'), 'Brand gradient must be defined in the shared foundation');
 assert(foundation.includes('.hd-dashboard-kpi[data-tone="good"]') && foundation.includes('var(--hd-color-success-surface)'), 'Positive dashboard tone must keep semantic success colors');
 assert(foundation.includes('.premium-data-module :where(table thead th)'), 'Operational tables must use the shared data-surface language');
@@ -63,13 +77,19 @@ for (const selector of [
   '.hd-ds-card',
   '.hd-ds-button',
   '.hd-ds-field',
+  '.hd-ds-page-header',
+  '.hd-ds-searchbar',
+  '.hd-ds-filterbar',
+  '.hd-ds-fab',
+  '.hd-ds-stepper',
+  '.hd-ds-accordion',
   '.hd-ds-dialog',
   '.hd-ds-state',
 ]) {
   assert(foundation.includes(selector), `Missing foundation rule: ${selector}`);
 }
 
-for (const component of ['HDCard', 'HDButton', 'HDField', 'HDDialog', 'HDStatusState']) {
+for (const component of ['HDCard', 'HDButton', 'HDPageHeader', 'HDSearchBar', 'HDFilterBar', 'HDFilterChip', 'HDFAB', 'HDStepper', 'HDAccordion', 'HDWidgetCustomizer', 'HDField', 'HDDialog', 'HDStatusState']) {
   assert(components.includes(`function ${component}`), `Missing shared primitive: ${component}`);
 }
 

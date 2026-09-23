@@ -177,6 +177,16 @@ test('picker loai hang dung danh muc du phong khi khach chua co don dat', () => 
   assert.doesNotMatch(warehouseModuleSource, /hasOrderRequest:/);
 });
 
+test('mo picker loai hang hien don khach da dat truoc va danh muc ben duoi', () => {
+  assert.match(warehouseModuleSource, /dispatchProductSearchEdited\s*\?\s*normalizeLookupText\(dispatchDraft\.productSearch\s*\|\|\s*''\)\s*:\s*''/);
+  assert.match(warehouseModuleSource, /setDispatchProductSearchEdited\(true\)/);
+  assert.match(warehouseModuleSource, /setDispatchProductSearchEdited\(false\)/);
+  assert.match(warehouseModuleSource, /filteredOrderedDispatchProducts/);
+  assert.match(warehouseModuleSource, /filteredOtherDispatchProducts/);
+  assert.match(warehouseModuleSource, /Khách đã đặt/);
+  assert.match(warehouseModuleSource, /Tất cả loại hàng/);
+});
+
 test('thanh tim kiem danh sach xuat kho khong ep dong tong so tren mobile', () => {
   assert.match(warehouseModuleSource, /flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center/);
   assert.match(warehouseModuleSource, /w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1/);

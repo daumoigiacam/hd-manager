@@ -2014,16 +2014,83 @@ html.hd-low-power-ui .hd-soft-red-outline {
   font-weight: 800;
 }
 
+.hd-header-global-search-button {
+  display: inline-flex;
+  flex: 0 0 2.5rem;
+  align-items: center;
+  justify-content: center;
+  inline-size: 2.5rem !important;
+  min-block-size: 2.5rem !important;
+  padding: 0 !important;
+  border: 1px solid rgb(255 255 255 / 0.28);
+  border-radius: 999px !important;
+  color: #ffffff;
+  background: rgb(255 255 255 / 0.12);
+  transition: background-color var(--hd-motion-fast, 150ms) ease-out, transform var(--hd-motion-fast, 150ms) ease-out;
+}
+
+.hd-header-global-search-button:hover {
+  background: rgb(255 255 255 / 0.22);
+}
+
+.hd-header-global-search-button:active {
+  transform: scale(0.96);
+}
+
+.hd-shell-search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: max(1rem, calc(var(--hd-safe-top, 0px) + 0.75rem)) 1rem max(1rem, calc(var(--hd-safe-bottom, 0px) + 0.75rem));
+  background: rgb(15 23 42 / 0.42);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
 .hd-shell-search-popover {
-  position: absolute;
-  inset-block-start: calc(100% + 0.5rem);
-  inset-inline-start: 0;
-  inline-size: min(18rem, calc(100vw - 2rem));
-  padding: 0.65rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  inline-size: min(34rem, 100%);
+  max-block-size: calc(100dvh - var(--hd-safe-top, 0px) - var(--hd-safe-bottom, 0px) - 2rem);
+  min-block-size: 0;
+  padding: 0.85rem;
   border: 1px solid #dbeafe;
-  border-radius: 1rem;
+  border-radius: 1.1rem;
   background: rgb(255 255 255 / 0.98);
-  box-shadow: 0 1.25rem 3rem rgb(15 23 42 / 0.16);
+  box-shadow: 0 1.25rem 3rem rgb(15 23 42 / 0.24);
+}
+
+.hd-shell-search-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-block-end: 0.7rem;
+}
+
+.hd-shell-search-dialog-header h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.hd-shell-search-dialog-header button {
+  display: inline-flex;
+  flex: 0 0 2.25rem;
+  align-items: center;
+  justify-content: center;
+  inline-size: 2.25rem !important;
+  min-block-size: 2.25rem !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  color: #64748b;
+  background: #f1f5f9;
 }
 
 .hd-shell-search-input-wrap {
@@ -2071,8 +2138,11 @@ html.hd-low-power-ui .hd-soft-red-outline {
 .hd-shell-search-results {
   display: grid;
   gap: 0.2rem;
-  max-block-size: 18rem;
+  min-block-size: 0;
+  max-block-size: min(28rem, 58dvh);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .hd-shell-search-results button {
@@ -2097,6 +2167,45 @@ html.hd-low-power-ui .hd-soft-red-outline {
 .hd-shell-search-results button span {
   min-inline-size: 0;
   flex: 1;
+}
+
+.hd-shell-search-section-label {
+  margin: 0.5rem 0.15rem 0.15rem;
+  color: #94a3b8;
+  font-size: 0.58rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hd-shell-search-results button.hd-shell-search-entity {
+  align-items: flex-start;
+  min-block-size: 3rem !important;
+}
+
+.hd-shell-search-result-copy {
+  display: grid;
+  gap: 0.15rem;
+  min-inline-size: 0;
+}
+
+.hd-shell-search-result-copy strong,
+.hd-shell-search-result-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hd-shell-search-result-copy strong {
+  color: #334155;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.hd-shell-search-result-copy small {
+  color: #94a3b8;
+  font-size: 0.65rem;
+  font-weight: 550;
 }
 
 .hd-shell-search-empty {
@@ -2210,10 +2319,6 @@ html.hd-low-power-ui .hd-soft-red-outline {
 .hd-navigation-collapsed .hd-shell-search-trigger {
   justify-content: center;
   padding-inline: 0 !important;
-}
-
-.hd-navigation-collapsed .hd-shell-search-popover {
-  inset-inline-start: calc(100% + 0.5rem);
 }
 
 .hd-navigation-collapsed .hd-sidebar-navigation .hd-nav-button {
@@ -2358,6 +2463,21 @@ html.hd-low-power-ui .hd-soft-red-outline {
   .hd-shell-search,
   .hd-sidebar-groups {
     display: none;
+  }
+
+  .hd-shell-search-overlay {
+    align-items: flex-start;
+    padding-block-start: max(1rem, calc(var(--hd-safe-top, 0px) + 0.5rem));
+  }
+
+  .hd-shell-search-popover {
+    inline-size: 100%;
+    max-block-size: calc(100dvh - var(--hd-safe-top, 0px) - var(--hd-safe-bottom, 0px) - 1.5rem);
+  }
+
+  .hd-shell-search-results {
+    max-block-size: none;
+    flex: 1 1 auto;
   }
 }
 
