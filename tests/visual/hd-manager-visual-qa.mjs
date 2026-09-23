@@ -546,6 +546,13 @@ try {
   interactionResults.push({ interaction: 'more menu navigation', passed: moreWorked });
 
   await navigateRoute(interactionSession.page, 'more');
+  const moreQuickActionVisible = await interactionSession.page
+    .locator('.hd-floating-quick-action button[aria-label="Mở phím tắt nhanh"]')
+    .isVisible()
+    .catch(() => false);
+  interactionResults.push({ interaction: 'module menu hides unrelated floating quick action', passed: !moreQuickActionVisible });
+
+  await navigateRoute(interactionSession.page, 'more');
   const darkThemeButton = interactionSession.page.getByRole('button', { name: 'Giao diện Tối', exact: true });
   const themeControlAvailable = await darkThemeButton.isVisible().catch(() => false);
   if (themeControlAvailable) await darkThemeButton.click();
@@ -1046,7 +1053,7 @@ const report = {
   baseUrl,
   browserPath,
   authenticatedSections: 'PREVIEW AUTH — isolated mock claims for employees/customers in comp_preview; production auth untouched',
-  nativeAndroidStatusBar: 'NOT VERIFIED — emulator launches, but Google Play Services account setup blocks authenticated app screens',
+  nativeAndroidStatusBar: 'NOT COVERED BY THIS BROWSER HARNESS — see separate emulator-5554 screenshots under test-results/android-device',
   routeCoverageFailures,
   sectionMapping: sectionDefinitions.map(([section, route, screen]) => {
     const routeResults = allResults.filter((result) => result.route === route);

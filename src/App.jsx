@@ -26076,7 +26076,7 @@ function MainAppView({
         </div>
       )}
 
-      {canShowFloatingQuickActionButton && quickActionItems.length > 0 && !['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management'].includes(activeTab) && (
+      {canShowFloatingQuickActionButton && quickActionItems.length > 0 && !['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management', 'more'].includes(activeTab) && (
         <FloatingQuickActionButton
           actions={quickActionItems}
           containerRef={appShellRef}
