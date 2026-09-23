@@ -53,6 +53,46 @@ try {
       headerFilterButton.evaluate(element => getComputedStyle(element).borderTopWidth),
     ]);
     assert.deepEqual(headerActionBorders, ['0px', '0px'], `${viewport.name}: search and filter header actions must be borderless`);
+    await headerSearchButton.click();
+    const inlineHeaderSearch = appHeader.locator('.hd-header-search-input');
+    await inlineHeaderSearch.waitFor({ state: 'visible', timeout: 5000 });
+    await inlineHeaderSearch.focus();
+    const focusedSearchFrame = await inlineHeaderSearch.evaluate(input => {
+      const inputStyle = getComputedStyle(input);
+      const surfaceStyle = getComputedStyle(input.parentElement);
+      return {
+        inputBorderColor: inputStyle.borderTopColor,
+        inputOutline: inputStyle.outlineStyle,
+        inputShadow: inputStyle.boxShadow,
+        surfaceBorderColor: surfaceStyle.borderTopColor,
+        surfaceShadow: surfaceStyle.boxShadow,
+      };
+    });
+    assert.equal(focusedSearchFrame.inputBorderColor, 'rgba(0, 0, 0, 0)', `${viewport.name}: focused search input must not gain a border`);
+    assert.equal(focusedSearchFrame.inputOutline, 'none', `${viewport.name}: focused search input must not gain an outline`);
+    assert.equal(focusedSearchFrame.inputShadow, 'none', `${viewport.name}: focused search input must not gain a shadow`);
+    assert.equal(focusedSearchFrame.surfaceBorderColor, 'rgba(0, 0, 0, 0)', `${viewport.name}: focused search surface must not gain a border`);
+    assert.equal(focusedSearchFrame.surfaceShadow, 'none', `${viewport.name}: focused search surface must not gain a shadow`);
+    assert.equal(await page.locator('.hd-enterprise-app-shell').getAttribute('data-hd-input-focus-mode'), 'pointer', `${viewport.name}: search clicked by pointer must use the quiet focus mode`);
+    await page.screenshot({ path: `${outputDir}/search-focus-${viewport.name}.png`, fullPage: false });
+    await appHeader.getByRole('button', { name: 'Xóa tìm kiếm', exact: true }).click();
+    await headerSearchButton.focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await inlineHeaderSearch.waitFor({ state: 'visible', timeout: 5000 });
+    const keyboardSearchOutline = await inlineHeaderSearch.evaluate(input => {
+      const style = getComputedStyle(input.parentElement);
+      return { width: style.outlineWidth, style: style.outlineStyle, color: style.outlineColor };
+    });
+    assert.deepEqual(
+      [keyboardSearchOutline.width, keyboardSearchOutline.style],
+      ['2px', 'solid'],
+      `${viewport.name}: keyboard-focused search must retain a visible accessible outline`,
+    );
+    assert.notEqual(keyboardSearchOutline.color, 'rgba(0, 0, 0, 0)', `${viewport.name}: keyboard focus outline must remain perceptible`);
+    await page.screenshot({ path: `${outputDir}/search-keyboard-focus-${viewport.name}.png`, fullPage: false });
+    await appHeader.getByRole('button', { name: 'Xóa tìm kiếm', exact: true }).click();
     assert.equal(await page.locator('[data-customer-summary="true"]').count(), 1, `${viewport.name}: customer summary must be visible before filtering`);
     const customerSummary = page.locator('[data-customer-summary="true"]');
     const summaryLayout = await customerSummary.evaluate((summary) => {

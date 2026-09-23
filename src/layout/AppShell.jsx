@@ -1,7 +1,14 @@
 import React from 'react';
 import { useHDTheme } from '../design-system/ThemeProvider.jsx';
 
-export const AppShell = React.forwardRef(function AppShell({ children, className = '', theme: themeOverride, ...props }, ref) {
+export const AppShell = React.forwardRef(function AppShell({
+  children,
+  className = '',
+  theme: themeOverride,
+  onPointerDownCapture,
+  onKeyDownCapture,
+  ...props
+}, ref) {
   const { theme: preferredTheme } = useHDTheme();
   const theme = themeOverride || preferredTheme;
 
@@ -11,6 +18,14 @@ export const AppShell = React.forwardRef(function AppShell({ children, className
       data-hd-shell="enterprise"
       data-hd-theme={theme}
       className={`hd-enterprise-app-shell hd-theme-${theme} ${className}`.trim()}
+      onPointerDownCapture={event => {
+        event.currentTarget.dataset.hdInputFocusMode = 'pointer';
+        onPointerDownCapture?.(event);
+      }}
+      onKeyDownCapture={event => {
+        if (event.key === 'Tab') event.currentTarget.dataset.hdInputFocusMode = 'keyboard';
+        onKeyDownCapture?.(event);
+      }}
       {...props}
     >
       {children}

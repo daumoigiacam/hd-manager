@@ -1863,9 +1863,11 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   input[type="search"],
   input[role="searchbox"]
 ):is(:focus, :focus-visible) {
+  border-color: transparent !important;
   outline: none !important;
   outline-offset: 0 !important;
   box-shadow: none !important;
+  transition: none !important;
   --tw-ring-offset-shadow: 0 0 #0000 !important;
   --tw-ring-shadow: 0 0 #0000 !important;
 }
@@ -1873,10 +1875,19 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 .hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[data-hd-search-input="true"]):focus-within,
 .hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[type="search"]):focus-within,
 .hd-enterprise-app-shell[data-hd-shell="enterprise"] :where(label, div):has(> input[role="searchbox"]):focus-within {
+  border-color: transparent !important;
   outline: none !important;
   box-shadow: none !important;
+  transition: none !important;
   --tw-ring-offset-shadow: 0 0 #0000 !important;
   --tw-ring-shadow: 0 0 #0000 !important;
+}
+
+.hd-enterprise-app-shell[data-hd-input-focus-mode="keyboard"] :where(label, div):has(> input[data-hd-search-input="true"]:focus-visible),
+.hd-enterprise-app-shell[data-hd-input-focus-mode="keyboard"] :where(label, div):has(> input[type="search"]:focus-visible),
+.hd-enterprise-app-shell[data-hd-input-focus-mode="keyboard"] :where(label, div):has(> input[role="searchbox"]:focus-visible) {
+  outline: 2px solid var(--hd-color-focus) !important;
+  outline-offset: 2px !important;
 }
 
 .hd-enterprise-app-shell[data-hd-shell="enterprise"] .hd-shell-search-input-wrap > button {
