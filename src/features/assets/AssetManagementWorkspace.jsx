@@ -22,6 +22,7 @@ import {
   Wrench,
   X
 } from 'lucide-react';
+import { HDButton, HDEmptyState } from '../../design-system/index.js';
 import {
   ASSET_FILTERS,
   EXTRA_ASSET_FILTERS,
@@ -220,6 +221,11 @@ function AssetListScreen({
 
   const visibleAssets = filteredAssets.slice(0, visibleCount);
   const visibleFilters = showMoreFilters ? [...ASSET_FILTERS, ...EXTRA_ASSET_FILTERS] : ASSET_FILTERS;
+  const resetAssetFilters = () => {
+    setQuery('');
+    setActiveFilter('all');
+    setShowMoreFilters(false);
+  };
 
   return (
     <section className="space-y-4" data-asset-list-screen="true">
@@ -284,11 +290,17 @@ function AssetListScreen({
       {!canViewAssets ? (
         <div className="rounded-2xl border border-slate-100 bg-white px-4 py-8 text-center text-sm font-medium text-slate-500">Tài khoản chưa có quyền xem tài sản.</div>
       ) : filteredAssets.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center">
-          <Package size={28} className="mx-auto text-slate-300" />
-          <p className="mt-3 text-sm font-bold text-slate-700">Chưa tìm thấy tài sản phù hợp</p>
-          <p className="mt-1 text-xs text-slate-500">Thử tìm theo tên, mã, biển số hoặc người phụ trách.</p>
-        </div>
+        <HDEmptyState
+          icon={<Package size={24} aria-hidden="true" />}
+          title={assets.length > 0 ? 'Không tìm thấy tài sản phù hợp' : 'Chưa có tài sản'}
+          description={assets.length > 0
+            ? 'Thử điều chỉnh bộ lọc hoặc từ khóa tìm kiếm.'
+            : 'Tài sản mới sẽ hiển thị tại đây sau khi được tạo.'}
+          action={assets.length > 0
+            ? <HDButton variant="secondary" size="sm" onClick={resetAssetFilters}>Xóa bộ lọc</HDButton>
+            : null}
+          className="rounded-2xl border border-dashed border-slate-200 bg-white"
+        />
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {visibleAssets.map(asset => (

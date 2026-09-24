@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 const app = read('src/App.jsx');
+const productView = app.slice(app.indexOf('function ProductManagementView('), app.indexOf('function CustomerCRMView('));
 const main = read('src/main.jsx');
 const shell = read('src/layout/AppShell.jsx');
 const themeProvider = read('src/design-system/ThemeProvider.jsx');
@@ -60,11 +61,30 @@ for (const token of ['--hd-type-kpi-lg: 24px', '--hd-type-kpi-md: 20px', '--hd-t
 assert(foundation.includes('--hd-gradient: linear-gradient(120deg'), 'Brand gradient must be defined in the shared foundation');
 assert(foundation.includes('.hd-dashboard-kpi[data-tone="good"]') && foundation.includes('var(--hd-color-success-surface)'), 'Positive dashboard tone must keep semantic success colors');
 assert(foundation.includes('.premium-data-module :where(table thead th)'), 'Operational tables must use the shared data-surface language');
+assert.match(
+  foundation,
+  /\.hd-shell--staff \.premium-data-summary\s*\{[^}]*border-color:[^}]*border-radius:[^}]*box-shadow:[^}]*\}/s,
+  'Staff shell must preserve each summary card background instead of forcing white over colored KPI cards',
+);
+assert.doesNotMatch(
+  foundation.match(/\.hd-shell--staff \.premium-data-summary\s*\{[^}]*\}/s)?.[0] ?? '',
+  /background\s*:/,
+  'Shared summary card styling must not override module-specific backgrounds',
+);
 assert(foundation.includes('[class~="bg-emerald-600"]'), 'Legacy command buttons must be mapped to the shared brand treatment');
 assert(foundation.includes('2026 quiet workspace refresh'), 'Staff shell must include the flat phone-first visual refresh');
 assert(foundation.includes('.hd-product-editor__actions'), 'Product editor must keep its actions reachable in the shared visual system');
 assert(app.includes('hd-product-editor__body'), 'Product creation must use the structured mobile editor layout');
 assert(app.includes('premium-products-module'), 'Product lists must opt into the shared operational surface language');
+assert(components.includes('icon = <Inbox size={24} aria-hidden="true" />'), 'Shared empty state must have a useful default icon');
+assert(components.includes('role={status === \'error\' ? \'alert\' : status === \'loading\' ? \'status\' : undefined}'), 'Empty state must not force a live status role on its action button');
+assert(components.includes('aria-live={status === \'loading\' ? \'polite\' : status === \'error\' ? \'assertive\' : undefined}'), 'Only loading/error states should announce status changes automatically');
+assert(components.includes('<span className="hd-ds-state__visual" aria-hidden="true">{icon}</span>'), 'Status state must render decorative icons without duplicating them to assistive technology');
+assert(foundation.includes('.hd-ds-state__visual > svg'), 'Shared state visuals must size their icon consistently');
+assert.match(app, /function ReportEmptyState[\s\S]*?<HDEmptyState/, 'Report empty views must use the shared empty-state component');
+assert.match(app, /function CustomerEmptyState\(\{ text \}\)[\s\S]*?<HDEmptyState description=\{text\}/, 'Customer portal empty views must use the shared empty-state component');
+assert.match(app, /title=\{hasOrderListFilters \? 'Không tìm thấy đơn phù hợp' : 'Chưa có đơn hàng'\}[\s\S]*?canCreateAnyOrder[\s\S]*?Tạo đơn hàng/, 'Order empty view must provide a permission-aware action or filter reset');
+assert.match(productView, /title=\{hasProductFilters[\s\S]*?Không tìm thấy sản phẩm phù hợp[\s\S]*?Chưa có sản phẩm còn tồn kho[\s\S]*?Thêm sản phẩm/, 'Product list and inventory must distinguish empty/filter states and offer contextual recovery actions');
 assert(indexCss.includes('--hd-breakpoint-desktop: 1024px'), 'Desktop shell must start at the specified 1024px breakpoint');
 assert(indexCss.includes('@media (min-width: 1024px)'), 'Desktop navigation and content must activate at 1024px');
 assert(indexCss.includes('@media (min-width: 600px) and (max-width: 1023px)'), 'Tablet rail and capped layout must stop before desktop width');

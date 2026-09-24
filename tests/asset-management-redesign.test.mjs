@@ -5,6 +5,9 @@ const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const workspace = readFileSync(new URL('../src/features/assets/AssetManagementWorkspace.jsx', import.meta.url), 'utf8');
 const model = readFileSync(new URL('../src/features/assets/assetManagementModel.js', import.meta.url), 'utf8');
 
+assert.match(workspace, /import \{ HDButton, HDEmptyState \} from '\.\.\/\.\.\/design-system\/index\.js'/, 'Asset list empty states and reset actions must use shared design-system components.');
+assert.match(workspace, /title=\{assets\.length > 0 \? 'Không tìm thấy tài sản phù hợp' : 'Chưa có tài sản'\}[\s\S]*?resetAssetFilters[\s\S]*?Xóa bộ lọc/, 'An asset filter result with no matches must distinguish it from a first-run empty list and offer a reset.');
+
 for (const contract of [
   'data-asset-list-screen="true"',
   'data-asset-detail-screen="true"',

@@ -5,7 +5,9 @@ const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const workspace = readFileSync(new URL('../src/features/delivery/DeliveryRedesignWorkspace.jsx', import.meta.url), 'utf8');
 const model = readFileSync(new URL('../src/features/delivery/deliveryWorkspaceModel.js', import.meta.url), 'utf8');
 
-assert.match(workspace, /import \{ HDIconButton \} from '\.\.\/\.\.\/design-system\/index\.js'/, 'Delivery icon actions must use the shared design-system control.');
+assert.match(workspace, /import \{ HDButton, HDEmptyState, HDIconButton \} from '\.\.\/\.\.\/design-system\/index\.js'/, 'Delivery actions and empty states must use the shared design-system controls.');
+assert.match(workspace, /title="Chưa có chuyến giao"[\s\S]*?description="Các chuyến giao sẽ xuất hiện tại đây khi có đơn cần giao\."/, 'The delivery overview must present the shared empty state when there are no recent groups.');
+assert.match(workspace, /title=\{normalizedGroups\.length > 0 \? 'Không có chuyến phù hợp' : 'Chưa có chuyến giao'\}[\s\S]*?resetListFilters[\s\S]*?Xóa bộ lọc/, 'An empty filtered delivery list must provide a working filter reset.');
 assert.match(workspace, /import \{ useHDTheme \} from '\.\.\/\.\.\/design-system\/ThemeProvider\.jsx'/, 'Delivery appearance must follow the app theme provider.');
 assert.match(workspace, /data-hd-module="delivery" data-hd-theme=\{theme\}/, 'Delivery must expose its active app theme to visual checks.');
 assert.match(workspace, /setPreference\(isDark \? 'light' : 'dark'\)/, 'The delivery theme toggle must update the app-wide theme preference.');

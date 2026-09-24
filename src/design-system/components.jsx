@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronLeft, ChevronUp, GripVertical, Plus, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronUp, GripVertical, Inbox, Plus, Search, X } from 'lucide-react';
 
 const cx = (...values) => values.filter(Boolean).join(' ');
 
@@ -167,10 +167,14 @@ export function HDDialog({ title, description, footer, className = '', children,
   );
 }
 
-export function HDStatusState({ status = 'loading', title, description, action, className = '' }) {
+export function HDStatusState({ status = 'loading', icon, title, description, action, className = '' }) {
   return (
-    <section className={`hd-ds-state hd-ds-state--${status} ${className}`.trim()} aria-live={status === 'loading' ? 'polite' : 'assertive'}>
-      <span className="hd-ds-state__visual" aria-hidden="true" />
+    <section
+      className={`hd-ds-state hd-ds-state--${status} ${className}`.trim()}
+      role={status === 'error' ? 'alert' : status === 'loading' ? 'status' : undefined}
+      aria-live={status === 'loading' ? 'polite' : status === 'error' ? 'assertive' : undefined}
+    >
+      <span className="hd-ds-state__visual" aria-hidden="true">{icon}</span>
       {title ? <h2>{title}</h2> : null}
       {description ? <p>{description}</p> : null}
       {action ? <div className="hd-ds-state__action">{action}</div> : null}
@@ -178,7 +182,9 @@ export function HDStatusState({ status = 'loading', title, description, action, 
   );
 }
 
-export const HDEmptyState = (props) => <HDStatusState status="empty" {...props} />;
+export const HDEmptyState = ({ icon = <Inbox size={24} aria-hidden="true" />, ...props }) => (
+  <HDStatusState status="empty" icon={icon} {...props} />
+);
 
 export const HDInput = React.forwardRef(function HDInput({ label, hint, error, className = '', inputClassName = '', type = 'text', ...props }, ref) {
   return (

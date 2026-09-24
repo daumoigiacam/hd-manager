@@ -60,6 +60,8 @@ try {
     const module = page.locator('[data-hd-module="delivery"]');
     await module.waitFor({ state: 'visible', timeout: 10000 });
     await page.getByRole('button', { name: 'Bắt đầu giao hàng', exact: false }).waitFor({ timeout: 10000 });
+    const overviewEmptyState = module.locator('.hd-ds-state--empty');
+    assert.equal(await overviewEmptyState.getByRole('heading').innerText(), 'Chưa có chuyến giao', `${viewport.name}: an empty delivery overview must use the shared empty-state component.`);
 
     const geometry = await page.evaluate(() => {
       const module = document.querySelector('[data-hd-module="delivery"]');
@@ -119,6 +121,9 @@ try {
       await page.getByRole('button', { name: 'Đóng thao tác nhanh', exact: true }).click();
 
       await page.getByRole('button', { name: 'Bắt đầu giao hàng', exact: false }).click();
+      const listEmptyState = module.locator('.hd-ds-state--empty');
+      assert.equal(await listEmptyState.getByRole('heading').innerText(), 'Chưa có chuyến giao', 'The delivery list must use the shared empty-state component when there are no groups.');
+      await page.screenshot({ path: `${outputDir}/mobile-list-empty.png`, fullPage: false });
       const listIconButtons = await module.locator('.hd-ds-button--icon').evaluateAll((buttons) => buttons.map((button) => {
         const rect = button.getBoundingClientRect();
         return { width: rect.width, height: rect.height, label: button.getAttribute('aria-label') };

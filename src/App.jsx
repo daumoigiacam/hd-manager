@@ -335,7 +335,7 @@ import {
   HDNavigationRail,
   HDSidebar,
 } from './layout/index.js';
-import { HDButton, HDBadge, HDIconButton, HDKpiCard, HDWidgetCustomizer } from './design-system/index.js';
+import { HDButton, HDBadge, HDIconButton, HDKpiCard, HDEmptyState, HDWidgetCustomizer } from './design-system/index.js';
 import { useHDTheme } from './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
@@ -46552,13 +46552,12 @@ function ReportSection({ title, subtitle, action, children }) {
 
 function ReportEmptyState({ title = 'Chưa có dữ liệu', description = 'Khi có phát sinh trong ngày, phần này sẽ tự động hiển thị.' }) {
   return (
-    <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
-      <div className="w-14 h-14 rounded-2xl bg-white border border-slate-200 text-slate-400 flex items-center justify-center mx-auto shadow-sm">
-        <FileText size={24} />
-      </div>
-      <p className="text-sm font-bold text-slate-700 mt-4">{title}</p>
-      <p className="text-xs text-slate-500 mt-2 leading-relaxed max-w-[240px] mx-auto">{description}</p>
-    </div>
+    <HDEmptyState
+      icon={<FileText size={24} />}
+      title={title}
+      description={description}
+      className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8"
+    />
   );
 }
 
@@ -68755,6 +68754,17 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     normalizeLookupText(deferredOrderSearchKeyword)
   ].join('|');
   const visibleDisplayOrders = useChunkedList(displayOrders, 32, 40, displayOrderRenderKey);
+  const hasOrderListFilters = Boolean(
+    orderSearchKeyword.trim() || orderDateFilter || orderProductFilter || orderPaymentFilter || orderSalesEmpFilter || tab !== 'all'
+  );
+  const resetOrderListFilters = () => {
+    setOrderSearchKeyword('');
+    setOrderDateFilter('');
+    setOrderProductFilter('');
+    setOrderPaymentFilter('');
+    setOrderSalesEmpFilter('');
+    setTab('all');
+  };
   const selectedRevenueDate = orderDateFilter || getTodayString();
   const dailyOrderRevenueSummary = useMemo(() => {
     const ordersForDate = activeOrders
@@ -70958,9 +70968,17 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       
       <div className="premium-data-list space-y-3">
         {displayOrders.length === 0 && (
-          <div className="premium-empty-state bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center text-sm text-gray-400">
-            Chưa có đơn hàng nào phù hợp với bộ lọc hiện tại.
-          </div>
+          <HDEmptyState
+            icon={<ClipboardList size={24} />}
+            title={hasOrderListFilters ? 'Không tìm thấy đơn phù hợp' : 'Chưa có đơn hàng'}
+            description={hasOrderListFilters ? 'Thử xóa bộ lọc hoặc tìm với từ khóa khác.' : 'Đơn hàng mới sẽ hiển thị tại đây sau khi được tạo.'}
+            action={hasOrderListFilters
+              ? <HDButton variant="secondary" size="sm" onClick={resetOrderListFilters}>Xóa bộ lọc</HDButton>
+              : canCreateAnyOrder
+                ? <HDButton size="sm" onClick={openAddOrderModal}><Plus size={16} aria-hidden="true" />Tạo đơn hàng</HDButton>
+                : null}
+            className="premium-empty-state rounded-2xl bg-white p-6"
+          />
         )}
 
         {visibleDisplayOrders.map((order, orderIndex) => {
@@ -72731,6 +72749,10 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
     [displayedProducts, inventoryByProductId]
   );
   const visibleProducts = productTab === 'inventory' ? inventoryProducts : displayedProducts;
+  const hasProductFilters = hasTokenSearchQuery(productSearch)
+    || activeCategory !== 'Tất cả'
+    || selectedUnit !== 'Tất cả'
+    || discountFilter !== 'Tất cả';
 
   useEffect(() => {
     if (!categories.includes(activeCategory)) setActiveCategory('Tất cả');
@@ -73165,10 +73187,14 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 );
               })}
               {productGroupRows.length === 0 && (
-                <div className="col-span-2 rounded-2xl border border-dashed border-gray-200 p-5 text-center">
-                  <Package size={32} className="mx-auto mb-2 text-gray-300" />
-                  <p className="text-sm font-semibold text-gray-400">Chưa có nhóm hàng nào.</p>
-                </div>
+                <HDEmptyState
+                  className="col-span-2 rounded-2xl border border-dashed border-slate-200 bg-white"
+                  icon={<Package size={24} aria-hidden="true" />}
+                  title="Chưa có nhóm hàng"
+                  description={canManageProductGroups
+                    ? 'Tạo nhóm đầu tiên bằng nút thêm ở phía trên.'
+                    : 'Nhóm hàng của công ty sẽ hiển thị tại đây sau khi được tạo.'}
+                />
               )}
             </div>
         </div>
@@ -73245,15 +73271,38 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
           );
         })}
         {visibleProducts.length === 0 && (
-          <div className="text-center py-10">
-            <Package size={48} className="mx-auto text-gray-300 mb-3" />
-                <p className="text-sm text-gray-400">{productTab === 'inventory' ? 'Chưa có sản phẩm còn tồn kho.' : 'Không tìm thấy sản phẩm phù hợp.'}</p>
-          </div>
+          <HDEmptyState
+            icon={<Package size={24} aria-hidden="true" />}
+            title={hasProductFilters
+              ? 'Không tìm thấy sản phẩm phù hợp'
+              : productTab === 'inventory'
+                ? (displayedProducts.length > 0 ? 'Chưa có sản phẩm còn tồn kho' : 'Chưa có sản phẩm')
+                : showArchived ? 'Chưa có sản phẩm đã lưu trữ' : 'Chưa có sản phẩm'}
+            description={hasProductFilters
+              ? 'Thử điều chỉnh từ khóa hoặc bộ lọc để xem thêm sản phẩm.'
+              : productTab === 'inventory' && displayedProducts.length > 0
+                ? 'Sản phẩm sẽ xuất hiện tại đây khi tồn kho được ghi nhận lớn hơn 0.'
+                : showArchived
+                  ? 'Các sản phẩm đã lưu trữ sẽ được liệt kê tại đây.'
+                  : canCreate
+                    ? 'Thêm sản phẩm đầu tiên để bắt đầu quản lý danh mục và tồn kho.'
+                    : 'Sản phẩm sẽ hiển thị tại đây sau khi người có quyền tạo thêm.'}
+            action={hasProductFilters
+              ? <HDButton variant="secondary" size="sm" onClick={resetProductFilters}>Xóa bộ lọc</HDButton>
+              : productTab === 'inventory' && displayedProducts.length > 0
+                ? <HDButton variant="secondary" size="sm" onClick={() => setProductTab('products')}>Xem sản phẩm</HDButton>
+                : showArchived
+                  ? <HDButton variant="secondary" size="sm" onClick={() => setShowArchived(false)}>Xem sản phẩm đang dùng</HDButton>
+                  : canCreate
+                    ? <HDButton variant="primary" size="sm" onClick={() => openCreateProductForm()}>Thêm sản phẩm</HDButton>
+                    : null}
+            className="rounded-2xl border border-dashed border-slate-200 bg-white"
+          />
         )}
       </div>
       )}
 
-      {!showArchived && canCreate && (
+      {!showArchived && canCreate && (productTab !== 'products' || activeProducts.length > 0) && (
         <div className="hd-module-fab hd-product-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
            <button aria-label="Thêm sản phẩm" onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
               <Plus size={28}/>
@@ -88875,7 +88924,7 @@ function CustomerStatCard({ label, value, icon: Icon, tone = 'emerald' }) {
 }
 
 function CustomerEmptyState({ text }) {
-  return <div className="hd-ds-card hd-ds-state py-6"><p>{text}</p></div>;
+  return <HDEmptyState description={text} className="hd-ds-card py-6" />;
 }
 
 function IdentitySetupWizard({ context = {}, onComplete }) {

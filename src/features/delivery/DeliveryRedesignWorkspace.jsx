@@ -23,7 +23,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
-import { HDIconButton } from '../../design-system/index.js';
+import { HDButton, HDEmptyState, HDIconButton } from '../../design-system/index.js';
 import { useHDTheme } from '../../design-system/ThemeProvider.jsx';
 import './DeliveryRedesignWorkspace.css';
 import {
@@ -204,6 +204,11 @@ export default function DeliveryRedesignWorkspace({
     setFilterOpen(false);
     setScreen('overview');
   };
+  const resetListFilters = () => {
+    setActiveTab('all');
+    setFilterStatus('all');
+    setKeyword('');
+  };
   const handleComplete = async () => {
     if (!selectedGroup || !canCreate) return;
     const saved = await onComplete?.();
@@ -275,7 +280,12 @@ export default function DeliveryRedesignWorkspace({
         </div>
         <div className="space-y-2">
           {recentGroups.length > 0 ? recentGroups.map((group) => <DeliveryRow key={group.key} group={group} onOpen={openGroup} />) : (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm font-bold text-slate-400">Chưa có chuyến giao</div>
+            <HDEmptyState
+              icon={<Truck size={24} aria-hidden="true" />}
+              title="Chưa có chuyến giao"
+              description="Các chuyến giao sẽ xuất hiện tại đây khi có đơn cần giao."
+              className={`rounded-2xl border ${isDark ? 'border-slate-800 bg-slate-900' : 'border-dashed border-slate-200 bg-white'}`}
+            />
           )}
         </div>
       </section>
@@ -305,7 +315,17 @@ export default function DeliveryRedesignWorkspace({
       </div>
       <div className="space-y-2">
         {filteredGroups.length > 0 ? filteredGroups.map((group) => <DeliveryRow key={group.key} group={group} onOpen={openGroup} darkMode={isDark} />) : (
-          <div className={`rounded-2xl px-4 py-10 text-center text-sm font-bold ${isDark ? 'bg-slate-900 text-slate-500' : 'bg-white text-slate-400'}`}>Không có chuyến phù hợp</div>
+          <HDEmptyState
+            icon={<Search size={24} aria-hidden="true" />}
+            title={normalizedGroups.length > 0 ? 'Không có chuyến phù hợp' : 'Chưa có chuyến giao'}
+            description={normalizedGroups.length > 0
+              ? 'Thử điều chỉnh tìm kiếm hoặc trạng thái giao hàng.'
+              : 'Các chuyến giao mới sẽ hiển thị tại đây.'}
+            action={normalizedGroups.length > 0
+              ? <HDButton variant="secondary" size="sm" onClick={resetListFilters}>Xóa bộ lọc</HDButton>
+              : null}
+            className={`rounded-2xl ${isDark ? 'bg-slate-900' : 'bg-white'}`}
+          />
         )}
       </div>
     </div>
