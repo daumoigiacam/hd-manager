@@ -226,52 +226,52 @@ export default function DeliveryRedesignWorkspace({
 
   const overview = (
     <div className="space-y-4">
-      <section className="hd-delivery-overview-hero overflow-hidden rounded-[28px] bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-500 px-5 pb-5 pt-4 text-white shadow-[0_18px_42px_rgba(5,150,105,0.24)]">
+      <section className="hd-delivery-overview-hero overflow-hidden rounded-2xl border border-slate-200 bg-white px-4 pb-4 pt-3 text-slate-900 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-emerald-100">Giao hàng</p>
-            <p className="mt-1 text-sm font-medium text-emerald-50">{formatDeliveryDay(workingDate)}</p>
+            <p className="text-[13px] font-medium text-slate-600">Giao hàng</p>
+            <p className="mt-1 text-sm font-normal text-slate-500">{formatDeliveryDay(workingDate)}</p>
           </div>
           <div className="flex items-center gap-1">
-            <IconButton label="Báo cáo nhanh" onClick={() => setScreen('stats')} className="text-white hover:bg-white/15"><BarChart3 size={19} /></IconButton>
-            <IconButton label="Thao tác nhanh" onClick={() => setQuickActionsOpen(true)} className="text-white hover:bg-white/15"><MoreHorizontal size={20} /></IconButton>
-          <label title="Chọn ngày" className="relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-white hover:bg-white/15">
+            <IconButton label="Báo cáo nhanh" onClick={() => setScreen('stats')} className="text-slate-600 hover:bg-slate-100"><BarChart3 size={19} /></IconButton>
+            <IconButton label="Thao tác nhanh" onClick={() => setQuickActionsOpen(true)} className="text-slate-600 hover:bg-slate-100"><MoreHorizontal size={20} /></IconButton>
+          <label title="Chọn ngày" className="relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100">
               <input type="date" value={workingDate} onChange={(event) => onChangeDate?.(event.target.value)} className="absolute inset-0 cursor-pointer opacity-0" aria-label="Chọn ngày giao hàng" />
               <FileText size={19} />
             </label>
           </div>
         </div>
-        <div className="hd-delivery-overview-heading mt-5 flex items-center justify-between gap-4">
-          <div className="hd-delivery-overview-copy max-w-[11rem]">
-            <p className="hd-delivery-overview-title text-2xl font-black leading-tight">Giao đúng hẹn</p>
-            <p className="mt-1 text-sm font-semibold text-emerald-50">Vững niềm tin</p>
+        <div className="hd-delivery-overview-heading mt-3 flex items-center justify-between gap-4">
+          <div className="hd-delivery-overview-copy min-w-0 flex-1">
+            <p className="hd-delivery-overview-title text-xl font-bold leading-7">Giao đúng hẹn</p>
+            <p className="mt-1 text-sm font-medium text-slate-500">Vững niềm tin</p>
           </div>
-          <div className="hd-delivery-overview-illustration flex h-28 w-28 shrink-0 items-center justify-center rounded-[24px] border border-white/20 bg-white/15 shadow-inner">
-            <Truck size={61} strokeWidth={1.65} aria-hidden="true" />
+          <div className="hd-delivery-overview-illustration flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-blue-100 bg-blue-50 text-blue-600">
+            <Truck size={34} strokeWidth={1.8} aria-hidden="true" />
           </div>
         </div>
-        <div className="hd-delivery-overview-stats mt-5 grid grid-cols-3 gap-2">
+        <div className="hd-delivery-overview-stats mt-4 grid grid-cols-3 gap-2">
           {[
-            { label: 'Cần giao', value: displayStats.required, tone: 'bg-white/18' },
-            { label: 'Chờ báo cáo', value: displayStats.waiting, tone: 'bg-orange-300/20' },
-            { label: 'Đã giao', value: displayStats.completed, tone: 'bg-emerald-300/20' },
+            { label: 'Cần giao', value: displayStats.required, tone: 'border-slate-200 bg-slate-50' },
+            { label: 'Chờ báo cáo', value: displayStats.waiting, tone: 'border-amber-100 bg-amber-50' },
+            { label: 'Đã giao', value: displayStats.completed, tone: 'border-emerald-100 bg-emerald-50' },
           ].map((item) => (
-            <div key={item.label} className={`rounded-2xl px-2 py-3 text-center ${item.tone}`}>
-              <p className="text-xl font-black tabular-nums">{item.value}</p>
-              <p className="mt-1 text-[10px] font-semibold leading-3 text-emerald-50">{item.label}</p>
+            <div key={item.label} className={`rounded-xl border px-2 py-3 text-center ${item.tone}`}>
+              <p className="text-xl font-bold tabular-nums">{item.value}</p>
+              <p className="mt-1 text-xs font-medium leading-4 text-slate-600">{item.label}</p>
             </div>
           ))}
         </div>
       </section>
 
-      <button type="button" onClick={openList} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-4 text-[15px] font-black text-white shadow-[0_14px_28px_rgba(5,150,105,0.22)] transition hover:bg-emerald-700 active:scale-[0.99]">
+      <button type="button" onClick={openList} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 active:scale-[0.99]">
         Bắt đầu giao hàng <ArrowRight size={18} />
       </button>
 
       <section>
         <div className="mb-2 flex items-center justify-between gap-3 px-1">
           <h2 className="text-[17px] font-black">Giao gần đây</h2>
-          <button type="button" onClick={openList} className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700">Xem tất cả <ChevronRight size={15} /></button>
+          <button type="button" onClick={openList} className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700">Xem tất cả <ChevronRight size={15} /></button>
         </div>
         <div className="space-y-2">
           {recentGroups.length > 0 ? recentGroups.map((group) => <DeliveryRow key={group.key} group={group} onOpen={openGroup} />) : (

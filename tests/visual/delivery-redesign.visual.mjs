@@ -68,6 +68,8 @@ try {
         return { width: rect.width, height: rect.height, label: button.getAttribute('aria-label') };
       });
       const statsGrid = module.querySelector('.hd-delivery-overview-stats');
+      const hero = module.querySelector('.hd-delivery-overview-hero');
+      const overviewTitle = module.querySelector('.hd-delivery-overview-title');
       const bounds = module.getBoundingClientRect();
       return {
         viewportWidth: window.innerWidth,
@@ -75,13 +77,17 @@ try {
         moduleLeft: bounds.left,
         moduleRight: bounds.right,
         overviewStatsColumns: getComputedStyle(statsGrid).gridTemplateColumns.split(' ').length,
-        overviewTitleHeight: module.querySelector('.hd-delivery-overview-title').getBoundingClientRect().height,
+        overviewTitleHeight: overviewTitle.getBoundingClientRect().height,
+        overviewTitleFontSize: Number.parseFloat(getComputedStyle(overviewTitle).fontSize),
+        overviewTitleFits: overviewTitle.scrollWidth <= overviewTitle.clientWidth,
+        overviewHeroBackgroundImage: getComputedStyle(hero).backgroundImage,
         iconButtons,
       };
     });
     assert.ok(geometry.documentWidth <= geometry.viewportWidth + 1, `${viewport.name}: document must not overflow horizontally (${JSON.stringify(geometry)})`);
     assert.equal(geometry.overviewStatsColumns, 3, `${viewport.name}: delivery overview KPIs must remain in three aligned columns (${JSON.stringify(geometry)})`);
-    if (viewport.width === 320) assert.ok(geometry.overviewTitleHeight <= 52, `mobile-320: overview headline must stay compact (${JSON.stringify(geometry)})`);
+    assert.equal(geometry.overviewHeroBackgroundImage, 'none', `${viewport.name}: overview must use the shared surface rather than a module-specific gradient (${JSON.stringify(geometry)})`);
+    assert.ok(geometry.overviewTitleFontSize <= 20 && geometry.overviewTitleHeight <= 32 && geometry.overviewTitleFits, `${viewport.name}: overview headline must follow the shared title scale without wrapping or clipping (${JSON.stringify(geometry)})`);
     assert.ok(geometry.iconButtons.length >= 2, `${viewport.name}: overview should expose the delivery icon actions`);
     assert.ok(geometry.iconButtons.every(({ width, height }) => width >= 44 && height >= 44), `${viewport.name}: icon actions must meet the shared 44px touch target (${JSON.stringify(geometry.iconButtons)})`);
     await page.screenshot({ path: `${outputDir}/${viewport.name}-overview.png`, fullPage: false });
