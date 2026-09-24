@@ -1255,7 +1255,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   --hd-elevation-3: 0 20px 48px rgba(15, 23, 42, 0.18);
   /* Compact visual height while preserving the 44px accessible touch target. */
   --hd-header-height: 44px;
-  --hd-bottom-nav-height: 56px;
+  --hd-bottom-nav-height: 72px;
   --hd-sidebar-width: 18rem;
   --hd-dialog-max-height: 90dvh;
   --hd-touch-target: 44px;
@@ -1426,7 +1426,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   :root {
     --hd-app-max-width: 48rem;
     --hd-header-height: 48px;
-    --hd-bottom-nav-height: 64px;
+    --hd-bottom-nav-height: 72px;
     --hd-page-x: clamp(1rem, 3vw, 1.5rem);
     --hd-card-pad: clamp(1rem, 3vw, 1.5rem);
   }

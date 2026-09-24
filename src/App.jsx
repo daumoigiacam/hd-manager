@@ -143,7 +143,7 @@ import {
   buildOrderRequestShareFiles,
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
-import { getFixedFooterNavIds } from './utils/footerNavigation.js';
+import { getContextualFabActionIds, getFixedFooterNavIds } from './utils/footerNavigation.js';
 import {
   normalizeCompanyDepartments,
   removeCompanyDepartment,
@@ -25130,6 +25130,8 @@ function MainAppView({
           isSuperAdmin={isSuperAdmin}
           canViewEmployees={canRoleAction('employees', 'view_employees')}
           canCreateEmployee={canRoleAction('employees', 'create_employee')}
+          quickActionIntent={activeTab === 'employees' ? quickActionIntent : null}
+          onQuickActionHandled={handleQuickActionHandled}
           canEditEmployee={canRoleAction('employees', 'edit_employee')}
           canDeleteEmployee={isOwnerAccount || isSuperAdmin || canRoleAction('employees', 'delete_employee')}
           canEditEmployeeSalaryPolicy={canRoleAction('employees', 'edit_employee_salary_policy')}
@@ -25170,8 +25172,8 @@ function MainAppView({
             note: 'Sản phẩm tạo nhanh sẽ dùng được ngay cho nhập kho, xuất kho, báo giá và báo cáo lợi nhuận.'
           });
         }
-        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} />;
+        return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} quickActionIntent={activeTab === 'warehouse_import' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} quickActionIntent={activeTab === 'warehouse_dispatch' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
@@ -25816,9 +25818,25 @@ function MainAppView({
     canRoleAction('orders', 'create_order_from_warehouse') ||
     canRoleAction('orders', 'create_order_from_image')
   ));
+  const canQuickCreateCustomer = Boolean(tabPermissions.customers && canRoleAction('customers', 'add_edit_customer'));
+  const canQuickImportCustomers = Boolean(tabPermissions.customers && canRoleAction('customers', 'import_customer_data'));
+  const canQuickCreateProduct = Boolean(tabPermissions.products && (canRoleAction('products', 'create_product') || isAccounting));
+  const canQuickCreateEmployee = Boolean(tabPermissions.employees && canRoleAction('employees', 'create_employee'));
   const canQuickCreateIncome = Boolean(tabPermissions.finance && canRoleAction('finance', 'create_income'));
   const canQuickCreateExpense = Boolean(tabPermissions.finance && canRoleAction('finance', 'create_expense'));
   const canQuickCreateOrderRequest = Boolean(tabPermissions.order_requests && canRoleAction('order_requests', 'create_order_request'));
+  const canQuickCreateWarehouseDispatch = Boolean(tabPermissions.warehouse_dispatch && (
+    canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch')
+    || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')
+  ));
+  const canQuickCreateWarehouseImport = Boolean(tabPermissions.warehouse_import && (
+    isOwnerAccount
+    || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')
+  ));
+  const canQuickAdjustWarehouseStock = Boolean(tabPermissions.warehouse_import && (
+    isOwnerAccount
+    || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')
+  ));
   const canQuickUsePriceQuotes = Boolean(tabPermissions.price_quotes);
   const canQuickUseAttendance = Boolean(tabPermissions.company_attendance);
   const canQuickUseDeliveryReport = Boolean(tabPermissions.delivery_reports && canRoleAction('delivery_reports', 'create_delivery_report'));
@@ -25837,14 +25855,14 @@ function MainAppView({
       quote: { id: 'quick_quote', label: 'B\u00e1o gi\u00e1 h\u00e0ng lo\u1ea1t', tab: 'price_quotes', icon: Send, tone: 'from-sky-500 to-cyan-500', visible: canQuickUsePriceQuotes },
       deliveryReport: { id: 'quick_delivery_report', label: 'B\u00e1o c\u00e1o giao h\u00e0ng', tab: 'delivery_reports', icon: FileText, tone: 'from-violet-500 to-purple-500', visible: canQuickUseDeliveryReport },
       maps: { id: 'quick_maps', label: 'B\u1ea3n \u0111\u1ed3', tab: 'maps', icon: MapPin, tone: 'from-teal-500 to-cyan-500', visible: tabPermissions.maps },
-      customer: { id: 'quick_customer', label: 'Th\u00eam kh\u00e1ch h\u00e0ng', tab: 'customers', icon: Users, tone: 'from-emerald-500 to-green-500', visible: tabPermissions.customers, intent: { type: 'create_customer' } },
-      product: { id: 'quick_product', label: 'Th\u00eam s\u1ea3n ph\u1ea9m', tab: 'products', icon: Package, tone: 'from-blue-500 to-indigo-500', visible: tabPermissions.products, intent: { type: 'create_product' } },
-      employee: { id: 'quick_employee', label: 'Th\u00eam nh\u00e2n s\u1ef1', tab: 'employees', icon: UserCircle, tone: 'from-violet-500 to-purple-500', visible: tabPermissions.employees }
+      customer: { id: 'quick_customer', label: 'Th\u00eam kh\u00e1ch h\u00e0ng', tab: 'customers', icon: Users, tone: 'from-emerald-500 to-green-500', visible: canQuickCreateCustomer, intent: { type: 'create_customer' } },
+      customerImport: { id: 'quick_customer_import', label: 'Nh\u1eadp Excel kh\u00e1ch h\u00e0ng', tab: 'customers', icon: FileText, tone: 'from-emerald-500 to-green-500', visible: canQuickImportCustomers, intent: { type: 'import_customer' } },
+      product: { id: 'quick_product', label: 'Th\u00eam s\u1ea3n ph\u1ea9m', tab: 'products', icon: Package, tone: 'from-blue-500 to-indigo-500', visible: canQuickCreateProduct, intent: { type: 'create_product' } },
+      employee: { id: 'quick_employee', label: 'Th\u00eam nh\u00e2n s\u1ef1', tab: 'employees', icon: UserCircle, tone: 'from-violet-500 to-purple-500', visible: canQuickCreateEmployee, intent: { type: 'create_employee' } },
+      warehouseDispatch: { id: 'quick_warehouse_dispatch', label: 'T\u1ea1o phi\u1ebfu xu\u1ea5t kho', tab: 'warehouse_dispatch', icon: Truck, tone: 'from-blue-500 to-cyan-500', visible: canQuickCreateWarehouseDispatch, intent: { type: 'create_warehouse_dispatch' } },
+      warehouseImport: { id: 'quick_warehouse_import', label: 'T\u1ea1o phi\u1ebfu nh\u1eadp kho', tab: 'warehouse_import', icon: Package, tone: 'from-emerald-500 to-green-500', visible: canQuickCreateWarehouseImport, intent: { type: 'create_warehouse_import' } },
+      stockAdjustment: { id: 'quick_stock_adjustment', label: 'Ki\u1ec3m kho th\u1ef1c t\u1ebf', tab: 'warehouse_import', icon: ClipboardList, tone: 'from-cyan-500 to-teal-500', visible: canQuickAdjustWarehouseStock, intent: { type: 'create_actual_stock_count' } }
     };
-
-    if (isDriver) return [actions.deliveryReport, actions.createIncome, actions.createExpense].filter(item => item.visible);
-    if (isSales) return [actions.orderRequest, actions.quote, actions.attendance].filter(item => item.visible);
-    if (isAccounting && !isOwnerAccount) return [actions.createOrder, actions.createIncome, actions.createExpense, actions.attendance].filter(item => item.visible);
 
     return [
       actions.createOrder,
@@ -25855,29 +25873,69 @@ function MainAppView({
       actions.attendance,
       actions.maps,
       actions.customer,
+      actions.customerImport,
       actions.product,
-      actions.employee
+      actions.employee,
+      actions.warehouseDispatch,
+      actions.warehouseImport,
+      actions.stockAdjustment
     ].filter(item => item.visible);
   }, [
     canQuickCreateExpense,
     canQuickCreateIncome,
     canQuickCreateOrder,
     canQuickCreateOrderRequest,
+    canQuickCreateCustomer,
+    canQuickCreateEmployee,
+    canQuickCreateProduct,
+    canQuickImportCustomers,
+    canQuickCreateWarehouseDispatch,
+    canQuickCreateWarehouseImport,
+    canQuickAdjustWarehouseStock,
     canQuickUseAttendance,
     canQuickUseDeliveryReport,
     canQuickUsePriceQuotes,
-    isAccounting,
-    isDriver,
-    isOwnerAccount,
-    isSales,
     tabPermissions.customers,
-    tabPermissions.employees,
     tabPermissions.maps,
     tabPermissions.products
   ]);
+  const missingWarehouseDispatchSetup = activeTab === 'warehouse_dispatch' && shouldShowMissingWorkflowSetup({
+    canCreate: canQuickCreateWarehouseDispatch,
+    dataReady: workflowDataReadiness.sales,
+    hasCustomers: hasWorkflowCustomerData,
+    hasProducts: hasWorkflowProductData
+  });
+  const missingWarehouseImportSetup = activeTab === 'warehouse_import' && shouldShowMissingWorkflowSetup({
+    canCreate: canQuickCreateWarehouseImport,
+    dataReady: workflowDataReadiness.products,
+    hasProducts: hasWorkflowProductData,
+    requiresCustomers: false
+  });
+  const contextualQuickActionIds = missingWarehouseDispatchSetup || missingWarehouseImportSetup
+    ? []
+    : getContextualFabActionIds(activeTab);
+  const mobileContextualQuickActionItems = useMemo(() => {
+    if (!canShowFloatingQuickActionButton || !floatingQuickActionEnabled) return [];
+    if (contextualQuickActionIds.includes('*')) return quickActionItems;
+    const allowedIds = new Set(contextualQuickActionIds);
+    return quickActionItems.filter(item => allowedIds.has(item.id));
+  }, [canShowFloatingQuickActionButton, contextualQuickActionIds, floatingQuickActionEnabled, quickActionItems]);
+  const handleQuickActionSelect = (item) => {
+    const requestedAt = Date.now();
+    if (item?.intent) {
+      setQuickActionIntent({
+        ...item.intent,
+        id: `${item.id}_${requestedAt}`,
+        requestedAt
+      });
+    } else {
+      setQuickActionIntent(null);
+    }
+    if (item?.tab) setActiveTab(item.tab);
+  };
 
   return (
-    <AppShell ref={appShellRef} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
+    <AppShell ref={appShellRef} data-active-tab={activeTab} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -26088,31 +26146,58 @@ function MainAppView({
         <FloatingQuickActionButton
           actions={quickActionItems}
           containerRef={appShellRef}
-          onSelect={(item) => {
-            if (item?.intent) {
-              setQuickActionIntent({
-                ...item.intent,
-                id: `${item.id}_${Date.now()}`
-              });
-            } else {
-              setQuickActionIntent(null);
-            }
-            if (item?.tab) setActiveTab(item.tab);
-          }}
+          onSelect={handleQuickActionSelect}
         />
       )}
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <HDBottomNavigation className="hd-bottom-navigation mobile-footer-nav flex justify-around items-center px-1 py-1.5">
-          {displayedFooterNavItems.map((item) => (
-            <NavButton
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
-              onClick={() => setActiveTab(item.id)}
-            />
-          ))}
+        <HDBottomNavigation className="hd-bottom-navigation mobile-footer-nav">
+          {activeTab === 'delivery_reports' ? (
+            displayedFooterNavItems.map((item, index) => (
+              <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 1 }}>
+                <NavButton
+                  icon={item.icon}
+                  label={item.label}
+                  active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  className="mobile-footer-nav__button"
+                />
+              </div>
+            ))
+          ) : (
+            <>
+              {displayedFooterNavItems.slice(0, 2).map((item, index) => (
+                <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 1 }}>
+                  <NavButton
+                    icon={item.icon}
+                    label={item.label}
+                    active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className="mobile-footer-nav__button"
+                  />
+                </div>
+              ))}
+              {mobileContextualQuickActionItems.length > 0 ? (
+                <ContextualQuickActionButton
+                  actions={mobileContextualQuickActionItems}
+                  onSelect={handleQuickActionSelect}
+                />
+              ) : (
+                <div className="hd-footer-nav-slot hd-footer-nav-slot--empty" aria-hidden="true" style={{ gridColumn: 3 }} />
+              )}
+              {displayedFooterNavItems.slice(2, 4).map((item, index) => (
+                <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 4 }}>
+                  <NavButton
+                    icon={item.icon}
+                    label={item.label}
+                    active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className="mobile-footer-nav__button"
+                  />
+                </div>
+              ))}
+            </>
+          )}
         </HDBottomNavigation>
         <HDNavigationRail className="tablet-navigation-rail" aria-label="Điều hướng chức năng">
           {desktopSidebarItems.map((item) => (
@@ -26207,6 +26292,79 @@ function MainAppView({
 
 // --- SUB-COMPONENTS ---
 
+function ContextualQuickActionButton({ actions = [], onSelect = () => {} }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === 'undefined') return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (actions.length === 0) setIsOpen(false);
+  }, [actions.length]);
+
+  if (actions.length === 0) return null;
+  const handleActivate = () => {
+    if (actions.length === 1) {
+      onSelect(actions[0]);
+      return;
+    }
+    setIsOpen(previous => !previous);
+  };
+
+  return (
+    <div className="hd-footer-nav-slot hd-contextual-fab-slot" style={{ gridColumn: 3 }}>
+      {isOpen && (
+        <>
+          <button
+            type="button"
+            className="hd-contextual-fab-backdrop"
+            aria-label="Đóng thao tác nhanh"
+            onClick={() => setIsOpen(false)}
+          />
+          <div className="hd-contextual-fab-menu" role="menu" aria-label="Thao tác nhanh">
+            {actions.map((item) => {
+              const Icon = item.icon || Plus;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="menuitem"
+                  className="hd-contextual-fab-menu__item"
+                  onClick={() => {
+                    setIsOpen(false);
+                    onSelect(item);
+                  }}
+                >
+                  <span className="hd-contextual-fab-menu__icon"><Icon size={18} /></span>
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <button
+        type="button"
+        className="hd-contextual-fab-trigger"
+        aria-label={actions.length === 1 ? actions[0].label : 'Mở thao tác nhanh'}
+        aria-haspopup={actions.length > 1 ? 'menu' : undefined}
+        aria-expanded={actions.length > 1 ? isOpen : undefined}
+        title={actions.length === 1 ? actions[0].label : 'Thêm nhanh'}
+        onClick={handleActivate}
+      >
+        {isOpen ? <X size={22} strokeWidth={2.5} /> : <Plus size={25} strokeWidth={2.5} />}
+      </button>
+      <span className="hd-contextual-fab-label" aria-hidden="true">Thêm</span>
+    </div>
+  );
+}
+
 function FloatingQuickActionButton({ actions = [], onSelect = () => {}, containerRef }) {
   const [isOpen, setIsOpen] = useState(false);
   const [position, setPosition] = useState({ x: 330, y: 520 });
@@ -26290,7 +26448,7 @@ function FloatingQuickActionButton({ actions = [], onSelect = () => {}, containe
 
   return (
     <div
-      className="hd-floating-quick-action absolute z-50"
+      className="hd-floating-quick-action hidden lg:block absolute z-50"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
     >
       {isOpen && (
@@ -54989,7 +55147,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   );
 }
 
-function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canPostVpsOpeningBalance = false, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true }) {
+function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, currentCompany = {}, customers = [], products = [], orders = [], orderRequests = [], warehouseImports = [], warehouseDispatches = [], warehouseStockCounts = [], onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onUpdateCompanySettings = null, canCreateWarehouseImport = true, canPostVpsOpeningBalance = false, canEditWarehouseImport = false, canDeleteWarehouseImport = false, canViewActualStockCount = true, canCreateActualStockCount = false, canEditActualStockCount = false, canDeleteActualStockCount = false, canRecordActualStockReason = false, canCompareActualStockCount = true, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const actualStockReasonOptions = ['Đếm sai', 'Bị mất', 'Hư hỏng', 'Bị lỗi', 'Bị chết', 'Bị loại', 'Trả nhà cung cấp', 'Khác'];
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [warehouseCalendarMonth, setWarehouseCalendarMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
@@ -55091,6 +55249,16 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       runFocus();
     }
   };
+  useEffect(() => {
+    if (quickActionIntent?.type !== 'create_warehouse_import') return;
+    if (!canCreateWarehouseImport) {
+      onQuickActionHandled();
+      return;
+    }
+    setWarehouseInventoryTab('import');
+    window.requestAnimationFrame?.(() => focusNextWarehouseImportField('productCode'));
+    onQuickActionHandled();
+  }, [canCreateWarehouseImport, onQuickActionHandled, quickActionIntent?.id, quickActionIntent?.type]);
   const handleWarehouseImportEnter = (event, nextFieldKey) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
@@ -56644,6 +56812,20 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     [warehouseStockRows]
   );
   const canOpenActualStockForm = canCreateActualStockCount || canEditActualStockCount;
+  useEffect(() => {
+    if (quickActionIntent?.type !== 'create_actual_stock_count') return;
+    setWarehouseInventoryTab('stock');
+    const firstRow = warehouseStockChecklistRows[0];
+    const firstMeasure = firstRow?.measureRows?.[0];
+    if (canOpenActualStockForm && firstRow && firstMeasure) {
+      openQuickStockEdit(firstRow, firstMeasure);
+    } else {
+      setStockCountStatus(canOpenActualStockForm
+        ? 'Chưa có nhóm hàng trong tồn kho để kiểm thực tế.'
+        : 'Tài khoản này chưa có quyền kiểm tồn thực tế.');
+    }
+    onQuickActionHandled();
+  }, [canOpenActualStockForm, onQuickActionHandled, quickActionIntent?.id, quickActionIntent?.type, warehouseStockChecklistRows]);
 
   const suggestedAmount = useMemo(() => {
     const totalKg = parseLooseQuantityValue(draft.totalKg);
@@ -58863,7 +59045,7 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 });
 
-function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false }) {
+function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
@@ -58945,6 +59127,20 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchListSearchInputRef = useRef(null);
   const dispatchListWeightSaveLockRef = useRef(false);
   useDismissSearchOnOutsideClick(Boolean(dispatchPickerOpen), () => setDispatchPickerOpen(''));
+
+  useEffect(() => {
+    if (quickActionIntent?.type !== 'create_warehouse_dispatch') return;
+    if (!canCreate) {
+      onQuickActionHandled();
+      return;
+    }
+    setDispatchPickerOpen('customer');
+    window.requestAnimationFrame?.(() => {
+      dispatchCustomerSearchInputRef.current?.focus?.({ preventScroll: true });
+      dispatchCustomerSearchInputRef.current?.select?.();
+    });
+    onQuickActionHandled();
+  }, [canCreate, onQuickActionHandled, quickActionIntent?.id, quickActionIntent?.type]);
 
   useEffect(() => {
     if (!isDispatchListSearchOpen || typeof window === 'undefined') return undefined;
@@ -70915,7 +71111,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
       {canCreateAnyOrder && (
       <div
-        className="fixed right-4 z-40 pointer-events-none flex justify-end"
+        className="hd-order-module-fab fixed right-4 z-40 pointer-events-none flex justify-end"
         style={{ bottom: 'calc(var(--hd-footer-height) + 1rem)' }}
       >
          <button
@@ -73058,7 +73254,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       )}
 
       {!showArchived && canCreate && (
-        <div className="hd-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
+        <div className="hd-module-fab hd-product-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
            <button aria-label="Thêm sản phẩm" onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
               <Plus size={28}/>
            </button>
@@ -75165,6 +75361,12 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     setShowCustomerQuickActions(false);
     setShowCustomerImportModal(true);
   };
+
+  useEffect(() => {
+    if (quickActionIntent?.type !== 'import_customer') return;
+    openCustomerImportModal();
+    onQuickActionHandled?.();
+  }, [quickActionIntent?.id, quickActionIntent?.requestedAt, quickActionIntent?.type]);
 
   const handleCustomerImportFileChange = async (event) => {
     const file = event.target.files?.[0];
@@ -79757,6 +79959,8 @@ function EmployeeView({
   isSuperAdmin,
   canViewEmployees = false,
   canCreateEmployee = false,
+  quickActionIntent = null,
+  onQuickActionHandled = () => {},
   canEditEmployee = false,
   canDeleteEmployee = false,
   canEditEmployeeSalaryPolicy = false,
@@ -80159,6 +80363,12 @@ function EmployeeView({
     setEmployeeStatus('');
     setShowForm(true);
   };
+
+  useEffect(() => {
+    if (quickActionIntent?.type !== 'create_employee' || !canCreateEmployee) return;
+    openCreateEmployeeForm();
+    onQuickActionHandled?.();
+  }, [quickActionIntent?.id, quickActionIntent?.requestedAt, quickActionIntent?.type, canCreateEmployee]);
 
   const handlePositionChange = (position) => {
     const shiftDefaults = getPositionShiftDefaults(position);
@@ -80901,7 +81111,7 @@ function EmployeeView({
       <input ref={employeeAvatarInputRef} type="file" accept="image/*" onChange={handleEmployeeAvatarSelect} className="hidden" />
       <input ref={employeeDocumentInputRef} type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleEmployeeDocumentSelect} className="hidden" />
       {canCreateEmployee && (
-      <div className="fixed bottom-[92px] right-4 z-40 pointer-events-none flex justify-end">
+      <div className="hd-employee-module-fab fixed bottom-[92px] right-4 z-40 pointer-events-none flex justify-end">
         <button type="button" onClick={openCreateEmployeeForm} aria-label="Thêm nhân viên" className="pointer-events-auto h-14 w-14 rounded-full bg-gradient-to-br from-emerald-500 to-blue-600 text-white shadow-2xl shadow-emerald-900/25 flex items-center justify-center border border-white/40 active:scale-95 transition">
           <Plus size={28} strokeWidth={2.8} />
         </button>

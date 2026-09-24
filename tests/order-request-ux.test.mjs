@@ -580,15 +580,15 @@ test('mobile footer stays fixed for accounting, delivery and sales roles', () =>
 
   assert.deepEqual(
     getFixedFooterNavIds({ isAccounting: true, permissions }),
-    ['home', 'orders', 'finance', 'debt', 'more'],
+    ['home', 'orders', 'finance', 'more'],
   );
   assert.deepEqual(
     getFixedFooterNavIds({ isDeliveryParticipant: true, permissions }),
-    ['home', 'delivery_reports', 'employee_reviews', 'company_attendance', 'more'],
+    ['home', 'delivery_reports', 'company_attendance', 'more'],
   );
   assert.deepEqual(
     getFixedFooterNavIds({ isSales: true, permissions }),
-    ['home', 'order_requests', 'debt', 'company_attendance', 'more'],
+    ['home', 'order_requests', 'debt', 'more'],
   );
 
   const footerSource = appSource.slice(
@@ -610,7 +610,7 @@ test('fixed footer never replaces a denied module with another feature', () => {
     },
   });
 
-  assert.deepEqual(ids, ['home', 'order_requests', 'company_attendance', 'more']);
+  assert.deepEqual(ids, ['home', 'order_requests', 'more']);
 });
 
 test('orders remain reachable from More when the fixed footer belongs to another role', () => {
