@@ -428,17 +428,35 @@ try {
       const customerFabLayout = await page.getByRole('button', { name: 'Mở thao tác khách hàng', exact: true }).evaluate((button) => {
         const footer = document.querySelector('[data-hd-navigation="bottom"]');
         const footerLayer = footer?.closest('nav') || footer;
+        const dock = button.parentElement;
         const buttonRect = button.getBoundingClientRect();
         const footerRect = footer?.getBoundingClientRect();
+        const dockRect = dock?.getBoundingClientRect();
+        const dockStyle = getComputedStyle(dock);
         return {
           buttonBottom: buttonRect.bottom,
           footerTop: footerRect?.top || 0,
           buttonZIndex: Number(getComputedStyle(button.parentElement).zIndex || 0),
           footerZIndex: Number(footerLayer && getComputedStyle(footerLayer).zIndex !== 'auto' ? getComputedStyle(footerLayer).zIndex : 0),
+          dockLeft: dockRect?.left || 0,
+          dockRight: dockRect?.right || 0,
+          dockTop: dockRect?.top || 0,
+          dockBottom: dockRect?.bottom || 0,
+          dockBackground: dockStyle.backgroundColor,
+          dockPointerEvents: dockStyle.pointerEvents,
         };
       });
       assert(customerFabLayout.buttonBottom <= customerFabLayout.footerTop - 4, 'mobile: add-customer action must remain fully above the footer');
       assert(customerFabLayout.buttonZIndex > customerFabLayout.footerZIndex, 'mobile: add-customer action must paint above the footer');
+      assert(customerFabLayout.dockLeft <= 1 && customerFabLayout.dockRight >= viewport.width - 1, `${viewport.name}: add-customer dock must span the viewport`);
+      assert(customerFabLayout.dockTop < customerFabLayout.dockBottom && customerFabLayout.dockBottom <= customerFabLayout.footerTop, `${viewport.name}: add-customer dock must stay above the footer`);
+      assert.notEqual(customerFabLayout.dockBackground, 'rgba(0, 0, 0, 0)', `${viewport.name}: add-customer dock must have an opaque surface above list content`);
+      assert.equal(customerFabLayout.dockPointerEvents, 'auto', `${viewport.name}: add-customer dock must protect content beneath it from accidental taps`);
+      const lastCustomerCard = page.locator('[data-customer-card="true"]').last();
+      await page.locator('.hd-app-content').evaluate(content => { content.scrollTop = content.scrollHeight; });
+      const lastCardBottom = await lastCustomerCard.evaluate(card => card.getBoundingClientRect().bottom);
+      assert(lastCardBottom <= customerFabLayout.dockTop + 1, `${viewport.name}: the last customer card must scroll fully above the add-customer dock`);
+      await firstCustomerCard.scrollIntoViewIfNeeded();
       assert(shellOverflow.footer, `${viewport.name}: bottom navigation must remain available on phone layouts`);
     }
 

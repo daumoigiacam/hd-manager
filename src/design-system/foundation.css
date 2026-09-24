@@ -1849,6 +1849,23 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 }
 
 @media (max-width: 599px) {
+  .hd-shell--staff:has(.hd-customer-module-fab) .hd-app-content {
+    padding-bottom: calc(var(--hd-footer-height) + 72px + var(--hd-space-5)) !important;
+  }
+
+  .hd-shell--staff .hd-customer-module-fab {
+    inset-inline: 0;
+    bottom: var(--hd-footer-height);
+    box-sizing: border-box;
+    min-height: 72px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--hd-color-border);
+    background: var(--hd-color-canvas);
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 599px) {
   .hd-shell--staff .hd-product-list {
     max-height: none;
     overflow: visible;

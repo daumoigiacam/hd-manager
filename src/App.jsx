@@ -77938,7 +77938,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       </div>
 
       {(canAddCustomer || canBulkImportCustomers) && (
-      <div className="hd-module-fab fixed right-4 z-50 pointer-events-none flex flex-col items-end gap-2">
+      <div className="hd-module-fab hd-customer-module-fab fixed right-4 z-50 pointer-events-none flex flex-col items-end gap-2">
         {showCustomerQuickActions && (
           <div className="pointer-events-auto w-52 rounded-2xl border border-gray-100 bg-white p-2 shadow-2xl">
             {canAddCustomer && (
