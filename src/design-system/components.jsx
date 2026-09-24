@@ -7,9 +7,10 @@ export function HDCard({ as: Component = 'section', tone = 'default', className 
   return <Component className={`hd-ds-card hd-ds-card--${tone} ${className}`.trim()} {...props}>{children}</Component>;
 }
 
-export function HDButton({ variant = 'primary', size = 'md', loading = false, iconOnly = false, className = '', type = 'button', children, disabled, ...props }) {
+export const HDButton = React.forwardRef(function HDButton({ variant = 'primary', size = 'md', loading = false, iconOnly = false, className = '', type = 'button', children, disabled, ...props }, ref) {
   return (
     <button
+      ref={ref}
       type={type}
       className={cx('hd-ds-button', `hd-ds-button--${variant}`, `hd-ds-button--${size}`, iconOnly && 'hd-ds-button--icon', loading && 'is-loading', className)}
       disabled={disabled || loading}
@@ -20,11 +21,11 @@ export function HDButton({ variant = 'primary', size = 'md', loading = false, ic
       {children}
     </button>
   );
-}
+});
 
-export function HDIconButton({ label, children, className = '', ...props }) {
-  return <HDButton variant="icon" iconOnly className={className} aria-label={label} {...props}>{children}</HDButton>;
-}
+export const HDIconButton = React.forwardRef(function HDIconButton({ label, children, className = '', ...props }, ref) {
+  return <HDButton ref={ref} variant="icon" iconOnly className={className} aria-label={label} {...props}>{children}</HDButton>;
+});
 
 export function HDPageHeader({ title, description, onBack, backLabel = 'Quay lại', actions = [], className = '', ...props }) {
   return (

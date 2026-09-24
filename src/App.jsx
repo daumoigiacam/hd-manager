@@ -23513,6 +23513,9 @@ function MainAppView({
   const [shellRecentTabs, setShellRecentTabs] = useState([]);
   const [shellRecentQueries, setShellRecentQueries] = useState(() => readGlobalSearchHistory());
   const shellSearchInputRef = useRef(null);
+  const shellSearchTriggerRef = useRef(null);
+  const shellSearchReturnFocusRef = useRef(null);
+  const shellSearchWasOpenRef = useRef(false);
   const systemNotificationReadyRef = useRef(false);
   const lastSystemNotificationShownAtRef = useRef(0);
 
@@ -24557,11 +24560,26 @@ function MainAppView({
     </HDIconButton>
   );
 
+  const openShellSearch = (event) => {
+    const eventTarget = event?.currentTarget;
+    const activeTarget = typeof document !== 'undefined' ? document.activeElement : null;
+    const candidate = typeof HTMLElement !== 'undefined' && eventTarget instanceof HTMLElement
+      ? eventTarget
+      : activeTarget;
+    shellSearchReturnFocusRef.current = typeof HTMLElement !== 'undefined'
+      && candidate instanceof HTMLElement
+      && candidate !== document.body
+      ? candidate
+      : shellSearchTriggerRef.current;
+    setShellSearchOpen(true);
+  };
+
   const renderGlobalSearchTrigger = () => (
     <HDIconButton
+      ref={shellSearchTriggerRef}
       label="Tìm kiếm toàn ứng dụng"
       className="hd-header-global-search-button"
-      onClick={() => setShellSearchOpen(true)}
+      onClick={openShellSearch}
       title="Tìm kiếm toàn ứng dụng"
     >
       <Command size={18} aria-hidden="true" />
@@ -24831,6 +24849,24 @@ function MainAppView({
         aria-modal="true"
         aria-labelledby="hd-shell-search-title"
         onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            setShellSearchOpen(false);
+            return;
+          }
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            const results = Array.from(event.currentTarget.querySelectorAll('[data-global-search-result]:not([disabled])'));
+            if (!results.length) return;
+            const activeIndex = results.indexOf(window.document.activeElement);
+            const direction = event.key === 'ArrowDown' ? 1 : -1;
+            const nextIndex = activeIndex < 0
+              ? (direction > 0 ? 0 : results.length - 1)
+              : (activeIndex + direction + results.length) % results.length;
+            event.preventDefault();
+            results[nextIndex]?.focus();
+            return;
+          }
           if (event.key !== 'Tab') return;
           const focusable = Array.from(event.currentTarget.querySelectorAll('button:not([disabled]), input:not([disabled])'));
           if (!focusable.length) return;
@@ -24860,10 +24896,6 @@ function MainAppView({
             value={shellSearchKeyword}
             onChange={(event) => setShellSearchKeyword(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                event.currentTarget.closest('.hd-shell-search-popover')?.querySelector('[data-global-search-result]')?.focus();
-              }
               if (event.key === 'Enter') {
                 event.preventDefault();
                 handleShellSearchEnter();
@@ -24954,11 +24986,11 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={() => setShellSearchOpen(true)} />
+    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
-    <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={expenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onOpenGlobalSearch={() => setShellSearchOpen(true)} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
+    <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={expenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
   );
 
   const renderEmployeeHomeDashboard = () => (
@@ -24984,7 +25016,7 @@ function MainAppView({
       record={currentAttendanceAlert?.record}
       notificationUnreadCount={employeeHomeInboxUnreadCount}
       onOpenNotifications={handleOpenEmployeeHomeInbox}
-      onOpenGlobalSearch={() => setShellSearchOpen(true)}
+      onOpenGlobalSearch={openShellSearch}
       showDeliveryReportHome={!(isSales || (isAccounting && !isOwnerAccount))}
     />
   );
@@ -25010,7 +25042,7 @@ function MainAppView({
       case 'home': return renderHomeDashboard();
       case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
-      case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onOpenGlobalSearch={() => setShellSearchOpen(true)} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
+      case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
       case 'settings': return <SettingsView isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
@@ -25669,16 +25701,29 @@ function MainAppView({
     }
   };
   useEffect(() => {
-    if (!shellSearchOpen || typeof window === 'undefined') return undefined;
-    const focusTimer = window.setTimeout(() => shellSearchInputRef.current?.focus(), 60);
-    return () => window.clearTimeout(focusTimer);
+    if (typeof window === 'undefined') return undefined;
+    if (shellSearchOpen) {
+      shellSearchWasOpenRef.current = true;
+      const focusTimer = window.setTimeout(() => shellSearchInputRef.current?.focus(), 60);
+      return () => window.clearTimeout(focusTimer);
+    }
+    if (!shellSearchWasOpenRef.current) return undefined;
+    shellSearchWasOpenRef.current = false;
+    const preferredTarget = shellSearchReturnFocusRef.current;
+    shellSearchReturnFocusRef.current = null;
+    const fallbackTarget = shellSearchTriggerRef.current;
+    const focusFrame = window.requestAnimationFrame(() => {
+      const target = preferredTarget?.isConnected ? preferredTarget : fallbackTarget?.isConnected ? fallbackTarget : null;
+      target?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
   }, [shellSearchOpen]);
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const handleShellSearchShortcut = (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        setShellSearchOpen(true);
+        openShellSearch();
       } else if (event.key === 'Escape') {
         setShellSearchOpen(false);
       }
@@ -26246,7 +26291,7 @@ function MainAppView({
             <button
               type="button"
               className="hd-shell-search-trigger"
-              onClick={() => setShellSearchOpen(true)}
+              onClick={openShellSearch}
               aria-label="Tìm chức năng"
               title="Tìm chức năng"
             >

@@ -1918,10 +1918,10 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 }
 
 .hd-enterprise-app-shell[data-hd-shell="enterprise"] .hd-shell-search-input-wrap > button {
-  flex: 0 0 1.75rem !important;
-  inline-size: 1.75rem !important;
-  min-inline-size: 1.75rem !important;
-  max-inline-size: 1.75rem !important;
+  flex: 0 0 var(--hd-touch-target, 44px) !important;
+  inline-size: var(--hd-touch-target, 44px) !important;
+  min-inline-size: var(--hd-touch-target, 44px) !important;
+  max-inline-size: var(--hd-touch-target, 44px) !important;
 }
 
 .hd-shell--staff .hd-product-list__item {

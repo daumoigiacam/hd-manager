@@ -36,6 +36,7 @@
     "test:firestore-employee-customer-messaging-rules": "firebase emulators:exec --only firestore \"node tests/firestore-employee-customer-messaging-rules.test.mjs\"",
     "test:search": "node tests/search-engine.test.mjs",
     "test:global-search": "node tests/global-search.test.mjs",
+    "test:global-search:visual": "node tests/visual/global-search.keyboard.visual.mjs",
     "test:company-departments": "node tests/company-departments.test.mjs",
     "test:search-focus-style": "node tests/search-focus-style.test.mjs",
     "test:messages-chat-list": "node tests/messages-chat-list-layout.test.mjs",
