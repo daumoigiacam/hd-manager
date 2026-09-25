@@ -21,7 +21,8 @@ assert(main.includes('<HDThemeProvider>'), 'The full app must be wrapped in the 
 assert(shell.includes('useHDTheme()') && shell.includes('preferredTheme'), 'All shared app shells must use the current global theme');
 assert(themeProvider.includes('prefers-color-scheme: dark') && themeProvider.includes('root.dataset.hdTheme = theme'), 'System preference must drive a document-wide theme attribute');
 assert(themeProvider.includes("event.key === 'hd_manager_theme_preference'"), 'Theme selection must sync across open tabs');
-assert(app.includes("{ id: 'light', label: 'Sáng'") && app.includes("{ id: 'dark', label: 'Tối'") && app.includes("{ id: 'system', label: 'Hệ thống'"), 'Users must be able to select Light, Dark, and System themes');
+const moreMenu = app.slice(app.indexOf('function MoreMenu('), app.indexOf('const PRICING_ENGINE_TABS'));
+assert(!moreMenu.includes("{ id: 'light', label: 'Sáng'") && !moreMenu.includes("{ id: 'dark', label: 'Tối'") && !moreMenu.includes('Đang dùng:'), 'More must not show the removed appearance selector');
 assert(themePreferences.includes("HD_THEME_STORAGE_KEY = 'hd_manager_theme_preference'"), 'Appearance preference must persist locally without changing business data');
 
 assert(shell.includes('data-hd-shell'), 'AppShell must expose its shared shell boundary');
@@ -81,7 +82,6 @@ assert(components.includes('role={status === \'error\' ? \'alert\' : status === 
 assert(components.includes('aria-live={status === \'loading\' ? \'polite\' : status === \'error\' ? \'assertive\' : undefined}'), 'Only loading/error states should announce status changes automatically');
 assert(components.includes('<span className="hd-ds-state__visual" aria-hidden="true">{icon}</span>'), 'Status state must render decorative icons without duplicating them to assistive technology');
 assert(foundation.includes('.hd-ds-state__visual > svg'), 'Shared state visuals must size their icon consistently');
-assert.match(app, /function ReportEmptyState[\s\S]*?<HDEmptyState/, 'Report empty views must use the shared empty-state component');
 assert.match(app, /function CustomerEmptyState\(\{ text \}\)[\s\S]*?<HDEmptyState description=\{text\}/, 'Customer portal empty views must use the shared empty-state component');
 assert.match(app, /title=\{hasOrderListFilters \? 'Không tìm thấy đơn phù hợp' : 'Chưa có đơn hàng'\}[\s\S]*?canCreateAnyOrder[\s\S]*?Tạo đơn hàng/, 'Order empty view must provide a permission-aware action or filter reset');
 assert.match(productView, /title=\{hasProductFilters[\s\S]*?Không tìm thấy sản phẩm phù hợp[\s\S]*?Chưa có sản phẩm còn tồn kho[\s\S]*?Thêm sản phẩm/, 'Product list and inventory must distinguish empty/filter states and offer contextual recovery actions');

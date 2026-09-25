@@ -11,7 +11,7 @@ import {
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, MoreVertical, LayoutGrid, Download, Copy, Mic,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Camera, Gift,
   MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint,
-  Pin, RefreshCw, Command, Sun, Moon, Monitor
+  Pin, RefreshCw, Sun, Moon, Monitor
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -80,6 +80,8 @@ import {
   applyEvaluationBonusToSalaryDetails,
   projectEvaluationSummaryToPayroll
 } from './utils/payrollEvaluationBonus.js';
+import PayrollWorkspace from './features/payroll/PayrollWorkspace.jsx';
+import PayrollCloseDialog from './features/payroll/PayrollCloseDialog.jsx';
 import {
   PAYROLL_AUTO_LOCK_PLAN_STATUS,
   PAYROLL_RULES_VERSION,
@@ -89,6 +91,7 @@ import {
   createPayrollPeriodRecord,
   getLockedPayrollPeriod,
   getPayrollMonthEndDateKey,
+  getVietnamPayrollDateKey,
   isPayrollPeriodLocked,
   mapPayrollSnapshotsToRows,
   normalizePayrollMonthKey
@@ -144,6 +147,7 @@ import {
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
 import { getContextualFabActionIds, getFixedFooterNavIds } from './utils/footerNavigation.js';
+import { getAppBackTab } from './utils/appBackNavigation.js';
 import {
   normalizeCompanyDepartments,
   removeCompanyDepartment,
@@ -156,6 +160,9 @@ import {
 } from './utils/globalSearch.js';
 import AssetManagementWorkspace from './features/assets/AssetManagementWorkspace.jsx';
 import DeliveryRedesignWorkspace from './features/delivery/DeliveryRedesignWorkspace.jsx';
+import AttendanceWorkspace from './features/attendance/AttendanceWorkspace.jsx';
+import { useAppScreenBack } from './hooks/useAppScreenBack.js';
+import { canAttemptAutoWifiCheckIn, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
 import {
@@ -248,6 +255,7 @@ import {
   setDoc as firebaseSetDoc,
   deleteDoc as firebaseDeleteDoc,
   runTransaction as firebaseRunTransaction,
+  serverTimestamp,
   increment,
   onSnapshot as firebaseOnSnapshot,
   query as firebaseQuery,
@@ -335,7 +343,7 @@ import {
   HDNavigationRail,
   HDSidebar,
 } from './layout/index.js';
-import { HDButton, HDBadge, HDIconButton, HDKpiCard, HDEmptyState, HDWidgetCustomizer } from './design-system/index.js';
+import { HDButton, HDBadge, HDFilterBar, HDFilterSheet, HDIconButton, HDKpiCard, HDEmptyState, HDWidgetCustomizer } from './design-system/index.js';
 import { useHDTheme } from './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
@@ -1225,7 +1233,6 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   asset_management: ['assets', 'assetCostLogs', 'employees'],
   pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
   price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
-  report: ['employees', 'attendance', 'financials', 'performance', 'customers', 'orders', 'payments', 'expenses', 'holidays', 'products', 'warehouseImports'],
   messages: ['employees', 'customers', 'orders', 'orderRequests', 'payments', 'expenses', 'products', 'messages', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
   settings: ['reward_catalog', 'promotions', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'ai_reply_rules'],
   customer_home: ['customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'messages', 'bankAccounts', 'products', 'pricingInputs', 'pricingRules'],
@@ -2260,23 +2267,6 @@ const ROLE_PERMISSION_MODULES = [
     details: ['Chọn sản phẩm', 'Tick nhiều khách', 'Áp dụng giá mới', 'Gửi báo giá Zalo']
   },
   {
-    id: 'report',
-    group: 'finance',
-    label: 'Báo cáo',
-    description: 'Xem báo cáo doanh thu, lợi nhuận, công nợ, hiệu suất và tổng hợp vận hành.',
-    actions: [
-      { id: 'view_report', label: 'Xem báo cáo tổng hợp' },
-      { id: 'view_profit_loss', label: 'Xem lãi lỗ' },
-      { id: 'view_profit_by_group', label: 'Xem lợi nhuận theo nhóm hàng' },
-      { id: 'view_inventory_report', label: 'Xem báo cáo tồn kho' },
-      { id: 'edit_inventory_costing', label: 'Sửa bảng tính giá vốn / tồn kho' },
-      { id: 'view_import_cost_summary', label: 'Xem tổng nhập kho / giá vốn' },
-      { id: 'view_sales_performance', label: 'Xem hiệu suất kinh doanh' },
-      { id: 'export_report', label: 'Xuất / chia sẻ báo cáo' }
-    ],
-    details: ['Doanh thu', 'Lợi nhuận', 'Công nợ', 'Hiệu suất']
-  },
-  {
     id: 'company_attendance',
     group: 'people',
     label: 'Chấm công',
@@ -2431,7 +2421,7 @@ const buildPermissionSet = (ids = []) => ROLE_PERMISSION_MODULES.reduce((acc, mo
 }, {});
 const DEFAULT_ROLE_PERMISSIONS = {
   owner: buildPermissionSet(ROLE_PERMISSION_MODULES.map(module => module.id)),
-  accounting: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'delivery_reports', 'asset_management', 'orders', 'customers', 'debt', 'finance', 'bank_payments', 'products', 'pricing', 'price_quotes', 'report', 'company_attendance', 'payroll', 'employees', 'employee_reviews', 'settings']),
+  accounting: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'delivery_reports', 'asset_management', 'orders', 'customers', 'debt', 'finance', 'bank_payments', 'products', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employees', 'employee_reviews', 'settings']),
   sales: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'orders', 'customers', 'debt', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employee_reviews']),
   driver: buildPermissionSet(['home', 'messages', 'maps', 'delivery_reports', 'customers', 'debt', 'finance', 'company_attendance', 'payroll', 'employee_reviews']),
   production: buildPermissionSet(['home', 'messages', 'company_attendance', 'payroll', 'employee_reviews']),
@@ -2758,7 +2748,6 @@ const VPS_UI_READ_MODULE_BY_TAB = Object.freeze({
   company_attendance: 'attendance',
   employees: 'hr',
   payroll: 'payroll',
-  report: 'reports',
   settings: 'settings',
   messages: 'notifications',
 });
@@ -8911,15 +8900,11 @@ const getAttendanceWifiDisplay = (settings = {}) => {
 };
 const getWifiPayloadName = (payload = {}) => normalizeWifiName(payload?.ssid || payload?.networkLabel || payload?.label?.replace(/^WiFi:\s*/i, '') || '');
 const doesWifiMatchAttendanceDefault = (wifiPayload = {}, company = {}) => {
-  const settings = getAttendanceWifiSettings(company);
-  const expectedSsid = normalizeWifiCompareKey(settings.ssid);
-  const actualSsid = normalizeWifiCompareKey(getWifiPayloadName(wifiPayload));
-  if (!expectedSsid || !actualSsid || expectedSsid !== actualSsid) return false;
-
-  const expectedBssid = normalizeWifiCompareKey(settings.bssid);
-  const actualBssid = normalizeWifiCompareKey(wifiPayload?.bssid || '');
-  if (expectedBssid && actualBssid && expectedBssid !== actualBssid) return false;
-  return true;
+  return matchesAttendanceWifi({ ...wifiPayload, ssid: getWifiPayloadName(wifiPayload) }, {
+    ...company,
+    attendanceWifiSsid: getAttendanceWifiSettings(company).ssid,
+    attendanceWifiBssid: getAttendanceWifiSettings(company).bssid
+  });
 };
 const assertAttendanceWifiMatches = (wifiPayload = {}, company = {}) => {
   const settings = getAttendanceWifiSettings(company);
@@ -9494,6 +9479,8 @@ const mapAttendanceWifiFailureMessage = (failureCode = '', fallbackMessage = '')
       return 'Dịch vụ vị trí đang tắt nên Android không đọc được WiFi. Hãy bật Vị trí rồi thử lại.';
     case 'ssid_unavailable':
       return 'Chưa đọc được tên WiFi hiện tại. Hãy kiểm tra kết nối WiFi và quyền vị trí.';
+    case 'bssid_unavailable':
+      return 'Chưa đọc được BSSID của WiFi hiện tại. Không thể xác minh WiFi công ty.';
     case 'scan_empty':
       return fallbackMessage || 'Chưa dò thấy WiFi nào. Hãy bật WiFi, bật Vị trí chính xác và thử lại.';
     case 'unsupported':
@@ -9515,8 +9502,9 @@ const getCurrentConnectedWifiForAttendance = async () => {
   try {
     const info = await WifiInfo.getCurrentWifiInfo();
     const ssid = normalizeWifiName(info?.ssid || '');
-    const failureCode = info?.failureCode || (ssid ? null : 'ssid_unavailable');
-    if (!info?.ok || !ssid) {
+    const bssid = normalizeWifiName(info?.bssid || '');
+    const failureCode = info?.failureCode || (!ssid ? 'ssid_unavailable' : !isUsableAttendanceBssid(bssid) ? 'bssid_unavailable' : null);
+    if (!info?.ok || !ssid || !isUsableAttendanceBssid(bssid)) {
       return {
         supported: false,
         failureCode,
@@ -9530,7 +9518,7 @@ const getCurrentConnectedWifiForAttendance = async () => {
       supported: true,
       failureCode: null,
       ssid,
-      bssid: info?.bssid || null,
+      bssid,
       rssi: info?.rssi ?? null,
       linkSpeed: info?.linkSpeed ?? null,
       frequency: info?.frequency ?? null,
@@ -9615,7 +9603,7 @@ const buildVerifiedAttendanceMethodPayload = async (methodKey = 'gps', wifiLabel
   if (methodKey === 'wifi') {
     if (isAndroidNativeRuntime()) {
       const detectedWifi = await getCurrentConnectedWifiForAttendance();
-      if (!detectedWifi.supported || !detectedWifi.ssid) {
+      if (!detectedWifi.supported || !detectedWifi.ssid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
         throw new Error(detectedWifi.message || 'Không xác định được WiFi hiện tại.');
       }
       return {
@@ -12079,6 +12067,8 @@ const useAutoDismissMessage = (message, setMessage, { delay = 5200, disabled = f
 };
 
 // --- APP ENTRY POINT ---
+const normalizeAppTab = (tab) => tab === 'report' ? 'home' : (tab || 'home');
+
 export default function App() {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
@@ -12097,7 +12087,7 @@ export default function App() {
 
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
-  const [activeTab, setActiveTab] = useState(persistedSession.activeTab || 'home');
+  const [activeTab, setActiveTab] = useState(normalizeAppTab(persistedSession.activeTab));
   const [biometricUnlockState, setBiometricUnlockState] = useState(() => (
     !isVpsStagingMode && shouldRequireBiometricUnlock(persistedSession.currentUser)
       ? 'pending'
@@ -12116,6 +12106,7 @@ export default function App() {
   const [rawPayrollDebtCarryovers, setRawPayrollDebtCarryovers] = useState([]);
   const [rawPayrollAutoLockPlans, setRawPayrollAutoLockPlans] = useState([]);
   const [rawAttendance, setRawAttendance] = useState({});
+  const [autoWifiCheckInStatus, setAutoWifiCheckInStatus] = useState('');
   const [rawFinancials, setRawFinancials] = useState([]);
   const [rawAdvanceRequests, setRawAdvanceRequests] = useState([]); 
   const [rawPerformance, setRawPerformance] = useState({});
@@ -13148,7 +13139,7 @@ export default function App() {
         const cachedUser = { ...persistedSession.currentUser, firebaseUid: u.uid };
         setCurrentUser(cachedUser);
         setCurrentCompany(persistedSession.currentCompany || { id: cachedUser.companyId, name: '' });
-        setActiveTab(persistedSession.activeTab || (cachedUser.accountType === 'customer' ? 'customer_home' : 'home'));
+        setActiveTab(normalizeAppTab(persistedSession.activeTab || (cachedUser.accountType === 'customer' ? 'customer_home' : 'home')));
         setIsFirebaseLoading(false);
         recordStartupEvent('auth.identity_cache_released', { bound: true });
       }
@@ -17919,8 +17910,8 @@ export default function App() {
     if (!canCurrentUserManagePayrollByRole()) {
       return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được khóa kỳ lương.' };
     }
-    if (!canLockPayrollPeriodAtDate(safeMonthKey, getTodayString())) {
-      return { success: false, message: 'Kỳ lương chỉ được khóa từ ngày cuối cùng của tháng.' };
+    if (!canLockPayrollPeriodAtDate(safeMonthKey, getVietnamPayrollDateKey())) {
+      return { success: false, message: 'Kỳ lương chỉ được chốt đúng ngày cuối cùng của tháng.' };
     }
     if (getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey)) {
       return { success: false, message: 'Kỳ lương này đã được khóa trước đó.' };
@@ -17957,8 +17948,12 @@ export default function App() {
       periodId,
       monthKey: safeMonthKey,
       lockedAt,
+      lockedByEmployeeId: period?.lockedByEmployeeId,
+      lockedByName: period?.lockedByName,
       employeeCount: safeSnapshots.length,
-      totalEndingDebt
+      totalEndingDebt,
+      totalPayroll: safeSnapshots.reduce((sum, snapshot) => sum + (Number(snapshot?.salaryDetails?.netSalary) || 0), 0),
+      negativeEmployeeCount: debtCarryovers.length
     });
     const transactionWriteCount = safeSnapshots.length + (debtCarryovers.length * 2) + (periodLockJournalEntry ? 2 : 1);
     if (transactionWriteCount > 450) {
@@ -18030,11 +18025,11 @@ export default function App() {
         if (periodLockJournalEntry) {
           transaction.set(
             doc(db, 'artifacts', appId, 'public', 'data', 'activityLogs', periodLockJournalEntry.id),
-            periodLockJournalEntry,
+            { ...periodLockJournalEntry, closedAtServer: serverTimestamp() },
             { merge: false }
           );
         }
-        transaction.set(periodRef, safePeriod, { merge: false });
+        transaction.set(periodRef, { ...safePeriod, closedAtServer: serverTimestamp() }, { merge: false });
       });
 
       safeSnapshots.forEach(snapshot => applyLocalCollectionWrite('payrollSnapshots', snapshot.id, snapshot, { merge: false }));
@@ -22724,6 +22719,15 @@ export default function App() {
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} allCompanyOrders={rawOrders.filter(order => order.companyId === myCompanyId)} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
+        autoWifiCheckInStatus={autoWifiCheckInStatus} onAutoWifiStatus={setAutoWifiCheckInStatus}
+        onAutoWifiAttendanceRecorded={({ workDate, employeeId, companyId, checkIn, status, network }) => setRawAttendance(previous => ({
+          ...previous,
+          [`${workDate}_${employeeId}`]: {
+            ...(previous[`${workDate}_${employeeId}`] || {}), companyId, checkIn, status,
+            checkInMethod: `WiFi: ${network.ssid}`,
+            checkInMethodMeta: { type: 'wifi', source: 'android-native-auto', ssid: network.ssid, bssid: network.bssid, automatic: true }
+          }
+        }))}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onMarkVpsNotificationsRead={handleMarkVpsNotificationsRead}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
@@ -23097,7 +23101,6 @@ const APP_NAV_ITEM_MAP = {
   employees: { id: 'employees', label: 'Nhân sự', icon: <Users /> },
   products: { id: 'products', label: 'Sản phẩm', icon: <Package /> },
   price_quotes: { id: 'price_quotes', label: 'Báo giá', icon: <Receipt /> },
-  report: { id: 'report', label: 'Báo cáo', icon: <FileText /> },
   settings: { id: 'settings', label: 'Cài đặt', icon: <Settings /> },
   role_permissions: { id: 'role_permissions', label: 'Vai trò', icon: <ShieldAlert /> },
   billing: { id: 'billing', label: 'Gói dịch vụ', icon: <CreditCard /> },
@@ -23287,6 +23290,7 @@ function MainAppView({
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
+  autoWifiCheckInStatus = '', onAutoWifiStatus, onAutoWifiAttendanceRecorded,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
@@ -23364,7 +23368,6 @@ function MainAppView({
       canRoleAction('pricing', 'view_today_price_table')
     ),
     price_quotes: canAccess('price_quotes'),
-    report: canAccess('report'),
     company_attendance: canAccess('company_attendance'),
     payroll: canAccess('payroll'),
     employees: canAccess('employees'),
@@ -23502,6 +23505,8 @@ function MainAppView({
   const mainContentRef = useRef(null);
   const [tabHistory, setTabHistory] = useState([]);
   const activeTabRef = useRef(activeTab);
+  const lastNonDebtTabRef = useRef(activeTab === 'debt' ? 'more' : activeTab);
+  const pendingHeaderBackTabRef = useRef(null);
   const rolePriorityAppliedRef = useRef('');
   const appBackStateRef = useRef({});
   const appBackHandlerRef = useRef(null);
@@ -24137,6 +24142,7 @@ function MainAppView({
 
   useEffect(() => {
     activeTabRef.current = activeTab;
+    if (activeTab !== 'debt') lastNonDebtTabRef.current = activeTab;
   }, [activeTab]);
 
   useEffect(() => {
@@ -24235,22 +24241,112 @@ function MainAppView({
     if (closeHeaderPanelForActiveTab(state)) return true;
 
     const historyStack = Array.isArray(state.tabHistory) ? state.tabHistory : [];
+    const currentTab = state.activeTab || activeTabRef.current || 'home';
+    const previousTab = getAppBackTab({
+      currentTab,
+      tabHistory: historyStack,
+      lastNonDebtTab: lastNonDebtTabRef.current,
+      canAccess,
+    });
+    if (!previousTab) return false;
     if (historyStack.length > 0) {
-      const previousTab = historyStack[historyStack.length - 1] || 'home';
       setTabHistory((prev) => prev.slice(0, -1));
       setRootActiveTab(previousTab);
       activeTabRef.current = previousTab;
+      if (typeof window !== 'undefined' && window.history?.replaceState) {
+        const browserState = window.history.state;
+        if (browserState?.hdManager && browserState.tab === currentTab && !browserState.root && window.history.length > 1) {
+          pendingHeaderBackTabRef.current = previousTab;
+          window.history.back();
+        } else {
+          window.history.replaceState({ hdManager: true, tab: previousTab, appEntry: true }, '', window.location.href);
+        }
+      }
       return true;
     }
 
-    const currentTab = state.activeTab || activeTabRef.current || 'home';
-    if (currentTab !== 'home') {
-      setRootActiveTab('home');
-      activeTabRef.current = 'home';
-      return true;
+    setRootActiveTab(previousTab);
+    activeTabRef.current = previousTab;
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState({ hdManager: true, tab: previousTab, appEntry: true }, '', window.location.href);
     }
-    return false;
+    return true;
   };
+
+  useEffect(() => {
+    const company = currentCompany;
+    if (!isAndroidNativeRuntime() || isVpsStagingMode || !auth?.currentUser
+      || !employee?.id || employee.attendanceAutoWifiEnabled !== true || !company?.id) return undefined;
+
+    let disposed = false;
+    let running = false;
+    let appActive = true;
+    let lastAttempt = 0;
+    let wifiListener;
+    let appListener;
+    const attempt = async () => {
+      if (disposed || running || !appActive || Date.now() - lastAttempt < 5000) return;
+      running = true;
+      lastAttempt = Date.now();
+      try {
+        const permission = await WifiInfo.getWifiPermissionStatus();
+        if (disposed || !permission?.granted) return;
+        const network = await getCurrentConnectedWifiForAttendance();
+        if (disposed || !canAttemptAutoWifiCheckIn({ native: true, employee, company, permissionGranted: true, network })) return;
+        const token = await onGetIdentityToken?.();
+        if (!token || disposed) return;
+        const projectId = activeFirebaseConfig?.projectId;
+        if (!projectId) return;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 18000);
+        let response;
+        try {
+          response = await fetch(`https://us-central1-${projectId}.cloudfunctions.net/attendanceAutoWifiCheckIn`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ appId, network: { ssid: network.ssid, bssid: network.bssid } }),
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+        const result = await response.json();
+        if (disposed) return;
+        if (!response.ok || !result?.success) throw new Error(result?.message || 'Máy chủ chưa nhận chấm công WiFi.');
+        if (result.created && result.workDate && result.checkIn) {
+          onAutoWifiAttendanceRecorded?.({ workDate: result.workDate, employeeId: employee.id, companyId: company.id, checkIn: result.checkIn, status: result.status, network });
+          onAutoWifiStatus?.('Đã tự động chấm công vào qua WiFi công ty.');
+        }
+      } catch (error) {
+        if (!disposed) onAutoWifiStatus?.(`Chấm công WiFi tự động chưa thành công: ${error?.message || 'Lỗi kết nối.'}`);
+      } finally {
+        running = false;
+      }
+    };
+    void attempt();
+    void WifiInfo.addListener('wifiConnectionChanged', attempt).then(handle => {
+      if (disposed) void handle.remove();
+      else wifiListener = handle;
+    });
+    void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      appActive = isActive;
+      if (isActive) void attempt();
+    }).then(handle => {
+      if (disposed) void handle.remove();
+      else appListener = handle;
+    });
+    const interval = window.setInterval(attempt, 60000);
+    window.addEventListener('online', attempt);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('online', attempt);
+      void wifiListener?.remove();
+      void appListener?.remove();
+    };
+  }, [employee?.id, employee?.attendanceAutoWifiEnabled, currentCompany?.id,
+    currentCompany?.attendanceWifiSsid, currentCompany?.attendanceWifiBssid,
+    currentUser?.id]);
 
   appBackHandlerRef.current = runAppBackAction;
 
@@ -24265,6 +24361,18 @@ function MainAppView({
     }
 
     const handleBrowserBack = (event) => {
+      const pendingTab = pendingHeaderBackTabRef.current;
+      if (pendingTab) {
+        pendingHeaderBackTabRef.current = null;
+        const browserState = event.state || {};
+        if (!browserState.hdManager || browserState.tab !== pendingTab) {
+          window.history.replaceState({ ...browserState, hdManager: true, tab: pendingTab }, '', window.location.href);
+        }
+        if (browserState.root) {
+          window.history.pushState({ hdManager: true, tab: pendingTab, appEntry: true }, '', window.location.href);
+        }
+        return;
+      }
       if (dispatchScreenBackRequest()) {
         try {
           window.history.pushState({ hdManager: true, tab: activeTabRef.current || 'home', appEntry: true }, '', window.location.href);
@@ -24274,7 +24382,7 @@ function MainAppView({
         return;
       }
       const state = event.state || {};
-      const nextTab = state.hdManager ? (state.tab || 'home') : 'home';
+      const nextTab = state.hdManager ? normalizeAppTab(state.tab) : 'home';
       if (nextTab && nextTab !== activeTabRef.current) {
         setRootActiveTab(nextTab);
         setTabHistory((prev) => prev.slice(0, -1));
@@ -24318,7 +24426,7 @@ function MainAppView({
 
   const setActiveTab = (nextTab, options = {}) => {
     const { preserveHistory = true } = options;
-    if (!nextTab || nextTab === activeTab) return;
+    if (!nextTab || nextTab === 'report' || nextTab === activeTab) return;
     if (preserveHistory) {
       setTabHistory((prev) => [...prev, activeTab]);
       if (typeof window !== 'undefined' && window.history?.pushState) {
@@ -24582,7 +24690,7 @@ function MainAppView({
       onClick={openShellSearch}
       title="Tìm kiếm toàn ứng dụng"
     >
-      <Command size={18} aria-hidden="true" />
+      <Search size={18} aria-hidden="true" />
     </HDIconButton>
   );
 
@@ -24627,7 +24735,7 @@ function MainAppView({
         </HDHeader>
       );
     }
-    const hideHeaderSearchFilter = activeTab === 'price_quotes' || activeTab === 'report' || activeTab === 'order_requests' || activeTab === 'warehouse_dispatch';
+    const hideHeaderSearchFilter = activeTab === 'price_quotes' || activeTab === 'order_requests' || activeTab === 'warehouse_dispatch';
     const showHeaderSearchFilterActions = ['finance', 'orders', 'debt', 'customers', 'products'].includes(activeTab);
     const headerSearchKeyword = activeTab === 'finance'
       ? financeSearchKeyword
@@ -24741,11 +24849,13 @@ function MainAppView({
                 </button>
               )}
             </div>
-            {renderGlobalSearchTrigger()}
+            {activeTab !== 'debt' && renderGlobalSearchTrigger()}
             <button
               type="button"
               onClick={toggleHeaderFilter}
               aria-label="Bộ lọc"
+              aria-expanded={headerFilterOpen}
+              aria-controls={activeTab === 'customers' ? 'hd-customer-filter-sheet' : undefined}
               title="Bộ lọc"
               className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${useFlatHeaderActions ? (headerFilterOpen ? 'bg-white text-emerald-700' : 'bg-transparent text-white hover:bg-white/15') : (headerFilterOpen ? 'border border-white bg-white text-emerald-700' : 'border border-white/30 bg-white/10 text-white hover:bg-white/20')}`}
             >
@@ -24756,7 +24866,7 @@ function MainAppView({
       );
     }
     return (
-      <HDHeader className={`hd-app-header hd-safe-header bg-gradient-to-r text-white p-4 shadow-sm shrink-0 ${activeTab === 'asset_management' ? 'from-blue-600 to-sky-500' : 'from-emerald-500 to-emerald-600'}`}>
+      <HDHeader className={`hd-app-header hd-safe-header bg-gradient-to-r text-white p-4 shadow-sm shrink-0 ${activeTab === 'asset_management' || activeTab === 'payroll' ? 'from-blue-700 to-blue-600' : 'from-emerald-500 to-emerald-600'}`}>
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
@@ -24772,7 +24882,6 @@ function MainAppView({
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
                activeTab === 'maps' ? 'Bản đồ' :
-               activeTab === 'report' ? 'Báo cáo' :
                activeTab === 'debt' ? 'Sổ nợ' :
                activeTab === 'bank_payments' ? 'Ngân Hàng' :
                activeTab === 'finance' ? 'Thu chi' : 
@@ -24788,7 +24897,7 @@ function MainAppView({
           {showHeaderSearchFilterActions ? (
             <div className="hd-header-actions flex items-center gap-2">
               {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && renderNotificationBell()}
-              {renderGlobalSearchTrigger()}
+              {activeTab !== 'debt' && renderGlobalSearchTrigger()}
               <button
                 data-search-zone="true"
                 type="button"
@@ -24804,6 +24913,8 @@ function MainAppView({
                 type="button"
                 onClick={toggleHeaderFilter}
                 aria-label="Bộ lọc"
+                aria-expanded={headerFilterOpen}
+                aria-controls={activeTab === 'customers' ? 'hd-customer-filter-sheet' : undefined}
                 title="Bộ lọc"
                 className={`inline-flex items-center justify-center rounded-full text-[11px] font-bold transition-colors ${isCompactHeaderAction ? 'h-10 w-10 p-0' : 'gap-1.5 px-2.5 py-1.5'} ${useFlatHeaderActions ? (headerFilterOpen ? 'bg-white text-emerald-700' : 'bg-transparent text-white hover:bg-white/15') : (headerFilterOpen ? 'border border-white bg-white text-emerald-700' : 'border border-white/30 bg-white/10 text-white hover:bg-white/20')}`}
               >
@@ -25062,7 +25173,7 @@ function MainAppView({
             note: 'Khi có nhân sự, dữ liệu chấm công sẽ cập nhật realtime sang lương, ứng lương và cảnh báo.'
           });
         }
-        return <AttendanceView currentEmployee={employee} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} />;
+        return <AttendanceView currentEmployee={employee} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
       case 'products': return <ProductManagementView isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
       case 'maps':
@@ -25181,7 +25292,6 @@ function MainAppView({
           onResetEmployeePassword={onResetEmployeePassword}
         />
       );
-      case 'report': return <ReportView currentEmployee={employee} currentCompany={currentCompany} employees={employees} attendance={attendance} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={officialExpenses} holidays={holidays} products={products} warehouseImports={warehouseImports} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
       case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
@@ -25300,7 +25410,7 @@ function MainAppView({
           canDeleteEmployeePurchase={canRoleAction('payroll', 'delete_employee_purchase') || canRoleAction('payroll', 'delete_bonus_penalty')}
         />
       );
-      case 'more': return <MoreMenu tabPermissions={tabPermissions} isAccounting={isAccounting} isSales={isSales} isDriver={isDriver} isWarehouseScale={isWarehouseScale} isSuperAdmin={isSuperAdmin} setActiveTab={setActiveTab} onLogout={onLogout} onSwitchToCustomerLogin={onSwitchToCustomerLogin} employee={employee} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} />;
+      case 'more': return <MoreMenu tabPermissions={tabPermissions} isSales={isSales} isDriver={isDriver} isWarehouseScale={isWarehouseScale} isSuperAdmin={isSuperAdmin} setActiveTab={setActiveTab} onLogout={onLogout} onSwitchToCustomerLogin={onSwitchToCustomerLogin} employee={employee} />;
       default: return renderHomeDashboard();
     }
   };
@@ -25314,7 +25424,10 @@ function MainAppView({
       isWarehouseScale,
       permissions: tabPermissions,
     });
-    return fixedIds.map((id) => APP_NAV_ITEM_MAP[id]);
+    return fixedIds.map((id) => ({
+      ...APP_NAV_ITEM_MAP[id],
+      label: id === 'order_requests' ? 'Đặt hàng' : APP_NAV_ITEM_MAP[id].label,
+    }));
   }, [
     isAccounting,
     isDeliveryParticipant,
@@ -25373,7 +25486,6 @@ function MainAppView({
     tabPermissions.employees,
     tabPermissions.products,
     tabPermissions.price_quotes,
-    tabPermissions.report,
     tabPermissions.settings,
     tabPermissions.role_permissions,
     tabPermissions.billing
@@ -25385,7 +25497,7 @@ function MainAppView({
       { id: 'operations', label: 'Vận hành', items: ['warehouse_dispatch', 'warehouse_import', 'delivery_reports', 'maps', 'asset_management'] },
       { id: 'finance', label: 'Tài chính', items: ['debt', 'finance', 'bank_payments'] },
       { id: 'people', label: 'Nhân sự', items: ['company_attendance', 'payroll', 'employees', 'employee_reviews'] },
-      { id: 'system', label: 'Hệ thống', items: ['products', 'report', 'settings', 'role_permissions', 'billing'] },
+      { id: 'system', label: 'Hệ thống', items: ['products', 'settings', 'role_permissions', 'billing'] },
     ];
     const allowedById = new Map(desktopSidebarItems.map((item) => [item.id, item]));
     const groupedIds = new Set();
@@ -25401,7 +25513,7 @@ function MainAppView({
     return groups;
   }, [desktopSidebarItems]);
   const displayedFooterNavItems = activeTab === 'delivery_reports'
-    ? ['home', 'delivery_reports', 'customers', 'report', 'more']
+    ? ['home', 'delivery_reports', 'customers', 'orders', 'more']
       .filter((id) => id === 'more' || Boolean(tabPermissions[id]))
       .map((id) => APP_NAV_ITEM_MAP[id])
     : footerNavItems;
@@ -25733,7 +25845,7 @@ function MainAppView({
   }, []);
   const directFooterTabIds = new Set(displayedFooterNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
-    && (['more','profile','customers','products','pricing','maps','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','report','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
+    && (['more','profile','customers','products','pricing','maps','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
       || (!isAccounting && !isSales && !isDriver && !isWarehouseScale));
   const showMessagesFooterButton = false;
 
@@ -25965,6 +26077,9 @@ function MainAppView({
     const allowedIds = new Set(contextualQuickActionIds);
     return quickActionItems.filter(item => allowedIds.has(item.id));
   }, [canShowFloatingQuickActionButton, contextualQuickActionIds, floatingQuickActionEnabled, quickActionItems]);
+  const showFloatingQuickActionButton = canShowFloatingQuickActionButton
+    && quickActionItems.length > 0
+    && !['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management', 'more'].includes(activeTab);
   const handleQuickActionSelect = (item) => {
     const requestedAt = Date.now();
     if (item?.intent) {
@@ -26187,7 +26302,7 @@ function MainAppView({
         </div>
       )}
 
-      {canShowFloatingQuickActionButton && quickActionItems.length > 0 && !['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management', 'more'].includes(activeTab) && (
+      {showFloatingQuickActionButton && (
         <FloatingQuickActionButton
           actions={quickActionItems}
           containerRef={appShellRef}
@@ -26196,54 +26311,28 @@ function MainAppView({
       )}
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <HDBottomNavigation className="hd-bottom-navigation mobile-footer-nav">
-          {activeTab === 'delivery_reports' ? (
-            displayedFooterNavItems.map((item, index) => (
-              <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 1 }}>
-                <NavButton
-                  icon={item.icon}
-                  label={item.label}
-                  active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className="mobile-footer-nav__button"
-                />
-              </div>
-            ))
-          ) : (
-            <>
-              {displayedFooterNavItems.slice(0, 2).map((item, index) => (
-                <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 1 }}>
-                  <NavButton
-                    icon={item.icon}
-                    label={item.label}
-                    active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
-                    onClick={() => setActiveTab(item.id)}
-                    className="mobile-footer-nav__button"
-                  />
-                </div>
-              ))}
-              {mobileContextualQuickActionItems.length > 0 ? (
-                <ContextualQuickActionButton
-                  actions={mobileContextualQuickActionItems}
-                  onSelect={handleQuickActionSelect}
-                />
-              ) : (
-                <div className="hd-footer-nav-slot hd-footer-nav-slot--empty" aria-hidden="true" style={{ gridColumn: 3 }} />
-              )}
-              {displayedFooterNavItems.slice(2, 4).map((item, index) => (
-                <div key={item.id} className="hd-footer-nav-slot" style={{ gridColumn: index + 4 }}>
-                  <NavButton
-                    icon={item.icon}
-                    label={item.label}
-                    active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
-                    onClick={() => setActiveTab(item.id)}
-                    className="mobile-footer-nav__button"
-                  />
-                </div>
-              ))}
-            </>
-          )}
+        <HDBottomNavigation
+          className="hd-bottom-navigation mobile-footer-nav"
+          style={{ '--hd-footer-item-count': displayedFooterNavItems.length }}
+        >
+          {displayedFooterNavItems.map((item) => (
+            <div key={item.id} className="hd-footer-nav-slot">
+              <NavButton
+                icon={item.icon}
+                label={item.label}
+                active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
+                onClick={() => setActiveTab(item.id)}
+                className="mobile-footer-nav__button"
+              />
+            </div>
+          ))}
         </HDBottomNavigation>
+        {!showFloatingQuickActionButton && mobileContextualQuickActionItems.length > 0 && (
+          <ContextualQuickActionButton
+            actions={mobileContextualQuickActionItems}
+            onSelect={handleQuickActionSelect}
+          />
+        )}
         <HDNavigationRail className="tablet-navigation-rail" aria-label="Điều hướng chức năng">
           {desktopSidebarItems.map((item) => (
             <NavButton
@@ -26363,7 +26452,7 @@ function ContextualQuickActionButton({ actions = [], onSelect = () => {} }) {
   };
 
   return (
-    <div className="hd-footer-nav-slot hd-contextual-fab-slot" style={{ gridColumn: 3 }}>
+    <div className="hd-contextual-fab-slot">
       {isOpen && (
         <>
           <button
@@ -26405,7 +26494,6 @@ function ContextualQuickActionButton({ actions = [], onSelect = () => {} }) {
       >
         {isOpen ? <X size={22} strokeWidth={2.5} /> : <Plus size={25} strokeWidth={2.5} />}
       </button>
-      <span className="hd-contextual-fab-label" aria-hidden="true">Thêm</span>
     </div>
   );
 }
@@ -26892,7 +26980,11 @@ function AttendanceGpsMetaCard({ title, meta }) {
   );
 }
 
-function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings }) {
+function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings, onEditEmployee, autoWifiCheckInStatus = '', onGoBack, onOpenNotifications }) {
+  const [attendanceScreen, setAttendanceScreen] = useState('dashboard');
+  const [wifiPermission, setWifiPermission] = useState({ granted: false });
+  const [autoWifiSaving, setAutoWifiSaving] = useState(false);
+  const [autoWifiEnabled, setAutoWifiEnabled] = useState(Boolean(currentEmployee?.attendanceAutoWifiEnabled));
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [formData, setFormData] = useState({ status: 'present', checkIn: '', checkOut: '' });
@@ -26997,10 +27089,104 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
   const currentAttendanceLocationSettings = getEmployeeAttendanceLocationSettings(currentEmployee, currentCompany);
   const attendanceWifiSettings = useMemo(() => getAttendanceWifiSettings(currentCompany), [currentCompany]);
   const selfWifiReady = isWifiAttendanceReady(selfWifiLookup, selfWifiLabel);
-  const selfWifiDefaultConfigured = Boolean(attendanceWifiSettings.ssid);
+  const selfWifiDefaultConfigured = Boolean(attendanceWifiSettings.ssid && isUsableAttendanceBssid(attendanceWifiSettings.bssid));
   const selfWifiLabelMatchesDefault = selfWifiDefaultConfigured && normalizeWifiCompareKey(selfWifiLabel) === normalizeWifiCompareKey(attendanceWifiSettings.ssid);
-  const isSelfCheckInDisabled = isSelfSubmitting || (selfMethod === 'wifi' && (!selfWifiReady || !selfWifiDefaultConfigured || !selfWifiLabelMatchesDefault));
+  const selfWifiMatchesDefault = doesWifiMatchAttendanceDefault(selfWifiLookup?.wifi || {}, currentCompany);
+  const isSelfCheckInDisabled = isSelfSubmitting || (selfMethod === 'wifi' && (!selfWifiReady || !selfWifiMatchesDefault));
   const isSelfCheckOutDisabled = isSelfSubmitting;
+
+  useEffect(() => setAutoWifiEnabled(Boolean(currentEmployee?.attendanceAutoWifiEnabled)), [currentEmployee?.attendanceAutoWifiEnabled]);
+  useAppScreenBack(() => {
+    if (attendanceScreen === 'dashboard') return false;
+    setAttendanceScreen(attendanceScreen === 'wifi-permission' ? 'wifi' : 'dashboard');
+    return true;
+  });
+
+  const readWifiPermission = async () => {
+    if (!isAndroidNativeRuntime()) {
+      const result = { granted: false, supported: false };
+      setWifiPermission(result);
+      return result;
+    }
+    try {
+      const result = await WifiInfo.getWifiPermissionStatus();
+      setWifiPermission(result);
+      return result;
+    } catch {
+      const result = { granted: false, supported: false };
+      setWifiPermission(result);
+      return result;
+    }
+  };
+
+  const refreshAttendanceWifi = async () => {
+    setSelfWifiLookup({ loading: true, success: false, message: '', failureCode: null });
+    const permission = await readWifiPermission();
+    if (!permission.granted) {
+      setSelfWifiLookup({ loading: false, success: false, message: isAndroidNativeRuntime() ? 'Chưa cấp quyền đọc WiFi.' : 'Trình duyệt không đọc được WiFi thật. Hãy dùng APK Android.', failureCode: 'permission_denied' });
+      return;
+    }
+    const detected = await getCurrentConnectedWifiForAttendance();
+    setSelfWifiLabel(detected.supported ? detected.ssid : '');
+    setSelfWifiLookup({ loading: false, success: detected.supported, message: detected.message, failureCode: detected.failureCode, wifi: detected.supported ? detected : null });
+  };
+
+  useEffect(() => {
+    if (!isAndroidNativeRuntime()) return undefined;
+    void refreshAttendanceWifi();
+    let listener;
+    let disposed = false;
+    void WifiInfo.addListener('wifiConnectionChanged', () => { void refreshAttendanceWifi(); }).then(handle => {
+      if (disposed) void handle.remove();
+      else listener = handle;
+    });
+    return () => {
+      disposed = true;
+      void listener?.remove();
+    };
+  }, []);
+
+  const openAttendanceWifi = async () => {
+    setSelfMethod('wifi');
+    const permission = await readWifiPermission();
+    setAttendanceScreen(permission.granted ? 'wifi' : 'wifi-permission');
+    if (permission.granted) void refreshAttendanceWifi();
+  };
+
+  const requestAttendanceWifiPermission = async () => {
+    if (!isAndroidNativeRuntime()) {
+      setSelfStatusMsg('Trình duyệt không hỗ trợ đọc WiFi thật. Hãy mở app Android.');
+      return;
+    }
+    try {
+      const permission = await WifiInfo.requestWifiPermissions();
+      setWifiPermission(permission);
+      if (permission.granted) {
+        setSelfStatusMsg('');
+        setAttendanceScreen('wifi');
+        void refreshAttendanceWifi();
+      } else setSelfStatusMsg('Quyền WiFi chưa được cấp. Bạn có thể mở cài đặt ứng dụng để cấp quyền.');
+    } catch (error) {
+      setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không thể xin quyền WiFi.'));
+    }
+  };
+
+  const toggleAutoWifi = async () => {
+    if (!currentEmployee?.id || !onEditEmployee || autoWifiSaving) return;
+    const next = !autoWifiEnabled;
+    setAutoWifiSaving(true);
+    setAutoWifiEnabled(next);
+    try {
+      const result = await onEditEmployee(currentEmployee.id, { attendanceAutoWifiEnabled: next });
+      if (result?.success === false) throw new Error(result.message);
+      setSelfStatusMsg(next ? 'Đã bật chấm công WiFi tự động.' : 'Đã tắt chấm công WiFi tự động.');
+    } catch (error) {
+      setAutoWifiEnabled(!next);
+      setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được cài đặt tự động.'));
+    } finally {
+      setAutoWifiSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!optimisticSelfRecord || optimisticSelfRecord.key !== currentRecordKey || !currentServerRecord) return;
@@ -27075,8 +27261,8 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
       return;
     }
 
-    lookupSelfWifi();
-  }, [selfMethod]);
+    if (attendanceScreen === 'team') lookupSelfWifi();
+  }, [selfMethod, attendanceScreen]);
 
   const openEditModal = (employee, record) => {
     if (!canManageAttendance) return;
@@ -27118,19 +27304,20 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
     if (!isAccounting || !onUpdateCompanySettings) return;
     const detectedWifi = selfWifiLookup?.wifi || {};
     const nextSsid = normalizeWifiName(detectedWifi.ssid || selfWifiLabel);
-    if (!nextSsid) {
-      setSelfStatusMsg('Chưa có WiFi hiện tại để đặt làm mặc định.');
+    if (!isAndroidNativeRuntime() || !selfWifiLookup.success || !nextSsid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
+      setSelfStatusMsg('Chỉ có thể đặt mặc định từ WiFi đang kết nối trên Android khi đọc được cả SSID và BSSID.');
       return;
     }
 
     try {
       setSelfStatusMsg('');
-      await onUpdateCompanySettings({
+      const result = await onUpdateCompanySettings({
         attendanceWifiEnabled: true,
         attendanceWifiSsid: nextSsid,
-        attendanceWifiBssid: normalizeWifiName(detectedWifi.bssid || ''),
+        attendanceWifiBssid: normalizeWifiName(detectedWifi.bssid),
         attendanceWifiUpdatedAt: new Date().toISOString()
       });
+      if (result?.success === false) throw new Error(result.message || 'Không lưu được WiFi mặc định.');
       setSelfStatusMsg(`Đã đặt WiFi "${nextSsid}" làm WiFi mặc định để chấm công.`);
     } catch (error) {
       setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được WiFi mặc định. Hãy thử lại.'));
@@ -27143,7 +27330,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
       setSelfStatusMsg('Chưa cài WiFi mặc định để chấm công. Kế toán hoặc chủ doanh nghiệp hãy dò WiFi hiện tại rồi đặt làm mặc định trước.');
       return;
     }
-    if (type === 'in' && selfMethod === 'wifi' && !selfWifiReady) {
+    if (type === 'in' && selfMethod === 'wifi' && (!selfWifiReady || !selfWifiMatchesDefault)) {
       setSelfStatusMsg(selfWifiLookup.message || 'Chưa xác minh được WiFi hiện tại, nên không thể chấm công bằng WiFi.');
       return;
     }
@@ -27232,8 +27419,29 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
     }
   };
 
+  if (attendanceScreen !== 'team') {
+    return <AttendanceWorkspace
+      screen={attendanceScreen} onScreenChange={setAttendanceScreen} onExit={onGoBack} onOpenNotifications={onOpenNotifications}
+      currentEmployee={currentEmployee} currentCompany={currentCompany} attendance={safeAttendance}
+      date={safeDate} onChangeDate={onChangeDate} record={currentRecord} shiftPolicy={currentShiftPolicy}
+      statusMessage={selfStatusMsg} autoStatus={autoWifiCheckInStatus}
+      wifiInfo={selfWifiLookup?.wifi} wifiLoading={selfWifiLookup.loading} wifiPermission={wifiPermission}
+      wifiMessage={selfWifiLookup.message}
+      wifiMatches={selfWifiMatchesDefault} wifiConfigured={selfWifiDefaultConfigured}
+      onOpenWifi={openAttendanceWifi} onRefreshWifi={refreshAttendanceWifi}
+      onRequestWifiPermission={requestAttendanceWifiPermission}
+      onOpenWifiSettings={() => isAndroidNativeRuntime() ? WifiInfo.openWifiAppSettings() : setSelfStatusMsg('Cài đặt quyền WiFi chỉ có trên Android.')}
+      onSaveCompanyWifi={handleSaveDefaultAttendanceWifi} autoEnabled={autoWifiEnabled}
+      autoSaving={autoWifiSaving} onToggleAuto={toggleAutoWifi} canManage={canManageAttendance} canManageWifi={isAccounting}
+      onManage={() => setAttendanceScreen('team')} selfMethod={selfMethod} onSelectMethod={setSelfMethod}
+      onCheckIn={() => handleSelfAttendance('in')} onCheckOut={() => handleSelfAttendance('out')}
+      onLeave={() => onLeave?.(currentEmployee?.id)} submitting={isSelfSubmitting}
+    />;
+  }
+
   return (
     <div className="space-y-4 animate-in fade-in pb-36">
+      <button type="button" onClick={() => setAttendanceScreen('dashboard')} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-bold text-blue-700"><ChevronLeft size={17} /> Chấm công</button>
       <div className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-2xl p-5 shadow-md">
         <button
           type="button"
@@ -35004,6 +35212,23 @@ function AssetManagementView({
     setCostForm(getAssetCostFormDefaults());
     setShowCostForm(false);
   };
+  useAppScreenBack(() => {
+    if (showCostForm) {
+      closeCostForm();
+      return true;
+    }
+    if (showAssetForm) {
+      if (showAssetDocumentDetails) {
+        setShowAssetDocumentDetails(false);
+      } else if (showAssetOperationDetails) {
+        setShowAssetOperationDetails(false);
+      } else {
+        closeAssetForm();
+      }
+      return true;
+    }
+    return false;
+  });
   const handleAssetImage = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -35153,6 +35378,7 @@ function AssetManagementView({
   return (
     <div className="space-y-4 animate-in fade-in">
       <AssetManagementWorkspace
+        backBlocked={showAssetForm || showCostForm}
         employees={employees}
         assets={assets}
         assetCostLogs={assetCostLogs}
@@ -38287,47 +38513,48 @@ function MapManagementView({
   );
 }
 
-function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee, attendanceAlerts = [], currentAttendanceAlert = null }) {
-  const { preference: themePreference, theme: resolvedTheme, setPreference: setThemePreference } = useHDTheme();
+function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee }) {
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
-  const themeOptions = [
-    { id: 'light', label: 'Sáng', icon: Sun },
-    { id: 'dark', label: 'Tối', icon: Moon },
-    { id: 'system', label: 'Hệ thống', icon: Monitor },
-  ];
   const menuItems = [
-    { id: 'executive_dashboard', label: 'Điều hành', icon: <PieChart className="text-blue-500" />, show: tabPermissions.executive_dashboard },
-    { id: 'order_requests', label: 'Lên đơn đặt hàng', icon: <Receipt className="text-sky-500" />, show: tabPermissions.order_requests },
-    { id: 'orders', label: 'Đơn hàng', icon: <ClipboardList className="text-orange-500" />, show: tabPermissions.orders },
-    { id: 'warehouse_import', label: 'Nhập Xuất Tồn', icon: <Package className="text-emerald-500" />, show: tabPermissions.warehouse_import },
-    { id: 'warehouse_dispatch', label: 'Xuất kho', icon: <ClipboardList className="text-violet-500" />, show: tabPermissions.warehouse_dispatch },
-    { id: 'delivery_reports', label: 'Báo cáo giao hàng', icon: <Camera className="text-cyan-500" />, show: tabPermissions.delivery_reports },
-    { id: 'maps', label: 'Bản đồ', icon: <MapPin className="text-teal-500" />, show: tabPermissions.maps },
-    { id: 'asset_management', label: 'Quản lý tài sản', icon: <Package className="text-blue-500" />, show: tabPermissions.asset_management },
-    { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle className="text-cyan-500" />, show: tabPermissions.messages },
-    { id: 'debt', label: 'Sổ nợ', icon: <BookText className="text-rose-500" />, show: tabPermissions.debt },
-    { id: 'finance', label: 'Thu chi', icon: <ArrowRightLeft className="text-emerald-500" />, show: tabPermissions.finance },
-    { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard className="text-cyan-500" />, show: tabPermissions.bank_payments },
-    { id: 'customers', label: 'Khách hàng', icon: <Users className="text-green-500" />, show: tabPermissions.customers },
-    { id: 'products', label: 'Kho sản phẩm', icon: <Package className="text-orange-500" />, show: tabPermissions.products },
-    { id: 'pricing', label: 'Giá cả', icon: <TrendingUp className="text-amber-500" />, show: tabPermissions.pricing },
-    { id: 'price_quotes', label: 'Báo giá hàng loạt', icon: <Send className="text-emerald-500" />, show: tabPermissions.price_quotes },
-    { id: 'report', label: 'Báo cáo', icon: <PieChart className="text-indigo-500" />, show: tabPermissions.report },
-    { id: 'company_attendance', label: 'Chấm công', icon: <CalendarDays className="text-purple-500" />, show: tabPermissions.company_attendance },
-    { id: 'payroll', label: 'Bảng lương', icon: <DollarSign className="text-yellow-600" />, show: tabPermissions.payroll },
-    { id: 'employee_reviews', label: 'Đánh giá', icon: <Star className="text-amber-500" />, show: tabPermissions.employee_reviews },
-    { id: 'employees', label: 'Nhân sự', icon: <Settings className="text-gray-500" />, show: tabPermissions.employees },
-    { id: 'settings', label: 'Cài đặt', icon: <Gift className="text-pink-500" />, show: tabPermissions.settings },
-    { id: 'role_permissions', label: 'Vai trò', icon: <Lock className="text-emerald-500" />, show: tabPermissions.role_permissions },
-    { id: 'billing', label: 'Gói cước', icon: <Crown className="text-yellow-500" />, show: tabPermissions.billing },
+    { id: 'executive_dashboard', group: 'overview', label: 'Điều hành', icon: <PieChart className="text-blue-500" />, show: tabPermissions.executive_dashboard },
+    { id: 'order_requests', group: 'sales', label: 'Lên đơn đặt hàng', icon: <Receipt className="text-sky-500" />, show: tabPermissions.order_requests },
+    { id: 'orders', group: 'sales', label: 'Đơn hàng', icon: <ClipboardList className="text-orange-500" />, show: tabPermissions.orders },
+    { id: 'warehouse_import', group: 'operations', label: 'Nhập Xuất Tồn', icon: <Package className="text-emerald-500" />, show: tabPermissions.warehouse_import },
+    { id: 'warehouse_dispatch', group: 'operations', label: 'Xuất kho', icon: <ClipboardList className="text-violet-500" />, show: tabPermissions.warehouse_dispatch },
+    { id: 'delivery_reports', group: 'operations', label: 'Báo cáo giao hàng', icon: <Camera className="text-cyan-500" />, show: tabPermissions.delivery_reports },
+    { id: 'maps', group: 'operations', label: 'Bản đồ', icon: <MapPin className="text-teal-500" />, show: tabPermissions.maps },
+    { id: 'asset_management', group: 'operations', label: 'Quản lý tài sản', icon: <Package className="text-blue-500" />, show: tabPermissions.asset_management },
+    { id: 'messages', group: 'people', label: 'Tin nhắn', icon: <MessageCircle className="text-cyan-500" />, show: tabPermissions.messages },
+    { id: 'debt', group: 'finance', label: 'Sổ nợ', icon: <BookText className="text-rose-500" />, show: tabPermissions.debt },
+    { id: 'finance', group: 'finance', label: 'Thu chi', icon: <ArrowRightLeft className="text-emerald-500" />, show: tabPermissions.finance },
+    { id: 'bank_payments', group: 'finance', label: 'Ngân hàng', icon: <CreditCard className="text-cyan-500" />, show: tabPermissions.bank_payments },
+    { id: 'customers', group: 'sales', label: 'Khách hàng', icon: <Users className="text-green-500" />, show: tabPermissions.customers },
+    { id: 'products', group: 'sales', label: 'Kho sản phẩm', icon: <Package className="text-orange-500" />, show: tabPermissions.products },
+    { id: 'pricing', group: 'sales', label: 'Giá cả', icon: <TrendingUp className="text-amber-500" />, show: tabPermissions.pricing },
+    { id: 'price_quotes', group: 'sales', label: 'Báo giá hàng loạt', icon: <Send className="text-emerald-500" />, show: tabPermissions.price_quotes },
+    { id: 'company_attendance', group: 'people', label: 'Chấm công', icon: <CalendarDays className="text-purple-500" />, show: tabPermissions.company_attendance },
+    { id: 'payroll', group: 'people', label: 'Bảng lương', icon: <DollarSign className="text-yellow-600" />, show: tabPermissions.payroll },
+    { id: 'employee_reviews', group: 'people', label: 'Đánh giá', icon: <Star className="text-amber-500" />, show: tabPermissions.employee_reviews },
+    { id: 'employees', group: 'people', label: 'Nhân sự', icon: <Settings className="text-gray-500" />, show: tabPermissions.employees },
+    { id: 'settings', group: 'system', label: 'Cài đặt', icon: <Gift className="text-pink-500" />, show: tabPermissions.settings },
+    { id: 'role_permissions', group: 'system', label: 'Vai trò', icon: <Lock className="text-emerald-500" />, show: tabPermissions.role_permissions },
+    { id: 'billing', group: 'system', label: 'Gói cước', icon: <Crown className="text-yellow-500" />, show: tabPermissions.billing },
+  ];
+  const menuGroups = [
+    { id: 'overview', label: 'Tổng quan' },
+    { id: 'sales', label: 'Bán hàng' },
+    { id: 'operations', label: 'Vận hành' },
+    { id: 'finance', label: 'Tài chính' },
+    { id: 'people', label: 'Nhân sự' },
+    { id: 'system', label: 'Hệ thống' },
   ];
 
   return (
-    <div className="space-y-4 animate-in fade-in">
+    <div className="hd-more-menu animate-in fade-in">
       <button
         type="button"
         onClick={() => setActiveTab?.('profile')}
-        className="w-full bg-white p-4 rounded-xl shadow-sm flex items-center gap-3 text-left transition hover:bg-emerald-50 border border-gray-50"
+        className="hd-more-menu__profile w-full bg-white p-4 shadow-sm flex items-center gap-3 text-left transition hover:bg-emerald-50 border border-gray-50"
       >
         <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xl overflow-hidden shrink-0">
           {employeeAvatarUrl ? (
@@ -38343,53 +38570,25 @@ function MoreMenu({ tabPermissions = {}, isAccounting, isSales, isDriver, isWare
         <ChevronRight size={16} className="text-gray-300" />
       </button>
 
-      <section className="rounded-xl border border-gray-100 bg-white p-3" aria-label="Giao diện">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-gray-800">Giao diện</p>
-          <span className="text-xs text-gray-500" aria-live="polite">Đang dùng: {resolvedTheme === 'dark' ? 'Tối' : 'Sáng'}</span>
-        </div>
-        <div className="grid grid-cols-3 gap-2" role="group" aria-label="Chọn giao diện">
-          {themeOptions.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              aria-pressed={themePreference === id}
-              aria-label={`Giao diện ${label}`}
-              onClick={() => setThemePreference(id)}
-              className={`flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors ${themePreference === id ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
-            >
-              <Icon size={16} aria-hidden="true" />
-              <span>{label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {(currentAttendanceAlert || (isAccounting && attendanceAlerts.length > 0)) && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <p className="text-xs font-bold uppercase text-amber-700 mb-1">Thông báo chấm công</p>
-          {currentAttendanceAlert && <p className="text-sm text-amber-900 font-semibold">{currentAttendanceAlert.title}</p>}
-          {currentAttendanceAlert && <p className="text-xs text-amber-800 mt-1">{currentAttendanceAlert.message}</p>}
-          {isAccounting && attendanceAlerts.length > 0 && <p className="text-xs text-amber-800 mt-2">Có {attendanceAlerts.length} nhân sự đang cần kiểm tra thiếu chấm công hôm nay.</p>}
-          <button type="button" onClick={() => setActiveTab?.('company_attendance')} className="mt-3 bg-white border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs font-bold">
-            Mở mục chấm công
-          </button>
-        </div>
-      )}
-      
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-50">
-        {menuItems.filter(i => i.show).map((item, idx) => (
-          <button key={item.id} onClick={() => setActiveTab?.(item.id)} className={`w-full flex items-center justify-between p-4 bg-white hover:bg-gray-50 transition ${idx !== 0 ? 'border-t border-gray-50' : ''}`}>
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center">{item.icon}</div>
-              <span className="text-sm font-medium text-gray-700">{item.label}</span>
+      {menuGroups.map((group) => {
+        const items = menuItems.filter((item) => item.show && item.group === group.id);
+        if (items.length === 0) return null;
+        return (
+          <section key={group.id} className="hd-more-menu__group" data-group={group.id} aria-labelledby={`hd-more-${group.id}`}>
+            <h2 id={`hd-more-${group.id}`} className="hd-more-menu__group-title">{group.label}</h2>
+            <div className="hd-more-menu__grid">
+              {items.map((item) => (
+                <button key={item.id} type="button" data-hd-more-module={item.id} onClick={() => setActiveTab?.(item.id)} className="hd-more-menu__item">
+                  <span className="hd-more-menu__icon" aria-hidden="true">{item.icon}</span>
+                  <span className="hd-more-menu__label">{item.label}</span>
+                </button>
+              ))}
             </div>
-            <ChevronRight size={16} className="text-gray-300" />
-          </button>
-        ))}
-      </div>
+          </section>
+        );
+      })}
 
-      <button onClick={() => onLogout?.()} className="w-full bg-white text-red-500 font-bold py-4 rounded-xl shadow-sm flex justify-center items-center gap-2 hover:bg-red-50 transition border border-red-50">
+      <button type="button" onClick={() => onLogout?.()} className="hd-more-menu__logout w-full bg-white text-red-500 font-bold py-4 shadow-sm flex justify-center items-center gap-2 hover:bg-red-50 transition border border-red-50">
         <LogOut size={18} /> Đăng xuất
       </button>
     </div>
@@ -43802,7 +44001,7 @@ function ExecutiveDashboardView({
             aria-label="Tìm kiếm toàn ứng dụng"
             title="Tìm kiếm toàn ứng dụng"
           >
-            <Command size={18} aria-hidden="true" />
+            <Search size={18} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -44460,7 +44659,7 @@ function EmployeePersonalHomeView({
               aria-label="Tìm kiếm toàn ứng dụng"
               title="Tìm kiếm toàn ứng dụng"
             >
-              <Command size={18} aria-hidden="true" />
+              <Search size={18} aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -45251,8 +45450,7 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
     { id: 'customers', label: 'Khách hàng', icon: Users, category: 'sales', iconClasses: 'bg-emerald-100 text-emerald-600', visible: tabPermissions.customers },
     { id: 'products', label: 'Sản phẩm', icon: Package, category: 'catalog', iconClasses: 'bg-blue-100 text-blue-600', visible: tabPermissions.products },
     { id: 'price_quotes', label: 'Báo giá hàng loạt', icon: Send, category: 'sales', iconClasses: 'bg-emerald-100 text-emerald-600', visible: tabPermissions.price_quotes },
-    { id: 'messages', label: 'Tin nhắn', icon: MessageCircle, category: 'sales', iconClasses: 'bg-cyan-100 text-cyan-600', visible: canOpenMessages },
-    { id: 'report', label: 'Báo cáo', icon: PieChart, category: 'analysis', iconClasses: 'bg-indigo-100 text-indigo-600', visible: tabPermissions.report }
+    { id: 'messages', label: 'Tin nhắn', icon: MessageCircle, category: 'sales', iconClasses: 'bg-cyan-100 text-cyan-600', visible: canOpenMessages }
   ].filter(item => item.visible)), [canOpenMessages, tabPermissions]);
   const filteredDashboardActions = useMemo(() => {
     const keyword = dashboardSearchKeyword.trim().toLowerCase();
@@ -45265,8 +45463,7 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
   const dashboardFilterOptions = [
     { value: 'all', label: 'Tất cả' },
     { value: 'sales', label: 'Bán hàng' },
-    { value: 'catalog', label: 'Danh mục' },
-    { value: 'analysis', label: 'Báo cáo' }
+    { value: 'catalog', label: 'Danh mục' }
   ];
 
   const dashboardScanMatch = useMemo(() => {
@@ -45455,7 +45652,7 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
               aria-label="Tìm kiếm toàn ứng dụng"
               title="Tìm kiếm toàn ứng dụng"
             >
-              <Command size={18} aria-hidden="true" />
+              <Search size={18} aria-hidden="true" />
             </button>
             {canOpenMessages && (
               <button
@@ -45557,15 +45754,6 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
               />
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {tabPermissions.report && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('report')}
-                  className="min-h-10 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700"
-                >
-                  Chi tiết
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => setShowDashboardWidgetCustomizer(current => !current)}
@@ -46005,14 +46193,6 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
   );
 }
 
-const REPORT_TABS = [
-  { id: 'sales', label: 'Bán hàng', icon: ShoppingBag },
-  { id: 'profit', label: 'Lãi lỗ', icon: TrendingUp },
-  { id: 'inventory', label: 'Kho hàng', icon: Package },
-  { id: 'cashflow', label: 'Thu chi', icon: Wallet },
-  { id: 'hr', label: 'Nhân sự', icon: Users }
-];
-
 const REPORT_CARD_TONES = {
   emerald: 'bg-emerald-50 border-emerald-100 text-emerald-700',
   blue: 'bg-blue-50 border-blue-100 text-blue-700',
@@ -46021,34 +46201,6 @@ const REPORT_CARD_TONES = {
   slate: 'bg-slate-50 border-slate-100 text-slate-700',
   indigo: 'bg-indigo-50 border-indigo-100 text-indigo-700'
 };
-
-const getRelativeReportLabel = (dateStr) => {
-  const today = getTodayString();
-  const yesterday = shiftDateString(today, -1);
-  if (dateStr === today) return 'Hôm nay';
-  if (dateStr === yesterday) return 'Hôm qua';
-  return parseDateInputValue(dateStr).toLocaleDateString('vi-VN');
-};
-
-const buildComparisonSummary = (currentValue, compareValue, { currency = false, suffix = '', referenceLabel = 'ngày trước' } = {}) => {
-  const safeCurrent = currentValue || 0;
-  const safeCompare = compareValue || 0;
-  const delta = safeCurrent - safeCompare;
-
-  if (delta === 0) return `Không đổi so với ${referenceLabel}`;
-
-  const absValue = currency ? `${formatCurrency(Math.abs(delta))} đ` : `${formatNumber(Math.abs(delta))}${suffix ? ` ${suffix}` : ''}`;
-  return `${delta > 0 ? 'Tăng' : 'Giảm'} ${absValue} so với ${referenceLabel}`;
-};
-
-const estimateOrderCost = (order, productMap = {}) => (
-  (order?.items || []).reduce((sum, item) => {
-    const product = productMap[item.productId];
-    const unitCost = parseFloat(item.costPrice ?? product?.costPrice ?? 0) || 0;
-    const quantity = parseFloat(item.quantity) || 0;
-    return sum + (quantity * unitCost);
-  }, 0)
-);
 
 const getProductInventoryUnit = (product = {}) => `${product?.stockUnit || product?.inventoryUnit || product?.unit || 'Đơn vị'}`.trim();
 const getProductOpeningStock = (product = {}) => parseLooseQuantityValue(product?.stockQuantity ?? product?.openingStock ?? product?.inventoryQuantity ?? product?.stock ?? 0);
@@ -46578,1707 +46730,6 @@ const buildOperatingCostSummaryForDate = ({
   };
 };
 
-function ReportSection({ title, subtitle, action, children }) {
-  return (
-    <section className="bg-white rounded-[28px] border border-gray-100 shadow-sm overflow-visible">
-      <div className="px-4 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="flex items-center gap-1 font-bold text-gray-800">
-            <span>{title}</span>
-            <SectionInfoHint description={subtitle} label={title} />
-          </h3>
-        </div>
-        {action && <div className="shrink-0">{action}</div>}
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
-}
-
-function ReportEmptyState({ title = 'Chưa có dữ liệu', description = 'Khi có phát sinh trong ngày, phần này sẽ tự động hiển thị.' }) {
-  return (
-    <HDEmptyState
-      icon={<FileText size={24} />}
-      title={title}
-      description={description}
-      className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8"
-    />
-  );
-}
-
-function ReportStatCard({ label, value, helper, tone = 'slate' }) {
-  return (
-    <div className={`rounded-3xl border p-4 ${REPORT_CARD_TONES[tone] || REPORT_CARD_TONES.slate}`}>
-      <p className="text-[11px] uppercase tracking-[0.16em] font-bold opacity-80">{label}</p>
-      <p className="text-xl font-black mt-2">{value}</p>
-      {helper && <p className="text-[11px] mt-2 leading-relaxed opacity-80">{helper}</p>}
-    </div>
-  );
-}
-
-function ReportLineChart({ currentSeries = [], compareSeries = [], currentLabel = 'Ngày chọn', compareLabel = 'Ngày trước' }) {
-  const mergedSeries = currentSeries.map((point, index) => ({
-    label: point.label,
-    currentValue: point.value || 0,
-    compareValue: compareSeries[index]?.value || 0
-  }));
-  const maxValue = Math.max(0, ...mergedSeries.map(point => Math.max(point.currentValue, point.compareValue)));
-
-  if (maxValue <= 0) {
-    return <ReportEmptyState title="Chưa có dữ liệu biểu đồ" description="Biểu đồ sẽ hiện khi có giao dịch hoặc đơn hàng phát sinh trong ngày." />;
-  }
-
-  const width = 320;
-  const height = 132;
-  const chartHeight = 104;
-  const stepX = mergedSeries.length > 1 ? width / (mergedSeries.length - 1) : width;
-  const mapPoint = (value, index) => {
-    const x = stepX * index;
-    const normalized = maxValue === 0 ? 0 : value / maxValue;
-    const y = chartHeight - (normalized * chartHeight) + 8;
-    return `${x},${y}`;
-  };
-
-  const currentPath = mergedSeries.map((point, index) => mapPoint(point.currentValue, index)).join(' ');
-  const comparePath = mergedSeries.map((point, index) => mapPoint(point.compareValue, index)).join(' ');
-
-  return (
-    <div className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
-      <div className="flex items-center gap-4 text-[11px] text-slate-600 mb-3 flex-wrap">
-        <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> {currentLabel}</span>
-        <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> {compareLabel}</span>
-      </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-40 overflow-visible">
-        {[0, 1, 2, 3].map(index => {
-          const y = 12 + ((chartHeight / 3) * index);
-          return <line key={index} x1="0" x2={width} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" strokeWidth="1" />;
-        })}
-        <polyline fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="5 6" points={comparePath} />
-        <polyline fill="none" stroke="#10b981" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" points={currentPath} />
-        {mergedSeries.map((point, index) => {
-          const [currentX, currentY] = mapPoint(point.currentValue, index).split(',');
-          const [compareX, compareY] = mapPoint(point.compareValue, index).split(',');
-          return (
-            <g key={point.label}>
-              <circle cx={compareX} cy={compareY} r="3" fill="#f59e0b" />
-              <circle cx={currentX} cy={currentY} r="3.5" fill="#10b981" />
-            </g>
-          );
-        })}
-      </svg>
-      <div className="grid grid-cols-4 gap-2 text-[10px] font-bold text-slate-500 mt-2">
-        {mergedSeries.map(point => (
-          <span key={point.label} className="text-center">{point.label}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ReportBarPairChart({ primarySeries = [], secondarySeries = [], primaryLabel = 'Thu', secondaryLabel = 'Chi' }) {
-  const labels = primarySeries.map(point => point.label);
-  const maxValue = Math.max(
-    0,
-    ...primarySeries.map(point => point.value || 0),
-    ...secondarySeries.map(point => point.value || 0)
-  );
-
-  if (maxValue <= 0) {
-    return <ReportEmptyState title="Chưa có dữ liệu biểu đồ" description="Biểu đồ sẽ hiện khi có giao dịch hoặc đơn hàng phát sinh trong ngày." />;
-  }
-
-  return (
-    <div className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
-      <div className="flex items-center gap-4 text-[11px] text-slate-600 mb-3 flex-wrap">
-        <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> {primaryLabel}</span>
-        <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-orange-500" /> {secondaryLabel}</span>
-      </div>
-      <div className="grid grid-cols-4 gap-2 items-end h-40">
-        {labels.map((label, index) => {
-          const primaryHeight = maxValue === 0 ? 0 : ((primarySeries[index]?.value || 0) / maxValue) * 110;
-          const secondaryHeight = maxValue === 0 ? 0 : ((secondarySeries[index]?.value || 0) / maxValue) * 110;
-          return (
-            <div key={label} className="flex flex-col items-center justify-end gap-2">
-              <div className="w-full flex items-end justify-center gap-1 h-[118px]">
-                <div className="w-4 rounded-t-2xl bg-emerald-500/85" style={{ height: `${primaryHeight}px` }} />
-                <div className="w-4 rounded-t-2xl bg-orange-500/85" style={{ height: `${secondaryHeight}px` }} />
-              </div>
-              <span className="text-[10px] font-bold text-slate-500">{label}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ReportView({ currentEmployee, currentCompany, employees, attendance, financials, performance, customers, orders, payments, expenses, holidays, products = [], warehouseImports = [], onUpdateCompanySettings }) {
-  const [reportTab, setReportTab] = useState('sales');
-  const [reportDate, setReportDate] = useState(getTodayString());
-  const [compareDate, setCompareDate] = useState(shiftDateString(getTodayString(), -1));
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
-  const [expandedReportAttendanceEmp, setExpandedReportAttendanceEmp] = useState(null);
-  const [processingInventoryDrafts, setProcessingInventoryDrafts] = useState([]);
-  const [selectedProcessingInventoryRowId, setSelectedProcessingInventoryRowId] = useState('');
-  const [processingInventorySaveStatus, setProcessingInventorySaveStatus] = useState('');
-  const [isSavingProcessingInventory, setIsSavingProcessingInventory] = useState(false);
-
-  useEffect(() => {
-    setCompareDate(shiftDateString(reportDate, -1));
-  }, [reportDate]);
-
-  const reportMonthKey = reportDate.substring(0, 7);
-  const isNextDateDisabled = reportDate >= getTodayString();
-  const currentLabel = getRelativeReportLabel(reportDate);
-  const compareLabel = getRelativeReportLabel(compareDate);
-  const compareReferenceLabel = compareLabel.toLowerCase();
-
-  const employeeMap = useMemo(() => Object.fromEntries(employees.map(emp => [emp.id, emp])), [employees]);
-  const customerMap = useMemo(() => Object.fromEntries(customers.map(customer => [customer.id, customer])), [customers]);
-  const productMap = useMemo(() => Object.fromEntries(products.map(product => [product.id, product])), [products]);
-  const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
-
-  useEffect(() => {
-    setProcessingInventoryDrafts(buildProcessingInventoryDraftRows({ company: currentCompany, date: reportDate, products: activeProducts, warehouseImports }));
-    setProcessingInventorySaveStatus('');
-  }, [currentCompany, reportDate, activeProducts, warehouseImports]);
-
-  useEffect(() => {
-    if (processingInventoryDrafts.length === 0) {
-      setSelectedProcessingInventoryRowId('');
-      return;
-    }
-    if (!selectedProcessingInventoryRowId || !processingInventoryDrafts.some(row => row.id === selectedProcessingInventoryRowId)) {
-      setSelectedProcessingInventoryRowId(processingInventoryDrafts[0].id);
-    }
-  }, [processingInventoryDrafts, selectedProcessingInventoryRowId]);
-
-  const selectedProcessingInventoryRow = useMemo(
-    () => processingInventoryDrafts.find(row => row.id === selectedProcessingInventoryRowId) || processingInventoryDrafts[0] || null,
-    [processingInventoryDrafts, selectedProcessingInventoryRowId]
-  );
-
-  const reportSnapshot = useMemo(
-    () => buildLedgerSnapshot(customers, orders, payments, reportDate),
-    [customers, orders, payments, reportDate]
-  );
-  const compareSnapshot = useMemo(
-    () => buildLedgerSnapshot(customers, orders, payments, compareDate),
-    [customers, orders, payments, compareDate]
-  );
-
-  const reportOrders = useMemo(
-    () => orders.filter(order => !order.isArchived && order.date === reportDate),
-    [orders, reportDate]
-  );
-  const compareOrders = useMemo(
-    () => orders.filter(order => !order.isArchived && order.date === compareDate),
-    [orders, compareDate]
-  );
-  const reportPayments = useMemo(
-    () => payments.filter(payment => !payment.isArchived && (getPaymentDateKey(payment) || payment.date) === reportDate),
-    [payments, reportDate]
-  );
-  const comparePayments = useMemo(
-    () => payments.filter(payment => !payment.isArchived && (getPaymentDateKey(payment) || payment.date) === compareDate),
-    [payments, compareDate]
-  );
-  const reportExpenses = useMemo(
-    () => expenses.filter(expense => !expense.isArchived && expense.date === reportDate),
-    [expenses, reportDate]
-  );
-  const compareExpenses = useMemo(
-    () => expenses.filter(expense => !expense.isArchived && expense.date === compareDate),
-    [expenses, compareDate]
-  );
-  const reportSalaryExpense = useMemo(
-    () => calculatePositiveDailyPayrollExpenseFromSalary({
-      employees,
-      attendance,
-      financials,
-      performance,
-      customers,
-      orders,
-      payments,
-      holidays,
-      targetDate: reportDate
-    }),
-    [employees, attendance, financials, performance, customers, orders, payments, reportDate, holidays]
-  );
-  const compareSalaryExpense = useMemo(
-    () => calculatePositiveDailyPayrollExpenseFromSalary({
-      employees,
-      attendance,
-      financials,
-      performance,
-      customers,
-      orders,
-      payments,
-      holidays,
-      targetDate: compareDate
-    }),
-    [employees, attendance, financials, performance, customers, orders, payments, compareDate, holidays]
-  );
-
-  const reportOrderRows = useMemo(() => reportOrders
-    .map(order => {
-      const ledgerOrder = reportSnapshot.orderLedgerMap[order.id];
-      const customer = customerMap[order.customerId];
-      const salesOwner = employeeMap[getOrderSalesEmpId(order, customers)];
-      const outstandingAmount = ledgerOrder?.outstandingAmount || 0;
-      const paidAmount = Math.max(0, (order.amount || 0) - outstandingAmount);
-      const orderCost = estimateOrderCost(order, productMap);
-
-      return {
-        ...order,
-        customerName: customer?.name || 'Khách hàng',
-        salesName: salesOwner?.name || 'Chưa gán',
-        paidAmount,
-        outstandingAmount,
-        orderCost
-      };
-    })
-    .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [reportOrders, reportSnapshot.orderLedgerMap, customerMap, employeeMap, customers, productMap]);
-
-  const compareOrderRows = useMemo(() => compareOrders
-    .map(order => {
-      const ledgerOrder = compareSnapshot.orderLedgerMap[order.id];
-      const outstandingAmount = ledgerOrder?.outstandingAmount || 0;
-      return {
-        ...order,
-        paidAmount: Math.max(0, (order.amount || 0) - outstandingAmount),
-        outstandingAmount,
-        orderCost: estimateOrderCost(order, productMap)
-      };
-    }), [compareOrders, compareSnapshot.orderLedgerMap, productMap]);
-
-  const salesSummary = useMemo(() => {
-    const revenue = reportOrderRows.reduce((sum, row) => sum + (row.amount || 0), 0);
-    const orderCount = reportOrderRows.length;
-    const customerCount = new Set(reportOrderRows.map(row => row.customerId).filter(Boolean)).size;
-    const averageOrder = orderCount > 0 ? revenue / orderCount : 0;
-    const totalPaid = reportOrderRows.reduce((sum, row) => sum + (row.paidAmount || 0), 0);
-    const totalDebt = reportOrderRows.reduce((sum, row) => sum + (row.outstandingAmount || 0), 0);
-    return { revenue, orderCount, customerCount, averageOrder, totalPaid, totalDebt };
-  }, [reportOrderRows]);
-
-  const compareSalesSummary = useMemo(() => {
-    const revenue = compareOrderRows.reduce((sum, row) => sum + (row.amount || 0), 0);
-    const orderCount = compareOrderRows.length;
-    const customerCount = new Set(compareOrderRows.map(row => row.customerId).filter(Boolean)).size;
-    const averageOrder = orderCount > 0 ? revenue / orderCount : 0;
-    return { revenue, orderCount, customerCount, averageOrder };
-  }, [compareOrderRows]);
-
-  const salesSeries = useMemo(() => buildTimeBucketSeries(reportOrders, order => order.amount || 0), [reportOrders]);
-  const compareSalesSeries = useMemo(() => buildTimeBucketSeries(compareOrders, order => order.amount || 0), [compareOrders]);
-
-  const paymentMethodRows = useMemo(() => {
-    const grouped = reportPayments.reduce((acc, payment) => {
-      const label = getPaymentMethodLabel(payment);
-      acc[label] = (acc[label] || 0) + (payment.amount || 0);
-      return acc;
-    }, {});
-
-    return Object.entries(grouped)
-      .map(([label, amount]) => ({
-        label,
-        amount,
-        share: salesSummary.totalPaid > 0 ? (amount / salesSummary.totalPaid) * 100 : 0
-      }))
-      .sort((a, b) => b.amount - a.amount);
-  }, [reportPayments, salesSummary.totalPaid]);
-
-  const productRevenueRows = useMemo(() => {
-    const grouped = {};
-
-    reportOrders.forEach(order => {
-      (order.items || []).forEach(item => {
-        const key = item.productId || item.description || 'other';
-        if (!grouped[key]) {
-          grouped[key] = {
-            key,
-            label: productMap[item.productId]?.name || item.description || 'Sản phẩm khác',
-            revenue: 0,
-            quantity: 0
-          };
-        }
-
-        const billing = getTransactionBillingPresentation(item);
-        const quantity = billing.actualQuantity;
-        const lineRevenue = billing.amount;
-        grouped[key].revenue += lineRevenue;
-        grouped[key].quantity += quantity;
-      });
-    });
-
-    return Object.values(grouped)
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 8);
-  }, [reportOrders, productMap]);
-
-  const debtRows = useMemo(() => reportOrderRows
-    .filter(row => row.outstandingAmount > 0)
-    .sort((a, b) => b.outstandingAmount - a.outstandingAmount), [reportOrderRows]);
-
-  const processingCostSummary = useMemo(
-    () => buildProcessingInventoryCostSummary({
-      orders: reportOrders,
-      products,
-      company: currentCompany,
-      date: reportDate,
-      records: processingInventoryDrafts,
-      warehouseImports
-    }),
-    [reportOrders, products, currentCompany, reportDate, processingInventoryDrafts, warehouseImports]
-  );
-  const compareProcessingCostSummary = useMemo(
-    () => buildProcessingInventoryCostSummary({
-      orders: compareOrders,
-      products,
-      company: currentCompany,
-      date: compareDate,
-      warehouseImports
-    }),
-    [compareOrders, products, currentCompany, compareDate, warehouseImports]
-  );
-
-  const profitSummary = useMemo(() => {
-    const totalRevenue = reportOrderRows.reduce((sum, row) => sum + (row.amount || 0), 0);
-    const cashExpense = reportExpenses
-      .reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    const inventoryPurchaseExpense = reportExpenses
-      .filter(expense => isInventoryPurchaseExpense(expense))
-      .reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    const manualExpense = Math.max(0, cashExpense - inventoryPurchaseExpense);
-    const costOfGoods = processingCostSummary.totals.costOfGoods;
-    const salaryExpense = reportSalaryExpense;
-    const totalCost = manualExpense + costOfGoods + salaryExpense;
-    return {
-      totalRevenue,
-      cashExpense,
-      manualExpense,
-      inventoryPurchaseExpense,
-      costOfGoods,
-      salaryExpense,
-      totalCost,
-      profitLoss: totalRevenue - totalCost
-    };
-  }, [reportOrderRows, reportExpenses, reportSalaryExpense, processingCostSummary]);
-
-  const compareProfitSummary = useMemo(() => {
-    const totalRevenue = compareOrderRows.reduce((sum, row) => sum + (row.amount || 0), 0);
-    const cashExpense = compareExpenses
-      .reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    const inventoryPurchaseExpense = compareExpenses
-      .filter(expense => isInventoryPurchaseExpense(expense))
-      .reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    const manualExpense = Math.max(0, cashExpense - inventoryPurchaseExpense);
-    const costOfGoods = compareProcessingCostSummary.totals.costOfGoods;
-    const totalCost = manualExpense + costOfGoods + compareSalaryExpense;
-    return { totalRevenue, cashExpense, manualExpense, inventoryPurchaseExpense, costOfGoods, totalCost, profitLoss: totalRevenue - totalCost };
-  }, [compareOrderRows, compareExpenses, compareSalaryExpense, compareProcessingCostSummary]);
-
-  const profitOrderRows = useMemo(() => reportOrderRows.map(row => ({
-    ...row,
-    grossProfit: (row.amount || 0) - (row.orderCost || 0)
-  })), [reportOrderRows]);
-
-  const expenseCategoryRows = useMemo(() => {
-    const grouped = reportExpenses
-      .filter(expense => !isInventoryPurchaseExpense(expense))
-      .reduce((acc, expense) => {
-        const category = expense.category || 'Chi phí khác';
-        acc[category] = (acc[category] || 0) + (expense.amount || 0);
-        return acc;
-      }, {});
-
-    const costOfGoods = processingCostSummary.totals.costOfGoods;
-    if (costOfGoods > 0) grouped['Giá vốn đã dùng'] = (grouped['Giá vốn đã dùng'] || 0) + costOfGoods;
-    if (reportSalaryExpense > 0) grouped['Chi phí lương'] = (grouped['Chi phí lương'] || 0) + reportSalaryExpense;
-
-    return Object.entries(grouped)
-      .map(([label, amount]) => ({ label, amount }))
-      .sort((a, b) => b.amount - a.amount);
-  }, [reportExpenses, processingCostSummary, reportSalaryExpense]);
-
-  const reportInventoryMetrics = useMemo(
-    () => buildInventoryMetrics(activeProducts, orders, { untilDate: reportDate }),
-    [activeProducts, orders, reportDate]
-  );
-
-  const inventorySummary = useMemo(() => {
-    const totalProducts = activeProducts.length;
-    const categoryCount = new Set(activeProducts.map(product => getProductMainGroupLabel(product, product.name))).size;
-    const totalCostCatalog = activeProducts.reduce((sum, product) => sum + (product.costPrice || 0), 0);
-    const totalSellCatalog = activeProducts.reduce((sum, product) => sum + (product.sellingPrice || 0), 0);
-    return {
-      totalProducts,
-      categoryCount,
-      totalCostCatalog,
-      totalSellCatalog,
-      stockValue: reportInventoryMetrics.totals.stockValue,
-      trackedProducts: reportInventoryMetrics.totals.trackedProducts,
-      outOfStockProducts: reportInventoryMetrics.totals.outOfStockProducts,
-      soldQuantity: reportInventoryMetrics.totals.soldQuantity,
-      remainingStock: reportInventoryMetrics.totals.remainingStock,
-      soldCost: reportInventoryMetrics.totals.soldCost
-    };
-  }, [activeProducts, reportInventoryMetrics]);
-
-  const inventoryCategoryRows = useMemo(() => reportInventoryMetrics.groupRows, [reportInventoryMetrics]);
-  const inventoryProductRows = useMemo(() => [...reportInventoryMetrics.productRows]
-    .filter(product => (product.openingStock || 0) > 0 || (product.soldQuantity || 0) > 0)
-    .sort((a, b) => {
-      const aLow = (a.openingStock || 0) > 0 && (a.remainingStock || 0) <= Math.max(1, (a.openingStock || 0) * 0.12);
-      const bLow = (b.openingStock || 0) > 0 && (b.remainingStock || 0) <= Math.max(1, (b.openingStock || 0) * 0.12);
-      if (aLow !== bLow) return aLow ? -1 : 1;
-      return (b.stockValue || 0) - (a.stockValue || 0);
-    })
-    .slice(0, 12), [reportInventoryMetrics.productRows]);
-
-  const recentProducts = useMemo(() => [...activeProducts]
-    .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-    .slice(0, 6), [activeProducts]);
-
-  const incompleteProducts = useMemo(() => activeProducts
-    .filter(product => !product.barcode || !product.costPrice || !product.sellingPrice)
-    .slice(0, 6), [activeProducts]);
-
-  const cashflowTransactions = useMemo(() => {
-    const list = [
-      ...reportExpenses.map(expense => ({
-        ...expense,
-        transactionType: 'expense',
-        title: expense.note || expense.category || 'Khoản chi',
-        subTitle: expense.category || 'Chi phí',
-        personLabel: employeeMap[expense.empId]?.name || 'Kế toán'
-      })),
-      ...reportPayments.map(payment => ({
-        ...payment,
-        transactionType: 'payment',
-        title: customerMap[payment.customerId]?.name || 'Khách hàng',
-        subTitle: `${getPaymentMethodLabel(payment)} • ${getPaymentSourceLabel(payment)}`,
-        personLabel: employeeMap[payment.empId]?.name || 'Kế toán'
-      }))
-    ];
-
-    return list.sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
-  }, [reportExpenses, reportPayments, employeeMap, customerMap]);
-
-  const cashflowSummary = useMemo(() => {
-    const totalIncome = reportPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const totalExpense = reportExpenses.reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    return {
-      totalIncome,
-      totalExpense,
-      balance: totalIncome - totalExpense
-    };
-  }, [reportPayments, reportExpenses]);
-
-  const compareCashflowSummary = useMemo(() => {
-    const totalIncome = comparePayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const totalExpense = compareExpenses.reduce((sum, expense) => sum + (expense.amount || 0), 0);
-    return {
-      totalIncome,
-      totalExpense,
-      balance: totalIncome - totalExpense
-    };
-  }, [comparePayments, compareExpenses]);
-
-  const incomeSeries = useMemo(() => buildTimeBucketSeries(reportPayments, payment => payment.amount || 0), [reportPayments]);
-  const expenseSeries = useMemo(() => buildTimeBucketSeries(reportExpenses, expense => expense.amount || 0), [reportExpenses]);
-
-  const reportCurrentEmployeeId = currentEmployee?.id || '';
-  const isReportOwnerAccount = isOwnerPosition(currentEmployee?.position) || currentEmployee?.role === 'super_admin';
-  const reportSalaryEmployees = useMemo(() => {
-    if (!reportCurrentEmployeeId) return [];
-    if (isReportOwnerAccount) {
-      return employees
-        .filter(emp => !emp?.isArchived)
-        .filter(emp => emp.id !== reportCurrentEmployeeId)
-        .filter(emp => !isOwnerPosition(emp?.position) && emp?.role !== 'super_admin');
-    }
-    const ownEmployee = employees.find(emp => emp.id === reportCurrentEmployeeId && !emp?.isArchived);
-    return ownEmployee ? [ownEmployee] : [];
-  }, [employees, isReportOwnerAccount, reportCurrentEmployeeId]);
-
-  const payrollRows = useMemo(() => reportSalaryEmployees
-    .map(emp => {
-      const details = buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, reportMonthKey);
-      if (!details) return null;
-
-      const lateDays = details.attendanceEntries.filter(entry => entry.status === 'late').length;
-      const leaveDays = details.attendanceEntries.filter(entry => entry.status === 'leave').length;
-      const missingCheckoutDays = details.attendanceEntries.filter(entry => entry.checkIn && !entry.checkOut).length;
-      const selectedDayEntry = details.attendanceEntries.find(entry => entry.date === reportDate) || attendance[`${reportDate}_${emp.id}`] || null;
-
-      return {
-        ...emp,
-        details,
-        lateDays,
-        leaveDays,
-        missingCheckoutDays,
-        selectedDayEntry
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => (b.details.netSalary || 0) - (a.details.netSalary || 0)), [reportSalaryEmployees, employees, attendance, financials, performance, customers, orders, payments, holidays, reportMonthKey, reportDate]);
-
-  const payrollSummary = useMemo(() => payrollRows.reduce((acc, row) => {
-    acc.totalWorkDays += row.details.workDays || 0;
-    acc.totalLateDays += row.lateDays || 0;
-    acc.totalAdvance += row.details.totalAdvance || 0;
-    acc.totalPenalty += row.details.totalPenalty || 0;
-    acc.totalNetSalary += row.details.netSalary || 0;
-    if (row.selectedDayEntry?.status === 'present' || row.selectedDayEntry?.status === 'late') acc.presentToday += 1;
-    if (row.selectedDayEntry?.status === 'late') acc.lateToday += 1;
-    return acc;
-  }, { totalWorkDays: 0, totalLateDays: 0, totalAdvance: 0, totalPenalty: 0, totalNetSalary: 0, presentToday: 0, lateToday: 0 }), [payrollRows]);
-
-  const selectedEmployee = useMemo(
-    () => payrollRows.find(row => row.id === selectedEmployeeId) || payrollRows[0] || null,
-    [payrollRows, selectedEmployeeId]
-  );
-
-  useEffect(() => {
-    if (!selectedEmployeeId && payrollRows[0]?.id) {
-      setSelectedEmployeeId(payrollRows[0].id);
-      return;
-    }
-
-    if (selectedEmployeeId && !payrollRows.some(row => row.id === selectedEmployeeId)) {
-      setSelectedEmployeeId(payrollRows[0]?.id || null);
-    }
-  }, [payrollRows, selectedEmployeeId]);
-
-  const updateProcessingInventoryDraft = (rowId, patch) => {
-    setProcessingInventoryDrafts(prev => prev.map(row => (
-      row.id === rowId ? { ...row, ...patch } : row
-    )));
-    setProcessingInventorySaveStatus('');
-  };
-
-  const addProcessingInventoryGroup = () => {
-    const nextIndex = processingInventoryDrafts.length + 1;
-    const nextRecord = normalizeProcessingInventoryRecord({ id: `custom_group_${Date.now()}`, groupName: `Nhóm ${nextIndex}`, unit: 'Con' }, nextIndex);
-    setProcessingInventoryDrafts(prev => [
-      ...prev,
-      nextRecord
-    ]);
-    setSelectedProcessingInventoryRowId(nextRecord.id);
-    setProcessingInventorySaveStatus('');
-  };
-
-  const removeProcessingInventoryGroup = (rowId) => {
-    setProcessingInventoryDrafts(prev => prev.filter(row => row.id !== rowId));
-    setProcessingInventorySaveStatus('');
-  };
-
-  const saveProcessingInventorySnapshot = async () => {
-    if (!onUpdateCompanySettings) {
-      setProcessingInventorySaveStatus('Chưa có quyền lưu cấu hình tồn kho nhóm.');
-      return;
-    }
-
-    try {
-      setIsSavingProcessingInventory(true);
-      setProcessingInventorySaveStatus('');
-      const normalizedRecords = processingInventoryDrafts
-        .map((record, index) => normalizeProcessingInventoryRecord(record, index))
-        .filter(record => record.groupName || hasProcessingInventoryInput(record));
-      const nextSnapshots = normalizeProcessingInventorySnapshots({
-        ...(currentCompany?.dailyInventorySnapshots || currentCompany?.processingInventorySnapshots || {}),
-        [reportDate]: {
-          date: reportDate,
-          updatedAt: new Date().toISOString(),
-          records: normalizedRecords
-        }
-      });
-      const result = await onUpdateCompanySettings({ dailyInventorySnapshots: nextSnapshots });
-      setProcessingInventorySaveStatus(result?.success === false ? (result.message || 'Chưa lưu được tồn kho nhóm.') : 'Đã lưu tồn kho nhóm trong ngày.');
-    } catch (error) {
-      setProcessingInventorySaveStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được tồn kho nhóm.'));
-    } finally {
-      setIsSavingProcessingInventory(false);
-    }
-  };
-
-  const renderProcessingMoneyInput = (row, key, placeholder = '0 đ') => (
-    <input
-      type="text"
-      inputMode="numeric"
-      value={row[key] || ''}
-      onChange={e => updateProcessingInventoryDraft(row.id, { [key]: e.target.value })}
-      className="w-full rounded-2xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-      placeholder={placeholder}
-    />
-  );
-
-  const renderProcessingQtyInput = (row, key, placeholder = '0') => (
-    <input
-      type="text"
-      inputMode="decimal"
-      value={row[key] || ''}
-      onChange={e => updateProcessingInventoryDraft(row.id, { [key]: e.target.value })}
-      className="w-full rounded-2xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-bold text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-      placeholder={placeholder}
-    />
-  );
-
-  const renderSalesTab = () => (
-    <div className="space-y-4">
-      <div className="bg-white rounded-[28px] border border-gray-100 shadow-sm p-5">
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-600">Doanh thu thuần</p>
-        <div className="flex items-end justify-between gap-3 mt-2">
-          <div>
-            <h2 className="text-4xl font-black text-gray-900">{formatCurrency(salesSummary.revenue)}</h2>
-            <p className="text-sm text-gray-500 mt-1">{buildComparisonSummary(salesSummary.revenue, compareSalesSummary.revenue, { currency: true, referenceLabel: compareReferenceLabel })}</p>
-          </div>
-          <div className="px-3 py-2 rounded-2xl bg-emerald-50 text-emerald-700 text-right min-w-[112px]">
-            <p className="text-[10px] uppercase font-bold tracking-wide">Đã thu</p>
-            <p className="text-lg font-black mt-1">{formatCurrency(salesSummary.totalPaid)} đ</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-3 gap-3 mt-4">
-          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Đơn hàng</p>
-            <p className="text-lg font-black text-slate-800 mt-1">{formatNumber(salesSummary.orderCount)}</p>
-          </div>
-          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Khách hàng</p>
-            <p className="text-lg font-black text-slate-800 mt-1">{formatNumber(salesSummary.customerCount)}</p>
-          </div>
-          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Trung bình/đơn</p>
-            <p className="text-lg font-black text-slate-800 mt-1">{formatCurrency(salesSummary.averageOrder)}</p>
-          </div>
-        </div>
-      </div>
-
-      <ReportSection
-        title="Biểu đồ xu hướng theo"
-        subtitle="Doanh thu được phân bổ theo thời điểm phát sinh đơn trong ngày. Nếu dữ liệu không có giờ chi tiết, app sẽ gom theo thứ tự đơn hàng."
-        action={<div className="px-3 py-2 rounded-xl bg-slate-50 text-xs font-bold text-slate-600">Doanh thu</div>}
-      >
-        <ReportLineChart currentSeries={salesSeries} compareSeries={compareSalesSeries} currentLabel={currentLabel} compareLabel={compareLabel} />
-      </ReportSection>
-
-      <ReportSection title="Doanh thu theo phương thức thanh toán" subtitle="Ghi nhận từ toàn bộ khoản thu đã xác nhận trong ngày.">
-        {paymentMethodRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có báo cáo thu tiền" description="Khi kế toán ghi nhận tiền mặt hoặc chuyển khoản trong ngày, phần này sẽ hiện ngay." />
-        ) : (
-          <div className="space-y-3">
-            {paymentMethodRows.map(method => (
-              <div key={method.label} className="rounded-2xl border border-gray-100 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-bold text-gray-800">{method.label}</p>
-                    <p className="text-xs text-gray-500 mt-1">{method.share > 0 ? `${method.share.toFixed(1)}% tổng tiền đã thu` : "Chưa có tỷ trọng"}</p>
-                  </div>
-                  <p className="text-lg font-black text-emerald-600">{formatCurrency(method.amount)} đ</p>
-                </div>
-                <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                  <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(6, Math.min(100, method.share || 0))}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Doanh thu chi tiết" subtitle="Theo dõi từng đơn hàng, khách hàng, NVKD, số tiền đã thu và công nợ còn lại.">
-        {reportOrderRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có đơn hàng trong ngày" description="Khi có đơn mới, bảng chi tiết doanh thu sẽ tự cập nhật tại đây." />
-        ) : (
-          <div className="space-y-3">
-            {reportOrderRows.map(row => (
-              <div key={row.id} className="rounded-3xl border border-gray-100 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-black text-gray-900">HD{(row.id || '').slice(-6).toUpperCase()}</p>
-                    <p className="text-sm text-gray-600 mt-1">{row.customerName}</p>
-                    <p className="text-xs text-gray-500 mt-1">NVKD: {row.salesName}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-black text-emerald-600">{formatCurrency(row.amount)} đ</p>
-                    <p className="text-[11px] text-gray-500 mt-1">{parseDateInputValue(row.date).toLocaleDateString('vi-VN')}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3 mt-4">
-                  <div className="rounded-2xl bg-blue-50 border border-blue-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-blue-600">Đã thu</p>
-                    <p className="font-black text-blue-700 mt-1">{formatCurrency(row.paidAmount)} đ</p>
-                  </div>
-                  <div className={`rounded-2xl border px-3 py-3 ${row.outstandingAmount > 0 ? 'bg-rose-50 border-rose-100' : 'bg-emerald-50 border-emerald-100'}`}>
-                    <p className={`text-[10px] uppercase font-bold ${row.outstandingAmount > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>Còn nợ</p>
-                    <p className={`font-black mt-1 ${row.outstandingAmount > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>{formatCurrency(row.outstandingAmount)} đ</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection
-        title="Doanh thu theo sản phẩm"
-        subtitle="Top sản phẩm bán ra trong ngày."
-        action={<div className="px-3 py-2 rounded-xl bg-slate-50 text-xs font-bold text-slate-600">Sản phẩm</div>}
-      >
-        {productRevenueRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có báo cáo sản phẩm" description="Khi có đơn hàng, top doanh thu theo sản phẩm sẽ hiện ở đây." />
-        ) : (
-          <div className="space-y-3">
-            {productRevenueRows.map((item, index) => (
-              <div key={item.key} className="rounded-2xl border border-gray-100 p-4 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 font-black flex items-center justify-center">{index + 1}</div>
-                  <div>
-                    <p className="font-bold text-gray-800">{item.label}</p>
-                    <p className="text-xs text-gray-500 mt-1">Số lượng: {formatNumber(item.quantity)}</p>
-                  </div>
-                </div>
-                <p className="text-lg font-black text-gray-900">{formatCurrency(item.revenue)} đ</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Công nợ / đơn chưa thu đủ" subtitle="Thay cho khối đơn hoàn/hủy trong mẫu, dùng để theo dõi ngay các đơn còn mở công nợ.">
-        {debtRows.length === 0 ? (
-          <ReportEmptyState title="Không có công nợ mở trong ngày" description="Tất cả đơn trong ngày đã được cân đối hoặc chưa phát sinh công nợ." />
-        ) : (
-          <div className="space-y-3">
-            {debtRows.map(row => (
-              <div key={row.id} className="rounded-2xl border border-rose-100 bg-rose-50 p-4 flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold text-rose-800">HD{(row.id || '').slice(-6).toUpperCase()}</p>
-                  <p className="text-sm text-rose-700 mt-1">{row.customerName}</p>
-                  <p className="text-xs text-rose-600 mt-1">Đã thu {formatCurrency(row.paidAmount)} đ / Tổng {formatCurrency(row.amount)} đ</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] uppercase font-bold tracking-wide text-rose-600">Còn nợ</p>
-                  <p className="text-lg font-black text-rose-700 mt-1">{formatCurrency(row.outstandingAmount)} đ</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-    </div>
-  );
-
-  const renderProfitTab = () => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <ReportStatCard label="Tổng doanh thu" value={`${formatCurrency(profitSummary.totalRevenue)} đ`} helper={buildComparisonSummary(profitSummary.totalRevenue, compareProfitSummary.totalRevenue, { currency: true, referenceLabel: compareReferenceLabel })} tone="emerald" />
-        <ReportStatCard label="Tổng chi phí" value={`${formatCurrency(profitSummary.totalCost)} đ`} helper={`Chi khác ${formatCurrency(profitSummary.manualExpense)} đ • Giá vốn đã dùng ${formatCurrency(profitSummary.costOfGoods)} đ • Lương ${formatCurrency(profitSummary.salaryExpense)} đ`} tone="amber" />
-        <ReportStatCard label="Lãi / lỗ" value={`${formatCurrency(profitSummary.profitLoss)} đ`} helper={buildComparisonSummary(profitSummary.profitLoss, compareProfitSummary.profitLoss, { currency: true, referenceLabel: compareReferenceLabel })} tone={profitSummary.profitLoss >= 0 ? 'blue' : 'rose'} />
-      </div>
-
-      <ReportSection title="Lãi / lỗ theo nhóm hàng" subtitle="Lợi nhuận chỉ trừ phần hàng đã bán/dùng trong ngày. Hàng còn tồn được chuyển giá vốn sang ngày sau, không tính lỗ giả hôm nay.">
-        {processingCostSummary.rows.length === 0 ? (
-          <ReportEmptyState title="Chưa có dữ liệu theo nhóm" description="Khi có đơn hàng trong ngày, app sẽ tự gom doanh thu, giá vốn và lãi gộp theo nhóm hàng." />
-        ) : (
-          <div className="space-y-3">
-            {processingCostSummary.rows.map(row => {
-              const margin = row.revenue > 0 ? (row.grossProfit / row.revenue) * 100 : 0;
-              return (
-                <div key={row.key} className="rounded-3xl border border-gray-100 bg-white p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-black text-gray-900">{row.groupName}</p>
-                      <p className="mt-1 text-sm font-semibold text-gray-500">{formatNumber(row.quantity)} {row.unit} • {row.lineCount} dòng bán</p>
-                      <p className="mt-1 text-[11px] font-bold text-gray-400">{row.usesGroupCost ? 'Đang tính theo tồn nhóm trong ngày' : 'Tạm tính theo giá vốn sản phẩm'}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[10px] font-bold uppercase text-gray-500">Lãi gộp</p>
-                      <p className={`mt-1 text-xl font-black ${row.grossProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatCurrency(row.grossProfit)} đ</p>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-2xl bg-emerald-50 px-3 py-3">
-                      <p className="text-[10px] font-bold uppercase text-emerald-600">Doanh thu</p>
-                      <p className="mt-1 text-sm font-black text-emerald-700">{formatCurrency(row.revenue)} đ</p>
-                    </div>
-                    <div className="rounded-2xl bg-amber-50 px-3 py-3">
-                      <p className="text-[10px] font-bold uppercase text-amber-600">Giá vốn</p>
-                      <p className="mt-1 text-sm font-black text-amber-700">{formatCurrency(row.costOfGoods)} đ</p>
-                    </div>
-                    <div className="rounded-2xl bg-blue-50 px-3 py-3">
-                      <p className="text-[10px] font-bold uppercase text-blue-600">Biên lời</p>
-                      <p className="mt-1 text-sm font-black text-blue-700">{margin.toFixed(1)}%</p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Báo cáo theo đơn hàng" subtitle="Lãi gộp từng đơn được ước tính bằng doanh thu trừ giá vốn hiện có của sản phẩm.">
-        {profitOrderRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có đơn hàng để tính lãi lỗ" description="Khi có đơn hàng trong ngày, bảng lãi gộp theo đơn sẽ tự hiện." />
-        ) : (
-          <div className="space-y-3">
-            {profitOrderRows.map(row => (
-              <div key={row.id} className="rounded-3xl border border-gray-100 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-black text-gray-900">HD{(row.id || '').slice(-6).toUpperCase()}</p>
-                    <p className="text-sm text-gray-600 mt-1">{row.customerName}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] uppercase font-bold text-gray-500">Lãi gộp</p>
-                    <p className={`text-lg font-black mt-1 ${row.grossProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatCurrency(row.grossProfit)} đ</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-3 mt-4 text-sm">
-                  <div className="rounded-2xl bg-emerald-50 border border-emerald-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-emerald-600">Doanh thu</p>
-                    <p className="font-black text-emerald-700 mt-1">{formatCurrency(row.amount)} đ</p>
-                  </div>
-                  <div className="rounded-2xl bg-amber-50 border border-amber-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-amber-600">Giá vốn</p>
-                    <p className="font-black text-amber-700 mt-1">{formatCurrency(row.orderCost)} đ</p>
-                  </div>
-                  <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-slate-600">Đã thu</p>
-                    <p className="font-black text-slate-700 mt-1">{formatCurrency(row.paidAmount)} đ</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Cơ cấu chi phí" subtitle="Bao gồm toàn bộ chi phí phát sinh trong ngày: khoản chi, lương theo ngày công và giá vốn ước tính từ đơn hàng.">
-        {expenseCategoryRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có chi phí phát sinh" description="Khi có khoản chi hoặc giá vốn đơn hàng, phần cơ cấu chi phí sẽ hiện tại đây." />
-        ) : (
-          <div className="space-y-3">
-            {expenseCategoryRows.map(row => {
-              const ratio = profitSummary.totalCost > 0 ? (row.amount / profitSummary.totalCost) * 100 : 0;
-              return (
-                <div key={row.label} className="rounded-2xl border border-gray-100 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-bold text-gray-800">{row.label}</p>
-                      <p className="text-xs text-gray-500 mt-1">{ratio.toFixed(1)}% tổng chi phí</p>
-                    </div>
-                    <p className="text-lg font-black text-gray-900">{formatCurrency(row.amount)} đ</p>
-                  </div>
-                  <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.max(6, Math.min(100, ratio || 0))}%` }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ReportSection>
-    </div>
-  );
-
-  const renderProcessingInventoryEditor = () => {
-    const row = selectedProcessingInventoryRow;
-    if (!row) {
-      return <ReportEmptyState title="Chưa có nhóm tồn kho" description="Bấm + Nhóm để bắt đầu khai báo tồn và giá vốn theo từng nhóm hàng." />;
-    }
-
-    const endingValue = parseLooseMoneyValue(row.endingLiveValue) + parseLooseMoneyValue(row.endingProcessedValue);
-    const matchedProfitRow = processingCostSummary.rows.find(item => item.key === buildProcessingInventoryGroupKey(row.groupName));
-    const calculatedCost = calculateProcessingInventorySoldCost(row, matchedProfitRow?.quantity || 0, matchedProfitRow?.soldWeightKg || 0);
-    const hasImportData = (row.importCount || 0) > 0;
-
-    return (
-      <div className="space-y-3">
-        <label className="block">
-          <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-emerald-600">Chọn nhóm hàng để lên tồn</span>
-          <select
-            value={row.id}
-            onChange={event => setSelectedProcessingInventoryRowId(event.target.value)}
-            className="w-full rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-          >
-            {processingInventoryDrafts.map(item => (
-              <option key={item.id} value={item.id}>
-                {item.groupName}{item.importCount ? ` • ${item.importCount} phiếu nhập` : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="grid flex-1 grid-cols-[minmax(0,1fr)_88px] gap-2">
-              <input
-                type="text"
-                value={row.groupName || ''}
-                onChange={e => updateProcessingInventoryDraft(row.id, { groupName: normalizeLeadingLabel(e.target.value) })}
-                className="w-full rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-black text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                placeholder="Vịt, Gà..."
-              />
-              <input
-                type="text"
-                value={row.unit || ''}
-                onChange={e => updateProcessingInventoryDraft(row.id, { unit: normalizeLeadingLabel(e.target.value) })}
-                className="w-full rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-bold text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                placeholder="Con/Kg"
-              />
-            </div>
-            <button type="button" onClick={() => removeProcessingInventoryGroup(row.id)} className="rounded-full bg-rose-50 p-2 text-rose-500">
-              <X size={16} />
-            </button>
-          </div>
-
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div>
-              <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn đầu</p>
-              <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                {renderProcessingQtyInput(row, 'openingQty', 'SL')}
-                {renderProcessingMoneyInput(row, 'openingValue')}
-              </div>
-            </div>
-            <div>
-              <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Nhập kho</p>
-              {hasImportData ? (
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2.5">
-                  <p className="text-xs font-black text-emerald-800">{formatNumber(row.purchaseQty || 0)} {row.unit || 'đơn vị'} • {formatCurrency(row.purchaseValue || 0)} đ</p>
-                  <p className="mt-1 text-[11px] font-bold text-emerald-600">{formatNumber(row.purchaseKg || 0)} kg từ {formatNumber(row.importCount || 0)} phiếu nhập</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                  {renderProcessingQtyInput(row, 'purchaseQty', 'SL')}
-                  {renderProcessingMoneyInput(row, 'purchaseValue')}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div>
-              <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn sống cuối</p>
-              <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                {renderProcessingQtyInput(row, 'endingLiveQty', 'SL')}
-                {renderProcessingMoneyInput(row, 'endingLiveValue')}
-              </div>
-            </div>
-            <div>
-              <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn làm rồi</p>
-              <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                {renderProcessingQtyInput(row, 'endingProcessedQty', 'SL')}
-                {renderProcessingMoneyInput(row, 'endingProcessedValue')}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
-            <div>
-              <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Chi phí sơ chế</p>
-              {renderProcessingMoneyInput(row, 'processingCost')}
-            </div>
-            <div className="rounded-2xl bg-slate-50 px-3 py-2.5 text-right">
-              <p className="text-[10px] font-black uppercase text-emerald-600">Giá vốn bán</p>
-              <p className="mt-1 text-base font-black text-gray-900">{formatCurrency(calculatedCost)} đ</p>
-            </div>
-          </div>
-
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-2xl bg-emerald-50 px-2 py-2">
-              <p className="text-[10px] font-bold uppercase text-emerald-600">Doanh thu</p>
-              <p className="text-sm font-black text-emerald-800">{formatCurrency(matchedProfitRow?.revenue || 0)} đ</p>
-            </div>
-            <div className="rounded-2xl bg-blue-50 px-2 py-2">
-              <p className="text-[10px] font-bold uppercase text-blue-600">Tồn cuối</p>
-              <p className="text-sm font-black text-blue-800">{formatCurrency(endingValue)} đ</p>
-            </div>
-            <div className="rounded-2xl bg-amber-50 px-2 py-2">
-              <p className="text-[10px] font-bold uppercase text-amber-600">Lãi</p>
-              <p className={`text-sm font-black ${(matchedProfitRow?.grossProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatCurrency(matchedProfitRow?.grossProfit || 0)} đ</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="sticky bottom-2 z-10 rounded-3xl border border-emerald-100 bg-white/95 p-3 shadow-lg backdrop-blur">
-          <button
-            type="button"
-            onClick={saveProcessingInventorySnapshot}
-            disabled={isSavingProcessingInventory}
-            className="w-full rounded-2xl bg-emerald-500 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/20 disabled:opacity-60"
-          >
-            {isSavingProcessingInventory ? 'Đang lưu...' : 'Lưu tồn nhóm trong ngày'}
-          </button>
-          {processingInventorySaveStatus && <p className="mt-2 text-center text-xs font-bold text-emerald-700">{processingInventorySaveStatus}</p>}
-        </div>
-      </div>
-    );
-  };
-
-  const renderInventoryTab = () => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <ReportStatCard label="Doanh thu nhóm" value={`${formatCurrency(processingCostSummary.totals.revenue)} đ`} helper="Tự lấy từ đơn hàng theo nhóm Vịt, Gà, Heo..." tone="emerald" />
-        <ReportStatCard label="Giá vốn đã bán" value={`${formatCurrency(processingCostSummary.totals.costOfGoods)} đ`} helper={`${processingCostSummary.totals.configuredGroups} nhóm đang tính theo tồn thực tế`} tone="amber" />
-        <ReportStatCard label="Tồn cuối quy đổi" value={`${formatCurrency(processingCostSummary.totals.endingValue)} đ`} helper="Tồn sống + tồn đã làm cuối ngày" tone="blue" />
-        <ReportStatCard label="Lãi nhóm" value={`${formatCurrency(processingCostSummary.totals.grossProfit)} đ`} helper="Doanh thu trừ giá vốn theo nhóm" tone={processingCostSummary.totals.grossProfit >= 0 ? 'indigo' : 'rose'} />
-      </div>
-
-      <ReportSection
-        title="Tính giá vốn theo nhóm gia cầm"
-        subtitle="Nhập nhanh theo ngày: tồn đầu + nhập trong ngày + chi phí sơ chế - tồn cuối. Nhóm Vịt/Gà có thể tồn sống và tồn đã làm riêng."
-        action={<button type="button" onClick={addProcessingInventoryGroup} className="rounded-full bg-emerald-50 px-3 py-2 text-[11px] font-black text-emerald-700">+ Nhóm</button>}
-      >
-        {renderProcessingInventoryEditor()}
-        {false && (
-        <div className="space-y-3">
-          {processingInventoryDrafts.map((row) => {
-            const calculatedCost = calculateProcessingInventorySoldCost(row, matchedProfitRow?.quantity || 0, matchedProfitRow?.soldWeightKg || 0);
-            const endingValue = parseLooseMoneyValue(row.endingLiveValue) + parseLooseMoneyValue(row.endingProcessedValue);
-            const matchedProfitRow = processingCostSummary.rows.find(item => item.key === buildProcessingInventoryGroupKey(row.groupName));
-            return (
-              <div key={row.id} className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50/40 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="grid flex-1 grid-cols-[minmax(0,1fr)_88px] gap-2">
-                    <input
-                      type="text"
-                      value={row.groupName || ''}
-                      onChange={e => updateProcessingInventoryDraft(row.id, { groupName: normalizeLeadingLabel(e.target.value) })}
-                      className="w-full rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-black text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                      placeholder="Vịt, Gà..."
-                    />
-                    <input
-                      type="text"
-                      value={row.unit || ''}
-                      onChange={e => updateProcessingInventoryDraft(row.id, { unit: normalizeLeadingLabel(e.target.value) })}
-                      className="w-full rounded-2xl border border-emerald-100 bg-white px-3 py-2.5 text-sm font-bold text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                      placeholder="Con/Kg"
-                    />
-                  </div>
-                  <button type="button" onClick={() => removeProcessingInventoryGroup(row.id)} className="rounded-full bg-white p-2 text-gray-400 hover:bg-rose-50 hover:text-rose-600">
-                    <X size={16} />
-                  </button>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div>
-                    <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn đầu</p>
-                    <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                      {renderProcessingQtyInput(row, 'openingQty', 'SL')}
-                      {renderProcessingMoneyInput(row, 'openingValue')}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Nhập trong ngày</p>
-                    <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                      {renderProcessingQtyInput(row, 'purchaseQty', 'SL')}
-                      {renderProcessingMoneyInput(row, 'purchaseValue')}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div>
-                    <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn sống cuối</p>
-                    <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                      {renderProcessingQtyInput(row, 'endingLiveQty', 'SL')}
-                      {renderProcessingMoneyInput(row, 'endingLiveValue')}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Tồn làm rồi</p>
-                    <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
-                      {renderProcessingQtyInput(row, 'endingProcessedQty', 'SL')}
-                      {renderProcessingMoneyInput(row, 'endingProcessedValue')}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
-                  <div>
-                    <p className="mb-1 text-[10px] font-black uppercase text-gray-500">Chi phí sơ chế</p>
-                    {renderProcessingMoneyInput(row, 'processingCost')}
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-2.5 text-right">
-                    <p className="text-[10px] font-black uppercase text-emerald-600">Giá vốn bán</p>
-                    <p className="mt-1 text-base font-black text-gray-900">{formatCurrency(calculatedCost)} đ</p>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                  <div className="rounded-2xl bg-white px-2 py-2">
-                    <p className="text-[10px] font-bold uppercase text-gray-400">Doanh thu</p>
-                    <p className="text-sm font-black text-emerald-700">{formatCurrency(matchedProfitRow?.revenue || 0)} đ</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-2 py-2">
-                    <p className="text-[10px] font-bold uppercase text-gray-400">Tồn cuối</p>
-                    <p className="text-sm font-black text-blue-700">{formatCurrency(endingValue)} đ</p>
-                  </div>
-                  <div className="rounded-2xl bg-white px-2 py-2">
-                    <p className="text-[10px] font-bold uppercase text-gray-400">Lãi</p>
-                    <p className={`text-sm font-black ${(matchedProfitRow?.grossProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatCurrency(matchedProfitRow?.grossProfit || 0)} đ</p>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="sticky bottom-2 z-10 rounded-3xl border border-emerald-100 bg-white/95 p-3 shadow-lg backdrop-blur">
-            <button
-              type="button"
-              onClick={saveProcessingInventorySnapshot}
-              disabled={isSavingProcessingInventory}
-              className="w-full rounded-2xl bg-emerald-500 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/20 disabled:opacity-60"
-            >
-              {isSavingProcessingInventory ? 'Đang lưu...' : 'Lưu tồn nhóm trong ngày'}
-            </button>
-            {processingInventorySaveStatus && <p className="mt-2 text-center text-xs font-bold text-emerald-700">{processingInventorySaveStatus}</p>}
-          </div>
-        </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Kho chi tiết sản phẩm / vật tư" subtitle="Dành cho vật tư hoặc hàng đóng gói trừ kho trực tiếp theo đúng đơn vị, ví dụ thùng xốp, túi bóng, kg thịt.">
-        {inventoryCategoryRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có dữ liệu tồn kho" description="Hãy vào Sản phẩm, khai báo tồn đầu và loại tồn để app bắt đầu theo dõi nhập - xuất - tồn." />
-        ) : (
-          <div className="space-y-3">
-            {inventoryCategoryRows.map(group => (
-              <div key={group.key} className="rounded-3xl border border-gray-100 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-black text-gray-900">{group.label}</p>
-                    <p className="text-sm text-gray-500 mt-1">{group.productCount} sản phẩm • Đơn vị tồn: {group.unit}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] uppercase font-bold text-gray-500">Giá trị tồn</p>
-                    <p className="text-lg font-black text-emerald-600 mt-1">{formatCurrency(group.stockValue)} đ</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-4 gap-2 mt-4 text-center">
-                  <div className="rounded-2xl bg-slate-50 border border-slate-100 px-2 py-3">
-                    <p className="text-[10px] uppercase font-bold text-slate-500">Tồn đầu</p>
-                    <p className="font-black text-slate-700 mt-1">{formatNumber(group.openingStock)}</p>
-                  </div>
-                  <div className="rounded-2xl bg-amber-50 border border-amber-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-amber-600">Đã bán</p>
-                    <p className="font-black text-amber-700 mt-1">{formatNumber(group.soldQuantity)}</p>
-                  </div>
-                  <div className="rounded-2xl bg-emerald-50 border border-emerald-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-emerald-600">Còn tồn</p>
-                    <p className="font-black text-emerald-700 mt-1">{formatNumber(group.remainingStock)}</p>
-                  </div>
-                  <div className="rounded-2xl bg-blue-50 border border-blue-100 px-3 py-3">
-                    <p className="text-[10px] uppercase font-bold text-blue-600">Lãi gộp</p>
-                    <p className="font-black text-blue-700 mt-1">{formatCurrency(group.grossProfit)} đ</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Chi tiết tồn từng sản phẩm" subtitle="Ưu tiên hiện sản phẩm sắp hết tồn hoặc có giá trị tồn lớn để kiểm soát thất thoát nhanh hơn.">
-        {inventoryProductRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có sản phẩm theo dõi tồn" description="Khi khai báo tồn đầu trong sản phẩm, bảng chi tiết sẽ tự hiện." />
-        ) : (
-          <div className="space-y-3">
-            {inventoryProductRows.map(product => {
-              const isLowStock = (product.openingStock || 0) > 0 && (product.remainingStock || 0) <= Math.max(1, (product.openingStock || 0) * 0.12);
-              return (
-                <div key={product.id} className={`rounded-3xl border p-4 ${isLowStock ? 'border-rose-100 bg-rose-50/40' : 'border-gray-100 bg-white'}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-black text-gray-900">{product.name}</p>
-                      <p className="mt-1 text-sm text-gray-500">{product.inventoryGroup} • {product.stockUnit}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-[10px] uppercase font-bold ${isLowStock ? 'text-rose-600' : 'text-gray-500'}`}>{isLowStock ? 'Cần nhập thêm' : 'Còn tồn'}</p>
-                      <p className={`mt-1 text-lg font-black ${isLowStock ? 'text-rose-700' : 'text-emerald-700'}`}>{formatNumber(product.remainingStock)} {product.stockUnit}</p>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-2xl bg-white border border-gray-100 px-3 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Tồn đầu</p>
-                      <p className="font-black text-gray-800 mt-1">{formatNumber(product.openingStock)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-white border border-gray-100 px-3 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Đã bán</p>
-                      <p className="font-black text-amber-700 mt-1">{formatNumber(product.soldQuantity)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-white border border-gray-100 px-3 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Giá trị</p>
-                      <p className="font-black text-emerald-700 mt-1">{formatCurrency(product.stockValue)} đ</p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Sản phẩm cần rà soát" subtitle="Những sản phẩm đang thiếu mã vạch hoặc thiếu thông tin giá để tránh hụt dữ liệu quản lý.">
-        {incompleteProducts.length === 0 ? (
-          <ReportEmptyState title="Danh mục đang khá đầy đủ" description="Hiện chưa thấy sản phẩm nào thiếu mã vạch hoặc thiếu giá cơ bản." />
-        ) : (
-          <div className="space-y-3">
-            {incompleteProducts.map(product => (
-              <div key={product.id} className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-bold text-amber-900">{product.name}</p>
-                    <p className="text-sm text-amber-700 mt-1">{product.category || 'Chưa phân nhóm'} • {product.unit || 'Đơn vị'}</p>
-                  </div>
-                  <div className="text-right text-[11px] text-amber-800 font-semibold">
-                    {!product.barcode && <p>Thiếu mã vạch/SKU</p>}
-                    {!product.costPrice && <p>Thiếu giá vốn</p>}
-                    {!product.sellingPrice && <p>Thiếu giá bán</p>}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-
-      <ReportSection title="Sản phẩm mới nhất" subtitle="Hiển thị nhanh những sản phẩm vừa được thêm gần đây.">
-        {recentProducts.length === 0 ? (
-          <ReportEmptyState title="Chưa có sản phẩm nào" description="Khi bạn thêm sản phẩm mới, danh sách gần đây sẽ hiển thị tại đây." />
-        ) : (
-          <div className="space-y-3">
-            {recentProducts.map(product => (
-              <div key={product.id} className="rounded-2xl border border-gray-100 p-4 flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold text-gray-800">{product.name}</p>
-                  <p className="text-xs text-gray-500 mt-1">{product.category || 'Chưa phân nhóm'} • {product.unit || 'Đơn vị'}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-black text-emerald-600">{formatCurrency(product.sellingPrice || 0)} đ</p>
-                  <p className="text-[11px] text-gray-500 mt-1">Giá vốn {formatCurrency(product.costPrice || 0)} đ</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ReportSection>
-    </div>
-  );
-
-  const renderCashflowTab = () => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <ReportStatCard label="Tổng thu" value={`${formatCurrency(cashflowSummary.totalIncome)} đ`} helper={buildComparisonSummary(cashflowSummary.totalIncome, compareCashflowSummary.totalIncome, { currency: true, referenceLabel: compareReferenceLabel })} tone="emerald" />
-        <ReportStatCard label="Tổng chi" value={`${formatCurrency(cashflowSummary.totalExpense)} đ`} helper={buildComparisonSummary(cashflowSummary.totalExpense, compareCashflowSummary.totalExpense, { currency: true, referenceLabel: compareReferenceLabel })} tone="amber" />
-        <ReportStatCard label="Chênh lệch" value={`${formatCurrency(cashflowSummary.balance)} đ`} helper={buildComparisonSummary(cashflowSummary.balance, compareCashflowSummary.balance, { currency: true, referenceLabel: compareReferenceLabel })} tone={cashflowSummary.balance >= 0 ? 'blue' : 'rose'} />
-      </div>
-
-      <ReportSection title="Nhịp thu chi trong ngày" subtitle="Biểu đồ cặp cột giúp xem nhanh khoảng thời gian thu nhiều hay chi nhiều.">
-        <ReportBarPairChart primarySeries={incomeSeries} secondarySeries={expenseSeries} primaryLabel="Thu" secondaryLabel="Chi" />
-      </ReportSection>
-
-      <ReportSection title="Danh sách giao dịch" subtitle="Gộp toàn bộ khoản thu và khoản chi trong ngày để kế toán đối soát nhanh.">
-        {cashflowTransactions.length === 0 ? (
-          <ReportEmptyState title="Chưa có giao dịch nào trong ngày" description="Khi có khoản thu hoặc chi phát sinh, danh sách giao dịch sẽ hiển thị tại đây." />
-        ) : (
-          <div className="space-y-3">
-            {cashflowTransactions.map(transaction => {
-              const isExpense = transaction.transactionType === 'expense';
-              return (
-                <div key={transaction.id} className="rounded-3xl border border-gray-100 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${isExpense ? 'bg-orange-50 text-orange-600' : 'bg-emerald-50 text-emerald-600'}`}>
-                        {isExpense ? <MinusCircle size={18} /> : <PlusCircle size={18} />}
-                      </div>
-                      <div>
-                        <p className="font-bold text-gray-900">{transaction.title}</p>
-                        <p className="text-sm text-gray-600 mt-1">{transaction.subTitle}</p>
-                        <p className="text-xs text-gray-500 mt-1">Tạo bởi {transaction.personLabel}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-lg font-black ${isExpense ? 'text-orange-600' : 'text-emerald-600'}`}>{isExpense ? '-' : '+'}{formatCurrency(transaction.amount)} đ</p>
-                      <p className="text-[11px] text-gray-500 mt-1">{parseDateInputValue(transaction.date).toLocaleDateString('vi-VN')}</p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ReportSection>
-    </div>
-  );
-
-  const renderHrTab = () => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <ReportStatCard label="Tổng ngày công" value={formatNumber(payrollSummary.totalWorkDays)} helper={`Tháng ${reportMonthKey} • ngày ${parseDateInputValue(reportDate).toLocaleDateString('vi-VN')}`} tone="indigo" />
-        <ReportStatCard label="Đi trễ" value={formatNumber(payrollSummary.totalLateDays)} helper={`${payrollSummary.presentToday} người có mặt • ${payrollSummary.lateToday} người đi trễ trong ngày chọn`} tone="amber" />
-        <ReportStatCard label="Tổng ứng" value={`${formatCurrency(payrollSummary.totalAdvance)} đ`} helper="Cộng toàn bộ ứng lương trong tháng đang xem" tone="rose" />
-        <ReportStatCard label="Tổng phạt" value={`${formatCurrency(payrollSummary.totalPenalty)} đ`} helper="Bao gồm mọi khoản phạt phát sinh trong tháng" tone="slate" />
-      </div>
-
-      <div className="bg-white rounded-[28px] border border-gray-100 shadow-sm p-5">
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-600">Lương còn lại của bạn</p>
-        <h2 className={`text-4xl font-black mt-2 ${payrollSummary.totalNetSalary >= 0 ? 'text-gray-900' : 'text-red-600'}`}>{formatCurrency(payrollSummary.totalNetSalary)}</h2>
-        <p className="text-sm text-gray-500 mt-1">Thực nhận tạm tính của chính tài khoản đang đăng nhập trong tháng {reportMonthKey}.</p>
-      </div>
-
-      <ReportSection title="Lương cá nhân" subtitle="Chỉ hiển thị dữ liệu lương của chính tài khoản đang đăng nhập.">
-        {payrollRows.length === 0 ? (
-          <ReportEmptyState title="Chưa có dữ liệu lương cá nhân" description="Khi tài khoản này có chấm công hoặc dữ liệu lương phát sinh, phần lương cá nhân sẽ hiện tại đây." />
-        ) : (
-          <div className="space-y-3">
-            {payrollRows.map(row => {
-              const isActive = row.id === selectedEmployee?.id;
-              const selectedDayStatus = row.selectedDayEntry?.status || 'missing';
-              const dayStatusLabel = selectedDayStatus === 'late'
-                ? 'Đi trễ'
-                : selectedDayStatus === 'present'
-                  ? 'Có mặt'
-                  : selectedDayStatus === 'leave'
-                    ? 'Nghỉ phép'
-                    : 'Chưa chấm';
-
-              return (
-                <button key={row.id} type="button" onClick={() => setSelectedEmployeeId(row.id)} className={`w-full text-left rounded-3xl border p-4 transition-colors ${isActive ? 'border-emerald-200 bg-emerald-50/60' : 'border-gray-100 bg-white hover:bg-gray-50'}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-black text-gray-900">{row.name}</p>
-                      <p className="text-sm text-gray-600 mt-1">{row.position || 'Nhân sự'}</p>
-                      <p className="text-xs text-gray-500 mt-2">Ngày chọn: <span className="font-semibold text-gray-700">{dayStatusLabel}</span></p>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-lg font-black ${row.details.netSalary >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatCurrency(row.details.netSalary)} đ</p>
-                      <p className="text-[11px] text-gray-500 mt-1">Lương còn lại</p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-4 gap-2 mt-4 text-center">
-                    <div className="rounded-2xl bg-white border border-gray-100 px-2 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Ngày công</p>
-                      <p className="font-black text-gray-800 mt-1">{formatNumber(row.details.workDays)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-white border border-gray-100 px-2 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Đi trễ</p>
-                      <p className="font-black text-amber-600 mt-1">{formatNumber(row.lateDays)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-white border border-gray-100 px-2 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Tổng ứng</p>
-                      <p className="font-black text-rose-600 mt-1">{formatCurrency(row.details.totalAdvance)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-white border border-gray-100 px-2 py-3">
-                      <p className="text-[10px] uppercase font-bold text-gray-500">Tổng phạt</p>
-                      <p className="font-black text-red-600 mt-1">{formatCurrency(row.details.totalPenalty)}</p>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </ReportSection>
-
-      {selectedEmployee && (
-        <ReportSection title={`Chi tiết lương • ${selectedEmployee.name}`} subtitle="Phần này chỉ gom thu nhập, khấu trừ và lịch sử chấm công của chính tài khoản đang đăng nhập.">
-          <div className="grid grid-cols-2 gap-3">
-            <ReportStatCard label="Lương cơ bản" value={`${formatCurrency(selectedEmployee.details.baseSalaryCalc)} đ`} tone="blue" />
-            <ReportStatCard label="Lương hỗ trợ" value={`${formatCurrency(selectedEmployee.details.supportSalary)} đ`} tone="slate" />
-            <ReportStatCard label="Lương trách nhiệm" value={`${formatCurrency(selectedEmployee.details.responsibilitySalary || 0)} đ`} tone="indigo" />
-            <ReportStatCard label="Lương kinh nghiệm" value={`${formatCurrency(selectedEmployee.details.experienceSalary)} đ`} tone="amber" />
-            <ReportStatCard label="Hoa hồng" value={`${formatCurrency(selectedEmployee.details.commission)} đ`} tone="emerald" />
-            <ReportStatCard label="Tăng ca duyệt" value={`${formatCurrency(selectedEmployee.details.overtimePay)} đ`} tone="blue" />
-            <ReportStatCard label="Tiền ứng" value={`${formatCurrency(selectedEmployee.details.totalAdvance)} đ`} tone="rose" />
-            <ReportStatCard label="Phạt vi phạm" value={`${formatCurrency(selectedEmployee.details.totalPenalty)} đ`} tone="rose" />
-            <ReportStatCard label="Khấu trừ công nợ" value={`${formatCurrency(selectedEmployee.details.badDebt || 0)} đ`} tone="slate" />
-            <ReportStatCard label="Lương còn lại" value={`${formatCurrency(selectedEmployee.details.netSalary)} đ`} tone={selectedEmployee.details.netSalary >= 0 ? 'emerald' : 'rose'} />
-          </div>
-
-          <div className="mt-5 rounded-3xl border border-gray-100 overflow-hidden">
-            <div className="px-4 py-3 bg-slate-50 border-b border-gray-100">
-              <h4 className="font-bold text-gray-800">Danh sách chấm công các ngày đi làm</h4>
-            </div>
-            {selectedEmployee.details.attendanceEntries.length === 0 ? (
-              <div className="p-4">
-                <ReportEmptyState title="Chưa có dữ liệu chấm công" description="Khi nhân viên này phát sinh chấm công, chi tiết từng ngày sẽ hiện ở đây." />
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-100">
-                {selectedEmployee.details.attendanceEntries.map(entry => {
-                  const isPresent = entry.status === 'present' || entry.status === 'late';
-                  const statusTone = entry.status === 'late'
-                    ? 'bg-amber-50 text-amber-700 border-amber-100'
-                    : entry.status === 'present'
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-                      : entry.status === 'leave'
-                        ? 'bg-slate-100 text-slate-700 border-slate-200'
-                        : 'bg-rose-50 text-rose-700 border-rose-100';
-                  const statusLabel = entry.status === 'late'
-                    ? 'Đi trễ'
-                    : entry.status === 'present'
-                      ? 'Có mặt'
-                      : entry.status === 'leave'
-                        ? 'Nghỉ phép'
-                        : 'Chưa chấm';
-
-                  return (
-                    <div key={`${selectedEmployee.id}_${entry.date}`} className="px-4 py-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-bold text-gray-800">{parseDateInputValue(entry.date).toLocaleDateString('vi-VN')}</p>
-                          <p className="text-xs text-gray-500 mt-1">
-                            {isPresent ? `Vào ${formatTime(entry.checkIn)} • Ra ${entry.checkOut ? formatTime(entry.checkOut) : '--:--'}` : 'Không có ca làm hoàn chỉnh'}
-                          </p>
-                        </div>
-                        <span className={`px-3 py-1.5 rounded-full border text-xs font-bold ${statusTone}`}>{statusLabel}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </ReportSection>
-      )}
-    </div>
-  );
-
-  const renderHrTabV2 = () => {
-    const selectedDetails = selectedEmployee?.details || null;
-    const selectedAttendanceRows = selectedDetails?.attendanceEntries || [];
-    const isReportAttendanceExpanded = Boolean(selectedEmployee?.id && expandedReportAttendanceEmp === selectedEmployee.id);
-    const salaryTitle = isReportOwnerAccount ? 'Tổng lương nhân sự' : 'Lương còn lại của bạn';
-    const salaryNote = isReportOwnerAccount
-      ? `Tổng thực nhận tạm tính của ${payrollRows.length} nhân sự trong tháng ${reportMonthKey}. Chủ doanh nghiệp không được cộng vào tổng lương này.`
-      : `Thực nhận tạm tính của chính tài khoản đang đăng nhập trong tháng ${reportMonthKey}.`;
-
-    return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <ReportStatCard label="Ngày công" value={formatNumber(payrollSummary.totalWorkDays)} helper={`Tháng ${reportMonthKey} • ${payrollRows.length} nhân sự`} tone="indigo" />
-          <ReportStatCard label="Đi trễ" value={formatNumber(payrollSummary.totalLateDays)} helper={`${payrollSummary.presentToday} có mặt • ${payrollSummary.lateToday} đi trễ ngày chọn`} tone="amber" />
-          <ReportStatCard label="Tổng lương" value={`${formatCurrency(payrollSummary.totalNetSalary)} đ`} helper={isReportOwnerAccount ? 'Không tính lương chủ doanh nghiệp' : 'Lương cá nhân tạm tính'} tone="emerald" />
-          <ReportStatCard label="Tổng ứng" value={`${formatCurrency(payrollSummary.totalAdvance)} đ`} helper="Cộng toàn bộ ứng lương trong tháng đang xem" tone="rose" />
-          <ReportStatCard label="Tổng phạt" value={`${formatCurrency(payrollSummary.totalPenalty)} đ`} helper="Cộng toàn bộ khoản phạt trong tháng" tone="slate" />
-        </div>
-
-        <div className="rounded-[28px] border border-gray-100 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-600">{salaryTitle}</p>
-          <h2 className={`mt-2 text-4xl font-black ${payrollSummary.totalNetSalary >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
-            {formatCurrency(payrollSummary.totalNetSalary)} đ
-          </h2>
-          <p className="mt-1 text-sm text-gray-500">{salaryNote}</p>
-        </div>
-
-        <ReportSection
-          title={isReportOwnerAccount ? 'Tổng hợp nhân sự' : 'Lương cá nhân'}
-          subtitle={isReportOwnerAccount
-            ? 'Tổng hợp ngày công, đi trễ, tổng lương, tổng ứng và tổng phạt của toàn bộ nhân viên. Chủ doanh nghiệp gần như không tính lương nên được loại khỏi bảng này.'
-            : 'Chỉ hiển thị dữ liệu lương của chính tài khoản đang đăng nhập.'}
-        >
-          {payrollRows.length === 0 ? (
-            <ReportEmptyState
-              title={isReportOwnerAccount ? 'Chưa có dữ liệu lương nhân sự' : 'Chưa có dữ liệu lương cá nhân'}
-              description={isReportOwnerAccount ? 'Khi nhân viên có chấm công hoặc dữ liệu lương phát sinh, bảng tổng hợp sẽ hiện tại đây.' : 'Khi tài khoản này có chấm công hoặc dữ liệu lương phát sinh, phần lương cá nhân sẽ hiện tại đây.'}
-            />
-          ) : (
-            <div className="space-y-3">
-              {payrollRows.map(row => {
-                const isActive = row.id === selectedEmployee?.id;
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => setSelectedEmployeeId(row.id)}
-                    className={`w-full rounded-3xl border p-4 text-left transition-colors ${isActive ? 'border-emerald-200 bg-emerald-50/70' : 'border-gray-100 bg-white hover:bg-gray-50'}`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate font-black text-gray-900">{row.name}</p>
-                        <p className="mt-1 text-sm text-gray-600">{row.position || 'Nhân sự'}</p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className={`text-lg font-black ${row.details.netSalary >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatCurrency(row.details.netSalary)} đ</p>
-                        <p className="mt-1 text-[11px] text-gray-500">Tổng lương</p>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid grid-cols-5 gap-1.5 text-center">
-                      <div className="rounded-2xl border border-gray-100 bg-white px-1.5 py-2">
-                        <p className="text-[9px] font-bold uppercase text-gray-500">Công</p>
-                        <p className="mt-1 font-black text-gray-800">{formatNumber(row.details.workDays)}</p>
-                      </div>
-                      <div className="rounded-2xl border border-gray-100 bg-white px-1.5 py-2">
-                        <p className="text-[9px] font-bold uppercase text-gray-500">Trễ</p>
-                        <p className="mt-1 font-black text-amber-600">{formatNumber(row.lateDays)}</p>
-                      </div>
-                      <div className="rounded-2xl border border-gray-100 bg-white px-1.5 py-2">
-                        <p className="text-[9px] font-bold uppercase text-gray-500">Lương</p>
-                        <p className="mt-1 break-words text-[11px] font-black text-emerald-700">{formatCurrency(row.details.netSalary)}</p>
-                      </div>
-                      <div className="rounded-2xl border border-gray-100 bg-white px-1.5 py-2">
-                        <p className="text-[9px] font-bold uppercase text-gray-500">Ứng</p>
-                        <p className="mt-1 break-words text-[11px] font-black text-rose-600">{formatCurrency(row.details.totalAdvance)}</p>
-                      </div>
-                      <div className="rounded-2xl border border-gray-100 bg-white px-1.5 py-2">
-                        <p className="text-[9px] font-bold uppercase text-gray-500">Phạt</p>
-                        <p className="mt-1 break-words text-[11px] font-black text-red-600">{formatCurrency(row.details.totalPenalty)}</p>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </ReportSection>
-
-        {selectedEmployee && selectedDetails && (
-          <ReportSection
-            title={`Chi tiết lương • ${selectedEmployee.name}`}
-            subtitle={isReportOwnerAccount ? 'Chủ doanh nghiệp đang xem chi tiết của nhân sự được chọn.' : 'Chi tiết lương của chính tài khoản đang đăng nhập.'}
-          >
-            <div className="grid grid-cols-2 gap-3">
-              <ReportStatCard label="Ngày công" value={formatNumber(selectedDetails.workDays)} tone="indigo" />
-              <ReportStatCard label="Đi trễ" value={formatNumber(selectedEmployee.lateDays || 0)} tone="amber" />
-              <ReportStatCard label="Tổng lương" value={`${formatCurrency(selectedDetails.netSalary)} đ`} tone={selectedDetails.netSalary >= 0 ? 'emerald' : 'rose'} />
-              <ReportStatCard label="Tổng ứng" value={`${formatCurrency(selectedDetails.totalAdvance)} đ`} tone="rose" />
-              <ReportStatCard label="Tổng phạt" value={`${formatCurrency(selectedDetails.totalPenalty)} đ`} tone="slate" />
-              <ReportStatCard label="Hoa hồng" value={`${formatCurrency(selectedDetails.commission || 0)} đ`} tone="blue" />
-            </div>
-
-            <div className="mt-5 overflow-hidden rounded-3xl border border-gray-100">
-              <button
-                type="button"
-                onClick={() => setExpandedReportAttendanceEmp(isReportAttendanceExpanded ? null : selectedEmployee.id)}
-                className="flex w-full items-center justify-between gap-3 border-b border-gray-100 bg-slate-50 px-4 py-3 text-left"
-              >
-                <div className="min-w-0">
-                  <h4 className="font-bold text-gray-800">Danh sách chấm công</h4>
-                  <p className="mt-1 text-[11px] text-slate-500">{selectedAttendanceRows.length} ngày trong tháng</p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600">{selectedAttendanceRows.length}</span>
-                  {isReportAttendanceExpanded ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
-                </div>
-              </button>
-              {isReportAttendanceExpanded && (
-                selectedAttendanceRows.length === 0 ? (
-                  <div className="p-4">
-                    <ReportEmptyState title="Chưa có dữ liệu chấm công" description="Khi nhân sự này có chấm công trong tháng, chi tiết từng ngày sẽ hiện ở đây." />
-                  </div>
-                ) : (
-                  <div className="divide-y divide-gray-100">
-                    {selectedAttendanceRows.map(entry => {
-                      const isPresent = entry.status === 'present' || entry.status === 'late';
-                      const statusLabel = entry.status === 'late'
-                        ? 'Đi trễ'
-                        : entry.status === 'present'
-                          ? 'Có mặt'
-                          : entry.status === 'leave'
-                            ? 'Nghỉ phép'
-                            : 'Chưa chấm';
-                      const statusTone = entry.status === 'late'
-                        ? 'bg-amber-50 text-amber-700 border-amber-100'
-                        : entry.status === 'present'
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-                          : entry.status === 'leave'
-                            ? 'bg-slate-100 text-slate-700 border-slate-200'
-                            : 'bg-rose-50 text-rose-700 border-rose-100';
-
-                      return (
-                        <div key={`${selectedEmployee.id}_${entry.date}`} className="px-4 py-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-bold text-gray-800">{parseDateInputValue(entry.date).toLocaleDateString('vi-VN')}</p>
-                              <p className="mt-1 text-xs text-gray-500">
-                                {isPresent ? `Vào ${formatTime(entry.checkIn)} • Ra ${entry.checkOut ? formatTime(entry.checkOut) : '--:--'}` : 'Không có ca làm hoàn chỉnh'}
-                              </p>
-                            </div>
-                            <span className={`rounded-full border px-3 py-1.5 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )
-              )}
-            </div>
-          </ReportSection>
-        )}
-      </div>
-    );
-  };
-
-  const renderActiveTab = () => {
-    if (reportTab === 'profit') return renderProfitTab();
-    if (reportTab === 'inventory') return renderInventoryTab();
-    if (reportTab === 'cashflow') return renderCashflowTab();
-    if (reportTab === 'hr') return renderHrTabV2();
-    return renderSalesTab();
-  };
-
-  return (
-    <div className="space-y-4 animate-in fade-in pb-16">
-      <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm p-4">
-        <div className="overflow-x-auto -mx-4 px-4 pb-1">
-          <div className="flex items-center gap-2 min-w-max">
-            {REPORT_TABS.map(tab => {
-              const Icon = tab.icon;
-              const isActive = reportTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setReportTab(tab.id)}
-                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-bold transition-colors ${isActive ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-50 text-slate-600 border border-slate-100 hover:bg-slate-100'}`}
-                >
-                  <Icon size={16} />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-3xl border border-slate-100 bg-slate-50 p-3">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setReportDate(prev => shiftDateString(prev, -1))}
-              className="w-11 h-11 rounded-2xl border border-slate-200 bg-white text-slate-600 flex items-center justify-center hover:bg-slate-100"
-            >
-              <ChevronLeft size={18} />
-            </button>
-            <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-3 py-2.5">
-              <label className="block text-[10px] uppercase font-bold tracking-[0.16em] text-slate-500">Ngày báo cáo</label>
-              <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} className="w-full bg-transparent text-sm font-bold text-slate-800 outline-none mt-1" />
-            </div>
-            <button
-              type="button"
-              disabled={isNextDateDisabled}
-              onClick={() => setReportDate(prev => shiftDateString(prev, 1))}
-              className="w-11 h-11 rounded-2xl border border-slate-200 bg-white text-slate-600 flex items-center justify-center hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <ChevronRight size={18} />
-            </button>
-          </div>
-
-          <div className="mt-3 flex items-center gap-4 text-xs font-medium text-slate-600 flex-wrap">
-            <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> {currentLabel}</span>
-            <span className="inline-flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> {compareLabel}</span>
-            <span className="inline-flex items-center gap-2 text-slate-500"><CalendarDays size={14} /> So sánh liền trước theo ngày</span>
-          </div>
-        </div>
-      </div>
-
-      {renderActiveTab()}
-    </div>
-  );
-}
-
 function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, isRestoring }) {
   if (!isOpen) return null;
   return (
@@ -48414,7 +46865,7 @@ function FinanceViewLegacy({ isAccounting, employee, expenses, payments, onAddEx
       </div>
 
       <div className="space-y-0 bg-white rounded-xl border border-gray-50 shadow-sm overflow-hidden">
-        {allTransactions.length === 0 ? <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch.</p> : 
+        {allTransactions.length === 0 ? <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch.</p> :
           allTransactions.map(t => {
             const isChi = t.isExpense;
             const empName = employees.find(e => e.id === t.empId)?.name || 'Admin';
@@ -50502,7 +48953,7 @@ function MessageCenterView({
             aria-label="Tìm kiếm toàn ứng dụng"
             title="Tìm kiếm toàn ứng dụng"
           >
-            <Command size={16} aria-hidden="true" />
+            <Search size={16} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -51042,6 +49493,30 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     date: getTodayString(),
     method: 'Tiền mặt',
     sourceType: 'driver_cash'
+  });
+  useAppScreenBack(() => {
+    if (showPaymentCustomerDropdown) {
+      setShowPaymentCustomerDropdown(false);
+      return true;
+    }
+    if (rejectingCashflowTransaction) {
+      setRejectingCashflowTransaction(null);
+      return true;
+    }
+    if (editingCashflowTransaction) {
+      setEditingCashflowTransaction(null);
+      return true;
+    }
+    if (showExpenseModal || showPaymentModal) {
+      setShowExpenseModal(false);
+      setShowPaymentModal(false);
+      return true;
+    }
+    if (showCashflowCreateMenu) {
+      setShowCashflowCreateMenu(false);
+      return true;
+    }
+    return false;
   });
   const isDriverFinanceMode = Boolean(isDriver || isEmployeeDriverPosition(employee));
   useEffect(() => {
@@ -52796,14 +51271,14 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       }
       const productRowKey = productKey || normalizeLookupText(productLabel || 'hang-hoa');
       if (!group.productRows.has(productRowKey)) {
-        group.productRows.set(productRowKey, {
-          key: productRowKey,
-          productLabel,
-          weight: 0,
-          quantity: 0,
-          packageCount: 0,
-          quantityUnit: report.actualQuantityUnit || report.expectedQuantityUnit || '',
-          packageUnit: report.actualPackageUnit || 'Bọc'
+          group.productRows.set(productRowKey, {
+            key: productRowKey,
+            productLabel,
+            weight: 0,
+            quantity: 0,
+            packageCount: 0,
+            quantityUnit: report.actualQuantityUnit || report.expectedQuantityUnit || '',
+            packageUnit: report.actualPackageUnit || ''
         });
       }
       const productRow = group.productRows.get(productRowKey);
@@ -52968,6 +51443,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           weight: 0,
           pricingQuantity: 0,
           pricingUnit,
+          imageUrl: product?.imageUrl || product?.photoUrl || product?.photo || '',
           unitPrice: priceInfo?.unitPrice || 0,
           totalAmount: 0
         });
@@ -53047,7 +51523,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const getDeliveryWorkspaceArea = (customer = {}) => {
     const locationText = `${getCustomerLocationDisplayText(customer) || ''}`.trim();
     return /^https?:\/\//i.test(locationText)
-      ? customer.address || 'Đã định vị'
+      ? customer.address || ''
       : locationText || customer.address || '';
   };
   const deliveryWorkspaceGroups = useMemo(() => {
@@ -53067,21 +51543,24 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         customerName: group.customerName || customer.name || 'Khách hàng',
         phone: customer.phone || customer.phoneNumber || '',
         address: customer.address || '',
+        location: customer.location || '',
+        locationUrl: customer.locationUrl || customer.mapsUrl || customer.mapsLink || customer.mapLink || '',
         area: getDeliveryWorkspaceArea(customer),
-        time: latestTimestamp || workingDate,
+        time: latestTimestamp || 0,
         latestTimestamp,
         pendingCount: group.pendingCount || 0,
         reportCount: group.reportCount || 0,
         rowCount: (group.rows || []).length,
         totalAmount: group.paymentSummaryTotal || 0,
         collectedAmount: latestReport?.collectedAmount || 0,
-        collectedMethod: latestReport?.collectedMethod || 'Tiền mặt',
+        collectedMethod: latestReport?.collectedMethod || '',
         note: latestReport?.note || customer.deliveryNote || customer.note || '',
         productLines: (group.productWeights ? Array.from(group.productWeights.values()) : []).map((line) => ({
-          productLabel: line.productLabel || 'Hàng hóa',
-          quantity: line.pricingQuantity || line.weight || 0,
-          unit: line.pricingUnit || 'đv',
+          productLabel: line.productLabel || line.productName || '',
+          quantity: line.pricingQuantity ?? line.weight ?? line.quantity ?? line.packageCount,
+          unit: line.pricingUnit || (Number(line.weight) > 0 ? 'Kg' : line.quantityUnit || line.packageUnit || ''),
           amount: line.totalAmount || 0,
+          imageUrl: line.imageUrl || line.productImage || line.image || '',
         })),
         rows: group.rows || [],
       };
@@ -53097,21 +51576,24 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           customerName: group.customerName || customer.name || 'Khách hàng',
           phone: customer.phone || customer.phoneNumber || '',
           address: customer.address || '',
+          location: customer.location || '',
+          locationUrl: customer.locationUrl || customer.mapsUrl || customer.mapsLink || customer.mapLink || '',
           area: getDeliveryWorkspaceArea(customer),
-          time: group.latestTimestamp || getEntityTimestamp(latestReport) || workingDate,
+          time: group.latestTimestamp || getEntityTimestamp(latestReport) || 0,
           latestTimestamp: group.latestTimestamp || getEntityTimestamp(latestReport) || 0,
           pendingCount: 0,
           reportCount: group.reports?.length || 1,
           rowCount: group.reports?.length || 1,
           totalAmount: group.totalCollectedAmount || latestReport.collectedAmount || 0,
           collectedAmount: latestReport.collectedAmount || 0,
-          collectedMethod: latestReport.collectedMethod || 'Tiền mặt',
+          collectedMethod: latestReport.collectedMethod || '',
           note: latestReport.note || customer.deliveryNote || customer.note || '',
           productLines: (group.tableProductRows || []).map((line) => ({
-            productLabel: line.productLabel || 'Hàng hóa',
-            quantity: line.weight || line.quantity || 0,
-            unit: line.quantity ? 'Con' : 'Kg',
+            productLabel: line.productLabel || '',
+            quantity: line.weight || line.quantity || line.packageCount || 0,
+            unit: line.weight > 0 ? 'Kg' : line.quantityUnit || line.packageUnit || '',
             amount: 0,
+            imageUrl: line.imageUrl || line.productImage || line.image || '',
           })),
           rows: [],
         };
@@ -55280,6 +53762,34 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   const warehouseCameraTimerRef = useRef(null);
   const warehouseScanInFlightRef = useRef(false);
   const warehouseMovementDetailRef = useRef(null);
+  useAppScreenBack(() => {
+    if (showWarehouseCameraScanner) {
+      setShowWarehouseCameraScanner(false);
+      return true;
+    }
+    if (showCustomQuantityUnitModal) {
+      setShowCustomQuantityUnitModal(false);
+      return true;
+    }
+    if (showSupplierPicker || showGroupPicker || showStockCountGroupPicker || showWarehouseProductCodePicker || showQuantityUnitPicker) {
+      setShowSupplierPicker(false);
+      setShowGroupPicker(false);
+      setShowStockCountGroupPicker(false);
+      setShowWarehouseProductCodePicker(false);
+      setShowQuantityUnitPicker(false);
+      return true;
+    }
+    if (quickStockEdit || stockVarianceReport) {
+      setQuickStockEdit(null);
+      setStockVarianceReport(null);
+      return true;
+    }
+    if (selectedWarehouseMovementRowKey) {
+      setSelectedWarehouseMovementRowKey('');
+      return true;
+    }
+    return false;
+  });
   const focusNextWarehouseImportField = (fieldKey) => {
     const nextField = warehouseImportFieldRefs.current?.[fieldKey];
     if (!nextField) return;
@@ -59170,6 +57680,37 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchProductSearchInputRef = useRef(null);
   const dispatchListSearchInputRef = useRef(null);
   const dispatchListWeightSaveLockRef = useRef(false);
+  useAppScreenBack(() => {
+    if (showWeightEntriesModal) {
+      setShowWeightEntriesModal(false);
+      return true;
+    }
+    if (dispatchListWeightEditor) {
+      setDispatchListWeightEditor(null);
+      return true;
+    }
+    if (dispatchCellEditor) {
+      setDispatchCellEditor(null);
+      return true;
+    }
+    if (selectedShortageLine) {
+      setSelectedShortageLine(null);
+      return true;
+    }
+    if (selectedHistoryDispatchGroup) {
+      setSelectedHistoryDispatchGroup(null);
+      return true;
+    }
+    if (dispatchPickerOpen) {
+      setDispatchPickerOpen('');
+      return true;
+    }
+    if (isDispatchListSearchOpen) {
+      setIsDispatchListSearchOpen(false);
+      return true;
+    }
+    return false;
+  });
   useDismissSearchOnOutsideClick(Boolean(dispatchPickerOpen), () => setDispatchPickerOpen(''));
 
   useEffect(() => {
@@ -62679,7 +61220,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                           title={canEditDispatchCellField('assignedDriverId') || canDelete ? 'Bấm để sửa người giao' : undefined}
                           aria-label={`Sửa người giao phiếu xuất của ${group.customerName || row.customerName || 'khách hàng'}`}
                         >
-                          <span className="block text-[9px] font-medium uppercase tracking-[0.08em] text-sky-600">Giao hàng</span>
                           {group.hasAssignedDriver && <span className="mt-1 block font-medium text-slate-900">{rowDriverName}</span>}
                           <span className="mt-1 block text-[11px] font-semibold text-slate-600">{group.deliveryStatus.label}</span>
                         </button>
@@ -68439,6 +66979,46 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const [searchCus, setSearchCus] = useState('');
   const [showCusDropdown, setShowCusDropdown] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  useAppScreenBack(() => {
+    if (showCusDropdown) {
+      setShowCusDropdown(false);
+      return true;
+    }
+    if (zaloPreviewOrderId) {
+      setZaloPreviewOrderId('');
+      return true;
+    }
+    if (orderPaymentDraft.open) {
+      setOrderPaymentDraft(prev => ({ ...prev, open: false }));
+      return true;
+    }
+    if (orderItemEditor.orderId) {
+      setOrderItemEditor({ orderId: '', itemIndex: -1, quantity: '', unitPrice: '' });
+      return true;
+    }
+    if (feeEditorOrderId || returnEditorOrderId) {
+      setFeeEditorOrderId('');
+      setReturnEditorOrderId('');
+      return true;
+    }
+    if (showQuickAddCus) {
+      setShowQuickAddCus(false);
+      return true;
+    }
+    if (showAddOrder) {
+      closeAddOrderModal();
+      return true;
+    }
+    if (showOrderSourcePicker) {
+      setShowOrderSourcePicker(false);
+      return true;
+    }
+    if (selectedOrderId) {
+      closeOrderDetail();
+      return true;
+    }
+    return false;
+  });
   const selectedOrderSnapshotRef = useRef(null);
   const zaloPreviewOrderSnapshotRef = useRef(null);
   useDismissSearchOnOutsideClick(showCusDropdown, () => setShowCusDropdown(false));
@@ -71190,8 +69770,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
       {selectedOrder && (() => {
         const statusMeta = getOrderStatusMeta(selectedOrder);
-        const reviewMeta = getOrderReviewMeta(selectedOrder);
-        const zaloMeta = getOrderZaloSendMeta(selectedOrder);
         const canEditSelectedOrder = canEditOrderRecord(selectedOrder);
         const detailItems = selectedOrder.items || [];
         const hasDiscount = parseLooseMoneyValue(selectedOrder.discount) > 0;
@@ -71201,18 +69779,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         const sellerFeeAmount = parseLooseMoneyValue(selectedOrder.sellerExtraExpense);
         const hasAnyFee = selectedOrderFeeAmount > 0 || parseLooseMoneyValue(selectedOrder.customerExtraExpense) > 0 || sellerFeeAmount > 0;
         const hasPaymentSummary = hasDiscount || hasAnyFee;
-        const selectedOrderCustomerId = selectedOrder.customerId || selectedOrder.customer?.id || '';
         const selectedOrderOutstandingAmount = Math.max(0, parseLooseMoneyValue(selectedOrder.outstandingAmount));
         const selectedOrderReturnSummary = summarizeOrderReturnGoods(selectedOrder);
         const hasReturnGoods = selectedOrderReturnSummary.count > 0;
-        const selectedOrderZaloActionLabel = zaloMeta.locked
-          ? zaloMeta.label
-          : (isApprovingZaloSend
-            ? 'Đang duyệt...'
-            : (zaloMeta.wakeable
-              ? 'Gửi ngay Zalo'
-              : (selectedOrder.zaloSendStatus === 'failed' || selectedOrder.zaloSendStatus === 'cancelled' ? 'Gửi lại Zalo' : 'Duyệt gửi Zalo')));
-
         return (
           <div className="hd-order-detail-layer fixed inset-0 bg-gray-50 z-50 flex flex-col animate-in slide-in-from-right">
             <HDHeader className="hd-order-detail-header hd-safe-header-compact relative z-10 bg-white border-b border-slate-200 px-4 pb-3 pt-3 flex items-center justify-between shrink-0 shadow-sm">
@@ -71251,34 +69820,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                     <p className="mt-2 break-words text-[12px] font-extrabold leading-4 text-slate-500">{formatOrderCode(selectedOrder.id)} • {formatDateTimeLabel(selectedOrder.date)}</p>
                   </div>
                 </div>
-                <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,0.9fr)_auto] items-center gap-2">
-                  <span className={`inline-flex min-w-0 items-center justify-center truncate rounded-full px-2 py-1 text-[9px] font-extrabold uppercase tracking-[0.1em] ${statusMeta.chipClasses}`}>{statusMeta.label}</span>
-                  <span className={`inline-flex min-w-0 items-center justify-center truncate rounded-full px-2 py-1 text-[9px] font-extrabold uppercase tracking-[0.1em] ${reviewMeta.chipClasses}`}>{reviewMeta.label}</span>
-                  <button
-                    type="button"
-                    onClick={() => approveOrderZaloSend(selectedOrder)}
-                    disabled={isApprovingZaloSend || zaloMeta.locked}
-                    className="inline-flex min-w-[104px] shrink-0 items-center justify-center rounded-full bg-emerald-500 px-2.5 py-1.5 text-[9px] font-black text-white shadow-lg shadow-emerald-500/20 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
-                  >
-                    {selectedOrderZaloActionLabel}
-                  </button>
-                </div>
-
                 {payosSyncStatus && (
                   <p className="mt-2 rounded-2xl border border-sky-100 bg-sky-50 px-3 py-2 text-[11px] font-bold leading-5 text-sky-700">
                     {payosSyncStatus}
                   </p>
-                )}
-
-                {!selectedOrder.customer?.zaloGroupLink && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenCustomerZaloLink?.(selectedOrderCustomerId)}
-                    className="mt-2 w-full rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-left text-[11px] font-bold leading-5 text-amber-700 transition hover:bg-amber-100 active:scale-[0.99]"
-                  >
-                    <span className="block">Khách này chưa có link nhóm Zalo.</span>
-                    <span className="block text-[10px] font-black uppercase tracking-wide text-amber-800">Bấm để cập nhật link nhóm trong hồ sơ khách</span>
-                  </button>
                 )}
 
                 <div className="mt-4 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
@@ -71433,7 +69978,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   </div>
                 )}
 
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-500">
+                <div aria-label="Trạng thái thanh toán" className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-500">
                   <span className="rounded-full bg-slate-50 px-2.5 py-1">Tổng {formatCurrency(selectedOrder.amount || 0)} đ</span>
                   {hasCollectedPayment && (
                     <button type="button" disabled={!canEditSelectedOrder} onClick={() => promptEditOrderMoney(selectedOrder, 'paid')} className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 disabled:text-slate-500">
@@ -71441,7 +69986,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                     </button>
                   )}
                   {selectedOrderOutstandingAmount <= 0 ? (
-                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">Hết nợ</span>
+                    <>
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">Hết nợ</span>
+                      <span className={`rounded-full px-2.5 py-1 font-extrabold uppercase ${statusMeta.chipClasses}`}>ĐÃ THANH TOÁN</span>
+                    </>
                   ) : (
                     <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">Còn nợ {formatCurrency(selectedOrderOutstandingAmount)} đ</span>
                   )}
@@ -72743,6 +71291,34 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
   const productWorkflowReturnRef = useRef(null);
 
   const [activeCategory, setActiveCategory] = useState('Tất cả');
+  useAppScreenBack(() => {
+    if (actionItem) {
+      setActionItem(null);
+      return true;
+    }
+    if (isProductGroupCreateOpen) {
+      setIsProductGroupCreateOpen(false);
+      return true;
+    }
+    if (editingProductGroupName) {
+      setEditingProductGroupName('');
+      setEditingProductGroupValue('');
+      return true;
+    }
+    if (showForm) {
+      setShowForm(false);
+      return true;
+    }
+    if (productTab !== 'products') {
+      setProductTab('products');
+      return true;
+    }
+    if (showArchived) {
+      setShowArchived(false);
+      return true;
+    }
+    return false;
+  });
 
   const activeProducts = products.filter(p => !!p.isArchived === showArchived);
   const inventoryMetrics = useMemo(() => buildInventoryMetrics(products, orders, { untilDate: getTodayString() }), [products, orders]);
@@ -74980,32 +73556,12 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     }
   }, [showAddCustomer]);
 
-  useEffect(() => {
-    if (!showAddCustomer || typeof window === 'undefined' || !window.history?.pushState) return;
-    try {
-      window.history.pushState({ ...(window.history.state || {}), hdManager: true, tab: 'customers', view: 'create_customer' }, '', window.location.href);
-    } catch (error) {
-      console.warn('Failed to push customer create-view history.', error);
-    }
-
-    const handleCustomerModalBack = () => {
-      setShowAddCustomer(false);
-      setCustomerContactStatus('');
-    };
-
-    window.addEventListener('popstate', handleCustomerModalBack);
-    return () => window.removeEventListener('popstate', handleCustomerModalBack);
-  }, [showAddCustomer]);
-
   const closeAddCustomerModal = () => {
     setShowAddCustomer(false);
     setCustomerContactStatus('');
     setNewCus({ customerHonorific: '', name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', openingBalanceType: 'receivable', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
     setNewCustomerProductIds([]);
     setNewCustomerProductSearch('');
-    if (typeof window !== 'undefined' && window.history?.state?.view === 'create_customer') {
-      window.setTimeout(() => window.history.back(), 0);
-    }
   };
 
   useEffect(() => {
@@ -78059,7 +76615,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       )}
 
       {((!searchInHeader && (showSearchBox || customerSearch)) || showFilterPanel) && (
-        <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <div className={`premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3 ${showFilterPanel && searchInHeader ? 'hidden' : ''}`}>
           {!searchInHeader && (showSearchBox || customerSearch) && (
             <div className="bg-gray-50 border border-gray-100 rounded-2xl px-3 py-2 flex items-center gap-2">
               <Search size={16} className="text-gray-400 shrink-0" />
@@ -78079,8 +76635,16 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             </div>
           )}
           {showFilterPanel && (
+            <HDFilterSheet
+              open
+              title="Bộ lọc khách hàng"
+              onClose={() => setShowFilterPanel(false)}
+              className="hd-customer-filter-sheet"
+              id="hd-customer-filter-sheet"
+              footer={<HDButton onClick={() => setShowFilterPanel(false)}>Áp dụng</HDButton>}
+            >
             <div data-customer-filter-panel="true" className="space-y-3">
-              <div className="grid grid-cols-3 gap-2">
+              <HDFilterBar label="Lọc và sắp xếp khách hàng">
                 {canSeeCustomerDebt && (
                   <button
                     type="button"
@@ -78115,7 +76679,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 >
                   Lọc theo ngày
                 </button>
-              </div>
+              </HDFilterBar>
               {customerSortFilter === 'date' && (
                 <input
                   type="date"
@@ -78135,6 +76699,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 <button type="button" onClick={handleResetCustomerFilters} className="text-blue-600 font-bold hover:text-blue-700">Đặt lại</button>
               </div>
             </div>
+            </HDFilterSheet>
           )}
         </div>
       )}
@@ -82304,6 +80869,7 @@ function SalaryView({
   const [showPayrollLockConfirm, setShowPayrollLockConfirm] = useState(false);
   const [isLockingPayroll, setIsLockingPayroll] = useState(false);
   const [payrollLockStatus, setPayrollLockStatus] = useState('');
+  const [payrollCloseReport, setPayrollCloseReport] = useState(null);
   const [payrollAdjustmentRow, setPayrollAdjustmentRow] = useState(null);
   const [payrollAdjustmentNetSalary, setPayrollAdjustmentNetSalary] = useState('');
   const [payrollAdjustmentEndingDebt, setPayrollAdjustmentEndingDebt] = useState('');
@@ -82336,6 +80902,31 @@ function SalaryView({
   const [payrollConfigNoticeHidden, setPayrollConfigNoticeHidden] = useState(false);
 
   const [salaryMonth, setSalaryMonth] = useState(getTodayString().substring(0, 7));
+  const [payrollScreen, setPayrollScreen] = useState('overview');
+  const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
+  useAppScreenBack(() => {
+    if (showPayrollLockConfirm) {
+      setShowPayrollLockConfirm(false);
+      return true;
+    }
+    if (showAdvanceRequestModal) {
+      setShowAdvanceRequestModal(false);
+      return true;
+    }
+    if (payrollScreen === 'detail') {
+      setPayrollScreen('list');
+      return true;
+    }
+    if (payrollScreen !== 'overview') {
+      setPayrollScreen('overview');
+      return true;
+    }
+    return false;
+  });
+  useEffect(() => {
+    const scrollArea = document.querySelector('.hd-app-content');
+    if (scrollArea) scrollArea.scrollTop = 0;
+  }, [payrollScreen]);
   const currentMonth = salaryMonth || getTodayString().substring(0, 7);
   const currentMonthLabel = `Tháng ${currentMonth.substring(5, 7)}/${currentMonth.substring(0, 4)}`;
   const payrollCompanyId = currentCompany?.id || currentCompany?.companyId || currentEmployee?.companyId || currentUser?.companyId || '';
@@ -82355,7 +80946,7 @@ function SalaryView({
   const shouldReviewPreviousPayrollPeriod = Boolean(
     canManagePayrollByRole
     && canViewCompanyPayroll
-    && currentMonth === getTodayString().substring(0, 7)
+    && currentMonth === getVietnamPayrollDateKey().substring(0, 7)
     && previousPayrollMonth
     && !previousLockedPayrollPeriod
   );
@@ -82373,7 +80964,7 @@ function SalaryView({
     )) || null
   ), [currentMonth, payrollAutoLockPlans, payrollCompanyId]);
   const payrollMonthEndDateKey = getPayrollMonthEndDateKey(currentMonth);
-  const isPayrollLockDateEligible = canLockPayrollPeriodAtDate(currentMonth, getTodayString());
+  const isPayrollLockDateEligible = canLockPayrollPeriodAtDate(currentMonth, getVietnamPayrollDateKey());
   const canAddSalaryAdjustments = !isPayrollLocked && canAddSalaryAdjustmentsByRole;
   const canEditSalaryAdjustments = !isPayrollLocked && canEditSalaryAdjustmentsByRole;
   const canDeleteSalaryAdjustments = !isPayrollLocked && canDeleteSalaryAdjustmentsByRole;
@@ -82729,6 +81320,7 @@ function SalaryView({
   useEffect(() => {
     setShowPayrollLockConfirm(false);
     setPayrollLockStatus('');
+    setPayrollCloseReport(null);
   }, [currentMonth]);
 
   useEffect(() => {
@@ -82819,6 +81411,14 @@ function SalaryView({
       setLockedSnapshotLoadState('loaded');
       setLockedSnapshotLoadError('');
       setShowPayrollLockConfirm(false);
+      setPayrollCloseReport({
+        monthKey: currentMonth,
+        employeeCount: result?.period?.employeeCount || snapshots.length,
+        workDays: Number(result?.period?.totals?.totalDays) || 0,
+        payable: Number(result?.period?.totals?.totalSalary) || 0,
+        carryCount: result?.debtCarryovers?.length || 0,
+        carryForward: Number(result?.period?.totalEndingDebt) || 0
+      });
       setPayrollLockStatus(`Đã khóa ${currentMonthLabel.toLowerCase()}. Dữ liệu kỳ này chuyển sang chế độ chỉ đọc.`);
     } catch (error) {
       setPayrollLockStatus(getFriendlyFirebaseErrorMessage(error, 'Không khóa được kỳ lương. Dữ liệu hiện tại vẫn được giữ nguyên.'));
@@ -83274,8 +81874,8 @@ function SalaryView({
   };
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
-      {showPayrollConfigNotice && (
+    <div className="payroll-workspace space-y-4 animate-in fade-in pb-16">
+      {payrollScreen === 'overview' && showPayrollConfigNotice && (
         <div className="rounded-2xl border border-amber-100 bg-amber-50/80 p-4 text-amber-900 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -83299,7 +81899,7 @@ function SalaryView({
           </p>
         </div>
       )}
-      {canReviewSalaryAdvances && reviewAdvanceRequests.length > 0 && (
+      {payrollScreen === 'overview' && canReviewSalaryAdvances && reviewAdvanceRequests.length > 0 && (
         <div className="bg-white border border-blue-100 p-4 rounded-2xl shadow-sm">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
@@ -83375,80 +81975,57 @@ function SalaryView({
         </div>
       )}
 
-      <div className="relative overflow-hidden rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-emerald-900 to-teal-600 p-5 text-white shadow-xl shadow-emerald-900/20">
-        <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
-        <div className="pointer-events-none absolute -bottom-20 left-8 h-44 w-44 rounded-full bg-cyan-300/20 blur-3xl" />
-        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-          <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider">
-            {canViewCompanyPayroll ? 'Tổng lương toàn bộ nhân viên' : 'Lương thực tế của bạn'}
-          </p>
-          <div className="flex flex-wrap items-end justify-end gap-2">
-            <label className="shrink-0">
-              <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-100">Xem tháng</span>
-              <input
-                type="month"
-                value={currentMonth}
-                onChange={(event) => setSalaryMonth(event.target.value || getTodayString().substring(0, 7))}
-                className="h-10 rounded-xl border border-white/40 bg-white px-3 text-xs font-black text-slate-900 shadow-sm outline-none [color-scheme:light] focus:border-emerald-200 focus:ring-2 focus:ring-white/40"
-                aria-label="Chọn tháng năm xem lương"
-              />
-            </label>
-            {canManagePayrollByRole && canViewCompanyPayroll && (
-              isPayrollLocked ? (
-                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200/40 bg-emerald-300/20 px-3 py-2 text-xs font-black text-emerald-50">
-                  <Lock size={14} /> Đã khóa
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  disabled={!canLockSelectedPayrollPeriod}
-                  onClick={() => setShowPayrollLockConfirm(true)}
-                  title={isPayrollLockDateEligible ? 'Khóa và lưu ảnh chụp kỳ lương' : `Có thể khóa từ ${payrollMonthEndLabel}`}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-black text-white transition-colors hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-55"
-                >
-                  <Lock size={14} /> {isPayrollLockDateEligible ? 'Khóa kỳ lương' : `Khóa từ ${payrollMonthEndLabel}`}
-                </button>
-              )
-            )}
-            {canCreateSalaryAdvanceForOthersInPeriod && advanceTargetEmployees.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openAdvanceRequestModal(advanceTargetEmployees[0].id)}
-                className="shrink-0 rounded-full border border-orange-200/40 bg-orange-400/90 px-3 py-2 text-center text-xs font-black text-white transition-colors hover:bg-orange-400"
-              >
-                Tạo lệnh ứng hộ
-              </button>
-            )}
-          </div>
-        </div>
-        <h3 className="mb-4 text-center text-3xl font-black text-white drop-shadow-[0_2px_4px_rgba(2,44,34,0.45)]">{formatCurrency(aggregateData.totalSalary)} đ</h3>
-        <div className="grid grid-cols-2 gap-3 border-t border-emerald-400/50 pt-3 sm:grid-cols-4">
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng ngày công</p><p className="font-bold text-sm">{aggregateData.totalDays}</p></div>
-          <div className="rounded-xl bg-white/10 p-3 text-center">
-            <p className="text-emerald-100 text-[10px] uppercase mb-1">Ứng + nợ đầu kỳ</p>
-            <p className="font-bold text-sm">{formatCurrency(aggregateData.totalAdvance + aggregateData.totalOpeningDebt)} đ</p>
-            {aggregateData.totalOpeningDebt > 0 && (
-              <p className="mt-1 text-[9px] font-semibold text-emerald-100/90">
-                Ứng {formatCurrency(aggregateData.totalAdvance)} đ • Nợ chuyển {formatCurrency(aggregateData.totalOpeningDebt)} đ
-              </p>
-            )}
-          </div>
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Mua hàng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEmployeePurchase)} đ</p></div>
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng phạt</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalPenalty)} đ</p></div>
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Tổng thưởng</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalBonus)} đ</p></div>
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Lương đánh giá</p><p className="font-bold text-sm">{formatCurrency(aggregateData.totalEvaluationBonus)} đ</p></div>
-          {aggregateData.totalEndingDebt > 0 && <div className="rounded-xl bg-rose-500/20 p-3 text-center"><p className="text-rose-100 text-[10px] uppercase mb-1">Nợ chuyển kỳ</p><p className="font-bold text-sm text-rose-50">{formatCurrency(aggregateData.totalEndingDebt)} đ</p></div>}
-          <div className="rounded-xl bg-white/10 p-3 text-center"><p className="text-emerald-100 text-[10px] uppercase mb-1">Bình quân/ngày</p><p className="font-bold text-sm">{formatCurrency(aggregateData.avgDaily)} đ</p></div>
-        </div>
-      </div>
+      <PayrollWorkspace
+        screen={payrollScreen}
+        onScreenChange={setPayrollScreen}
+        rows={salaryRows}
+        monthKey={currentMonth}
+        onMonthChange={setSalaryMonth}
+        isLocked={isPayrollLocked}
+        lockedPeriod={lockedPayrollPeriod}
+        periods={canViewCompanyPayroll ? payrollPeriods : []}
+        carryovers={canViewCompanyPayroll ? payrollDebtCarryovers : payrollDebtCarryovers.filter(item => item.employeeId === currentEmployee?.id)}
+        employees={canViewCompanyPayroll ? employees : visibleSalaryEmployees}
+        companyId={payrollCompanyId}
+        canManage={canManagePayrollByRole && canViewCompanyPayroll}
+        canViewCompany={canViewCompanyPayroll}
+        canClose={canLockSelectedPayrollPeriod}
+        closeDateLabel={payrollMonthEndLabel}
+        onCloseRequest={() => setShowPayrollLockConfirm(true)}
+        onEmployeeOpen={(employeeId) => {
+          setSelectedPayrollEmployeeId(employeeId);
+          setExpandedEmp(employeeId);
+          setPayrollScreen('detail');
+        }}
+        selectedEmployeeId={selectedPayrollEmployeeId}
+        onOpenAdvance={openAdvanceRequestModal}
+      />
 
-      {payrollLockStatus && (
+      {payrollScreen === 'overview' && payrollCloseReport?.monthKey === currentMonth && (
+        <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950" aria-label="Báo cáo chốt lương">
+          <h2 className="font-bold">Chốt lương thành công</h2>
+          <p className="mt-1 text-xs">{currentMonthLabel} đã khóa và lưu lịch sử.</p>
+          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2">
+            <span>Nhân viên</span><strong className="text-right">{payrollCloseReport.employeeCount}</strong>
+            <span>Ngày công</span><strong className="text-right">{payrollCloseReport.workDays.toLocaleString('vi-VN')}</strong>
+            <span>Tổng chi phí</span><strong className="text-right">{formatCurrency(payrollCloseReport.payable)} đ</strong>
+            <span>Lương âm</span><strong className="text-right">{payrollCloseReport.carryCount} nhân viên</strong>
+            <span>Chuyển kỳ sau</span><strong className="text-right">{formatCurrency(payrollCloseReport.carryForward)} đ</strong>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-4">
+            <button type="button" className="min-h-10 text-sm font-semibold text-blue-700" onClick={() => setPayrollScreen('list')}>Xem bảng lương</button>
+            {payrollCloseReport.carryForward > 0 && <button type="button" className="min-h-10 text-sm font-semibold text-blue-700" onClick={() => setPayrollScreen('carryover')}>Xem chi tiết chuyển kỳ</button>}
+          </div>
+        </section>
+      )}
+
+      {payrollScreen === 'overview' && payrollLockStatus && (
         <div className={`rounded-2xl border px-4 py-3 text-sm font-bold ${payrollLockStatus.startsWith('Đã khóa') ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
           {payrollLockStatus}
         </div>
       )}
 
-      {isPayrollLocked && (
+      {payrollScreen === 'overview' && isPayrollLocked && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-emerald-900 shadow-sm">
           <div className="flex items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white"><Lock size={17} /></span>
@@ -83463,7 +82040,7 @@ function SalaryView({
         </div>
       )}
 
-      {shouldReviewPreviousPayrollPeriod && (
+      {payrollScreen === 'overview' && shouldReviewPreviousPayrollPeriod && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-amber-950 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -83483,7 +82060,7 @@ function SalaryView({
         </div>
       )}
 
-      {canPreparePayrollAutoLock && (
+      {payrollScreen === 'overview' && canPreparePayrollAutoLock && (
         <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-sky-900 shadow-sm">
           <div className="flex items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white"><Clock size={17} /></span>
@@ -83521,17 +82098,11 @@ function SalaryView({
         </div>
       )}
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-        <h3 className="font-bold text-gray-800">{canViewCompanyPayroll ? 'Danh sách lương nhân viên' : 'Lương cá nhân'}</h3>
-        <p className="text-xs text-gray-500 mt-1">
-          {canViewCompanyPayroll
-            ? `Đang hiển thị ${salaryRows.length} nhân viên trong ${currentMonthLabel.toLowerCase()}. Chủ doanh nghiệp không tính vào tổng lương nhân viên.`
-            : `Màn này chỉ hiển thị lương của chính tài khoản đang đăng nhập trong ${currentMonthLabel.toLowerCase()}.`}
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        {salaryRows.map((row) => {
+      {payrollScreen === 'detail' && (
+      <details className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+        <summary className="cursor-pointer text-sm font-semibold text-blue-700">Bảng tính chi tiết và tác vụ</summary>
+      <div className="mt-3 space-y-3">
+        {salaryRows.filter(row => row.emp?.id === selectedPayrollEmployeeId).map((row) => {
           const {
             emp,
             details,
@@ -84085,6 +82656,8 @@ function SalaryView({
           </div>
         )}
       </div>
+      </details>
+      )}
 
       <PayrollEvaluationDetailDialog
         detail={selectedEvaluationDetail}
@@ -84183,78 +82756,16 @@ function SalaryView({
       )}
 
       {showPayrollLockConfirm && !isPayrollLocked && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="payroll-lock-title"
-            className="w-full max-w-md overflow-hidden rounded-3xl border border-emerald-100 bg-white shadow-2xl"
-          >
-            <div className="border-b border-slate-100 px-5 py-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex min-w-0 items-start gap-3">
-                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-                    <Lock size={19} />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600">Chốt dữ liệu tháng</p>
-                    <h3 id="payroll-lock-title" className="mt-1 text-lg font-black text-slate-900">Khóa kỳ lương {currentMonthLabel.toLowerCase()}</h3>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={isLockingPayroll}
-                  onClick={() => setShowPayrollLockConfirm(false)}
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200 disabled:opacity-50"
-                  aria-label="Đóng xác nhận khóa kỳ lương"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-
-            <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4">
-              <p className="text-sm leading-relaxed text-slate-600">
-                App sẽ lưu một ảnh chụp cố định của bảng lương. Sau khi khóa, kỳ này chuyển sang chỉ đọc và các thay đổi phát sinh về sau không làm đổi số lương đã chốt.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-slate-50 p-3 text-center">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Nhân viên</p>
-                  <p className="mt-1 text-base font-black text-slate-900">{liveSalaryRows.length}</p>
-                </div>
-                <div className="rounded-2xl bg-emerald-50 p-3 text-center">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Tổng thực nhận</p>
-                  <p className="mt-1 text-base font-black text-emerald-800">{formatCurrency(aggregateData.totalSalary)} đ</p>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
-                Hãy kiểm tra chấm công, ứng lương, thưởng, phạt và các khoản cộng trừ trước khi xác nhận khóa.
-              </div>
-              {payrollLockStatus && !payrollLockStatus.startsWith('Đang lưu') && (
-                <p className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">{payrollLockStatus}</p>
-              )}
-            </div>
-
-            <div className="sticky bottom-0 grid grid-cols-2 gap-3 border-t border-slate-100 bg-white px-5 py-4">
-              <button
-                type="button"
-                disabled={isLockingPayroll}
-                onClick={() => setShowPayrollLockConfirm(false)}
-                className="min-h-11 rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50"
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                disabled={isLockingPayroll || !canLockSelectedPayrollPeriod}
-                onClick={handleConfirmPayrollLock}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
-              >
-                <Lock size={16} /> {isLockingPayroll ? 'Đang khóa...' : 'Xác nhận khóa'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <PayrollCloseDialog
+          monthKey={currentMonth}
+          closeDateLabel={payrollMonthEndLabel}
+          rows={liveSalaryRows}
+          eligible={canLockSelectedPayrollPeriod}
+          busy={isLockingPayroll}
+          status={payrollLockStatus}
+          onCancel={() => setShowPayrollLockConfirm(false)}
+          onConfirm={handleConfirmPayrollLock}
+        />
       )}
 
       {showAdvanceRequestModal && (
@@ -84500,6 +83011,17 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   const setShowSearchBox = setExternalShowSearchBox ?? setLocalShowSearchBox;
   const showFilterPanel = externalShowFilterPanel ?? localShowFilterPanel;
   const setShowFilterPanel = setExternalShowFilterPanel ?? setLocalShowFilterPanel;
+  useAppScreenBack(() => {
+    if (showPaymentModal) {
+      setShowPaymentModal(false);
+      return true;
+    }
+    if (selectedCustomerId) {
+      setSelectedCustomerId(null);
+      return true;
+    }
+    return false;
+  });
   const canViewAllDebtRecords = Boolean(canViewAllDebt);
   const canViewAssignedDebtRecords = Boolean(canViewAssignedDebt);
   const canRecordCustomerPayment = Boolean(canRecordPayment);
@@ -85234,20 +83756,20 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   return (
     <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16">
       {(canViewAllDebtRecords || accessibleCustomers.length > 0) && (
-        <div className="-mx-4 grid grid-cols-2 overflow-hidden border-y border-slate-100 shadow-sm">
+        <div className="-mt-4 -mx-4 grid grid-cols-2 overflow-hidden border-y border-slate-100 shadow-sm">
           <div className="flex min-h-[96px] flex-col justify-center bg-gradient-to-r from-rose-600 to-orange-500 px-4 py-3 text-left text-white">
             <div className="flex items-center justify-between gap-2 text-[11px] font-bold leading-tight">
               <span>Khách nợ</span>
               <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.debtCustomerCount} khách</span>
             </div>
-            <p className="mt-2 whitespace-nowrap text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalDebt)} đ</p>
+            <p className="mt-2 w-full whitespace-nowrap text-center text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalDebt)} đ</p>
           </div>
           <div className="flex min-h-[96px] flex-col items-end justify-center bg-gradient-to-l from-sky-600 to-cyan-500 px-4 py-3 text-right text-white">
             <div className="flex w-full items-center justify-between gap-2 text-[11px] font-bold leading-tight">
               <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.creditCustomerCount} khách</span>
               <span>Nợ khách</span>
             </div>
-            <p className="mt-2 whitespace-nowrap text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalCredit)} đ</p>
+            <p className="mt-2 w-full whitespace-nowrap text-center text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalCredit)} đ</p>
           </div>
         </div>
       )}

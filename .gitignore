@@ -112,6 +112,19 @@ src/*.extract.js
 
 # Separate repository cloned inside the workspace
 hd-connect-platform/
+/.codex-platform-security-device-fix/
+/.g106-staging-image/
+/hd-connect-platform-phone-provision/
+/p2-ui/
+/p2/
+
+# Local build caches and temporary release copies
+/.gradle-home/
+/.artifacts/
+/.codex-release-p41-registration-session/
+/.codex-release-p42-order-wiring/
+/hdconnect-g13-e2e-a16a791.tar
+/hdconnect-website-release-20260918.zip
 
 # Expo local state
 ios-expo/.expo/

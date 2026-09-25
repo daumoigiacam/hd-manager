@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const notificationCenterStart = app.indexOf('{showNotificationCenter && (');
-const notificationCenterEnd = app.indexOf('{canShowFloatingQuickActionButton &&', notificationCenterStart);
+const notificationCenterEnd = app.indexOf('{showFloatingQuickActionButton && (', notificationCenterStart);
 assert(notificationCenterStart >= 0, 'Notification center must be rendered conditionally.');
 assert(notificationCenterEnd > notificationCenterStart, 'Notification center must end before the floating action button.');
 const notificationCenter = app.slice(notificationCenterStart, notificationCenterEnd);

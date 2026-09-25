@@ -8,6 +8,7 @@ import {
   createPayrollPeriodRecord,
   getLockedPayrollPeriod,
   getPayrollMonthEndDateKey,
+  getVietnamPayrollDateKey,
   mapPayrollSnapshotsToRows,
   normalizePayrollMonthKey
 } from '../src/utils/payrollPeriodLock.js';
@@ -65,9 +66,16 @@ test('does not allow locking before the final day', () => {
   assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-08-30'), false);
 });
 
-test('allows locking on the final day and later dates', () => {
+test('allows locking only on the final day, not a later date', () => {
   assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-08-31'), true);
-  assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-09-01'), true);
+  assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-09-01'), false);
+});
+
+test('uses Vietnam calendar dates across UTC day and month boundaries', () => {
+  assert.equal(getVietnamPayrollDateKey(new Date('2026-09-29T16:59:59Z')), '2026-09-29');
+  assert.equal(getVietnamPayrollDateKey(new Date('2026-09-29T17:00:00Z')), '2026-09-30');
+  assert.equal(getVietnamPayrollDateKey(new Date('2026-09-30T16:59:59Z')), '2026-09-30');
+  assert.equal(getVietnamPayrollDateKey(new Date('2026-09-30T17:00:00Z')), '2026-10-01');
 });
 
 test('uses deterministic IDs to prevent duplicate periods and employee snapshots', () => {

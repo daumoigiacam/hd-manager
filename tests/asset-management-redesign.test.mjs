@@ -48,6 +48,6 @@ for (const contract of [
 assert.match(model, /if \(vehicleSignal\) return 'truck';/, 'Legacy vehicle records must keep a useful type without data migration.');
 assert.match(app, /<AssetManagementWorkspace[\s\S]*assets=\{assets\}[\s\S]*assetCostLogs=\{assetCostLogs\}/, 'Workspace must use existing live asset and cost-log data.');
 assert.match(app, /activeTab === 'asset_management' \? 'Tài sản'/, 'The asset header must use the approved title.');
-assert.match(app, /activeTab === 'asset_management' \? 'from-blue-600 to-sky-500'/, 'The asset header must retain the HD blue treatment.');
+assert.match(app, /activeTab === 'asset_management' \|\| activeTab === 'payroll' \? 'from-blue-700 to-blue-600'/, 'The asset header must retain the HD blue treatment.');
 
 console.log('PASS Asset management redesign: list, live data adapters, detail tabs, maintenance, documents and history are wired.');

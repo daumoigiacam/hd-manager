@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, ChevronLeft, ChevronUp, GripVertical, Inbox, Plus, Search, X } from 'lucide-react';
 
 const cx = (...values) => values.filter(Boolean).join(' ');
@@ -66,6 +67,65 @@ export function HDFilterBar({ children, label = 'Bộ lọc', className = '', ..
 
 export function HDFilterChip({ selected = false, children, className = '', type = 'button', ...props }) {
   return <button type={type} className={cx('hd-ds-filter-chip', className)} aria-pressed={selected} data-selected={selected || undefined} {...props}>{children}</button>;
+}
+
+export function HDFilterSheet({ open, title = 'Bộ lọc', onClose, footer, children, className = '', ...props }) {
+  const titleId = React.useId();
+  const sheetRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    const previousFocus = document.activeElement;
+    const focusFrame = window.requestAnimationFrame(() => sheetRef.current?.querySelector('button')?.focus({ preventScroll: true }));
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [open]);
+
+  if (!open || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="hd-ds-filter-sheet-layer" role="presentation" onClick={onClose}>
+      <section
+        ref={sheetRef}
+        className={cx('hd-ds-filter-sheet', className)}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose?.();
+            return;
+          }
+          if (event.key !== 'Tab') return;
+          const focusable = Array.from(event.currentTarget.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled])'));
+          if (!focusable.length) return;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+        {...props}
+      >
+        <header className="hd-ds-filter-sheet__header">
+          <h2 id={titleId}>{title}</h2>
+          <HDIconButton label="Đóng bộ lọc" onClick={onClose}><X aria-hidden="true" /></HDIconButton>
+        </header>
+        <div className="hd-ds-filter-sheet__body">{children}</div>
+        {footer ? <footer className="hd-ds-filter-sheet__footer">{footer}</footer> : null}
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 export function HDFAB({ label, icon, className = '', type = 'button', ...props }) {

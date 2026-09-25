@@ -163,8 +163,12 @@ export const createPayrollPeriodLockJournalEntry = ({
   periodId = '',
   monthKey = '',
   lockedAt = '',
+  lockedByEmployeeId = '',
+  lockedByName = '',
   employeeCount = 0,
-  totalEndingDebt = 0
+  totalEndingDebt = 0,
+  totalPayroll = 0,
+  negativeEmployeeCount = 0
 } = {}) => {
   const normalizedMonthKey = normalizePayrollMonthKey(monthKey);
   const safePeriodId = `${periodId || buildPayrollPeriodId(companyId, normalizedMonthKey)}`.trim();
@@ -176,12 +180,16 @@ export const createPayrollPeriodLockJournalEntry = ({
     companyId: `${companyId}`,
     type: 'payroll_period_lock',
     action: 'payroll_period_locked',
+    event: 'PAYROLL_CLOSED',
     periodId: safePeriodId,
     monthKey: normalizedMonthKey,
     amount: normalizedEndingDebt,
+    totalPayroll: toMoney(totalPayroll),
+    negativeEmployeeCount: Math.max(0, Number(negativeEmployeeCount) || 0),
     employeeCount: Math.max(0, Number(employeeCount) || 0),
-    actorType: 'system',
-    actorName: 'Hệ thống',
+    actorType: lockedByEmployeeId ? 'employee' : 'system',
+    actorId: `${lockedByEmployeeId || ''}`,
+    actorName: `${lockedByName || 'Hệ thống'}`,
     message: normalizedEndingDebt > 0
       ? `Đã khóa kỳ lương ${normalizedMonthKey} và chuyển tổng dư nợ ${normalizedEndingDebt} sang kỳ sau.`
       : `Đã khóa kỳ lương ${normalizedMonthKey}; không có dư nợ cần chuyển sang kỳ sau.`,

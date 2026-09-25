@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   FIXED_FOOTER_NAV_IDS,
   getContextualFabActionIds,
@@ -10,7 +11,7 @@ const permissionSet = Object.fromEntries(
 );
 
 for (const [group, ids] of Object.entries(FIXED_FOOTER_NAV_IDS)) {
-  assert.equal(ids.length, 4, `${group} footer should reserve four route slots around the center action`);
+  assert(ids.length >= 4 && ids.length <= 5, `${group} footer should contain only its visible routes`);
   assert.equal(ids.at(-1), 'more', `${group} footer should keep More available`);
 }
 
@@ -32,7 +33,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   getFixedFooterNavIds({ permissions: permissionSet }),
-  ['home', 'orders', 'warehouse_dispatch', 'more'],
+  ['home', 'order_requests', 'warehouse_dispatch', 'orders', 'more'],
 );
 assert.deepEqual(
   getFixedFooterNavIds({ isSales: true, permissions: { home: true, order_requests: true } }),
@@ -47,5 +48,13 @@ assert.deepEqual(getContextualFabActionIds('employees'), ['quick_employee']);
 assert.deepEqual(getContextualFabActionIds('warehouse_dispatch'), ['quick_warehouse_dispatch']);
 assert.deepEqual(getContextualFabActionIds('warehouse_import'), ['quick_warehouse_import', 'quick_stock_adjustment']);
 assert.deepEqual(getContextualFabActionIds('settings'), [], 'screens without a create action should not show the FAB');
+
+const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const moreMenuStart = appSource.indexOf('function MoreMenu(');
+const moreMenuEnd = appSource.indexOf('const PRICING_ENGINE_TABS', moreMenuStart);
+assert(moreMenuStart >= 0 && moreMenuEnd > moreMenuStart, 'More menu source must be available for layout checks.');
+const moreMenuSource = appSource.slice(moreMenuStart, moreMenuEnd);
+assert.doesNotMatch(moreMenuSource, /aria-label="Giao diện"|Đang dùng:|Giao diện Sáng|Giao diện Tối|Giao diện Hệ thống/);
+assert.doesNotMatch(moreMenuSource, /Thông báo chấm công|Chưa chấm vào ca|Mở mục chấm công/);
 
 console.log('Footer navigation role and contextual action tests passed.');

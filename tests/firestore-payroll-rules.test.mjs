@@ -14,6 +14,7 @@ import {
   getDocs,
   query,
   runTransaction,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where,
@@ -81,6 +82,7 @@ const buildLockDocuments = ({
     monthKey,
     status: 'LOCKED',
     lockedAt,
+    closedAtServer: serverTimestamp(),
     employeeCount: 1,
     snapshotIds: [snapshotId],
     debtCarryoverIds: endingDebt > 0 ? [carryoverId] : [],
@@ -255,8 +257,11 @@ try {
     await assertFails(writeAtomicLock(employeeDb, lock));
   });
 
-  await test('an owner can atomically create period, snapshot, carry and audit logs', async () => {
-    await assertSucceeds(writeAtomicLock(ownerDb, lock));
+  await test('an owner cannot backdate a payroll close; historical records remain readable', async () => {
+    await assertFails(writeAtomicLock(ownerDb, lock));
+    await testEnvironment.withSecurityRulesDisabled(async context => {
+      await writeAtomicLock(context.firestore(), lock);
+    });
     const savedSnapshot = await assertSucceeds(getDoc(doc(ownerDb, pathFor(appId, 'payrollSnapshots', lock.snapshotId))));
     assert.equal(savedSnapshot.data().salaryDetails.endingDebt, 2_000_000);
   });
@@ -270,9 +275,13 @@ try {
     assert.equal(snapshots.size, 1);
   });
 
-  await test('an accountant resolved from the employee profile has payroll manager rights', async () => {
+  await test('an accountant can read an existing company payroll period', async () => {
     const accountantLock = buildLockDocuments({ monthKey: '2026-06', employeeId: 'employee-02', endingDebt: 0 });
-    await assertSucceeds(writeAtomicLock(accountantDb, accountantLock));
+    await testEnvironment.withSecurityRulesDisabled(async context => {
+      await writeAtomicLock(context.firestore(), accountantLock);
+    });
+    const period = await assertSucceeds(getDoc(doc(accountantDb, pathFor(appId, 'payrollPeriods', accountantLock.periodId))));
+    assert.equal(period.data().companyId, companyId);
   });
 
   const autoLockPlanId = `payroll_auto_lock_${companyId}_2026-08`;
@@ -407,6 +416,7 @@ try {
 
   const adjustmentId = `payroll_adjustment_${lock.snapshotId}_2`;
   const adjustedAt = '2026-08-02T02:00:00.000Z';
+  const savedLockedPeriod = (await getDoc(doc(ownerDb, pathFor(appId, 'payrollPeriods', lock.periodId)))).data();
   const adjustment = {
     id: adjustmentId,
     companyId,
@@ -425,7 +435,7 @@ try {
     isArchived: false
   };
   const adjustedPeriod = {
-    ...lock.period,
+    ...savedLockedPeriod,
     status: 'ADJUSTED',
     totals: { totalSalary: 500_000, totalEndingDebt: 1_000_000 },
     totalEndingDebt: 1_000_000,
@@ -487,7 +497,7 @@ try {
     await assertFails(deleteDoc(auditRef));
   });
 
-  await test('two concurrent lock attempts create exactly one immutable history set', async () => {
+  await test('two concurrent backdated lock attempts create no partial history', async () => {
     const concurrencyAppId = 'test-app-concurrency';
     const concurrentLock = buildLockDocuments({
       targetAppId: concurrencyAppId,
@@ -520,16 +530,16 @@ try {
     });
 
     const outcomes = await Promise.allSettled([lockOnce(), lockOnce()]);
-    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
-    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 1);
+    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 0);
+    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 2);
     await testEnvironment.withSecurityRulesDisabled(async context => {
       const adminDb = context.firestore();
       const periods = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollPeriods`));
       const snapshots = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollSnapshots`));
       const carryovers = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollDebtCarryovers`));
-      assert.equal(periods.size, 1);
-      assert.equal(snapshots.size, 1);
-      assert.equal(carryovers.size, 1);
+      assert.equal(periods.size, 0);
+      assert.equal(snapshots.size, 0);
+      assert.equal(carryovers.size, 0);
     });
   });
 

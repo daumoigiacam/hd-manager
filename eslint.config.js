@@ -20,6 +20,7 @@ export default [
     files: [
       'src/features/assets/**/*.{jsx,js}',
       'src/features/delivery/**/*.{jsx,js}',
+      'src/features/payroll/**/*.{jsx,js}',
       'src/design-system/ThemeProvider.jsx',
       'src/design-system/themePreferences.js',
       'src/layout/AppShell.jsx',

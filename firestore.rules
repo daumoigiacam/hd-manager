@@ -522,13 +522,23 @@ service cloud.firestore {
         && data.calculationSnapshot.results.endingDebt is number;
     }
 
+    function isVietnamPayrollMonthEnd(monthKey) {
+      let localTime = request.time + duration.value(7, 'h');
+      let localMonth = localTime.month();
+      let localMonthKey = string(localTime.year()) + '-' + (localMonth < 10 ? '0' : '') + string(localMonth);
+      return monthKey == localMonthKey
+        && (localTime + duration.value(1, 'd')).month() != localMonth;
+    }
+
     function isValidLockedPayrollPeriodCreate(appId, docId) {
       return isPayrollManager(appId)
         && request.resource.data.id == docId
         && request.resource.data.status == 'LOCKED'
         && request.resource.data.companyId == request.auth.token.companyId
         && request.resource.data.monthKey is string
+        && isVietnamPayrollMonthEnd(request.resource.data.monthKey)
         && request.resource.data.lockedAt is string
+        && request.resource.data.closedAtServer == request.time
         && request.resource.data.snapshotIds is list
         && request.resource.data.snapshotIds.size() > 0
         && request.resource.data.employeeCount == request.resource.data.snapshotIds.size()

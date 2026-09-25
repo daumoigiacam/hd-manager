@@ -2,6 +2,9 @@ package com.hdmanager.app;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -12,6 +15,7 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.ScanResult;
 import android.os.Build;
 import android.provider.Settings;
+import android.net.Uri;
 import android.text.TextUtils;
 
 import com.getcapacitor.JSArray;
@@ -41,12 +45,75 @@ import java.util.Map;
 )
 public class WifiInfoPlugin extends Plugin {
 
+    private BroadcastReceiver wifiReceiver;
+
+    @Override
+    public void load() {
+        wifiReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                JSObject event = new JSObject();
+                event.put("connected", WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(intent.getAction()));
+                notifyListeners("wifiConnectionChanged", event);
+            }
+        };
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+        filter.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getContext().registerReceiver(wifiReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            getContext().registerReceiver(wifiReceiver, filter);
+        }
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (wifiReceiver != null) {
+            getContext().unregisterReceiver(wifiReceiver);
+            wifiReceiver = null;
+        }
+        super.handleOnDestroy();
+    }
+
+    @PluginMethod
+    public void getWifiPermissionStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("permissions", buildPermissionStatePayload());
+        result.put("granted", isLocationPermissionGranted() && isNearbyWifiPermissionGranted());
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void requestWifiPermissions(PluginCall call) {
+        String[] aliases = getRequiredPermissionAliases();
+        if (shouldRequestPermissions(aliases)) {
+            requestPermissionForAliases(aliases, call, "permissionStatusCallback");
+            return;
+        }
+        getWifiPermissionStatus(call);
+    }
+
+    @PermissionCallback
+    private void permissionStatusCallback(PluginCall call) {
+        getWifiPermissionStatus(call);
+    }
+
+    @PluginMethod
+    public void openWifiAppSettings(PluginCall call) {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+        getContext().startActivity(intent);
+        call.resolve();
+    }
+
     private static final String FAILURE_WIFI_DISABLED = "wifi_disabled";
     private static final String FAILURE_NOT_CONNECTED = "not_connected_to_wifi";
     private static final String FAILURE_LOCATION_PERMISSION = "location_permission_denied";
     private static final String FAILURE_NEARBY_PERMISSION = "nearby_wifi_permission_denied";
     private static final String FAILURE_LOCATION_SERVICES = "location_services_off";
     private static final String FAILURE_SSID_UNAVAILABLE = "ssid_unavailable";
+    private static final String FAILURE_BSSID_UNAVAILABLE = "bssid_unavailable";
     private static final String FAILURE_SCAN_EMPTY = "scan_empty";
     private static final String FAILURE_UNSUPPORTED = "unsupported";
 
@@ -150,9 +217,11 @@ public class WifiInfoPlugin extends Plugin {
             result.put("ssid", ssid);
 
             String bssid = sanitizeBssid(wifiInfo.getBSSID());
-            if (!TextUtils.isEmpty(bssid)) {
-                result.put("bssid", bssid);
+            if (TextUtils.isEmpty(bssid)) {
+                resolveFailure(call, FAILURE_BSSID_UNAVAILABLE, "Android chua tra duoc BSSID cua WiFi hien tai.", checks, permissions, true);
+                return;
             }
+            result.put("bssid", bssid);
 
             result.put("rssi", wifiInfo.getRssi());
             result.put("linkSpeed", wifiInfo.getLinkSpeed());

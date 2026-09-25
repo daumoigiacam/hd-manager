@@ -8,6 +8,7 @@ export {
   HDSearchBar,
   HDFilterBar,
   HDFilterChip,
+  HDFilterSheet,
   HDFAB,
   HDStepper,
   HDAccordion,

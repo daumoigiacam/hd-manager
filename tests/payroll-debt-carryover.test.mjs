@@ -149,11 +149,19 @@ test('creates one deterministic lock journal without modifying salary details', 
     periodId: 'payroll_company-01_2026-07',
     monthKey: '2026-07',
     lockedAt: '2026-07-31T16:59:59.000Z',
+    lockedByEmployeeId: 'owner-01',
+    lockedByName: 'Owner',
     employeeCount: 1,
-    totalEndingDebt: salaryDetails.endingDebt
+    totalEndingDebt: salaryDetails.endingDebt,
+    totalPayroll: 8_000_000,
+    negativeEmployeeCount: 1
   });
   assert.equal(entry.id, 'payroll_period_lock_payroll_company-01_2026-07');
   assert.equal(entry.amount, 4_000_000);
+  assert.equal(entry.event, 'PAYROLL_CLOSED');
+  assert.equal(entry.totalPayroll, 8_000_000);
+  assert.equal(entry.negativeEmployeeCount, 1);
+  assert.equal(entry.actorId, 'owner-01');
   assert.match(entry.message, /2026-07/);
   assert.deepEqual(salaryDetails, { endingDebt: 4_000_000, netSalary: 0 });
 });

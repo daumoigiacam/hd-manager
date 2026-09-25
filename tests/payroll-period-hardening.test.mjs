@@ -261,13 +261,13 @@ test('the locked UI dependency graph exits before live policy and formula calcul
   assert.match(source, /const salaryRows = isPayrollLocked \? lockedSnapshotRows : liveSalaryRows;/);
 });
 
-test('company payroll summary exposes a visible month selector with readable total salary', () => {
+test('company payroll summary uses the current month and row data in the redesigned workspace', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  assert.match(source, /<span className="mb-1 block[^>]*>Xem tháng<\/span>/);
-  assert.match(source, /type="month"\s+value=\{currentMonth\}/);
-  assert.match(source, /onChange=\{\(event\) => setSalaryMonth\(event\.target\.value/);
-  assert.match(source, /text-3xl font-black text-white drop-shadow/);
-  assert.doesNotMatch(source, /ref=\{salaryMonthInputRef\}/);
+  const workspace = readFileSync(new URL('../src/features/payroll/PayrollWorkspace.jsx', import.meta.url), 'utf8');
+  assert.match(source, /<PayrollWorkspace[\s\S]*?rows=\{salaryRows\}[\s\S]*?monthKey=\{currentMonth\}[\s\S]*?onMonthChange=\{setSalaryMonth\}/);
+  assert.match(workspace, /<MonthControl monthKey=\{monthKey\} onChange=\{onMonthChange\}/);
+  assert.match(workspace, /money\(summary\.payable\)/);
+  assert.match(workspace, /summarizePayrollWorkspace\(rows\)/);
 });
 
 test('manual payroll lock reads only the period document before creating immutable artifacts', () => {
@@ -283,7 +283,6 @@ test('manual payroll lock reads only the period document before creating immutab
 test('payroll summary shows opening debt beside current-period advances without changing salary math', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /Ứng \+ nợ đầu kỳ/);
-  assert.match(source, /aggregateData\.totalAdvance \+ aggregateData\.totalOpeningDebt/);
   assert.match(source, /\(details\.totalAdvance \|\| 0\) \+ \(details\.openingDebt \|\| 0\)/);
   assert.match(source, /<span>Dư nợ đầu kỳ<\/span>/);
   assert.match(source, /<span>Đã khấu trừ nợ đầu kỳ<\/span>/);

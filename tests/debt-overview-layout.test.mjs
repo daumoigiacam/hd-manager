@@ -10,10 +10,14 @@ assert(debtStart >= 0, 'Debt management view must exist.');
 assert(debtEnd > debtStart, 'Debt management view must have a stable boundary.');
 
 const debtView = app.slice(debtStart, debtEnd);
+const header = app.slice(app.indexOf('const renderHeader = () => {'), app.indexOf('const renderShellSearchDialog ='));
 
-assert.match(debtView, /-mx-4 grid grid-cols-2 overflow-hidden/, 'Debt totals must run edge-to-edge in two halves.');
+assert.equal((header.match(/activeTab !== 'debt' && renderGlobalSearchTrigger\(\)/g) || []).length, 2, 'Debt must hide global search in both normal and expanded header states.');
+assert.match(header, /else if \(activeTab === 'debt'\) setDebtSearchOpen\(prev => !prev\)/, 'Debt-specific search must remain available.');
+assert.match(debtView, /-mt-4 -mx-4 grid grid-cols-2 overflow-hidden/, 'Debt totals must meet the header and run edge-to-edge in two halves.');
 assert.equal((debtView.match(/min-h-\[96px\]/g) || []).length, 2, 'Debt totals must use two compact 96px panels.');
 assert.equal((debtView.match(/text-\[12px\]/g) || []).length, 2, 'Debt total amounts must use 12px text.');
+assert.equal((debtView.match(/mt-2 w-full whitespace-nowrap text-center text-\[12px\]/g) || []).length, 2, 'Each debt total amount must be centered across its panel.');
 assert.doesNotMatch(debtView, /fontFamily:/, 'Debt totals must inherit the single shared platform font stack.');
 assert.match(foundation, /--hd-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,/, 'The shared platform font stack must resolve to Roboto on Android.');
 assert.match(debtView, /<span>Khách nợ<\/span>[\s\S]*?debtCustomerCount} khách/, 'Receivable title and customer count must share one row.');

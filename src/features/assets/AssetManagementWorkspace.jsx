@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useAppScreenBack } from '../../hooks/useAppScreenBack.js';
 import {
   Bike,
   Building2,
@@ -490,6 +491,7 @@ export default function AssetManagementWorkspace({
   onAddCost,
   onEditCost,
   onUpdateAsset,
+  backBlocked = false,
   formatCurrency,
   getEmployeeNames,
   getCostTypeLabel
@@ -502,20 +504,17 @@ export default function AssetManagementWorkspace({
     if (selectedAssetId && !selectedAsset) setSelectedAssetId('');
   }, [selectedAsset, selectedAssetId]);
 
-  useEffect(() => {
-    const handlePopState = () => setSelectedAssetId('');
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
-
   const openAsset = (asset) => {
     setSelectedAssetId(asset.id);
-    window.history.pushState({ hdAssetDetail: asset.id }, '');
   };
   const closeAsset = () => {
-    if (window.history.state?.hdAssetDetail) window.history.back();
-    else setSelectedAssetId('');
+    setSelectedAssetId('');
   };
+  useAppScreenBack(() => {
+    if (!selectedAssetId || backBlocked) return false;
+    closeAsset();
+    return true;
+  });
 
   if (selectedAsset) {
     return <AssetDetailScreen asset={selectedAsset} metrics={metricsByAsset[selectedAsset.id] || {}} assetCostLogs={assetCostLogs} canEditAsset={canEditAsset} canViewAssetCostLogs={canViewAssetCostLogs} canCreateAssetCostLog={canCreateAssetCostLog} onBack={closeAsset} onEditAsset={() => onEditAsset(selectedAsset)} onAddCost={() => onAddCost(selectedAsset)} onEditCost={onEditCost} onUpdateAsset={onUpdateAsset} getAssigneeName={getAssigneeName} getCostTypeLabel={getCostTypeLabel} formatCurrency={formatCurrency} />;

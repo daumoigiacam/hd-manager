@@ -461,11 +461,38 @@ try {
     }
 
     await headerFilterButton.click();
+    const filterSheet = page.getByRole('dialog', { name: 'Bộ lọc khách hàng' });
+    await filterSheet.waitFor({ state: 'visible', timeout: 10000 });
     const customerFilterPanel = page.locator('[data-customer-filter-panel="true"]');
     await customerFilterPanel.waitFor({ state: 'visible', timeout: 10000 });
     assert.equal(await page.locator('[data-customer-summary="true"]').count(), 0, `${viewport.name}: customer summary must yield to the filter panel`);
+    const filterLayout = await filterSheet.evaluate(sheet => {
+      const bounds = sheet.getBoundingClientRect();
+      const chips = Array.from(sheet.querySelectorAll('.hd-customer-filter-chip'));
+      return {
+        top: bounds.top,
+        right: bounds.right,
+        bottom: bounds.bottom,
+        left: bounds.left,
+        focusedInside: sheet.contains(document.activeElement),
+        chipHeights: chips.map(chip => chip.getBoundingClientRect().height),
+        chipTops: chips.map(chip => chip.getBoundingClientRect().top),
+        filterDisplay: getComputedStyle(sheet.querySelector('.hd-ds-filterbar')).display,
+      };
+    });
+    assert(filterLayout.top >= -1 && filterLayout.left >= -1 && filterLayout.right <= viewport.width + 1 && filterLayout.bottom <= viewport.height + 1, `${viewport.name}: filter sheet must stay within the viewport (${JSON.stringify(filterLayout)})`);
+    assert(filterLayout.focusedInside, `${viewport.name}: opening the filter sheet must move keyboard focus inside`);
+    assert.equal(filterLayout.filterDisplay, 'flex', `${viewport.name}: filter chips must use one horizontal row`);
+    assert(filterLayout.chipHeights.every(height => height >= 44), `${viewport.name}: every filter chip must meet the touch target`);
+    assert(filterLayout.chipTops.every(top => Math.abs(top - filterLayout.chipTops[0]) <= 1), `${viewport.name}: filter chips must share one row`);
     const filterChipBorders = await customerFilterPanel.locator('.hd-customer-filter-chip').evaluateAll(elements => elements.map(element => getComputedStyle(element).borderTopWidth));
     assert(filterChipBorders.length >= 3 && filterChipBorders.every(width => width === '0px'), `${viewport.name}: customer filter chips must be borderless`);
+
+    await page.keyboard.press('Escape');
+    await filterSheet.waitFor({ state: 'hidden', timeout: 10000 });
+    assert(await headerFilterButton.evaluate(button => document.activeElement === button), `${viewport.name}: closing the filter sheet must restore focus to its trigger`);
+    await headerFilterButton.click();
+    await customerFilterPanel.waitFor({ state: 'visible', timeout: 10000 });
 
     const revenueSortButton = customerFilterPanel.locator('[data-sort-direction]');
     assert.equal(await revenueSortButton.textContent().then(text => text.trim()), 'Doanh thu', `${viewport.name}: revenue filter must use the concise label`);
@@ -479,7 +506,7 @@ try {
     assert(ascendingRevenue.every((value, index) => index === 0 || ascendingRevenue[index - 1] <= value), `${viewport.name}: revenue ascending order must be applied to customer cards`);
     await page.screenshot({ path: `${outputDir}/filter-${viewport.name}.png`, fullPage: false });
 
-    await headerFilterButton.click();
+    await filterSheet.getByRole('button', { name: 'Áp dụng', exact: true }).click();
     await customerFilterPanel.waitFor({ state: 'hidden', timeout: 10000 });
     await page.locator('[data-customer-summary="true"]').waitFor({ state: 'visible', timeout: 10000 });
     await page.getByRole('button', { name: 'Mở thao tác khách hàng', exact: true }).click();

@@ -619,7 +619,7 @@ test('orders remain reachable from More when the fixed footer belongs to another
     appSource.indexOf('const PRICING_ENGINE_TABS')
   );
 
-  assert.match(moreMenuSource, /id: 'orders', label: 'Đơn hàng'/);
+  assert.match(moreMenuSource, /id: 'orders'[^\n]*label: 'Đơn hàng'/);
   assert.match(moreMenuSource, /show: tabPermissions\.orders/);
   assert.match(moreMenuSource, /onClick=\{\(\) => setActiveTab\?\.\(item\.id\)\}/);
 });
