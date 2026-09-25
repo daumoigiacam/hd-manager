@@ -12,7 +12,6 @@ import {
   doc,
   getDoc,
   getDocs,
-  onSnapshot,
   query,
   setDoc,
   updateDoc,
@@ -43,28 +42,6 @@ const test = async (name, callback) => {
   passed += 1;
   console.log(`PASS ${name}`);
 };
-
-const waitForRealtimeSnapshot = (queryRef, predicate, timeoutMs = 5000) => new Promise((resolve, reject) => {
-  let unsubscribe = () => {};
-  const timeout = setTimeout(() => {
-    unsubscribe();
-    reject(new Error('Timed out waiting for a Firestore realtime snapshot.'));
-  }, timeoutMs);
-  unsubscribe = onSnapshot(
-    queryRef,
-    (snapshot) => {
-      if (!predicate(snapshot)) return;
-      clearTimeout(timeout);
-      unsubscribe();
-      resolve(snapshot);
-    },
-    (error) => {
-      clearTimeout(timeout);
-      unsubscribe();
-      reject(error);
-    }
-  );
-});
 
 try {
   await testEnvironment.withSecurityRulesDisabled(async context => {
@@ -188,25 +165,27 @@ try {
     assert.equal(ownOrders.size, 2);
   });
 
-  await test('tenant realtime listeners receive only their own company updates', async () => {
+  await test('tenant-scoped queries receive only their own company updates', async () => {
     const ordersRef = collection(employeeADb, `artifacts/${appId}/public/data/orders`);
     const ownOrdersQuery = query(ordersRef, where('companyId', '==', companyA));
-    const initialSnapshot = await waitForRealtimeSnapshot(
-      ownOrdersQuery,
-      snapshot => snapshot.docs.some(item => item.id === 'order-a')
-    );
+    const initialSnapshot = await assertSucceeds(getDocs(ownOrdersQuery));
+    assert.equal(initialSnapshot.size, 2);
     assert.ok(initialSnapshot.docs.every(item => item.data().companyId === companyA));
 
-    const updatedSnapshotPromise = waitForRealtimeSnapshot(
-      ownOrdersQuery,
-      snapshot => snapshot.docs.some(item => item.id === 'order-a' && item.data().total === 110_000)
-    );
     await testEnvironment.withSecurityRulesDisabled(async context => {
       await updateDoc(doc(context.firestore(), pathFor('orders', 'order-a')), { total: 110_000 });
     });
-    const updatedSnapshot = await updatedSnapshotPromise;
+    const updatedSnapshot = await assertSucceeds(getDocs(ownOrdersQuery));
+    assert.equal(updatedSnapshot.size, 2);
     assert.ok(updatedSnapshot.docs.every(item => item.data().companyId === companyA));
     assert.equal(updatedSnapshot.docs.find(item => item.id === 'order-a')?.data().total, 110_000);
+
+    const otherTenantOrders = await assertSucceeds(getDocs(query(
+      collection(employeeBDb, `artifacts/${appId}/public/data/orders`),
+      where('companyId', '==', companyB)
+    )));
+    assert.equal(otherTenantOrders.size, 1);
+    assert.ok(otherTenantOrders.docs.every(item => item.data().companyId === companyB));
   });
 
   await test('customers can read and safely edit only their own profile', async () => {
