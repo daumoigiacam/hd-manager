@@ -12,7 +12,7 @@ assert(debtEnd > debtStart, 'Debt management view must have a stable boundary.')
 const debtView = app.slice(debtStart, debtEnd);
 const header = app.slice(app.indexOf('const renderHeader = () => {'), app.indexOf('const renderShellSearchDialog ='));
 
-assert.equal((header.match(/activeTab !== 'debt' && renderGlobalSearchTrigger\(\)/g) || []).length, 2, 'Debt must hide global search in both normal and expanded header states.');
+assert.equal((header.match(/activeTab !== 'debt'(?: && activeTab !== 'finance')? && renderGlobalSearchTrigger\(\)/g) || []).length, 2, 'Debt must hide global search in both normal and expanded header states.');
 assert.match(header, /else if \(activeTab === 'debt'\) setDebtSearchOpen\(prev => !prev\)/, 'Debt-specific search must remain available.');
 assert.match(debtView, /-mt-4 -mx-4 grid grid-cols-2 overflow-hidden/, 'Debt totals must meet the header and run edge-to-edge in two halves.');
 assert.equal((debtView.match(/min-h-\[96px\]/g) || []).length, 2, 'Debt totals must use two compact 96px panels.');

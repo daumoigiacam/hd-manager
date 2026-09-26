@@ -1,0 +1,37 @@
+product_id,product,required_uom,conversion_required,conversion_status,evidence_type,confidence,status,reason,owner_required
+prod_1779104073246,Gà Sống / prod_1779104073246,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104101173,Gà Móc / prod_1779104101173,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104118174,Gà Không Móc / prod_1779104118174,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104146701,Gà Móc Sạch / prod_1779104146701,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104170597,Gà Móc Sạch Cắt Chân / prod_1779104170597,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104205565,Vịt Sống / prod_1779104205565,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104224062,Vịt Không Móc / prod_1779104224062,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104241550,Vịt Móc / prod_1779104241550,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104268878,Vịt Móc Sạch / prod_1779104268878,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104293541,Vịt Móc Sạch Cắt Chân / prod_1779104293541,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104313397,Vịt Bọng / prod_1779104313397,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104330830,Cánh Gà / prod_1779104330830,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104342214,Đùi Gà / prod_1779104342214,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104360773,Đùi Tỏi / prod_1779104360773,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104371789,Ức Gà / prod_1779104371789,Con + Kg independent,NO_FIXED_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved poultry policy: CON and KG are independent; no fixed CON<->KG conversion.,YES
+prod_1779104388678,Gà Bọng / prod_1779104388678,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104406958,Chân Gà / prod_1779104406958,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104421262,Chân Vịt / prod_1779104421262,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104434102,Đầu Gà / prod_1779104434102,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104446485,Đầu Vịt / prod_1779104446485,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104459006,Đầu Vịt Dài / prod_1779104459006,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104474430,Lòng Gà / prod_1779104474430,Bộ,NO_AUTOMATIC_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved byproduct policy: preserve source UOM; no automatic conversion.,YES
+prod_1779104486206,Lòng Vịt / prod_1779104486206,Bộ,NO_AUTOMATIC_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved byproduct policy: preserve source UOM; no automatic conversion.,YES
+prod_1779104526942,Thùng Xốp / prod_1779104526942,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104541910,Phế Phẩm / prod_1779104541910,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104561166,Phí Ship / prod_1779104561166,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104571278,Đá / prod_1779104571278,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104605054,Vịt Loại / prod_1779104605054,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1779104619174,Gà Loại / prod_1779104619174,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1781562583964,Mỡ Gà / prod_1781562583964,Kg,NO_AUTOMATIC_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved byproduct policy: preserve source UOM; no automatic conversion.,YES
+prod_1781656503918,Lông Vịt / prod_1781656503918,Kg,NO_AUTOMATIC_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved byproduct policy: preserve source UOM; no automatic conversion.,YES
+prod_1782399766159,Vịt Không Móc / prod_1782399766159,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1782399802559,Vịt Không Móc / prod_1782399802559,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1782977822236,Phao Câu / prod_1782977822236,Kg,NO_AUTOMATIC_CONVERSION,NO_FIXED_CONVERSION_APPROVED,FACT,HIGH,AUTO_RESOLVED,Approved byproduct policy: preserve source UOM; no automatic conversion.,YES
+prod_1786785535576,Vịt Không Móc To / prod_1786785535576,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES
+prod_1786785560787,Vịt Không Móc Trung / prod_1786785560787,OWNER_REVIEW,,NOT_DETERMINED,OWNER_REVIEW,NONE,OWNER_REVIEW,Role/target UOM semantics are not directly evidenced for this row.,YES

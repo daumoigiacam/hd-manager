@@ -20,10 +20,10 @@ function createInitialStore() {
 }
 
 function normalizeStore(parsedStore = {}) {
-  const initialStore = createInitialStore();
+  const initialStore = parsedStore?.__replaceSeed === true ? {} : createInitialStore();
   const collectionNames = new Set([
     ...Object.keys(initialStore),
-    ...Object.keys(parsedStore || {})
+    ...Object.keys(parsedStore || {}).filter((name) => name !== '__replaceSeed')
   ]);
 
   return Object.fromEntries(
@@ -312,6 +312,10 @@ export const getDocFromServer = getDoc;
 
 export function increment(amount) {
   return new MockIncrementSentinel(amount);
+}
+
+export function serverTimestamp() {
+  return new Date().toISOString();
 }
 
 export async function enableNetwork() {

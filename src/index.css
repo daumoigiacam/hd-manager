@@ -699,6 +699,16 @@ svg {
   }
 }
 
+.mobile-app-shell .finance-summary-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (min-width: 768px) {
+  .mobile-app-shell:has(.finance-summary-metrics) > nav.hd-app-navigation > .hd-contextual-fab-slot {
+    display: none !important;
+  }
+}
+
 .pb-safe {
   padding-bottom: var(--hd-safe-bottom);
 }

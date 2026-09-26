@@ -2,6 +2,10 @@ import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
+import { buildInvoiceViewModel, normalizeInvoiceTemplateId, resolveInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
+const InvoiceTemplateSettings = React.lazy(() => import('./features/invoice-templates/InvoiceTemplateWorkspace.jsx').then(module => ({ default: module.InvoiceTemplateSettings })));
+const InvoicePreview = React.lazy(() => import('./features/invoice-templates/InvoiceTemplateWorkspace.jsx').then(module => ({ default: module.InvoicePreview })));
+const InvoiceTemplateEngine = React.lazy(() => import('./features/invoice-templates/InvoiceTemplateEngine.jsx'));
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -160,6 +164,16 @@ import {
 } from './utils/globalSearch.js';
 import AssetManagementWorkspace from './features/assets/AssetManagementWorkspace.jsx';
 import DeliveryRedesignWorkspace from './features/delivery/DeliveryRedesignWorkspace.jsx';
+import BusinessReportWorkspace from './features/business-report/BusinessReportWorkspace.jsx';
+import {
+  AttachmentPanel, ChatAvatar, ChatSearchBar, ChatState, ChatTabs,
+  ConversationItem, ConversationToolbar, MessageComposer, MessageList,
+  OfflineBanner, SearchResultItem
+} from './features/messaging/MessagingUi.jsx';
+import {
+  CHAT_LIST_TABS, CHAT_SEARCH_TABS, filterChatConversations,
+  getChatCategory, getChatSearchResult, normalizeChatSearch
+} from './features/messaging/messagingUiModel.js';
 import AttendanceWorkspace from './features/attendance/AttendanceWorkspace.jsx';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
 import { canAttemptAutoWifiCheckIn, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
@@ -5719,6 +5733,63 @@ const getOrderReturnProductSummary = (order = {}) => (Array.isArray(order.items)
   .filter(Boolean)
   .join(', ');
 
+const buildInvoiceTemplateDemoQrDataUrl = (payment = {}) => buildLocalPaymentQrDataUrl(buildVietQrEmvPayload({
+  bankCode: payment.bankName,
+  accountNumber: payment.accountNumber,
+  accountName: payment.accountName,
+  amount: payment.totalReceivable,
+  description: payment.transferContent
+}), { width: 220 });
+
+const buildSalesInvoiceTemplateModel = async ({ order, company, customers = [], orders = [], payments = [], products = [] } = {}) => {
+  if (!order) throw new Error('Chưa chọn hóa đơn.');
+  const customer = order.customer || customers.find(item => item.id === order.customerId) || {};
+  const shareOrders = upsertOrderIntoShareCollection(orders, order);
+  const ledger = customer?.id ? buildCustomerLedger(customer, shareOrders, payments) : null;
+  const ledgerOrder = ledger?.orders?.find(item => item.id === order.id);
+  const itemRows = (order.items || []).map((item) => {
+    const billing = getTransactionBillingPresentation(item);
+    const product = products.find(record => record.id === item.productId);
+    return {
+      ...item,
+      productName: item.description || item.productName || product?.name || 'Sản phẩm',
+      image: item.image || item.imageUrl || item.productImage || product?.image || product?.imageUrl || '',
+      quantity: billing.billingQuantity,
+      unit: billing.billingUnit,
+      unitPrice: billing.unitPrice,
+      amount: billing.amount
+    };
+  });
+  const subtotal = itemRows.reduce((sum, item) => sum + item.amount, 0);
+  const orderAmount = parseLooseMoneyValue(ledgerOrder?.amount ?? order.amount ?? subtotal);
+  const storedPaid = Math.max(parseLooseMoneyValue(order.appliedAmount), parseLooseMoneyValue(order.paidAmount), parseLooseMoneyValue(order.collectedAmount));
+  const paid = Math.max(parseLooseMoneyValue(ledgerOrder?.appliedAmount), storedPaid);
+  const invoiceDebt = Math.max(0, parseLooseMoneyValue(ledgerOrder?.outstandingAmount ?? order.outstandingAmount ?? (orderAmount - paid)));
+  const totalReceivable = ledger ? Math.max(0, parseLooseMoneyValue(ledger.currentDebt)) : invoiceDebt;
+  const oldDebt = Math.max(0, totalReceivable - invoiceDebt);
+  const profile = getInvoiceTransferProfile(company);
+  const accountNumber = normalizePaymentAccountNumber(profile.sepayReceivingAccountNumber || profile.accountNumber || order.receivingBankAccountNumber || '');
+  const qrOrder = { ...order, currentPaymentDueAmount: totalReceivable, paymentDueAmount: totalReceivable, finalDebtAmount: totalReceivable, totalToCollect: totalReceivable, paymentAmount: totalReceivable, outstandingAmount: totalReceivable };
+  const qrPayload = buildOrderLocalPaymentQrPayload(qrOrder, company, { preferStoredSource: false });
+  const qr = qrPayload ? await buildLocalPaymentQrDataUrl(qrPayload, { width: 360 }) : '';
+  const feeRows = Array.isArray(order.fees) ? order.fees.filter(fee => fee.payer !== 'seller' && fee.payer !== 'company') : [];
+  const customerFee = parseLooseMoneyValue(order.customerExtraExpense ?? (order.extraExpensePayer === 'buyer' ? order.extraExpenseAmount : 0));
+  if (customerFee > 0 && feeRows.length === 0) feeRows.push({ name: order.extraExpenseName || 'Phụ phí', amount: customerFee });
+  return buildInvoiceViewModel({
+    order, company, customer, items: itemRows, subtotal, grandTotal: orderAmount, fees: feeRows,
+    invoiceCode: formatOrderCode(order.id),
+    employee: order.salesOwner || order.createdBy || {},
+    payment: {
+      paid, invoiceDebt, oldDebt, totalReceivable,
+      bankName: profile.bankName || order.receivingBankName || '',
+      accountName: order.receivingBankAccountName || profile.accountName || '',
+      accountNumber,
+      transferContent: order.sepayPaymentCode || order.paymentCode || buildOrderTransferMemo(order),
+      qr
+    }
+  });
+};
+
 const drawSalesInvoiceShareImage = async ({
   order,
   company,
@@ -6395,6 +6466,11 @@ const buildRelatedOrderShareCollectionFingerprint = (
 
 const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) => {
   const customers = Array.isArray(context.customers) ? context.customers : [];
+  const products = Array.isArray(context.products) ? context.products : [];
+  const imageFingerprint = (value = '') => {
+    const source = `${value || ''}`;
+    return `${source.length}:${source.slice(0, 32)}:${source.slice(-32)}`;
+  };
   const orders = upsertOrderIntoShareCollection(context.orders, order);
   const payments = Array.isArray(context.payments) ? context.payments : [];
   const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
@@ -6452,6 +6528,17 @@ const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) =>
 
   return [
     order.id || '',
+    resolveInvoiceTemplateId(company, order),
+    order.invoiceTemplateOverride || '',
+    company.name || '',
+    company.displayName || '',
+    company.companyPhone || '',
+    company.companyAddress || '',
+    imageFingerprint(company.logoUrl || company.logo),
+    (order.items || []).map(item => {
+      const product = products.find(record => record.id === item.productId);
+      return [item.productId, item.amount, imageFingerprint(item.image || item.imageUrl || product?.image || product?.imageUrl), product?.updatedAt || ''].join('~');
+    }).join(';'),
     order.updatedAt || order.createdAt || order.date || '',
     order.paymentLookupSyncedAt || order.sepayCreatedAt || '',
     order.paymentAmount || '',
@@ -6523,11 +6610,12 @@ const warmOrderShareAssetCache = async ({
   customers = [],
   orders = [],
   payments = [],
+  products = [],
   ensurePayment = null,
   reason = 'background'
 } = {}) => {
   if (!order?.id) return null;
-  const cacheContext = { customers, orders, payments };
+  const cacheContext = { customers, orders, payments, products };
   const cacheKey = buildOrderShareAssetCacheKey(order, company, cacheContext);
   const cached = getCachedOrderShareAsset(order, company, cacheContext);
   if (cached) {
@@ -6628,13 +6716,9 @@ const warmOrderShareAssetCache = async ({
     }
     let blob;
     try {
-      blob = await drawSalesInvoiceShareImage({
-        order: orderForShare,
-        company,
-        customers,
-        orders,
-        payments
-      });
+      const model = await buildSalesInvoiceTemplateModel({ order: orderForShare, company, customers, orders, payments, products });
+      const { renderInvoiceImageBlob } = await import('./features/invoice-templates/InvoiceTemplateWorkspace.jsx');
+      blob = await renderInvoiceImageBlob(model, resolveInvoiceTemplateId(company, orderForShare));
     } catch (error) {
       if (paymentPreparationError) {
         recordPerformanceEvent('share_invoice.fallback_render_failed', {
@@ -6650,7 +6734,8 @@ const warmOrderShareAssetCache = async ({
     const finalCacheContext = {
       customers,
       orders: upsertOrderIntoShareCollection(orders, orderForShare),
-      payments
+      payments,
+      products
     };
     const entry = rememberOrderShareAsset(orderForShare, company, { blob, nativeFile }, finalCacheContext);
     prepareSpan?.end({
@@ -9996,6 +10081,51 @@ const calculatePositiveDailyPayrollExpenseFromSalary = (options = {}) => (
     .reduce((sum, row) => sum + (row.dailyAmount || 0), 0)
 );
 
+const buildDashboardPayrollCostRows = ({
+  employees = [], attendance = {}, financials = [], performance = {}, customers = [],
+  orders = [], payments = [], holidays = [], now = new Date()
+} = {}) => {
+  const firstMonth = new Date(now.getFullYear(), Math.min(0, now.getMonth() - 11), 1);
+  const lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const todayKey = getDateKeyFromAnyValue(now);
+  const rows = [];
+
+  for (let cursor = firstMonth; cursor <= lastMonth; cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)) {
+    const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    const policyEmployees = employees.map(emp => applyEmployeePayrollPolicyForMonth(emp, monthKey));
+    const monthAttendance = Object.fromEntries(Object.entries(attendance).filter(([key]) => key.startsWith(monthKey) && key.slice(0, 10) <= todayKey));
+    const monthFinancials = financials.filter(record => {
+      const key = getDateKeyFromAnyValue(record?.date);
+      return !key || (key.startsWith(monthKey) && key <= todayKey);
+    });
+    const monthOrders = orders.filter(order => {
+      const key = getDateKeyFromAnyValue(order.date || order.orderDate || order.createdAt);
+      return key.startsWith(monthKey) && key <= todayKey;
+    });
+    policyEmployees
+      .filter(emp => emp?.id && !emp.isArchived && emp.role !== 'super_admin' && !isOwnerPosition(emp.position))
+      .forEach(emp => {
+        const details = buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true });
+        const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
+        if (!amount) return;
+        const earningDays = [...new Set((details.attendanceEntries || [])
+          .filter(entry => (entry.status === 'present' || entry.status === 'late') && !entry.noSalaryDay && entry.date <= todayKey)
+          .map(entry => entry.date))];
+        const fallbackDate = monthKey === todayKey.slice(0, 7)
+          ? todayKey
+          : getDateKeyFromAnyValue(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0));
+        const dates = earningDays.length ? earningDays : [fallbackDate];
+        const baseAmount = Math.floor(amount / dates.length);
+        dates.forEach((date, index) => rows.push({
+          date,
+          employeeId: emp.id,
+          amount: index === dates.length - 1 ? amount - baseAmount * (dates.length - 1) : baseAmount
+        }));
+      });
+  }
+  return rows;
+};
+
 const compareLedgerItems = (a, b) => {
   const aDateKey = getPaymentDateKey(a) || getDateKeyFromAnyValue(a?.paymentDate || a?.transactionDate || a?.transactionDateTime || a?.paidAt || a?.transactionAt || a?.date || a?.createdAt || getEntityTimestamp(a));
   const bDateKey = getPaymentDateKey(b) || getDateKeyFromAnyValue(b?.paymentDate || b?.transactionDate || b?.transactionDateTime || b?.paidAt || b?.transactionAt || b?.date || b?.createdAt || getEntityTimestamp(b));
@@ -11567,7 +11697,7 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   };
 };
 
-const buildSalaryDetails = (empId, employees, attendance, financials, performance, allCustomers = [], allOrders = [], allPayments = [], holidays = [], monthKey = getTodayString().substring(0, 7)) => {
+const buildSalaryDetails = (empId, employees, attendance, financials, performance, allCustomers = [], allOrders = [], allPayments = [], holidays = [], monthKey = getTodayString().substring(0, 7), options = {}) => {
   const emp = employees.find(e => e.id === empId);
   if (!emp) return null;
 
@@ -11733,7 +11863,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const roundedTotalEmployeePurchase = roundMoneyValue(totalEmployeePurchase);
 
   let badDebt = 0;
-  if (isEmployeeSalesPosition(emp)) {
+  if (!options.skipDebt && isEmployeeSalesPosition(emp)) {
     const myCustomers = allCustomers.filter(c => c.empId === empId);
     badDebt = myCustomers.reduce((sum, cus) => sum + getCustomerDebt(cus, allOrders, allPayments), 0);
     if (badDebt < 0) badDebt = 0;
@@ -11806,12 +11936,21 @@ function MissingFirebaseError() {
   );
 }
 
-function SmartAIAssistant({ employee, company, activeTab, customers, orders, expenses, employees = [], attendance = {}, holidays = [], products = [] }) {
+function SmartAIAssistant({ employee, company, activeTab, customers, orders, expenses, employees = [], attendance = {}, holidays = [], products = [], warehouseImports = [], dashboardSnapshot = null, reportTheme = false, externalOpen = false, onExternalClose = () => {}, hideTrigger = false }) {
   const hasCloudAi = GEMINI_PROXY_ENABLED;
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([{ role: 'model', text: `Chào ${employee?.name || 'bạn'}! Mình là Trợ lý AI của công ty. Bạn cần hỗ trợ phân tích số liệu, hướng dẫn sử dụng app hay tư vấn công việc hôm nay?` }]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (externalOpen) setIsOpen(true);
+  }, [externalOpen]);
+
+  const closeAssistant = () => {
+    setIsOpen(false);
+    onExternalClose();
+  };
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -11823,7 +11962,7 @@ function SmartAIAssistant({ employee, company, activeTab, customers, orders, exp
     setIsLoading(true);
 
     const todaysOrders = orders.filter(o => o.date === getTodayString() && !o.isArchived);
-    const revenueToday = todaysOrders.reduce((s, o) => s + (o.amount || 0), 0);
+    const revenueToday = Number(dashboardSnapshot?.finance?.revenueToday ?? todaysOrders.reduce((s, o) => s + (o.amount || 0), 0));
     const contextStr = `Bạn là Trợ lý AI thông minh của công ty ${company?.name || 'HD'}.
 Người dùng hiện tại: ${employee?.name || 'Chưa rõ'}.
 Vai trò hiện tại: ${getEmployeePositionLabel(employee?.position) || 'Chưa rõ'}.
@@ -11875,16 +12014,16 @@ Hãy trả lời ngắn gọn, hữu ích, đúng nghiệp vụ, ưu tiên hư�
 
   return (
     <>
-      <div className="fixed bottom-[80px] left-3 z-50">
+      {!hideTrigger && <div className="fixed bottom-[80px] left-3 z-50">
         <button onClick={() => setIsOpen(true)} className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white p-3.5 rounded-full shadow-[0_4px_20px_rgba(16,185,129,0.5)] flex items-center justify-center hover:scale-105 transition-transform active:scale-95 border-2 border-white">
           <Sparkles size={24} className="animate-pulse" />
         </button>
-      </div>
+      </div>}
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
-          <div className="bg-gray-50 w-full h-[85vh] sm:h-[600px] sm:max-w-md sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300 overflow-hidden border border-gray-200">
-            <div className="bg-gradient-to-r from-emerald-600 to-emerald-500 text-white p-4 flex justify-between items-center shrink-0 shadow-sm">
+          <div className="bg-gray-50 w-full h-[85vh] sm:h-[600px] sm:max-w-md sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300 overflow-hidden border border-gray-200" role="dialog" aria-modal="true" aria-label="Trợ lý AI">
+            <div className={`${reportTheme ? 'bg-[#2563eb]' : 'bg-gradient-to-r from-emerald-600 to-emerald-500'} text-white p-4 flex justify-between items-center shrink-0 shadow-sm`}>
               <div className="flex items-center gap-3">
                 <div className="bg-white/20 p-2 rounded-full shadow-inner"><Bot size={22} /></div>
                 <div>
@@ -11892,7 +12031,7 @@ Hãy trả lời ngắn gọn, hữu ích, đúng nghiệp vụ, ưu tiên hư�
         <p className="text-[10px] text-emerald-100 font-medium">{hasCloudAi ? 'Trực tuyến' : 'Demo local'} • Hỗ trợ {getEmployeePositionLabel(employee?.position)}</p>
                 </div>
               </div>
-              <button onClick={() => setIsOpen(false)} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20} /></button>
+              <button onClick={closeAssistant} className="hover:bg-white/20 p-1.5 rounded-full transition-colors" aria-label="Đóng trợ lý AI"><X size={20} /></button>
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 space-y-5 flex flex-col">
@@ -11911,7 +12050,7 @@ Hãy trả lời ngắn gọn, hữu ích, đúng nghiệp vụ, ưu tiên hư�
             <div className="p-3 bg-white border-t border-gray-100 shrink-0 pb-safe">
               <form onSubmit={handleSend} className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-full p-1.5 pl-4 focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100 transition-all">
                 <input type="text" value={input} onChange={e => setInput(capitalizeFirst(e.target.value))} placeholder="Nhập câu hỏi tại đây..." className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 placeholder-gray-400" />
-                <button type="submit" disabled={isLoading || !input.trim()} className="bg-emerald-500 text-white p-2.5 rounded-full hover:bg-emerald-600 disabled:opacity-50 transition-colors shadow-sm">
+                <button type="submit" disabled={isLoading || !input.trim()} className={`${reportTheme ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-500 hover:bg-emerald-600'} text-white p-2.5 rounded-full disabled:opacity-50 transition-colors shadow-sm`} aria-label="Gửi câu hỏi">
                   <Send size={16} className="ml-0.5" />
                 </button>
               </form>
@@ -16578,6 +16717,7 @@ export default function App() {
       vaAccountNumber: normalizedSepayVirtualAccountNumber,
       virtualAccountNumber: normalizedSepayVirtualAccountNumber,
       invoiceQrTemplate: settingsData.invoiceQrTemplate || currentCompany?.invoiceQrTemplate || DEFAULT_INVOICE_TRANSFER_PROFILE.template,
+      invoiceTemplateId: normalizeInvoiceTemplateId(settingsData.invoiceTemplateId || currentCompany?.invoiceTemplateId),
       autoReconcileByOrderCode: settingsData.autoReconcileByOrderCode ?? isOrderCodeAutoMatchEnabled(currentCompany),
       customerLoyaltyEnabled: settingsData.customerLoyaltyEnabled ?? currentLoyaltySettings.enabled,
       loyaltyEarnAmountPerPoint: normalizedLoyaltyEarnAmount > 0 ? normalizedLoyaltyEarnAmount : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
@@ -19245,6 +19385,7 @@ export default function App() {
         customers,
         orders: [newOrderDocument, ...existingCompanyOrders.filter(order => !order?.isArchived && order?.id !== id)],
         payments,
+        products,
         ensurePayment: handleEnsureOrderPayosPayment,
         reason: 'order_created'
       });
@@ -20704,6 +20845,26 @@ export default function App() {
     }
   };
 
+  const handleUpdateOrderInvoiceTemplate = async (orderId, templateId = null) => {
+    if (isVpsStagingMode) return { success: false, message: 'Chế độ staging chưa hỗ trợ lưu mẫu hóa đơn riêng.' };
+    if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
+    if (!existingOrder) return { success: false, message: 'Không tìm thấy hóa đơn trong công ty này.' };
+    if (templateId && !INVOICE_TEMPLATES.some(template => template.id === templateId)) {
+      return { success: false, message: 'Mẫu hóa đơn không hợp lệ.' };
+    }
+    const patch = { invoiceTemplateOverride: templateId || null, invoiceTemplateUpdatedAt: new Date().toISOString() };
+    try {
+      const result = await saveDataDocument('orders', orderId, patch, { merge: true });
+      await requireSharedWriteConfirmation(result, 'orders', orderId);
+      rememberRecentLocalWrite('orders', orderId, patch);
+      setRawOrders(previous => previous.map(order => order.id === orderId ? { ...order, ...patch } : order));
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: error?.message || 'Không lưu được mẫu hóa đơn.' };
+    }
+  };
+
   const handleEditOrder = async (orderId, orderData, collectedPaymentData = null) => {
     if (isVpsStagingMode) {
       if (collectedPaymentData) {
@@ -20830,6 +20991,7 @@ export default function App() {
       customers,
       orders: [updatedOrderForSync, ...(orders || []).filter(order => order?.id !== orderId)],
       payments,
+      products,
       ensurePayment: handleEnsureOrderPayosPayment,
       reason: 'order_updated'
     });
@@ -22728,7 +22890,7 @@ export default function App() {
             checkInMethodMeta: { type: 'wifi', source: 'android-native-auto', ssid: network.ssid, bssid: network.bssid, automatic: true }
           }
         }))}
-        onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
+        onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onUpdateOrderInvoiceTemplate={handleUpdateOrderInvoiceTemplate} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onMarkVpsNotificationsRead={handleMarkVpsNotificationsRead}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
         onAddOrderRequest={handleAddOrderRequest} onEditOrderRequest={handleEditOrderRequest} onDeleteOrderRequest={handleDeleteOrderRequest}
@@ -23291,7 +23453,7 @@ function MainAppView({
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
   autoWifiCheckInStatus = '', onAutoWifiStatus, onAutoWifiAttendanceRecorded,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -24711,7 +24873,7 @@ function MainAppView({
     };
     const renderHeaderIdentityActions = () => (
       <div className="hidden items-center gap-2 md:flex">
-        {canShowFloatingQuickActionButton && quickActionItems?.length > 0 && (
+        {activeTab !== 'finance' && canShowFloatingQuickActionButton && quickActionItems?.length > 0 && (
           <button type="button" className="hd-header-quick-action" onClick={handleHeaderQuickAction} aria-label="Phím tắt nhanh" title={quickActionItems[0]?.label || 'Phím tắt nhanh'}>
             <Plus size={17} />
           </button>
@@ -24870,7 +25032,7 @@ function MainAppView({
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="hd-header-context hd-header-title-group flex items-center gap-3">
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
-            <h1 className={`hd-header-title text-lg font-bold ${activeTab === 'products' ? 'text-white' : ''}`}>
+            <h1 className={`hd-header-title font-bold ${activeTab === 'finance' ? 'whitespace-nowrap text-sm' : 'text-lg'} ${activeTab === 'products' ? 'text-white' : ''}`}>
               {activeTab === 'asset_management' ? 'Tài sản' :
                activeTab === 'profile' ? 'Cá nhân' :
                activeTab === 'customers' ? 'Khách hàng' :
@@ -24884,7 +25046,7 @@ function MainAppView({
                activeTab === 'maps' ? 'Bản đồ' :
                activeTab === 'debt' ? 'Sổ nợ' :
                activeTab === 'bank_payments' ? 'Ngân Hàng' :
-               activeTab === 'finance' ? 'Thu chi' : 
+               activeTab === 'finance' ? 'Tổng kết ngày' :
                activeTab === 'company_attendance' ? 'Chấm công' : 
                activeTab === 'payroll' ? 'Bảng lương' : 
                activeTab === 'employee_reviews' ? 'Đánh giá' :
@@ -24897,7 +25059,7 @@ function MainAppView({
           {showHeaderSearchFilterActions ? (
             <div className="hd-header-actions flex items-center gap-2">
               {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && renderNotificationBell()}
-              {activeTab !== 'debt' && renderGlobalSearchTrigger()}
+              {activeTab !== 'debt' && activeTab !== 'finance' && renderGlobalSearchTrigger()}
               <button
                 data-search-zone="true"
                 type="button"
@@ -25097,7 +25259,7 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+    <ExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
@@ -25319,7 +25481,7 @@ function MainAppView({
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
-      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onUpdateOrderInvoiceTemplate={onUpdateOrderInvoiceTemplate} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
@@ -26005,7 +26167,7 @@ function MainAppView({
   const quickActionItems = useMemo(() => {
     const actions = {
       createOrder: { id: 'quick_create_order', label: 'T\u1ea1o \u0111\u01a1n h\u00e0ng', tab: 'orders', icon: Receipt, tone: 'from-emerald-500 to-teal-500', visible: canQuickCreateOrder, intent: { type: 'create_order' } },
-      createIncome: { id: 'quick_create_income', label: 'T\u1ea1o kho\u1ea3n thu', tab: 'finance', icon: PlusCircle, tone: 'from-sky-500 to-cyan-500', visible: canQuickCreateIncome, intent: { type: 'income' } },
+      createIncome: { id: 'quick_create_income', label: 'Kho\u1ea3n thu', tab: 'finance', icon: PlusCircle, tone: 'from-sky-500 to-cyan-500', visible: canQuickCreateIncome, intent: { type: 'income' } },
       createExpense: { id: 'quick_create_expense', label: 'Kho\u1ea3n chi', tab: 'finance', icon: MinusCircle, tone: 'from-rose-500 to-pink-500', visible: canQuickCreateExpense, intent: { type: 'expense' } },
       attendance: { id: 'quick_attendance', label: 'Ch\u1ea5m c\u00f4ng', tab: 'company_attendance', icon: Clock, tone: 'from-amber-500 to-orange-500', visible: canQuickUseAttendance },
       orderRequest: { id: 'quick_order_request', label: 'L\u00ean \u0111\u01a1n \u0111\u1eb7t h\u00e0ng', tab: 'order_requests', icon: ClipboardList, tone: 'from-emerald-500 to-teal-500', visible: canQuickCreateOrderRequest, intent: { type: 'create_order_request' } },
@@ -26072,11 +26234,11 @@ function MainAppView({
     ? []
     : getContextualFabActionIds(activeTab);
   const mobileContextualQuickActionItems = useMemo(() => {
-    if (!canShowFloatingQuickActionButton || !floatingQuickActionEnabled) return [];
+    if (activeTab !== 'finance' && (!canShowFloatingQuickActionButton || !floatingQuickActionEnabled)) return [];
     if (contextualQuickActionIds.includes('*')) return quickActionItems;
     const allowedIds = new Set(contextualQuickActionIds);
     return quickActionItems.filter(item => allowedIds.has(item.id));
-  }, [canShowFloatingQuickActionButton, contextualQuickActionIds, floatingQuickActionEnabled, quickActionItems]);
+  }, [activeTab, canShowFloatingQuickActionButton, contextualQuickActionIds, floatingQuickActionEnabled, quickActionItems]);
   const showFloatingQuickActionButton = canShowFloatingQuickActionButton
     && quickActionItems.length > 0
     && !['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management', 'more'].includes(activeTab);
@@ -32435,6 +32597,7 @@ function SettingsView({
   onConvertZaloOrderRequest,
   setActiveTab,
   canViewBankPayments = false,
+  canEditCompanyProfile = false,
   canManageBankAccounts = false,
   canManagePaymentQr = false,
   canManageLoyaltySettings = false,
@@ -32603,6 +32766,7 @@ function SettingsView({
   const canManageSalaryAdvanceSettings = Boolean(canConfigureSalaryAdvanceLimit || isAccounting);
   const canAccessSettings = Boolean(
     isAccounting ||
+    canEditCompanyProfile ||
     canManageBankTransferSettings ||
     canOpenBankPaymentCenter ||
     canManageLoyaltySettings ||
@@ -32615,6 +32779,7 @@ function SettingsView({
   );
   const settingsPanels = [
     { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
+    { id: 'invoice_templates', label: 'Mẫu hóa đơn', description: '10 mẫu xem, in và chia sẻ', icon: Receipt, enabled: isAccounting || canEditCompanyProfile },
     { id: 'bank_payments', label: 'Ngân hàng & Thanh toán', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
     { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
     { id: 'care', label: 'Nhắc khách hàng', description: `${customerCareInactiveDaysPreview} ngày chưa mua`, icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
@@ -32914,6 +33079,8 @@ function SettingsView({
           })}
         </div>
       </div>
+
+      {safeActiveSettingsPanel === 'invoice_templates' && <React.Suspense fallback={<div className="p-4 text-sm text-slate-500">Đang mở mẫu hóa đơn...</div>}><InvoiceTemplateSettings company={currentCompany} onApply={onUpdateCompanySettings} canApply={canEditCompanyProfile} buildQrDataUrl={buildInvoiceTemplateDemoQrDataUrl} /></React.Suspense>}
 
       {safeActiveSettingsPanel === 'account' && <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm hd-soft-red-outline">
         <div className="flex items-start justify-between gap-3">
@@ -42943,6 +43110,8 @@ function ExecutiveDashboardView({
   payments = [],
   expenses = [],
   financials = [],
+  performance = {},
+  holidays = [],
   advanceRequests = [],
   products = [],
   warehouseImports = [],
@@ -42956,7 +43125,16 @@ function ExecutiveDashboardView({
   setActiveTab,
   onOpenGlobalSearch = () => {}
 }) {
+  const [isMobileReport, setIsMobileReport] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const media = window.matchMedia('(max-width: 1023px)');
+    const update = () => setIsMobileReport(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
   const [activeExecutiveTab, setActiveExecutiveTab] = useState('overview');
+  const [showMobileReportAssistant, setShowMobileReportAssistant] = useState(false);
   const [showExecutiveWidgetCustomizer, setShowExecutiveWidgetCustomizer] = useState(false);
   const executiveWidgetScopeKey = getDashboardWidgetPreferenceKey(company?.id, employee?.id, 'executive');
   const [executiveWidgetState, setExecutiveWidgetState] = useState(() => ({
@@ -43009,6 +43187,16 @@ function ExecutiveDashboardView({
       [listId]: !current[listId]
     }));
   };
+  const payrollCosts = useMemo(() => buildDashboardPayrollCostRows({
+    employees, attendance, financials, performance, customers, orders, payments, holidays
+  }), [employees, attendance, financials, performance, customers, orders, payments, holidays]);
+  const debtLedger = useMemo(() => customers
+    .filter(customer => customer && !customer.isArchived)
+    .map(customer => ({
+      id: customer.id,
+      name: getCustomerDisplayName(customer) || customer.name || 'Khách hàng',
+      debt: buildCustomerReconciledLedger(customer, orders, payments, warehouseImports).currentDebt
+    })), [customers, orders, payments, warehouseImports]);
   const snapshot = useMemo(() => buildExecutiveDashboardSnapshot({
     employee,
     company,
@@ -43020,6 +43208,8 @@ function ExecutiveDashboardView({
     payments,
     expenses,
     financials,
+    payrollCosts,
+    debtLedger,
     advances: advanceRequests,
     products,
     warehouseImports,
@@ -43039,6 +43229,8 @@ function ExecutiveDashboardView({
     payments,
     expenses,
     financials,
+    payrollCosts,
+    debtLedger,
     advanceRequests,
     products,
     warehouseImports,
@@ -43974,6 +44166,13 @@ function ExecutiveDashboardView({
       </div>
     );
   };
+
+  if (isMobileReport) {
+    return <>
+      <BusinessReportWorkspace snapshot={snapshot} employee={employee} companyName={companyDisplayName} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
+      <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
+    </>;
+  }
 
   return (
     <div className="hd-premium-dashboard">
@@ -47186,9 +47385,12 @@ function MessageCenterView({
   const [chatSearchKeyword, setChatSearchKeyword] = useState('');
   const deferredChatSearchKeyword = useDeferredValue(chatSearchKeyword);
   const [showChatSearch, setShowChatSearch] = useState(false);
-  const [activeChatTab, setActiveChatTab] = useState('priority');
+  const [activeChatTab, setActiveChatTab] = useState('all');
+  const [activeSearchTab, setActiveSearchTab] = useState('messages');
+  const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [isRefreshingChats, setIsRefreshingChats] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showExtraAttachMenu, setShowExtraAttachMenu] = useState(false);
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('');
   const [localReplies, setLocalReplies] = useState({});
@@ -47216,6 +47418,16 @@ function MessageCenterView({
   const codeScannerTimerRef = useRef(null);
   const chatListRefreshTimerRef = useRef(null);
   const chatListTouchStartRef = useRef(null);
+  const cameraInputRef = useRef(null);
+  useEffect(() => {
+    const updateOnlineStatus = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    return () => {
+      window.removeEventListener('online', updateOnlineStatus);
+      window.removeEventListener('offline', updateOnlineStatus);
+    };
+  }, []);
   useDismissSearchOnOutsideClick(
     showChatSearch || showAttachMenu || showMessageFilterMenu || showCreateConversationPanel,
     () => {
@@ -47265,11 +47477,6 @@ function MessageCenterView({
     if (words.length === 0) return 'HD';
     if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
     return `${words[0][0] || ''}${words[words.length - 1][0] || ''}`.toUpperCase();
-  };
-  const formatChatTime = (value) => {
-    const parsed = new Date(value || Date.now());
-    if (Number.isNaN(parsed.getTime())) return '';
-    return `${parsed.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} ${parsed.toLocaleDateString('vi-VN')}`;
   };
   const isUnreadStatus = (value = '') => ['unread', 'new', 'pending', 'need_human'].includes(`${value || ''}`.toLowerCase());
   const isMessageUnreadForCurrentEmployee = (message = {}) => {
@@ -47338,14 +47545,19 @@ function MessageCenterView({
           attachmentLabel: message.attachmentLabel || '',
           attachmentText: message.attachmentText || '',
           attachmentImage: message.attachmentImage || '',
+          attachmentImages: Array.isArray(message.attachmentImages) ? message.attachmentImages : [],
+          audioUrl: message.audioUrl || '',
+          duration: message.duration || '',
+          reactions: message.reactions || null,
           createdAt: activityAt,
           updatedAt: getMessageTimeValue(message.updatedAt) || activityAt,
           senderName: message.senderName || '',
+          senderAvatarUrl: getEmployeeAvatarUrl(employeeById.get(message.senderEmpId)),
           isUnread: isMessageUnreadForCurrentEmployee(message)
         });
       });
     return grouped;
-  }, [currentEmployeeId, messages, stableMessageFallbackBaseAt]);
+  }, [currentEmployeeId, employeeById, messages, stableMessageFallbackBaseAt]);
 
   const supportConversations = useMemo(() => {
     const supportConversationId = 'support-hd-manager';
@@ -47694,7 +47906,7 @@ function MessageCenterView({
     return `${a.title || a.id || ''}`.localeCompare(`${b.title || b.id || ''}`, 'vi');
   };
   const allVisibleConversations = Object.entries(conversationGroups)
-    .filter(([type]) => visibleMessageTypes.includes(type))
+    .filter(([type]) => type !== 'notice' && visibleMessageTypes.includes(type))
     .flatMap(([, conversations]) => (conversations || []).map(decorateConversationUnread))
     .sort(sortConversationsByPriority);
   const activeConversations = allVisibleConversations;
@@ -47720,7 +47932,7 @@ function MessageCenterView({
     if (conversation.sourceItem) return true;
     return (conversation.messages || []).some((message) => {
       if (!message || message.isSystemIntro || message.isFallback) return false;
-      return Boolean(normalizeKeyword([
+        return Boolean(message.attachmentImage || message.attachmentImages?.length || message.audioUrl || normalizeKeyword([
         message.text,
         message.attachmentLabel,
         message.attachmentText,
@@ -47785,20 +47997,23 @@ function MessageCenterView({
     || conversation.isPinnedChat
     || conversation.metadata?.isPinned
   );
-  const isPriorityConversation = (conversation = {}) => (
-    isPinnedConversation(conversation) || getConversationUnreadCount(conversation) > 0
-  );
-  const priorityConversations = filteredConversations.filter(isPriorityConversation);
-  const otherConversations = filteredConversations.filter((conversation) => !isPriorityConversation(conversation));
-  const tabConversations = activeChatTab === 'priority'
-    ? (priorityConversations.length > 0 ? priorityConversations : filteredConversations)
-    : otherConversations;
+  const tabConversations = filterChatConversations(filteredConversations, activeChatTab);
   const visibleFilteredConversations = useChunkedList(
     tabConversations,
     60,
     80,
     `${safeActiveType}|${activeChatTab}|${messageFilter}|${listKeyword}`
   );
+  const searchResults = filteredConversations
+    .filter((conversation) => {
+      if (activeSearchTab === 'people') return ['customer', 'team'].includes(getChatCategory(conversation));
+      if (activeSearchTab === 'groups') return getChatCategory(conversation) === 'group';
+      if (activeSearchTab === 'files') return (conversation.messages || []).some((message) =>
+        ['document', 'file', 'image', 'video'].includes(message.attachmentType) || message.attachmentImage
+      );
+      return true;
+    })
+    .map((conversation) => getChatSearchResult(conversation, deferredSearchKeyword));
   const unreadFilteredConversations = filteredConversations.filter((conversation) => getConversationUnreadCount(conversation) > 0);
   const canMarkFilteredUnreadAsRead = messageFilter === 'unread' && unreadFilteredConversations.length > 0;
   const handleMarkFilteredUnreadAsRead = () => {
@@ -48262,6 +48477,16 @@ function MessageCenterView({
     { id: 'customer', label: 'Kh\u00e1ch h\u00e0ng', icon: UserCircle, color: 'bg-cyan-500', allowed: canSendContactAttachment },
     { id: 'order_request', label: '\u0110\u01a1n \u0111\u1eb7t', icon: ClipboardList, color: 'bg-teal-500', allowed: canSendOrderRequestAttachment }
   ].filter(action => action.allowed);
+  const visualAttachActions = [
+    { id: 'image', label: 'Ảnh', allowed: canSendImageAttachment },
+    { id: 'camera', label: 'Camera', allowed: canSendImageAttachment },
+    { id: 'video', label: 'Video', allowed: false },
+    { id: 'document', label: 'Tài liệu', allowed: false },
+    { id: 'location', label: 'Vị trí', allowed: canSendLocationAttachment },
+    { id: 'contact', label: 'Liên hệ', allowed: canSendContactAttachment },
+    { id: 'order', label: 'Đơn hàng', allowed: canSendOrderAttachment },
+    { id: 'weighing', label: 'Phiếu cân', allowed: false }
+  ];
 
   const buildOutgoingMessageMeta = (conversation = {}) => {
     const isInternalGroup = conversation.conversationKind === 'internal_group';
@@ -48480,13 +48705,6 @@ function MessageCenterView({
     setStatus('Chưa có kết nối lưu tin nhắn cho hội thoại này.');
   };
 
-  const handleAttachAction = (action) => {
-    handleRealAttachAction(action);
-    return;
-    setShowAttachMenu(false);
-    setStatus(`Đã chọn gửi ${action.label}. Mình sẽ nối dữ liệu thật cho mục này ở bước tiếp theo.`);
-  };
-
   const sendAttachmentPayload = async ({ text = '', attachmentType = '', attachmentLabel = '', attachmentText = '', attachmentImage = '' } = {}) => {
     if (!selectedConversation) return;
     if (!canSendInSelectedConversation) {
@@ -48633,6 +48851,11 @@ function MessageCenterView({
     setShowAttachMenu(false);
     if (!selectedConversation) return;
 
+    if (action.id === 'camera') {
+      cameraInputRef.current?.click?.();
+      return;
+    }
+
     if (!action.id || action.id === 'image') {
       imageInputRef.current?.click?.();
       return;
@@ -48721,114 +48944,23 @@ function MessageCenterView({
     }
   };
 
-  const renderAvatar = (conversation, large = false) => {
-    const sizeClass = large ? 'h-[50px] w-[50px] text-base' : 'h-11 w-11 text-sm';
-    if (conversation?.avatarUrl) {
-      return <img src={conversation.avatarUrl} alt="" className={`${sizeClass} rounded-full object-cover bg-white/80`} />;
-    }
-    return (
-      <div className={`${sizeClass} rounded-full bg-gradient-to-br ${conversation?.color || 'from-emerald-500 to-teal-500'} text-white font-black flex items-center justify-center shadow-sm`}>
-        {buildInitials(conversation?.title || companyInitials)}
-      </div>
-    );
-  };
-
   if (selectedConversation) {
     return (
-      <div className="h-full bg-slate-100 flex flex-col">
+      <div className="hd-messaging" data-hd-module="messaging" data-chat-screen="conversation">
         <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageAttachmentChange} />
-        <div className="bg-gradient-to-r from-blue-600 via-cyan-500 to-teal-400 px-3 py-2 text-white shadow-md">
-          <div className="flex min-h-10 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setSelectedConversationId('')}
-              className="rounded-full p-1.5 hover:bg-white/15"
-              aria-label="Quay lại danh sách tin nhắn"
-            >
-              <ChevronLeft size={22} />
-            </button>
-            <div className="flex-1" />
-            <button
-              data-search-zone="true"
-              type="button"
-              onClick={() => setShowChatSearch((value) => !value)}
-              className="rounded-full p-1.5 hover:bg-white/15"
-              aria-label="Tìm trong hội thoại"
-            >
-              <Search size={21} />
-            </button>
-            <button
-              type="button"
-              onClick={handleCall}
-              disabled={!canCallFromMessage}
-              className="rounded-full p-1.5 hover:bg-white/15 disabled:opacity-40"
-              aria-label="Gọi"
-            >
-              <Phone size={21} />
-            </button>
-            <button
-              data-search-zone="true"
-              type="button"
-              onClick={() => setShowAttachMenu((value) => !value)}
-              disabled={!canSendInSelectedConversation || attachActions.length === 0}
-              className="rounded-full p-1.5 hover:bg-white/15 disabled:opacity-40"
-              aria-label="Thao tác khác"
-            >
-              <MoreVertical size={21} />
-            </button>
-          </div>
-          {showChatSearch && (
-            <div data-search-zone="true" className="mt-2 flex items-center gap-2 rounded-2xl bg-white/95 px-3 py-2 text-gray-800 shadow-sm">
-              <Search size={18} className="text-gray-400" />
-              <input
-                data-hd-search-input="true"
-                autoFocus
-                value={chatSearchKeyword}
-                onChange={(event) => setChatSearchKeyword(event.target.value)}
-                placeholder="Tìm trong hội thoại"
-                className="flex-1 bg-transparent outline-none text-sm"
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3 pb-40">
-          {selectedConversation.type === 'notice' && selectedConversation.sourceItem && (
-            <button
-              type="button"
-              onClick={() => onOpenNotification(selectedConversation.sourceItem)}
-              className="w-full rounded-2xl border border-violet-100 bg-white px-4 py-3 text-left text-sm font-bold text-violet-700 shadow-sm"
-            >
-              Mở chi tiết thông báo
-            </button>
-          )}
-          {visibleMessages.map((message) => {
-            const isMine = message.from === 'me';
-            return (
-              <div key={message.id} className={`flex gap-2 ${isMine ? 'justify-end' : 'justify-start'}`}>
-                {!isMine && renderAvatar(selectedConversation)}
-                <div className={`max-w-[78%] rounded-3xl px-4 py-3 shadow-sm ${isMine ? 'bg-emerald-500 text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md'}`}>
-                  {message.text && <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</p>}
-                  {message.attachmentImage && (
-                    <img loading="lazy" decoding="async" src={message.attachmentImage} alt={message.attachmentLabel || 'Hình ảnh'} className="mt-2 max-h-64 w-full rounded-2xl object-cover border border-white/30" />
-                  )}
-                  {(message.attachmentLabel || message.attachmentText) && (
-                    <div className={`mt-2 rounded-2xl border px-3 py-2 text-left ${isMine ? 'border-white/25 bg-white/15' : 'border-gray-100 bg-gray-50'}`}>
-                      {message.attachmentLabel && <p className={`text-xs font-black uppercase tracking-wide ${isMine ? 'text-white/85' : 'text-emerald-700'}`}>{message.attachmentLabel}</p>}
-                      {message.attachmentText && <p className="mt-1 text-sm leading-relaxed whitespace-pre-wrap">{message.attachmentText}</p>}
-                    </div>
-                  )}
-                  <p className={`mt-2 text-[11px] ${isMine ? 'text-white/75' : 'text-gray-400'}`}>{formatChatTime(message.createdAt)}</p>
-                </div>
-              </div>
-            );
-          })}
-          {status && (
-            <div className="mx-auto max-w-xs rounded-full bg-white px-4 py-2 text-center text-xs font-semibold text-gray-500 shadow-sm">
-              {status}
-            </div>
-          )}
-        </div>
+        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageAttachmentChange} />
+        <ConversationToolbar
+          conversation={selectedConversation}
+          onBack={() => setSelectedConversationId('')}
+          onCall={handleCall}
+          onSearch={() => setShowChatSearch((value) => !value)}
+          onMore={() => setShowExtraAttachMenu((value) => !value)}
+          canCall={canCallFromMessage && Boolean(selectedConversation.phone)}
+        />
+        {showChatSearch && <div className="hd-chat-inline-search" data-search-zone="true"><Search size={18} /><input data-hd-search-input="true" autoFocus value={chatSearchKeyword} onChange={(event) => setChatSearchKeyword(event.target.value)} placeholder="Tìm trong cuộc trò chuyện..." /></div>}
+        <OfflineBanner online={isOnline} />
+        {showExtraAttachMenu && <div className="hd-chat-extra-actions" data-search-zone="true">{attachActions.filter((action) => !visualAttachActions.some((primary) => primary.id === action.id)).map((action) => <button type="button" key={action.id} onClick={() => { setShowExtraAttachMenu(false); handleRealAttachAction(action); }}>{action.label}</button>)}</div>}
+        <MessageList conversation={selectedConversation} messages={visibleMessages} status={status} onOpenNotice={() => onOpenNotification(selectedConversation.sourceItem)} />
 
         {attachmentPickerConfig && (
           <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4">
@@ -48885,118 +49017,52 @@ function MessageCenterView({
           </div>
         )}
 
-        {showAttachMenu && (
-          <div data-search-zone="true" className="absolute left-0 right-0 bottom-[94px] z-50 bg-white rounded-t-[2rem] shadow-[0_-10px_30px_rgba(15,23,42,0.12)] px-5 pt-5 pb-6 border-t border-gray-100">
-            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-gray-200" />
-            <div className="grid grid-cols-4 gap-4">
-              {attachActions.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <button key={action.id} type="button" onClick={() => handleRealAttachAction(action)} className="flex flex-col items-center gap-2">
-                    <span className={`w-12 h-12 rounded-full ${action.color} text-white flex items-center justify-center shadow-md`}>
-                      <Icon size={23} />
-                    </span>
-                    <span className="text-[11px] font-bold text-gray-700 text-center">{action.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="absolute left-0 right-0 bottom-[62px] z-40 bg-white px-3 py-3 border-t border-gray-100">
-          <div className="flex items-center gap-2">
-            <button data-search-zone="true" type="button" onClick={() => setShowAttachMenu((value) => !value)} disabled={!canSendInSelectedConversation || attachActions.length === 0} className="w-11 h-11 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center disabled:opacity-40">
-              <MoreHorizontal size={25} />
-            </button>
-            <input
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
-                  event.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-              enterKeyHint="send"
-              placeholder="Nhập nội dung..."
-              disabled={!canSendInSelectedConversation}
-              className="flex-1 h-11 rounded-2xl border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-emerald-400 focus:bg-white disabled:opacity-60"
-            />
-            <button type="button" onClick={() => setStatus('Ghi âm sẽ được nối với micro ở bước tiếp theo.')} className="w-11 h-11 rounded-full bg-gray-50 text-gray-600 flex items-center justify-center">
-              <Mic size={22} />
-            </button>
-            <button type="button" onClick={() => handleAttachAction({ label: 'Hình ảnh' })} disabled={!canSendInSelectedConversation || !canSendImageAttachment} className="w-11 h-11 rounded-full bg-gray-50 text-gray-600 flex items-center justify-center disabled:opacity-40">
-              <ImagePlus size={22} />
-            </button>
-            <button type="button" onClick={handleSendMessage} disabled={!canSendInSelectedConversation} className="w-11 h-11 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-md disabled:opacity-40">
-              <Send size={21} />
-            </button>
-          </div>
-        </div>
+        {showAttachMenu && <AttachmentPanel actions={visualAttachActions} onSelect={handleRealAttachAction} onClose={() => setShowAttachMenu(false)} />}
+        <MessageComposer
+          draft={draft}
+          onChange={setDraft}
+          onSend={handleSendMessage}
+          onAttach={() => setShowAttachMenu((value) => !value)}
+          onMic={() => setStatus('Ghi âm chưa được hỗ trợ trên thiết bị này.')}
+          disabled={!canSendInSelectedConversation}
+          panelOpen={showAttachMenu}
+        />
       </div>
     );
   }
 
   return (
-    <div className="h-full bg-white flex flex-col">
-      <div className="relative bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 px-3 pt-1 pb-1 text-white shadow-lg shadow-sky-100">
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={onGoBack} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/95 transition hover:bg-white/15">
-            <ChevronLeft size={18} />
-          </button>
-          <h1 className="min-w-0 flex-1 truncate text-base font-black">{safeActiveType === 'zalo_ai' ? 'Hộp thư' : 'Tin nhắn'}</h1>
-          <button
-            type="button"
-            onClick={onOpenGlobalSearch}
-            className="hd-header-global-search-button h-8 w-8"
-            aria-label="Tìm kiếm toàn ứng dụng"
-            title="Tìm kiếm toàn ứng dụng"
-          >
-            <Search size={16} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={openHeaderCodeScanner}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-white/95 transition hover:bg-white/15"
-            aria-label="Quét mã"
-          >
-            <Scan size={18} />
-          </button>
-          {canUseCreateConversation && (
-            <button
-              data-search-zone="true"
-              type="button"
-              onClick={() => {
-                setShowMessageFilterMenu(false);
-                setShowCreateConversationPanel((prev) => !prev);
-              }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-white transition hover:bg-white/15"
-              aria-label="Thêm bạn hoặc tạo nhóm"
-            >
-              <Plus size={21} strokeWidth={1.9} />
-            </button>
-          )}
-          {!canUseCreateConversation && (
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15">
-              {companyLogo ? <img src={companyLogo} alt="" className="h-5 w-5 rounded-full object-cover" /> : <span className="text-[11px] font-black text-white">{companyInitials}</span>}
-            </div>
-          )}
-        </div>
-
+    <div className="hd-messaging" data-hd-module="messaging" data-chat-screen={searchKeyword.trim() ? 'search' : 'list'}>
+      <div className="hd-chat-list-head" data-search-zone="true">
+        <ChatSearchBar
+          value={searchKeyword}
+          onChange={setSearchKeyword}
+          onClear={() => setSearchKeyword('')}
+          onCreate={() => {
+            setShowMessageFilterMenu(false);
+            setShowCreateConversationPanel((value) => !value);
+          }}
+          createEnabled={canUseCreateConversation}
+          placeholder="Tìm kiếm tin nhắn, người dùng..."
+        />
+        <ChatTabs
+          items={searchKeyword.trim() ? CHAT_SEARCH_TABS : CHAT_LIST_TABS.map((tab) => ({ ...tab, badge: tab.id === 'customer' ? unreadFilteredConversations.filter((item) => getChatCategory(item) === 'customer').length : 0 }))}
+          value={searchKeyword.trim() ? activeSearchTab : activeChatTab}
+          onChange={searchKeyword.trim() ? setActiveSearchTab : setActiveChatTab}
+          label={searchKeyword.trim() ? 'Loại kết quả tìm kiếm' : 'Loại cuộc trò chuyện'}
+        />
         {showCreateConversationPanel && canUseCreateConversation && (
-          <div data-search-zone="true" className="absolute right-3 top-[58px] z-[80] w-64 rounded-2xl bg-white py-2 text-slate-900 shadow-2xl ring-1 ring-slate-200">
-            <span className="absolute -top-2 right-5 h-4 w-4 rotate-45 bg-white ring-1 ring-slate-200" />
-            <div className="relative overflow-hidden rounded-2xl bg-white">
+          <div data-search-zone="true" className="hd-chat-create-menu">
+            <div>
               <button
                 type="button"
                 onClick={() => {
                   setShowCreateConversationPanel(false);
                   setShowAddFriendPanel(true);
                 }}
-                className="flex w-full items-center gap-4 px-5 py-4 text-left text-lg font-bold text-slate-800 transition hover:bg-sky-50"
+                className="hd-chat-create-menu-item"
               >
-                <UserCircle size={25} className="text-slate-400" />
+                <UserCircle size={19} />
                 <span>Thêm bạn</span>
               </button>
               <button
@@ -49005,86 +49071,20 @@ function MessageCenterView({
                   setShowCreateConversationPanel(false);
                   setShowCreateGroup(true);
                 }}
-                className="flex w-full items-center gap-4 border-t border-slate-100 px-5 py-4 text-left text-lg font-bold text-slate-800 transition hover:bg-sky-50"
+                className="hd-chat-create-menu-item"
               >
-                <Users size={25} className="text-slate-400" />
+                <Users size={19} />
                 <span>Tạo nhóm</span>
               </button>
+              <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); setShowMessageFilterMenu(true); }}><Filter size={19} /><span>Lọc tin nhắn</span></button>
+              <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); openHeaderCodeScanner(); }}><Scan size={19} /><span>Quét mã</span></button>
+              <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); handleRefreshChats(); }}><RefreshCw size={19} /><span>Làm mới</span></button>
             </div>
           </div>
         )}
-      </div>
-
-      {safeActiveType !== 'zalo_ai' && (
-        <div className="relative border-b border-slate-100 bg-white px-4 pt-3">
-          <div data-search-zone="true" className="flex h-11 items-center gap-2 rounded-full bg-[#F3F4F6] px-3.5">
-            <Search size={18} className="shrink-0 text-slate-400" />
-            <input
-              data-hd-search-input="true"
-              value={searchKeyword}
-              onChange={(event) => setSearchKeyword(event.target.value)}
-              placeholder="Tìm kiếm tin nhắn"
-              className="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-800 outline-none placeholder:text-slate-400"
-            />
-            {searchKeyword && (
-              <button type="button" onClick={() => setSearchKeyword('')} className="flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-white" aria-label="Xóa tìm kiếm">
-                <X size={15} />
-              </button>
-            )}
-            <button type="button" onClick={handleRefreshChats} disabled={isRefreshingChats} className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-sky-600 disabled:opacity-60" aria-label="Làm mới tin nhắn" data-chat-list-refresh="true">
-              <RefreshCw size={16} className={isRefreshingChats ? 'animate-spin' : ''} />
-            </button>
-          </div>
-          <div className="mt-2 flex min-h-11 items-center border-b border-slate-100">
-            <div className="grid flex-1 grid-cols-2 self-stretch">
-              {[
-                { id: 'priority', label: 'Ưu tiên' },
-                { id: 'other', label: 'Khác' }
-              ].map((tab) => {
-                const active = activeChatTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setActiveChatTab(tab.id)}
-                    className={`relative flex items-center justify-center gap-1.5 text-[15px] font-semibold transition ${active ? 'text-sky-600' : 'text-slate-500 hover:text-slate-800'}`}
-                    aria-selected={active}
-                    role="tab"
-                  >
-                    <span>{tab.label}</span>
-                    {active && <span className="absolute inset-x-7 bottom-0 h-[3px] rounded-full bg-[#3B82F6]" />}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex items-center gap-1 pl-2">
-              {canMarkFilteredUnreadAsRead && (
-                <button
-                  type="button"
-                  onClick={handleMarkFilteredUnreadAsRead}
-                  className="hidden rounded-xl bg-red-50 px-2 py-1 text-[11px] font-black text-red-600 transition hover:bg-red-100 sm:inline-flex"
-                >
-                  Đọc hết {unreadFilteredConversations.length}
-                </button>
-              )}
-              <button
-                data-search-zone="true"
-                type="button"
-                onClick={() => {
-                  setShowCreateConversationPanel(false);
-                  setShowMessageFilterMenu((prev) => !prev);
-                }}
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${messageFilter === 'all' ? 'text-slate-400 hover:bg-slate-50' : 'bg-sky-50 text-sky-700'}`}
-                aria-label="Lọc tin nhắn"
-              >
-                <Filter size={18} />
-              </button>
-            </div>
-          </div>
-          {showMessageFilterMenu && (
-            <div data-search-zone="true" className="absolute right-3 top-12 z-[70] w-64 overflow-hidden rounded-2xl bg-white py-2 text-slate-900 shadow-2xl ring-1 ring-slate-200">
-              <span className="absolute -top-2 right-4 h-4 w-4 rotate-45 bg-white ring-1 ring-slate-200" />
-              <div className="relative bg-white">
+        {showMessageFilterMenu && (
+            <div data-search-zone="true" className="hd-chat-create-menu">
+              <div>
                 {messageFilterOptions.map((item) => {
                   const active = item.id === messageFilter;
                   return (
@@ -49105,8 +49105,7 @@ function MessageCenterView({
               </div>
             </div>
           )}
-        </div>
-      )}
+      </div>
 
       {showCodeScanner && (
         <div
@@ -49343,94 +49342,35 @@ function MessageCenterView({
         </div>
       )}
 
-      {safeActiveType === 'zalo_ai' ? (
-        <div className="flex-1 overflow-y-auto px-4 py-3 pb-24">
-          <ZaloInboxPanel
-            currentCompany={currentCompany}
-            employee={employee}
-            customers={customers}
-            products={products}
-            orders={orders}
-            payments={payments}
-            zaloInboxMessages={zaloInboxMessages}
-            aiReplyRules={aiReplyRules}
-            onUpdateCompanySettings={onUpdateCompanySettings}
-            onProcessMessage={onProcessZaloInboxMessage}
-            onSendReply={onSendAiZaloReply}
-            onIgnoreMessage={onIgnoreZaloInboxMessage}
-            onMarkNeedHuman={onMarkNeedHumanZaloInboxMessage}
-            onToggleCustomerAiReply={onToggleCustomerAiReply}
-            onSaveAiReplyRule={onSaveAiReplyRule}
-            onArchiveAiReplyRule={onArchiveAiReplyRule}
-          />
-        </div>
-      ) : (
+      <OfflineBanner online={isOnline} />
       <div
-        className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 pb-24"
+        className={searchKeyword.trim() ? 'hd-chat-results' : 'hd-chat-list'}
         data-chat-list="true"
         onTouchStart={handleChatListTouchStart}
         onTouchEnd={handleChatListTouchEnd}
       >
-        {isRefreshingChats && (
-          <div className="mb-3 flex items-center justify-center gap-2 text-xs font-semibold text-sky-600" data-chat-refresh-indicator="true">
-            <RefreshCw size={14} className="animate-spin" />
-            <span>Đang làm mới tin nhắn...</span>
-          </div>
-        )}
-        {visibleFilteredConversations.length === 0 && !listKeyword && messageFilter === 'all' && activeChatTab === 'priority' && filteredConversations.length > 0 && (
-          <div className="mb-3 rounded-xl bg-slate-50 px-3 py-2 text-center text-xs font-medium text-slate-500">
-            Chưa có tin ưu tiên, đang hiển thị các cuộc trò chuyện gần đây.
-          </div>
-        )}
-        {visibleFilteredConversations.map((conversation) => {
-          const unreadCount = getConversationUnreadCount(conversation);
-          const isUnread = unreadCount > 0;
+        {isRefreshingChats ? <ChatState state="loading" /> : searchKeyword.trim() ? (
+          searchResults.length ? searchResults.map((result) => <SearchResultItem
+            key={result.id}
+            result={{ ...result, title: getConversationDisplayName(result) }}
+            keyword={searchKeyword}
+            timestamp={formatConversationListTime(result.matchedMessage?.createdAt || getConversationActivityAt(result))}
+            onSelect={() => handleSelectConversation(result)}
+          />) : <ChatState state="empty" title="Không tìm thấy kết quả" />
+        ) : visibleFilteredConversations.length ? visibleFilteredConversations.map((conversation) => {
           const displayName = getConversationDisplayName(conversation);
-          const previewText = getConversationPreview(conversation, displayName);
-          const listTime = formatConversationListTime(getConversationActivityAt(conversation));
-          const typeLabel = getConversationTypeLabel(conversation, displayName);
-          const previewLine = previewText || typeLabel || 'Tin nhắn mới';
-          const pinned = isPinnedConversation(conversation);
-          return (
-            <button
-              key={conversation.id}
-              type="button"
-              onClick={() => handleSelectConversation(conversation)}
-              className={`hd-render-contained mb-3 flex min-h-[74px] w-full items-center gap-3 border-b border-slate-100 pb-3 text-left transition hover:bg-slate-50/80 ${isUnread ? 'bg-sky-50/25' : 'bg-white'}`}
-              data-chat-item="true"
-            >
-              <div className="h-[50px] w-[50px] shrink-0">
-                {renderAvatar(conversation, true)}
-              </div>
-              <div className="min-w-0 flex-1 self-stretch py-0.5">
-                <div className="flex items-start justify-between gap-2">
-                  <p className={`min-w-0 truncate text-base leading-5 text-[#111827] ${isUnread ? 'font-bold' : 'font-semibold'}`}>
-                    {displayName}
-                  </p>
-                  <span className="shrink-0 pt-0.5 text-xs font-medium text-[#9CA3AF]">{listTime || 'Mới'}</span>
-                </div>
-                <div className="mt-1 flex min-w-0 items-center gap-2">
-                  <p className={`min-w-0 flex-1 truncate text-sm leading-5 ${isUnread ? 'font-medium text-slate-600' : 'text-[#6B7280]'}`}>
-                    {previewLine}
-                  </p>
-                  {pinned && <Pin size={14} className="shrink-0 rotate-45 text-sky-500" aria-label="Đã ghim" />}
-                  {isUnread && (
-                    <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#EF4444] px-1.5 text-[11px] font-bold text-white" aria-label={`${unreadCount} tin chưa đọc`}>
-                      {unreadCount > 9 ? '9+' : unreadCount}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </button>
-          );
-        })}
-        {tabConversations.length === 0 && (
-          <div className="mt-10 rounded-3xl bg-gray-50 p-6 text-center text-sm text-gray-500">
-            {listKeyword ? 'Không tìm thấy hội thoại phù hợp.' : (messageFilter !== 'all' ? `Chưa có tin thuộc bộ lọc ${selectedMessageFilter.shortLabel}.` : activeChatTab === 'other' ? 'Chưa có cuộc trò chuyện khác.' : 'Chưa có tin nhắn phát sinh.')}
-          </div>
-        )}
+          return <ConversationItem
+            key={conversation.id}
+            conversation={{ ...conversation, title: displayName }}
+            displayName={displayName}
+            preview={getConversationPreview(conversation, displayName) || getConversationTypeLabel(conversation, displayName) || 'Tin nhắn mới'}
+            timestamp={formatConversationListTime(getConversationActivityAt(conversation)) || 'Mới'}
+            unreadCount={getConversationUnreadCount(conversation)}
+            pinned={isPinnedConversation(conversation)}
+            onSelect={() => handleSelectConversation(conversation)}
+          />;
+        }) : <ChatState state="empty" title={messageFilter !== 'all' ? `Chưa có tin thuộc bộ lọc ${selectedMessageFilter.shortLabel}` : 'Chưa có cuộc trò chuyện'} onStart={canUseCreateConversation ? () => setShowCreateConversationPanel(true) : undefined} />}
       </div>
-      )}
     </div>
   );
 }
@@ -49466,7 +49406,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const [localShowFilterPanel, setLocalShowFilterPanel] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [showCashflowCreateMenu, setShowCashflowCreateMenu] = useState(false);
+  const [showDesktopCreateMenu, setShowDesktopCreateMenu] = useState(false);
   const [editingCashflowTransaction, setEditingCashflowTransaction] = useState(null);
   const [rejectingCashflowTransaction, setRejectingCashflowTransaction] = useState(null);
   const [cashflowEditForm, setCashflowEditForm] = useState({
@@ -49512,8 +49452,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       setShowPaymentModal(false);
       return true;
     }
-    if (showCashflowCreateMenu) {
-      setShowCashflowCreateMenu(false);
+    if (showDesktopCreateMenu) {
+      setShowDesktopCreateMenu(false);
       return true;
     }
     return false;
@@ -49671,17 +49611,35 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const setShowFilterPanel = setExternalShowFilterPanel ?? setLocalShowFilterPanel;
   useDismissSearchOnOutsideClick(showPaymentCustomerDropdown, () => setShowPaymentCustomerDropdown(false));
 
+  const openCashflowComposer = (type) => {
+    setShowDesktopCreateMenu(false);
+    if (type === 'income') {
+      setShowExpenseModal(false);
+      setPaymentCustomerSearch('');
+      setShowPaymentCustomerDropdown(false);
+      setNewPayment({ customerId: '', amount: '', note: '', date: getTodayString(), method: 'Tiền mặt', sourceType: 'driver_cash' });
+      setShowPaymentModal(true);
+      return;
+    }
+    setShowPaymentModal(false);
+    setNewExpense(previous => ({
+      ...previous,
+      category: isDriverFinanceMode ? '' : (previous.category || 'Chi mua hàng hóa'),
+      note: isDriverFinanceMode ? '' : previous.note,
+      date: getTodayString()
+    }));
+    setShowExpenseModal(true);
+  };
+
   useEffect(() => {
     if (!quickActionIntent?.type) return;
     if (quickActionIntent.type === 'income' && canCreateIncome) {
-      setShowExpenseModal(false);
-      setShowPaymentModal(true);
+      openCashflowComposer('income');
       onQuickActionHandled?.();
       return;
     }
     if (quickActionIntent.type === 'expense' && canCreateExpense) {
-      setShowPaymentModal(false);
-      setShowExpenseModal(true);
+      openCashflowComposer('expense');
       onQuickActionHandled?.();
     }
   }, [quickActionIntent?.id, quickActionIntent?.requestedAt, quickActionIntent?.type, canCreateIncome, canCreateExpense]);
@@ -49875,6 +49833,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const pendingIncome = pendingTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingExpense = pendingTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
   const balance = totalIncome - totalExpense;
+  const summaryAmountSize = (amount) => {
+    const length = `${formatCurrency(amount)} đ`.length;
+    return length >= 15 ? 'text-[9px]' : length >= 12 ? 'text-[10px]' : length >= 10 ? 'text-[11px]' : 'text-xs';
+  };
 
   const handleResetFilters = () => {
     setFilterDate(getTodayString());
@@ -50119,33 +50081,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     closeCashflowEditor();
   };
 
-  const openExpenseComposer = () => {
-    setShowCashflowCreateMenu(false);
-    setNewExpense(prev => ({
-      ...prev,
-      category: isDriverFinanceMode ? '' : (prev.category || 'Chi mua hàng hóa'),
-      note: isDriverFinanceMode ? '' : prev.note,
-      date: getTodayString()
-    }));
-    setShowExpenseModal(true);
-  };
-
-  const openIncomeComposer = () => {
-    setShowCashflowCreateMenu(false);
-    setPaymentCustomerSearch('');
-    setShowPaymentCustomerDropdown(false);
-    setNewPayment(prev => ({
-      ...prev,
-      customerId: '',
-      amount: '',
-      note: '',
-      date: getTodayString(),
-      method: 'Tiền mặt',
-      sourceType: 'driver_cash'
-    }));
-    setShowPaymentModal(true);
-  };
-
   return (
     <div className="space-y-4 animate-in fade-in pb-16">
       {showFilterPanel && (
@@ -50225,31 +50160,48 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         </div>
       )}
 
-      <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 text-white rounded-2xl p-3 shadow-md">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-200">Tổng kết ngày</p>
-          <h3 className="shrink-0 text-2xl font-black leading-tight !text-white">{formatCurrency(balance)} đ</h3>
-        </div>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <div className="rounded-xl border border-orange-200/30 bg-orange-400/15 p-2 text-center">
-            <p className="mb-0 text-[10px] uppercase font-bold leading-tight text-orange-200">Tổng chi</p>
-            <p className="text-base font-black leading-tight text-orange-100">{formatCurrency(totalExpense)} đ</p>
-          </div>
-          <div className="rounded-xl border border-emerald-200/30 bg-emerald-400/15 p-2 text-center">
-            <p className="mb-0 text-[10px] uppercase font-bold leading-tight text-emerald-200">Tổng thu</p>
-            <p className="text-base font-black leading-tight text-emerald-100">{formatCurrency(totalIncome)} đ</p>
-          </div>
+      <div className="rounded-xl bg-gradient-to-r from-emerald-800 to-teal-700 px-2 py-3 text-white shadow-sm">
+        <div className="finance-summary-metrics grid grid-cols-3 divide-x divide-white/20 text-center">
+          {[
+            { label: 'Tổng thu', amount: totalIncome, tone: 'text-emerald-100' },
+            { label: 'Tổng chi', amount: totalExpense, tone: 'text-amber-100' },
+            { label: 'Lợi nhuận', amount: balance, tone: balance < 0 ? 'text-rose-100' : 'text-white' }
+          ].map(({ label, amount, tone }) => (
+            <div key={label} className="flex min-w-0 flex-col justify-center gap-1 px-1.5" title={`${label}: ${formatCurrency(amount)} đ`}>
+              <span className={`text-[10px] font-bold leading-tight ${tone}`}>{label}</span>
+              <strong className={`${summaryAmountSize(amount)} whitespace-nowrap font-black leading-tight text-white`}>{formatCurrency(amount)} đ</strong>
+            </div>
+          ))}
         </div>
         {(pendingIncome > 0 || pendingExpense > 0) && (
-          <div className="mt-2 rounded-2xl border border-amber-300/30 bg-amber-400/10 px-2 py-1.5 text-[11px] font-bold leading-tight text-amber-100">
+          <div className="mt-2 border-t border-white/15 px-2 pt-2 text-[11px] font-bold leading-tight text-amber-100">
             Chờ xác nhận: thu {formatCurrency(pendingIncome)} đ • chi {formatCurrency(pendingExpense)} đ. Các khoản này chưa trừ nợ và chưa vào chi phí chính thức.
           </div>
         )}
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-100">
+      <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
           <h3 className="font-bold text-gray-800">Danh sách thu chi</h3>
+          {(canCreateExpense || canCreateIncome) && (
+            <div className="relative hidden md:block">
+              <button
+                type="button"
+                onClick={() => setShowDesktopCreateMenu(value => !value)}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                aria-label="Mở thao tác thu chi"
+                aria-expanded={showDesktopCreateMenu}
+              >
+                <Plus size={18} />
+              </button>
+              {showDesktopCreateMenu && (
+                <div className="absolute right-0 top-full z-20 mt-2 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  {canCreateIncome && <button type="button" onClick={() => openCashflowComposer('income')} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-emerald-700 hover:bg-emerald-50"><PlusCircle size={16} /> Khoản thu</button>}
+                  {canCreateExpense && <button type="button" onClick={() => openCashflowComposer('expense')} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-orange-600 hover:bg-orange-50"><MinusCircle size={16} /> Khoản chi</button>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {filteredTransactions.length === 0 ? (
           <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch nào trong ngày đã chọn.</p>
@@ -50354,54 +50306,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
           </div>
         )}
       </div>
-
-      {(canCreateExpense || canCreateIncome) && (
-        <div className="fixed bottom-[calc(76px+env(safe-area-inset-bottom))] left-0 z-40 flex w-full px-4 sm:bottom-4 pointer-events-none">
-          <div className="relative mx-auto flex w-full max-w-md items-center gap-2 pointer-events-auto">
-          {canCreateExpense && (
-            <button
-              onClick={openExpenseComposer}
-              className="min-w-0 flex-1 rounded-xl bg-orange-500 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-orange-600"
-            >
-              Khoản chi
-            </button>
-          )}
-          {canCreateIncome && (
-            <button
-              onClick={openIncomeComposer}
-              className="min-w-0 flex-1 rounded-xl bg-emerald-500 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-600"
-            >
-              Khoản thu
-            </button>
-          )}
-            <div className="relative shrink-0">
-              {showCashflowCreateMenu && (
-                <div className="absolute bottom-full right-0 mb-3 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
-                  {canCreateIncome && (
-                    <button type="button" onClick={openIncomeComposer} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-emerald-700 transition hover:bg-emerald-50">
-                      <PlusCircle size={16} /> Khoản thu
-                    </button>
-                  )}
-                  {canCreateExpense && (
-                    <button type="button" onClick={openExpenseComposer} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-bold text-orange-600 transition hover:bg-orange-50">
-                      <MinusCircle size={16} /> Khoản chi
-                    </button>
-                  )}
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowCashflowCreateMenu(value => !value)}
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition hover:bg-blue-700"
-                aria-label="Mở thao tác thu chi"
-                aria-expanded={showCashflowCreateMenu}
-              >
-                <Plus size={22} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {editingCashflowTransaction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -66946,12 +66850,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   );
 }
 
-function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canManageInvoiceTemplate = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showAddOrder, setShowAddOrder] = useState(false); 
   const [showOrderSourcePicker, setShowOrderSourcePicker] = useState(false);
   const [orderCreationSource, setOrderCreationSource] = useState('');
   const [showQuickAddCus, setShowQuickAddCus] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [showInvoiceTemplateMenu, setShowInvoiceTemplateMenu] = useState(false);
+  const [invoicePreviewModel, setInvoicePreviewModel] = useState(null);
+  const [invoiceDetailModel, setInvoiceDetailModel] = useState(null);
+  const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
   const [orderShareStatus, setOrderShareStatus] = useState('');
   const [zaloPreviewOrderId, setZaloPreviewOrderId] = useState('');
   const [zaloPreviewDraft, setZaloPreviewDraft] = useState('');
@@ -66980,6 +66888,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const [showCusDropdown, setShowCusDropdown] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   useAppScreenBack(() => {
+    if (invoicePreviewModel) { setInvoicePreviewModel(null); return true; }
+    if (showInvoiceTemplateMenu) { setShowInvoiceTemplateMenu(false); return true; }
     if (showCusDropdown) {
       setShowCusDropdown(false);
       return true;
@@ -67447,6 +67357,18 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     || (zaloPreviewOrderSnapshotRef.current?.id === zaloPreviewOrderId ? zaloPreviewOrderSnapshotRef.current : null);
 
   useEffect(() => {
+    let cancelled = false;
+    if (!selectedOrder?.id) {
+      setInvoiceDetailModel(null);
+      return undefined;
+    }
+    buildSalesInvoiceTemplateModel({ order: selectedOrder, company: currentCompany, customers, orders, payments, products })
+      .then(model => { if (!cancelled) setInvoiceDetailModel(model); })
+      .catch(error => { if (!cancelled) { setInvoiceDetailModel(null); console.warn('Không chuẩn bị được mẫu hóa đơn:', error); } });
+    return () => { cancelled = true; };
+  }, [selectedOrder, currentCompany, customers, orders, payments, products]);
+
+  useEffect(() => {
     if (selectedOrderId && !orderViewModels[selectedOrderId] && selectedOrderSnapshotRef.current?.id !== selectedOrderId) {
       closeOrderDetail();
     }
@@ -67485,6 +67407,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       customers,
       orders,
       payments,
+      products,
       ensurePayment: onEnsureOrderPayosPayment,
       reason: 'order_detail_opened_or_refreshed'
     });
@@ -67494,6 +67417,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     customers,
     orders,
     payments,
+    products,
     selectedOrder?.id,
     selectedOrder?.updatedAt,
     selectedOrder?.paymentLookupSyncedAt
@@ -67541,6 +67465,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const closeOrderDetail = () => {
+    setShowInvoiceTemplateMenu(false);
+    setInvoicePreviewModel(null);
     setSelectedOrderId(null);
     selectedOrderSnapshotRef.current = null;
     setOrderShareStatus('');
@@ -67554,6 +67480,27 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setOrderPaymentDraft({ open: false, orderId: '', amount: '', method: 'Chuyển khoản', date: getTodayString(), isSaving: false, error: '' });
     setZaloPreviewOrderId('');
     zaloPreviewOrderSnapshotRef.current = null;
+  };
+
+  const openInvoicePreview = async () => {
+    if (!selectedOrder) return;
+    setInvoicePreviewLoading(true);
+    setOrderShareStatus('');
+    try {
+      const model = await buildSalesInvoiceTemplateModel({ order: selectedOrder, company: currentCompany, customers, orders, payments, products });
+      setInvoicePreviewModel(model);
+    } catch (error) {
+      setOrderShareStatus(error?.message || 'Không mở được bản xem trước hóa đơn.');
+    } finally {
+      setInvoicePreviewLoading(false);
+    }
+  };
+
+  const saveInvoiceTemplateOverride = async (templateId) => {
+    if (!selectedOrder || !canManageInvoiceTemplate) return;
+    setShowInvoiceTemplateMenu(false);
+    const result = await onUpdateOrderInvoiceTemplate?.(selectedOrder.id, templateId);
+    setOrderShareStatus(result?.success ? 'Đã lưu mẫu riêng cho hóa đơn.' : result?.message || 'Không lưu được mẫu hóa đơn.');
   };
 
   const isOrderDraft = (order) => (order?.reviewStatus || 'draft') === 'draft';
@@ -68364,7 +68311,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       const cachedAsset = getCachedOrderShareAsset(selectedOrder, currentCompany, {
         customers,
         orders,
-        payments
+        payments,
+        products
       });
       readSpan.end({ status: cachedAsset ? 'cache_hit' : 'cache_miss' });
       readSpanClosed = true;
@@ -68377,6 +68325,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           customers,
           orders,
           payments,
+          products,
           ensurePayment: onEnsureOrderPayosPayment,
           reason: 'share_click_cache_miss'
         });
@@ -69794,15 +69743,26 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   <p className="mt-0.5 text-[12px] font-semibold text-slate-500">{formatOrderCode(selectedOrder.id)}</p>
                 </div>
               </div>
-              {canSharePaymentQr && <button type="button" aria-label="Chia sẻ hóa đơn" onClick={() => handleShareOrder()} className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-sm shrink-0 hover:bg-emerald-100">
-                <Send size={18} />
-              </button>}
+              <div className="flex items-center gap-1">
+                <button type="button" title="Xem hóa đơn" aria-label="Xem hóa đơn" disabled={invoicePreviewLoading} onClick={openInvoicePreview} className="w-9 h-9 rounded-full bg-sky-50 text-sky-700 flex items-center justify-center"><Eye size={18} /></button>
+                {canSharePaymentQr && <button type="button" title="Chia sẻ hóa đơn" aria-label="Chia sẻ hóa đơn" onClick={() => handleShareOrder()} className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center"><Send size={18} /></button>}
+                <button type="button" title="Mẫu hóa đơn" aria-label="Mẫu hóa đơn" aria-expanded={showInvoiceTemplateMenu} onClick={() => setShowInvoiceTemplateMenu(value => !value)} className="w-9 h-9 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center"><MoreVertical size={18} /></button>
+              </div>
+              {showInvoiceTemplateMenu && <div className="absolute right-3 top-full z-50 mt-1 max-h-[60vh] w-64 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" role="menu" aria-label="Mẫu hóa đơn">
+                <p className="px-2 py-1 text-[12px] font-bold text-slate-800">Mẫu hóa đơn</p>
+                <button type="button" role="menuitem" disabled={!canManageInvoiceTemplate} onClick={() => saveInvoiceTemplateOverride(null)} className="block w-full rounded px-2 py-2 text-left text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-50">Mặc định công ty{!selectedOrder.invoiceTemplateOverride ? ' ✓' : ''}</button>
+                {INVOICE_TEMPLATES.map((template) => <button key={template.id} type="button" role="menuitem" disabled={!canManageInvoiceTemplate} onClick={() => saveInvoiceTemplateOverride(template.id)} className="block w-full rounded px-2 py-2 text-left text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-50">{template.id.slice(-2)} · {template.name}{selectedOrder.invoiceTemplateOverride === template.id ? ' ✓' : ''}</button>)}
+              </div>}
             </HDHeader>
+
+            {invoicePreviewModel && <React.Suspense fallback={null}><InvoicePreview model={invoicePreviewModel} templateId={resolveInvoiceTemplateId(currentCompany, selectedOrder)} title="Hóa đơn bán hàng" onClose={() => setInvoicePreviewModel(null)} onShare={canSharePaymentQr ? () => handleShareOrder() : null} /></React.Suspense>}
 
             <div
               className="hd-order-detail-content flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-[calc(var(--hd-safe-bottom)+7rem)] space-y-4"
               style={{ scrollPaddingBottom: 'calc(var(--hd-safe-bottom) + 7rem)' }}
             >
+              {invoiceDetailModel && <div className="invoice-preview-container" style={{ containerType: 'inline-size', containerName: 'invoice-preview' }}><React.Suspense fallback={<div className="p-3 text-sm text-slate-500">Đang tải hóa đơn...</div>}><InvoiceTemplateEngine model={invoiceDetailModel} templateId={resolveInvoiceTemplateId(currentCompany, selectedOrder)} /></React.Suspense></div>}
+              <h3 className="text-[12px] font-bold text-slate-500">Chi tiết và thao tác</h3>
               <div className="rounded-[28px] border border-rose-100 bg-gradient-to-br from-white via-rose-50/40 to-amber-50/40 p-4 shadow-sm hd-soft-red-outline">
                 <div className="mb-4 grid grid-cols-[1.05fr_1.15fr] gap-3">
                   <div className="rounded-3xl bg-white/85 px-3 py-4 text-left shadow-sm">

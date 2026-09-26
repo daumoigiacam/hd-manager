@@ -1,0 +1,2 @@
+source_warehouse_id,source_company_id,source_name,operational_record_count,evidence_sources,target_candidate,confidence,status,owner_required
+NOT_FOUND,comp_1777895277336,NOT_AVAILABLE,2679,WAREHOUSE-SOURCE-PROFILE.csv;WAREHOUSE-MASTER-CANDIDATES.csv;WAREHOUSE-TENANT-MAPPING.csv,OWNER_REQUIRED,HIGH,OPERATIONAL_ONLY,YES

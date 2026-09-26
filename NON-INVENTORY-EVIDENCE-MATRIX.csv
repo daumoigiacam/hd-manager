@@ -1,0 +1,4 @@
+source_product_id,source_name,category,source_unit,code_group,evidence,confidence,status,owner_required
+prod_1779104526942,Thùng Xốp,Phụ,Cái,OWNER_REVIEW,Product evidence only; no direct inventory exclusion proof,NONE,OWNER_REVIEW,YES
+prod_1779104561166,Phí Ship,Phụ,Chuyến,SERVICE,PRODUCT-CODE-PROPOSAL.csv service proposal; no complete stock/purchase exclusion proof,NONE,OWNER_REVIEW,YES
+prod_1779104571278,Đá,Phụ,Bao,OWNER_REVIEW,Product evidence only; no direct inventory exclusion proof,NONE,OWNER_REVIEW,YES

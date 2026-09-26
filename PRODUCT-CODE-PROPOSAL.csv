@@ -1,0 +1,37 @@
+tenant_id,source_product_id,source_name,category,proposed_code,code_group,code_status,reason
+comp_1777895277336,prod_1779104073246,Gà Sống,Gà,HD-LIVE-GA-1779104073246,LIVE_GA,PROPOSED,Explicit name/category identify live chicken; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104101173,Gà Móc,Gà,HD-PROCESSED-GA-1779104101173,PROCESSED_GA,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104118174,Gà Không Móc,Gà,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104146701,Gà Móc Sạch,Gà,HD-PROCESSED-GA-1779104146701,PROCESSED_GA,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104170597,Gà Móc Sạch Cắt Chân,Gà,HD-PROCESSED-GA-1779104170597,PROCESSED_GA,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104205565,Vịt Sống,Vịt,HD-LIVE-VIT-1779104205565,LIVE_VIT,PROPOSED,Explicit name/category identify live duck; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104224062,Vịt Không Móc,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104241550,Vịt Móc,Vịt,HD-PROCESSED-VIT-1779104241550,PROCESSED_VIT,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104268878,Vịt Móc Sạch,Vịt,HD-PROCESSED-VIT-1779104268878,PROCESSED_VIT,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104293541,Vịt Móc Sạch Cắt Chân,Vịt,HD-PROCESSED-VIT-1779104293541,PROCESSED_VIT,PROPOSED,Explicit hooked/processed name and matching category; approved quantity CON + independent weight KG
+comp_1777895277336,prod_1779104313397,Vịt Bọng,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104330830,Cánh Gà,Gà Công Nghiệp,HD-PROCESSED-GA-1779104330830,PROCESSED_GA,PROPOSED,Explicit poultry cut name and Gà Công Nghiệp category; approved processed poultry quantity CON + independent weight KG
+comp_1777895277336,prod_1779104342214,Đùi Gà,Gà Công Nghiệp,HD-PROCESSED-GA-1779104342214,PROCESSED_GA,PROPOSED,Explicit poultry cut name and Gà Công Nghiệp category; approved processed poultry quantity CON + independent weight KG
+comp_1777895277336,prod_1779104360773,Đùi Tỏi,Gà Công Nghiệp,HD-PROCESSED-GA-1779104360773,PROCESSED_GA,PROPOSED,Explicit poultry cut name and Gà Công Nghiệp category; approved processed poultry quantity CON + independent weight KG
+comp_1777895277336,prod_1779104371789,Ức Gà,Gà Công Nghiệp,HD-PROCESSED-GA-1779104371789,PROCESSED_GA,PROPOSED,Explicit poultry cut name and Gà Công Nghiệp category; approved processed poultry quantity CON + independent weight KG
+comp_1777895277336,prod_1779104388678,Gà Bọng,Gà Công Nghiệp,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104406958,Chân Gà,Chân,HD-BYPRODUCT-1779104406958,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104421262,Chân Vịt,Chân,HD-BYPRODUCT-1779104421262,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104434102,Đầu Gà,Phụ,HD-BYPRODUCT-1779104434102,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104446485,Đầu Vịt,Phụ,HD-BYPRODUCT-1779104446485,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104459006,Đầu Vịt Dài,Phụ,HD-BYPRODUCT-1779104459006,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104474430,Lòng Gà,Lòng,HD-BYPRODUCT-1779104474430,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104486206,Lòng Vịt,Lòng,HD-BYPRODUCT-1779104486206,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104526942,Thùng Xốp,Phụ,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104541910,Phế Phẩm,Phụ,HD-BYPRODUCT-1779104541910,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1779104561166,Phí Ship,Phụ,HD-SERVICE-1779104561166,SERVICE,PROPOSED,Explicit shipping-fee name; not poultry or by-product; proposal only
+comp_1777895277336,prod_1779104571278,Đá,Phụ,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104605054,Vịt Loại,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1779104619174,Gà Loại,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1781562583964,Mỡ Gà,Gà,HD-BYPRODUCT-1781562583964,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1781656503918,Lông Vịt,Vịt,HD-BYPRODUCT-1781656503918,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1780202063417,prod_1782399766159,Vịt Không Móc,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1780202063417,prod_1782399802559,Vịt Không Móc,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1782977822236,Phao Câu,Lòng,HD-BYPRODUCT-1782977822236,BYPRODUCT,PROPOSED,Explicit by-product/part name or source category; preserve source unit/stockUnit; proposal only
+comp_1777895277336,prod_1786785535576,Vịt Không Móc To,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required
+comp_1777895277336,prod_1786785560787,Vịt Không Móc Trung,Vịt,OWNER_REQUIRED,OWNER_REVIEW,OWNER_REVIEW,Category/name does not prove a live processed by-product or service group; owner review required

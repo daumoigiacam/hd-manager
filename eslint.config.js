@@ -18,6 +18,30 @@ export default [
   },
   {
     files: [
+      'src/features/invoice-templates/**/*.{jsx,js}',
+      'tests/invoice-templates.test.mjs',
+      'tests/visual/invoice-harness.jsx',
+      'tests/visual/invoice-templates.visual.mjs',
+      'tests/visual/invoice-settings.integration.mjs'
+    ],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: {
+        console: 'readonly',
+        document: 'readonly',
+        window: 'readonly',
+        Image: 'readonly',
+        URL: 'readonly'
+      }
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }]
+    }
+  },
+  {
+    files: [
       'src/features/assets/**/*.{jsx,js}',
       'src/features/delivery/**/*.{jsx,js}',
       'src/features/payroll/**/*.{jsx,js}',

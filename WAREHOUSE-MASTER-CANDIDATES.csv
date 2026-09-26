@@ -1,0 +1,2 @@
+source_warehouse_id,source_company_id,source_name,location,operational_record_count,active_evidence,candidate_status,target_required,owner_review
+NOT_FOUND,comp_1777895277336,NOT_AVAILABLE,NOT_AVAILABLE,2679,NOT_AVAILABLE; no source warehouse master/status fields,OWNER_INPUT_REQUIRED,YES,YES

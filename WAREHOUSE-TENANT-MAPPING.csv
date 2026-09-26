@@ -1,0 +1,2 @@
+source_warehouse_id,source_company_id,source_name,target_warehouse_id,mapping_status,evidence,owner_required
+NOT_FOUND,comp_1777895277336,NOT_AVAILABLE,OWNER_REQUIRED,NOT_FOUND,immutable snapshot phase3f1-reconstruction-20260820-04; products JSONL SHA-256 7df19e4f049e1863002b93af37ecf60078044d27ee99dd1c7af3958a23d7e949; 2679 operational records have companyId only; warehouseId/warehouseName/location fields are absent,YES

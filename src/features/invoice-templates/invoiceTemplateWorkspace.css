@@ -1,0 +1,86 @@
+.invoice-settings { background: #fff; border: 1px solid #e5eaf1; border-radius: 8px; padding: 20px; color: #18243b; }
+.invoice-settings__heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.invoice-settings__heading h2 { font-size: 19px; font-weight: 800; margin: 0; }
+.invoice-settings__heading p { margin: 3px 0 0; color: #62708a; font-size: 12px; }
+.invoice-settings__heading > span { color: #285bd9; background: #edf4ff; padding: 5px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.invoice-settings__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.invoice-settings__option { --thumb-color: #1465ea; position: relative; display: flex; flex-direction: column; align-items: stretch; min-width: 0; padding: 9px; border: 1px solid #dce4ef; border-radius: 7px; background: #fff; color: #1b2a43; text-align: left; cursor: pointer; }
+.invoice-settings__option.is-selected { border-color: #2369e8; box-shadow: inset 0 0 0 1px #2369e8; }
+.invoice-settings__option--green { --thumb-color: #05935b; }
+.invoice-settings__option--coral { --thumb-color: #ea5261; }
+.invoice-settings__option--orange { --thumb-color: #ed8225; }
+.invoice-settings__option--teal { --thumb-color: #0a788b; }
+.invoice-settings__option--paper { --thumb-color: #ad4a38; }
+.invoice-settings__option--gold { --thumb-color: #aa792e; }
+.invoice-settings__option--navy { --thumb-color: #0a3348; }
+.invoice-settings__option--minimal { --thumb-color: #374a50; }
+.invoice-settings__option--corporate { --thumb-color: #097f68; }
+.invoice-settings__thumbnail { position: relative; display: flex; flex-direction: column; gap: 5px; height: 82px; padding: 12px; overflow: hidden; border: 1px solid #dce4ee; border-radius: 4px; background: #fafcff; }
+.invoice-settings__thumbnail:before { content: ''; display: block; width: 60%; height: 10px; background: var(--thumb-color); border-radius: 1px; }
+.invoice-settings__thumbnail > span { display: block; width: 75%; height: 14px; background: color-mix(in srgb, var(--thumb-color) 18%, white); }
+.invoice-settings__thumbnail > i { display: block; width: 94%; height: 5px; background: #e1e8f1; }
+.invoice-settings__thumbnail > i:nth-of-type(2) { width: 70%; }
+.invoice-settings__thumbnail > i:nth-of-type(3) { width: 84%; }
+.invoice-settings__thumbnail > strong { position: absolute; right: 12px; bottom: 8px; font-size: 22px; color: var(--thumb-color); }
+.invoice-settings__option--navy .invoice-settings__thumbnail { background: linear-gradient(90deg, #0a3348 30%, #f9fbff 30%); }
+.invoice-settings__option--gold .invoice-settings__thumbnail { border: 2px double #ba9652; background: #fffcf4; }
+.invoice-settings__option--minimal .invoice-settings__thumbnail { background: #fff; }
+.invoice-settings__option-body { display: block; padding: 9px 0 2px; min-width: 0; }
+.invoice-settings__option-body strong, .invoice-settings__option-body small { display: block; overflow-wrap: anywhere; }
+.invoice-settings__option-body strong { font-size: 12px; line-height: 1.3; }
+.invoice-settings__option-body small { color: #66748d; font-size: 10px; margin-top: 3px; }
+.invoice-settings__option > svg { position: absolute; right: 15px; top: 17px; color: #145ddd; background: white; border-radius: 50%; }
+.invoice-settings__active { display: block; color: #047857; font-size: 10px; font-weight: 700; }
+.invoice-settings__bottom { display: flex; justify-content: space-between; align-items: end; gap: 12px; margin-top: 18px; }
+.invoice-settings__bottom label { display: flex; flex-direction: column; gap: 5px; color: #53627b; font-size: 11px; font-weight: 700; }
+.invoice-settings__bottom select { min-height: 37px; padding: 0 8px; border: 1px solid #cfdae9; border-radius: 5px; background: white; color: #1b2a43; }
+.invoice-settings__bottom > div { display: flex; gap: 7px; }
+.invoice-settings__bottom button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 38px; padding: 0 11px; border-radius: 5px; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.invoice-settings__secondary { border: 1px solid #b9cdf5; color: #1f5fd5; background: white; }
+.invoice-settings__primary { border: 1px solid #245fe1; color: white; background: #245fe1; }
+.invoice-settings__primary:disabled { opacity: .55; }
+.invoice-settings__status { margin: 10px 0 0; color: #0d7660; font-size: 12px; font-weight: 700; }
+.invoice-preview-overlay { position: fixed; z-index: 120; inset: 0; display: flex; align-items: stretch; justify-content: center; background: rgba(11, 27, 53, .67); padding: 12px; }
+.invoice-preview-dialog { display: flex; flex-direction: column; width: min(1100px, 100%); max-height: 100%; overflow: hidden; border-radius: 8px; background: #f0f4f9; box-shadow: 0 15px 50px #08182f44; }
+.invoice-preview-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; background: white; border-bottom: 1px solid #dbe3ee; }
+.invoice-preview-toolbar div { display: flex; flex-direction: column; min-width: 0; }
+.invoice-preview-toolbar strong { color: #1b2a43; font-size: 15px; }
+.invoice-preview-toolbar span { color: #687891; font-size: 11px; }
+.invoice-preview-toolbar button { width: 32px; height: 32px; display: grid; place-items: center; border: 0; background: #f2f5f9; color: #4b5d78; border-radius: 5px; }
+.invoice-preview-controls { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 10px; }
+.invoice-preview-segment { display: flex; border: 1px solid #cfdaec; border-radius: 5px; overflow: hidden; background: #fff; }
+.invoice-preview-segment button { display: flex; align-items: center; gap: 4px; padding: 7px 9px; border: 0; background: #fff; color: #61718d; font-size: 11px; font-weight: 700; }
+.invoice-preview-segment button[aria-pressed="true"] { color: #165bd2; background: #e8f0ff; }
+.invoice-preview-controls select { height: 32px; border: 1px solid #cfdaec; border-radius: 5px; background: #fff; color: #1b2a43; font-size: 11px; }
+.invoice-preview-canvas { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+.invoice-preview-container { margin: 0 auto; container-type: inline-size; container-name: invoice-preview; }
+.invoice-preview-canvas--phone .invoice-preview-container { width: min(390px, 100%); }
+.invoice-preview-canvas--desktop .invoice-preview-container { width: min(1000px, 100%); }
+.invoice-preview-canvas--print.invoice-preview-canvas--a4 .invoice-preview-container { width: min(794px, 100%); }
+.invoice-preview-canvas--print.invoice-preview-canvas--a5 .invoice-preview-container { width: min(560px, 100%); }
+.invoice-preview-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 14px; background: #fff; border-top: 1px solid #dbe3ee; }
+.invoice-preview-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 8px 10px; border: 1px solid #cbd8e8; border-radius: 5px; background: #fff; color: #1b4c9d; font-size: 11px; font-weight: 800; }
+.invoice-preview-actions button:last-child { background: #1b61dc; border-color: #1b61dc; color: white; }
+.invoice-preview-actions button:disabled { opacity: .55; }
+.invoice-preview-error { padding: 6px 15px; margin: 0; color: #ba3143; font-size: 12px; }
+@media (max-width: 560px) {
+  .invoice-settings { padding: 12px; }
+  .invoice-settings__grid { gap: 7px; }
+  .invoice-settings__option { padding: 6px; }
+  .invoice-settings__thumbnail { height: 65px; }
+  .invoice-settings__bottom { display: block; }
+  .invoice-settings__bottom > div { margin-top: 10px; }
+  .invoice-preview-overlay { padding: 0; }
+  .invoice-preview-dialog { border-radius: 0; }
+  .invoice-preview-controls { justify-content: space-between; gap: 4px; }
+  .invoice-preview-segment button { padding: 7px 5px; font-size: 10px; }
+  .invoice-preview-segment svg { width: 13px; }
+  .invoice-preview-canvas { padding: 8px; }
+}
+@media print {
+  body * { visibility: hidden !important; }
+  .invoice-print-target, .invoice-print-target * { visibility: visible !important; }
+  .invoice-print-target { position: absolute !important; top: 0; left: 0; width: 100% !important; margin: 0 !important; }
+  .invoice-preview-overlay, .invoice-preview-dialog, .invoice-preview-canvas { position: static; display: block; background: #fff; padding: 0; margin: 0; overflow: visible; box-shadow: none; max-height: none; }
+  .invoice-preview-toolbar, .invoice-preview-controls, .invoice-preview-actions { display: none !important; }
+}
