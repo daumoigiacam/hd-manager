@@ -111,7 +111,7 @@ test('company dashboard renders immediately while server-confirmed data syncs in
   assert.doesNotMatch(appSource, /COMPANY_DASHBOARD_SERVER_COLLECTION_NAMES/);
   assert.doesNotMatch(appSource, /isCompanyDashboardServerReady/);
   assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
-  assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<ExecutiveDashboardView/);
+  assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<(?:Memoized)?ExecutiveDashboardView/);
   assert.match(appSource, /if \(!shouldApplyRealtimeSnapshot\(snapshot\)\)/);
   assert.match(appSource, /readTenantCollectionViaRest\(colName\)/);
 });

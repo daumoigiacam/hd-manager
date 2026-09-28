@@ -1,6 +1,7 @@
 .mobile-app-shell[data-active-tab="messages"] > main.hd-app-content {
   min-height: 0;
   padding: 0 !important;
+  padding-bottom: var(--hd-footer-height, 0px) !important;
   overflow: hidden;
   scrollbar-gutter: auto;
   background: #fff;

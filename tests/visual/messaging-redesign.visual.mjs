@@ -83,11 +83,17 @@ const messages = [
   directMessage('emp_driver', 'Đã giao 500 con vịt cho trại', 7, 5),
   directMessage('emp_dispatch', 'Lịch giao vịt cho khách Bắc Ninh. Cập nhật vị trí giúp mình', 7, 0),
 ];
+const notifications = [
+  { id: 'notice_customer', companyId, title: 'Đơn khách mới', message: 'Đơn khách Bình Dương chờ xác nhận.', customerId: 'farm', audience: 'employees', createdAt: dateAt(9, 34) },
+  { id: 'notice_group', companyId, title: 'Lịch nhóm giao hàng', message: 'Nhóm giao hàng cập nhật lịch.', groupId: 'internal_group_delivery', audience: 'employees', createdAt: dateAt(9, 35) },
+  { id: 'notice_company', companyId, title: 'Thông báo hệ thống', message: 'Hệ thống sẽ bảo trì lúc 22:00.', audience: 'employees', createdAt: dateAt(9, 36) },
+];
 const previewStore = {
   __replaceSeed: true,
   customers,
   employees,
   messages: Object.fromEntries(messages.map((item) => [item.id, item])),
+  notifications: Object.fromEntries(notifications.map((item) => [item.id, item])),
 };
 
 await mkdir(outputDir, { recursive: true });
@@ -117,13 +123,36 @@ try {
   await page.screenshot({ path: `${outputDir}/01_chat_list.png` });
   assert.equal(await module.locator('h1').count(), 0, 'No app-level messaging header is allowed.');
   assert.equal(await module.getByRole('tab').count(), 4, 'Conversation list needs four tabs.');
-  await module.getByRole('button', { name: /Trại Bình Dương/ }).first().click();
+  const rows = module.locator('[data-chat-item="true"]');
+  const hasRow = async (text) => (await rows.filter({ hasText: text }).count()) > 0;
+  await rows.filter({ hasText: 'Hệ thống sẽ bảo trì lúc 22:00.' }).waitFor({ timeout: 10000 });
+  assert.ok(await hasRow('Hệ thống sẽ bảo trì lúc 22:00.'), 'All must include general app notifications.');
+  assert.ok(await hasRow('Đơn khách Bình Dương chờ xác nhận.'), 'All must include customer notifications.');
+  assert.ok(await hasRow('Nhóm giao hàng cập nhật lịch.'), 'All must include group notifications.');
+  await rows.filter({ hasText: 'Hệ thống sẽ bảo trì lúc 22:00.' }).click();
+  assert.ok(await module.getByRole('button', { name: 'Mở chi tiết thông báo' }).isVisible(), 'Notification must open as a readable detail.');
+  assert.equal(await module.getByRole('textbox', { name: 'Nhập tin nhắn' }).count(), 0, 'Notifications must not show a disabled message composer.');
+  await module.getByRole('button', { name: 'Quay lại danh sách tin nhắn' }).click();
+  await module.getByRole('tab', { name: 'Khách hàng' }).click();
+  assert.ok(await hasRow('Trại Bình Dương'), 'Customer tab must include customer conversations.');
+  assert.ok(await hasRow('Đơn khách Bình Dương chờ xác nhận.'), 'Customer tab must include customer notifications.');
+  assert.equal(await hasRow('Nhóm giao hàng cập nhật lịch.'), false, 'Customer tab must exclude group notifications.');
+  assert.equal(await hasRow('Hệ thống sẽ bảo trì lúc 22:00.'), false, 'Customer tab must exclude general notifications.');
+  await module.getByRole('tab', { name: 'Nhóm', exact: true }).click();
+  assert.ok(await hasRow('Tài xế - Giao hàng'), 'Group tab must include group conversations.');
+  assert.ok(await hasRow('Nhóm giao hàng cập nhật lịch.'), 'Group tab must include group notifications.');
+  assert.equal(await hasRow('Đơn khách Bình Dương chờ xác nhận.'), false, 'Group tab must exclude customer notifications.');
+  await module.getByRole('tab', { name: 'Đội ngũ' }).click();
+  assert.ok(await hasRow('Anh Hùng - Tài xế'), 'Team tab must include company conversations.');
+  assert.equal(await hasRow('Nhóm giao hàng cập nhật lịch.'), false, 'Team tab must exclude group notifications.');
+  await module.getByRole('tab', { name: 'Tất cả', exact: true }).click();
+  await module.locator('[data-chat-item="true"][data-chat-type="internal"][data-chat-category="customer"]').filter({ hasText: 'Trại Bình Dương' }).first().click();
   await page.screenshot({ path: `${outputDir}/02_chat_conversation.png` });
   await module.getByRole('button', { name: 'Đính kèm' }).click();
   await page.screenshot({ path: `${outputDir}/05_attachment_panel.png` });
   assert.equal(await module.locator('[data-chat-attachment-panel="true"] button').count(), 9, 'Attachment panel needs eight options and close.');
   await module.getByRole('button', { name: 'Quay lại danh sách tin nhắn' }).click();
-  await module.getByRole('button', { name: /Tài xế - Giao hàng/ }).first().click();
+  await module.locator('[data-chat-item="true"][data-chat-type="internal"][data-chat-category="group"]').filter({ hasText: 'Tài xế - Giao hàng' }).first().click();
   await page.screenshot({ path: `${outputDir}/03_group_delivery.png` });
   await module.getByRole('button', { name: 'Quay lại danh sách tin nhắn' }).click();
   await module.getByRole('searchbox', { name: 'Tìm kiếm tin nhắn, người dùng...' }).fill('vịt');

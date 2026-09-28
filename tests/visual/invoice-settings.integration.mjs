@@ -31,6 +31,16 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(({ initialToken, initialStore }) => {
     window.__initial_auth_token = initialToken;
+    window.__invoiceShareCalls = [];
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: ({ files }) => Boolean(files?.length) });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: async ({ files = [] }) => {
+      window.__invoiceShareCalls.push(await Promise.all(files.map(async (file) => ({
+        name: file.name,
+        size: file.size,
+        mime: file.type,
+        signature: Array.from(new Uint8Array(await file.slice(0, 8).arrayBuffer()))
+      }))));
+    } });
     if (!localStorage.getItem('hd-manager-local-db-v2-clean-preview')) {
       localStorage.setItem('hd-manager-local-db-v2-clean-preview', JSON.stringify(initialStore));
     }
@@ -70,6 +80,11 @@ try {
   assert.match(baseQr, /050086470672/);
   assert.match(baseQr, /1818000/);
   await page.screenshot({ path: 'test-results/invoice-templates/preview-mobile.png' });
+  await dialog.getByLabel('Khổ giấy').selectOption('a6');
+  await dialog.getByRole('button', { name: 'Bản in' }).click();
+  assert.ok(await dialog.locator('.invoice-preview-canvas--a6 .invoice-document').isVisible());
+  assert.ok(await dialog.locator('.invoice-preview-container').evaluate((element) => element.getBoundingClientRect().width <= 397));
+  await page.screenshot({ path: 'test-results/invoice-templates/preview-a6-mobile.png' });
   for (const [buttonName, extension] of [['PDF', '.pdf'], ['Ảnh', '.png']]) {
     const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
     await dialog.getByRole('button', { name: buttonName, exact: true }).click();
@@ -91,34 +106,55 @@ try {
   await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Đơn hàng', exact: true }).click();
   await page.getByRole('button', { name: /Khách kiểm thử hóa đơn/ }).first().click();
   await page.locator('.hd-order-detail-layer').waitFor();
-  await page.locator('.hd-order-detail-layer > .hd-order-detail-content .invoice-document').waitFor({ timeout: 15000 });
-  assert.equal(await page.locator('.hd-order-detail-content .invoice-document').getAttribute('data-invoice-template'), 'template-07');
-  assert.match(decodeQr(await page.locator('.hd-order-detail-content .invoice-bank__qr img').getAttribute('src')), /1818000/);
+  await page.waitForTimeout(500);
+  assert.ok(await page.evaluate(() => Boolean(document.elementFromPoint(80, 20)?.closest('.hd-order-detail-layer'))), 'Order detail header must cover the list header after opening.');
+  assert.equal(await page.locator('.hd-order-detail-header h2').evaluate((node) => getComputedStyle(node).color), 'rgb(255, 255, 255)');
+  assert.equal(await page.locator('.hd-order-detail-content .invoice-document').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Mẫu hóa đơn', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Xem hóa đơn', exact: true }).count(), 0);
+  assert.equal(await page.getByText('Chi tiết và thao tác').count(), 0);
+  assert.equal(await page.locator('.hd-order-detail-content section[aria-label="Thao tác hóa đơn"]').count(), 1);
+  assert.match(await page.locator('.hd-order-detail-content section h3').first().innerText(), /^Sửa mặt hàng \(1\)$/);
+  assert.ok(await page.locator('.hd-order-detail-content button[title="Sửa số lượng"]').isVisible());
   await page.screenshot({ path: 'test-results/invoice-templates/order-detail-mobile.png' });
-  await page.getByRole('button', { name: 'Mẫu hóa đơn', exact: true }).click();
-  await page.getByRole('menuitem', { name: /03 · Thanh toán nhanh/ }).click();
-  await page.getByText('Đã lưu mẫu riêng cho hóa đơn.').waitFor({ timeout: 15000 });
-  await page.locator('.hd-order-detail-content .invoice-document[data-invoice-template="template-03"]').waitFor({ timeout: 15000 });
-  await page.getByRole('button', { name: 'Xem hóa đơn' }).click();
-  const orderDialog = page.getByRole('dialog', { name: 'Hóa đơn bán hàng' });
-  await orderDialog.waitFor();
-  assert.equal(await orderDialog.locator('.invoice-document').getAttribute('data-invoice-template'), 'template-03');
-  await orderDialog.getByRole('button', { name: 'Đóng xem trước' }).click();
+  await page.locator('.hd-order-detail-content button[title="Sửa số lượng"]').click();
+  await page.getByLabel('Số lượng').fill('31.3');
+  const editStartedAt = Date.now();
+  await page.getByRole('button', { name: 'Lưu thay đổi' }).click();
+  await page.getByText(/Đã cập nhật số lượng/).waitFor({ timeout: 30000 });
+  await page.locator('.hd-order-detail-content').getByText(/1\.878\.000/).first().waitFor({ timeout: 15000 });
+  const updatedShareCache = await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('hd-manager-share-image-cache');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const records = request.result.transaction('assets', 'readonly').objectStore('assets').getAll();
+      records.onerror = () => reject(records.error);
+      records.onsuccess = () => resolve(records.result
+        .filter((record) => record.scope === 'sales_order_invoice' && record.entityId === 'o_invoice')
+        .map((record) => ({ createdAt: record.createdAt, sourceKey: record.sourceKey, bytes: record.payload?.blob?.size || 0 })));
+    };
+  }));
+  assert.ok(updatedShareCache.some((record) => record.createdAt >= editStartedAt && record.sourceKey.includes('template-07') && record.bytes > 5000), 'Saving edits must persist the updated company-template share image before reporting success.');
+  await page.getByRole('button', { name: 'Chia sẻ hóa đơn' }).click();
+  await page.waitForFunction(() => window.__invoiceShareCalls.length > 0, null, { timeout: 30000 });
+  const sharedFile = (await page.evaluate(() => window.__invoiceShareCalls.at(-1)))[0];
+  assert.match(sharedFile.name, /hoa-don-ban-hang\.png$/);
+  assert.equal(sharedFile.mime, 'image/png');
+  assert.ok(sharedFile.size > 5000);
+  assert.deepEqual(sharedFile.signature, [137, 80, 78, 71, 13, 10, 26, 10]);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.evaluate(async (authToken) => {
     const { getAuth, signInWithCustomToken } = await import('/src/mocks/firebase-auth.js');
     await signInWithCustomToken(getAuth(), authToken);
   }, token);
   await page.locator('[data-hd-shell="enterprise"]').waitFor({ timeout: 30000 });
-  await page.locator('.hd-order-detail-content .invoice-document, [data-hd-navigation="bottom"] button').first().waitFor({ timeout: 15000 });
-  if (!await page.locator('.hd-order-detail-content .invoice-document').count()) {
+  await page.locator('[data-hd-navigation="bottom"] button').first().waitFor({ timeout: 15000 });
+  if (!await page.locator('.hd-order-detail-content').count()) {
     await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Đơn hàng', exact: true }).click();
     await page.getByRole('button', { name: /Khách kiểm thử hóa đơn/ }).first().click();
   }
-  await page.locator('.hd-order-detail-content .invoice-document[data-invoice-template="template-03"]').waitFor({ timeout: 15000 });
-  await page.getByRole('button', { name: 'Mẫu hóa đơn', exact: true }).click();
-  await page.getByRole('menuitem', { name: /Mặc định công ty/ }).click();
-  await page.locator('.hd-order-detail-content .invoice-document[data-invoice-template="template-07"]').waitFor({ timeout: 15000 });
+  assert.equal(await page.locator('.hd-order-detail-content .invoice-document').count(), 0);
+  assert.match(await page.locator('.hd-order-detail-content').innerText(), /1\.878\.000/);
   assert.deepEqual(errors, []);
-  console.log('Invoice settings integration: 10 defaults, preview, override, reload and fallback passed.');
+  console.log('Invoice settings integration: 10 templates, A6 preview/export, compact order detail, share/cache and reload passed.');
 } finally { await browser.close(); }

@@ -148,7 +148,7 @@ assert.match(appSource, /className="hd-header-global-search-button"[\s\S]*?aria-
 assert.match(designComponents, /HDButton = React\.forwardRef[\s\S]*?ref=\{ref\}/, 'shared buttons must forward focus refs');
 assert.match(designComponents, /HDIconButton = React\.forwardRef[\s\S]*?<HDButton ref=\{ref\}/, 'icon buttons must forward focus refs');
 assert.match(appSource, /const shellSearchTriggerRef = useRef\(null\)/);
-assert.match(appSource, /const openShellSearch = \(event\) =>/);
+assert.match(appSource, /const openShellSearch = (?:useCallback\()?\(event\) =>/);
 assert.match(appSource, /shellSearchReturnFocusRef\.current = null;[\s\S]*?requestAnimationFrame[\s\S]*?target\?\.focus\(\{ preventScroll: true \}\)/);
 const searchDialogSource = appSource.slice(
   appSource.indexOf('const renderShellSearchDialog ='),

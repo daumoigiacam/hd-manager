@@ -39,10 +39,13 @@ try {
           const png = await invoiceNodeToPngBlob(node);
           const a4 = await invoiceNodeToPdfBlob(node, 'a4');
           const a5 = await invoiceNodeToPdfBlob(node, 'a5');
+          const a6 = await invoiceNodeToPdfBlob(node, 'a6');
           const share = await renderInvoiceImageBlob(window.__invoiceModel, window.__invoiceModel.templateId);
-          return [png.size, a4.size, a5.size, share.size];
+          const mediaBox = (await a6.text()).match(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/);
+          return { sizes: [png.size, a4.size, a5.size, a6.size, share.size], dimensions: mediaBox?.slice(1).map(Number) || [] };
         });
-        assert.ok(exports.every((size) => size > 5000), `${templateId} PNG/A4/A5/share export: ${exports}`);
+        assert.ok(exports.sizes.every((size) => size > 5000), `${templateId} PNG/A4/A5/A6/share export: ${exports.sizes}`);
+        assert.ok(Math.abs(exports.dimensions[0] - 105 * 72 / 25.4) < 1 && Math.abs(exports.dimensions[1] - 148 * 72 / 25.4) < 1, `${templateId} A6 PDF page size: ${exports.dimensions}`);
         if (number === 6) {
           const printed = await page.pdf({ path: `${outputDir}/template-06-a5-print.pdf`, format: 'A5', printBackground: true });
           assert.ok(printed.length > 5000, 'A5 browser print must not be blank');

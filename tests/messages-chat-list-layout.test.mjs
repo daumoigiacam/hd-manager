@@ -18,7 +18,7 @@ const end = app.indexOf('\nfunction NavButton(', start);
 assert(start >= 0 && end > start, 'Messaging workspace must remain discoverable.');
 const center = app.slice(start, end);
 
-assert.deepEqual(CHAT_LIST_TABS.map((tab) => tab.label), ['Tất cả', 'Khách hàng', 'Đội ngũ', 'Nhóm']);
+assert.deepEqual(CHAT_LIST_TABS.map((tab) => tab.label), ['Tất cả', 'Khách hàng', 'Nhóm', 'Đội ngũ']);
 assert.deepEqual(CHAT_SEARCH_TABS.map((tab) => tab.label), ['Tin nhắn', 'Người dùng', 'Nhóm', 'File']);
 assert.equal(normalizeChatSearch('  Vịt Đồng Xoài  '), 'vit dong xoai');
 assert.deepEqual(getSearchHighlightParts('Có 500 con vịt, giá 60k', 'vit'), [
@@ -31,11 +31,25 @@ const conversations = [
   { id: 'customer', conversationKind: 'customer_support' },
   { id: 'team', type: 'internal' },
   { id: 'group', conversationKind: 'internal_group' },
+  { id: 'company-feedback', type: 'support' },
+  { id: 'customer-feedback', type: 'support', customerId: 'customer-1' },
+  { id: 'customer-notice', type: 'notice', sourceItem: { customerId: 'customer-1' } },
+  { id: 'group-notice', type: 'notice', sourceItem: { sourceNotification: { groupId: 'group-1' } } },
+  { id: 'general-notice', type: 'notice', sourceItem: { title: 'Thông báo hệ thống' } },
 ];
 assert.equal(getChatCategory(conversations[0]), 'customer');
 assert.equal(getChatCategory(conversations[1]), 'team');
 assert.equal(getChatCategory(conversations[2]), 'group');
-assert.deepEqual(filterChatConversations(conversations, 'group').map((item) => item.id), ['group']);
+assert.deepEqual(conversations.map((item) => getChatCategory(item)), [
+  'customer', 'team', 'group', 'team', 'customer', 'customer', 'group', 'other'
+]);
+assert.deepEqual(filterChatConversations(conversations, 'all').map((item) => item.id), conversations.map((item) => item.id));
+assert.deepEqual(filterChatConversations(conversations, 'customer').map((item) => item.id), ['customer', 'customer-feedback', 'customer-notice']);
+assert.deepEqual(filterChatConversations(conversations, 'group').map((item) => item.id), ['group', 'group-notice']);
+assert.deepEqual(filterChatConversations(conversations, 'team').map((item) => item.id), ['team', 'company-feedback']);
+assert.match(center, /\.filter\(\(\[type\]\) => visibleMessageTypes\.includes\(type\)\)/, 'All messages must include authorized notices.');
+assert.match(app, /canSendSupportMessages=\{canRoleAction\('messages', 'send_support_messages'\)\}/, 'Company feedback must respect the send permission.');
+assert.match(center, /conversation\.id === 'support-hd-manager'/, 'Company feedback thread must remain reachable before its first message.');
 assert.equal(getChatSearchResult({ messages: [{ text: 'giá gà' }, { text: '500 con vịt' }] }, 'vit').matchText, '500 con vịt');
 
 for (const token of [

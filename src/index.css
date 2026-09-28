@@ -1632,6 +1632,10 @@ html.hd-low-power-ui .hd-soft-red-outline {
   isolation: isolate;
 }
 
+.mobile-app-shell .hd-order-detail-header h2 {
+  color: #fff;
+}
+
 .mobile-app-shell .hd-order-detail-content {
   position: relative;
   z-index: 1;

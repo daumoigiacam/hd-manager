@@ -3345,6 +3345,157 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   row-gap: 0.75rem;
 }
 
+.hd-customer-directory-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 8px;
+  background: #e9eef6;
+}
+
+.hd-customer-directory-tabs button {
+  min-width: 0;
+  min-height: 2.5rem;
+  border-radius: 6px;
+  color: #58657c;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.hd-customer-directory-tabs button[aria-selected="true"] {
+  background: #ffffff;
+  color: #2451c5;
+  box-shadow: 0 1px 4px rgb(26 42 77 / 0.1);
+}
+
+.hd-customer-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.hd-customer-summary-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hd-customer-summary-grid--one {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hd-customer-summary-grid > .hd-ds-card--kpi {
+  min-width: 0;
+  padding: 0.65rem 0.25rem;
+  border-radius: 8px;
+  container-type: inline-size;
+}
+
+.hd-customer-summary-grid .hd-ds-card__eyebrow {
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.hd-customer-summary-grid .hd-ds-card__value {
+  margin-top: 0.35rem;
+  font-size: 9px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+@container (min-width: 105px) {
+  .hd-customer-summary-grid .hd-ds-card__eyebrow { font-size: 10px; }
+  .hd-customer-summary-grid .hd-ds-card__value { font-size: 11px; }
+}
+
+@container (min-width: 140px) {
+  .hd-customer-summary-grid .hd-ds-card__eyebrow { font-size: 12px; }
+  .hd-customer-summary-grid .hd-ds-card__value { font-size: 14px; }
+}
+
+@container (min-width: 190px) {
+  .hd-customer-summary-grid .hd-ds-card__value { font-size: 16px; }
+}
+
+.hd-customer-supplier-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.hd-customer-supplier-count {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hd-customer-supplier-card {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 0.65rem;
+  padding: 0.9rem;
+  border: 1px solid #e3e9f1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1e293b;
+  text-align: left;
+}
+
+.hd-customer-supplier-card__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 14px;
+}
+
+.hd-customer-supplier-card__heading strong,
+.hd-customer-supplier-card__contact span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hd-customer-supplier-card__contact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.hd-customer-supplier-card__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.hd-customer-supplier-card__metrics > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+  padding: 0.5rem 0.25rem;
+  border-radius: 6px;
+  background: #f5f8fc;
+  text-align: center;
+  container-type: inline-size;
+}
+
+.hd-customer-supplier-card__metrics small {
+  color: #69788e;
+  font-size: 9px;
+}
+
+.hd-customer-supplier-card__metrics strong {
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+@container (min-width: 110px) {
+  .hd-customer-supplier-card__metrics small { font-size: 11px; }
+  .hd-customer-supplier-card__metrics strong { font-size: 12px; }
+}
+
 .hd-customer-card__identity-row {
   display: flex;
   min-width: 0;
@@ -3421,6 +3572,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   justify-content: center;
   gap: 0.25rem;
   text-align: center;
+  container-type: inline-size;
 }
 
 .hd-customer-card__stats-row > div > p {
@@ -3494,6 +3646,15 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
     padding-right: 0.75rem;
     padding-left: 0.75rem;
   }
+}
+
+.hd-customer-card__stats-row > div > p:last-child {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+@container (min-width: 140px) {
+  .hd-customer-card__stats-row > div > p:last-child { font-size: 12px; }
 }
 
 .hd-shell--staff > nav.hd-app-navigation > .hd-contextual-fab-slot {
@@ -3768,4 +3929,11 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 
 .hd-payroll-tabs::-webkit-scrollbar {
   display: none;
+}
+
+@media (min-width: 600px) and (max-width: 1023px) {
+  .hd-shell--staff .hd-customer-module-fab {
+    display: flex !important;
+    bottom: 1rem;
+  }
 }

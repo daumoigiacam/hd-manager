@@ -1,6 +1,12 @@
+const isPreviewMode = import.meta.env.VITE_DATA_MODE === 'preview';
+
 const blocked = (operation) => {
-  const error = new Error(`${operation} is not available in VPS staging.`);
-  error.code = 'legacy-firebase-flow-blocked-in-vps-staging';
+  const error = new Error(isPreviewMode
+    ? 'This UI preview cannot sign in. Open the Firebase cloud app to use your account.'
+    : `${operation} is not available in VPS staging.`);
+  error.code = isPreviewMode
+    ? 'identity-unavailable-in-ui-preview'
+    : 'legacy-firebase-flow-blocked-in-vps-staging';
   return Promise.reject(error);
 };
 
@@ -15,9 +21,14 @@ export const findIdentitySessionOwner = (records = [], identity = {}) => (
 export const getBiometricAvailability = async () => ({
   supported: false,
   available: false,
-  reason: 'vps-staging',
+  reason: isPreviewMode ? 'ui-preview' : 'vps-staging',
 });
-export const authenticateBiometric = async () => ({ success: false, message: 'Biometric login is unavailable in VPS staging.' });
+export const authenticateBiometric = async () => ({
+  success: false,
+  message: isPreviewMode
+    ? 'Biometric login is unavailable in this UI preview.'
+    : 'Biometric login is unavailable in VPS staging.',
+});
 export const getBiometricAutoLoginProfile = () => null;
 export const getIdentityAccountScope = (identity = {}) => {
   const identityKey = `${identity?.identityKey || ''}`.trim();
@@ -32,11 +43,11 @@ export const suppressBiometricAutoLoginForSession = () => undefined;
 export const clearBiometricAutoLoginSuppression = () => undefined;
 
 export const getIdentityDevice = () => ({
-  deviceId: 'hd-manager-vps-staging-web',
-  name: 'HD Manager VPS staging',
+  deviceId: isPreviewMode ? 'hd-manager-ui-preview-web' : 'hd-manager-vps-staging-web',
+  name: isPreviewMode ? 'HD Manager UI preview' : 'HD Manager VPS staging',
   platform: 'web',
   os: 'web',
-  appVersion: 'vps-staging',
+  appVersion: isPreviewMode ? 'ui-preview' : 'vps-staging',
 });
 
 export const shouldInvalidateIdentitySession = () => false;

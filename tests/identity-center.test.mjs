@@ -234,7 +234,7 @@ assert.doesNotMatch(
 assert.doesNotMatch(appSource, /isCompanyDashboardServerReady/);
 assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
 assert.doesNotMatch(appSource, /Đang nạp dữ liệu tài khoản từ Cloud/);
-assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<ExecutiveDashboardView/);
+assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<(?:Memoized)?ExecutiveDashboardView/);
 
 const identitySessionStart = appSource.indexOf('const establishIdentitySession = async');
 const identitySessionEnd = appSource.indexOf('const handleIdentityLogin = async');

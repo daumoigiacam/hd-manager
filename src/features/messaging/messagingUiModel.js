@@ -1,8 +1,8 @@
 export const CHAT_LIST_TABS = [
   { id: 'all', label: 'Tất cả' },
   { id: 'customer', label: 'Khách hàng' },
-  { id: 'team', label: 'Đội ngũ' },
-  { id: 'group', label: 'Nhóm' }
+  { id: 'group', label: 'Nhóm' },
+  { id: 'team', label: 'Đội ngũ' }
 ];
 
 export const CHAT_SEARCH_TABS = [
@@ -21,9 +21,22 @@ const foldChatSearch = (value = '') => `${value}`
 export const normalizeChatSearch = (value = '') => foldChatSearch(value).trim();
 
 export const getChatCategory = (conversation = {}) => {
-  if (conversation.conversationKind === 'internal_group') return 'group';
-  if (conversation.conversationKind === 'customer_support' || conversation.customerId) return 'customer';
-  if (conversation.type === 'internal') return 'team';
+  const source = conversation.sourceItem || {};
+  const notification = source.sourceNotification || {};
+  const sourcePayment = source.sourcePayment || {};
+  const groupId = conversation.groupId || source.groupId || notification.groupId
+    || source.metadata?.groupId || notification.metadata?.groupId;
+  if (conversation.conversationKind === 'internal_group'
+    || source.conversationType === 'internal_group'
+    || notification.conversationType === 'internal_group'
+    || groupId) return 'group';
+  const customerId = conversation.customerId || source.customerId || notification.customerId
+    || sourcePayment.customerId;
+  const customerName = source.customerName || notification.customerName
+    || notification.customerNameSnapshot;
+  if (conversation.conversationKind === 'customer_support' || customerId || customerName) return 'customer';
+  if (conversation.type === 'notice') return 'other';
+  if (conversation.type === 'internal' || conversation.type === 'support') return 'team';
   return 'other';
 };
 

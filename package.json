@@ -59,6 +59,7 @@
     "test:warehouse-inventory": "node tests/warehouse-inventory-integrity.test.mjs",
     "test:order-request-ux": "node tests/order-request-ux.test.mjs",
     "test:order-share-cache": "node tests/order-share-cache.test.mjs",
+    "test:android-share-native": "node tests/android-share-native-smoke.mjs",
     "test:cache-freshness": "node --test tests/cache-freshness.test.mjs",
     "test:order-cross-account-sync": "node --test tests/order-cross-account-sync.test.mjs",
     "test:realtime-listener-planner": "node --test tests/realtime-listener-planner.test.mjs",

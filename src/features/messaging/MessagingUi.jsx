@@ -69,7 +69,7 @@ export function ChatState({ state, title, onRetry, onStart }) {
 }
 
 export function ConversationItem({ conversation, displayName, preview, timestamp, unreadCount = 0, pinned = false, onSelect }) {
-  return <button type="button" className="hd-chat-conversation" data-chat-item="true" onClick={onSelect}>
+  return <button type="button" className="hd-chat-conversation" data-chat-item="true" data-chat-type={conversation.type || ''} data-chat-category={getChatCategory(conversation)} onClick={onSelect}>
     <ChatAvatar conversation={conversation} size="list" />
     <span className="hd-chat-conversation-body">
       <span className="hd-chat-conversation-top"><strong>{displayName}</strong><time>{timestamp}</time></span>

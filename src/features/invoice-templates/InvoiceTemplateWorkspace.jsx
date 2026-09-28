@@ -10,6 +10,11 @@ const scenarios = [
   ['base', 'Cơ bản'], ['discount', 'Giảm giá'], ['promotion', 'Khuyến mãi'], ['fee', 'Phụ phí'],
   ['combined', 'Đầy đủ'], ['old-debt', 'Nợ cũ'], ['partial', 'Thu một phần'], ['paid', 'Đã thanh toán'],
 ];
+const paperSizes = {
+  a4: { widthMm: 210, heightMm: 297, previewPx: 794, marginMm: 8 },
+  a5: { widthMm: 148, heightMm: 210, previewPx: 560, marginMm: 8 },
+  a6: { widthMm: 105, heightMm: 148, previewPx: 397, marginMm: 5 },
+};
 
 export async function invoiceNodeToPngBlob(node) {
   if (!node) throw new Error('Chưa có bản xem trước hóa đơn.');
@@ -49,9 +54,10 @@ export async function renderInvoiceImageBlob(model, templateId) {
 }
 
 export async function invoiceNodeToPdfBlob(node, paper = 'a4') {
+  const size = paperSizes[paper] || paperSizes.a4;
   const exportHost = document.createElement('div');
   exportHost.className = 'invoice-preview-container';
-  exportHost.style.cssText = `position:fixed;left:-10000px;top:0;width:${paper === 'a5' ? 560 : 794}px;container-type:inline-size;container-name:invoice-preview;`;
+  exportHost.style.cssText = `position:fixed;left:-10000px;top:0;width:${size.previewPx}px;container-type:inline-size;container-name:invoice-preview;`;
   exportHost.append(node.cloneNode(true));
   document.body.append(exportHost);
   let png;
@@ -70,9 +76,9 @@ export async function invoiceNodeToPdfBlob(node, paper = 'a4') {
     const image = new Image();
     image.src = imageUrl;
     await image.decode();
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: paper });
-    const pageWidth = paper === 'a5' ? 148 : 210;
-    const pageHeight = paper === 'a5' ? 210 : 297;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [size.widthMm, size.heightMm] });
+    const pageWidth = size.widthMm;
+    const pageHeight = size.heightMm;
     const scaledHeight = (image.height / image.width) * pageWidth;
     let remaining = scaledHeight;
     let y = 0;
@@ -131,12 +137,12 @@ function InvoicePreview({ model, templateId, title, onClose, onShare, readOnly =
           <button type="button" aria-pressed={mode === 'desktop'} onClick={() => setMode('desktop')} title="Xem trên máy tính"><Monitor size={17} />Máy tính</button>
           <button type="button" aria-pressed={mode === 'print'} onClick={() => setMode('print')} title="Xem bản in"><Printer size={17} />Bản in</button>
         </div>
-        <select aria-label="Khổ giấy" value={paper} onChange={(event) => setPaper(event.target.value)}><option value="a4">A4</option><option value="a5">A5</option></select>
+        <select aria-label="Khổ giấy" value={paper} onChange={(event) => setPaper(event.target.value)}><option value="a4">A4</option><option value="a5">A5</option><option value="a6">A6</option></select>
       </div>
       <div className={`invoice-preview-canvas invoice-preview-canvas--${mode} invoice-preview-canvas--${paper}`}>
         <div className="invoice-print-target invoice-preview-container" ref={documentRef}><InvoiceTemplateEngine model={model} templateId={templateId} paper={paper} /></div>
       </div>
-      <style media="print">{`@page { size: ${paper.toUpperCase()} portrait; margin: 8mm; }`}</style>
+      <style media="print">{`@page { size: ${paper.toUpperCase()} portrait; margin: ${paperSizes[paper].marginMm}mm; }`}</style>
       {error && <p className="invoice-preview-error" role="alert">{error}</p>}
       <footer className="invoice-preview-actions">
         <button type="button" disabled={Boolean(busy)} onClick={() => window.print()}><Printer size={17} />In</button>
@@ -179,7 +185,7 @@ export function InvoiceTemplateSettings({ company, onApply, buildQrDataUrl, canA
     } finally { setSaving(false); }
   };
   return <section className="invoice-settings" aria-label="Mẫu hóa đơn">
-    <div className="invoice-settings__heading"><div><h2>Mẫu hóa đơn</h2><p>Chọn mẫu hiển thị cho hóa đơn bán hàng</p></div><span>{INVOICE_TEMPLATES.length} mẫu</span></div>
+    <div className="invoice-settings__heading"><div><h2>Mẫu hóa đơn</h2><p>Chọn mẫu dùng khi chia sẻ và xuất hóa đơn</p></div><span>{INVOICE_TEMPLATES.length} mẫu</span></div>
     <div className="invoice-settings__grid">{INVOICE_TEMPLATES.map((template, index) => <button key={template.id} type="button" className={`invoice-settings__option invoice-settings__option--${template.tone} ${selectedId === template.id ? 'is-selected' : ''}`} onClick={() => { setSelectedId(template.id); setStatus(''); }} aria-pressed={selectedId === template.id}>
       <span className="invoice-settings__thumbnail"><span /><i /><i /><i /><strong>{String(index + 1).padStart(2, '0')}</strong></span>
       <span className="invoice-settings__option-body"><strong>Mẫu {String(index + 1).padStart(2, '0')} · {template.name}</strong><small>{template.description}</small></span>
