@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import App from './App.jsx';
 import { HDThemeProvider } from './design-system/ThemeProvider.jsx';
 import './index.css';
@@ -11,8 +11,12 @@ import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
+  const pluginRegistry = globalThis.__HD_MANAGER_CAPACITOR_PLUGINS__ ||= {};
+  const nativeSafeArea = pluginRegistry.NativeSafeArea ||= registerPlugin('NativeSafeArea');
   let pendingFrame = 0;
   let pendingKeyboardFrame = 0;
+  let nativeInsetsRequest = null;
+  let nativeInsetsRetries = 0;
 
   const getPlatform = () => {
     try {
@@ -41,6 +45,24 @@ function installResponsiveViewportVars() {
     || window.matchMedia?.('(display-mode: standalone)')?.matches
   );
 
+  const refreshNativeSafeArea = () => {
+    if (nativeInsetsRequest) return;
+    nativeInsetsRequest = nativeSafeArea.getInsets()
+      .then((insets) => {
+        for (const side of ['top', 'right', 'bottom', 'left']) {
+          const value = Number(insets?.[side]);
+          if (Number.isFinite(value) && value >= 0) {
+            root.style.setProperty(`--hd-native-safe-${side}`, `${value}px`);
+          }
+        }
+        nativeInsetsRetries = 0;
+      })
+      .catch(() => {
+        if (nativeInsetsRetries++ < 3) window.setTimeout(refreshNativeSafeArea, 250);
+      })
+      .finally(() => { nativeInsetsRequest = null; });
+  };
+
   const updateVars = () => {
     pendingFrame = 0;
     const viewport = window.visualViewport;
@@ -60,6 +82,7 @@ function installResponsiveViewportVars() {
 
     const platform = getPlatform();
     const isAndroidNative = isNativePlatform() && platform === 'android';
+    root.dataset.hdAndroidNative = isAndroidNative ? 'true' : 'false';
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const isIosInputZoomGuard = platform === 'ios' || isIosWeb;
     const isStandalone = isStandaloneWebApp();
@@ -74,6 +97,7 @@ function installResponsiveViewportVars() {
     root.style.setProperty('--hd-safe-top-fallback', topFallback);
     root.style.setProperty('--hd-safe-bottom-fallback', bottomFallback);
     root.dataset.hdIosInputZoomGuard = isIosInputZoomGuard ? 'true' : 'false';
+    if (isAndroidNative) refreshNativeSafeArea();
   };
 
   const isKeyboardEditableElement = (element) => {

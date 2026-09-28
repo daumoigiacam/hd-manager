@@ -25,10 +25,10 @@ html {
   --hd-viewport-width: 100dvw;
   --hd-safe-top-fallback: 0px;
   --hd-safe-bottom-fallback: 0px;
-  --hd-safe-top: max(env(safe-area-inset-top, 0px), var(--hd-safe-top-fallback));
-  --hd-safe-right: env(safe-area-inset-right, 0px);
-  --hd-safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--hd-safe-bottom-fallback));
-  --hd-safe-left: env(safe-area-inset-left, 0px);
+  --hd-safe-top: var(--hd-native-safe-top, max(env(safe-area-inset-top, 0px), var(--hd-safe-top-fallback)));
+  --hd-safe-right: var(--hd-native-safe-right, env(safe-area-inset-right, 0px));
+  --hd-safe-bottom: var(--hd-native-safe-bottom, max(env(safe-area-inset-bottom, 0px), var(--hd-safe-bottom-fallback)));
+  --hd-safe-left: var(--hd-native-safe-left, env(safe-area-inset-left, 0px));
   --hd-page-x: clamp(0.75rem, 3.6vw, 1rem);
   --hd-card-pad: clamp(0.75rem, 3.8vw, 1.25rem);
   --hd-card-radius: clamp(1rem, 5vw, 1.75rem);
@@ -51,7 +51,7 @@ body {
   min-height: 100vh;
   min-height: var(--hd-viewport-height);
   overscroll-behavior-x: none;
-  background: #f4f6f8;
+  background: #ffffff;
   color: #0f172a;
 }
 

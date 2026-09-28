@@ -62,7 +62,7 @@ test('plus picker exposes the active catalog and remembers new customer products
   assert.match(appSource, /const manualCatalogProductVariantOptions = useMemo\(\(\) => activeProducts\.flatMap/);
   assert.match(appSource, /const sourceVariants = manualCatalogProductVariantOptions\.filter/);
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /await persistOrderRequestMemories\(savedRequests\);/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\);/);
   assert.match(appSource, /onEditCustomer=\{onEditCustomer\}/);
   assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
 });
@@ -404,14 +404,24 @@ test('saved request synchronizes customer defaults atomically only after the req
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{handleSyncCustomerFixedProductDefaults\}/);
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{onSyncCustomerFixedProductDefaults\}/);
   assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, memoryRequests\)/);
-  assert.match(appSource, /await persistOrderRequestMemories\(savedRequests\);/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\);/);
   assert.match(appSource, /orderUnit: quantityUnit,/);
   assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
   assert.match(
     appSource,
-    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin'\);\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*await persistAdditionalCustomerFixedProducts\(\[\{\s*\.\.\.normalizedRequest,\s*items: \[requestItems\[row\.itemIndex\]\],\s*\}\]\);\s*\}/,
+    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin'\);\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*scheduleOrderRequestMemorySync\(\[\{\s*\.\.\.normalizedRequest,\s*items: \[requestItems\[row\.itemIndex\]\],\s*\}\], 'fixed-products'\);\s*\}/,
     'saving an inline-edited order line must update only that fixed-product memory after the order save succeeds'
   );
+});
+
+test('order request memory sync does not block a confirmed save', () => {
+  const submitSection = appSource.slice(
+    appSource.indexOf('const handleSubmitOrderRequests = async'),
+    appSource.indexOf('const orderCellEditorConfig = getOrderCellEditorConfig()'),
+  );
+  assert.match(submitSection, /await onEditOrderRequest\([\s\S]*?scheduleOrderRequestMemorySync\(/);
+  assert.match(submitSection, /const savedRequestId = await onAddOrderRequest[\s\S]*?scheduleOrderRequestMemorySync\(savedRequests\);/);
+  assert.doesNotMatch(submitSection, /await persistOrderRequestMemories\(/);
 });
 
 test('order submit keeps both state and ref duplicate guards', () => {

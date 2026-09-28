@@ -37,7 +37,21 @@ try {
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
-    await page.addInitScript(token => { window.__initial_auth_token = token; }, authToken);
+    await page.addInitScript(({ token, disableFloating }) => {
+      window.__initial_auth_token = token;
+      if (disableFloating) {
+        localStorage.setItem('hd-manager-local-db-v2-clean-preview', JSON.stringify({
+          companies: {
+            comp_preview: {
+              id: 'comp_preview',
+              name: 'Công ty HD Preview',
+              ownerPhone: '0909000001',
+              floatingQuickActionEnabled: false,
+            },
+          },
+        }));
+      }
+    }, { token: authToken, disableFloating: viewport.name === 'mobile-390' });
     const response = await page.goto(baseUrl, { waitUntil: 'commit', timeout: 20000 });
     assert.equal(response?.status(), 200, `${viewport.name}: local preview must return HTTP 200`);
     await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });

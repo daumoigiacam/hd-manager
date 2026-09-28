@@ -1,24 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
-import { PNG } from 'pngjs';
-import { BinaryBitmap, HybridBinarizer, QRCodeReader, RGBLuminanceSource } from '@zxing/library';
-
-const decodeQr = (dataUrl) => {
-  const image = PNG.sync.read(Buffer.from(dataUrl.split(',')[1], 'base64'));
-  const luminance = new Uint8ClampedArray(image.width * image.height);
-  for (let index = 0; index < luminance.length; index += 1) {
-    const pixel = index * 4;
-    luminance[index] = (image.data[pixel] + image.data[pixel + 1] * 2 + image.data[pixel + 2]) / 4;
-  }
-  return new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(luminance, image.width, image.height)))).getText();
-};
 
 const browserPath = process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const baseUrl = process.env.HD_MANAGER_INVOICE_APP_URL || 'http://127.0.0.1:5207/';
 const claims = { uid: 'emp_admin', identityId: 'emp_admin', appUserId: 'emp_admin', companyId: 'comp_preview', companyName: 'Công ty HD Preview', accountType: 'employee', role: 'super_admin', name: 'Quản trị Demo', phone: '0909000001' };
 const token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
 const store = {
+  companies: { comp_preview: { id: 'comp_preview', name: 'Công ty HD Preview', ownerPhone: '0909000001', bankId: 'STB', bankName: 'Sacombank', bankAccountName: 'HOANG VAN DUC', bankAccountNumber: '050086470672', invoiceTemplateId: 'template-07' } },
   customers: { c_invoice: { id: 'c_invoice', companyId: 'comp_preview', name: 'Khách kiểm thử hóa đơn', phone: '0909123456', address: 'Bình Dương', isArchived: false } },
   products: { p_invoice: { id: 'p_invoice', companyId: 'comp_preview', name: 'Gà Móc Sạch Cắt Chân', price: 60000, image: '/invoice/white-chicken-farm.webp', isArchived: false } },
   orders: { o_invoice: { id: 'o_invoice', companyId: 'comp_preview', customerId: 'c_invoice', date: '2026-09-27', createdAt: '2026-09-27T09:00:00+07:00', amount: 1818000, discount: 0, customerExtraExpense: 0, status: 'unpaid', reviewStatus: 'approved', isArchived: false, items: [{ productId: 'p_invoice', description: 'Gà Móc Sạch Cắt Chân', quantity: 30.3, quantityUnit: 'Kg', unitPrice: 60000, amount: 1818000 }] } },
@@ -34,6 +23,7 @@ try {
     window.__invoiceShareCalls = [];
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: ({ files }) => Boolean(files?.length) });
     Object.defineProperty(navigator, 'share', { configurable: true, value: async ({ files = [] }) => {
+      window.__invoiceShareCalledAt = performance.now();
       window.__invoiceShareCalls.push(await Promise.all(files.map(async (file) => ({
         name: file.name,
         size: file.size,
@@ -49,59 +39,9 @@ try {
   await page.locator('[data-hd-shell="enterprise"]').waitFor({ timeout: 30000 });
   await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Thêm', exact: true }).click();
   await page.getByRole('button', { name: 'Cài đặt', exact: true }).last().click();
-  const settings = page.locator('.invoice-settings');
-  await page.getByRole('button', { name: /Mẫu hóa đơn.*10 mẫu/ }).click();
-  await settings.waitFor({ timeout: 15000 });
-  assert.equal(await settings.locator('.invoice-settings__option').count(), 10);
+  assert.equal(await page.getByRole('button', { name: /Mẫu hóa đơn/ }).count(), 0);
+  assert.equal(await page.locator('.invoice-settings').count(), 0);
   await page.screenshot({ path: 'test-results/invoice-templates/settings-mobile.png', fullPage: true });
-  for (let number = 1; number <= 10; number += 1) {
-    const id = `template-${String(number).padStart(2, '0')}`;
-    await settings.getByRole('button', { name: new RegExp(`Mẫu ${String(number).padStart(2, '0')}`) }).click();
-    if (number > 1) {
-      await settings.getByRole('button', { name: 'Áp dụng' }).click();
-      await settings.getByText('Đã áp dụng mẫu cho hóa đơn của công ty.').waitFor({ timeout: 15000 });
-    }
-    await settings.getByRole('button', { name: /Xem trước/ }).click();
-    const selectedPreview = page.getByRole('dialog');
-    await selectedPreview.waitFor();
-    assert.equal(await selectedPreview.locator('.invoice-document').getAttribute('data-invoice-template'), id);
-    await selectedPreview.getByRole('button', { name: 'Đóng xem trước' }).click();
-  }
-  await settings.getByRole('button', { name: /Mẫu 07/ }).click();
-  await settings.getByRole('button', { name: 'Áp dụng' }).click();
-  await settings.getByText('Đã áp dụng mẫu cho hóa đơn của công ty.').waitFor({ timeout: 15000 });
-  await settings.getByRole('button', { name: /Xem trước/ }).click();
-  const dialog = page.getByRole('dialog', { name: /Premium Sang trọng/ });
-  await dialog.waitFor();
-  assert.equal(await dialog.locator('.invoice-document').getAttribute('data-invoice-template'), 'template-07');
-  assert.equal(await dialog.locator('.invoice-bank__qr img').count(), 1);
-  const baseQr = decodeQr(await dialog.locator('.invoice-bank__qr img').getAttribute('src'));
-  assert.match(baseQr, /970403/);
-  assert.match(baseQr, /050086470672/);
-  assert.match(baseQr, /1818000/);
-  await page.screenshot({ path: 'test-results/invoice-templates/preview-mobile.png' });
-  await dialog.getByLabel('Khổ giấy').selectOption('a6');
-  await dialog.getByRole('button', { name: 'Bản in' }).click();
-  assert.ok(await dialog.locator('.invoice-preview-canvas--a6 .invoice-document').isVisible());
-  assert.ok(await dialog.locator('.invoice-preview-container').evaluate((element) => element.getBoundingClientRect().width <= 397));
-  await page.screenshot({ path: 'test-results/invoice-templates/preview-a6-mobile.png' });
-  for (const [buttonName, extension] of [['PDF', '.pdf'], ['Ảnh', '.png']]) {
-    const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
-    await dialog.getByRole('button', { name: buttonName, exact: true }).click();
-    const download = await downloadPromise;
-    assert.ok(download.suggestedFilename().endsWith(extension));
-    assert.ok((await stat(await download.path())).size > 5000);
-  }
-  await dialog.getByRole('button', { name: 'Đóng xem trước' }).click();
-  await settings.getByLabel('Trường hợp xem trước').selectOption('combined');
-  await settings.getByRole('button', { name: /Xem trước/ }).click();
-  const adjustedDialog = page.getByRole('dialog', { name: /Premium Sang trọng/ });
-  await adjustedDialog.locator('.invoice-bank__qr img').waitFor();
-  const adjustedQr = decodeQr(await adjustedDialog.locator('.invoice-bank__qr img').getAttribute('src'));
-  assert.notEqual(adjustedQr, baseQr);
-  assert.match(adjustedQr, /1398000/);
-  assert.match(await adjustedDialog.locator('.invoice-pricing').innerText(), /1\.698\.000/);
-  await adjustedDialog.getByRole('button', { name: 'Đóng xem trước' }).click();
 
   await page.locator('[data-hd-navigation="bottom"]').getByRole('button', { name: 'Đơn hàng', exact: true }).click();
   await page.getByRole('button', { name: /Khách kiểm thử hóa đơn/ }).first().click();
@@ -134,9 +74,43 @@ try {
         .map((record) => ({ createdAt: record.createdAt, sourceKey: record.sourceKey, bytes: record.payload?.blob?.size || 0 })));
     };
   }));
-  assert.ok(updatedShareCache.some((record) => record.createdAt >= editStartedAt && record.sourceKey.includes('template-07') && record.bytes > 5000), 'Saving edits must persist the updated company-template share image before reporting success.');
+  assert.ok(updatedShareCache.some((record) => record.createdAt >= editStartedAt && record.sourceKey.includes('classic-v1') && record.bytes > 5000), 'Saving edits must persist the updated classic invoice share image before reporting success.');
+  const pngDataUrl = await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('hd-manager-share-image-cache');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const records = request.result.transaction('assets', 'readonly').objectStore('assets').getAll();
+      records.onerror = () => reject(records.error);
+      records.onsuccess = () => {
+        const record = records.result
+          .filter((item) => item.scope === 'sales_order_invoice' && item.entityId === 'o_invoice' && item.sourceKey.includes('classic-v1'))
+          .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
+        if (!record?.payload?.blob) return reject(new Error('Missing classic invoice PNG'));
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error);
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(record.payload.blob);
+      };
+    };
+  }));
+  await writeFile('test-results/invoice-templates/classic-share-invoice.png', Buffer.from(pngDataUrl.split(',')[1], 'base64'));
+  const qrPayload = await page.evaluate(async (invoiceDataUrl) => {
+    const image = new Image();
+    image.src = invoiceDataUrl;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = 190;
+    canvas.height = 190;
+    canvas.getContext('2d').drawImage(image, 90, 595, 190, 190, 0, 0, 190, 190);
+    const { BrowserQRCodeReader } = await import('/node_modules/.vite/deps/@zxing_browser.js');
+    return new BrowserQRCodeReader().decodeFromImageUrl(canvas.toDataURL('image/png')).then((result) => result.getText());
+  }, pngDataUrl);
+  assert.ok(qrPayload.includes('970403') && qrPayload.includes('050086470672') && qrPayload.includes('1878000') && qrPayload.includes('TT HDNVOICE'), 'The refreshed invoice QR must encode the printed bank account, edited amount and transfer memo.');
+  const shareClickStartedAt = await page.evaluate(() => performance.now());
   await page.getByRole('button', { name: 'Chia sẻ hóa đơn' }).click();
   await page.waitForFunction(() => window.__invoiceShareCalls.length > 0, null, { timeout: 30000 });
+  const shareOpenMs = await page.evaluate((startedAt) => window.__invoiceShareCalledAt - startedAt, shareClickStartedAt);
+  assert.ok(shareOpenMs < 1500, `Cached invoice share should open promptly, observed ${Math.round(shareOpenMs)}ms.`);
   const sharedFile = (await page.evaluate(() => window.__invoiceShareCalls.at(-1)))[0];
   assert.match(sharedFile.name, /hoa-don-ban-hang\.png$/);
   assert.equal(sharedFile.mime, 'image/png');
@@ -155,6 +129,11 @@ try {
   }
   assert.equal(await page.locator('.hd-order-detail-content .invoice-document').count(), 0);
   assert.match(await page.locator('.hd-order-detail-content').innerText(), /1\.878\.000/);
+  const reloadShareStartedAt = await page.evaluate(() => performance.now());
+  await page.getByRole('button', { name: 'Chia sẻ hóa đơn' }).click();
+  await page.waitForFunction(() => window.__invoiceShareCalls.length > 0, null, { timeout: 30000 });
+  const reloadShareOpenMs = await page.evaluate((startedAt) => window.__invoiceShareCalledAt - startedAt, reloadShareStartedAt);
+  assert.ok(reloadShareOpenMs < 1500, `Persisted invoice share should open promptly after reload, observed ${Math.round(reloadShareOpenMs)}ms.`);
   assert.deepEqual(errors, []);
-  console.log('Invoice settings integration: 10 templates, A6 preview/export, compact order detail, share/cache and reload passed.');
+  console.log(`Invoice settings integration: classic share/cache, QR decode, compact order detail and reload passed; share opened in ${Math.round(shareOpenMs)}ms from memory and ${Math.round(reloadShareOpenMs)}ms after reload.`);
 } finally { await browser.close(); }

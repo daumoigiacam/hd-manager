@@ -23,7 +23,7 @@ assert.doesNotMatch(finance, /showCashflowCreateMenu/);
 assert.match(finance, /relative hidden md:block[\s\S]*?aria-label="M\u1edf thao t\u00e1c thu chi"/);
 assert.match(finance, /quickActionIntent\.type === 'income'/);
 assert.match(finance, /quickActionIntent\.type === 'expense'/);
-assert.match(app, /activeTab !== 'finance' && \(!canShowFloatingQuickActionButton \|\| !floatingQuickActionEnabled\)/);
+assert.match(app, /!\['finance', 'customers'\]\.includes\(activeTab\) && \(!canShowFloatingQuickActionButton \|\| !floatingQuickActionEnabled\)/);
 assert.match(footer, /finance: Object\.freeze\(\['quick_create_income', 'quick_create_expense'\]\)/);
 
 console.log('Finance mobile layout tests passed.');

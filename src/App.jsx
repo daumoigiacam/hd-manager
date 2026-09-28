@@ -2,8 +2,7 @@ import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { flushSync } from 'react-dom';
-import { buildInvoiceViewModel, normalizeInvoiceTemplateId, resolveInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
-const InvoiceTemplateSettings = React.lazy(() => import('./features/invoice-templates/InvoiceTemplateWorkspace.jsx').then(module => ({ default: module.InvoiceTemplateSettings })));
+import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
@@ -493,6 +492,7 @@ const getCapacitorPlugin = (name) => {
 };
 
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
+const NativeSafeArea = getCapacitorPlugin('NativeSafeArea');
 const clientRuntime = resolveClientRuntime();
 const isPreviewDataMode = import.meta.env.VITE_DATA_MODE === 'preview';
 const GOOGLE_MAPS_API_KEY = clientRuntime.googleMapsApiKey;
@@ -5708,63 +5708,6 @@ const getOrderReturnProductSummary = (order = {}) => (Array.isArray(order.items)
   .filter(Boolean)
   .join(', ');
 
-const buildInvoiceTemplateDemoQrDataUrl = (payment = {}) => buildLocalPaymentQrDataUrl(buildVietQrEmvPayload({
-  bankCode: payment.bankName,
-  accountNumber: payment.accountNumber,
-  accountName: payment.accountName,
-  amount: payment.totalReceivable,
-  description: payment.transferContent
-}), { width: 220 });
-
-const buildSalesInvoiceTemplateModel = async ({ order, company, customers = [], orders = [], payments = [], products = [] } = {}) => {
-  if (!order) throw new Error('Chưa chọn hóa đơn.');
-  const customer = order.customer || customers.find(item => item.id === order.customerId) || {};
-  const shareOrders = upsertOrderIntoShareCollection(orders, order);
-  const ledger = customer?.id ? buildCustomerLedger(customer, shareOrders, payments) : null;
-  const ledgerOrder = ledger?.orders?.find(item => item.id === order.id);
-  const itemRows = (order.items || []).map((item) => {
-    const billing = getTransactionBillingPresentation(item);
-    const product = products.find(record => record.id === item.productId);
-    return {
-      ...item,
-      productName: item.description || item.productName || product?.name || 'Sản phẩm',
-      image: item.image || item.imageUrl || item.productImage || product?.image || product?.imageUrl || '',
-      quantity: billing.billingQuantity,
-      unit: billing.billingUnit,
-      unitPrice: billing.unitPrice,
-      amount: billing.amount
-    };
-  });
-  const subtotal = itemRows.reduce((sum, item) => sum + item.amount, 0);
-  const orderAmount = parseLooseMoneyValue(ledgerOrder?.amount ?? order.amount ?? subtotal);
-  const storedPaid = Math.max(parseLooseMoneyValue(order.appliedAmount), parseLooseMoneyValue(order.paidAmount), parseLooseMoneyValue(order.collectedAmount));
-  const paid = Math.max(parseLooseMoneyValue(ledgerOrder?.appliedAmount), storedPaid);
-  const invoiceDebt = Math.max(0, parseLooseMoneyValue(ledgerOrder?.outstandingAmount ?? order.outstandingAmount ?? (orderAmount - paid)));
-  const totalReceivable = ledger ? Math.max(0, parseLooseMoneyValue(ledger.currentDebt)) : invoiceDebt;
-  const oldDebt = Math.max(0, totalReceivable - invoiceDebt);
-  const profile = getInvoiceTransferProfile(company);
-  const accountNumber = normalizePaymentAccountNumber(profile.sepayReceivingAccountNumber || profile.accountNumber || order.receivingBankAccountNumber || '');
-  const qrOrder = { ...order, currentPaymentDueAmount: totalReceivable, paymentDueAmount: totalReceivable, finalDebtAmount: totalReceivable, totalToCollect: totalReceivable, paymentAmount: totalReceivable, outstandingAmount: totalReceivable };
-  const qrPayload = buildOrderLocalPaymentQrPayload(qrOrder, company, { preferStoredSource: false });
-  const qr = qrPayload ? await buildLocalPaymentQrDataUrl(qrPayload, { width: 360 }) : '';
-  const feeRows = Array.isArray(order.fees) ? order.fees.filter(fee => fee.payer !== 'seller' && fee.payer !== 'company') : [];
-  const customerFee = parseLooseMoneyValue(order.customerExtraExpense ?? (order.extraExpensePayer === 'buyer' ? order.extraExpenseAmount : 0));
-  if (customerFee > 0 && feeRows.length === 0) feeRows.push({ name: order.extraExpenseName || 'Phụ phí', amount: customerFee });
-  return buildInvoiceViewModel({
-    order, company, customer, items: itemRows, subtotal, grandTotal: orderAmount, fees: feeRows,
-    invoiceCode: formatOrderCode(order.id),
-    employee: order.salesOwner || order.createdBy || {},
-    payment: {
-      paid, invoiceDebt, oldDebt, totalReceivable,
-      bankName: profile.bankName || order.receivingBankName || '',
-      accountName: order.receivingBankAccountName || profile.accountName || '',
-      accountNumber,
-      transferContent: order.sepayPaymentCode || order.paymentCode || buildOrderTransferMemo(order),
-      qr
-    }
-  });
-};
-
 const drawSalesInvoiceShareImage = async ({
   order,
   company,
@@ -5843,13 +5786,13 @@ const drawSalesInvoiceShareImage = async ({
   const localPaymentSourceForQr = buildOrderLocalPaymentQrPayload(paymentOrderForQr, company, { preferStoredSource: false });
   const paymentSourceForQr = localPaymentSourceForQr || (canUseSavedPaymentSourceForQr ? savedPaymentSourceForQr : '');
   const remotePaymentSourceForQr = (canUseSavedPaymentSourceForQr ? savedPaymentSourceForQr : '') || localPaymentSourceForQr;
-  const qrAccountNumber = extractPaymentAccountNumberFromQrSource(remotePaymentSourceForQr);
+  const qrAccountNumber = extractPaymentAccountNumberFromQrSource(paymentSourceForQr);
   const transferAccountNumber = qrAccountNumber
-    || normalizePaymentAccountNumber(order.receivingBankAccountNumber || order.companyBankAccountNumber || order.bankAccountNumber || '')
     || transferProfile.sepayReceivingAccountNumber
-    || transferProfile.accountNumber;
-  const transferBankName = order.receivingBankName || order.receivingBankCode || transferProfile.bankName || transferProfile.bankId || 'Ngân hàng';
-  const transferAccountName = order.receivingBankAccountName || transferProfile.accountName || 'Chưa cài đặt chủ tài khoản';
+    || transferProfile.accountNumber
+    || normalizePaymentAccountNumber(order.receivingBankAccountNumber || order.companyBankAccountNumber || order.bankAccountNumber || '');
+  const transferBankName = transferProfile.bankName || transferProfile.bankId || order.receivingBankName || order.receivingBankCode || 'Ngân hàng';
+  const transferAccountName = transferProfile.accountName || order.receivingBankAccountName || 'Chưa cài đặt chủ tài khoản';
   const qrUrl = buildPayosPaymentQrImageSource(remotePaymentSourceForQr);
   const codeOnlyQrUrl = buildCodeOnlyPaymentQrImageSource(qrUrl);
   if (!paymentSourceForQr && !qrUrl) {
@@ -6161,7 +6104,7 @@ const drawSalesInvoiceShareImage = async ({
   const bankW = 315;
   const transferX = bankX + bankW + 36;
   const transferW = contentX + contentW - transferX - 18;
-  const transferMemo = buildOrderTransferMemo(order);
+  const transferMemo = order.sepayPaymentCode || order.paymentCode || buildOrderTransferMemo(order);
   drawText(transferBankName, bankX, paymentY + 48, 30, 900);
   drawWrapped(transferAccountName, bankX, paymentY + 100, bankW, 22, 900, '#111827', 2, 28);
   drawText(transferAccountNumber || 'Chưa cài đặt số tài khoản', bankX, paymentY + 154, 22, 900);
@@ -6361,6 +6304,7 @@ const writePersistentShareImageAsset = async ({
   });
 };
 
+const SALES_INVOICE_SHARE_LAYOUT_VERSION = 'classic-v1';
 const ORDER_SHARE_ASSET_CACHE_LIMIT = 32;
 const ORDER_SHARE_ASSET_CACHE_TTL_MS = SHARE_IMAGE_CACHE_TTL_MS;
 const orderShareAssetCache = new Map();
@@ -6441,11 +6385,6 @@ const buildRelatedOrderShareCollectionFingerprint = (
 
 const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) => {
   const customers = Array.isArray(context.customers) ? context.customers : [];
-  const products = Array.isArray(context.products) ? context.products : [];
-  const imageFingerprint = (value = '') => {
-    const source = `${value || ''}`;
-    return `${source.length}:${source.slice(0, 32)}:${source.slice(-32)}`;
-  };
   const orders = upsertOrderIntoShareCollection(context.orders, order);
   const payments = Array.isArray(context.payments) ? context.payments : [];
   const customer = order.customer || customers.find(item => item?.id === order.customerId) || {};
@@ -6503,17 +6442,19 @@ const buildOrderShareAssetCacheKey = (order = {}, company = {}, context = {}) =>
 
   return [
     order.id || '',
-    resolveInvoiceTemplateId(company, order),
-    order.invoiceTemplateOverride || '',
+    SALES_INVOICE_SHARE_LAYOUT_VERSION,
     company.name || '',
-    company.displayName || '',
-    company.companyPhone || '',
-    company.companyAddress || '',
-    imageFingerprint(company.logoUrl || company.logo),
-    (order.items || []).map(item => {
-      const product = products.find(record => record.id === item.productId);
-      return [item.productId, item.description, item.quantity, item.billingQuantity, item.unitPrice, item.amount, imageFingerprint(item.image || item.imageUrl || product?.image || product?.imageUrl), product?.updatedAt || ''].join('~');
-    }).join(';'),
+    (order.items || []).map(item => [
+      item.productId,
+      item.description,
+      item.productName,
+      item.quantity,
+      item.quantityUnit,
+      item.billingQuantity,
+      item.billingUnit,
+      item.unitPrice,
+      item.amount
+    ].join('~')).join(';'),
     order.updatedAt || order.createdAt || order.date || '',
     order.discount || '',
     order.customerExtraExpense || '',
@@ -6650,6 +6591,14 @@ const warmOrderShareAssetCache = async ({
     let orderForShare = order;
     const paymentSource = getOrderPayosPaymentSource(orderForShare);
     const paymentDueAmount = getOrderSharePaymentDueAmount(orderForShare, customers, orders, payments);
+    const localQrOrder = {
+      ...orderForShare,
+      currentPaymentDueAmount: paymentDueAmount,
+      paymentDueAmount,
+      paymentAmount: paymentDueAmount
+    };
+    const localQrPayload = buildOrderLocalPaymentQrPayload(localQrOrder, company, { preferStoredSource: false });
+    if (localQrPayload) warmLocalPaymentQrDataUrlCache(localQrPayload, { width: 520 });
     const paymentQrFingerprintAligned = isOrderPaymentQrFingerprintAligned(
       orderForShare,
       company,
@@ -6700,9 +6649,7 @@ const warmOrderShareAssetCache = async ({
     }
     let blob;
     try {
-      const model = await buildSalesInvoiceTemplateModel({ order: orderForShare, company, customers, orders, payments, products });
-      const { renderInvoiceImageBlob } = await import('./features/invoice-templates/InvoiceTemplateWorkspace.jsx');
-      blob = await renderInvoiceImageBlob(model, resolveInvoiceTemplateId(company, orderForShare));
+      blob = await drawSalesInvoiceShareImage({ order: orderForShare, company, customers, orders, payments });
     } catch (error) {
       if (paymentPreparationError) {
         recordPerformanceEvent('share_invoice.fallback_render_failed', {
@@ -14090,6 +14037,7 @@ export default function App() {
             if (hasCollectionValue(prevValue, isObject)) return prevValue;
             if (hasCollectionValue(stableValue, isObject)) return stableValue;
           }
+          if (!nextHasData && !hasCollectionValue(prevValue, isObject)) return prevValue;
           return nextValue;
         });
 
@@ -19550,15 +19498,6 @@ export default function App() {
       createdAt
     };
 
-    setRawOrderRequests(prev => {
-      const currentList = Array.isArray(prev) ? prev : [];
-      if (currentList.some(request => request?.id === id)) {
-        return currentList.map(request => request?.id === id ? { ...request, ...newRequestDocument } : request);
-      }
-      return [newRequestDocument, ...currentList];
-    });
-    rememberRecentLocalWrite('orderRequests', id, newRequestDocument);
-
     const notifyAssignedSalesEmployee = () => {
       if (!isCustomerCreatedRequest || !salesEmpId) return;
       const notificationId = `notif_order_request_${id}`;
@@ -19674,23 +19613,6 @@ export default function App() {
         ? true
         : (updatedData.isLatestCustomerOrderVersion ?? existingRequest.isLatestCustomerOrderVersion ?? true)
     };
-    setRawOrderRequests(prev => (Array.isArray(prev)
-      ? prev.map(request => request?.id === requestId
-        ? {
-          ...request,
-          ...normalizedUpdatedData,
-          salesEmpId,
-          updatedAt,
-          updatedByEmpId: empId || ''
-        }
-        : request)
-      : prev));
-    rememberRecentLocalWrite('orderRequests', requestId, {
-      ...normalizedUpdatedData,
-      salesEmpId,
-      updatedAt,
-      updatedByEmpId: empId || ''
-    });
     const writeResult = await saveDataDocument('orderRequests', requestId, {
       ...normalizedUpdatedData,
       salesEmpId,
@@ -19711,10 +19633,6 @@ export default function App() {
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     };
-    setRawOrderRequests(prev => (Array.isArray(prev)
-      ? prev.map(request => request?.id === requestId ? { ...request, ...archivedPayload } : request)
-      : prev));
-    rememberRecentLocalWrite('orderRequests', requestId, archivedPayload);
     const writeResult = await saveDataDocument('orderRequests', requestId, archivedPayload, { merge: true });
     await requireSharedWriteConfirmation(writeResult, 'orderRequests', requestId);
   };
@@ -21021,18 +20939,9 @@ export default function App() {
     return { success: true, order: updatedOrderForSync, shareReady: Boolean(shareAsset) };
   };
 
-  const getOrderCurrentPaymentDueAmount = (order = {}) => {
-    const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? order.grandTotal ?? 0);
-    const paidAmount = parseLooseMoneyValue(order.appliedAmount ?? order.paidAmount ?? order.collectedAmount ?? 0);
-    const customer = customers.find(c => c.id === order.customerId) || order.customer || {};
-    const ledger = customer?.id ? buildCustomerLedger(customer, orders, payments) : null;
-    const ledgerOrder = ledger?.orders?.find(item => item.id === order.id) || null;
-    const outstandingAmount = Math.max(0, ledgerOrder
-      ? parseLooseMoneyValue(ledgerOrder.outstandingAmount)
-      : parseLooseMoneyValue(order.outstandingAmount ?? (orderAmount - paidAmount)));
-    const currentDebt = ledger ? Math.max(0, parseLooseMoneyValue(ledger.currentDebt)) : outstandingAmount;
-    return Math.max(0, Math.round(currentDebt || outstandingAmount));
-  };
+  const getOrderCurrentPaymentDueAmount = (order = {}) => (
+    getOrderSharePaymentDueAmount(order, customers, orders, payments)
+  );
 
   const isOrderPaymentAmountAligned = (order = {}, amount = 0) => {
     const expected = Math.max(0, Math.round(parseLooseMoneyValue(amount)));
@@ -24202,6 +24111,10 @@ function MainAppView({
     () => visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length,
     [lastNotificationSeenAt, visibleNotificationItems]
   );
+  const homeUnreadNotificationCount = useMemo(
+    () => notificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length,
+    [lastNotificationSeenAt, notificationItems]
+  );
   const employeeMessageUnreadCount = useMemo(() => {
     const currentEmployeeId = `${employee?.id || currentUser?.employeeId || currentUser?.id || ''}`.trim();
     const currentEmployeePhone = `${employee?.phone || currentUser?.phone || ''}`.trim();
@@ -24334,6 +24247,12 @@ function MainAppView({
   useEffect(() => {
     activeTabRef.current = activeTab;
     if (activeTab !== 'debt') lastNonDebtTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform?.() || Capacitor.getPlatform?.() !== 'android') return;
+    const darkIcons = ['home', 'executive_dashboard', 'messages'].includes(activeTab);
+    NativeSafeArea.setStatusBarDarkIcons({ darkIcons }).catch(() => {});
   }, [activeTab]);
 
   useEffect(() => {
@@ -24615,11 +24534,12 @@ function MainAppView({
     };
   }, []);
 
-  const setActiveTab = (nextTab, options = {}) => {
+  const setActiveTab = useCallback((nextTab, options = {}) => {
     const { preserveHistory = true } = options;
-    if (!nextTab || nextTab === 'report' || nextTab === activeTab) return;
+    const currentTab = activeTabRef.current;
+    if (!nextTab || nextTab === 'report' || nextTab === currentTab) return;
     if (preserveHistory) {
-      setTabHistory((prev) => [...prev, activeTab]);
+      setTabHistory((prev) => [...prev, currentTab]);
       if (typeof window !== 'undefined' && window.history?.pushState) {
         try {
           window.history.pushState({ hdManager: true, tab: nextTab }, '', window.location.href);
@@ -24628,8 +24548,9 @@ function MainAppView({
         }
       }
     }
+    activeTabRef.current = nextTab;
     setRootActiveTab(nextTab);
-  };
+  }, [setRootActiveTab]);
   const handleOpenCustomerDebtLedger = (customerId) => {
     if (!customerId || !canAccess('debt')) return false;
     setDebtFocusCustomerId(customerId);
@@ -25288,7 +25209,7 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-    <MemoizedExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={unreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+    <MemoizedExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
@@ -26265,7 +26186,7 @@ function MainAppView({
     ? []
     : getContextualFabActionIds(activeTab);
   const mobileContextualQuickActionItems = useMemo(() => {
-    if (activeTab !== 'finance' && (!canShowFloatingQuickActionButton || !floatingQuickActionEnabled)) return [];
+    if (!['finance', 'customers'].includes(activeTab) && (!canShowFloatingQuickActionButton || !floatingQuickActionEnabled)) return [];
     if (contextualQuickActionIds.includes('*')) return quickActionItems;
     const allowedIds = new Set(contextualQuickActionIds);
     return quickActionItems.filter(item => allowedIds.has(item.id));
@@ -26300,7 +26221,7 @@ function MainAppView({
       />
       {renderHeader()}
       {renderShellSearchDialog()}
-      
+
       <main ref={mainContentRef} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
         {keepExecutiveDashboardMounted && (
@@ -32821,7 +32742,6 @@ function SettingsView({
   );
   const settingsPanels = [
     { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
-    { id: 'invoice_templates', label: 'Mẫu hóa đơn', description: '10 mẫu xem, in và chia sẻ', icon: Receipt, enabled: isAccounting || canEditCompanyProfile },
     { id: 'bank_payments', label: 'Ngân hàng & Thanh toán', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
     { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
     { id: 'care', label: 'Nhắc khách hàng', description: `${customerCareInactiveDaysPreview} ngày chưa mua`, icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
@@ -33121,8 +33041,6 @@ function SettingsView({
           })}
         </div>
       </div>
-
-      {safeActiveSettingsPanel === 'invoice_templates' && <React.Suspense fallback={<div className="p-4 text-sm text-slate-500">Đang mở mẫu hóa đơn...</div>}><InvoiceTemplateSettings company={currentCompany} onApply={onUpdateCompanySettings} canApply={canEditCompanyProfile} buildQrDataUrl={buildInvoiceTemplateDemoQrDataUrl} /></React.Suspense>}
 
       {safeActiveSettingsPanel === 'account' && <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm hd-soft-red-outline">
         <div className="flex items-start justify-between gap-3">
@@ -62075,6 +61993,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     ]);
     return fixedProductResult;
   };
+  const scheduleOrderRequestMemorySync = (savedRequests, mode = 'all') => {
+    window.setTimeout(() => {
+      Promise.resolve().then(() => {
+        if (mode === 'fixed-products') return persistAdditionalCustomerFixedProducts(savedRequests);
+        if (mode === 'preferences') return persistSmartOrderingPreferences(savedRequests);
+        return persistOrderRequestMemories(savedRequests);
+      }).catch(error => {
+        console.warn('Đơn đặt hàng đã lưu nhưng chưa cập nhật được gợi ý sản phẩm.', error);
+      });
+    }, 0);
+  };
   const handleDraftItemQuantityUnitChange = (localId, itemLocalId, nextUnit) => {
     const draft = requestDrafts.find(item => item.localId === localId);
     const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
@@ -63405,10 +63334,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     try {
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
       if (orderCellEditor?.field === 'unitPrice') {
-        await persistAdditionalCustomerFixedProducts([{
+        scheduleOrderRequestMemorySync([{
           ...normalizedRequest,
           items: [requestItems[row.itemIndex]],
-        }]);
+        }], 'fixed-products');
       }
       resetInlineEditing();
       setRequestStatus(`Đã cập nhật đơn đặt hàng của ${customer.name}.`);
@@ -63457,7 +63386,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         ), 0)
       };
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
-      await persistSmartOrderingPreferences([normalizedRequest]);
+      scheduleOrderRequestMemorySync([normalizedRequest], 'preferences');
       setRequestStatus(`Da xoa mot dong hang cua ${customerName}.`);
       resetInlineEditing();
       return true;
@@ -65291,7 +65220,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
         const originalRequest = orderRequests.find(request => request?.id === editingRequestId);
-        await persistOrderRequestMemories([{
+        scheduleOrderRequestMemorySync([{
           ...(originalRequest || {}),
           ...normalizedRequests[0],
           id: editingRequestId,
@@ -65317,7 +65246,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           createdAt: new Date().toISOString(),
         });
       }
-      await persistOrderRequestMemories(savedRequests);
+      scheduleOrderRequestMemorySync(savedRequests);
 
       setRequestStatus('');
       closeOrderRequestForm();

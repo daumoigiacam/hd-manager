@@ -1615,8 +1615,8 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 /* 2026 quiet workspace refresh: a flat, phone-first visual language shared by
  * the staff shell. Business behavior remains owned by the feature layer. */
 .hd-shell--staff {
-  --hd-color-canvas: #f3f5f9;
-  --hd-color-canvas-raised: #f6f8fb;
+  --hd-color-canvas: #ffffff;
+  --hd-color-canvas-raised: #ffffff;
   --hd-color-surface-muted: #f7f9fc;
   --hd-color-border: #e2e7ef;
   --hd-color-border-strong: #cfd7e4;
@@ -1631,6 +1631,14 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   --hd-elevation-surface: 0 1px 2px rgb(15 23 42 / 0.045);
   --hd-elevation-floating: 0 8px 24px rgb(15 23 42 / 0.09);
   background: var(--hd-color-canvas);
+}
+
+@media (max-width: 599px) {
+  html[data-hd-android-native="true"] .mobile-app-shell {
+    width: 100% !important;
+    max-width: none !important;
+    margin-inline: 0 !important;
+  }
 }
 
 .hd-shell--staff[data-hd-theme="dark"] {

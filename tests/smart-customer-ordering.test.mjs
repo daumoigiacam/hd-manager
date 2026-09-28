@@ -314,10 +314,10 @@ test('Firestore integration reads one deterministic preference document', () => 
 
 test('order requests persist Smart Memory after successful writes', () => {
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /await persistOrderRequestMemories\(savedRequests\)/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\)/);
   assert.match(appSource, /persistSmartOrderingPreferences\(savedRequests\)/);
   assert.match(appSource, /persistAdditionalCustomerFixedProducts\(savedRequests\)/);
-  assert.match(appSource, /await persistSmartOrderingPreferences\(\[normalizedRequest\]\)/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(\[normalizedRequest\], 'preferences'\)/);
 });
 
 test('order form keeps the selected input unit separate from the pricing unit', () => {

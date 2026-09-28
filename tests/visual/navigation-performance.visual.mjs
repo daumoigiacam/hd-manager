@@ -49,56 +49,79 @@ try {
     const title = document.querySelector('.business-report-kpi--revenue')?.getAttribute('title') || '';
     return Number(title.replace(/[^\d]/g, '')) >= 150000000;
   }, null, { timeout: 30000 });
-  const measure = (label, contentSelector, expectedText = '') => page.evaluate(async ({ name, selector, text }) => {
+  if (Number(process.env.HD_MANAGER_NAV_IDLE_MS) > 0) {
+    await page.waitForTimeout(Number(process.env.HD_MANAGER_NAV_IDLE_MS));
+  }
+  const measure = async (label, contentSelector, expectedText = '') => {
+    const timing = await page.evaluate(async ({ name, selector, text }) => {
     const button = [...document.querySelectorAll('[data-hd-navigation="bottom"] button')]
       .find(item => item.textContent.trim() === name);
     if (!button) throw new Error(`Missing footer button: ${name}`);
     const started = performance.now();
+    const longTasks = [];
+    const longTaskObserver = typeof PerformanceObserver === 'function'
+      ? new PerformanceObserver((list) => list.getEntries().forEach((entry) => longTasks.push(Math.round(entry.duration))))
+      : null;
+    longTaskObserver?.observe({ entryTypes: ['longtask'] });
     button.click();
+    const clickMs = Math.round(performance.now() - started);
+    let contentMs = 0;
     await new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => { observer.disconnect(); reject(new Error(`Timed out navigating to ${name}`)); }, 30000);
       const check = () => {
         const target = document.querySelector(selector);
-        if (!target || (text && !target.textContent.includes(text))) return;
+        if (!target || !target.getClientRects().length || (text && !target.textContent.includes(text))) return;
+        contentMs = Math.round(performance.now() - started);
         window.clearTimeout(timeout);
         observer.disconnect();
         requestAnimationFrame(() => requestAnimationFrame(resolve));
       };
       const observer = new MutationObserver(check);
-      observer.observe(document.body, { childList: true, subtree: true });
+      observer.observe(document.body, { childList: true, attributes: true, attributeFilter: ['style'], subtree: true });
       check();
     });
-    return Math.round(performance.now() - started);
-  }, { name: label, selector: contentSelector, text: expectedText });
+    longTaskObserver?.disconnect();
+    return { ms: Math.round(performance.now() - started), clickMs, contentMs, longTasks };
+    }, { name: label, selector: contentSelector, text: expectedText });
+    if (timing.ms >= 200) console.log(`Navigation timing ${label}:`, JSON.stringify(timing));
+    return timing.ms;
+  };
+
+  const profileNavigation = async (label, run) => {
+    if (process.env.HD_MANAGER_NAV_PROFILE !== '1'
+      || (process.env.HD_MANAGER_NAV_PROFILE_TARGET && process.env.HD_MANAGER_NAV_PROFILE_TARGET !== label)) return run();
+    const profiler = await context.newCDPSession(page);
+    await profiler.send('Profiler.enable');
+    await profiler.send('Profiler.start');
+    try {
+      const ms = await run();
+      const { profile } = await profiler.send('Profiler.stop');
+      if (ms >= 200) {
+        const hot = profile.nodes
+          .filter(node => node.hitCount > 0)
+          .sort((left, right) => right.hitCount - left.hitCount)
+          .slice(0, 20)
+          .map(node => ({ function: node.callFrame.functionName, hits: node.hitCount, url: node.callFrame.url.split('/').slice(-1)[0], line: node.callFrame.lineNumber }));
+        console.log(`Navigation CPU profile ${label} (${ms} ms):`, JSON.stringify(hot));
+      }
+      return ms;
+    } finally {
+      await profiler.detach();
+    }
+  };
 
   const samples = [];
   for (let index = 0; index < 3; index += 1) {
     samples.push({ screen: 'Thêm', ms: await measure('Thêm', '.hd-more-menu, .hd-more-grid, .hd-more-screen') });
-    let profiler;
-    if (index === 0 && process.env.HD_MANAGER_NAV_PROFILE === '1') {
-      profiler = await context.newCDPSession(page);
-      await profiler.send('Profiler.enable');
-      await profiler.send('Profiler.start');
-    }
-    samples.push({ screen: 'Trang chủ', ms: await measure('Trang chủ', '.business-report-workspace') });
-    if (profiler) {
-      const { profile } = await profiler.send('Profiler.stop');
-      const hot = profile.nodes
-        .filter(node => node.hitCount > 0)
-        .sort((left, right) => right.hitCount - left.hitCount)
-        .slice(0, 25)
-        .map(node => ({ function: node.callFrame.functionName, hits: node.hitCount, url: node.callFrame.url.split('/').slice(-1)[0] }));
-      console.log('Navigation CPU profile:', JSON.stringify(hot));
-      await profiler.detach();
-    }
+    samples.push({ screen: 'Trang chủ', ms: await profileNavigation('Trang chủ từ Thêm', () => measure('Trang chủ', '.business-report-workspace')) });
   }
   for (const [button, title] of [
     ['Đặt hàng', 'Đơn đặt'],
     ['Xuất kho', 'Phiếu xuất kho'],
     ['Đơn hàng', 'Đơn hàng'],
   ]) {
-    samples.push({ screen: button, ms: await measure(button, '.hd-app-header .hd-header-title', title) });
-    samples.push({ screen: 'Trang chủ', ms: await measure('Trang chủ', '.business-report-workspace') });
+    samples.push({ screen: button, ms: await profileNavigation(button, () => measure(button, '.hd-app-header .hd-header-title', title)) });
+    samples.push({ screen: 'Trang chủ', ms: await profileNavigation(`Trang chủ từ ${button}`, () => measure('Trang chủ', '.business-report-workspace')) });
   }
   assert.deepEqual(errors, [], 'navigation must not raise page errors');
   if (maxMs > 0) {

@@ -14,6 +14,7 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.ScanResult;
 import android.os.Build;
+import android.util.Log;
 import android.provider.Settings;
 import android.net.Uri;
 import android.text.TextUtils;
@@ -44,6 +45,7 @@ import java.util.Map;
     }
 )
 public class WifiInfoPlugin extends Plugin {
+    private static final String TAG = "HDManagerWifiInfo";
 
     private BroadcastReceiver wifiReceiver;
 
@@ -60,10 +62,15 @@ public class WifiInfoPlugin extends Plugin {
         IntentFilter filter = new IntentFilter();
         filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
         filter.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            getContext().registerReceiver(wifiReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            getContext().registerReceiver(wifiReceiver, filter);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getContext().registerReceiver(wifiReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                getContext().registerReceiver(wifiReceiver, filter);
+            }
+        } catch (RuntimeException error) {
+            wifiReceiver = null;
+            Log.w(TAG, "Unable to register optional WiFi receiver", error);
         }
     }
 

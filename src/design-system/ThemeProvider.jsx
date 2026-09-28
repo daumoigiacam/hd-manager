@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
 import {
   normalizeHDThemePreference,
   readHDThemePreference,
@@ -23,7 +24,8 @@ function readSystemDarkPreference() {
 export function HDThemeProvider({ children }) {
   const [preference, setPreferenceState] = useState(readHDThemePreference);
   const [prefersDark, setPrefersDark] = useState(readSystemDarkPreference);
-  const theme = resolveHDTheme(preference, prefersDark);
+  const isAndroidNative = Capacitor.isNativePlatform?.() && Capacitor.getPlatform?.() === 'android';
+  const theme = isAndroidNative ? 'light' : resolveHDTheme(preference, prefersDark);
 
   useEffect(() => {
     let mediaQuery;

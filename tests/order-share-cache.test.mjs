@@ -65,6 +65,21 @@ assert.match(
   /reason:\s*'order_detail_opened_or_refreshed'/,
   'Opening an existing invoice must warm its share asset before the share button is pressed.'
 );
+assert.match(
+  appSource,
+  /SALES_INVOICE_SHARE_LAYOUT_VERSION\s*=\s*'classic-v1'/,
+  'The restored classic invoice must use a distinct persistent-cache version.'
+);
+assert.match(
+  appSource,
+  /blob\s*=\s*await drawSalesInvoiceShareImage\(\{ order: orderForShare, company, customers, orders, payments \}\)/,
+  'The share asset must render the compact classic invoice rather than a selectable template.'
+);
+assert.match(
+  appSource,
+  /getOrderSharePaymentDueAmount\(order, customers, orders, payments\)/,
+  'QR creation must include an order that has just been saved but is not yet in React state.'
+);
 assert.doesNotMatch(
   appSource,
   /requestIdleCallback\(run,\s*\{\s*timeout:\s*250\s*\}\)/,
