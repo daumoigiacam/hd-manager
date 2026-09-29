@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   formatCompactVnd, formatVnd, getChangePercent, getReportPeriod, getRevenueGroups,
+  aggregateReportRows,
 } from '../src/features/business-report/reportViewModel.js';
 import { buildProductDailyReportSeries } from '../src/services/executiveDashboardService.js';
 
@@ -55,6 +56,19 @@ test('money, comparison, and revenue shares remain truthful', () => {
   ], 2);
   assert.deepEqual(groups.map((row) => row.name), ['Gà', 'Vịt', 'Khác']);
   assert.equal(groups.reduce((sum, row) => sum + row.share, 0), 100);
+});
+
+test('period aggregations include only matching dates and sum every requested metric', () => {
+  const report = getReportPeriod(finance, 'month');
+  const rows = aggregateReportRows([
+    { date: '2026-08-31', id: 'chicken', name: 'Gà', revenue: 500, quantity: 2 },
+    { date: '2026-09-25', id: 'chicken', name: 'Gà', revenue: 100, quantity: 1 },
+    { date: '2026-09-26', id: 'duck', name: 'Vịt', revenue: 150, quantity: 3 },
+  ], report, { groupBy: 'id', valueFields: ['revenue', 'quantity'] });
+  assert.deepEqual(rows.map(({ name, revenue, quantity }) => ({ name, revenue, quantity })), [
+    { name: 'Vịt', revenue: 150, quantity: 3 },
+    { name: 'Gà', revenue: 100, quantity: 1 },
+  ]);
 });
 
 test('product trend includes only that product and ignores archived orders', () => {

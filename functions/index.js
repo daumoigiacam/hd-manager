@@ -964,6 +964,14 @@ exports.identityBiometricLogin = functions.https.onRequest(runIdentityRequest((r
   biometricProof: Boolean(req.body?.biometricProof)
 })));
 
+exports.identityPasskey = functions.https.onRequest(runIdentityRequest((req) => identityCenter.passkey({
+  operation: req.body?.operation,
+  body: req.body || {},
+  authorization: req.headers.authorization,
+  origin: req.headers.origin,
+  ip: req.ip,
+})));
+
 exports.identityRegisterCompany = functions.https.onRequest(runIdentityRequest((req) => identityCenter.registerCompany({
   companyName: req.body?.companyName,
   phone: req.body?.phone,

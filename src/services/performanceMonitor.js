@@ -235,6 +235,27 @@ const getFetchMethod = (input, init) => {
   return String(init?.method || input?.method || 'GET').toUpperCase();
 };
 
+const getBodySizeBytes = (body) => {
+  if (typeof body === 'string') return new TextEncoder().encode(body).byteLength;
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+    return new TextEncoder().encode(body.toString()).byteLength;
+  }
+  if (typeof Blob !== 'undefined' && body instanceof Blob) return body.size;
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  return null;
+};
+
+const getServerDatabaseDuration = (headerValue) => {
+  if (!headerValue) return null;
+  for (const entry of headerValue.split(',')) {
+    if (!/^\s*db(?:[-_][^;\s]+)?\s*;/i.test(entry)) continue;
+    const match = entry.match(/;\s*dur=([\d.]+)/i);
+    if (match) return Number(match[1]);
+  }
+  return null;
+};
+
 const patchFetch = () => {
   const win = getWindow();
   if (!win?.fetch || fetchPatched) return;
@@ -244,13 +265,30 @@ const patchFetch = () => {
   win.fetch = async (input, init) => {
     const url = sanitizeUrl(getFetchUrl(input));
     const method = getFetchMethod(input, init);
-    const span = createPerformanceSpan('api.response', { method, url });
+    let requestBytes = null;
+    let requestHeaderBytes = null;
+    try {
+      requestBytes = getBodySizeBytes(init?.body);
+      requestHeaderBytes = Number(new Headers(init?.headers || input?.headers || {}).get('content-length')) || null;
+    } catch {
+      requestBytes = null;
+      requestHeaderBytes = null;
+    }
+    const startedAt = now();
+    const span = createPerformanceSpan('api.response', {
+      method,
+      url,
+      requestBytes: requestBytes ?? requestHeaderBytes,
+    });
     try {
       const response = await originalFetch(input, init);
       const detail = {
         status: response.status,
         ok: response.ok,
         contentType: response.headers?.get?.('content-type') || '',
+        responseBytes: Number(response.headers?.get?.('content-length')) || null,
+        ttfbMs: Math.round(now() - startedAt),
+        databaseDurationMs: getServerDatabaseDuration(response.headers?.get?.('server-timing')),
       };
       span.end(detail);
       if (!response.ok || response.status >= 500) {

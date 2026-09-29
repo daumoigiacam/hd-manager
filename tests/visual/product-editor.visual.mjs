@@ -83,6 +83,28 @@ try {
     assert.equal(productChrome.mainOverflowY, 'auto', `${viewport.name}: app content must own vertical scrolling`);
     if (viewport.name === 'mobile') {
       assert(productChrome.addButtonBottom <= productChrome.footerTop - 4, 'mobile: add-product action must remain fully above the footer');
+      const addProductButton = page.locator('main').getByRole('button', { name: 'Thêm sản phẩm' });
+      await addProductButton.waitFor({ state: 'visible', timeout: 5000 });
+      const addProductFab = await page.evaluate(() => {
+        const button = document.querySelector('main button[aria-label="Thêm sản phẩm"]');
+        const footer = document.querySelector('[data-hd-navigation="bottom"]');
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return {
+          buttonBottom: rect.bottom,
+          footerTop: footer.getBoundingClientRect().top,
+          display: getComputedStyle(button.parentElement).display,
+          receivesPointer: hit?.closest('button[aria-label="Thêm sản phẩm"]') === button,
+        };
+      });
+      assert(addProductFab.buttonBottom < addProductFab.footerTop, 'mobile: create-product FAB must sit above the footer');
+      assert.equal(addProductFab.display, 'flex', 'mobile: create-product FAB must not be hidden');
+      assert.equal(addProductFab.receivesPointer, true, 'mobile: create-product FAB must receive pointer input');
+      await addProductButton.click();
+      const createProductDialog = page.getByRole('dialog', { name: 'Tạo sản phẩm' });
+      await createProductDialog.waitFor({ state: 'visible', timeout: 5000 });
+      await createProductDialog.getByRole('button', { name: 'Quay lại' }).click();
+      await createProductDialog.waitFor({ state: 'hidden', timeout: 5000 });
     }
 
     const productListLayout = await page.locator('.hd-product-list').evaluate((list) => {
@@ -325,6 +347,7 @@ try {
       const actionRect = actions?.getBoundingClientRect();
       const layerRect = layer?.getBoundingClientRect();
       const editorStyle = getComputedStyle(editor);
+      const layerStyle = layer ? getComputedStyle(layer) : null;
       const topElement = document.elementFromPoint(window.innerWidth / 2, 24);
       const bottomElement = document.elementFromPoint(window.innerWidth / 2, window.innerHeight - 20);
       const ancestors = [];
@@ -351,6 +374,14 @@ try {
         editorBottom: editorRect.bottom,
         layerTop: layerRect?.top || 0,
         layerBottom: layerRect?.bottom || 0,
+        layerCssTop: layerStyle?.top || '',
+        layerCssBottom: layerStyle?.bottom || '',
+        layerCssHeight: layerStyle?.height || '',
+        modalViewportTop: getComputedStyle(document.documentElement).getPropertyValue('--hd-modal-viewport-top').trim(),
+        modalViewportHeight: getComputedStyle(document.documentElement).getPropertyValue('--hd-modal-viewport-height').trim(),
+        visualViewport: window.visualViewport ? { height: window.visualViewport.height, offsetTop: window.visualViewport.offsetTop, scale: window.visualViewport.scale } : null,
+        innerHeight: window.innerHeight,
+        maxTouchPoints: navigator.maxTouchPoints,
         scrollY: window.scrollY,
         actionsBottom: actionRect?.bottom || 0,
         headerBackground: header ? getComputedStyle(header).backgroundColor : '',

@@ -62,7 +62,8 @@ test('plus picker exposes the active catalog and remembers new customer products
   assert.match(appSource, /const manualCatalogProductVariantOptions = useMemo\(\(\) => activeProducts\.flatMap/);
   assert.match(appSource, /const sourceVariants = manualCatalogProductVariantOptions\.filter/);
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\);/);
+  assert.match(appSource, /onPersisted: \(\{ id, request \}\) =>/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
   assert.match(appSource, /onEditCustomer=\{onEditCustomer\}/);
   assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
 });
@@ -404,23 +405,36 @@ test('saved request synchronizes customer defaults atomically only after the req
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{handleSyncCustomerFixedProductDefaults\}/);
   assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{onSyncCustomerFixedProductDefaults\}/);
   assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, memoryRequests\)/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\);/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
   assert.match(appSource, /orderUnit: quantityUnit,/);
   assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
-  assert.match(
-    appSource,
-    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin'\);\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*scheduleOrderRequestMemorySync\(\[\{\s*\.\.\.normalizedRequest,\s*items: \[requestItems\[row\.itemIndex\]\],\s*\}\], 'fixed-products'\);\s*\}/,
-    'saving an inline-edited order line must update only that fixed-product memory after the order save succeeds'
+  const inlineSaveSection = appSource.slice(
+    appSource.indexOf('const saveInlineEditRow = async'),
+    appSource.indexOf('const deleteInlineEditRow = async'),
   );
+  assert.match(
+    inlineSaveSection,
+    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin', \{\s*backgroundSync: true,\s*onPersisted: \(\) => \{\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*scheduleOrderRequestMemorySync\(/,
+    'inline order edits must update customer price memory only after the order write is confirmed or durably queued'
+  );
+  assert.match(inlineSaveSection, /Đã lưu thay đổi đơn đặt hàng của \$\{customer\.name\}\. Firebase đang đồng bộ nền\./);
 });
 
-test('order request memory sync does not block a confirmed save', () => {
+test('inline order edit blocks rapid duplicate saves before React rerenders', () => {
+  assert.match(appSource, /const savingOrderCellRef = useRef\(false\)/);
+  assert.match(appSource, /if \(!orderCellEditor\?\.row \|\| !canEditOrderCellField\(orderCellEditor\.field\) \|\| savingOrderCellRef\.current\) return;/);
+  assert.match(appSource, /savingOrderCellRef\.current = true;\s*setIsSavingOrderCell\(true\);/);
+  assert.match(appSource, /savingOrderCellRef\.current = false;\s*setIsSavingOrderCell\(false\);/);
+});
+
+test('order request memory sync runs after local persistence is confirmed or durably queued', () => {
   const submitSection = appSource.slice(
     appSource.indexOf('const handleSubmitOrderRequests = async'),
     appSource.indexOf('const orderCellEditorConfig = getOrderCellEditorConfig()'),
   );
-  assert.match(submitSection, /await onEditOrderRequest\([\s\S]*?scheduleOrderRequestMemorySync\(/);
-  assert.match(submitSection, /const savedRequestId = await onAddOrderRequest[\s\S]*?scheduleOrderRequestMemorySync\(savedRequests\);/);
+  assert.match(submitSection, /await onEditOrderRequest\([\s\S]*?backgroundSync: true,[\s\S]*?onPersisted: \(\{ request \}\) => scheduleOrderRequestMemorySync\(/);
+  assert.match(submitSection, /const savedRequestId = await onAddOrderRequest[\s\S]*?backgroundSync: true,[\s\S]*?onPersisted: \(\{ id, request \}\) =>/);
+  assert.match(submitSection, /onSettled: \(\) => \{[\s\S]*?scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
   assert.doesNotMatch(submitSection, /await persistOrderRequestMemories\(/);
 });
 

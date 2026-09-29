@@ -1,8 +1,4 @@
 export const resolveClientRuntime = () => ({
-  googleMapsApiKey: '',
-  googleMapsMapId: '',
-  goongMapTilesApiKey: '',
-  goongRestApiKey: '',
   legacyPaymentApiBaseUrl: '',
 });
 

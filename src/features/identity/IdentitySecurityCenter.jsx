@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
+import PasskeySettings from './PasskeySettings.jsx';
 
 export default function IdentitySecurityCenter({
   identityApi,
@@ -41,6 +42,12 @@ export default function IdentitySecurityCenter({
   const [deletionPassword, setDeletionPassword] = useState('');
   const [deletionConfirmation, setDeletionConfirmation] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [quickLogin, setQuickLogin] = useState({ available: false, native: false });
+  useEffect(() => {
+    let active = true;
+    if (!vpsMode && identityApi.getQuickLoginAvailability) identityApi.getQuickLoginAvailability().then(result => { if (active) setQuickLogin(result); });
+    return () => { active = false; };
+  }, [identityApi, vpsMode]);
   const device = useMemo(() => getIdentityDevice(), [getIdentityDevice]);
   const identityReady = Boolean(identityUser?.phone || identityUser?.id);
 
@@ -315,8 +322,9 @@ export default function IdentitySecurityCenter({
                 <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
                 {vpsMode && <button type="button" onClick={() => { resetEmailChangeState(); setActiveEditor(activeEditor === 'email-start' ? '' : 'email-start'); }} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi email</button>}
                 {!vpsMode && <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>}
-                {!vpsMode && <button type="button" onClick={toggleBiometric} disabled={isLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>}
+                {!vpsMode && quickLogin.native && <button type="button" onClick={toggleBiometric} disabled={isLoading || (!quickLogin.available && !biometricEnabled)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>}
               </div>
+              {!vpsMode && !quickLogin.native && quickLogin.available && <PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} />}
               {(activeEditor === 'password' || activeEditor === 'pin') && (
                 <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   {activeEditor === 'password' && (

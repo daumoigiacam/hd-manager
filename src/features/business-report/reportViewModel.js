@@ -31,18 +31,19 @@ export function getReportPeriod(finance = {}, period = 'today', customRange = nu
   const month = String(finance.currentMonthKey || today.slice(0, 7));
   const quarter = Math.floor((Number(month.slice(5, 7)) - 1) / 3);
   const year = today.slice(0, 4);
+  const quarterStartMonth = String(quarter * 3 + 1).padStart(2, '0');
   const daily = Array.isArray(finance.series30Days) ? finance.series30Days : [];
   const monthly = Array.isArray(finance.series12Months) ? finance.series12Months : [];
   const rangeRows = period === 'custom'
     ? daily.filter((row) => row.date >= customRange?.start && row.date <= customRange?.end)
     : [];
   const map = {
-    today: { label: 'Hôm nay', revenue: finance.revenueToday, profit: finance.profitToday, expense: finance.expenseToday, rows: daily.filter((row) => row.date === today), previous: { revenue: finance.revenueYesterday, profit: finance.profitYesterday, expense: finance.expenseYesterday } },
-    week: { label: 'Tuần này', revenue: finance.revenueWeek, profit: finance.profitWeek, expense: finance.expenseWeek, rows: daily.filter((row) => row.date >= finance.weekStartKey && row.date <= finance.weekEndKey) },
-    month: { label: 'Tháng này', revenue: finance.revenueMonth, profit: finance.profitMonth, expense: finance.expenseMonth, rows: daily.filter((row) => String(row.date).startsWith(month)), previous: { revenue: finance.revenuePreviousMonth, profit: finance.profitPreviousMonth, expense: finance.expensePreviousMonth } },
-    quarter: { label: `Quý ${quarter + 1}`, revenue: finance.revenueQuarter, profit: finance.quarterProfit, expense: finance.expenseQuarter, rows: monthly.filter((row) => String(row.month).startsWith(year) && Math.floor((Number(String(row.month).slice(5, 7)) - 1) / 3) === quarter) },
-    year: { label: `Năm ${year}`, revenue: finance.revenueYear, profit: finance.yearProfit, expense: finance.expenseYear, rows: monthly.filter((row) => String(row.month).startsWith(year)) },
-    custom: { label: `${formatShortDate(customRange?.start)}–${formatShortDate(customRange?.end)}`, revenue: sumRows(rangeRows, 'revenue'), profit: sumRows(rangeRows, 'profit'), expense: sumRows(rangeRows, 'expense'), rows: rangeRows },
+    today: { label: 'Hôm nay', startDate: today, endDate: today, revenue: finance.revenueToday, profit: finance.profitToday, expense: finance.expenseToday, rows: daily.filter((row) => row.date === today), previous: { revenue: finance.revenueYesterday, profit: finance.profitYesterday, expense: finance.expenseYesterday } },
+    week: { label: 'Tuần này', startDate: finance.weekStartKey, endDate: finance.weekEndKey, revenue: finance.revenueWeek, profit: finance.profitWeek, expense: finance.expenseWeek, rows: daily.filter((row) => row.date >= finance.weekStartKey && row.date <= finance.weekEndKey) },
+    month: { label: 'Tháng này', startDate: `${month}-01`, endDate: today, revenue: finance.revenueMonth, profit: finance.profitMonth, expense: finance.expenseMonth, rows: daily.filter((row) => String(row.date).startsWith(month)), previous: { revenue: finance.revenuePreviousMonth, profit: finance.profitPreviousMonth, expense: finance.expensePreviousMonth } },
+    quarter: { label: `Quý ${quarter + 1}`, startDate: `${year}-${quarterStartMonth}-01`, endDate: today, revenue: finance.revenueQuarter, profit: finance.quarterProfit, expense: finance.expenseQuarter, rows: monthly.filter((row) => String(row.month).startsWith(year) && Math.floor((Number(String(row.month).slice(5, 7)) - 1) / 3) === quarter) },
+    year: { label: `Năm ${year}`, startDate: `${year}-01-01`, endDate: today, revenue: finance.revenueYear, profit: finance.yearProfit, expense: finance.expenseYear, rows: monthly.filter((row) => String(row.month).startsWith(year)) },
+    custom: { label: `${formatShortDate(customRange?.start)}–${formatShortDate(customRange?.end)}`, startDate: customRange?.start, endDate: customRange?.end, revenue: sumRows(rangeRows, 'revenue'), profit: sumRows(rangeRows, 'profit'), expense: sumRows(rangeRows, 'expense'), rows: rangeRows },
   };
   const selected = map[period] || map.today;
   const chartRows = period === 'today' ? (Array.isArray(finance.series7Days) ? finance.series7Days : []) : selected.rows;
@@ -56,6 +57,22 @@ export function getReportPeriod(finance = {}, period = 'today', customRange = nu
     chartRows,
     chartLabel: period === 'today' ? '7 ngày' : selected.label,
   };
+}
+
+export function aggregateReportRows(rows = [], report = {}, { groupBy = 'name', valueFields = ['value'], limit = 30 } = {}) {
+  const totals = new Map();
+  rows.forEach((row) => {
+    if (!row?.date || (report.startDate && row.date < report.startDate) || (report.endDate && row.date > report.endDate)) return;
+    const key = String(row[groupBy] || row.name || 'Khác');
+    const current = totals.get(key) || { id: row.id || key, name: row.name || key, category: row.category || '', department: row.department || '', detail: row.detail || '', count: 0 };
+    valueFields.forEach((field) => { current[field] = (current[field] || 0) + number(row[field]); });
+    current.count += 1;
+    totals.set(key, current);
+  });
+  const sortField = valueFields[0];
+  return [...totals.values()]
+    .sort((left, right) => number(right[sortField]) - number(left[sortField]) || left.name.localeCompare(right.name, 'vi'))
+    .slice(0, limit);
 }
 
 export function getTopSalesEmployees(business = {}, finance = {}, period = 'today', customRange = null, limit = 5) {

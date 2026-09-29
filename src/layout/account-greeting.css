@@ -1,0 +1,5 @@
+.hd-account-greeting { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; text-align: left; letter-spacing: 0; }
+.hd-account-greeting__salutation { flex: 0 0 auto; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.hd-account-greeting__logo { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 6px; object-fit: contain; background: #fff; }
+.hd-account-greeting__monogram { display: grid; place-items: center; color: #1658cf; font-size: 14px; font-weight: 700; }
+.hd-account-greeting__name { min-width: 0; font-size: 14px; font-weight: 700; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

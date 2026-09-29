@@ -19,6 +19,7 @@ const DEFAULT_IDENTITY_API_BASE_URL = 'https://us-central1-hd-manager-c5839.clou
 const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/login': 'identityLogin',
   '/api/identity/biometric-login': 'identityBiometricLogin',
+  '/api/identity/passkey': 'identityPasskey',
   '/api/identity/register-company': 'identityRegisterCompany',
   '/api/identity/complete-setup': 'identityCompleteSetup',
   '/api/identity/request-recovery': 'identityRequestRecovery',
@@ -198,9 +199,9 @@ const rememberBiometricLoginProfile = ({ identity = {}, identifier = '', enabled
   });
 };
 
-export const getBiometricAutoLoginProfile = () => {
+export const getBiometricAutoLoginProfile = ({ manual = false } = {}) => {
   if (typeof window === 'undefined' || !isNativeRuntime()) return null;
-  if (window.sessionStorage?.getItem(BIOMETRIC_LOGIN_SUPPRESSED_KEY) === '1') return null;
+  if (!manual && window.sessionStorage?.getItem(BIOMETRIC_LOGIN_SUPPRESSED_KEY) === '1') return null;
   return readBiometricLoginProfile();
 };
 
@@ -444,8 +445,9 @@ export const identityLogin = async ({ identifier, password, appId }) => {
   return result;
 };
 
-export const identityBiometricLogin = async ({ appId }) => {
-  const profile = getBiometricAutoLoginProfile();
+export const identityBiometricLogin = async ({ appId, manual = false }) => {
+  if (!isNativeRuntime()) return identityPasskeyLogin();
+  const profile = getBiometricAutoLoginProfile({ manual });
   if (!profile) return { success: false, unavailable: true };
   const availability = await getBiometricAvailability();
   if (!availability.available) return { success: false, unavailable: true };
@@ -477,6 +479,46 @@ export const identityBiometricLogin = async ({ appId }) => {
     }
     throw error;
   }
+};
+
+export const getQuickLoginAvailability = async () => {
+  if (isNativeRuntime()) return { ...(await getBiometricAvailability()), native: true };
+  try {
+    const available = Boolean(globalThis.isSecureContext && globalThis.PublicKeyCredential
+      && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+    return { available, native: false };
+  } catch { return { available: false, native: false }; }
+};
+
+const passkeyError = (error) => {
+  if (['NotAllowedError', 'AbortError'].includes(error?.name)) return new Error('Xác thực đã hủy hoặc hết thời gian. Bạn có thể thử lại hoặc dùng mật khẩu.');
+  if (error?.name === 'InvalidStateError') return new Error('Thiết bị đã có passkey cho tài khoản này.');
+  return error;
+};
+
+export const identityRegisterPasskey = async ({ idToken, password, label }) => {
+  const availability = await getQuickLoginAvailability();
+  if (!availability.available || availability.native) throw new Error('Trình duyệt này chưa hỗ trợ passkey. Hãy mở HD Manager bằng Safari hoặc Chrome trên thiết bị có khóa màn hình.');
+  try {
+    const { startRegistration } = await import('@simplewebauthn/browser');
+    const challenge = await requestIdentityApi('/api/identity/passkey', { operation: 'register-options', password, label }, { idToken });
+    const response = await startRegistration({ optionsJSON: challenge.options });
+    return await requestIdentityApi('/api/identity/passkey', { operation: 'register-verify', challengeId: challenge.challengeId, response }, { idToken });
+  } catch (error) { throw passkeyError(error); }
+};
+
+export const identityListPasskeys = ({ idToken }) => requestIdentityApi('/api/identity/passkey', { operation: 'list' }, { idToken });
+export const identityRevokePasskey = ({ idToken, id, password }) => requestIdentityApi('/api/identity/passkey', { operation: 'revoke', id, password }, { idToken });
+
+const identityPasskeyLogin = async () => {
+  try {
+    const { startAuthentication } = await import('@simplewebauthn/browser');
+    const challenge = await requestIdentityApi('/api/identity/passkey', { operation: 'login-options' });
+    const response = await startAuthentication({ optionsJSON: challenge.options });
+    const result = await requestIdentityApi('/api/identity/passkey', { operation: 'login-verify', challengeId: challenge.challengeId, response, device: getIdentityDevice() });
+    rememberIdentitySessionAccount(result);
+    return result;
+  } catch (error) { throw passkeyError(error); }
 };
 
 export const identityRegisterCompany = async ({ companyName, phone, password, appId, companySettings }) => {
@@ -520,6 +562,8 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
 };
 
 export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) => {
+  if (!isNativeRuntime()) throw new Error('Trên website, hãy đăng ký Passkey trong phần bảo mật tài khoản.');
+  if (enabled && !(await getBiometricAvailability()).available) throw new Error('Hãy bật Face ID hoặc vân tay trong cài đặt thiết bị trước.');
   const device = getIdentityDevice();
   const accountScope = rememberIdentityAccountScope(identity);
   let secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: false, accountScope });
@@ -535,7 +579,7 @@ export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) 
   if (!secret && isNativeRuntime() && accountScope) {
     secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: true });
   }
-  if (!secret) throw new Error('Thiết bị này chưa được tin cậy. Hãy đăng nhập lại và hoàn tất thiết lập bảo mật.');
+  if (!secret) return identityCompleteSetup({ idToken, biometricEnabled: Boolean(enabled), trustDevice: true });
   const result = await requestIdentityApi('/api/identity/complete-setup', {
     device,
     biometricEnabled: Boolean(enabled),

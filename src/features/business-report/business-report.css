@@ -50,9 +50,13 @@
   color: #12337e;
   background: transparent;
 }
-.business-report-header > img { width: 32px; height: 32px; border-radius: 8px; object-fit: contain; }
-.business-report-header > strong { display: -webkit-box; min-width: 0; flex: 1; overflow: hidden; color: var(--report-ink); font-size: 15px; font-weight: 750; line-height: 1.2; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.business-report-header > .business-report-header__identity { display: flex; flex: 1 1 auto; align-items: center; justify-content: flex-start; width: auto; min-width: 0; height: auto; min-height: 44px; padding: 0; border: 0; border-radius: 0; color: var(--report-ink); text-align: left; background: transparent; }
+.business-report-header__brand { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; }
+.business-report-header__brand img { flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid #e9eef6; border-radius: 8px; background: #fff; object-fit: contain; }
+.business-report-header__mark { display: grid; flex: 0 0 28px; width: 28px; height: 28px; place-items: center; border: 1px solid #dce8fa; border-radius: 8px; color: #2563eb; background: #eff6ff; font-size: 13px; font-weight: 800; }
+.business-report-header__brand strong { min-width: 0; overflow: hidden; color: var(--report-ink); font-size: 14px; font-weight: 750; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .business-report-header__bell i { position: absolute; top: 0; right: 0; min-width: 16px; height: 16px; display: grid; place-items: center; border-radius: 999px; background: #e5384d; color: white; font-size: 9px; font-style: normal; font-weight: 700; }
+.business-report-header > .business-report-header__bell { flex: 0 0 40px; width: 40px; height: 40px; min-height: 40px; }
 .business-report-header > .business-report-header__avatar { flex-basis: 38px; width: 38px; height: 38px; min-height: 38px; border-radius: 50%; background: #2865e7; color: white; font-size: 12px; font-weight: 700; }
 .business-report-subheader { justify-content: space-between; }
 .business-report-subheader h1 { flex: 1; margin: 0; color: #0e214e; text-align: center; font-size: 20px; font-weight: 700; }
@@ -181,6 +185,12 @@
 .business-report-mini-grid strong { color: #183572; font-size: 17px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .business-report-cost-hero { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: 125px; padding: 19px; border-radius: 16px; color: #fff; background: linear-gradient(115deg, #ef5263, #f37c74); }
 .business-report-cost-hero .business-report-change { color: #fff; }
+.business-report-profit-bridge { display: grid; gap: 0; }
+.business-report-profit-bridge > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; border-bottom: 1px solid #eef2f7; }
+.business-report-profit-bridge > div:last-child { border-bottom: 0; }
+.business-report-profit-bridge span { color: #647792; font-size: 12px; }
+.business-report-profit-bridge strong { color: #183572; font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.business-report-profit-bridge .is-total span, .business-report-profit-bridge .is-total strong { color: #0b9f68; font-weight: 750; }
 .business-report-cost-list { display: grid; }
 .business-report-cost-list > button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 59px; padding: 7px 0; border: 0; border-bottom: 1px solid #eef2f7; background: white; text-align: left; }
 .business-report-cost-list > button:last-child { border-bottom: 0; }
@@ -217,7 +227,9 @@
 @media (max-width: 359px) {
   .business-report-content { gap: 14px; padding-left: 12px; padding-right: 12px; }
   .business-report-header { padding-left: 10px; padding-right: 10px; gap: 5px; }
-  .business-report-header > strong { font-size: 13px; }
+  .business-report-header__brand { gap: 5px; }
+  .business-report-header__brand img { flex-basis: 25px; width: 25px; height: 25px; }
+  .business-report-header__brand strong { font-size: 12px; }
   .business-report-kpi { padding: 10px; }
   .business-report-kpi__value { font-size: 15px; }
   .business-report-breakdown { grid-template-columns: 106px minmax(0, 1fr); gap: 9px; }

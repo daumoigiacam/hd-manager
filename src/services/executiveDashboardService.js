@@ -65,6 +65,20 @@ const parseDate = (value) => {
     if (value.seconds) return new Date(value.seconds * 1000);
   }
   const raw = String(value).trim();
+  const vietnameseDateMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (vietnameseDateMatch) {
+    const [, dayText, monthText, yearText, hourText = '0', minuteText = '0', secondText = '0'] = vietnameseDateMatch;
+    const day = Number(dayText);
+    const month = Number(monthText);
+    const year = Number(yearText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText);
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
+    const date = new Date(year, month - 1, day, hour, minute, second);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+  }
   const isoLike = raw.includes('T') ? raw : raw.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1');
   const date = new Date(isoLike);
   return Number.isNaN(date.getTime()) ? null : date;
@@ -1091,6 +1105,8 @@ export const BusinessAnalysisService = {
     const salesEmployees = source.employees.filter(isSalesEmployeeRecord);
     const salesEmployeeIds = new Set(salesEmployees.map(employee => String(employee.id || employee.employeeId || '')));
     const salesEmployeeOrders = [];
+    const productPerformanceRows = [];
+    const customerPerformanceRows = [];
     salesEmployees.forEach(employee => {
       const employeeId = String(employee.id || employee.employeeId || employeeDisplayNameOf(employee));
       const employeeName = employeeDisplayNameOf(employee);
@@ -1230,6 +1246,48 @@ export const BusinessAnalysisService = {
         salesEmployeeOrders.push({ date: orderDay, id: employeeKey, name: salesOwner.name, revenue, orders: 1 });
       }
 
+      if (orderDay && orderDay <= finance.todayKey) {
+        customerPerformanceRows.push({
+          date: orderDay,
+          id: String(order.customerId || order.customer?.id || normalizeText(customerName)),
+          name: customerName,
+          revenue,
+          profit,
+          orders: 1
+        });
+        const reportItems = getItems(order);
+        const rawItemRevenue = reportItems.reduce((sum, item) => sum + Math.max(0, itemLineTotal(item)), 0);
+        const orderRevenueScale = rawItemRevenue > 0 ? revenue / rawItemRevenue : 0;
+        const itemProfitRows = reportItems.map(item => ({
+          item,
+          revenue: rawItemRevenue > 0
+            ? Math.max(0, itemLineTotal(item)) * orderRevenueScale
+            : revenue / Math.max(1, reportItems.length),
+          profit: itemProfitFromProfitability(item).profit,
+          weight: rawItemRevenue > 0 ? Math.max(0, itemLineTotal(item)) / rawItemRevenue : 1 / Math.max(1, reportItems.length)
+        }));
+        const itemProfitTotal = itemProfitRows.reduce((sum, row) => sum + row.profit, 0);
+        itemProfitRows.forEach(({ item, revenue: itemRevenue, profit: baseProfit, weight }) => {
+          const productName = productNameOf(item, productsById);
+          productPerformanceRows.push({
+            date: orderDay,
+            id: String(item.productId || normalizeText(productName)),
+            name: productName,
+            revenue: itemRevenue,
+            profit: baseProfit + (profit - itemProfitTotal) * weight,
+            quantity: itemQuantity(item)
+          });
+        });
+        if (!reportItems.length && revenue > 0) productPerformanceRows.push({
+          date: orderDay,
+          id: 'unassigned-product',
+          name: 'Chưa có chi tiết mặt hàng',
+          revenue,
+          profit,
+          quantity: 0
+        });
+      }
+
       getItems(order).forEach(item => {
         const productName = productNameOf(item, productsById);
         const itemRevenue = itemLineTotal(item);
@@ -1326,8 +1384,13 @@ export const BusinessAnalysisService = {
       topCustomersByDebt: source.hasDebtLedger
         ? source.debtLedger.filter(row => toNumber(row.debt) > 0)
           .map(row => ({ ...row, value: toNumber(row.debt), debt: toNumber(row.debt) }))
-          .sort((a, b) => b.debt - a.debt).slice(0, 10)
-        : topRows(customerDebt, 'debt'),
+          .sort((a, b) => b.debt - a.debt).slice(0, 30)
+        : topRows(customerDebt, 'debt', 30),
+      debtCustomerCount: source.hasDebtLedger
+        ? source.debtLedger.filter(row => toNumber(row.debt) > 0).length
+        : [...customerDebt.values()].filter(row => toNumber(row.debt) > 0).length,
+      productPerformanceRows,
+      customerPerformanceRows,
       salesEmployeeOrders,
       revenuePerDay: finance.revenueMonth / daysPassed,
       profitPerDay: finance.profitMonth / daysPassed,
@@ -2263,6 +2326,53 @@ export const DashboardService = {
     const costBreakdown = [...currentMonthCostBreakdownMap.entries()]
       .filter(([, value]) => toNumber(value) > 0)
       .map(([name, value]) => ({ name, value }));
+    const expenseCategoryRows = [];
+    const expenseDetailRows = [];
+    const salaryEmployeeRows = [];
+    const reportEmployeesById = new Map(source.employees.map(employee => [String(employee.id || employee.employeeId || employee.uid || employee.userId || ''), employee]));
+    operatingExpenses.forEach(expense => {
+      const date = dateKey(getDateValue(expense));
+      const value = Math.max(0, toNumber(expense.amount));
+      if (!date || !value) return;
+      const category = classifyExpense(expense);
+      const employeeId = recordEmployeeIdOf(expense);
+      const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
+      const name = expense.name || expense.title || expense.description || expense.reason || expense.category || category;
+      expenseCategoryRows.push({ date, category, name: category, detail: name, value });
+      expenseDetailRows.push({ date, category, name, detail: name, value });
+      if (category === 'Lương') salaryEmployeeRows.push({
+        date,
+        employeeId,
+        name: expense.employeeName || expense.staffName || employee?.name || employee?.fullName || 'Lương chưa gắn nhân sự',
+        department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
+        value
+      });
+    });
+    inventorySoldCostByDate.forEach((value, date) => {
+      if (date <= finance.todayKey && toNumber(value) > 0) {
+        expenseCategoryRows.push({ date, category: 'Giá vốn', name: 'Giá vốn đã dùng', detail: 'Hàng đã bán', value: toNumber(value) });
+        expenseDetailRows.push({ date, category: 'Giá vốn', name: 'Giá vốn hàng đã bán', detail: 'Theo giá vốn tồn kho', value: toNumber(value) });
+      }
+    });
+    const payrollEmployeeRows = [];
+    source.payrollCosts.forEach(row => {
+      const date = dateKey(getDateValue(row));
+      const value = Math.max(0, moneyOfExpense(row));
+      if (!date || date > finance.todayKey || !value) return;
+      const employeeId = recordEmployeeIdOf(row);
+      const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
+      const item = {
+        date,
+        employeeId,
+        name: row.employeeName || row.staffName || employee?.name || employee?.fullName || 'Nhân sự chưa rõ',
+        department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
+        value
+      };
+      payrollEmployeeRows.push(item);
+      expenseCategoryRows.push({ date, category: 'Lương', name: 'Lương', detail: item.name, value });
+      expenseDetailRows.push({ date, category: 'Lương', name: `Lương • ${item.name}`, detail: item.department, value });
+    });
+    salaryEmployeeRows.push(...payrollEmployeeRows);
     const expenseByDepartmentMap = new Map([['Giá vốn', costOfGoodsMonth]]);
     operatingExpenses.filter(expense => monthKey(getDateValue(expense)) === finance.currentMonthKey).forEach(expense => {
       const department = formatDepartmentLabel(expense.department || expense.departmentName || expense.team, 'Chi phí chung');
@@ -2354,7 +2464,10 @@ export const DashboardService = {
       dailyCashflowRows: series30Days,
       series12Months,
       costBreakdown,
-      expenseByDepartment
+      expenseByDepartment,
+      expenseCategoryRows,
+      expenseDetailRows,
+      salaryEmployeeRows
     };
     const profitabilityBase = ProfitabilityService.build(source, finance);
     const profitabilityDiagnostics = buildProfitabilityDiagnostics(source, finance);

@@ -49,9 +49,9 @@ for (const contract of [
   assert(model.includes(contract), `Delivery data model is missing required contract: ${contract}`);
 }
 
-assert.match(app, /<DeliveryRedesignWorkspace[\s\S]*groups=\{deliveryWorkspaceGroups\}/, 'The redesign must be wired to real dispatch and report data.');
-assert.match(app, /onComplete=\{\(\) => handleSubmitReport\(\{ preventDefault\(\) \{\} \}\)\}/, 'The redesign must preserve the existing save workflow.');
-assert.match(app, /case 'delivery_reports':\s*return <DeliveryReportView/, 'The redesigned workspace must also render when the selected day has no dispatches.');
+assert.doesNotMatch(app, /DeliveryRedesignWorkspace|deliveryWorkspaceGroups/, 'The delivery module should use its previous in-app UI rather than the replacement workspace.');
+assert.match(app, /function DeliveryReportView[\s\S]*?return \(\s*<div className="mx-auto flex w-\[calc\(100%-0\.75rem\)\]/, 'The previous delivery report layout must be the active view.');
+assert.match(app, /case 'delivery_reports':\s*return <DeliveryReportView/, 'The previous delivery layout must render when the selected day has no dispatches.');
 assert.match(app, /activeTab === 'delivery_reports'[\s\S]*\['home', 'delivery_reports', 'customers', 'orders', 'more'\]/, 'The delivery workspace must keep a five-item contextual navigation without the retired report module.');
 assert.match(app, /const showFloatingQuickActionButton = canShowFloatingQuickActionButton\s*&& quickActionItems\.length > 0\s*&& !\['delivery_reports', 'customers', 'products', 'finance', 'orders', 'employees', 'messages', 'asset_management', 'more'\]\.includes\(activeTab\)/, 'The global quick action must not duplicate module actions or obscure the module menu.');
 assert.match(app, /activeTab === 'delivery_reports' \? 'Giao hàng'/, 'The delivery header must use the approved title.');

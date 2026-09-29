@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
+import { buildExecutiveDashboardSnapshot } from '../../src/services/executiveDashboardService.js';
+import { formatVnd } from '../../src/features/business-report/reportViewModel.js';
 
 const baseUrl = process.env.HD_MANAGER_VISUAL_QA_URL || 'http://127.0.0.1:5204/';
 const outputDir = process.env.HD_MANAGER_BUSINESS_REPORT_OUTPUT || 'test-results/business-report';
@@ -12,6 +14,7 @@ const dateKey = (offset) => {
   date.setDate(date.getDate() - offset);
   return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, '0')}-${`${date.getDate()}`.padStart(2, '0')}`;
 };
+const vietnameseDateTime = (offset, time) => `${new Date(`${dateKey(offset)}T00:00:00`).toLocaleDateString('vi-VN')} ${time}`;
 const products = {
   report_product_chicken: { id: 'report_product_chicken', companyId: 'comp_preview', name: 'Gà ta', shortName: 'Gà ta', price: 65000, cost: 48000, stock: 500 },
   report_product_duck: { id: 'report_product_duck', companyId: 'comp_preview', name: 'Vịt sống', shortName: 'Vịt sống', price: 58000, cost: 42000, stock: 340 },
@@ -22,13 +25,19 @@ const orders = Object.fromEntries(Array.from({ length: 7 }, (_, index) => {
   const quantity = 20 + index * 5;
   const productId = index % 3 === 0 ? 'report_product_chicken' : index % 3 === 1 ? 'report_product_duck' : 'report_product_spice';
   const product = products[productId];
-  return [id, { id, companyId: 'comp_preview', customerId: index % 2 ? 'c_preview_01' : 'c_preview_02', customerName: index % 2 ? 'Cửa hàng Lan Anh' : 'Tạp hóa Hưng Phát', date: dateKey(index), amount: quantity * product.price, total: quantity * product.price, items: [{ productId, productName: product.name, quantity, unitPrice: product.price, costPrice: product.cost, total: quantity * product.price }], status: 'completed' }];
+  return [id, { id, companyId: 'comp_preview', customerId: index % 2 ? 'c_preview_01' : 'c_preview_02', customerName: index % 2 ? 'Cửa hàng Lan Anh' : 'Tạp hóa Hưng Phát', date: vietnameseDateTime(index, '13:52'), amount: quantity * product.price, total: quantity * product.price, items: [{ productId, productName: product.name, quantity, unitPrice: product.price, costPrice: product.cost, total: quantity * product.price }], status: 'completed' }];
 }));
 const expenses = Object.fromEntries(Array.from({ length: 6 }, (_, index) => {
   const id = `report_expense_${index}`;
-  return [id, { id, companyId: 'comp_preview', date: dateKey(index), category: index % 2 ? 'Xăng dầu' : 'Điện nước', amount: 150000 + index * 25000, status: 'paid' }];
+  return [id, { id, companyId: 'comp_preview', date: vietnameseDateTime(index, '08:05'), category: index % 2 ? 'Xăng dầu' : 'Điện nước', amount: 150000 + index * 25000, status: 'paid' }];
 }));
-const store = { products, orders, expenses };
+const store = { __replaceSeed: true, products, orders, expenses };
+const expectedFinance = buildExecutiveDashboardSnapshot({
+  now: new Date(),
+  products: Object.values(products),
+  orders: Object.values(orders),
+  expenses: Object.values(expenses),
+}).finance;
 
 await mkdir(outputDir, { recursive: true });
 const browser = await chromium.launch({ executablePath: browserPath, headless: true });
@@ -52,12 +61,13 @@ try {
     }
     const report = page.locator('.business-report-workspace');
     await report.waitFor({ timeout: 15000 });
-    await report.locator('.business-report-header > strong').waitFor();
-    assert.equal(await report.locator('.business-report-header > strong').innerText(), 'Công ty HD Preview');
+    await report.locator('.business-report-header__brand strong').waitFor();
+    assert.equal(await report.locator('.business-report-header__brand strong').innerText(), 'Công ty HD Preview');
     assert.equal(await report.locator('.business-report-kpi').count(), 4, 'Home shows exactly four totals');
-    assert.equal(await report.locator('.business-report-section').count(), 1, 'Home shows only the insights section below totals');
-    await report.getByRole('heading', { name: 'Nhận định & gợi ý' }).waitFor();
-    assert.equal(await report.locator('.business-report-hero, .business-report-greeting, .business-report-assistant-fab').count(), 0, 'Home hides other secondary sections');
+    for (const heading of ['Doanh thu & lợi nhuận', 'Cơ cấu doanh thu tháng', 'Top nhân viên kinh doanh', 'Khách hàng nổi bật', 'Top sản phẩm', 'Cảnh báo cần chú ý', 'Nhận định & gợi ý']) {
+      await report.getByRole('heading', { name: heading, exact: true }).waitFor();
+    }
+    assert.equal(await report.locator('.business-report-hero, .business-report-greeting, .business-report-assistant-fab').count(), 0, 'Home hides unrelated secondary UI');
     await report.locator('.business-report-date-button').waitFor();
     const geometry = await page.evaluate(() => ({
       documentWidth: document.documentElement.scrollWidth,
@@ -95,14 +105,33 @@ try {
     }
     if (width === 390) {
       const homeDebtLabel = await report.locator('.business-report-kpi--receivables').getAttribute('title');
-      const todayRevenue = await report.locator('.business-report-kpi--revenue').getAttribute('title');
+      const todayRevenueTitle = await report.locator('.business-report-kpi--revenue').getAttribute('title');
+      const currentReceivablesTitle = await report.locator('.business-report-kpi--receivables').getAttribute('title');
       const dateDialog = report.getByRole('dialog', { name: 'Chọn thời gian báo cáo' });
+      const periodKpis = {
+        revenue: 'revenue',
+        profit: 'profit',
+        expense: 'expense',
+      };
       for (const label of ['Tuần', 'Tháng', 'Quý', 'Năm']) {
         await report.locator('.business-report-date-button').click();
         await dateDialog.getByRole('button', { name: label, exact: true }).click();
         assert.match(await report.locator('.business-report-date-button').innerText(), new RegExp(label));
+        const expectedPeriod = label === 'Tuần'
+          ? { revenue: expectedFinance.revenueWeek, profit: expectedFinance.profitWeek, expense: expectedFinance.expenseWeek }
+          : label === 'Tháng'
+            ? { revenue: expectedFinance.revenueMonth, profit: expectedFinance.profitMonth, expense: expectedFinance.expenseMonth }
+            : label === 'Quý'
+              ? { revenue: expectedFinance.revenueQuarter, profit: expectedFinance.quarterProfit, expense: expectedFinance.expenseQuarter }
+              : { revenue: expectedFinance.revenueYear, profit: expectedFinance.yearProfit, expense: expectedFinance.expenseYear };
+        for (const [metric, field] of Object.entries(periodKpis)) {
+          const shownTitle = await report.locator(`.business-report-kpi--${metric}`).getAttribute('title');
+          const metricLabel = { revenue: 'Doanh thu', profit: 'Lợi nhuận', expense: 'Tổng chi', receivables: 'Công nợ phải thu' }[metric];
+          assert.equal(shownTitle, `${metricLabel}: ${formatVnd(expectedPeriod[field])}`, `${label}: ${metric} must match the selected period`);
+        }
+        assert.equal(await report.locator('.business-report-kpi--receivables').getAttribute('title'), currentReceivablesTitle, `${label}: receivables remain the current Sổ nợ balance`);
       }
-      assert.notEqual(await report.locator('.business-report-kpi--revenue').getAttribute('title'), todayRevenue, 'Home totals follow the chosen period');
+      assert.notEqual(await report.locator('.business-report-kpi--revenue').getAttribute('title'), todayRevenueTitle, 'Year and today fixture values must differ');
       await report.locator('.business-report-date-button').click();
       await dateDialog.getByLabel('Từ ngày').fill(dateKey(1));
       await dateDialog.getByLabel('Đến ngày').fill(dateKey(0));
@@ -110,12 +139,16 @@ try {
       assert.match(await report.locator('.business-report-date-button').innerText(), /–/);
       await report.locator('.business-report-kpi--revenue').click();
       await report.getByRole('heading', { name: 'Báo cáo chi tiết' }).waitFor();
-      await report.getByRole('heading', { name: 'Top sản phẩm' }).waitFor();
+      const reportTabs = report.getByRole('tablist', { name: 'Loại báo cáo' }).getByRole('tab');
+      assert.deepEqual(await reportTabs.allTextContents(), ['Doanh thu', 'Chi phí', 'Lợi nhuận', 'Công nợ'], 'Detail report has exactly the four requested sections');
+      assert.equal(await report.getByRole('tab', { name: 'Doanh thu', exact: true }).getAttribute('aria-selected'), 'true', 'Revenue total opens the revenue section');
+      await report.getByRole('heading', { name: 'Doanh thu theo sản phẩm' }).waitFor();
       await report.getByRole('button', { name: 'Mở Trợ lý AI' }).click();
       await page.getByRole('dialog', { name: 'Trợ lý AI' }).waitFor();
       await page.screenshot({ path: `${outputDir}/assistant-${width}.png` });
       await page.getByRole('button', { name: 'Đóng trợ lý AI' }).click();
       await page.screenshot({ path: `${outputDir}/detail-${width}.png` });
+      await report.locator('.business-report-subheader button').click();
       await report.getByRole('button', { name: /Xem tất cả/ }).first().click();
       await report.getByRole('heading', { name: 'Sản phẩm', exact: true }).waitFor();
       await page.screenshot({ path: `${outputDir}/products-${width}.png` });
@@ -132,19 +165,22 @@ try {
       await report.locator('.business-report-date-button').click();
       await dateDialog.getByRole('button', { name: 'Hôm nay', exact: true }).click();
       await report.locator('.business-report-kpi--profit').click();
-      await report.getByRole('heading', { name: 'Lợi nhuận', exact: true }).first().waitFor();
+      assert.equal(await report.getByRole('tab', { name: 'Lợi nhuận', exact: true }).getAttribute('aria-selected'), 'true', 'Profit total opens the profit section');
+      await report.getByRole('heading', { name: 'Cầu nối lợi nhuận' }).waitFor();
+      await report.getByRole('heading', { name: 'Lợi nhuận theo sản phẩm' }).waitFor();
       await page.screenshot({ path: `${outputDir}/profit-${width}.png` });
       await report.locator('.business-report-subheader button').click();
       await report.locator('.business-report-kpi--expense').click();
-      await report.getByRole('heading', { name: 'Chi phí', exact: true }).waitFor();
-      await page.screenshot({ path: `${outputDir}/costs-${width}.png` });
-      await report.getByRole('tab', { name: 'Chi tiết', exact: true }).click();
+      assert.equal(await report.getByRole('tab', { name: 'Chi phí', exact: true }).getAttribute('aria-selected'), 'true', 'Expense total opens the cost section');
       await report.getByRole('heading', { name: 'Chi phí theo thời gian' }).waitFor();
-      await report.getByRole('tab', { name: 'Theo khoản', exact: true }).click();
-      await report.getByRole('heading', { name: 'Top chi phí tháng' }).waitFor();
+      await report.getByRole('heading', { name: /Các khoản chi lớn/ }).waitFor();
+      await report.getByRole('heading', { name: /Chi phí lương/ }).waitFor();
+      await page.screenshot({ path: `${outputDir}/costs-${width}.png` });
       await report.locator('.business-report-subheader button').click();
       await report.locator('.business-report-kpi--receivables').click();
-      await report.getByRole('heading', { name: 'Công nợ', exact: true }).waitFor();
+      assert.equal(await report.getByRole('tab', { name: 'Công nợ', exact: true }).getAttribute('aria-selected'), 'true', 'Receivables total opens the debt section');
+      await report.getByRole('heading', { name: /Khách hàng còn công nợ/ }).waitFor();
+      await report.getByRole('heading', { name: 'Cơ cấu dư nợ hiện tại' }).waitFor();
       await page.screenshot({ path: `${outputDir}/debt-${width}.png` });
       await report.getByRole('button', { name: 'Mở sổ nợ' }).click();
       const debtSummary = page.locator('.premium-debt-module > div:first-child > div:first-child p').first();

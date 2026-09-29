@@ -17,6 +17,8 @@ function installResponsiveViewportVars() {
   let pendingKeyboardFrame = 0;
   let nativeInsetsRequest = null;
   let nativeInsetsRetries = 0;
+  let stableViewportHeight = 0;
+  let stableViewportWidth = 0;
 
   const getPlatform = () => {
     try {
@@ -65,18 +67,16 @@ function installResponsiveViewportVars() {
 
   const updateVars = () => {
     pendingFrame = 0;
-    const viewport = window.visualViewport;
-    const viewportHeight = Math.round(
-      viewport?.height || window.innerHeight || document.documentElement.clientHeight || 0
-    );
-    const viewportWidth = Math.round(
-      viewport?.width || window.innerWidth || document.documentElement.clientWidth || 0
-    );
-
-    if (viewportHeight > 0) {
-      root.style.setProperty('--hd-viewport-height', `${viewportHeight}px`);
+    const viewportHeight = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
+    const viewportWidth = Math.round(window.innerWidth || document.documentElement.clientWidth || 0);
+    const isTouchLayout = navigator.maxTouchPoints > 0 && window.matchMedia?.('(pointer: coarse)')?.matches;
+    const focusedEditable = isKeyboardEditableElement(document.activeElement);
+    if (viewportHeight > 0 && (!stableViewportHeight || !isTouchLayout || (viewportWidth !== stableViewportWidth && !focusedEditable))) {
+      stableViewportHeight = viewportHeight;
+      root.style.setProperty('--hd-viewport-height', `${stableViewportHeight}px`);
     }
     if (viewportWidth > 0) {
+      stableViewportWidth = viewportWidth;
       root.style.setProperty('--hd-viewport-width', `${viewportWidth}px`);
     }
 
@@ -118,11 +118,14 @@ function installResponsiveViewportVars() {
     const viewportOffsetTop = viewport?.offsetTop || 0;
     const keyboardHeight = Math.max(0, Math.round(layoutHeight - viewportHeight - viewportOffsetTop));
     const isSmallTouchScreen = Boolean(window.matchMedia?.('(max-width: 768px)')?.matches && navigator.maxTouchPoints > 0);
-    const keyboardVisibleByViewport = isSmallTouchScreen && keyboardHeight > 110;
+    const keyboardVisibleByViewport = focusedEditable && isSmallTouchScreen && keyboardHeight > 110;
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const shouldHideBottomNav = Boolean(focusedEditable && (keyboardVisibleByViewport || (isSmallTouchScreen && isIosWeb)));
 
     root.style.setProperty('--hd-keyboard-height', `${keyboardHeight}px`);
+    root.style.setProperty('--hd-modal-viewport-height', `${Math.round(keyboardVisibleByViewport ? viewportHeight : stableViewportHeight || layoutHeight)}px`);
+    root.style.setProperty('--hd-modal-viewport-top', `${Math.round(keyboardVisibleByViewport ? viewportOffsetTop : 0)}px`);
+    root.style.setProperty('--hd-modal-safe-bottom', keyboardVisibleByViewport ? '0px' : 'var(--hd-safe-bottom)');
     root.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
     document.body?.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
   };
@@ -142,17 +145,13 @@ function installResponsiveViewportVars() {
     scheduleKeyboardUpdate();
   };
 
-  const scheduleKeyboardBlurUpdate = () => {
-    window.setTimeout(scheduleKeyboardUpdate, 80);
-  };
-
   updateVars();
   updateKeyboardState();
-  window.addEventListener('resize', scheduleUpdate, { passive: true });
-  window.addEventListener('orientationchange', scheduleUpdate, { passive: true });
-  window.addEventListener('pageshow', scheduleUpdate, { passive: true });
+  window.addEventListener('resize', scheduleViewportAndKeyboardUpdate, { passive: true });
+  window.addEventListener('orientationchange', scheduleViewportAndKeyboardUpdate, { passive: true });
+  window.addEventListener('pageshow', scheduleViewportAndKeyboardUpdate, { passive: true });
   window.addEventListener('focusin', scheduleKeyboardUpdate, true);
-  window.addEventListener('focusout', scheduleKeyboardBlurUpdate, true);
+  window.addEventListener('focusout', scheduleKeyboardUpdate, true);
   window.visualViewport?.addEventListener('resize', scheduleViewportAndKeyboardUpdate, { passive: true });
   if (!isNativePlatform()) {
     window.visualViewport?.addEventListener('scroll', scheduleViewportAndKeyboardUpdate, { passive: true });

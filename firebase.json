@@ -22,6 +22,10 @@
     ],
     "rewrites": [
       {
+        "source": "/api/identity/passkey",
+        "function": "identityPasskey"
+      },
+      {
         "source": "/api/identity/login",
         "function": "identityLogin"
       },

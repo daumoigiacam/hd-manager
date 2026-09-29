@@ -5,8 +5,46 @@ import {
   findDuplicateWarehouseDispatchIds,
   getWarehouseDispatchIds,
   isWarehouseDispatchAlreadyLinked,
+  selectWarehouseDispatchOrderPriceCandidate,
   resolveOrderCreationDateKey,
 } from '../src/utils/warehouseDispatchOrders.js';
+
+const olderRequestPrice = {
+  price: 63000,
+  requestTimestamp: Date.parse('2026-09-20T09:00:00.000Z'),
+  exactProductId: 1,
+  sizeMatch: 1,
+  unitMatch: 1,
+  sameSourceDate: 1,
+};
+const newestRequestPrice = {
+  price: 60000,
+  requestTimestamp: Date.parse('2026-09-23T09:00:00.000Z'),
+  exactProductId: 1,
+  sizeMatch: 1,
+  unitMatch: 1,
+};
+assert.equal(
+  selectWarehouseDispatchOrderPriceCandidate([olderRequestPrice, newestRequestPrice])?.price,
+  60000,
+  'the newest matching order request beats an older same-day/quantity candidate when invoicing a dispatch later',
+);
+assert.equal(
+  selectWarehouseDispatchOrderPriceCandidate([
+    newestRequestPrice,
+    { ...olderRequestPrice, exactRow: 1, exactRequest: 1 },
+  ])?.price,
+  60000,
+  'a newer matching request supersedes an older directly linked source order row',
+);
+assert.equal(
+  selectWarehouseDispatchOrderPriceCandidate([
+    { ...newestRequestPrice, exactRow: 1, exactRequest: 1 },
+    { ...newestRequestPrice, price: 61000 },
+  ])?.price,
+  60000,
+  'a direct source-row link breaks ties when matching requests have the same timestamp',
+);
 
 assert.equal(
   resolveOrderCreationDateKey({
@@ -82,5 +120,13 @@ assert.ok(/await runTransaction\(db, async \(transaction\) => \{[\s\S]{0,1200}tr
 assert.ok(/transaction\.set\(dispatchRef, dispatchLinkPatch, \{ merge: true \}\)/.test(appSource));
 assert.ok(/findDuplicateWarehouseDispatchIds\(\s*bulkOrderDrafts,\s*orderRecordsForDuplicateCheck\s*\)/.test(appSource));
 assert.ok(/clientMutationId: orderData\.clientMutationId \|\| \(isWarehouseDispatchOrder[\s\S]{0,260}order-dispatch-/.test(appSource));
+const bulkPriceResolver = appSource.slice(
+  appSource.indexOf('const findOrderRequestPricingForDispatch ='),
+  appSource.indexOf('const groupedDrafts = pendingWarehouseDispatches.reduce', appSource.indexOf('const findOrderRequestPricingForDispatch =')),
+);
+assert.match(appSource, /const activeOrderRequests = \(orderRequests \|\| \[\]\)\.filter\(request => !request\?\.isArchived\)/, 'bulk price matching indexes active customer order requests once');
+assert.match(bulkPriceResolver, /orderRequestsByCustomerId\.get\(dispatchCustomerId\)/, 'bulk price matching is restricted to the dispatch customer');
+assert.doesNotMatch(bulkPriceResolver, /requestDateMs\s*>\s*dispatchDateMs|requestTimestamp\s*>\s*dispatchTimestamp/, 'a later order request must not be excluded because its request date is after the warehouse dispatch');
+assert.match(bulkPriceResolver, /selectWarehouseDispatchOrderPriceCandidate\(matchedPriceCandidates\)/, 'bulk pricing uses the tested newest matching request selector');
 
 console.log('Warehouse dispatch order creation date and duplicate protection tests passed.');

@@ -1,4 +1,4 @@
-import { extractCustomerCoordinates, isValidLatLng } from '../services/mapEngineService.js';
+import { extractCustomerCoordinates, isValidLatLng } from './geoCoordinates.js';
 
 const MAPS_DESTINATION_QUERY_KEYS = ['destination', 'query', 'q'];
 

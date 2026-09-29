@@ -21,13 +21,27 @@ test('new sales orders wait for Firestore confirmation before returning success'
   assert.match(section, /throw error;/);
 });
 
-test('new order requests wait for Firestore confirmation before returning success', () => {
+test('employee order request saves can return immediately while Firestore confirmation continues in the background', () => {
   const section = getSection('const handleAddOrderRequest = async', 'const handleEditOrderRequest');
 
-  assert.match(section, /const writeResult = await saveDataDocument\(/);
+  assert.match(section, /const handleAddOrderRequest = async \(empId, requestData = \{\}, saveOptions = \{\}\)/);
+  assert.match(section, /if \(saveOptions\?\.backgroundSync\)/);
+  assert.match(section, /void \(async \(\) => \{/);
+  assert.match(section, /return id;/);
+  assert.match(section, /const writeResult = await persistOrderRequest\(\);/);
   assert.match(section, /await requireSharedWriteConfirmation\(writeResult, 'orderRequests', id\)/);
-  assert.doesNotMatch(section, /saveDataDocument\('orderRequests'[\s\S]*?\.then\(/);
-  assert.match(section, /throw error;/);
+  assert.match(section, /saveOptions\.onPersisted\?\.\(\{ id, request: newRequestDocument, queued: Boolean\(writeResult\?\.queued\) \}\)/);
+  assert.match(section, /saveOptions\.onSettled\?\.\(\{ id, persisted, confirmed, error: writeError \}\)/);
+});
+
+test('editing an order request supports an immediate optimistic return with background sync', () => {
+  const section = getSection('const handleEditOrderRequest = async', 'const handleDeleteOrderRequest');
+
+  assert.match(section, /const handleEditOrderRequest = async \(requestId, updatedData, empId = '', saveOptions = \{\}\)/);
+  assert.match(section, /if \(saveOptions\?\.backgroundSync\)/);
+  assert.match(section, /await persistOrderRequestUpdate\(\)/);
+  assert.match(section, /await requireSharedWriteConfirmation\(writeResult, 'orderRequests', requestId\)/);
+  assert.match(section, /return true;/);
 });
 
 test('queued shared writes are retried once per document and remain tenant-scoped', () => {
@@ -42,12 +56,14 @@ test('queued shared writes are retried once per document and remain tenant-scope
   assert.match(tenantSourceSection, /firebaseWhere\('companyId', '==', tenantCompanyId\)/);
 });
 
-test('order forms stay open while the server confirms the write', () => {
+test('order request form uses background persistence while normal sales order save retains confirmation', () => {
   const requestSubmitSection = getSection('const handleSubmitOrderRequests = async', 'const orderCellEditorConfig');
   const salesSubmitSection = getSection('const handleSubmitBulkOrders = async', 'const openAddOrderModal');
   const singleOrderSubmitSection = getSection('const handleAddSubmit = async', 'const openAddOrderModal');
 
-  assert.doesNotMatch(requestSubmitSection, /closeImmediatelyAfterSubmit/);
+  assert.match(requestSubmitSection, /backgroundSync: true/);
+  assert.match(requestSubmitSection, /onPersisted:/);
+  assert.match(requestSubmitSection, /onSettled:/);
   assert.match(requestSubmitSection, /Dang luu \$\{normalizedRequests\.length\} don dat hang/);
   assert.doesNotMatch(salesSubmitSection, /flushSync\(\(\) => \{[\s\S]*?setShowAddOrder\(false\)/);
   assert.match(singleOrderSubmitSection, /setBulkOrderStatus\('Đang xác nhận đơn với máy chủ\.\.\.'\)/);

@@ -23,12 +23,15 @@ html {
   --hd-app-max-width: 28rem;
   --hd-viewport-height: 100dvh;
   --hd-viewport-width: 100dvw;
+  --hd-modal-viewport-height: var(--hd-viewport-height);
+  --hd-modal-viewport-top: 0px;
   --hd-safe-top-fallback: 0px;
   --hd-safe-bottom-fallback: 0px;
   --hd-safe-top: var(--hd-native-safe-top, max(env(safe-area-inset-top, 0px), var(--hd-safe-top-fallback)));
   --hd-safe-right: var(--hd-native-safe-right, env(safe-area-inset-right, 0px));
   --hd-safe-bottom: var(--hd-native-safe-bottom, max(env(safe-area-inset-bottom, 0px), var(--hd-safe-bottom-fallback)));
   --hd-safe-left: var(--hd-native-safe-left, env(safe-area-inset-left, 0px));
+  --hd-modal-safe-bottom: var(--hd-safe-bottom);
   --hd-page-x: clamp(0.75rem, 3.6vw, 1rem);
   --hd-card-pad: clamp(0.75rem, 3.8vw, 1.25rem);
   --hd-card-radius: clamp(1rem, 5vw, 1.75rem);
@@ -126,7 +129,7 @@ svg {
 /* Keep order-request actions visible while the product picker scrolls inside the modal. */
 .hd-order-request-modal-panel {
   min-height: 0;
-  height: min(calc(var(--hd-viewport-height) - 2rem), 64rem);
+  height: min(calc(var(--hd-modal-viewport-height) - 2rem), 64rem);
   max-height: none !important;
 }
 
@@ -335,7 +338,7 @@ svg {
 @media (max-width: 639px) {
   .hd-order-request-modal-panel {
     height: min(
-      calc(var(--hd-viewport-height) - var(--hd-safe-top) - var(--hd-safe-bottom) - 0.75rem),
+      calc(var(--hd-modal-viewport-height) - var(--hd-safe-top) - var(--hd-modal-safe-bottom) - 0.75rem),
       64rem
     );
   }

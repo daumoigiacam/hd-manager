@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { createPasskeyService } = require('./identityPasskeys');
 
 const IDENTITY_ACCOUNT_COLLECTION = 'identity_accounts';
 const IDENTITY_AUDIT_COLLECTION = 'identity_audit_logs';
@@ -1403,6 +1404,15 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       devicesSnapshot = await devicesRef.limit(400).get();
     }
 
+    const passkeysRef = db.collection('identity_passkeys').where('identityId', '==', identityId);
+    let passkeysSnapshot = await passkeysRef.limit(400).get();
+    while (!passkeysSnapshot.empty) {
+      const batch = db.batch();
+      passkeysSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+      if (passkeysSnapshot.size < 400) break;
+      passkeysSnapshot = await passkeysRef.limit(400).get();
+    }
     const completedAt = new Date();
     await identityRef.set({
       id: identityId,
@@ -1427,6 +1437,19 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
 
   return {
     registerCompany,
+    passkey: createPasskeyService({ db, getVerifiedIdentity, verifyPassword, issueSession, logAudit,
+      validateAccount: async (transaction, identity) => {
+        const paths = [publicPath(getAppId(), identity.publicCollection, identity.publicId)];
+        if (identity.companyId) paths.push(publicPath(getAppId(), 'companies', identity.companyId));
+        for (const path of paths) {
+          const snapshot = await transaction.get(db.doc(path));
+          const record = snapshot.data();
+          if (!record || record.isArchived || record.disabled || ['blocked', 'disabled', 'revoked', 'suspended', 'deleted'].includes(record.status || record.accountStatus)) {
+            throw Object.assign(new Error('Tài khoản hoặc công ty không còn hoạt động.'), { statusCode: 403 });
+          }
+        }
+      },
+    }),
     login,
     biometricLogin,
     completeSetup,

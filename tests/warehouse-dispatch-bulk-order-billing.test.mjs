@@ -193,6 +193,16 @@ const linkedKilogramPrice = buildWarehouseDispatchOrderBillingSnapshot({
 assert.equal(linkedKilogramPrice.unitPrice, 62000, 'an exact source order price is reused only when it has the same pricing unit');
 assert.equal(linkedKilogramPrice.amount, 7774800, 'linked Kg source price still uses exported Kg');
 
+const latestOrderRequestPrice = buildWarehouseDispatchOrderBillingSnapshot({
+  dispatch: fiftyDuckDispatch,
+  product: duckProduct,
+  configuration: { configurationId: 'customer-duck-kg', pricingUnit: 'Kg', unitPrice: 63000 },
+  sourceUnitPrice: 60000,
+  sourcePricingUnit: 'Kg',
+});
+assert.equal(latestOrderRequestPrice.unitPrice, 60000, 'the latest matching request price of 60,000 overrides an older 63,000 customer config');
+assert.equal(latestOrderRequestPrice.amount, 7524000, 'the order total is recalculated with the selected 60,000 request price');
+
 const preservedFallback = buildWarehouseDispatchOrderBillingSnapshot({
   dispatch: {
     ...fiftyDuckDispatch,

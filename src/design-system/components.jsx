@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, ChevronLeft, ChevronUp, GripVertical, Inbox, Plus, Search, X } from 'lucide-react';
+import { useModalScrollLock } from '../layout/useModalScrollLock.js';
 
 const cx = (...values) => values.filter(Boolean).join(' ');
 
@@ -211,9 +212,10 @@ export function HDField({ label, hint, error, className = '', children, ...props
 }
 
 export function HDDialog({ title, description, footer, className = '', children, onClose, ...props }) {
+  useModalScrollLock(true);
   return (
-    <div className="hd-ds-dialog-layer" role="presentation">
-      <section className={`hd-ds-dialog hd-dialog-surface ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title} {...props}>
+    <div className="hd-ds-dialog-layer hd-modal-layer" data-hd-modal-root="true" role="presentation">
+      <section className={`hd-ds-dialog hd-dialog-surface hd-modal-surface ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title} {...props}>
         <header className="hd-ds-dialog__header hd-dialog-header">
           <div>
             {title ? <h2>{title}</h2> : null}
@@ -221,8 +223,8 @@ export function HDDialog({ title, description, footer, className = '', children,
           </div>
           {onClose ? <HDIconButton label="Đóng" onClick={onClose}>&times;</HDIconButton> : null}
         </header>
-        <div className="hd-ds-dialog__body hd-dialog-body">{children}</div>
-        {footer ? <footer className="hd-ds-dialog__footer hd-dialog-footer">{footer}</footer> : null}
+        <div className="hd-ds-dialog__body hd-dialog-body hd-modal-body">{children}</div>
+        {footer ? <footer className="hd-ds-dialog__footer hd-dialog-footer hd-modal-actions">{footer}</footer> : null}
       </section>
     </div>
   );

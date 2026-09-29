@@ -32,6 +32,19 @@ export const findDuplicateWarehouseDispatchIds = (drafts = [], orders = []) => {
   return [...duplicateIds].sort();
 };
 
+export const selectWarehouseDispatchOrderPriceCandidate = (candidates = []) => [...candidates]
+  .sort((a, b) => (
+    (b.exactProductId || 0) - (a.exactProductId || 0)
+    || (b.sizeMatch || 0) - (a.sizeMatch || 0)
+    || (b.unitMatch || 0) - (a.unitMatch || 0)
+    || (b.requestTimestamp || 0) - (a.requestTimestamp || 0)
+    || (b.exactRow || 0) - (a.exactRow || 0)
+    || (b.exactRequest || 0) - (a.exactRequest || 0)
+    || (b.quantityMatch || 0) - (a.quantityMatch || 0)
+    || (b.weightMatch || 0) - (a.weightMatch || 0)
+    || (b.sameSourceDate || 0) - (a.sameSourceDate || 0)
+  ))[0] || null;
+
 export const resolveOrderCreationDateKey = ({ sourceType = '', draftDate = '', creationDate = '' } = {}) => {
   const draftDateKey = `${draftDate || ''}`.slice(0, 10);
   const creationDateKey = `${creationDate || ''}`.slice(0, 10);

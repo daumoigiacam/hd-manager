@@ -1,7 +1,8 @@
 import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
+import AccountGreeting from './layout/AccountGreeting.jsx';
 import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
@@ -62,6 +63,7 @@ import {
   findDuplicateWarehouseDispatchIds,
   getWarehouseDispatchIds,
   isWarehouseDispatchAlreadyLinked,
+  selectWarehouseDispatchOrderPriceCandidate,
   resolveOrderCreationDateKey
 } from './utils/warehouseDispatchOrders.js';
 import {
@@ -160,7 +162,6 @@ import {
   writeGlobalSearchHistory,
 } from './utils/globalSearch.js';
 import AssetManagementWorkspace from './features/assets/AssetManagementWorkspace.jsx';
-import DeliveryRedesignWorkspace from './features/delivery/DeliveryRedesignWorkspace.jsx';
 import BusinessReportWorkspace from './features/business-report/BusinessReportWorkspace.jsx';
 import {
   AttachmentPanel, ChatAvatar, ChatSearchBar, ChatState, ChatTabs,
@@ -172,6 +173,7 @@ import {
   getChatCategory, getChatSearchResult, normalizeChatSearch
 } from './features/messaging/messagingUiModel.js';
 import AttendanceWorkspace from './features/attendance/AttendanceWorkspace.jsx';
+import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
 import { canAttemptAutoWifiCheckIn, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
@@ -319,24 +321,6 @@ import {
   normalizePricingMarginByProduct,
 } from './utils/pricingProductMargins.js';
 import {
-  MAP_PROVIDER_OPTIONS,
-  MapService,
-  buildOfflineRouteSnapshot,
-  extractCustomerCoordinates,
-  formatDistanceKm,
-  getDefaultMapProvider,
-  isValidLatLng,
-} from './services/mapEngineService.js';
-import {
-  buildDeliveryRouteCacheKey,
-  getDeliveryCustomerLocationState,
-  getDeliveryGpsQuality,
-  getPendingDeliveryMapPoints,
-  normalizeDeliveryGpsPosition,
-  shouldAcceptDeliveryGpsPosition,
-  shouldRefreshDeliveryRoute,
-} from './utils/deliveryMapNavigation.js';
-import {
   createPerformanceSpan,
   isPerformanceMonitorEnabled,
   recordFirestoreOperation,
@@ -353,6 +337,7 @@ import {
   HDBottomNavigation,
   HDNavigationRail,
   HDSidebar,
+  useModalScrollLock,
 } from './layout/index.js';
 import { HDButton, HDBadge, HDFilterBar, HDFilterSheet, HDIconButton, HDKpiCard, HDEmptyState, HDWidgetCustomizer } from './design-system/index.js';
 import { useHDTheme } from './design-system/ThemeProvider.jsx';
@@ -401,6 +386,10 @@ import {
   findIdentitySessionOwner,
   getBiometricAutoLoginProfile,
   getBiometricAvailability,
+  getQuickLoginAvailability,
+  identityRegisterPasskey,
+  identityListPasskeys,
+  identityRevokePasskey,
   getIdentityDevice,
   getIdentityAccountScope,
   identityApproveOwnerReset,
@@ -445,7 +434,6 @@ import {
   resolveFirebaseRuntimeConfig,
 } from '@hd/firebase-runtime';
 import {
-  resolveClientRuntime,
   resolveLegacyPaymentApiBaseUrl,
 } from '@hd/client-runtime';
 import {
@@ -458,6 +446,10 @@ const LazyIdentitySecurityCenter = React.lazy(
 );
 
 const legacyIdentitySecurityApi = {
+  getQuickLoginAvailability,
+  identityRegisterPasskey,
+  identityListPasskeys,
+  identityRevokePasskey,
   getIdentityDevice,
   identityCompleteSetup,
   identityListAudit,
@@ -493,225 +485,7 @@ const getCapacitorPlugin = (name) => {
 
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
 const NativeSafeArea = getCapacitorPlugin('NativeSafeArea');
-const clientRuntime = resolveClientRuntime();
 const isPreviewDataMode = import.meta.env.VITE_DATA_MODE === 'preview';
-const GOOGLE_MAPS_API_KEY = clientRuntime.googleMapsApiKey;
-const GOOGLE_MAPS_MAP_ID = clientRuntime.googleMapsMapId;
-const GOONG_MAPTILES_API_KEY = clientRuntime.goongMapTilesApiKey;
-const GOONG_REST_API_KEY = clientRuntime.goongRestApiKey;
-const GOONG_JS_URL = 'https://cdn.jsdelivr.net/npm/@goongmaps/goong-js@1.0.9/dist/goong-js.js';
-const GOONG_CSS_URL = 'https://cdn.jsdelivr.net/npm/@goongmaps/goong-js@1.0.9/dist/goong-js.css';
-const GOONG_STYLE_URL = 'https://tiles.goong.io/assets/goong_map_web.json';
-
-let googleMapsLoaderPromise = null;
-let googleMapsAuthFailureMessage = '';
-let goongMapsLoaderPromise = null;
-
-const withGoongApiKey = (url, apiKey) => {
-  const safeUrl = `${url || ''}`.trim();
-  const safeKey = `${apiKey || ''}`.trim();
-  if (!safeUrl || !safeKey || !/goong\.io/i.test(safeUrl)) return safeUrl;
-  if (/[?&](api_key|access_token)=/i.test(safeUrl)) return safeUrl;
-  const hashIndex = safeUrl.indexOf('#');
-  const baseUrl = hashIndex >= 0 ? safeUrl.slice(0, hashIndex) : safeUrl;
-  const hash = hashIndex >= 0 ? safeUrl.slice(hashIndex) : '';
-  return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}api_key=${encodeURIComponent(safeKey)}${hash}`;
-};
-
-const buildGoongStyleUrl = apiKey => withGoongApiKey(GOONG_STYLE_URL, apiKey);
-
-const waitForGoogleMapsReady = (resolve, reject) => {
-  let attempts = 0;
-  const tick = () => {
-    if (window.google?.maps) {
-      resolve(window.google);
-      return;
-    }
-    if (googleMapsAuthFailureMessage) {
-      reject(new Error(googleMapsAuthFailureMessage));
-      return;
-    }
-    attempts += 1;
-    if (attempts >= 20) {
-      reject(new Error('Google Maps da tai script nhung khong khoi tao duoc. Hay kiem tra Maps JavaScript API, billing va gioi han domain/referrer trong Google Cloud.'));
-      return;
-    }
-    window.setTimeout(tick, 150);
-  };
-  tick();
-};
-
-const loadGoogleMapsApi = apiKey => {
-  if (typeof window === 'undefined') return Promise.reject(new Error('Google Maps chi chay tren trinh duyet.'));
-  if (window.google?.maps) return Promise.resolve(window.google);
-  const safeKey = `${apiKey || ''}`.trim();
-  if (!safeKey) return Promise.reject(new Error('Chua cau hinh VITE_GOOGLE_MAPS_API_KEY.'));
-  if (googleMapsLoaderPromise) return googleMapsLoaderPromise;
-
-  googleMapsLoaderPromise = new Promise((resolve, reject) => {
-    googleMapsAuthFailureMessage = '';
-    window.gm_authFailure = () => {
-      googleMapsAuthFailureMessage = 'Google Maps tu choi API key. Can bat Maps JavaScript API, bat Billing va cho phep domain/app dang chay trong Google Cloud.';
-    };
-
-    const existingScript = document.querySelector('script[data-hd-google-maps="true"]');
-    if (existingScript) {
-      waitForGoogleMapsReady(resolve, reject);
-      existingScript.addEventListener('load', () => waitForGoogleMapsReady(resolve, reject), { once: true });
-      existingScript.addEventListener('error', () => reject(new Error('Khong tai duoc Google Maps API.')), { once: true });
-      return;
-    }
-
-    const params = new URLSearchParams({
-      key: safeKey,
-      libraries: 'geometry',
-      language: 'vi',
-      region: 'VN',
-      v: 'weekly',
-    });
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
-    script.async = true;
-    script.defer = true;
-    script.dataset.hdGoogleMaps = 'true';
-    script.onload = () => waitForGoogleMapsReady(resolve, reject);
-    script.onerror = () => reject(new Error('Khong tai duoc Google Maps API.'));
-    document.head.appendChild(script);
-  });
-
-  return googleMapsLoaderPromise;
-};
-
-const loadExternalStylesheet = (href, dataAttribute) => {
-  if (typeof document === 'undefined') return Promise.resolve();
-  if (document.querySelector(`link[${dataAttribute}="true"]`)) return Promise.resolve();
-  return new Promise(resolve => {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = href;
-    link.setAttribute(dataAttribute, 'true');
-    link.onload = () => resolve();
-    link.onerror = () => resolve();
-    document.head.appendChild(link);
-  });
-};
-
-const loadGoongMapsApi = apiKey => {
-  if (typeof window === 'undefined') return Promise.reject(new Error('Goong Map chi chay tren trinh duyet.'));
-  const safeKey = `${apiKey || ''}`.trim();
-  if (!safeKey) return Promise.reject(new Error('Chua cau hinh VITE_GOONG_MAPTILES_KEY.'));
-  if (window.goongjs?.Map) {
-    window.goongjs.accessToken = safeKey;
-    return Promise.resolve(window.goongjs);
-  }
-  if (goongMapsLoaderPromise) return goongMapsLoaderPromise;
-
-  goongMapsLoaderPromise = new Promise((resolve, reject) => {
-    loadExternalStylesheet(GOONG_CSS_URL, 'data-hd-goong-maps-css').finally(() => {
-      const existingScript = document.querySelector('script[data-hd-goong-maps="true"]');
-      const finish = () => {
-        if (window.goongjs?.Map) {
-          window.goongjs.accessToken = safeKey;
-          resolve(window.goongjs);
-        } else {
-          reject(new Error('Goong Map da tai script nhung khong khoi tao duoc.'));
-        }
-      };
-
-      if (existingScript) {
-        if (window.goongjs?.Map) {
-          finish();
-          return;
-        }
-        existingScript.addEventListener('load', finish, { once: true });
-        existingScript.addEventListener('error', () => reject(new Error('Khong tai duoc Goong Map API.')), { once: true });
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = GOONG_JS_URL;
-      script.async = true;
-      script.defer = true;
-      script.dataset.hdGoongMaps = 'true';
-      script.onload = finish;
-      script.onerror = () => reject(new Error('Khong tai duoc Goong Map API.'));
-      document.head.appendChild(script);
-    });
-  });
-
-  return goongMapsLoaderPromise;
-};
-
-const resolveGoongMapTilesKey = (company = {}) => `${(
-  company?.goongMapTilesKey
-  || company?.goongMapTileKey
-  || company?.goongMapApiKey
-  || company?.settings?.goongMapTilesKey
-  || company?.settings?.goongMapTileKey
-  || company?.settings?.goongMapApiKey
-  || GOONG_MAPTILES_API_KEY
-  || ''
-)}`.trim();
-
-const resolveGoongRestApiKey = (company = {}) => `${(
-  company?.goongRestApiKey
-  || company?.settings?.goongRestApiKey
-  || GOONG_REST_API_KEY
-  || ''
-)}`.trim();
-
-const toMapNumber = value => {
-  if (value === null || value === undefined || value === '') return null;
-  const parsed = Number(`${value}`.replace(',', '.').trim());
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const getMapPointId = (point = {}, fallback = '') => (
-  `${point.id || point.dispatchId || point.customerId || point.driverId || fallback || ''}`.trim()
-);
-
-const distanceBetweenMapPointsKm = (from = {}, to = {}) => {
-  const fromLat = toMapNumber(from.latitude);
-  const fromLng = toMapNumber(from.longitude);
-  const toLat = toMapNumber(to.latitude);
-  const toLng = toMapNumber(to.longitude);
-  if (!isValidLatLng(fromLat, fromLng) || !isValidLatLng(toLat, toLng)) return Infinity;
-  const toRadians = degree => degree * Math.PI / 180;
-  const earthRadiusKm = 6371;
-  const dLat = toRadians(toLat - fromLat);
-  const dLng = toRadians(toLng - fromLng);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRadians(fromLat)) * Math.cos(toRadians(toLat)) * Math.sin(dLng / 2) ** 2;
-  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-};
-
-const buildNearestMapRoute = (points = [], startPoint = null) => {
-  const remaining = (points || []).filter(point => (
-    isValidLatLng(toMapNumber(point.latitude), toMapNumber(point.longitude))
-  ));
-  if (!remaining.length) return [];
-  if (!startPoint || !isValidLatLng(toMapNumber(startPoint.latitude), toMapNumber(startPoint.longitude))) {
-    return remaining;
-  }
-
-  const route = [];
-  let cursor = startPoint;
-  while (remaining.length) {
-    let bestIndex = 0;
-    let bestDistance = Infinity;
-    remaining.forEach((point, index) => {
-      const distance = distanceBetweenMapPointsKm(cursor, point);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestIndex = index;
-      }
-    });
-    const [nextPoint] = remaining.splice(bestIndex, 1);
-    route.push(nextPoint);
-    cursor = nextPoint;
-  }
-  return route;
-};
 
 const requestWarehouseDispatchDraftDisabled = async () => {
   throw new Error('Gemini voice extraction is disabled for warehouse dispatch.');
@@ -1232,7 +1006,6 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   warehouse_import: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts'],
   warehouse_dispatch: ['customers', 'products', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'employees'],
   delivery_reports: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'assets', 'assetCostLogs'],
-  maps: ['customers', 'orders', 'orderRequests', 'warehouseDispatches', 'employees'],
   customers: ['customers', 'orders', 'payments', 'payment_reconciliations', 'customer_points', 'customerLoans', 'products', 'warehouseImports', 'warehouseDispatches'],
   debt: ['customers', 'orders', 'payments', 'bankTransactions', 'warehouseImports', 'employees'],
   points: ['customer_points', 'reward_catalog'],
@@ -1892,22 +1665,6 @@ const ROLE_PERMISSION_MODULES = [
     details: ['KPI điều hành', 'Tài chính', 'Kinh doanh', 'Vận hành', 'Cảnh báo']
   },
   {
-    id: 'maps',
-    group: 'warehouse',
-    label: 'Bản đồ',
-    description: 'Bản đồ khách hàng, tuyến giao tài xế, điều phối xe và heatmap doanh thu/công nợ.',
-    actions: [
-      { id: 'view_map', label: 'Xem module bản đồ' },
-      { id: 'view_customer_map', label: 'Xem bản đồ khách hàng' },
-      { id: 'view_driver_route', label: 'Xem tuyến giao tài xế' },
-      { id: 'view_dispatch_dashboard', label: 'Xem điều phối giao hàng' },
-      { id: 'view_map_heatmap', label: 'Xem heatmap doanh thu / công nợ' },
-      { id: 'view_route_history', label: 'Xem lại lịch sử tuyến' },
-      { id: 'change_map_provider', label: 'Đổi nhà cung cấp bản đồ' }
-    ],
-    details: ['Bản đồ khách hàng', 'Tuyến tài xế', 'Điều phối', 'Heatmap']
-  },
-  {
     id: 'messages',
     group: 'overview',
     label: 'Tin nhắn / thông báo',
@@ -2433,11 +2190,11 @@ const buildPermissionSet = (ids = []) => ROLE_PERMISSION_MODULES.reduce((acc, mo
 }, {});
 const DEFAULT_ROLE_PERMISSIONS = {
   owner: buildPermissionSet(ROLE_PERMISSION_MODULES.map(module => module.id)),
-  accounting: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'delivery_reports', 'asset_management', 'orders', 'customers', 'debt', 'finance', 'bank_payments', 'products', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employees', 'employee_reviews', 'settings']),
-  sales: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'orders', 'customers', 'debt', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employee_reviews']),
-  driver: buildPermissionSet(['home', 'messages', 'maps', 'delivery_reports', 'customers', 'debt', 'finance', 'company_attendance', 'payroll', 'employee_reviews']),
+  accounting: buildPermissionSet(['home', 'messages', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'delivery_reports', 'asset_management', 'orders', 'customers', 'debt', 'finance', 'bank_payments', 'products', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employees', 'employee_reviews', 'settings']),
+  sales: buildPermissionSet(['home', 'messages', 'order_requests', 'orders', 'customers', 'debt', 'pricing', 'price_quotes', 'company_attendance', 'payroll', 'employee_reviews']),
+  driver: buildPermissionSet(['home', 'messages', 'delivery_reports', 'customers', 'debt', 'finance', 'company_attendance', 'payroll', 'employee_reviews']),
   production: buildPermissionSet(['home', 'messages', 'company_attendance', 'payroll', 'employee_reviews']),
-  warehouse: buildPermissionSet(['home', 'messages', 'maps', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'company_attendance', 'payroll', 'employee_reviews'])
+  warehouse: buildPermissionSet(['home', 'messages', 'order_requests', 'warehouse_import', 'warehouse_dispatch', 'company_attendance', 'payroll', 'employee_reviews'])
 };
 const getRolePermissionActionItems = (module = {}) => (
   module.actions || (module.details || []).map((label, index) => ({ id: `detail_${index}`, label }))
@@ -12170,7 +11927,7 @@ const useAutoDismissMessage = (message, setMessage, { delay = 5200, disabled = f
 };
 
 // --- APP ENTRY POINT ---
-const normalizeAppTab = (tab) => tab === 'report' ? 'home' : (tab || 'home');
+const normalizeAppTab = (tab) => (tab === 'report' ? 'home' : tab === 'maps' ? 'more' : (tab || 'home'));
 
 export default function App() {
   useMobileKeyboardViewportGuard();
@@ -12256,6 +12013,7 @@ export default function App() {
   const aiInboxProcessingRef = useRef(new Set());
   const orderCreateInFlightRef = useRef(new Set());
   const orderRequestCreateInFlightRef = useRef(new Set());
+  const orderRequestOptimisticEditRevisionsRef = useRef(new Map());
   const customerProductPreferenceCacheRef = useRef(new Map());
   const pointRedemptionRequestRef = useRef(new Map());
   const refreshCollectionsInFlightRef = useRef(false);
@@ -12434,7 +12192,7 @@ export default function App() {
     setPendingFirebaseWriteCount(safeWrites.length);
   };
 
-  const enqueuePendingFirebaseWrite = ({ collectionName, documentId, payload, options = {}, error = null }) => {
+  const enqueuePendingFirebaseWrite = ({ collectionName, documentId, payload, options = {}, error = null, durable = false }) => {
     const companyId = activeTenantScopeRef.current;
     if (!companyId) throw new Error('Khong the xep hang ghi du lieu khi chua xac dinh cong ty.');
     const now = new Date().toISOString();
@@ -12456,8 +12214,15 @@ export default function App() {
       ...pendingFirebaseWritesRef.current.filter(item => item?.key !== key),
       nextWrite
     ];
+    if (durable) {
+      if (nextWrites.length > 500) throw new Error('Hàng chờ đã đầy. Vui lòng đồng bộ trước khi lưu thêm phiếu.');
+      const storageKey = getTenantStorageKey(PENDING_FIREBASE_WRITES_STORAGE_KEY, companyId);
+      const serialized = JSON.stringify(nextWrites);
+      window.localStorage.setItem(storageKey, serialized);
+      if (window.localStorage.getItem(storageKey) !== serialized) throw new Error('Không thể lưu tạm phiếu trên thiết bị.');
+    }
     persistPendingFirebaseWrites(nextWrites);
-    const pendingMessage = isFirestoreInternalAssertionError(error)
+    const pendingMessage = durable || isFirestoreInternalAssertionError(error)
       ? `Đã ghi nhận thao tác và đang đồng bộ nền ${nextWrites.length} lệnh.`
       : `Firebase đang hết quota hoặc phản hồi chậm. Đã lưu tạm ${nextWrites.length} lệnh và sẽ tự đồng bộ lại.`;
     setRealtimeStatus({
@@ -12934,6 +12699,45 @@ export default function App() {
       functionName: 'saveDataDocument',
       collection: collectionName,
     });
+    const monitorSave = isPerformanceMonitorEnabled();
+    const saveSpan = createPerformanceSpan('save.firestore_document', {
+      provider: 'firestore',
+      collection: collectionName || 'unknown',
+      operation: options?.merge ? 'merge' : 'set',
+    });
+    let optimisticUpdateMs = null;
+    let payloadBytes = null;
+    let writeAttemptCount = 0;
+    let writeSource = 'firestore-sdk';
+    let remoteStartedAt = null;
+    const finishSave = (result, remoteStartedAt) => {
+      saveSpan.end({
+        status: result?.queued ? 'queued' : 'confirmed',
+        remoteConfirmed: !result?.queued,
+        writeSource,
+        retryCount: Math.max(0, writeAttemptCount - 1),
+        attemptCount: writeAttemptCount,
+        optimisticUpdateMs,
+        remoteAckMs: result?.queued || remoteStartedAt === null
+          ? null
+          : Math.round(performance.now() - remoteStartedAt),
+        payloadBytes,
+        responseBytes: null,
+        ttfbMs: null,
+        databaseDurationMs: null,
+      });
+      return result;
+    };
+    const failSave = (error) => {
+      saveSpan.fail(error, {
+        writeSource,
+        retryCount: Math.max(0, writeAttemptCount - 1),
+        attemptCount: writeAttemptCount,
+        optimisticUpdateMs,
+        payloadBytes,
+      });
+      throw error;
+    };
     const activeCompanyId = currentUser?.companyId || currentCompany?.id || '';
     const isCompanyScopedCollection = COMPANY_SCOPED_DATA_COLLECTION_NAMES.has(collectionName);
     const sanitizedPayload = sanitizeFirestoreWritePayload(payload || {});
@@ -12952,6 +12756,13 @@ export default function App() {
         companyId: sanitizedPayload.companyId || activeCompanyId
       };
     }
+    if (monitorSave) {
+      try {
+        payloadBytes = new TextEncoder().encode(JSON.stringify(scopedPayload)).byteLength;
+      } catch {
+        payloadBytes = null;
+      }
+    }
 
     if (collectionName) {
       lastFirestoreWriteCollectionsRef.current = [
@@ -12959,16 +12770,27 @@ export default function App() {
         ...lastFirestoreWriteCollectionsRef.current.filter(item => item !== collectionName)
       ].slice(0, 8);
     }
+    const optimisticStartedAt = performance.now();
     rememberRecentLocalWrite(collectionName, documentId, scopedPayload, 90000);
     applyLocalCollectionWrite(collectionName, documentId, scopedPayload, options);
+    optimisticUpdateMs = monitorSave ? Math.round(performance.now() - optimisticStartedAt) : null;
     const documentRef = doc(db, 'artifacts', appId, 'public', 'data', collectionName, documentId);
 
     try {
+      remoteStartedAt = performance.now();
       const result = await withTimeout(
         runResilientFirestoreWrite({
           preferRest: firestoreSdkFailedRef.current,
-          sdkWrite: () => setDoc(documentRef, scopedPayload, options),
-          restWrite: () => writeFirestoreDocumentViaRest(collectionName, documentId, scopedPayload, options),
+          sdkWrite: () => {
+            writeAttemptCount += 1;
+            writeSource = 'firestore-sdk';
+            return setDoc(documentRef, scopedPayload, options);
+          },
+          restWrite: () => {
+            writeAttemptCount += 1;
+            writeSource = 'firestore-rest';
+            return writeFirestoreDocumentViaRest(collectionName, documentId, scopedPayload, options);
+          },
           isInternalError: isFirestoreInternalAssertionError,
           onSdkInternalError: () => {
             firestoreSdkFailedRef.current = true;
@@ -12982,7 +12804,7 @@ export default function App() {
         timeoutMessage
       );
       scheduleCollectionRefresh(collectionName);
-      return result;
+      return finishSave(result, remoteStartedAt);
     } catch (error) {
       let writeError = error;
       if (isFirestoreInternalAssertionError(writeError)) {
@@ -12990,6 +12812,8 @@ export default function App() {
       }
       if (isFirebasePermissionError(writeError) && !firestoreSdkFailedRef.current && firebaseUser?.getIdToken) {
         try {
+          writeAttemptCount += 1;
+          writeSource = 'firestore-sdk-token-refresh';
           recordStartupEvent('firestore.write.sdk_token_refresh', {
             collection: collectionName
           }, 'warn');
@@ -13000,42 +12824,44 @@ export default function App() {
             `${timeoutMessage} sau khi làm mới phiên đăng nhập`
           );
           scheduleCollectionRefresh(collectionName);
-          return retryResult;
+          return finishSave(retryResult, remoteStartedAt);
         } catch (retryError) {
           writeError = retryError;
           if (isFirestoreInternalAssertionError(writeError)) {
             firestoreSdkFailedRef.current = true;
           }
-          if (isFirebasePermissionError(writeError)) throw writeError;
+          if (isFirebasePermissionError(writeError)) return failSave(writeError);
         }
       }
       if (isFirebaseQuotaError(writeError)) {
         restQuotaBlockedUntilRef.current = Date.now() + 60 * 1000;
         const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [5000, 15000]);
-        return queuedResult;
+        return finishSave(queuedResult, null);
       }
       if (isFirestoreInternalAssertionError(writeError) && !firebaseUser?.getIdToken) {
         const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [800, 3000, 9000]);
-        return queuedResult;
+        return finishSave(queuedResult, null);
       }
-      if (!isTimeoutLikeError(writeError)) throw writeError;
-      if (!firebaseUser?.getIdToken) throw writeError;
+      if (!isTimeoutLikeError(writeError)) return failSave(writeError);
+      if (!firebaseUser?.getIdToken) return failSave(writeError);
       if (Date.now() < restQuotaBlockedUntilRef.current) {
         const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: writeError });
         scheduleCollectionRefresh(collectionName, [5000, 15000]);
-        return queuedResult;
+        return finishSave(queuedResult, null);
       }
 
       try {
+        writeAttemptCount += 1;
+        writeSource = 'firestore-rest-after-timeout';
         const restResult = await withTimeout(
           writeFirestoreDocumentViaRest(collectionName, documentId, scopedPayload, options),
           Math.max(timeoutMs, 8000),
           'Firebase REST phản hồi chậm khi lưu dữ liệu.'
         );
         scheduleCollectionRefresh(collectionName);
-        return restResult;
+        return finishSave(restResult, remoteStartedAt);
       } catch (restError) {
         const restMessage = `${restError?.message || restError || ''}`.toLowerCase();
         if (
@@ -13047,9 +12873,9 @@ export default function App() {
         ) {
           const queuedResult = enqueuePendingFirebaseWrite({ collectionName, documentId, payload: scopedPayload, options, error: restError });
           scheduleCollectionRefresh(collectionName, [5000, 15000]);
-          return queuedResult;
+          return finishSave(queuedResult, null);
         }
-        throw restError;
+        return failSave(restError);
       }
     }
   };
@@ -15619,14 +15445,14 @@ export default function App() {
     }
   };
 
-  const handleIdentityBiometricLogin = async () => {
-    if (isVpsStagingMode || !getBiometricAutoLoginProfile()) {
+  const handleIdentityBiometricLogin = async ({ manual = false } = {}) => {
+    if (isVpsStagingMode || (isNativeRuntime() && !getBiometricAutoLoginProfile({ manual }))) {
       return { success: false, unavailable: true };
     }
     const loginStartedAt = Date.now();
     try {
       recordStartupEvent('auth.biometric_login.started');
-      const session = await identityBiometricLogin({ appId });
+      const session = await identityBiometricLogin({ appId, manual });
       if (!session?.success) return session;
       identitySetupPendingRef.current = Boolean(session.requiresSetup);
       const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
@@ -16702,20 +16528,6 @@ export default function App() {
       floatingQuickActionEnabled: settingsData.floatingQuickActionEnabled !== undefined
         ? Boolean(settingsData.floatingQuickActionEnabled)
         : (currentCompany?.floatingQuickActionEnabled !== false),
-      mapProvider: settingsData.mapProvider !== undefined
-        ? (MAP_PROVIDER_OPTIONS.some(option => option.id === `${settingsData.mapProvider || ''}`.trim().toLowerCase())
-          ? `${settingsData.mapProvider || ''}`.trim().toLowerCase()
-          : getDefaultMapProvider(currentCompany))
-        : getDefaultMapProvider(currentCompany),
-      goongMapTilesKey: settingsData.goongMapTilesKey !== undefined
-        ? `${settingsData.goongMapTilesKey || ''}`.trim()
-        : resolveGoongMapTilesKey(currentCompany),
-      goongMapTileKey: settingsData.goongMapTilesKey !== undefined
-        ? `${settingsData.goongMapTilesKey || ''}`.trim()
-        : resolveGoongMapTilesKey(currentCompany),
-      goongMapApiKey: settingsData.goongMapTilesKey !== undefined
-        ? `${settingsData.goongMapTilesKey || ''}`.trim()
-        : resolveGoongMapTilesKey(currentCompany),
       productGroups: settingsData.productGroups !== undefined
         ? normalizeProductGroups(settingsData.productGroups)
         : normalizeProductGroups(currentCompany?.productGroups || []),
@@ -19438,7 +19250,7 @@ export default function App() {
     return preference;
   };
 
-  const handleAddOrderRequest = async (empId, requestData = {}) => {
+  const handleAddOrderRequest = async (empId, requestData = {}, saveOptions = {}) => {
     if (!firebaseUser) return null;
     const customer = customers.find(c => c.id === requestData.customerId);
     const customerSalesEmpId = customer?.empId
@@ -19541,29 +19353,29 @@ export default function App() {
         });
     };
 
-    try {
-      const writeResult = await saveDataDocument(
-        'orderRequests',
-        id,
-        newRequestDocument,
-        {},
-        4500,
-        'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.'
-      );
+    const persistOrderRequest = () => saveDataDocument(
+      'orderRequests',
+      id,
+      newRequestDocument,
+      {},
+      4500,
+      'Firebase SDK phản hồi chậm khi lưu đơn đặt hàng.'
+    );
+    const finishOrderRequestSave = async (writeResult) => {
       await requireSharedWriteConfirmation(writeResult, 'orderRequests', id);
       notifyAssignedSalesEmployee();
       notifyOrderRequestShareWarmup({
         requestId: id,
         reason: 'order_request_created'
       });
-      return id;
-    } catch (error) {
+    };
+    const reportOrderRequestSaveError = (error) => {
       if (error?.code === 'firestore/sync-pending') {
         setRawOrderRequests(prev => (Array.isArray(prev)
           ? prev.map(request => request?.id === id ? { ...request, __pendingFirebaseSync: true } : request)
           : prev));
       } else {
-        setRawOrderRequests(prev => (Array.isArray(prev) ? prev.filter(request => request?.id !== id) : prev));
+        applyLocalCollectionDelete('orderRequests', id);
       }
       setRealtimeStatus({
         state: error?.code === 'firestore/sync-pending' ? 'queued' : 'error',
@@ -19572,13 +19384,51 @@ export default function App() {
         error: `Lưu đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được đơn đặt hàng.')}`
       });
       console.error('Không thể lưu đơn đặt hàng lên Firebase:', error);
+    };
+
+    if (saveOptions?.backgroundSync) {
+      void (async () => {
+        let persisted = false;
+        let confirmed = false;
+        let writeError = null;
+        try {
+          const writeResult = await persistOrderRequest();
+          persisted = true;
+          try {
+            saveOptions.onPersisted?.({ id, request: newRequestDocument, queued: Boolean(writeResult?.queued) });
+          } catch (callbackError) {
+            console.warn('Không thể cập nhật bộ nhớ đơn đặt hàng sau khi lưu:', callbackError);
+          }
+          await finishOrderRequestSave(writeResult);
+          confirmed = true;
+        } catch (error) {
+          writeError = error;
+          reportOrderRequestSaveError(error);
+        } finally {
+          try {
+            saveOptions.onSettled?.({ id, persisted, confirmed, error: writeError });
+          } catch (callbackError) {
+            console.warn('Không thể hoàn tất theo dõi lưu đơn đặt hàng:', callbackError);
+          }
+          if (duplicateSignature) orderRequestCreateInFlightRef.current.delete(duplicateSignature);
+        }
+      })();
+      return id;
+    }
+
+    try {
+      const writeResult = await persistOrderRequest();
+      await finishOrderRequestSave(writeResult);
+      return id;
+    } catch (error) {
+      reportOrderRequestSaveError(error);
       throw error;
     } finally {
       if (duplicateSignature) orderRequestCreateInFlightRef.current.delete(duplicateSignature);
     }
   };
 
-  const handleEditOrderRequest = async (requestId, updatedData, empId = '') => {
+  const handleEditOrderRequest = async (requestId, updatedData, empId = '', saveOptions = {}) => {
     if (!firebaseUser || !requestId) return;
     const existingRequest = orderRequests.find(request => request?.id === requestId) || {};
     const customer = customers.find(c => c.id === (updatedData.customerId || existingRequest.customerId));
@@ -19613,17 +19463,85 @@ export default function App() {
         ? true
         : (updatedData.isLatestCustomerOrderVersion ?? existingRequest.isLatestCustomerOrderVersion ?? true)
     };
-    const writeResult = await saveDataDocument('orderRequests', requestId, {
+    const orderRequestWrite = {
       ...normalizedUpdatedData,
       salesEmpId,
       updatedAt,
       updatedByEmpId: empId || ''
-    }, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật đơn đặt hàng.');
-    await requireSharedWriteConfirmation(writeResult, 'orderRequests', requestId);
-    notifyOrderRequestShareWarmup({
+    };
+    if (saveOptions?.backgroundSync) {
+      orderRequestOptimisticEditRevisionsRef.current.set(requestId, updatedAt);
+    }
+    const persistOrderRequestUpdate = () => saveDataDocument(
+      'orderRequests',
       requestId,
-      reason: 'order_request_updated'
-    });
+      orderRequestWrite,
+      { merge: true },
+      4500,
+      'Firebase SDK phản hồi chậm khi cập nhật đơn đặt hàng.'
+    );
+    const finishOrderRequestUpdate = async (writeResult) => {
+      try {
+        saveOptions.onPersisted?.({
+          id: requestId,
+          request: { ...existingRequest, ...orderRequestWrite },
+          queued: Boolean(writeResult?.queued)
+        });
+      } catch (callbackError) {
+        console.warn('Không thể cập nhật bộ nhớ đơn đặt hàng sau khi sửa:', callbackError);
+      }
+      await requireSharedWriteConfirmation(writeResult, 'orderRequests', requestId);
+      notifyOrderRequestShareWarmup({
+        requestId,
+        reason: 'order_request_updated'
+      });
+    };
+
+    if (saveOptions?.backgroundSync) {
+      void (async () => {
+        let persisted = false;
+        let confirmed = false;
+        let writeError = null;
+        try {
+          const writeResult = await persistOrderRequestUpdate();
+          persisted = true;
+          await finishOrderRequestUpdate(writeResult);
+          confirmed = true;
+        } catch (error) {
+          writeError = error;
+          if (error?.code === 'firestore/sync-pending') {
+            setRawOrderRequests(prev => (Array.isArray(prev)
+              ? prev.map(request => request?.id === requestId ? { ...request, __pendingFirebaseSync: true } : request)
+              : prev));
+          } else {
+            if (orderRequestOptimisticEditRevisionsRef.current.get(requestId) === updatedAt) {
+              rememberRecentLocalWrite('orderRequests', requestId, existingRequest);
+              applyLocalCollectionWrite('orderRequests', requestId, existingRequest);
+            }
+          }
+          setRealtimeStatus({
+            state: error?.code === 'firestore/sync-pending' ? 'queued' : 'error',
+            collection: 'orderRequests',
+            lastAt: new Date().toISOString(),
+            error: `Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Chưa cập nhật được đơn đặt hàng.')}`
+          });
+          console.error('Không thể cập nhật đơn đặt hàng lên Firebase:', error);
+        } finally {
+          if (orderRequestOptimisticEditRevisionsRef.current.get(requestId) === updatedAt) {
+            orderRequestOptimisticEditRevisionsRef.current.delete(requestId);
+          }
+          try {
+            saveOptions.onSettled?.({ id: requestId, persisted, confirmed, error: writeError });
+          } catch (callbackError) {
+            console.warn('Không thể hoàn tất theo dõi sửa đơn đặt hàng:', callbackError);
+          }
+        }
+      })();
+      return true;
+    }
+
+    const writeResult = await persistOrderRequestUpdate();
+    await finishOrderRequestUpdate(writeResult);
   };
 
   const handleDeleteOrderRequest = async (requestId) => {
@@ -20581,7 +20499,10 @@ export default function App() {
     ]);
     rememberRecentLocalWrite('warehouseDispatches', id, normalizedPayload);
     try {
-      const saveResult = await saveDataDocument('warehouseDispatches', id, normalizedPayload);
+      const saveResult = enqueuePendingFirebaseWrite({ collectionName: 'warehouseDispatches', documentId: id, payload: normalizedPayload, durable: true });
+      void flushPendingFirebaseWriteNow('warehouseDispatches', id).catch(error => {
+        console.warn('Phiếu xuất đang chờ đồng bộ:', error);
+      });
       return { id, queued: Boolean(saveResult?.queued) };
     } catch (error) {
       setRawWarehouseDispatches(prev => prev.filter(item => item.id !== id));
@@ -23077,7 +22998,6 @@ const NavigationIntentService = {
 const OnboardingHintService = {
   salesSetup: 'Sau khi tạo nhanh xong, app sẽ tự đưa bạn quay lại đúng bước đang thao tác.',
   deliveryNeedsDispatch: 'Phiếu xuất kho là dữ liệu gốc để tài xế báo cáo giao hàng, đối chiếu công nợ và cập nhật trạng thái giao.',
-  mapNeedsGps: 'Khách có GPS sẽ tự hiện trên bản đồ và cập nhật realtime sau khi lưu vị trí.',
   bankNeedsSetup: 'Cấu hình đúng ngân hàng, tài khoản VA và webhook SePay để QR, công nợ, thu chi và thông báo chạy tự động.',
   payrollNeedsEmployee: 'Bảng lương cần có hồ sơ nhân sự và cấu hình lương để app tự tính công, ứng, thưởng, phạt.'
 };
@@ -23132,36 +23052,6 @@ const ModuleDependencyService = {
       { label: 'Có ít nhất 1 sản phẩm', done: hasProducts, hint: 'Dùng để lên đơn, xuất kho và tính doanh thu.' }
     ];
   },
-  getTodayDispatches(dispatches = [], targetDate = getTodayString()) {
-    return (dispatches || []).filter(dispatch => {
-      if (!dispatch || dispatch.isArchived || dispatch.deleted || dispatch.status === 'deleted') return false;
-      return resolveEntityDateKey(dispatch, targetDate) === targetDate;
-    });
-  },
-  getDispatchesForUser(dispatches = [], employee = null, shouldRestrict = false) {
-    if (!shouldRestrict || !employee?.id) return dispatches || [];
-    const employeeId = `${employee.id}`;
-    return (dispatches || []).filter(dispatch => getDeliveryAssignmentIds(dispatch).includes(employeeId));
-  },
-  getDispatchCustomerIds(dispatches = []) {
-    return Array.from(new Set((dispatches || [])
-      .map(dispatch => `${dispatch?.customerId || dispatch?.customer?.id || dispatch?.customer_id || ''}`.trim())
-      .filter(Boolean)));
-  },
-  getCustomerGpsStats(customers = [], customerIds = []) {
-    const idSet = new Set((customerIds || []).map(id => `${id}`));
-    const scopedCustomers = (customers || []).filter(customer => {
-      if (!customer || customer.isArchived) return false;
-      if (!idSet.size) return true;
-      return idSet.has(`${customer.id}`);
-    });
-    const withGps = scopedCustomers.filter(customer => Boolean(extractCustomerCoordinates(customer)));
-    return {
-      total: scopedCustomers.length,
-      withGps: withGps.length,
-      missing: Math.max(0, scopedCustomers.length - withGps.length)
-    };
-  },
   hasSepayConfig(company = {}) {
     const profile = getInvoiceTransferProfile(company || {});
     return Boolean(profile?.bankId && profile?.accountName && profile?.sepayReceivingAccountNumber);
@@ -23186,7 +23076,6 @@ const APP_NAV_ITEM_MAP = {
   bank_payments: { id: 'bank_payments', label: 'Ngân hàng', icon: <CreditCard /> },
   messages: { id: 'messages', label: 'Tin nhắn', icon: <MessageCircle /> },
   pricing: { id: 'pricing', label: 'Giá cả', icon: <TrendingUp /> },
-  maps: { id: 'maps', label: 'Bản đồ', icon: <MapPin /> },
   company_attendance: { id: 'company_attendance', label: 'Chấm công', icon: <Clock /> },
   employee_reviews: { id: 'employee_reviews', label: 'Đánh giá', icon: <Star /> },
   asset_management: { id: 'asset_management', label: 'Tài sản', icon: <Building /> },
@@ -23304,7 +23193,6 @@ const getNotificationContextsForActiveTab = (activeTab = '') => {
       return new Set(['orders', 'order_requests']);
     case 'warehouse_dispatch':
     case 'delivery_reports':
-    case 'maps':
       return new Set(['warehouse_dispatch', 'delivery_reports', 'maps']);
     case 'debt':
       return new Set(['debt']);
@@ -23394,6 +23282,10 @@ function MainAppView({
   const isSuperAdmin = currentUser?.role === 'super_admin' || employee?.role === 'super_admin';
   const position = getEmployeePositionLabel(employee?.position || '');
   const isOwnerAccount = isOwnerAccountUser(employee, currentUser);
+  const isCompanyAccount = currentUser?.isCompanyAccount === true
+    || ['company', 'business'].includes(`${currentUser?.accountType || ''}`.toLowerCase())
+    || ['company', 'business'].includes(`${currentUser?.role || ''}`.toLowerCase())
+    || isOwnerAccount;
   const isAccounting = isSuperAdmin || isAccountingPosition(position);
   const canUseCompanyHomeDashboard = isOwnerAccount || isAccounting;
   const isSales = isEmployeeSalesPosition(employee);
@@ -23441,8 +23333,6 @@ function MainAppView({
     delivery_reports: canAccess('delivery_reports') && canRoleAction('delivery_reports', 'view_delivery_reports'),
     // Map visibility is controlled by the module switch and the primary view action.
     // Sub-permissions must not expose the module when the role has not been granted access.
-    maps: (isOwnerAccount || isSuperAdmin || Boolean(rolePermissions?.maps))
-      && (isOwnerAccount || isSuperAdmin || canRoleAction('maps', 'view_map')),
     asset_management: canAccess('asset_management') && canRoleAction('asset_management', 'view_asset_management'),
     orders: canAccess('orders'),
     customers: canAccess('customers'),
@@ -23605,6 +23495,7 @@ function MainAppView({
   const appBackStateRef = useRef({});
   const appBackHandlerRef = useRef(null);
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
+  const [showEmployeeSettings, setShowEmployeeSettings] = useState(false);
   const [lastNotificationSeenAt, setLastNotificationSeenAt] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [shellSearchOpen, setShellSearchOpen] = useState(false);
@@ -24780,6 +24671,17 @@ function MainAppView({
     </HDIconButton>
   );
 
+  const renderEmployeeSettingsButton = () => (
+    <HDIconButton
+      onClick={() => setShowEmployeeSettings(true)}
+      label="Cài đặt nhân sự"
+      title="Cài đặt nhân sự"
+      className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/30 bg-white/10 text-white transition-colors hover:bg-white/20"
+    >
+      <Settings size={18} />
+    </HDIconButton>
+  );
+
   const openShellSearch = useCallback((event) => {
     const eventTarget = event?.currentTarget;
     const activeTarget = typeof document !== 'undefined' ? document.activeElement : null;
@@ -24984,7 +24886,7 @@ function MainAppView({
             <button type="button" onClick={handleGoBack} aria-label="Quay lại" className="hover:bg-emerald-700/50 p-1.5 rounded-full transition"><ChevronLeft size={24} /></button>
             <h1 className={`hd-header-title font-bold ${activeTab === 'finance' ? 'whitespace-nowrap text-sm' : 'text-lg'} ${activeTab === 'products' ? 'text-white' : ''}`}>
               {activeTab === 'asset_management' ? 'Tài sản' :
-               activeTab === 'profile' ? 'Cá nhân' :
+               activeTab === 'profile' ? (isCompanyAccount ? 'Thông tin công ty' : 'Cá nhân') :
                activeTab === 'customers' ? 'Khách hàng' :
                activeTab === 'order_requests' ? 'Đơn đặt' :
                activeTab === 'warehouse_import' ? 'Nhập Xuất Tồn' :
@@ -24993,7 +24895,6 @@ function MainAppView({
                activeTab === 'orders' ? 'Đơn hàng' :
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
-               activeTab === 'maps' ? 'Bản đồ' :
                activeTab === 'debt' ? 'Sổ nợ' :
                activeTab === 'bank_payments' ? 'Ngân Hàng' :
                activeTab === 'finance' ? 'Tổng kết ngày' :
@@ -25008,7 +24909,9 @@ function MainAppView({
           </div>
           {showHeaderSearchFilterActions ? (
             <div className="hd-header-actions flex items-center gap-2">
-              {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && renderNotificationBell()}
+              {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && (
+                activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()
+              )}
               {activeTab !== 'debt' && activeTab !== 'finance' && renderGlobalSearchTrigger()}
               <button
                 data-search-zone="true"
@@ -25043,7 +24946,7 @@ function MainAppView({
             </div>
           ) : !hideHeaderSearchFilter ? (
             <div className="hd-header-actions flex items-center gap-3">
-              {renderNotificationBell()}
+              {activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()}
               {renderGlobalSearchTrigger()}
               <Filter size={20} />
               {renderHeaderIdentityActions()}
@@ -25209,7 +25112,7 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-    <MemoizedExecutiveDashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+    <MemoizedExecutiveDashboardView employee={employee} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
@@ -25256,9 +25159,6 @@ function MainAppView({
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
     }
-    if (activeTab === 'maps' && !tabPermissions.maps) {
-      return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
-    }
     if (!canAccess(activeTab)) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
     }
@@ -25266,7 +25166,7 @@ function MainAppView({
     switch (activeTab) {
       case 'home': return keepExecutiveDashboardMounted ? null : renderHomeDashboard();
       case 'executive_dashboard': return keepExecutiveDashboardMounted ? null : renderExecutiveDashboard();
-      case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
+      case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
       case 'settings': return <SettingsView isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
@@ -25287,43 +25187,9 @@ function MainAppView({
             note: 'Khi có nhân sự, dữ liệu chấm công sẽ cập nhật realtime sang lương, ứng lương và cảnh báo.'
           });
         }
-        return <AttendanceView currentEmployee={employee} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
+return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
       case 'products': return <ProductManagementView isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
-      case 'maps':
-        if (!hasWorkflowDispatchToday) {
-          return renderWorkflowGuide({
-            icon: <MapPin size={18} />,
-            title: isDriver ? 'Chưa có đơn được giao hôm nay' : 'Chưa có đơn giao hàng hôm nay',
-            description: isDriver ? 'Khi kho phân công đơn cho bạn, bản đồ sẽ tự hiện khách cần giao và tuyến đi.' : 'Tạo hoặc phân công phiếu xuất kho hôm nay để bản đồ tự hiện các điểm giao.',
-            steps: [
-              { label: 'Có phiếu xuất kho hôm nay', done: false, hint: 'Mỗi phiếu có khách hàng và người giao để app gắn điểm lên bản đồ.' },
-              { label: 'Khách hàng có GPS', done: hasWorkflowMapGps, hint: 'Vị trí được lấy từ hồ sơ khách hàng.' }
-            ],
-            actions: [
-              ...(tabPermissions.warehouse_dispatch ? [{ label: 'Mở xuất kho', primary: true, onClick: () => setActiveTab('warehouse_dispatch') }] : []),
-              ...(tabPermissions.customers ? [{ label: 'Cập nhật vị trí khách', onClick: () => setActiveTab('customers') }] : [])
-            ],
-            note: OnboardingHintService.deliveryNeedsDispatch
-          });
-        }
-        if (!hasWorkflowMapGps) {
-          return renderWorkflowGuide({
-            icon: <MapPin size={18} />,
-            title: 'Khách giao hôm nay chưa có GPS',
-            description: 'App đã thấy phiếu giao nhưng chưa có vị trí hợp lệ để ghim lên bản đồ.',
-            steps: [
-              { label: 'Có phiếu xuất kho hôm nay', done: true, hint: `${workflowDeliveryDispatches.length} phiếu đang chờ hiển thị.` },
-              { label: 'Có GPS khách hàng', done: false, hint: 'Bấm cập nhật vị trí trong hồ sơ khách rồi quay lại bản đồ.' }
-            ],
-            actions: [
-              ...(tabPermissions.customers ? [{ label: 'Cập nhật vị trí khách', primary: true, onClick: () => setActiveTab('customers') }] : []),
-              ...(tabPermissions.warehouse_dispatch ? [{ label: 'Xem phiếu xuất kho', onClick: () => setActiveTab('warehouse_dispatch') }] : [])
-            ],
-            note: OnboardingHintService.mapNeedsGps
-          });
-        }
-        return <MapManagementView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} payments={officialPayments} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || currentUser?.employeeId || currentUser?.id || 'maps', data)} onUpdateCompanySettings={onUpdateCompanySettings} canViewCustomerMap={canRoleAction('maps', 'view_customer_map') || canRoleAction('maps', 'view_map')} canViewDriverRoute={canRoleAction('maps', 'view_driver_route') || canRoleAction('maps', 'view_map')} canViewDispatchDashboard={canRoleAction('maps', 'view_dispatch_dashboard') || canRoleAction('maps', 'view_map')} canViewHeatmap={canRoleAction('maps', 'view_map_heatmap') || canRoleAction('maps', 'view_map')} canViewHistory={canRoleAction('maps', 'view_route_history') || canRoleAction('maps', 'view_map')} canChangeMapProvider={isOwnerAccount || canRoleAction('maps', 'change_map_provider')} />;
       case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
       case 'employee_reviews': return (
         <EmployeeReviewModuleView
@@ -25362,6 +25228,8 @@ function MainAppView({
       );
       case 'employees': return (
         <EmployeeView
+          showSettings={showEmployeeSettings}
+          setShowSettings={setShowEmployeeSettings}
           isVpsMode={isVpsMode}
           currentEmployee={employee}
           currentCompany={currentCompany}
@@ -25554,7 +25422,7 @@ function MainAppView({
     const rolePriorityIds = isWarehouseScale
       ? ['home', 'warehouse_dispatch', 'order_requests', 'delivery_reports', 'warehouse_import']
       : isDriver
-        ? ['home', 'delivery_reports', 'customers', 'maps']
+        ? ['home', 'delivery_reports', 'customers']
         : isSales
           ? ['home', 'order_requests', 'debt', 'customers', 'pricing']
           : (!isOwnerAccount && isAccounting)
@@ -25589,7 +25457,6 @@ function MainAppView({
     tabPermissions.bank_payments,
     tabPermissions.home,
     tabPermissions.messages,
-    tabPermissions.maps,
     tabPermissions.order_requests,
     tabPermissions.orders,
     tabPermissions.pricing,
@@ -25608,7 +25475,7 @@ function MainAppView({
     const groupDefinitions = [
       { id: 'overview', label: 'Tổng quan', items: ['home', 'executive_dashboard', 'messages'] },
       { id: 'sales', label: 'Bán hàng', items: ['order_requests', 'orders', 'customers', 'pricing', 'price_quotes'] },
-      { id: 'operations', label: 'Vận hành', items: ['warehouse_dispatch', 'warehouse_import', 'delivery_reports', 'maps', 'asset_management'] },
+      { id: 'operations', label: 'Vận hành', items: ['warehouse_dispatch', 'warehouse_import', 'delivery_reports', 'asset_management'] },
       { id: 'finance', label: 'Tài chính', items: ['debt', 'finance', 'bank_payments'] },
       { id: 'people', label: 'Nhân sự', items: ['company_attendance', 'payroll', 'employees', 'employee_reviews'] },
       { id: 'system', label: 'Hệ thống', items: ['products', 'settings', 'role_permissions', 'billing'] },
@@ -25959,7 +25826,7 @@ function MainAppView({
   }, []);
   const directFooterTabIds = new Set(displayedFooterNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
-    && (['more','profile','customers','products','pricing','maps','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
+    && (['more','profile','customers','products','pricing','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
       || (!isAccounting && !isSales && !isDriver && !isWarehouseScale));
   const showMessagesFooterButton = false;
 
@@ -25981,29 +25848,10 @@ function MainAppView({
     serverConfirmedCollectionState?.tenantId,
     serverConfirmedCollectionState?.collections
   ]);
-  const workflowDateKey = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : getTodayString();
   const hasWorkflowEmployeeData = useMemo(
     () => ModuleDependencyService.hasEmployees(employees),
     [employees]
   );
-  const workflowTodayDispatches = useMemo(
-    () => ModuleDependencyService.getTodayDispatches(warehouseDispatches, workflowDateKey),
-    [warehouseDispatches, workflowDateKey]
-  );
-  const workflowDeliveryDispatches = useMemo(
-    () => ModuleDependencyService.getDispatchesForUser(workflowTodayDispatches, employee, isDriver),
-    [workflowTodayDispatches, employee?.id, isDriver]
-  );
-  const workflowDispatchCustomerIds = useMemo(
-    () => ModuleDependencyService.getDispatchCustomerIds(workflowDeliveryDispatches),
-    [workflowDeliveryDispatches]
-  );
-  const workflowMapGpsStats = useMemo(
-    () => ModuleDependencyService.getCustomerGpsStats(customers, workflowDispatchCustomerIds),
-    [customers, workflowDispatchCustomerIds]
-  );
-  const hasWorkflowDispatchToday = workflowDeliveryDispatches.length > 0;
-  const hasWorkflowMapGps = workflowMapGpsStats.withGps > 0;
   const hasWorkflowSepayConfig = useMemo(
     () => ModuleDependencyService.hasSepayConfig(currentCompany),
     [currentCompany]
@@ -26125,7 +25973,6 @@ function MainAppView({
       orderRequest: { id: 'quick_order_request', label: 'L\u00ean \u0111\u01a1n \u0111\u1eb7t h\u00e0ng', tab: 'order_requests', icon: ClipboardList, tone: 'from-emerald-500 to-teal-500', visible: canQuickCreateOrderRequest, intent: { type: 'create_order_request' } },
       quote: { id: 'quick_quote', label: 'B\u00e1o gi\u00e1 h\u00e0ng lo\u1ea1t', tab: 'price_quotes', icon: Send, tone: 'from-sky-500 to-cyan-500', visible: canQuickUsePriceQuotes },
       deliveryReport: { id: 'quick_delivery_report', label: 'B\u00e1o c\u00e1o giao h\u00e0ng', tab: 'delivery_reports', icon: FileText, tone: 'from-violet-500 to-purple-500', visible: canQuickUseDeliveryReport },
-      maps: { id: 'quick_maps', label: 'B\u1ea3n \u0111\u1ed3', tab: 'maps', icon: MapPin, tone: 'from-teal-500 to-cyan-500', visible: tabPermissions.maps },
       customer: { id: 'quick_customer', label: 'Th\u00eam kh\u00e1ch h\u00e0ng', tab: 'customers', icon: Users, tone: 'from-emerald-500 to-green-500', visible: canQuickCreateCustomer, intent: { type: 'create_customer' } },
       customerImport: { id: 'quick_customer_import', label: 'Nh\u1eadp Excel kh\u00e1ch h\u00e0ng', tab: 'customers', icon: FileText, tone: 'from-emerald-500 to-green-500', visible: canQuickImportCustomers, intent: { type: 'import_customer' } },
       product: { id: 'quick_product', label: 'Th\u00eam s\u1ea3n ph\u1ea9m', tab: 'products', icon: Package, tone: 'from-blue-500 to-indigo-500', visible: canQuickCreateProduct, intent: { type: 'create_product' } },
@@ -26142,7 +25989,6 @@ function MainAppView({
       actions.createIncome,
       actions.createExpense,
       actions.attendance,
-      actions.maps,
       actions.customer,
       actions.customerImport,
       actions.product,
@@ -26167,7 +26013,6 @@ function MainAppView({
     canQuickUseDeliveryReport,
     canQuickUsePriceQuotes,
     tabPermissions.customers,
-    tabPermissions.maps,
     tabPermissions.products
   ]);
   const missingWarehouseDispatchSetup = activeTab === 'warehouse_dispatch' && shouldShowMissingWorkflowSetup({
@@ -27105,8 +26950,8 @@ function AttendanceGpsMetaCard({ title, meta }) {
   );
 }
 
-function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings, onEditEmployee, autoWifiCheckInStatus = '', onGoBack, onOpenNotifications }) {
-  const [attendanceScreen, setAttendanceScreen] = useState('dashboard');
+function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings, onEditEmployee, autoWifiCheckInStatus = '', onGoBack, onOpenNotifications }) {
+  const [attendanceScreen, setAttendanceScreen] = useState(() => isCompanyAccount ? 'team' : 'dashboard');
   const [wifiPermission, setWifiPermission] = useState({ granted: false });
   const [autoWifiSaving, setAutoWifiSaving] = useState(false);
   const [autoWifiEnabled, setAutoWifiEnabled] = useState(Boolean(currentEmployee?.attendanceAutoWifiEnabled));
@@ -27130,9 +26975,10 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
   const safeAttendance = attendance && typeof attendance === 'object' ? attendance : {};
   const safeDate = date || getTodayString();
   const canManageAttendance = Boolean(isAccounting || canOverrideAttendance);
-  const attendanceEmployees = canManageAttendance
-    ? safeEmployees
-    : (currentEmployee?.id ? [currentEmployee] : []);
+  const attendanceEmployees = useMemo(
+    () => attendanceRoster(safeEmployees, currentCompany, currentEmployee, isCompanyAccount || canManageAttendance),
+    [safeEmployees, currentCompany, currentEmployee, isCompanyAccount, canManageAttendance],
+  );
 
   const displayDate = new Date(safeDate).toLocaleDateString('vi-VN');
 
@@ -27566,7 +27412,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
 
   return (
     <div className="space-y-4 animate-in fade-in pb-36">
-      <button type="button" onClick={() => setAttendanceScreen('dashboard')} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-bold text-blue-700"><ChevronLeft size={17} /> Chấm công</button>
+      <button type="button" onClick={() => isCompanyAccount ? onGoBack?.() : setAttendanceScreen('dashboard')} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-bold text-blue-700"><ChevronLeft size={17} /> {isCompanyAccount ? 'Quay lại' : 'Chấm công'}</button>
       <div className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-2xl p-5 shadow-md">
         <button
           type="button"
@@ -27811,13 +27657,15 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
       )}
 
       <div className="space-y-3">
-        {filteredEmployees.map((emp) => {
+        {[...filteredEmployees].sort((a, b) => attendanceDepartment(a, currentCompany).localeCompare(attendanceDepartment(b, currentCompany), 'vi')).map((emp, index, roster) => {
           const record = getRecord(emp.id);
           const statusMeta = getStatusMeta(record);
           const shiftPolicy = resolveEmployeeShiftPolicy(emp);
 
           return (
-            <div key={emp.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <React.Fragment key={emp.id}>
+            {(index === 0 || attendanceDepartment(roster[index - 1], currentCompany) !== attendanceDepartment(emp, currentCompany)) && <h2 className="pt-3 text-sm font-bold text-gray-800">{attendanceDepartment(emp, currentCompany)}</h2>}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
               <div className="flex justify-between items-start gap-3">
                 <div className="min-w-0">
                   <h3 className="font-bold text-gray-800 text-sm">{emp.name}</h3>
@@ -27891,6 +27739,7 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
                 </div>
               )}
             </div>
+            </React.Fragment>
           );
         })}
 
@@ -27967,9 +27816,13 @@ function AttendanceView({ currentEmployee, isAccounting = false, canOverrideAtte
   );
 }
 
-function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEditEmployee, onUpdateCompanySettings, onGetIdentityToken, onLogout }) {
+function ProfileView({ employee, currentUser, currentCompany, isCompanyAccount: companyAccountProp, isAccounting, onEditEmployee, onUpdateCompanySettings, onGetIdentityToken, onLogout }) {
   const avatarInputRef = useRef(null);
   const logoInputRef = useRef(null);
+  const isCompanyAccount = companyAccountProp ?? (currentUser?.isCompanyAccount === true
+    || ['company', 'business'].includes(`${currentUser?.accountType || ''}`.toLowerCase())
+    || ['company', 'business'].includes(`${currentUser?.role || ''}`.toLowerCase())
+    || isOwnerAccountUser(employee, currentUser));
   const canEditCompanyProfile = Boolean(isAccounting);
   const [personalForm, setPersonalForm] = useState({
     name: employee?.name || '',
@@ -28116,9 +27969,21 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
     }
   };
 
+  const identitySecurityPanel = (
+    <React.Suspense fallback={<section className="min-h-16 rounded-2xl border border-slate-100 bg-white shadow-sm" aria-busy="true" />}>
+      <LazyIdentitySecurityCenter
+        identityApi={identitySecurityApi}
+        identityUser={currentUser}
+        vpsMode={isVpsMode}
+        onGetIdentityToken={onGetIdentityToken}
+        onLogout={onLogout}
+      />
+    </React.Suspense>
+  );
+
   return (
     <div className="space-y-4 animate-in fade-in pb-20">
-      <div className="bg-gradient-to-br from-emerald-500 to-teal-600 rounded-[28px] p-5 text-white shadow-lg shadow-emerald-500/20">
+      {!isCompanyAccount && <div className="bg-gradient-to-br from-emerald-500 to-teal-600 rounded-[28px] p-5 text-white shadow-lg shadow-emerald-500/20">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 rounded-2xl bg-white/15 border border-white/25 flex items-center justify-center overflow-hidden shrink-0">
             {personalAvatarUrl ? (
@@ -28133,19 +27998,11 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
             <p className="text-sm text-emerald-50 mt-1 truncate">{positionLabel} • {companyPreviewName}</p>
           </div>
         </div>
-      </div>
+      </div>}
 
-      <React.Suspense fallback={<section className="min-h-16 rounded-2xl border border-slate-100 bg-white shadow-sm" aria-busy="true" />}>
-        <LazyIdentitySecurityCenter
-          identityApi={identitySecurityApi}
-          identityUser={currentUser}
-          vpsMode={isVpsMode}
-          onGetIdentityToken={onGetIdentityToken}
-          onLogout={onLogout}
-        />
-      </React.Suspense>
+      {!isCompanyAccount && identitySecurityPanel}
 
-      <form onSubmit={handlePersonalSubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
+      {!isCompanyAccount && <form onSubmit={handlePersonalSubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="font-bold text-lg text-gray-900">Thông tin cá nhân</h3>
@@ -28302,7 +28159,7 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
         <button type="submit" disabled={isSavingPersonal} className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white py-3 rounded-xl font-bold transition-colors">
           {isSavingPersonal ? 'Đang lưu...' : 'Lưu hồ sơ cá nhân'}
         </button>
-      </form>
+      </form>}
 
       <form onSubmit={handleCompanySubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -28432,6 +28289,8 @@ function ProfileView({ employee, currentUser, currentCompany, isAccounting, onEd
           {isSavingCompany ? 'Đang lưu...' : 'Lưu doanh nghiệp'}
         </button>
       </form>
+
+      {isCompanyAccount && identitySecurityPanel}
     </div>
   );
 }
@@ -32586,7 +32445,6 @@ function SettingsView({
   const [warehouseSaveStatus, setWarehouseSaveStatus] = useState('');
   const [advanceSaveStatus, setAdvanceSaveStatus] = useState('');
   const [bubbleSaveStatus, setBubbleSaveStatus] = useState('');
-  const [mapSaveStatus, setMapSaveStatus] = useState('');
   const [backupStatus, setBackupStatus] = useState('');
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
@@ -32629,10 +32487,6 @@ function SettingsView({
   const [bubbleForm, setBubbleForm] = useState(() => ({
     floatingQuickActionEnabled: currentCompany?.floatingQuickActionEnabled !== false
   }));
-  const [mapForm, setMapForm] = useState(() => ({
-    mapProvider: getDefaultMapProvider(currentCompany),
-    goongMapTilesKey: resolveGoongMapTilesKey(currentCompany)
-  }));
 
   useEffect(() => {
     const profile = getInvoiceTransferProfile(currentCompany);
@@ -32666,17 +32520,12 @@ function SettingsView({
     setBubbleForm({
       floatingQuickActionEnabled: currentCompany?.floatingQuickActionEnabled !== false
     });
-    setMapForm({
-      mapProvider: getDefaultMapProvider(currentCompany),
-      goongMapTilesKey: resolveGoongMapTilesKey(currentCompany)
-    });
     setBankSaveStatus('');
     setLoyaltySaveStatus('');
     setCustomerCareSaveStatus('');
     setWarehouseSaveStatus('');
     setAdvanceSaveStatus('');
     setBubbleSaveStatus('');
-    setMapSaveStatus('');
     setBackupStatus('');
     setResetStatus('');
   }, [currentCompany]);
@@ -32717,13 +32566,6 @@ function SettingsView({
   const bubbleStatusClasses = bubbleForm.floatingQuickActionEnabled
     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
     : 'bg-gray-100 text-gray-500 border-gray-200';
-  const activeMapProvider = MAP_PROVIDER_OPTIONS.find(option => option.id === mapForm.mapProvider) || MAP_PROVIDER_OPTIONS[0];
-  const hasGoongMapTilesKey = Boolean(mapForm.goongMapTilesKey?.trim());
-  const mapStatusClasses = mapForm.mapProvider === 'goong' && hasGoongMapTilesKey
-    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-    : mapForm.mapProvider === 'goong'
-      ? 'bg-amber-50 text-amber-700 border-amber-200'
-      : 'bg-gray-100 text-gray-500 border-gray-200';
   const canManageBankTransferSettings = Boolean(canManageBankAccounts || canManagePaymentQr);
   const canOpenBankPaymentCenter = Boolean(canViewBankPayments || canManageBankTransferSettings || isAccounting);
   const canManageSalaryAdvanceSettings = Boolean(canConfigureSalaryAdvanceLimit || isAccounting);
@@ -32747,7 +32589,6 @@ function SettingsView({
     { id: 'care', label: 'Nhắc khách hàng', description: `${customerCareInactiveDaysPreview} ngày chưa mua`, icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
     { id: 'warehouse', label: 'Xu\u1ea5t kho', description: warehouseAutoCancelDaysPreview > 0 ? `T\u1ef1 \u1ea9n sau ${warehouseAutoCancelDaysPreview} ng\u00e0y` : 'Kh\u00f4ng t\u1ef1 \u1ea9n \u0111\u01a1n \u0111\u1eb7t', icon: Archive, enabled: canManageWarehouseSettings || isAccounting },
     { id: 'salary_advance', label: 'Ứng lương', description: advanceLimitPreview, icon: Banknote, enabled: canManageSalaryAdvanceSettings },
-    { id: 'maps', label: 'Bản đồ', description: activeMapProvider?.label || 'Nhà cung cấp bản đồ', icon: MapPin, enabled: isAccounting },
     { id: 'bubble', label: 'Bong bóng +', description: bubbleForm.floatingQuickActionEnabled ? 'Đang bật' : 'Đang tắt', icon: PlusCircle, enabled: isAccounting },
     { id: 'backup', label: 'Sao lưu/khôi phục', description: 'Xuất file hoặc nhập lại dữ liệu', icon: ArchiveRestore, enabled: canBackupData || canRestoreData || isAccounting },
     { id: 'reset', label: 'Reset dữ liệu', description: 'Xóa riêng từng phạm vi', icon: Database, enabled: canResetCompanyData || isAccounting }
@@ -32874,28 +32715,6 @@ function SettingsView({
       floatingQuickActionEnabled: Boolean(bubbleForm.floatingQuickActionEnabled)
     });
     setBubbleSaveStatus(result?.success ? 'Đã lưu cài đặt bong bóng +.' : (result?.message || 'Không thể lưu cài đặt bong bóng +.'));
-  };
-
-  const handleMapSettingSubmit = async (event) => {
-    event.preventDefault();
-    if (!isAccounting) {
-      setMapSaveStatus('Bạn chưa được cấp quyền cài đặt bản đồ.');
-      return;
-    }
-    const nextProvider = `${mapForm.mapProvider || ''}`.trim().toLowerCase();
-    if (!MAP_PROVIDER_OPTIONS.some(option => option.id === nextProvider)) {
-      setMapSaveStatus('Nhà cung cấp bản đồ chưa hợp lệ.');
-      return;
-    }
-    if (nextProvider === 'goong' && !mapForm.goongMapTilesKey.trim()) {
-      setMapSaveStatus('Vui lòng nhập Goong Map Tiles key để hiển thị bản đồ Goong.');
-      return;
-    }
-    const result = await onUpdateCompanySettings?.({
-      mapProvider: nextProvider,
-      goongMapTilesKey: mapForm.goongMapTilesKey.trim()
-    });
-    setMapSaveStatus(result?.success ? 'Đã lưu cấu hình bản đồ.' : (result?.message || 'Không thể lưu cấu hình bản đồ.'));
   };
 
   const handleCreateBackupFile = async () => {
@@ -33249,75 +33068,6 @@ function SettingsView({
               <CreditCard size={17} />
               Mở Ngân hàng & Thanh toán
             </button>
-          </div>
-        </div>
-      </section>}
-
-      {safeActiveSettingsPanel === 'maps' && <section className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-white via-emerald-50/70 to-cyan-50/70 p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
-            <MapPin size={21} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-lg font-black text-gray-900">Bản đồ giao hàng</h3>
-            <p className="mt-1 text-xs leading-5 text-gray-500">
-              Chọn nhà cung cấp bản đồ cho module Bản đồ. Với Goong, chỉ cần Map Tiles key để hiển thị bản đồ Việt Nam trong app.
-            </p>
-            <div className="mt-4 rounded-2xl border border-white/80 bg-white/90 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wide text-gray-400">Đang dùng</p>
-                  <p className="mt-1 text-sm font-black text-gray-900">{activeMapProvider?.label || 'Bản đồ'}</p>
-                  <p className="mt-1 text-xs font-semibold text-gray-500">
-                    {mapForm.mapProvider === 'goong'
-                      ? (hasGoongMapTilesKey ? 'Goong đã có key hiển thị.' : 'Goong cần Map Tiles key.')
-                      : 'Có thể chuyển sang Goong bất cứ lúc nào.'}
-                  </p>
-                </div>
-                <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${mapStatusClasses}`}>
-                  {mapForm.mapProvider === 'goong' ? (hasGoongMapTilesKey ? 'Sẵn sàng' : 'Thiếu key') : activeMapProvider?.label || 'Đang bật'}
-                </span>
-              </div>
-            </div>
-
-            <form onSubmit={handleMapSettingSubmit} className="mt-4 space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-bold text-gray-500">Nhà cung cấp</span>
-                <select
-                  value={mapForm.mapProvider}
-                  onChange={(event) => setMapForm(prev => ({ ...prev, mapProvider: event.target.value }))}
-                  className="w-full rounded-xl border border-gray-300 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  {MAP_PROVIDER_OPTIONS.map(option => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-xs font-bold text-gray-500">Goong Map Tiles key</span>
-                <input
-                  value={mapForm.goongMapTilesKey}
-                  onChange={(event) => setMapForm(prev => ({ ...prev, goongMapTilesKey: event.target.value.trim() }))}
-                  className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Dán Map Tiles key của Goong"
-                  autoComplete="off"
-                />
-                <span className="mt-2 block text-xs font-semibold text-gray-500">
-                  Key này dùng để tải bản đồ trong app. Nếu chưa nhập, app vẫn tự dùng bản đồ dự phòng để không bị màn hình trắng.
-                </span>
-              </label>
-
-              {mapSaveStatus && (
-                <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
-                  {mapSaveStatus}
-                </div>
-              )}
-
-              <button type="submit" className="w-full rounded-xl bg-emerald-600 py-3.5 text-sm font-black text-white shadow-md shadow-emerald-500/20">
-                Lưu cấu hình bản đồ
-              </button>
-            </form>
           </div>
         </div>
       </section>}
@@ -36247,2399 +35997,6 @@ function BankPaymentCenterView({
   );
 }
 
-const MAP_TILE_SIZE = 256;
-const MAP_MIN_ZOOM = 5;
-const MAP_MAX_ZOOM = 18;
-
-const clampMapLat = value => Math.max(-85.05112878, Math.min(85.05112878, Number(value) || 0));
-const clampMapLng = value => Math.max(-180, Math.min(180, Number(value) || 0));
-const mapScale = zoom => MAP_TILE_SIZE * Math.pow(2, zoom);
-const lngToWorldX = (lng, zoom) => ((clampMapLng(lng) + 180) / 360) * mapScale(zoom);
-const latToWorldY = (lat, zoom) => {
-  const sin = Math.sin((clampMapLat(lat) * Math.PI) / 180);
-  return (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * mapScale(zoom);
-};
-const worldXToLng = (x, zoom) => (x / mapScale(zoom)) * 360 - 180;
-const worldYToLat = (y, zoom) => {
-  const n = Math.PI - (2 * Math.PI * y) / mapScale(zoom);
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-};
-
-function calculateDeliveryMapView(points = [], bounds = null) {
-  const validPoints = (points || []).filter(point => isValidLatLng(Number(point.latitude), Number(point.longitude)));
-  const sourceBounds = bounds || (validPoints.length ? {
-    minLat: Math.min(...validPoints.map(point => Number(point.latitude))),
-    maxLat: Math.max(...validPoints.map(point => Number(point.latitude))),
-    minLng: Math.min(...validPoints.map(point => Number(point.longitude))),
-    maxLng: Math.max(...validPoints.map(point => Number(point.longitude))),
-  } : null);
-
-  if (!sourceBounds) {
-    return { center: { latitude: 10.8231, longitude: 106.6297 }, zoom: 11 };
-  }
-
-  const center = {
-    latitude: (Number(sourceBounds.minLat) + Number(sourceBounds.maxLat)) / 2,
-    longitude: (Number(sourceBounds.minLng) + Number(sourceBounds.maxLng)) / 2,
-  };
-  const latSpan = Math.max(0.002, Math.abs(Number(sourceBounds.maxLat) - Number(sourceBounds.minLat)));
-  const lngSpan = Math.max(0.002, Math.abs(Number(sourceBounds.maxLng) - Number(sourceBounds.minLng)));
-  const maxSpan = Math.max(latSpan, lngSpan);
-  const zoom = maxSpan > 3 ? 8 : maxSpan > 1 ? 9 : maxSpan > 0.35 ? 10 : maxSpan > 0.12 ? 12 : maxSpan > 0.04 ? 13 : 14;
-
-  return { center, zoom };
-}
-
-function DeliveryTileMap({
-  points = [],
-  routePoints = [],
-  bounds = null,
-  selectedId = '',
-  onSelect = null,
-  onOpenExternal = null,
-  currentLocation = null,
-  warehouseLocation = null,
-  perspective = true,
-  cameraRequestKey = 0,
-  cameraMode = 'overview',
-  navigationOrigin = null,
-  navigationTarget = null,
-}) {
-  const containerRef = useRef(null);
-  const dragRef = useRef(null);
-  const pointersRef = useRef(new Map());
-  const pinchRef = useRef(null);
-  const lastCameraRequestRef = useRef(null);
-  const initialView = useMemo(() => calculateDeliveryMapView(points, bounds), [points, bounds]);
-  const [center, setCenter] = useState(initialView.center);
-  const [zoom, setZoom] = useState(initialView.zoom);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-
-  useEffect(() => {
-    const requestId = `${cameraRequestKey}:${cameraMode}`;
-    if (lastCameraRequestRef.current === requestId) return;
-    const focusPoints = cameraMode === 'navigation'
-      ? [navigationOrigin, navigationTarget].filter(Boolean)
-      : [
-        ...(points || []),
-        ...(warehouseLocation ? [warehouseLocation] : []),
-        ...(currentLocation ? [currentLocation] : []),
-      ];
-    if (!focusPoints.some(point => isValidLatLng(Number(point?.latitude), Number(point?.longitude)))) return;
-    const nextView = calculateDeliveryMapView(focusPoints, cameraMode === 'navigation' ? null : bounds);
-    setCenter(nextView.center);
-    setZoom(cameraMode === 'navigation' ? Math.max(13, nextView.zoom) : nextView.zoom);
-    lastCameraRequestRef.current = requestId;
-  }, [
-    bounds,
-    cameraMode,
-    cameraRequestKey,
-    currentLocation,
-    navigationOrigin,
-    navigationTarget,
-    points,
-    warehouseLocation,
-  ]);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return undefined;
-    const updateSize = () => setSize({ width: node.clientWidth || 0, height: node.clientHeight || 0 });
-    updateSize();
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateSize);
-      return () => window.removeEventListener('resize', updateSize);
-    }
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  const centerWorld = useMemo(() => ({
-    x: lngToWorldX(center.longitude, zoom),
-    y: latToWorldY(center.latitude, zoom),
-  }), [center.latitude, center.longitude, zoom]);
-
-  const projectPoint = useCallback((point = {}) => {
-    const latitude = Number(point.latitude);
-    const longitude = Number(point.longitude);
-    if (!isValidLatLng(latitude, longitude) || !size.width || !size.height) return null;
-    const worldX = lngToWorldX(longitude, zoom);
-    const worldY = latToWorldY(latitude, zoom);
-    return {
-      left: size.width / 2 + worldX - centerWorld.x,
-      top: size.height / 2 + worldY - centerWorld.y,
-    };
-  }, [centerWorld.x, centerWorld.y, size.height, size.width, zoom]);
-
-  const markerPositions = useMemo(() => (points || [])
-    .filter(point => isValidLatLng(Number(point.latitude), Number(point.longitude)))
-    .map((point, index) => {
-      const projected = projectPoint(point);
-      if (!projected) return null;
-      return {
-        point,
-        index,
-        left: projected.left,
-        top: projected.top,
-      };
-    })
-    .filter(Boolean), [points, projectPoint]);
-
-  const routePositions = useMemo(() => {
-    const sourcePoints = (routePoints && routePoints.length ? routePoints : points) || [];
-    return sourcePoints
-      .filter(point => isValidLatLng(Number(point.latitude), Number(point.longitude)))
-      .map(point => projectPoint(point))
-      .filter(Boolean);
-  }, [points, projectPoint, routePoints]);
-
-  const warehousePosition = useMemo(() => projectPoint(warehouseLocation || {}), [projectPoint, warehouseLocation]);
-  const currentPosition = useMemo(() => projectPoint(currentLocation || {}), [currentLocation, projectPoint]);
-
-  const mapLabels = useMemo(() => {
-    const base = [
-      { id: 'zone-north', text: 'Khu giao phía Bắc', x: 0.22, y: 0.18 },
-      { id: 'zone-center', text: 'Tuyến trung tâm', x: 0.57, y: 0.42 },
-      { id: 'zone-south', text: 'Khu giao phía Nam', x: 0.28, y: 0.76 },
-      { id: 'warehouse-label', text: 'Kho xuất hàng', x: 0.74, y: 0.18 },
-    ];
-    const offsetX = ((centerWorld.x % 220) / 220 - 0.5) * 48;
-    const offsetY = ((centerWorld.y % 180) / 180 - 0.5) * 42;
-    return base.map(item => ({
-      ...item,
-      left: `${Math.max(5, Math.min(92, item.x * 100 + offsetX / Math.max(1, size.width) * 100))}%`,
-      top: `${Math.max(6, Math.min(88, item.y * 100 + offsetY / Math.max(1, size.height) * 100))}%`,
-    }));
-  }, [centerWorld.x, centerWorld.y, size.height, size.width]);
-
-  const roadLines = useMemo(() => {
-    const panX = -((centerWorld.x % 160) - 80);
-    const panY = -((centerWorld.y % 120) - 60);
-    return [
-      `M ${-120 + panX} ${80 + panY} C ${size.width * 0.24} ${150 + panY}, ${size.width * 0.42} ${20 + panY}, ${size.width + 160 + panX} ${170 + panY}`,
-      `M ${-80 + panX} ${size.height * 0.56 + panY} C ${size.width * 0.22} ${size.height * 0.44 + panY}, ${size.width * 0.7} ${size.height * 0.8 + panY}, ${size.width + 100 + panX} ${size.height * 0.58 + panY}`,
-      `M ${size.width * 0.18 + panX} ${-80 + panY} C ${size.width * 0.34 + panX} ${size.height * 0.22}, ${size.width * 0.15 + panX} ${size.height * 0.72}, ${size.width * 0.42 + panX} ${size.height + 100}`,
-      `M ${size.width * 0.78 + panX} ${-70 + panY} C ${size.width * 0.66 + panX} ${size.height * 0.3}, ${size.width * 0.9 + panX} ${size.height * 0.72}, ${size.width * 0.65 + panX} ${size.height + 90}`,
-    ];
-  }, [centerWorld.x, centerWorld.y, size.height, size.width]);
-
-  const routePath = useMemo(() => (
-    routePositions.length > 1
-      ? routePositions.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.left} ${point.top}`).join(' ')
-      : ''
-  ), [routePositions]);
-
-  const bringIntoView = useCallback((point = {}) => {
-    const latitude = Number(point.latitude);
-    const longitude = Number(point.longitude);
-    if (!isValidLatLng(latitude, longitude)) return;
-    setCenter({ latitude: clampMapLat(latitude), longitude: clampMapLng(longitude) });
-    setZoom(value => Math.max(value, 14));
-  }, []);
-
-  const fitAllPoints = useCallback(() => {
-    const nextView = calculateDeliveryMapView([
-      ...(points || []),
-      ...(warehouseLocation ? [warehouseLocation] : []),
-      ...(currentLocation ? [currentLocation] : []),
-    ], bounds);
-    setCenter(nextView.center);
-    setZoom(nextView.zoom);
-  }, [bounds, currentLocation, points, warehouseLocation]);
-
-  const handleMarkerSelect = useCallback((point, markerId) => {
-    if (markerId && selectedId === markerId) {
-      onSelect?.('');
-      return;
-    }
-    if (markerId) onSelect?.(markerId);
-    bringIntoView(point);
-  }, [bringIntoView, onSelect, selectedId]);
-
-  const updateZoom = delta => setZoom(value => Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, value + delta)));
-
-  const getPointerDistance = () => {
-    const pointers = [...pointersRef.current.values()];
-    if (pointers.length < 2) return 0;
-    return Math.hypot(pointers[1].x - pointers[0].x, pointers[1].y - pointers[0].y);
-  };
-
-  const handlePointerDown = event => {
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointersRef.current.size >= 2) {
-      pinchRef.current = { distance: getPointerDistance(), zoom };
-      dragRef.current = null;
-      return;
-    }
-    dragRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      centerWorld,
-    };
-  };
-
-  const handlePointerMove = event => {
-    if (pointersRef.current.has(event.pointerId)) {
-      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    }
-    if (pinchRef.current && pointersRef.current.size >= 2) {
-      const distance = getPointerDistance();
-      if (distance > 0 && pinchRef.current.distance > 0) {
-        const scale = distance / pinchRef.current.distance;
-        const nextZoom = Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, pinchRef.current.zoom + Math.log2(scale)));
-        setZoom(nextZoom);
-      }
-      return;
-    }
-    if (!dragRef.current) return;
-    const dx = event.clientX - dragRef.current.x;
-    const dy = event.clientY - dragRef.current.y;
-    const nextWorldX = dragRef.current.centerWorld.x - dx;
-    const nextWorldY = dragRef.current.centerWorld.y - dy;
-    setCenter({
-      latitude: clampMapLat(worldYToLat(nextWorldY, zoom)),
-      longitude: clampMapLng(worldXToLng(nextWorldX, zoom)),
-    });
-  };
-
-  const stopDrag = event => {
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    pointersRef.current.delete(event.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    dragRef.current = null;
-  };
-
-  return (
-    <div
-      ref={containerRef}
-      className={`absolute inset-0 select-none overflow-hidden bg-[#e8f3ed] ${perspective ? 'saturate-125 contrast-105' : ''}`}
-      onWheel={event => {
-        event.preventDefault();
-        updateZoom(event.deltaY > 0 ? -1 : 1);
-      }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={stopDrag}
-      onPointerCancel={stopDrag}
-      onDoubleClick={event => {
-        event.preventDefault();
-        updateZoom(1);
-      }}
-      style={{ touchAction: 'none' }}
-    >
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(circle at 18% 22%, rgba(16,185,129,.24), transparent 22%), radial-gradient(circle at 82% 18%, rgba(59,130,246,.18), transparent 20%), radial-gradient(circle at 70% 82%, rgba(245,158,11,.16), transparent 24%), linear-gradient(135deg, #eef9f2 0%, #dfeee9 48%, #edf6ff 100%)',
-        }}
-      />
-      <div
-        className="absolute inset-0 opacity-50"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(15,118,110,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(15,118,110,.09) 1px, transparent 1px)',
-          backgroundSize: `${Math.max(42, 104 - zoom * 3)}px ${Math.max(42, 104 - zoom * 3)}px`,
-          backgroundPosition: `${-(centerWorld.x % 80)}px ${-(centerWorld.y % 80)}px`,
-        }}
-      />
-      <svg className="absolute inset-0 h-full w-full">
-        {roadLines.map((path, index) => (
-          <g key={`road-${index}`}>
-            <path d={path} fill="none" stroke="#ffffff" strokeWidth={index < 2 ? 18 : 12} strokeLinecap="round" opacity="0.86" />
-            <path d={path} fill="none" stroke={index < 2 ? '#9ca3af' : '#cbd5e1'} strokeWidth={index < 2 ? 3 : 2} strokeLinecap="round" strokeDasharray={index < 2 ? '18 16' : '10 12'} opacity="0.42" />
-          </g>
-        ))}
-        {routePath && (
-          <>
-            <path d={routePath} fill="none" stroke="#ffffff" strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" opacity="0.95" />
-            <path d={routePath} fill="none" stroke="#2563eb" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="14 9" opacity="0.9" />
-          </>
-        )}
-      </svg>
-
-      {mapLabels.map(label => (
-        <span
-          key={label.id}
-          className="pointer-events-none absolute rounded-full bg-white/55 px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 shadow-sm backdrop-blur"
-          style={{ left: label.left, top: label.top }}
-        >
-          {label.text}
-        </span>
-      ))}
-
-      {warehousePosition && (
-        <button
-          type="button"
-          onClick={event => {
-            event.stopPropagation();
-            bringIntoView(warehouseLocation);
-          }}
-          className="absolute z-10 -translate-x-1/2 -translate-y-full rounded-2xl border-[3px] border-white bg-slate-900 px-3 py-2 text-xs font-black text-white shadow-xl"
-          style={{ left: warehousePosition.left, top: warehousePosition.top }}
-          title="Kho xuất hàng"
-        >
-          KHO
-        </button>
-      )}
-
-      {currentPosition && (
-        <span
-          className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border-4 border-white bg-blue-600 shadow-2xl shadow-blue-300"
-          style={{ left: currentPosition.left, top: currentPosition.top, width: 22, height: 22 }}
-          title="Vị trí hiện tại"
-        >
-          <span className="absolute -inset-3 animate-ping rounded-full bg-blue-400/40" />
-        </span>
-      )}
-
-      {markerPositions.map(({ point, index, left, top }) => {
-        const markerId = point.id || point.dispatchId || '';
-        const isWarehouse = point.type === 'warehouse';
-        const isSelected = selectedId && selectedId === markerId;
-        const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
-        const markerColor = isWarehouse ? '#0f766e' : isDelivered ? '#10b981' : '#f59e0b';
-        return (
-          <button
-            key={markerId || point.customerId || `${point.latitude}-${point.longitude}-${index}`}
-            type="button"
-            title={point.customerName || point.label || 'Điểm bản đồ'}
-            onClick={event => {
-              event.stopPropagation();
-              markerId ? handleMarkerSelect(point, markerId) : onOpenExternal?.(point);
-            }}
-            className={`absolute z-30 -translate-x-1/2 -translate-y-full rounded-full border-[3px] text-white shadow-xl transition hover:scale-110 ${isSelected ? 'border-yellow-300 ring-4 ring-yellow-200' : 'border-white'}`}
-            style={{
-              left,
-              top,
-              backgroundColor: markerColor,
-              width: isWarehouse ? 44 : isSelected ? 46 : point.count > 1 ? 40 : 36,
-              height: isWarehouse ? 44 : isSelected ? 46 : point.count > 1 ? 40 : 36,
-              boxShadow: isSelected ? '0 20px 32px rgba(245, 158, 11, .38)' : '0 14px 24px rgba(15, 23, 42, .22)',
-            }}
-          >
-            <span className="text-xs font-black">{isWarehouse ? 'K' : point.count || index + 1}</span>
-          </button>
-        );
-      })}
-
-      <div className="absolute bottom-4 right-4 z-40 flex flex-col overflow-hidden rounded-2xl border border-white/80 bg-white/95 shadow-xl backdrop-blur">
-        <button type="button" onClick={() => updateZoom(1)} className="h-11 w-11 border-b border-slate-100 text-2xl font-black text-slate-700">+</button>
-        <button type="button" onClick={() => updateZoom(-1)} className="h-11 w-11 border-b border-slate-100 text-2xl font-black text-slate-700">-</button>
-        <button type="button" onClick={fitAllPoints} className="flex h-11 w-11 items-center justify-center text-slate-700" title="Xem toàn bộ điểm">
-          <Target className="h-5 w-5" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function GoogleDeliveryMap({
-  points = [],
-  routePoints = [],
-  bounds = null,
-  selectedId = '',
-  onSelect = null,
-  currentLocation = null,
-  warehouseLocation = null,
-  apiKey = '',
-  mapId = '',
-  cameraRequestKey = 0,
-  cameraMode = 'overview',
-  navigationOrigin = null,
-  navigationTarget = null,
-}) {
-  const containerRef = useRef(null);
-  const mapRef = useRef(null);
-  const markersRef = useRef(new Map());
-  const onSelectRef = useRef(onSelect);
-  const selectedIdRef = useRef(selectedId);
-  const routeLineRef = useRef(null);
-  const currentLocationMarkerRef = useRef(null);
-  const lastCameraRequestRef = useRef(null);
-  const lastSelectedIdRef = useRef('');
-  const [loadState, setLoadState] = useState(apiKey ? 'loading' : 'missing_key');
-  const [loadError, setLoadError] = useState('');
-
-  useEffect(() => {
-    onSelectRef.current = onSelect;
-  }, [onSelect]);
-
-  useEffect(() => {
-    selectedIdRef.current = selectedId;
-  }, [selectedId]);
-
-  const validPoints = useMemo(() => (points || [])
-    .map((point, index) => ({
-      ...point,
-      id: getMapPointId(point, `point-${index}`),
-      latitude: toMapNumber(point.latitude),
-      longitude: toMapNumber(point.longitude),
-    }))
-    .filter(point => isValidLatLng(point.latitude, point.longitude)), [points]);
-
-  const validRoutePoints = useMemo(() => (routePoints || [])
-    .map((point, index) => ({
-      ...point,
-      id: getMapPointId(point, `route-${index}`),
-      latitude: toMapNumber(point.latitude),
-      longitude: toMapNumber(point.longitude),
-    }))
-    .filter(point => isValidLatLng(point.latitude, point.longitude)), [routePoints]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!apiKey) {
-      setLoadState('missing_key');
-      setLoadError('Chưa cấu hình Google Maps API key.');
-      return undefined;
-    }
-
-    setLoadState('loading');
-    setLoadError('');
-    loadGoogleMapsApi(apiKey)
-      .then(google => {
-        if (cancelled || !containerRef.current) return;
-        if (!mapRef.current) {
-          const firstPoint = { latitude: 10.8231, longitude: 106.6297 };
-          mapRef.current = new google.maps.Map(containerRef.current, {
-            center: { lat: Number(firstPoint.latitude), lng: Number(firstPoint.longitude) },
-            zoom: 11,
-            mapId: mapId || undefined,
-            mapTypeId: 'roadmap',
-            clickableIcons: false,
-            disableDefaultUI: false,
-            fullscreenControl: false,
-            mapTypeControl: false,
-            streetViewControl: false,
-            gestureHandling: 'greedy',
-          });
-        }
-        setLoadState('ready');
-      })
-      .catch(error => {
-        if (cancelled) return;
-        setLoadState('error');
-        setLoadError(error?.message || 'Không tải được Google Maps.');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [apiKey, mapId]);
-
-  useEffect(() => {
-    const google = window.google;
-    const map = mapRef.current;
-    if (!map || !google?.maps || loadState !== 'ready') return;
-
-    const desiredMarkerIds = new Set();
-    const markerIcon = ({ selected = false, delivered = false, warehouse = false }) => ({
-      path: google.maps.SymbolPath.CIRCLE,
-      fillColor: warehouse ? '#0f766e' : delivered ? '#10b981' : '#f59e0b',
-      fillOpacity: 1,
-      strokeColor: '#ffffff',
-      strokeWeight: 3,
-      scale: warehouse ? 15 : selected ? 17 : 14,
-    });
-    const upsertMarker = ({ id, selectId = id, position, title, label, selected = false, delivered = false, warehouse = false, zIndex = 10 }) => {
-      desiredMarkerIds.add(id);
-      const markerRecord = markersRef.current.get(id);
-      if (markerRecord) {
-        markerRecord.marker.setPosition(position);
-        markerRecord.marker.setTitle(title);
-        markerRecord.marker.setLabel(label);
-        markerRecord.marker.setIcon(markerIcon({ selected, delivered, warehouse }));
-        markerRecord.marker.setZIndex(zIndex);
-        return;
-      }
-      const marker = new google.maps.Marker({
-        map,
-        position,
-        title,
-        label,
-        icon: markerIcon({ selected, delivered, warehouse }),
-        zIndex,
-      });
-      if (!warehouse) {
-        marker.addListener('click', () => onSelectRef.current?.(selectedIdRef.current === selectId ? '' : selectId));
-      }
-      markersRef.current.set(id, { marker });
-    };
-
-    validPoints.forEach((point, index) => {
-      const pointId = getMapPointId(point, `point-${index}`);
-      const isSelected = selectedId === pointId;
-      const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
-      upsertMarker({
-        id: `point:${pointId}`,
-        selectId: pointId,
-        position: { lat: Number(point.latitude), lng: Number(point.longitude) },
-        title: point.customerName || point.label || 'Điểm giao hàng',
-        label: { text: `${point.count || index + 1}`, color: '#ffffff', fontWeight: '900', fontSize: '13px' },
-        selected: isSelected,
-        delivered: isDelivered,
-        zIndex: isSelected ? 1000 : 10 + index,
-      });
-    });
-
-    const warehouseLat = toMapNumber(warehouseLocation?.latitude);
-    const warehouseLng = toMapNumber(warehouseLocation?.longitude);
-    if (isValidLatLng(warehouseLat, warehouseLng)) {
-      upsertMarker({
-        id: 'warehouse',
-        position: { lat: warehouseLat, lng: warehouseLng },
-        title: 'Kho',
-        label: { text: 'K', color: '#ffffff', fontWeight: '900' },
-        warehouse: true,
-        zIndex: 900,
-      });
-    }
-
-    markersRef.current.forEach((record, id) => {
-      if (!desiredMarkerIds.has(id)) {
-        record.marker.setMap(null);
-        markersRef.current.delete(id);
-      }
-    });
-  }, [loadState, selectedId, validPoints, warehouseLocation]);
-
-  useEffect(() => {
-    const google = window.google;
-    const map = mapRef.current;
-    if (!map || !google?.maps || loadState !== 'ready') return;
-
-    const routePath = validRoutePoints.map(point => ({ lat: Number(point.latitude), lng: Number(point.longitude) }));
-    if (routePath.length < 2) {
-      routeLineRef.current?.setMap(null);
-      routeLineRef.current = null;
-    } else if (routeLineRef.current) {
-      routeLineRef.current.setPath(routePath);
-    } else {
-      routeLineRef.current = new google.maps.Polyline({
-        path: routePath,
-        geodesic: true,
-        strokeColor: '#2563eb',
-        strokeOpacity: 0.9,
-        strokeWeight: 5,
-        map,
-      });
-    }
-  }, [loadState, validRoutePoints]);
-
-  useEffect(() => {
-    const google = window.google;
-    const map = mapRef.current;
-    if (!map || !google?.maps || loadState !== 'ready') return;
-
-    const latitude = toMapNumber(currentLocation?.latitude);
-    const longitude = toMapNumber(currentLocation?.longitude);
-    if (!isValidLatLng(latitude, longitude)) {
-      currentLocationMarkerRef.current?.setMap(null);
-      currentLocationMarkerRef.current = null;
-      return;
-    }
-
-    const position = { lat: latitude, lng: longitude };
-    if (currentLocationMarkerRef.current) {
-      currentLocationMarkerRef.current.setPosition(position);
-      return;
-    }
-    currentLocationMarkerRef.current = new google.maps.Marker({
-      map,
-      position,
-      title: 'Vị trí hiện tại',
-      icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#2563eb', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 4, scale: 10 },
-      zIndex: 1200,
-    });
-  }, [currentLocation, loadState]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || loadState !== 'ready') return;
-    if (!selectedId) {
-      lastSelectedIdRef.current = '';
-      return;
-    }
-    if (lastSelectedIdRef.current === selectedId) return;
-    const selectedPoint = validPoints.find(point => getMapPointId(point) === selectedId);
-    if (!selectedPoint) return;
-    map.panTo({ lat: Number(selectedPoint.latitude), lng: Number(selectedPoint.longitude) });
-    if ((map.getZoom?.() || 0) < 15) map.setZoom(15);
-    lastSelectedIdRef.current = selectedId;
-  }, [loadState, selectedId, validPoints]);
-
-  useEffect(() => {
-    const google = window.google;
-    const map = mapRef.current;
-    if (!map || !google?.maps || loadState !== 'ready') return;
-    const requestId = `${cameraRequestKey}:${cameraMode}`;
-    if (lastCameraRequestRef.current === requestId) return;
-    const cameraPoints = cameraMode === 'navigation'
-      ? [navigationOrigin, navigationTarget].filter(Boolean)
-      : [
-        ...validPoints,
-        ...(warehouseLocation ? [warehouseLocation] : []),
-        ...(currentLocation ? [currentLocation] : []),
-      ];
-    const validCameraPoints = cameraPoints.filter(point => isValidLatLng(toMapNumber(point?.latitude), toMapNumber(point?.longitude)));
-    if (validCameraPoints.length > 1) {
-      const markerBounds = new google.maps.LatLngBounds();
-      validCameraPoints.forEach(point => markerBounds.extend({ lat: toMapNumber(point.latitude), lng: toMapNumber(point.longitude) }));
-      map.fitBounds(markerBounds, 64);
-      if (cameraMode === 'navigation') {
-        google.maps.event.addListenerOnce(map, 'idle', () => map.panBy?.(0, Math.round((containerRef.current?.clientHeight || 0) * 0.18)));
-      }
-    } else if (validCameraPoints.length === 1) {
-      map.setCenter({ lat: toMapNumber(validCameraPoints[0].latitude), lng: toMapNumber(validCameraPoints[0].longitude) });
-      map.setZoom(15);
-    } else if (bounds?.center) {
-      map.setCenter({ lat: Number(bounds.center.latitude), lng: Number(bounds.center.longitude) });
-      map.setZoom(bounds.zoom || 11);
-    } else {
-      return;
-    }
-    lastCameraRequestRef.current = requestId;
-  }, [bounds, cameraMode, cameraRequestKey, currentLocation, loadState, navigationOrigin, navigationTarget, validPoints, warehouseLocation]);
-
-  useEffect(() => () => {
-    markersRef.current.forEach(record => record.marker.setMap(null));
-    markersRef.current.clear();
-    routeLineRef.current?.setMap(null);
-    currentLocationMarkerRef.current?.setMap(null);
-    if (mapRef.current) window.google?.maps?.event?.clearInstanceListeners(mapRef.current);
-    mapRef.current = null;
-  }, []);
-
-  if (loadState === 'error' || loadState === 'missing_key') {
-    return (
-      <div className="absolute inset-0 overflow-hidden bg-slate-100">
-        <DeliveryTileMap
-          points={validPoints.length ? validPoints : points}
-          bounds={bounds}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          routePoints={routePoints}
-          currentLocation={currentLocation}
-          warehouseLocation={warehouseLocation}
-          perspective
-          cameraRequestKey={cameraRequestKey}
-          cameraMode={cameraMode}
-          navigationOrigin={navigationOrigin}
-          navigationTarget={navigationTarget}
-        />
-        <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-amber-100 bg-white/95 p-3 text-xs font-bold text-slate-700 shadow-xl backdrop-blur">
-          <p className="font-black text-amber-700">Google Maps chưa sẵn sàng, app đã tự chuyển sang bản đồ dự phòng.</p>
-          <p className="mt-1 text-slate-500">{loadError || 'Bạn vẫn xem được điểm giao và danh sách khách hôm nay.'}</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="absolute inset-0 overflow-hidden bg-slate-100">
-      <div ref={containerRef} className="h-full w-full" />
-      {loadState !== 'ready' && (
-        <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-white/80 bg-white/95 p-4 text-sm font-bold text-slate-700 shadow-xl backdrop-blur">
-          <p className="font-black text-emerald-700">Đang tải Google Maps...</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GoongDeliveryMap({
-  points = [],
-  routePoints = [],
-  bounds = null,
-  selectedId = '',
-  onSelect = null,
-  currentLocation = null,
-  warehouseLocation = null,
-  apiKey = '',
-  cameraRequestKey = 0,
-  cameraMode = 'overview',
-  navigationOrigin = null,
-  navigationTarget = null,
-}) {
-  const containerRef = useRef(null);
-  const mapRef = useRef(null);
-  const markersRef = useRef(new Map());
-  const onSelectRef = useRef(onSelect);
-  const selectedIdRef = useRef(selectedId);
-  const currentLocationMarkerRef = useRef(null);
-  const lastCameraRequestRef = useRef(null);
-  const lastSelectedIdRef = useRef('');
-  const [loadState, setLoadState] = useState(apiKey ? 'loading' : 'missing_key');
-  const [loadError, setLoadError] = useState('');
-
-  useEffect(() => {
-    onSelectRef.current = onSelect;
-    selectedIdRef.current = selectedId;
-  }, [onSelect, selectedId]);
-
-  const validPoints = useMemo(() => (points || [])
-    .map((point, index) => ({
-      ...point,
-      id: getMapPointId(point, `point-${index}`),
-      latitude: toMapNumber(point.latitude),
-      longitude: toMapNumber(point.longitude),
-    }))
-    .filter(point => isValidLatLng(point.latitude, point.longitude)), [points]);
-
-  const validRoutePoints = useMemo(() => (routePoints || [])
-    .map((point, index) => ({
-      ...point,
-      id: getMapPointId(point, `route-${index}`),
-      latitude: toMapNumber(point.latitude),
-      longitude: toMapNumber(point.longitude),
-    }))
-    .filter(point => isValidLatLng(point.latitude, point.longitude)), [routePoints]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!apiKey) {
-      setLoadState('missing_key');
-      setLoadError('Chưa cấu hình Goong Map Tiles key.');
-      return undefined;
-    }
-
-    setLoadState('loading');
-    setLoadError('');
-    loadGoongMapsApi(apiKey)
-      .then(goongjs => {
-        if (cancelled || !containerRef.current) return;
-        if (!mapRef.current) {
-          const firstPoint = { latitude: 10.8231, longitude: 106.6297 };
-          mapRef.current = new goongjs.Map({
-            container: containerRef.current,
-            style: buildGoongStyleUrl(apiKey),
-            center: [Number(firstPoint.longitude), Number(firstPoint.latitude)],
-            zoom: 11,
-            pitch: 34,
-            bearing: -8,
-            attributionControl: true,
-          });
-          if (goongjs.NavigationControl) {
-            mapRef.current.addControl(new goongjs.NavigationControl({ showCompass: true }), 'bottom-right');
-          }
-          mapRef.current.once('load', () => {
-            if (!cancelled) setLoadState('ready');
-          });
-          mapRef.current.on('error', event => {
-            if (!cancelled) {
-              setLoadState('error');
-              const message = `${event?.error?.message || ''}`.trim();
-              const isAuthError = /401|403|unauthorized|forbidden|api[_ -]?key|access/i.test(message);
-              setLoadError(isAuthError
-                ? 'Goong không xác thực được Map Tiles key. Vui lòng kiểm tra đúng loại key Map Tiles, không dùng REST API key.'
-                : (message || 'Goong Map chưa tải được dữ liệu bản đồ.'));
-            }
-          });
-        } else {
-          setLoadState('ready');
-        }
-      })
-      .catch(error => {
-        if (cancelled) return;
-        setLoadState('error');
-        setLoadError(error?.message || 'Không tải được Goong Map.');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [apiKey]);
-
-  useEffect(() => {
-    const goongjs = window.goongjs;
-    const map = mapRef.current;
-    if (!map || !goongjs?.Marker || loadState !== 'ready') return;
-
-    const createMarkerElement = ({ label, selected = false, delivered = false, warehouse = false }) => {
-      const element = document.createElement('button');
-      element.type = 'button';
-      element.textContent = label;
-      element.style.width = warehouse ? '44px' : selected ? '46px' : '38px';
-      element.style.height = warehouse ? '44px' : selected ? '46px' : '38px';
-      element.style.borderRadius = '999px';
-      element.style.border = selected ? '4px solid #fde68a' : '3px solid #ffffff';
-      element.style.background = warehouse ? '#0f766e' : delivered ? '#10b981' : '#f59e0b';
-      element.style.color = '#ffffff';
-      element.style.fontWeight = '900';
-      element.style.fontSize = warehouse ? '13px' : '12px';
-      element.style.lineHeight = '1';
-      element.style.boxShadow = selected
-        ? '0 20px 34px rgba(245, 158, 11, .38)'
-        : '0 14px 24px rgba(15, 23, 42, .24)';
-      element.style.cursor = 'pointer';
-      element.style.display = 'flex';
-      element.style.alignItems = 'center';
-      element.style.justifyContent = 'center';
-      return element;
-    };
-
-    const updateMarkerElement = (element, { label, selected = false, delivered = false, warehouse = false }) => {
-      element.textContent = label;
-      element.style.width = warehouse ? '44px' : selected ? '46px' : '38px';
-      element.style.height = warehouse ? '44px' : selected ? '46px' : '38px';
-      element.style.border = selected ? '4px solid #fde68a' : '3px solid #ffffff';
-      element.style.background = warehouse ? '#0f766e' : delivered ? '#10b981' : '#f59e0b';
-      element.style.boxShadow = selected ? '0 20px 34px rgba(245, 158, 11, .38)' : '0 14px 24px rgba(15, 23, 42, .24)';
-    };
-    const desiredMarkerIds = new Set();
-    const upsertMarker = ({ id, selectId = id, longitude, latitude, label, selected = false, delivered = false, warehouse = false }) => {
-      desiredMarkerIds.add(id);
-      const existing = markersRef.current.get(id);
-      if (existing) {
-        existing.marker.setLngLat([longitude, latitude]);
-        updateMarkerElement(existing.element, { label, selected, delivered, warehouse });
-        return;
-      }
-      const element = createMarkerElement({ label, selected, delivered, warehouse });
-      if (!warehouse) element.addEventListener('click', () => onSelectRef.current?.(selectedIdRef.current === selectId ? '' : selectId));
-      const marker = new goongjs.Marker({ element, anchor: 'bottom' })
-        .setLngLat([longitude, latitude])
-        .addTo(map);
-      markersRef.current.set(id, { marker, element });
-    };
-
-    validPoints.forEach((point, index) => {
-      const pointId = getMapPointId(point, `point-${index}`);
-      const isSelected = selectedId && selectedId === pointId;
-      const isDelivered = Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt);
-      upsertMarker({
-        id: `point:${pointId}`,
-        selectId: pointId,
-        longitude: Number(point.longitude),
-        latitude: Number(point.latitude),
-        label: `${point.count || index + 1}`,
-        selected: isSelected,
-        delivered: isDelivered,
-      });
-    });
-
-    const warehouseLat = toMapNumber(warehouseLocation?.latitude);
-    const warehouseLng = toMapNumber(warehouseLocation?.longitude);
-    if (isValidLatLng(warehouseLat, warehouseLng)) {
-      upsertMarker({ id: 'warehouse', longitude: warehouseLng, latitude: warehouseLat, label: 'K', warehouse: true });
-    }
-
-    markersRef.current.forEach((record, id) => {
-      if (!desiredMarkerIds.has(id)) {
-        record.marker.remove?.();
-        markersRef.current.delete(id);
-      }
-    });
-  }, [loadState, selectedId, validPoints, warehouseLocation]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || loadState !== 'ready') return;
-    const sourceId = 'hd-delivery-route';
-    const layerId = 'hd-delivery-route-line';
-    const routeCoordinates = validRoutePoints.map(point => [Number(point.longitude), Number(point.latitude)]);
-    const routeData = {
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: routeCoordinates,
-      },
-      properties: {},
-    };
-
-    if (routeCoordinates.length < 2) {
-      if (map.getLayer?.(layerId)) map.removeLayer(layerId);
-      if (map.getSource?.(sourceId)) map.removeSource(sourceId);
-      return;
-    }
-
-    if (map.getSource?.(sourceId)) {
-      map.getSource(sourceId).setData(routeData);
-      return;
-    }
-
-    map.addSource(sourceId, { type: 'geojson', data: routeData });
-    map.addLayer({
-      id: layerId,
-      type: 'line',
-      source: sourceId,
-      layout: {
-        'line-join': 'round',
-        'line-cap': 'round',
-      },
-      paint: {
-        'line-color': '#2563eb',
-        'line-width': 5,
-        'line-opacity': 0.9,
-      },
-    });
-  }, [loadState, validRoutePoints]);
-
-  useEffect(() => {
-    const goongjs = window.goongjs;
-    const map = mapRef.current;
-    if (!map || !goongjs?.Marker || loadState !== 'ready') return;
-
-    const latitude = toMapNumber(currentLocation?.latitude);
-    const longitude = toMapNumber(currentLocation?.longitude);
-    if (!isValidLatLng(latitude, longitude)) {
-      currentLocationMarkerRef.current?.remove?.();
-      currentLocationMarkerRef.current = null;
-      return;
-    }
-
-    if (currentLocationMarkerRef.current) {
-      currentLocationMarkerRef.current.setLngLat([longitude, latitude]);
-      return;
-    }
-
-    const element = document.createElement('span');
-    element.style.width = '22px';
-    element.style.height = '22px';
-    element.style.borderRadius = '999px';
-    element.style.border = '4px solid #ffffff';
-    element.style.background = '#2563eb';
-    element.style.boxShadow = '0 0 0 9px rgba(37, 99, 235, .18)';
-    currentLocationMarkerRef.current = new goongjs.Marker({ element, anchor: 'center' })
-      .setLngLat([longitude, latitude])
-      .addTo(map);
-  }, [currentLocation, loadState]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || loadState !== 'ready') return;
-    if (!selectedId) {
-      lastSelectedIdRef.current = '';
-      return;
-    }
-    if (lastSelectedIdRef.current === selectedId) return;
-    const selectedPoint = validPoints.find(point => getMapPointId(point) === selectedId);
-    if (!selectedPoint) return;
-    map.easeTo({
-      center: [Number(selectedPoint.longitude), Number(selectedPoint.latitude)],
-      zoom: Math.max(map.getZoom?.() || 0, 15),
-      duration: 450,
-    });
-    lastSelectedIdRef.current = selectedId;
-  }, [loadState, selectedId, validPoints]);
-
-  useEffect(() => {
-    const goongjs = window.goongjs;
-    const map = mapRef.current;
-    if (!map || !goongjs?.LngLatBounds || loadState !== 'ready') return;
-    const requestId = `${cameraRequestKey}:${cameraMode}`;
-    if (lastCameraRequestRef.current === requestId) return;
-    const cameraPoints = cameraMode === 'navigation'
-      ? [navigationOrigin, navigationTarget].filter(Boolean)
-      : [
-        ...validPoints,
-        ...(warehouseLocation ? [warehouseLocation] : []),
-        ...(currentLocation ? [currentLocation] : []),
-      ];
-    const validCameraPoints = cameraPoints.filter(point => isValidLatLng(toMapNumber(point?.latitude), toMapNumber(point?.longitude)));
-    if (validCameraPoints.length > 1) {
-      const mapBounds = new goongjs.LngLatBounds();
-      validCameraPoints.forEach(point => mapBounds.extend([toMapNumber(point.longitude), toMapNumber(point.latitude)]));
-      const navigationPadding = Math.round((containerRef.current?.clientHeight || 0) * 0.3);
-      map.fitBounds(mapBounds, {
-        padding: cameraMode === 'navigation'
-          ? { top: 64, right: 56, bottom: Math.max(140, navigationPadding), left: 56 }
-          : 72,
-        maxZoom: 15,
-        duration: 420,
-      });
-    } else if (validCameraPoints.length === 1) {
-      map.easeTo({
-        center: [toMapNumber(validCameraPoints[0].longitude), toMapNumber(validCameraPoints[0].latitude)],
-        zoom: 15,
-        duration: 420,
-      });
-    } else if (bounds?.center) {
-      map.easeTo({
-        center: [Number(bounds.center.longitude), Number(bounds.center.latitude)],
-        zoom: bounds.zoom || 11,
-        duration: 420,
-      });
-    } else {
-      return;
-    }
-    lastCameraRequestRef.current = requestId;
-  }, [bounds, cameraMode, cameraRequestKey, currentLocation, loadState, navigationOrigin, navigationTarget, validPoints, warehouseLocation]);
-
-  useEffect(() => () => {
-    markersRef.current.forEach(record => record.marker.remove?.());
-    markersRef.current.clear();
-    currentLocationMarkerRef.current?.remove?.();
-    mapRef.current?.remove?.();
-    mapRef.current = null;
-  }, []);
-
-  if (loadState === 'error' || loadState === 'missing_key') {
-    return (
-      <div className="absolute inset-0 overflow-hidden bg-slate-100">
-        <DeliveryTileMap
-          points={validPoints.length ? validPoints : points}
-          routePoints={routePoints}
-          bounds={bounds}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          currentLocation={currentLocation}
-          warehouseLocation={warehouseLocation}
-          perspective
-          cameraRequestKey={cameraRequestKey}
-          cameraMode={cameraMode}
-          navigationOrigin={navigationOrigin}
-          navigationTarget={navigationTarget}
-        />
-        <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-amber-100 bg-white/95 p-3 text-xs font-bold text-slate-700 shadow-xl backdrop-blur">
-          <p className="font-black text-amber-700">Goong Map chưa sẵn sàng, app đã tự chuyển sang bản đồ dự phòng.</p>
-          <p className="mt-1 text-slate-500">{loadError || 'Bạn vẫn xem được điểm giao và danh sách khách hôm nay.'}</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="absolute inset-0 overflow-hidden bg-slate-100">
-      <div ref={containerRef} className="h-full w-full" />
-      {loadState !== 'ready' && (
-        <div className="absolute inset-x-4 top-24 z-30 rounded-3xl border border-white/80 bg-white/95 p-4 text-sm font-bold text-slate-700 shadow-xl backdrop-blur">
-          <p className="font-black text-emerald-700">Đang tải Goong Map...</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MapManagementView({
-  employee,
-  currentCompany = {},
-  employees = [],
-  customers = [],
-  orders = [],
-  payments = [],
-  warehouseDispatches = [],
-  deliveryReports = [],
-  onAddDeliveryReport = null,
-  onUpdateCompanySettings = null,
-  canViewCustomerMap = true,
-  canViewDriverRoute = true,
-  canViewDispatchDashboard = true,
-  canViewHeatmap = true,
-  canViewHistory = true,
-  canChangeMapProvider = false,
-}) {
-  const configuredGoongMapTilesKey = resolveGoongMapTilesKey(currentCompany);
-  const getPreferredMapProvider = (company = {}) => {
-    const explicitProvider = `${company?.mapProvider || company?.settings?.mapProvider || ''}`.trim().toLowerCase();
-    if (MAP_PROVIDER_OPTIONS.some(option => option.id === explicitProvider)) {
-      return explicitProvider === 'openstreetmap' ? 'google' : explicitProvider;
-    }
-    if (resolveGoongMapTilesKey(company)) return 'goong';
-    const configuredProvider = getDefaultMapProvider(company);
-    return configuredProvider === 'openstreetmap' ? 'google' : configuredProvider;
-  };
-  const [activeMode, setActiveMode] = useState(canViewCustomerMap ? 'customers' : canViewDriverRoute ? 'route' : 'dispatch');
-  const [providerId, setProviderId] = useState(() => getPreferredMapProvider(currentCompany));
-  const [mapDate, setMapDate] = useState(getTodayString());
-  const [keyword, setKeyword] = useState('');
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
-  const [onlyDebt, setOnlyDebt] = useState(false);
-  const [heatMetric, setHeatMetric] = useState('revenue');
-  const [mapPerspective3d, setMapPerspective3d] = useState(true);
-  const [selectedDeliveryOrderId, setSelectedDeliveryOrderId] = useState('');
-  const [showDeliveryListSheet, setShowDeliveryListSheet] = useState(false);
-  const [markingDeliveredId, setMarkingDeliveredId] = useState('');
-  const [optimisticDeliveredIds, setOptimisticDeliveredIds] = useState([]);
-  const [geocodedDeliveryPoints, setGeocodedDeliveryPoints] = useState({});
-  const [currentMapPosition, setCurrentMapPosition] = useState(null);
-  const [statusText, setStatusText] = useState('');
-  const [navigationTargetId, setNavigationTargetId] = useState('');
-  const [navigationStarted, setNavigationStarted] = useState(false);
-  const [navigationLocationError, setNavigationLocationError] = useState('');
-  const [navigationRoadRoute, setNavigationRoadRoute] = useState(null);
-  const [navigationRouteLoading, setNavigationRouteLoading] = useState(false);
-  const [navigationRouteOrigin, setNavigationRouteOrigin] = useState(null);
-  const [gpsQualityNotice, setGpsQualityNotice] = useState('');
-  const [mapCameraRequest, setMapCameraRequest] = useState(1);
-  const [mapCameraMode, setMapCameraMode] = useState('overview');
-  const selectedDeliveryOrderSnapshotRef = useRef(null);
-  const lastNavigationPositionRef = useRef(null);
-  const currentMapPositionRef = useRef(null);
-  const navigationRouteCacheRef = useRef(new Map());
-
-  useEffect(() => {
-    setProviderId(getPreferredMapProvider(currentCompany));
-  }, [
-    currentCompany?.id,
-    currentCompany?.mapProvider,
-    currentCompany?.settings?.mapProvider,
-    currentCompany?.goongMapTilesKey,
-    currentCompany?.goongMapTileKey,
-    currentCompany?.goongMapApiKey,
-    currentCompany?.settings?.goongMapTilesKey,
-    currentCompany?.settings?.goongMapTileKey,
-    currentCompany?.settings?.goongMapApiKey,
-  ]);
-
-  const mapModes = useMemo(() => ([
-    { id: 'customers', label: 'Đơn giao hàng', visible: canViewCustomerMap },
-    { id: 'route', label: 'Tuyến giao', visible: canViewDriverRoute },
-    { id: 'dispatch', label: 'Điều phối', visible: canViewDispatchDashboard },
-    { id: 'heatmap', label: 'Heatmap', visible: canViewHeatmap },
-    { id: 'history', label: 'Lịch sử', visible: canViewHistory },
-  ].filter(item => item.visible)), [canViewCustomerMap, canViewDriverRoute, canViewDispatchDashboard, canViewHeatmap, canViewHistory]);
-
-  useEffect(() => {
-    if (!mapModes.some(item => item.id === activeMode)) {
-      setActiveMode(mapModes[0]?.id || 'blocked');
-    }
-  }, [activeMode, mapModes]);
-
-  const mapService = useMemo(() => new MapService({ providerId }), [providerId]);
-  const isCurrentDriver = isEmployeeDeliveryParticipant(employee);
-  const currentDriverId = isCurrentDriver ? employee?.id : '';
-  const driverOptions = useMemo(
-    () => (employees || []).filter(emp => emp && !emp.isArchived && isEmployeeDeliveryParticipant(emp)),
-    [employees]
-  );
-  const selectedDriverId = isCurrentDriver ? currentDriverId : selectedEmployeeId;
-  const geocodeCacheKey = useMemo(
-    () => `hd-manager-map-geocode:${currentCompany?.id || currentCompany?.companyId || 'default'}`,
-    [currentCompany?.id, currentCompany?.companyId]
-  );
-
-  useEffect(() => {
-    try {
-      const rawCache = window.localStorage?.getItem(geocodeCacheKey);
-      setGeocodedDeliveryPoints(rawCache ? JSON.parse(rawCache) || {} : {});
-    } catch (error) {
-      setGeocodedDeliveryPoints({});
-    }
-  }, [geocodeCacheKey]);
-
-  const saveGeocodeCache = useCallback((patch = {}) => {
-    if (!patch || !Object.keys(patch).length) return;
-    setGeocodedDeliveryPoints(prev => {
-      const next = { ...(prev || {}), ...patch };
-      try {
-        window.localStorage?.setItem(geocodeCacheKey, JSON.stringify(next));
-      } catch (error) {
-        // Cache is only a speed helper. If storage is full/blocked, the map still works.
-      }
-      return next;
-    });
-  }, [geocodeCacheKey]);
-
-  const customerLookupForMap = useMemo(() => {
-    const byId = new Map();
-    const byPhone = new Map();
-    const byName = new Map();
-    const addId = (value, customer) => {
-      const key = `${value || ''}`.trim();
-      if (key) byId.set(key, customer);
-    };
-    const addPhone = (value, customer) => {
-      const key = `${value || ''}`.replace(/\D/g, '');
-      if (key.length >= 6) byPhone.set(key, customer);
-    };
-    const addName = (value, customer) => {
-      const key = normalizeLookupText(value);
-      if (key) byName.set(key, customer);
-    };
-
-    (customers || []).filter(Boolean).forEach(customer => {
-      [
-        customer.id,
-        customer.customerId,
-        customer.customerID,
-        customer.code,
-        customer.customerCode,
-      ].forEach(value => addId(value, customer));
-      [
-        customer.phone,
-        customer.phoneNumber,
-        customer.mobile,
-        customer.zaloPhone,
-        customer.contactPhone,
-      ].forEach(value => addPhone(value, customer));
-      [
-        customer.name,
-        customer.customerName,
-        customer.fullName,
-        customer.displayName,
-      ].forEach(value => addName(value, customer));
-    });
-
-    return { byId, byPhone, byName };
-  }, [customers]);
-
-  const findCustomerForMapMission = useCallback((mission = {}) => {
-    const idCandidates = [
-      mission.customerId,
-      mission.customerID,
-      mission.customerCode,
-      mission.customer?.id,
-      mission.customer?.customerId,
-    ].map(value => `${value || ''}`.trim()).filter(Boolean);
-    for (const key of idCandidates) {
-      const found = customerLookupForMap.byId.get(key);
-      if (found) return found;
-    }
-
-    const phoneCandidates = [
-      mission.phone,
-      mission.customerPhone,
-      mission.phoneNumber,
-      mission.customer?.phone,
-    ].map(value => `${value || ''}`.replace(/\D/g, '')).filter(value => value.length >= 6);
-    for (const key of phoneCandidates) {
-      const found = customerLookupForMap.byPhone.get(key);
-      if (found) return found;
-    }
-
-    const nameCandidates = [
-      mission.customerName,
-      mission.customerNameSnapshot,
-      mission.name,
-      mission.customer?.name,
-    ].map(value => normalizeLookupText(value)).filter(Boolean);
-    for (const key of nameCandidates) {
-      const exact = customerLookupForMap.byName.get(key);
-      if (exact) return exact;
-      const fuzzy = Array.from(customerLookupForMap.byName.entries())
-        .find(([name]) => name === key || name.includes(key) || key.includes(name));
-      if (fuzzy?.[1]) return fuzzy[1];
-    }
-
-    return null;
-  }, [customerLookupForMap]);
-
-  const routeMissions = useMemo(() => mapService.buildDeliveryMissions({
-    warehouseDispatches,
-    customers,
-    employees,
-    deliveryReports,
-    date: mapDate,
-    currentDriverId: selectedDriverId,
-  }), [mapService, warehouseDispatches, customers, employees, deliveryReports, mapDate, selectedDriverId]);
-
-  const optimisticDeliveredSet = useMemo(() => new Set(optimisticDeliveredIds), [optimisticDeliveredIds]);
-
-  const deliveryOrderPoints = useMemo(() => {
-    const searchText = normalizeLookupText(keyword);
-    return (routeMissions || [])
-      .map((mission, index) => {
-        const matchedCustomer = findCustomerForMapMission(mission) || {};
-        const customerCoordinates = extractCustomerCoordinates(matchedCustomer);
-        const hasLiveCustomerCoordinates = isValidLatLng(Number(customerCoordinates?.latitude), Number(customerCoordinates?.longitude));
-        const customer = matchedCustomer || {};
-        const cacheKey = mission.customerId || mission.dispatchId || mission.id || '';
-        const cachedCoordinates = geocodedDeliveryPoints[cacheKey] || geocodedDeliveryPoints[mission.dispatchId] || geocodedDeliveryPoints[mission.id];
-        const missionHasCoordinates = isValidLatLng(Number(mission.latitude), Number(mission.longitude));
-        const missionWithLiveCustomerCoordinates = hasLiveCustomerCoordinates
-          ? {
-              ...mission,
-              customerId: mission.customerId || customer.id || customer.customerId || '',
-              latitude: Number(customerCoordinates.latitude),
-              longitude: Number(customerCoordinates.longitude),
-              gpsSource: 'customer_profile',
-            }
-          : mission;
-        const missionWithCoordinates = (!hasLiveCustomerCoordinates && !missionHasCoordinates && cachedCoordinates && isValidLatLng(Number(cachedCoordinates.latitude), Number(cachedCoordinates.longitude)))
-          ? {
-              ...missionWithLiveCustomerCoordinates,
-              latitude: Number(cachedCoordinates.latitude),
-              longitude: Number(cachedCoordinates.longitude),
-              gpsSource: cachedCoordinates.source || 'geocoded',
-              geocodedAddress: cachedCoordinates.displayName || '',
-            }
-          : missionWithLiveCustomerCoordinates;
-        const debt = Math.max(0, parseLooseMoneyValue(customer.currentDebt ?? customer.totalDebt ?? customer.debt ?? 0));
-        const searchable = normalizeLookupText([
-          missionWithCoordinates.customerName,
-          missionWithCoordinates.phone,
-          missionWithCoordinates.address,
-          missionWithCoordinates.driverName,
-          missionWithCoordinates.itemSummary,
-          missionWithCoordinates.dispatchId,
-        ].filter(Boolean).join(' '));
-        const pointId = missionWithCoordinates.dispatchId || missionWithCoordinates.id || `delivery-${index}`;
-        const isDelivered = Boolean(
-          missionWithCoordinates.isDelivered
-          || missionWithCoordinates.status === 'delivered'
-          || missionWithCoordinates.deliveredAt
-          || optimisticDeliveredSet.has(pointId)
-        );
-        return {
-          ...missionWithCoordinates,
-          id: pointId,
-          isDelivered,
-          status: isDelivered ? 'delivered' : missionWithCoordinates.status,
-          label: `${missionWithCoordinates.customerName || 'Khách hàng'} - ${missionWithCoordinates.itemSummary || 'Đơn giao'}`,
-          type: 'delivery_order',
-          count: missionWithCoordinates.sequence || index + 1,
-          debt,
-          revenue: parseLooseMoneyValue(missionWithCoordinates.amount ?? missionWithCoordinates.totalAmount ?? missionWithCoordinates.finalAmount ?? 0),
-          heatValue: debt || parseLooseMoneyValue(missionWithCoordinates.amount ?? missionWithCoordinates.totalAmount ?? missionWithCoordinates.finalAmount ?? 0) || 1,
-          searchable,
-        };
-      })
-      .filter(point => !searchText || point.searchable.includes(searchText))
-      .filter(point => !onlyDebt || point.debt > 0);
-  }, [routeMissions, findCustomerForMapMission, geocodedDeliveryPoints, keyword, onlyDebt, optimisticDeliveredSet]);
-
-  const warehouseLocation = currentCompany?.warehouseLocation
-    || currentCompany?.defaultWarehouseLocation
-    || currentCompany?.mainWarehouseLocation
-    || null;
-
-  const deliveryCustomerPoints = useMemo(() => {
-    const groups = new Map();
-    getPendingDeliveryMapPoints(deliveryOrderPoints).forEach(point => {
-      const customerId = `${point.customerId || ''}`.trim();
-      const phone = `${point.phone || ''}`.replace(/\D/g, '');
-      const name = normalizeLookupText(point.customerName || '');
-      const groupKey = customerId || phone || name || `dispatch:${point.id || point.dispatchId || groups.size}`;
-      const existing = groups.get(groupKey);
-      const pointId = point.id || point.dispatchId || '';
-      const pointWeight = Number(point.weight) || 0;
-      const pointQuantity = Number(point.quantity) || 0;
-      const pointAmount = Number(point.amount) || 0;
-      const hasCoordinates = isValidLatLng(Number(point.latitude), Number(point.longitude));
-
-      if (!existing) {
-        groups.set(groupKey, {
-          ...point,
-          id: `customer:${groupKey}`,
-          primaryDispatchId: point.dispatchId || point.id || '',
-          dispatchIds: pointId ? [pointId] : [],
-          orderPoints: [point],
-          dispatchCount: 1,
-          totalWeight: pointWeight,
-          totalQuantity: pointQuantity,
-          totalAmount: pointAmount,
-          itemSummaries: point.itemSummary ? [point.itemSummary] : [],
-          isDelivered: Boolean(point.isDelivered),
-          allDelivered: Boolean(point.isDelivered),
-        });
-        return;
-      }
-
-      existing.dispatchCount += 1;
-      if (pointId && !existing.dispatchIds.includes(pointId)) existing.dispatchIds.push(pointId);
-      existing.orderPoints.push(point);
-      existing.totalWeight += pointWeight;
-      existing.totalQuantity += pointQuantity;
-      existing.totalAmount += pointAmount;
-      if (point.itemSummary && !existing.itemSummaries.includes(point.itemSummary)) {
-        existing.itemSummaries.push(point.itemSummary);
-      }
-      existing.isDelivered = existing.isDelivered && Boolean(point.isDelivered);
-      existing.allDelivered = existing.allDelivered && Boolean(point.isDelivered);
-      if (!isValidLatLng(Number(existing.latitude), Number(existing.longitude)) && hasCoordinates) {
-        existing.latitude = Number(point.latitude);
-        existing.longitude = Number(point.longitude);
-        existing.gpsSource = point.gpsSource || existing.gpsSource;
-      }
-    });
-
-    const origin = currentMapPosition || (
-      warehouseLocation
-      && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))
-        ? warehouseLocation
-        : null
-    );
-
-    return Array.from(groups.values())
-      .map(group => {
-        const hasCoordinates = isValidLatLng(Number(group.latitude), Number(group.longitude));
-        const locationState = getDeliveryCustomerLocationState({
-          customerPosition: group,
-          originPosition: origin,
-        });
-        const distanceKm = origin && hasCoordinates
-          ? distanceBetweenMapPointsKm(origin, group)
-          : Infinity;
-        return {
-          ...group,
-          itemSummary: group.itemSummaries.join(' • '),
-          amount: group.totalAmount,
-          weight: group.totalWeight,
-          quantity: group.totalQuantity,
-          distanceKm,
-          distanceSource: Number.isFinite(distanceKm)
-            ? currentMapPosition ? 'current_location' : 'warehouse'
-            : '',
-          distanceLabel: Number.isFinite(distanceKm)
-            ? `${formatDistanceKm(distanceKm)}${currentMapPosition ? '' : ' • từ kho'}`
-            : locationState.label,
-          status: group.allDelivered ? 'delivered' : group.status,
-        };
-      })
-      .sort((left, right) => {
-        const leftHasDistance = Number.isFinite(left.distanceKm);
-        const rightHasDistance = Number.isFinite(right.distanceKm);
-        if (leftHasDistance !== rightHasDistance) return leftHasDistance ? -1 : 1;
-        if (leftHasDistance && left.distanceKm !== right.distanceKm) return left.distanceKm - right.distanceKm;
-        return `${left.customerName || ''}`.localeCompare(`${right.customerName || ''}`, 'vi');
-      });
-  }, [currentMapPosition, deliveryOrderPoints, warehouseLocation]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const missingPoints = (deliveryOrderPoints || [])
-      .filter(point => !isValidLatLng(Number(point.latitude), Number(point.longitude)))
-      .filter(point => point.address || point.customerName)
-      .slice(0, 12);
-
-    if (!missingPoints.length) return undefined;
-
-    const runGeocode = async () => {
-      const patch = {};
-      for (const point of missingPoints) {
-        if (cancelled) return;
-        const cacheKey = point.customerId || point.dispatchId || point.id || '';
-        if (!cacheKey || geocodedDeliveryPoints[cacheKey]) continue;
-        const query = mapService.buildGeocodeQuery(point, currentCompany);
-        const result = await mapService.geocodeAddress(query);
-        if (result && isValidLatLng(Number(result.latitude), Number(result.longitude))) {
-          patch[cacheKey] = {
-            latitude: Number(result.latitude),
-            longitude: Number(result.longitude),
-            displayName: result.displayName || query,
-            source: result.source || 'geocoded',
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        await new Promise(resolve => setTimeout(resolve, 350));
-      }
-      if (!cancelled) saveGeocodeCache(patch);
-    };
-
-    runGeocode();
-    return () => {
-      cancelled = true;
-    };
-  }, [deliveryOrderPoints, geocodedDeliveryPoints, mapService, currentCompany, saveGeocodeCache]);
-
-  const routePoints = useMemo(
-    () => mapService.buildRoutePolyline(routeMissions, warehouseLocation),
-    [mapService, routeMissions, warehouseLocation]
-  );
-
-  const routeMetrics = useMemo(() => mapService.estimateRouteMetrics(routePoints), [mapService, routePoints]);
-  const dispatchDashboard = useMemo(() => mapService.buildDispatchDashboard(routeMissions, employees), [mapService, routeMissions, employees]);
-  const heatmapPoints = useMemo(() => mapService.buildHeatmapBuckets(deliveryOrderPoints, heatMetric), [mapService, deliveryOrderPoints, heatMetric]);
-  const offlineSnapshot = useMemo(() => buildOfflineRouteSnapshot({ missions: routeMissions, providerId }), [routeMissions, providerId]);
-
-  const visibleMapPoints = useMemo(() => {
-    return deliveryOrderPoints;
-  }, [deliveryOrderPoints]);
-
-  const hasMapCoordinates = useCallback((point = {}) => (
-    isValidLatLng(Number(point.latitude), Number(point.longitude))
-  ), []);
-
-  const getDeliveryPointId = useCallback((point = {}) => (
-    point.id || point.dispatchId || point.customerId || ''
-  ), []);
-
-  const isDeliveryPointDone = useCallback((point = {}) => (
-    Boolean(point.isDelivered || point.status === 'delivered' || point.deliveredAt)
-  ), []);
-
-  const visibleLimitedPoints = useMemo(() => (
-    visibleMapPoints.filter(hasMapCoordinates).slice(0, 500)
-  ), [hasMapCoordinates, visibleMapPoints]);
-
-  const pendingVisibleLimitedPoints = useMemo(() => (
-    visibleLimitedPoints.filter(point => !isDeliveryPointDone(point))
-  ), [isDeliveryPointDone, visibleLimitedPoints]);
-
-  const optimizedMapRoutePoints = useMemo(() => (
-    buildNearestMapRoute(pendingVisibleLimitedPoints, currentMapPosition || warehouseLocation)
-  ), [currentMapPosition, pendingVisibleLimitedPoints, warehouseLocation]);
-
-  const getNextPendingDeliveryPoint = useCallback((excludedIds = [], originOverride = null) => {
-    const excludedSet = new Set((excludedIds || []).filter(Boolean));
-    const candidates = visibleLimitedPoints.filter(point => {
-      const pointId = getDeliveryPointId(point);
-      return pointId && !excludedSet.has(pointId) && !isDeliveryPointDone(point);
-    });
-    if (!candidates.length) return null;
-    const sortedTargets = buildNearestMapRoute(candidates, originOverride || currentMapPosition || warehouseLocation);
-    return sortedTargets[0] || candidates[0] || null;
-  }, [currentMapPosition, getDeliveryPointId, isDeliveryPointDone, visibleLimitedPoints, warehouseLocation]);
-
-  const suggestedDeliveryOrderPoints = useMemo(() => {
-    const routeOrderMap = new Map();
-    optimizedMapRoutePoints.forEach((point, index) => {
-      const id = point.id || point.dispatchId || point.customerId || '';
-      if (id) routeOrderMap.set(id, index + 1);
-    });
-
-    return visibleLimitedPoints
-      .map((point, index) => {
-        const id = point.id || point.dispatchId || point.customerId || '';
-        const suggestedOrder = routeOrderMap.get(id) || 0;
-        return {
-          ...point,
-          suggestedOrder,
-          count: suggestedOrder || point.count || index + 1,
-        };
-      })
-      .sort((a, b) => {
-        const aOrder = a.suggestedOrder || Number.MAX_SAFE_INTEGER;
-        const bOrder = b.suggestedOrder || Number.MAX_SAFE_INTEGER;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        return (a.count || 0) - (b.count || 0);
-      });
-  }, [optimizedMapRoutePoints, visibleLimitedPoints]);
-
-  const pendingSuggestedDeliveryOrderPoints = useMemo(() => (
-    getPendingDeliveryMapPoints(suggestedDeliveryOrderPoints)
-  ), [suggestedDeliveryOrderPoints]);
-
-  const selectedDeliveryOrderLive = useMemo(() => (
-    suggestedDeliveryOrderPoints.find(point => (point.id || point.dispatchId) === selectedDeliveryOrderId) || null
-  ), [selectedDeliveryOrderId, suggestedDeliveryOrderPoints]);
-
-  useEffect(() => {
-    if (!selectedDeliveryOrderId) {
-      selectedDeliveryOrderSnapshotRef.current = null;
-      return;
-    }
-    if (selectedDeliveryOrderLive) {
-      selectedDeliveryOrderSnapshotRef.current = selectedDeliveryOrderLive;
-    }
-  }, [selectedDeliveryOrderId, selectedDeliveryOrderLive]);
-
-  const selectedDeliveryOrder = selectedDeliveryOrderLive
-    || (selectedDeliveryOrderSnapshotRef.current && (
-      (selectedDeliveryOrderSnapshotRef.current.id || selectedDeliveryOrderSnapshotRef.current.dispatchId) === selectedDeliveryOrderId
-    ) ? selectedDeliveryOrderSnapshotRef.current : null);
-
-  const selectedDeliveryCustomer = useMemo(() => {
-    if (!selectedDeliveryOrder) return null;
-    return deliveryCustomerPoints.find(customer => (
-      customer.primaryDispatchId === selectedDeliveryOrderId
-      || customer.dispatchIds?.includes(selectedDeliveryOrderId)
-    )) || selectedDeliveryOrder;
-  }, [deliveryCustomerPoints, selectedDeliveryOrder, selectedDeliveryOrderId]);
-
-  const navigationTarget = useMemo(() => (
-    suggestedDeliveryOrderPoints.find(point => (point.id || point.dispatchId) === navigationTargetId) || null
-  ), [navigationTargetId, suggestedDeliveryOrderPoints]);
-
-  const navigationOrigin = useMemo(() => {
-    if (currentMapPosition && isValidLatLng(Number(currentMapPosition.latitude), Number(currentMapPosition.longitude))) {
-      return { ...currentMapPosition, source: 'gps' };
-    }
-    if (warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))) {
-      return { ...warehouseLocation, source: 'warehouse' };
-    }
-    return null;
-  }, [currentMapPosition, warehouseLocation]);
-
-  const requestMapCamera = useCallback((mode = 'overview') => {
-    setMapCameraMode(mode);
-    setMapCameraRequest(value => value + 1);
-  }, []);
-
-  useEffect(() => {
-    if (!navigationTargetId) {
-      setNavigationRouteOrigin(null);
-      return;
-    }
-    if (!navigationOrigin) return;
-    setNavigationRouteOrigin(previous => {
-      if (!previous || previous.source !== navigationOrigin.source || navigationOrigin.source === 'warehouse') {
-        return navigationOrigin;
-      }
-      return shouldRefreshDeliveryRoute(previous, navigationOrigin) ? navigationOrigin : previous;
-    });
-  }, [navigationOrigin, navigationTargetId]);
-
-  const routeOriginForRequest = navigationRouteOrigin || navigationOrigin;
-
-  const navigationRouteRequestKey = useMemo(() => {
-    if (!navigationTarget || !routeOriginForRequest) return '';
-    const routeKey = buildDeliveryRouteCacheKey({
-      origin: routeOriginForRequest,
-      target: navigationTarget,
-      provider: 'osrm',
-    });
-    return routeKey ? `${navigationTargetId}|${routeKey}` : '';
-  }, [navigationTarget, navigationTargetId, routeOriginForRequest]);
-
-  const navigationRoutePoints = useMemo(() => {
-    if (!navigationTarget) return optimizedMapRoutePoints;
-    if (navigationRoadRoute?.targetId === navigationTargetId && navigationRoadRoute?.points?.length) {
-      return navigationRoadRoute.points;
-    }
-    const startPoint = navigationOrigin || routeOriginForRequest;
-    return startPoint ? [startPoint, navigationTarget] : [navigationTarget];
-  }, [navigationOrigin, navigationRoadRoute, navigationTarget, navigationTargetId, optimizedMapRoutePoints, routeOriginForRequest]);
-
-  const navigationMetrics = useMemo(() => {
-    if (!navigationTarget || !navigationOrigin) {
-      return { distanceKm: null, etaMinutes: null, arrivalLabel: '--:--', speedKmh: null, originSource: null };
-    }
-    const distanceKm = Number(navigationRoadRoute?.distanceKm) > 0
-      ? Number(navigationRoadRoute.distanceKm)
-      : distanceBetweenMapPointsKm(navigationOrigin, navigationTarget);
-    const averageSpeedKmh = 38;
-    const etaMinutes = Number(navigationRoadRoute?.etaMinutes) > 0
-      ? Number(navigationRoadRoute.etaMinutes)
-      : Number.isFinite(distanceKm) ? Math.max(1, Math.round((distanceKm / averageSpeedKmh) * 60)) : null;
-    const arrivalLabel = etaMinutes ? formatTime(new Date(Date.now() + etaMinutes * 60 * 1000)) : '--:--';
-    const speedKmh = navigationOrigin.source === 'gps' && Number(navigationOrigin.speedKmh || 0) > 0
-      ? Math.round(Number(navigationOrigin.speedKmh))
-      : null;
-    return { distanceKm, etaMinutes, arrivalLabel, speedKmh, originSource: navigationOrigin.source };
-  }, [navigationOrigin, navigationRoadRoute, navigationTarget]);
-
-  useEffect(() => {
-    if (!navigationRouteRequestKey || !navigationTarget || !routeOriginForRequest) {
-      setNavigationRoadRoute(null);
-      return undefined;
-    }
-
-    const originLat = Number(routeOriginForRequest.latitude);
-    const originLng = Number(routeOriginForRequest.longitude);
-    const destinationLat = Number(navigationTarget.latitude);
-    const destinationLng = Number(navigationTarget.longitude);
-    const targetId = navigationTarget.id || navigationTarget.dispatchId || navigationTargetId;
-    const cachedRoute = navigationRouteCacheRef.current.get(navigationRouteRequestKey);
-    if (cachedRoute) {
-      setNavigationRoadRoute(cachedRoute);
-      setNavigationRouteLoading(false);
-      return undefined;
-    }
-    const controller = new AbortController();
-    let cancelled = false;
-
-    const fetchRoute = async () => {
-      setNavigationRouteLoading(true);
-      try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destinationLng},${destinationLat}?overview=full&geometries=geojson&steps=true`;
-        const response = await fetch(url, { signal: controller.signal });
-        if (!response.ok) throw new Error(`OSRM ${response.status}`);
-        const data = await response.json();
-        const route = data?.routes?.[0];
-        const coordinates = route?.geometry?.coordinates || [];
-        const roadPoints = coordinates
-          .map(([longitude, latitude]) => ({
-            latitude: Number(latitude),
-            longitude: Number(longitude),
-            type: 'navigation_route',
-          }))
-          .filter(point => isValidLatLng(point.latitude, point.longitude));
-        const firstMeaningfulStep = route?.legs?.[0]?.steps?.find(step => Number(step?.distance) > 20);
-        const nextInstruction = firstMeaningfulStep
-          ? `${firstMeaningfulStep.name ? `Đi theo ${firstMeaningfulStep.name}` : 'Tiếp tục đi theo tuyến'} • ${formatDistanceKm((Number(firstMeaningfulStep.distance) || 0) / 1000)}`
-          : '';
-        if (!cancelled && roadPoints.length >= 2) {
-          const nextRoute = {
-            targetId,
-            points: roadPoints,
-            distanceKm: (Number(route?.distance) || 0) / 1000,
-            etaMinutes: Math.max(1, Math.round((Number(route?.duration) || 0) / 60)),
-            nextInstruction,
-            updatedAt: new Date().toISOString(),
-          };
-          navigationRouteCacheRef.current.set(navigationRouteRequestKey, nextRoute);
-          if (navigationRouteCacheRef.current.size > 24) {
-            navigationRouteCacheRef.current.delete(navigationRouteCacheRef.current.keys().next().value);
-          }
-          setNavigationRoadRoute(nextRoute);
-        }
-      } catch (error) {
-        if (!cancelled && error?.name !== 'AbortError') {
-          setNavigationRoadRoute(previous => previous?.targetId === targetId ? previous : null);
-          setNavigationLocationError('Chưa tải được tuyến đường theo đường phố, app tạm dẫn theo khoảng cách trực tiếp.');
-        }
-      } finally {
-        if (!cancelled) setNavigationRouteLoading(false);
-      }
-    };
-
-    fetchRoute();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [navigationRouteRequestKey, navigationTarget, navigationTargetId, routeOriginForRequest]);
-
-  useEffect(() => {
-    if (
-      selectedDeliveryOrderId
-      && !deliveryOrderPoints.some(point => (point.id || point.dispatchId) === selectedDeliveryOrderId)
-      && ((selectedDeliveryOrderSnapshotRef.current?.id || selectedDeliveryOrderSnapshotRef.current?.dispatchId) !== selectedDeliveryOrderId)
-    ) {
-      setSelectedDeliveryOrderId('');
-    }
-  }, [deliveryOrderPoints, selectedDeliveryOrderId]);
-
-  useEffect(() => {
-    if (selectedDeliveryOrderId) {
-      setShowDeliveryListSheet(false);
-    }
-  }, [selectedDeliveryOrderId]);
-
-  useEffect(() => {
-    if (navigationTargetId && !navigationTarget) {
-      setNavigationTargetId('');
-      setNavigationStarted(false);
-      setNavigationLocationError('');
-      setNavigationRoadRoute(null);
-    }
-  }, [navigationTarget, navigationTargetId]);
-
-  const bounds = useMemo(() => mapService.fitBounds(pendingSuggestedDeliveryOrderPoints), [mapService, pendingSuggestedDeliveryOrderPoints]);
-
-  const normalizeMapPosition = useCallback((rawPosition = {}) => (
-    normalizeDeliveryGpsPosition(rawPosition)
-  ), []);
-
-  const enrichNavigationPosition = useCallback((position) => {
-    if (!position) return null;
-    const previous = lastNavigationPositionRef.current;
-    const explicitSpeedKmh = Number(position.speedKmh);
-    let speedKmh = Number.isFinite(explicitSpeedKmh) && explicitSpeedKmh > 0 ? explicitSpeedKmh : null;
-    if (!speedKmh && previous) {
-      const previousTime = Number(previous.timestampMs || Date.parse(previous.updatedAt || ''));
-      const currentTime = Number(position.timestampMs || Date.parse(position.updatedAt || ''));
-      const elapsedSeconds = (currentTime - previousTime) / 1000;
-      const distanceKm = distanceBetweenMapPointsKm(previous, position);
-      const derivedSpeedKmh = elapsedSeconds > 1 && elapsedSeconds <= 300
-        ? (distanceKm * 3600) / elapsedSeconds
-        : 0;
-      if (derivedSpeedKmh > 0 && derivedSpeedKmh <= 160) speedKmh = derivedSpeedKmh;
-    }
-    const enriched = { ...position, speedKmh };
-    lastNavigationPositionRef.current = enriched;
-    return enriched;
-  }, []);
-
-  const applyMapPosition = useCallback((rawPosition) => {
-    const normalized = normalizeMapPosition(rawPosition);
-    if (!normalized) {
-      setGpsQualityNotice('GPS chưa có vị trí hợp lệ.');
-      return null;
-    }
-    const quality = getDeliveryGpsQuality(normalized);
-    if (!quality.isUsable) {
-      setGpsQualityNotice(quality.message || 'GPS chưa đủ chính xác, đang tìm vị trí tốt hơn.');
-      return null;
-    }
-    const previous = currentMapPositionRef.current;
-    if (!shouldAcceptDeliveryGpsPosition(previous, normalized)) {
-      setGpsQualityNotice('App đã bỏ qua điểm GPS nhiễu để tránh làm bản đồ nhảy.');
-      return null;
-    }
-    const nextPosition = enrichNavigationPosition(normalized);
-    currentMapPositionRef.current = nextPosition;
-    setCurrentMapPosition(nextPosition);
-    setGpsQualityNotice(quality.message || '');
-    return nextPosition;
-  }, [enrichNavigationPosition, normalizeMapPosition]);
-
-  const getCachedMapPosition = useCallback(() => {
-    const cachedPosition = currentMapPositionRef.current;
-    return getDeliveryGpsQuality(cachedPosition).isUsable ? cachedPosition : null;
-  }, []);
-
-  const getCurrentMapPosition = useCallback(async () => {
-    const cachedPosition = getCachedMapPosition();
-    try {
-      const result = await requestCurrentLocation();
-      const position = applyMapPosition(result);
-      if (position) return position;
-    } catch (error) {
-      if (!cachedPosition) {
-        setGpsQualityNotice(error?.message || 'Chưa lấy được GPS hiện tại. App vẫn đang chờ vị trí.');
-      }
-    }
-    return cachedPosition;
-  }, [applyMapPosition, getCachedMapPosition]);
-
-  useEffect(() => {
-    void getCurrentMapPosition().catch(() => {});
-    return undefined;
-  }, [getCurrentMapPosition]);
-
-  useEffect(() => {
-    if (!navigationTargetId) return undefined;
-    let cancelled = false;
-    let nativeWatchId = '';
-    let browserWatchId = null;
-    let fallbackTimer = null;
-
-    const applyPosition = rawPosition => {
-      const nextPosition = applyMapPosition(rawPosition);
-      if (!cancelled && nextPosition) {
-        setNavigationLocationError('');
-        setStatusText('');
-      }
-    };
-
-    const handleWatchError = error => {
-      if (cancelled) return;
-      setGpsQualityNotice(mapLocationErrorMessage(error, isNativeRuntime() ? 'native' : 'web'));
-    };
-
-    getCurrentMapPosition()
-      .then(position => {
-        if (!cancelled && position) {
-          setNavigationLocationError('');
-          setStatusText('');
-        }
-      })
-      .catch(() => {});
-
-    if (isNativeRuntime()) {
-      void Geolocation.watchPosition(
-        {
-          enableHighAccuracy: true,
-          timeout: 30000,
-          maximumAge: 3000,
-          minimumUpdateInterval: 5000,
-          interval: 5000,
-          enableLocationFallback: true
-        },
-        (position, error) => {
-          if (error) {
-            handleWatchError(error);
-            return;
-          }
-          if (position) applyPosition(position);
-        }
-      )
-        .then(watchId => {
-          nativeWatchId = watchId;
-          if (cancelled) {
-            void Geolocation.clearWatch({ id: watchId }).catch(() => {});
-          }
-        })
-        .catch(handleWatchError);
-    } else if (typeof navigator !== 'undefined' && navigator.geolocation?.watchPosition) {
-      browserWatchId = navigator.geolocation.watchPosition(
-        position => applyPosition(position),
-        handleWatchError,
-        { enableHighAccuracy: true, maximumAge: 3000, timeout: 12000 }
-      );
-    } else {
-      fallbackTimer = window.setInterval(async () => {
-        const position = await getCurrentMapPosition();
-        if (!cancelled && position) {
-          setNavigationLocationError(previous => (
-            previous.startsWith('Chưa lấy được GPS') ? '' : previous
-          ));
-        }
-      }, 7000);
-    }
-
-    return () => {
-      cancelled = true;
-      if (nativeWatchId) {
-        void Geolocation.clearWatch({ id: nativeWatchId }).catch(() => {});
-      }
-      if (browserWatchId !== null && typeof navigator !== 'undefined' && navigator.geolocation?.clearWatch) {
-        navigator.geolocation.clearWatch(browserWatchId);
-      }
-      if (fallbackTimer) window.clearInterval(fallbackTimer);
-    };
-  }, [applyMapPosition, getCurrentMapPosition, navigationTargetId]);
-
-  const buildGoogleDirectionsUrl = (destination = {}, origin = null) => {
-    const destinationLat = Number(destination.latitude);
-    const destinationLng = Number(destination.longitude);
-    if (!isValidLatLng(destinationLat, destinationLng)) return '';
-    const params = new URLSearchParams({
-      api: '1',
-      destination: `${destinationLat},${destinationLng}`,
-      travelmode: 'driving',
-    });
-    if (origin && isValidLatLng(Number(origin.latitude), Number(origin.longitude))) {
-      params.set('origin', `${Number(origin.latitude)},${Number(origin.longitude)}`);
-    }
-    return `https://www.google.com/maps/dir/?${params.toString()}`;
-  };
-
-  const openExternalMap = async (point = null) => {
-    let url = '';
-    if (point) {
-      const destinationLat = Number(point.latitude);
-      const destinationLng = Number(point.longitude);
-      if (!isValidLatLng(destinationLat, destinationLng)) {
-        setStatusText('Khách này chưa có tọa độ GPS để chỉ đường.');
-        return;
-      }
-      setStatusText('Đang lấy vị trí hiện tại để mở chỉ đường...');
-      const currentPosition = await getCurrentMapPosition();
-      url = buildGoogleDirectionsUrl({ latitude: destinationLat, longitude: destinationLng }, currentPosition);
-      if (!currentPosition) {
-        setStatusText('Chưa lấy được vị trí hiện tại, app vẫn mở Google Maps để bạn chọn điểm xuất phát.');
-      } else {
-        setStatusText('');
-      }
-    } else {
-      url = mapService.buildRouteUrl(routePoints);
-    }
-    if (!url) {
-      setStatusText('Chưa đủ tọa độ để mở bản đồ ngoài.');
-      return;
-    }
-    window.open(url, '_blank', 'noopener,noreferrer');
-  };
-
-  const startInAppNavigation = async (point = selectedDeliveryOrder) => {
-    const destinationId = point?.id || point?.dispatchId || '';
-    const destinationLat = Number(point?.latitude);
-    const destinationLng = Number(point?.longitude);
-    if (!destinationId || !isValidLatLng(destinationLat, destinationLng)) {
-      setStatusText('Khách này chưa có tọa độ GPS để dẫn đường trong app.');
-      return;
-    }
-
-    setSelectedDeliveryOrderId(destinationId);
-    setShowDeliveryListSheet(false);
-    setNavigationTargetId(destinationId);
-    setNavigationStarted(true);
-    setNavigationLocationError('');
-    setNavigationRoadRoute(null);
-    setStatusText('Đang lấy GPS để bắt đầu dẫn đường trong app...');
-    requestMapCamera('navigation');
-
-    const currentPosition = await getCurrentMapPosition();
-    if (currentPosition) {
-      setCurrentMapPosition(currentPosition);
-      setStatusText('');
-    } else if (warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))) {
-      setNavigationLocationError('');
-      setStatusText('Đang chờ tín hiệu GPS chính xác. App tạm tính tuyến từ kho và sẽ tự cập nhật khi nhận được vị trí.');
-    } else {
-      setNavigationLocationError('');
-      setStatusText('Đang chờ tín hiệu GPS chính xác. Tuyến sẽ tự cập nhật khi nhận được vị trí.');
-    }
-  };
-
-  const stopInAppNavigation = () => {
-    setNavigationTargetId('');
-    setNavigationStarted(false);
-    setNavigationLocationError('');
-    setNavigationRoadRoute(null);
-    setStatusText('');
-    requestMapCamera('overview');
-  };
-
-  const handleOpenBestRoute = async () => {
-    if (!pendingSuggestedDeliveryOrderPoints.length) {
-      stopInAppNavigation();
-      setStatusText('Tất cả phiếu giao hôm nay đã giao xong.');
-      return;
-    }
-    if (!pendingVisibleLimitedPoints.length) {
-      stopInAppNavigation();
-      setStatusText('Chưa có phiếu cần giao nào có tọa độ GPS để dẫn đường.');
-      return;
-    }
-
-    setStatusText('Đang sắp tuyến gần nhất trong app...');
-    const currentPosition = await getCurrentMapPosition();
-    const fallbackWarehouse = warehouseLocation && isValidLatLng(Number(warehouseLocation.latitude), Number(warehouseLocation.longitude))
-      ? warehouseLocation
-      : null;
-    const origin = currentPosition || fallbackWarehouse;
-    if (currentPosition) setCurrentMapPosition(currentPosition);
-
-    const firstTarget = getNextPendingDeliveryPoint([], origin);
-    const firstTargetId = firstTarget?.id || firstTarget?.dispatchId || '';
-    if (!firstTargetId) {
-      setStatusText('Chưa tìm được điểm đầu tiên để dẫn tuyến.');
-      return;
-    }
-
-    setSelectedDeliveryOrderId(firstTargetId);
-    setShowDeliveryListSheet(false);
-    setNavigationTargetId(firstTargetId);
-    setNavigationStarted(true);
-    setNavigationRoadRoute(null);
-    setNavigationLocationError('');
-    setStatusText(
-      currentPosition
-        ? `Đã gợi ý tuyến gần nhất. Điểm đầu: ${firstTarget.customerName || 'khách hàng'}.`
-        : fallbackWarehouse
-          ? 'Đang chờ tín hiệu GPS chính xác. App tạm tính tuyến từ kho và sẽ tự cập nhật khi nhận được vị trí.'
-          : 'Đang chờ tín hiệu GPS chính xác. Tuyến sẽ tự cập nhật khi nhận được vị trí.'
-    );
-    requestMapCamera('navigation');
-  };
-
-  const handleMarkDeliveryDone = async (mission = selectedDeliveryOrder) => {
-    if (!mission?.dispatchId) {
-      setStatusText('Chưa chọn được phiếu xuất kho để đánh dấu đã giao.');
-      return;
-    }
-    if (mission.isDelivered || mission.status === 'delivered') {
-      setStatusText(`${mission.customerName || 'Khách hàng'} đã được đánh dấu giao xong.`);
-      return;
-    }
-    if (!onAddDeliveryReport) {
-      setStatusText('Chưa có quyền ghi nhận báo cáo giao hàng từ bản đồ.');
-      return;
-    }
-
-    const markerId = mission.id || mission.dispatchId;
-    if (markingDeliveredId === markerId) return;
-    setMarkingDeliveredId(markerId);
-    try {
-      const deliveredAt = new Date().toISOString();
-      const deliveryPosition = currentMapPosition
-        && isValidLatLng(Number(currentMapPosition.latitude), Number(currentMapPosition.longitude))
-        ? currentMapPosition
-        : null;
-      await onAddDeliveryReport({
-        idempotencyKey: `map_delivery:${mission.dispatchId}`,
-        source: 'map_delivery',
-        deliveryStatus: 'delivered',
-        dispatchId: mission.dispatchId,
-        customerId: mission.customerId || '',
-        productId: mission.productId || '',
-        customerNameSnapshot: mission.customerName || '',
-        productNameSnapshot: mission.itemSummary || '',
-        expectedWeightKg: mission.weight || 0,
-        actualWeightKg: mission.weight || 0,
-        date: mission.date || mapDate,
-        deliveredAt,
-        deliveryCompletedAt: deliveredAt,
-        driverId: mission.driverId || selectedDriverId || '',
-        driverName: mission.driverName || '',
-        deliveryLatitude: deliveryPosition?.latitude ?? null,
-        deliveryLongitude: deliveryPosition?.longitude ?? null,
-        deliveryGpsAccuracy: deliveryPosition?.accuracy ?? null,
-        deliveryGpsTimestamp: deliveryPosition?.timestampMs ?? null,
-        note: 'Đánh dấu đã giao từ bản đồ',
-      });
-      setOptimisticDeliveredIds(prev => prev.includes(markerId) ? prev : [...prev, markerId]);
-      const nextMission = getNextPendingDeliveryPoint([markerId], currentMapPosition);
-      if (nextMission) {
-        await startInAppNavigation(nextMission);
-        setStatusText(`Đã giao xong ${mission.customerName || 'khách hàng'}. Đang chuyển sang ${nextMission.customerName || 'khách tiếp theo'}.`);
-      } else {
-        stopInAppNavigation();
-        setStatusText(`Đã giao xong ${mission.customerName || 'khách hàng'}. Không còn phiếu chưa giao có GPS.`);
-      }
-    } catch (error) {
-      setStatusText(getFriendlyFirebaseErrorMessage(error, 'Chưa đánh dấu được đã giao.'));
-    } finally {
-      setMarkingDeliveredId('');
-    }
-  };
-
-  const saveProvider = async () => {
-    if (!canChangeMapProvider || !onUpdateCompanySettings) return;
-    await onUpdateCompanySettings({ mapProvider: providerId });
-    setStatusText(`Đã lưu nhà cung cấp bản đồ: ${MAP_PROVIDER_OPTIONS.find(item => item.id === providerId)?.label || providerId}.`);
-  };
-
-  if (!mapModes.length) {
-    return (
-      <div className="space-y-4">
-        <div className="rounded-[2rem] border border-amber-100 bg-amber-50 p-5 text-amber-700 shadow-sm">
-          <p className="font-black">Bạn chưa có quyền xem module Bản đồ.</p>
-          <p className="mt-1 text-sm font-semibold">Chủ doanh nghiệp có thể bật quyền Bản đồ trong Vai trò.</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="-mx-4 -mt-4 pb-0 sm:mx-0 sm:mt-0">
-      <div
-        className={`relative w-full max-w-full overflow-hidden rounded-none border border-slate-200 bg-slate-100 shadow-2xl shadow-slate-200 sm:rounded-[2rem] ${mapPerspective3d ? 'shadow-cyan-100' : ''}`}
-        style={{
-          height: 'calc(var(--hd-viewport-height) - var(--hd-footer-height) - var(--hd-safe-top) - 6.25rem)',
-          minHeight: 'min(22rem, calc(var(--hd-viewport-height) - var(--hd-footer-height) - var(--hd-safe-top) - 6.25rem))',
-        }}
-      >
-        {providerId === 'goong' ? (
-          <GoongDeliveryMap
-            points={pendingSuggestedDeliveryOrderPoints}
-            routePoints={navigationRoutePoints}
-            bounds={bounds}
-            selectedId={selectedDeliveryOrderId}
-            onSelect={setSelectedDeliveryOrderId}
-            currentLocation={currentMapPosition}
-            warehouseLocation={warehouseLocation}
-            apiKey={configuredGoongMapTilesKey}
-            cameraRequestKey={mapCameraRequest}
-            cameraMode={mapCameraMode}
-            navigationOrigin={navigationOrigin}
-            navigationTarget={navigationTarget}
-          />
-        ) : providerId === 'google' && GOOGLE_MAPS_API_KEY ? (
-          <GoogleDeliveryMap
-            points={pendingSuggestedDeliveryOrderPoints}
-            routePoints={navigationRoutePoints}
-            bounds={bounds}
-            selectedId={selectedDeliveryOrderId}
-            onSelect={setSelectedDeliveryOrderId}
-            currentLocation={currentMapPosition}
-            warehouseLocation={warehouseLocation}
-            apiKey={GOOGLE_MAPS_API_KEY}
-            mapId={GOOGLE_MAPS_MAP_ID}
-            cameraRequestKey={mapCameraRequest}
-            cameraMode={mapCameraMode}
-            navigationOrigin={navigationOrigin}
-            navigationTarget={navigationTarget}
-          />
-        ) : (
-          <DeliveryTileMap
-            points={pendingSuggestedDeliveryOrderPoints}
-            routePoints={navigationRoutePoints}
-            bounds={bounds}
-            selectedId={selectedDeliveryOrderId}
-            onSelect={setSelectedDeliveryOrderId}
-            onOpenExternal={openExternalMap}
-            currentLocation={currentMapPosition}
-            warehouseLocation={warehouseLocation}
-            perspective={mapPerspective3d}
-            cameraRequestKey={mapCameraRequest}
-            cameraMode={mapCameraMode}
-            navigationOrigin={navigationOrigin}
-            navigationTarget={navigationTarget}
-          />
-        )}
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/20 via-transparent to-slate-900/10" />
-
-        <div className="absolute left-3 right-3 top-3 z-20 grid grid-cols-3 gap-1.5 md:left-5 md:right-auto md:w-[31rem]">
-          <label className="flex min-w-0 items-center gap-1.5 rounded-full border border-white/80 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur transition focus-within:ring-2 focus-within:ring-emerald-300">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-700">
-              <Car className="h-3.5 w-3.5" />
-            </span>
-            <select
-              value={selectedDriverId || ''}
-              onChange={(event) => {
-                setSelectedDeliveryOrderId('');
-                setShowDeliveryListSheet(true);
-                requestMapCamera('overview');
-                if (!isCurrentDriver) setSelectedEmployeeId(event.target.value);
-              }}
-              disabled={isCurrentDriver}
-              className="min-w-0 flex-1 bg-transparent text-xs font-black text-slate-800 outline-none disabled:opacity-100"
-              aria-label="Tìm phương tiện"
-            >
-              <option value="">{isCurrentDriver ? employee?.name || 'Phương tiện của tôi' : 'Tìm phương tiện'}</option>
-              {!isCurrentDriver && driverOptions.map(driver => (
-                <option key={driver.id || driver.phone || driver.name} value={driver.id || ''}>
-                  {driver.name || driver.phone || 'Tài xế'}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedDeliveryOrderId('');
-              setShowDeliveryListSheet(value => !value);
-              requestMapCamera('overview');
-            }}
-            className="flex min-w-0 items-center gap-1.5 rounded-full border border-white/80 bg-white/95 px-2 py-1.5 text-left shadow-lg backdrop-blur transition hover:bg-white"
-          >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-md shadow-emerald-200">
-              <ClipboardList className="h-3.5 w-3.5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-black text-slate-900">Danh sách đơn</span>
-              <span className="block truncate text-[10px] font-bold leading-none text-slate-500">{pendingSuggestedDeliveryOrderPoints.length} phiếu cần giao</span>
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenBestRoute}
-            className="flex min-w-0 items-center gap-1.5 rounded-full border border-white/80 bg-white/95 px-2 py-1.5 text-left shadow-lg backdrop-blur transition hover:bg-white"
-          >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-500 text-white shadow-md shadow-orange-200">
-              <Send className="h-3.5 w-3.5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-black text-slate-900">Tuyến đi</span>
-              <span className="block truncate text-[10px] font-bold leading-none text-slate-500">Tự gợi ý</span>
-            </span>
-          </button>
-        </div>
-
-        <div className="absolute right-3 top-20 z-20 flex flex-col overflow-hidden rounded-2xl border border-white/80 bg-white/95 shadow-xl backdrop-blur">
-          <button
-            type="button"
-            onClick={() => setMapPerspective3d(value => !value)}
-            className="flex h-11 w-11 items-center justify-center border-b border-slate-100 text-slate-700"
-            title="Đổi lớp bản đồ"
-          >
-            <LayoutGrid className="h-5 w-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => selectedDeliveryOrder ? startInAppNavigation(selectedDeliveryOrder) : handleOpenBestRoute()}
-            className="flex h-11 w-11 items-center justify-center border-b border-slate-100 text-slate-700"
-            title="Dẫn đường trong app"
-          >
-            <Send className="h-5 w-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedDeliveryOrderId('');
-              requestMapCamera('overview');
-            }}
-            className="flex h-11 w-11 items-center justify-center text-slate-700"
-            title="Xem toàn bộ"
-          >
-            <Target className="h-5 w-5" />
-          </button>
-        </div>
-
-        {!visibleLimitedPoints.length && (
-          <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-            <div className="rounded-[2rem] bg-white/90 p-5 shadow-sm">
-              <MapPin className="mx-auto h-10 w-10 text-slate-300" />
-              <p className="mt-2 font-black text-slate-700">Chưa có tọa độ để hiển thị.</p>
-              <p className="mt-1 text-sm font-semibold text-slate-400">App đang tự dò từ địa chỉ khách; nếu muốn chính xác tuyệt đối hãy cập nhật GPS trong hồ sơ khách hàng.</p>
-            </div>
-          </div>
-        )}
-        {deliveryOrderPoints.length > 0 && !pendingSuggestedDeliveryOrderPoints.length && (
-          <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-            <div className="rounded-[2rem] bg-white/90 p-5 shadow-sm">
-              <CheckCircle className="mx-auto h-10 w-10 text-emerald-500" />
-              <p className="mt-2 font-black text-slate-700">Đã giao hết các phiếu.</p>
-              <p className="mt-1 text-sm font-semibold text-slate-400">Lịch sử giao hàng, doanh thu và công nợ vẫn được giữ nguyên.</p>
-            </div>
-          </div>
-        )}
-        {(selectedDeliveryOrder || showDeliveryListSheet) && !navigationTargetId && (
-        <div className="absolute bottom-3 left-3 right-3 z-20 rounded-[1.8rem] border border-white/80 bg-white/95 p-3 shadow-2xl backdrop-blur md:left-auto md:w-[28rem]">
-          <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-slate-200 md:hidden" />
-
-          {selectedDeliveryOrder ? (
-            <div className="space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate text-lg font-black text-slate-900">{selectedDeliveryCustomer?.customerName || 'Khách hàng'}</h3>
-                  <p className="mt-1 truncate text-xs font-bold text-slate-500">
-                    {selectedDeliveryCustomer?.itemSummary || 'Phiếu xuất kho'}
-                    {selectedDeliveryCustomer?.weight ? ` • ${formatNumber(selectedDeliveryCustomer.weight)}kg` : ''}
-                  </p>
-                </div>
-                <button type="button" onClick={() => { setSelectedDeliveryOrderId(''); setShowDeliveryListSheet(false); requestMapCamera('overview'); }} className="rounded-full bg-slate-100 p-2 text-slate-500">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <button type="button" disabled={!selectedDeliveryOrder.phone} onClick={() => { if (selectedDeliveryOrder.phone) window.location.href = `tel:${selectedDeliveryOrder.phone}`; }} className="rounded-2xl bg-slate-100 px-3 py-3 text-sm font-black text-slate-700 disabled:opacity-40">
-                  <Phone className="mx-auto mb-1 h-4 w-4" />
-                  Gọi
-                </button>
-                <button type="button" onClick={() => startInAppNavigation(selectedDeliveryOrder)} className="rounded-2xl bg-blue-50 px-3 py-3 text-sm font-black text-blue-700">
-                  <MapPin className="mx-auto mb-1 h-4 w-4" />
-                  {navigationTargetId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) ? 'Đang dẫn' : 'Chỉ đường'}
-                </button>
-                <button type="button" disabled={markingDeliveredId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) || selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered'} onClick={() => handleMarkDeliveryDone(selectedDeliveryOrder)} className={`rounded-2xl px-3 py-3 text-sm font-black ${selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {markingDeliveredId === (selectedDeliveryOrder.id || selectedDeliveryOrder.dispatchId) ? <Loader2 className="mx-auto mb-1 h-4 w-4 animate-spin" /> : <CheckCircle className="mx-auto mb-1 h-4 w-4" />}
-                  {selectedDeliveryOrder.isDelivered || selectedDeliveryOrder.status === 'delivered' ? 'Đã giao' : 'Chưa giao'}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div className="flex items-center justify-between gap-2 px-1">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Danh sách khách hàng</p>
-                  <h3 className="text-base font-black text-slate-900">{deliveryCustomerPoints.length} khách • {pendingSuggestedDeliveryOrderPoints.length} phiếu cần giao</h3>
-                </div>
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-500">{formatDateLabel(mapDate)}</span>
-              </div>
-              <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-                {deliveryCustomerPoints.slice(0, 100).map((mission, index) => (
-                  <button
-                    key={mission.id || `${mission.customerId}-${index}`}
-                    type="button"
-                    onClick={() => setSelectedDeliveryOrderId(mission.primaryDispatchId || mission.id || mission.dispatchId || '')}
-                    className="flex w-full items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-emerald-50"
-                  >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-black text-white shadow-md">{index + 1}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-black text-slate-900">{mission.customerName || 'Khách hàng'}</span>
-                      <span className="block truncate text-xs font-semibold text-slate-500">
-                        {mission.dispatchCount || 1} phiếu{mission.itemSummary ? ` • ${mission.itemSummary}` : ''}
-                        {mission.totalWeight ? ` • ${formatNumber(mission.totalWeight)}kg` : ''}
-                        {mission.totalQuantity ? ` • ${formatNumber(mission.totalQuantity)}` : ''}
-                      </span>
-                    </span>
-                    <span className={`shrink-0 text-right text-[10px] font-black ${Number.isFinite(mission.distanceKm) ? 'text-blue-700' : 'text-slate-400'}`}>
-                      {mission.distanceLabel}
-                    </span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
-                  </button>
-                ))}
-                {!deliveryCustomerPoints.length && (
-                  <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm font-semibold text-slate-400">Chưa có khách hàng được phân công giao trong ngày này.</p>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-        )}
-
-        {navigationTargetId && navigationTarget && (
-          <div className="pointer-events-none absolute bottom-3 left-3 right-3 z-30 md:left-auto md:w-[30rem]">
-            <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-white/80 bg-white/95 px-3 py-2.5 shadow-2xl backdrop-blur">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-black text-blue-700">
-                  Đang dẫn đường • {navigationTarget.customerName || 'Khách hàng'}
-                </p>
-                <p className="mt-0.5 truncate text-[11px] font-bold text-slate-600">
-                  {navigationRouteLoading
-                    ? 'Đang tính tuyến đường...'
-                    : navigationMetrics.distanceKm !== null
-                      ? `${formatDistanceKm(navigationMetrics.distanceKm)} • ETA ${navigationMetrics.arrivalLabel} • ${navigationMetrics.speedKmh ? `${navigationMetrics.speedKmh} km/h` : navigationMetrics.originSource === 'warehouse' ? 'GPS đang chờ' : 'Đang đo tốc độ'}`
-                      : 'Đang chờ tín hiệu GPS để cập nhật tuyến.'}
-                </p>
-                {navigationLocationError && (
-                  <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={navigationLocationError}>
-                    {navigationLocationError}
-                  </p>
-                )}
-                {gpsQualityNotice && (
-                  <p className="mt-0.5 truncate text-[10px] font-semibold text-amber-700" title={gpsQualityNotice}>
-                    {gpsQualityNotice}
-                  </p>
-                )}
-              </div>
-              <button type="button" onClick={stopInAppNavigation} className="shrink-0 rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-200">
-                Dừng
-              </button>
-            </div>
-          </div>
-        )}
-
-      {statusText && (
-        <div className="absolute bottom-4 left-4 right-4 z-30 rounded-2xl border border-sky-100 bg-sky-50 p-3 text-sm font-bold text-sky-700 shadow-xl md:right-auto md:max-w-lg">{statusText}</div>
-      )}
-      </div>
-    </div>
-  );
-}
-
 function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee }) {
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
   const menuItems = [
@@ -38649,7 +36006,6 @@ function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, is
     { id: 'warehouse_import', group: 'operations', label: 'Nhập Xuất Tồn', icon: <Package className="text-emerald-500" />, show: tabPermissions.warehouse_import },
     { id: 'warehouse_dispatch', group: 'operations', label: 'Xuất kho', icon: <ClipboardList className="text-violet-500" />, show: tabPermissions.warehouse_dispatch },
     { id: 'delivery_reports', group: 'operations', label: 'Báo cáo giao hàng', icon: <Camera className="text-cyan-500" />, show: tabPermissions.delivery_reports },
-    { id: 'maps', group: 'operations', label: 'Bản đồ', icon: <MapPin className="text-teal-500" />, show: tabPermissions.maps },
     { id: 'asset_management', group: 'operations', label: 'Quản lý tài sản', icon: <Package className="text-blue-500" />, show: tabPermissions.asset_management },
     { id: 'messages', group: 'people', label: 'Tin nhắn', icon: <MessageCircle className="text-cyan-500" />, show: tabPermissions.messages },
     { id: 'debt', group: 'finance', label: 'Sổ nợ', icon: <BookText className="text-rose-500" />, show: tabPermissions.debt },
@@ -43072,6 +40428,7 @@ const getCachedDashboardValue = (cache, key, dependencies, calculate) => {
 
 function ExecutiveDashboardView({
   employee,
+  accountName,
   company,
   employees = [],
   attendance = [],
@@ -43229,6 +40586,7 @@ function ExecutiveDashboardView({
 
   const { kpis, finance, costs, business, profitability, operations, alerts, insights, recommendations, generatedAt } = snapshot;
   const companyDisplayName = getCompanyDisplayName(company);
+  const companyLogoUrl = getCompanyLogoUrl(company);
   const currentEmployeeId = employee?.id || '';
   const unreadMessageCount = useMemo(() => {
     return (messages || []).filter((message) => {
@@ -44155,7 +41513,7 @@ function ExecutiveDashboardView({
 
   if (isMobileReport) {
     return <>
-      <BusinessReportWorkspace snapshot={snapshot} employee={employee} companyName={companyDisplayName} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
+      <BusinessReportWorkspace snapshot={snapshot} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
       <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
     </>;
   }
@@ -44169,9 +41527,9 @@ function ExecutiveDashboardView({
               type="button"
               onClick={() => setActiveTab?.('profile')}
               className="hd-dashboard-company"
-              aria-label="Mở hồ sơ công ty"
+              aria-label="Mở thông tin tài khoản"
             >
-              <span className="truncate">{companyDisplayName.toUpperCase()}</span>
+              <AccountGreeting name={accountName || companyDisplayName} companyName={companyDisplayName} logoUrl={companyLogoUrl} />
               <Edit3 size={15} aria-hidden="true" />
             </button>
             <p className="hd-dashboard-freshness">
@@ -44822,9 +42180,10 @@ function EmployeePersonalHomeView({
     <div className="space-y-5">
       <div className="rounded-[2rem] bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-5 text-white shadow-xl">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-[0.24em] text-emerald-100">Trang chủ nhân sự</p>
-            <h2 className="mt-2 truncate text-2xl font-black">{employee?.name || 'Nhân sự'}</h2>
+          <div className="min-w-0 flex-1">
+            <button type="button" className="w-full min-w-0 text-left" onClick={() => setActiveTab('profile')} aria-label="Mở hồ sơ cá nhân">
+              <AccountGreeting name={employee?.name || 'Bạn'} companyName={getCompanyDisplayName(currentCompany)} logoUrl={getCompanyLogoUrl(currentCompany)} />
+            </button>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-emerald-50">
               <span>{positionLabel} • {formatMonthYearLabel(monthKey)}</span>
               <button
@@ -51416,86 +48775,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   ), [isReconciliationExpanded, pendingReconciliationGroups]);
   const hasMorePendingReconciliationCustomers = basePendingReconciliationGroups.length
     > DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT;
-  const getDeliveryWorkspaceArea = (customer = {}) => {
-    const locationText = `${getCustomerLocationDisplayText(customer) || ''}`.trim();
-    return /^https?:\/\//i.test(locationText)
-      ? customer.address || ''
-      : locationText || customer.address || '';
-  };
-  const deliveryWorkspaceGroups = useMemo(() => {
-    const seen = new Set();
-    const fromDispatches = dispatchReconciliationGroups.map((group) => {
-      const orderedRows = [...(group.rows || [])].sort((left, right) => (
-        (getEntityTimestamp(right.report || right.dispatch) || 0) - (getEntityTimestamp(left.report || left.dispatch) || 0)
-      ));
-      const primaryRow = orderedRows[0] || {};
-      const customer = primaryRow.customer || customerLookup.get(group.customerId) || {};
-      const latestReport = orderedRows.find((row) => row.report)?.report || null;
-      const latestTimestamp = Math.max(0, ...orderedRows.map((row) => getEntityTimestamp(row.report || row.dispatch) || 0));
-      seen.add(group.key);
-      return {
-        key: group.key,
-        customerId: group.customerId || customer.id || '',
-        customerName: group.customerName || customer.name || 'Khách hàng',
-        phone: customer.phone || customer.phoneNumber || '',
-        address: customer.address || '',
-        location: customer.location || '',
-        locationUrl: customer.locationUrl || customer.mapsUrl || customer.mapsLink || customer.mapLink || '',
-        area: getDeliveryWorkspaceArea(customer),
-        time: latestTimestamp || 0,
-        latestTimestamp,
-        pendingCount: group.pendingCount || 0,
-        reportCount: group.reportCount || 0,
-        rowCount: (group.rows || []).length,
-        totalAmount: group.paymentSummaryTotal || 0,
-        collectedAmount: latestReport?.collectedAmount || 0,
-        collectedMethod: latestReport?.collectedMethod || '',
-        note: latestReport?.note || customer.deliveryNote || customer.note || '',
-        productLines: (group.productWeights ? Array.from(group.productWeights.values()) : []).map((line) => ({
-          productLabel: line.productLabel || line.productName || '',
-          quantity: line.pricingQuantity ?? line.weight ?? line.quantity ?? line.packageCount,
-          unit: line.pricingUnit || (Number(line.weight) > 0 ? 'Kg' : line.quantityUnit || line.packageUnit || ''),
-          amount: line.totalAmount || 0,
-          imageUrl: line.imageUrl || line.productImage || line.image || '',
-        })),
-        rows: group.rows || [],
-      };
-    });
-    const reportOnlyGroups = reportCustomerGroups
-      .filter((group) => !seen.has(group.key))
-      .map((group) => {
-        const latestReport = group.reports?.[0] || {};
-        const customer = customerLookup.get(group.customerId) || {};
-        return {
-          key: group.key,
-          customerId: group.customerId || customer.id || '',
-          customerName: group.customerName || customer.name || 'Khách hàng',
-          phone: customer.phone || customer.phoneNumber || '',
-          address: customer.address || '',
-          location: customer.location || '',
-          locationUrl: customer.locationUrl || customer.mapsUrl || customer.mapsLink || customer.mapLink || '',
-          area: getDeliveryWorkspaceArea(customer),
-          time: group.latestTimestamp || getEntityTimestamp(latestReport) || 0,
-          latestTimestamp: group.latestTimestamp || getEntityTimestamp(latestReport) || 0,
-          pendingCount: 0,
-          reportCount: group.reports?.length || 1,
-          rowCount: group.reports?.length || 1,
-          totalAmount: group.totalCollectedAmount || latestReport.collectedAmount || 0,
-          collectedAmount: latestReport.collectedAmount || 0,
-          collectedMethod: latestReport.collectedMethod || '',
-          note: latestReport.note || customer.deliveryNote || customer.note || '',
-          productLines: (group.tableProductRows || []).map((line) => ({
-            productLabel: line.productLabel || '',
-            quantity: line.weight || line.quantity || line.packageCount || 0,
-            unit: line.weight > 0 ? 'Kg' : line.quantityUnit || line.packageUnit || '',
-            amount: 0,
-            imageUrl: line.imageUrl || line.productImage || line.image || '',
-          })),
-          rows: [],
-        };
-      });
-    return [...fromDispatches, ...reportOnlyGroups];
-  }, [customerLookup, dispatchReconciliationGroups, reportCustomerGroups, workingDate]);
   const stageReportedReconciliationRows = useCallback((dispatchIds = []) => {
     const completedDispatchIds = new Set(dispatchIds.map(value => `${value || ''}`.trim()).filter(Boolean));
     if (completedDispatchIds.size === 0) return;
@@ -51872,14 +49151,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setActualRows(rows);
     setSelectedDispatchId(rows.find(row => row.dispatchId)?.dispatchId || '');
   };
-  const handleSelectDeliveryWorkspaceGroup = useCallback((group) => {
-    const sourceGroup = dispatchReconciliationGroups.find((item) => item.key === group?.key);
-    const primaryRow = sourceGroup?.rows?.[0] || group?.rows?.[0];
-    const customer = primaryRow?.customer || customerLookup.get(group?.customerId);
-    if (customer) handleSelectCustomer(customer);
-    const dispatchId = primaryRow?.dispatch?.id || primaryRow?.dispatchId || '';
-    if (dispatchId) setSelectedDispatchId(dispatchId);
-  }, [customerLookup, dispatchReconciliationGroups]);
   openPendingReconciliationGroupRef.current = (groupKey) => {
     const group = basePendingReconciliationGroups.find(item => item.key === groupKey);
     const primaryRow = group?.rows?.[0];
@@ -52872,54 +50143,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         <p className="mt-3 text-sm font-bold text-slate-600">Bạn chưa được cấp quyền báo cáo giao hàng.</p>
         <p className="mt-1 text-xs text-slate-400">Chủ doanh nghiệp có thể bật quyền này trong mục Vai trò.</p>
       </div>
-    );
-  }
-
-  const deliveryRedesignEnabled = Boolean(DeliveryRedesignWorkspace);
-  if (deliveryRedesignEnabled) {
-    return (
-      <DeliveryRedesignWorkspace
-        workingDate={workingDate}
-        onChangeDate={(nextDate) => setWorkingDate(nextDate || getTodayString())}
-        groups={deliveryWorkspaceGroups}
-        stats={{
-          required: dayDispatches.length,
-          waiting: pendingReconciliationDispatchCount,
-          completed: reportedDispatchCount,
-          collectedTotal: dayDeliveryCollectedTotal,
-        }}
-        canCreate={canCreateDeliveryReport}
-        selectedCustomer={selectedCustomer}
-        note={note}
-        onNoteChange={setNote}
-        photoUrl={photoUrl}
-        onPhotoChange={handlePhotoChange}
-        onRemovePhoto={() => setPhotoUrl('')}
-        photoInputRef={photoInputRef}
-        isReadingPhoto={isReadingPhoto}
-        collectedAmount={collectedAmount}
-        onCollectedAmountChange={(value) => {
-          setCollectedAmount(value);
-          setCollectedAmountManuallyEdited(true);
-        }}
-        collectedMethod={collectedMethod}
-        onCollectedMethodChange={setCollectedMethod}
-        onSelectGroup={handleSelectDeliveryWorkspaceGroup}
-        onComplete={() => handleSubmitReport({ preventDefault() {} })}
-        onOpenDirections={(group) => {
-          const customer = customerLookup.get(group?.customerId);
-          const destination = customer ? buildCustomerDirectionsUrl(customer) : '';
-          if (destination) {
-            window.open(destination, '_blank', 'noopener,noreferrer');
-          } else {
-            setStatusTone('amber');
-            setStatusMessage('Khách hàng chưa có địa chỉ để chỉ đường.');
-          }
-        }}
-        statusMessage={statusMessage}
-        statusTone={statusTone}
-        isSaving={isSaving}
-      />
     );
   }
 
@@ -60371,7 +57594,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
 
     const savedLabel = `Đã lưu phiếu xuất cho ${getCustomerDisplayName(customer) || customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} ${quantityUnit}` : ''}${weightKg > 0 ? ` • ${formatNumber(weightKg)} kg` : ''}${assignedDriverName ? ` • Giao: ${assignedDriverName}` : ''}.`;
     setDispatchStatus(saveResult?.queued
-      ? `${savedLabel} Firebase đang chậm/mất mạng, app đã đưa phiếu vào hàng chờ đồng bộ cloud và sẽ tự gửi lại.`
+      ? `${savedLabel} Đã lưu trên thiết bị, đang đồng bộ lên cloud.`
       : `${savedLabel} Dữ liệu đã được gửi lên cloud.`
     );
     setDispatchError('');
@@ -60594,7 +57817,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
 
           {dispatchShortageSummary.issueLines.length > 0 ? (
             <div className="mt-3 space-y-2">
-              {(showAllDispatchShortageCustomers ? dispatchShortageCustomerGroups : dispatchShortageCustomerGroups.slice(0, 5)).map(group => {
+              {(showAllDispatchShortageCustomers ? dispatchShortageCustomerGroups : dispatchShortageCustomerGroups.slice(0, 3)).map(group => {
                 return (
                 <button
                   key={group.key}
@@ -60631,13 +57854,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 </button>
                 );
               })}
-              {dispatchShortageCustomerGroups.length > 5 && (
+              {dispatchShortageCustomerGroups.length > 3 && (
                 <button
                   type="button"
                   onClick={() => setShowAllDispatchShortageCustomers(prev => !prev)}
                   className="w-full rounded-2xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-black text-amber-700 transition hover:bg-amber-50 active:scale-[0.99]"
                 >
-                  {showAllDispatchShortageCustomers ? 'Thu gọn danh sách' : `Xem thêm ${dispatchShortageCustomerGroups.length - 5} khách`}
+                  {showAllDispatchShortageCustomers ? 'Thu gọn danh sách' : `Xem thêm ${dispatchShortageCustomerGroups.length - 3} khách`}
                 </button>
               )}
             </div>
@@ -61652,12 +58875,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   });
   const [showForm, setShowForm] = useState(false);
   const [requestDrafts, setRequestDrafts] = useState([createDraft()]);
+  useModalScrollLock(showForm);
   const [editingRequestId, setEditingRequestId] = useState(null);
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
   const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
   const [orderCellEditor, setOrderCellEditor] = useState(null);
   const [orderUnitEditor, setOrderUnitEditor] = useState(null);
   const [isSavingOrderCell, setIsSavingOrderCell] = useState(false);
+  const savingOrderCellRef = useRef(false);
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
   const [isRequestSubmitting, setIsRequestSubmitting] = useState(false);
@@ -61678,7 +58903,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [orderVoiceTarget, setOrderVoiceTarget] = useState({ draftLocalId: '', itemLocalId: '' });
   const [quickProductSearch, setQuickProductSearch] = useState('');
   const [pendingQuickProductSelectionKeys, setPendingQuickProductSelectionKeys] = useState(() => new Set());
-  const [orderFormKeyboardLift, setOrderFormKeyboardLift] = useState(0);
   const orderVoiceRecognitionRef = useRef(null);
   const orderVoiceMediaRecorderRef = useRef(null);
   const orderVoiceMediaStreamRef = useRef(null);
@@ -61721,31 +58945,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       input.click();
     }
   };
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !showForm) {
-      setOrderFormKeyboardLift(0);
-      return undefined;
-    }
-    const viewport = window.visualViewport;
-    const updateKeyboardLift = () => {
-      if (!window.visualViewport) {
-        setOrderFormKeyboardLift(0);
-        return;
-      }
-      const lift = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
-      setOrderFormKeyboardLift(Math.min(380, Math.round(lift)));
-    };
-    updateKeyboardLift();
-    viewport?.addEventListener('resize', updateKeyboardLift);
-    viewport?.addEventListener('scroll', updateKeyboardLift);
-    window.addEventListener('resize', updateKeyboardLift);
-    return () => {
-      viewport?.removeEventListener('resize', updateKeyboardLift);
-      viewport?.removeEventListener('scroll', updateKeyboardLift);
-      window.removeEventListener('resize', updateKeyboardLift);
-    };
-  }, [showForm]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -62710,8 +59909,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const isManualSetupStage = !isEditingRequest && orderFormStage === 'manual_setup';
   const isOrderDetailStage = isEditingRequest || orderFormStage === 'detail';
   const isCompactManualDetailStage = isOrderDetailStage && !isEditingRequest && orderEntryMode === 'manual';
-  const compactOrderFormActionBottom = orderFormKeyboardLift > 0 ? orderFormKeyboardLift + 112 : 118;
-  const compactOrderFormBodyBottomPadding = compactOrderFormActionBottom + 96;
   const primaryDraft = requestDrafts[0] || null;
   const primaryDraftItem = primaryDraft?.items?.[0] || null;
   const primarySelectedCustomer = primaryDraft?.customerId ? customerLookup.get(primaryDraft.customerId) || null : null;
@@ -63330,17 +60527,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ), 0)
     };
 
-    setRequestStatus(`Đang cập nhật đơn đặt hàng của ${customer.name}...`);
+    setRequestStatus(`Đang lưu thay đổi đơn đặt hàng của ${customer.name}...`);
     try {
-      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
-      if (orderCellEditor?.field === 'unitPrice') {
-        scheduleOrderRequestMemorySync([{
-          ...normalizedRequest,
-          items: [requestItems[row.itemIndex]],
-        }], 'fixed-products');
-      }
+      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin', {
+        backgroundSync: true,
+        onPersisted: () => {
+          if (orderCellEditor?.field === 'unitPrice') {
+            scheduleOrderRequestMemorySync([{
+              ...normalizedRequest,
+              items: [requestItems[row.itemIndex]],
+            }], 'fixed-products');
+          }
+        },
+      });
       resetInlineEditing();
-      setRequestStatus(`Đã cập nhật đơn đặt hàng của ${customer.name}.`);
+      setRequestStatus(`Đã lưu thay đổi đơn đặt hàng của ${customer.name}. Firebase đang đồng bộ nền.`);
       return true;
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
@@ -63479,11 +60680,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const saveOrderCellEditor = async () => {
-    if (!orderCellEditor?.row || !canEditOrderCellField(orderCellEditor.field) || isSavingOrderCell) return;
+    if (!orderCellEditor?.row || !canEditOrderCellField(orderCellEditor.field) || savingOrderCellRef.current) return;
+    savingOrderCellRef.current = true;
     setIsSavingOrderCell(true);
     try {
       await saveInlineEditRow(orderCellEditor.row);
     } finally {
+      savingOrderCellRef.current = false;
       setIsSavingOrderCell(false);
     }
   };
@@ -65218,35 +62421,51 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           return;
         }
 
-        await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin');
         const originalRequest = orderRequests.find(request => request?.id === editingRequestId);
-        scheduleOrderRequestMemorySync([{
-          ...(originalRequest || {}),
-          ...normalizedRequests[0],
-          id: editingRequestId,
-          createdAt: originalRequest?.createdAt
-            || originalRequest?.requestedAt
-            || originalRequest?.date
-            || normalizedRequests[0].date,
-          updatedAt: new Date().toISOString(),
-        }]);
+        await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin', {
+          backgroundSync: true,
+          onPersisted: ({ request }) => scheduleOrderRequestMemorySync([{
+            ...(originalRequest || {}),
+            ...request,
+            id: editingRequestId,
+            createdAt: originalRequest?.createdAt
+              || originalRequest?.requestedAt
+              || originalRequest?.date
+              || normalizedRequests[0].date,
+            updatedAt: request.updatedAt || new Date().toISOString(),
+          }]),
+        });
 
         setRequestStatus('');
         closeOrderRequestForm();
         return;
       }
 
-      const savedRequests = [];
+      const memorySyncBatch = {
+        expected: normalizedRequests.length,
+        settled: 0,
+        persisted: [],
+      };
       for (const requestPayload of normalizedRequests) {
-        const savedRequestId = await onAddOrderRequest(employee?.id || 'admin', requestPayload);
-        savedRequests.push({
-          ...requestPayload,
-          id: savedRequestId || '',
-          companyId: customerLookup.get(requestPayload.customerId)?.companyId || '',
-          createdAt: new Date().toISOString(),
+        const savedRequestId = await onAddOrderRequest(employee?.id || 'admin', requestPayload, {
+          backgroundSync: true,
+          onPersisted: ({ id, request }) => {
+            memorySyncBatch.persisted.push({
+              ...request,
+              id,
+              companyId: customerLookup.get(requestPayload.customerId)?.companyId || '',
+              createdAt: request.createdAt || new Date().toISOString(),
+            });
+          },
+          onSettled: () => {
+            memorySyncBatch.settled += 1;
+            if (memorySyncBatch.settled === memorySyncBatch.expected && memorySyncBatch.persisted.length > 0) {
+              scheduleOrderRequestMemorySync(memorySyncBatch.persisted);
+            }
+          },
         });
+        if (!savedRequestId) throw new Error('Không thể tạo mã đơn đặt hàng. Vui lòng thử lại.');
       }
-      scheduleOrderRequestMemorySync(savedRequests);
 
       setRequestStatus('');
       closeOrderRequestForm();
@@ -65632,8 +62851,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       )}
 
       {showForm && (
-        <div className="hd-order-request-modal-layer fixed inset-0 z-[120] isolate bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4">
-          <div className="hd-order-request-modal-panel relative z-[121] flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden">
+        <div className="hd-order-request-modal-layer hd-modal-layer fixed inset-0 z-[120] isolate bg-black/60 flex items-start justify-center px-2 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:p-4" data-hd-modal-root="true">
+          <div className="hd-order-request-modal-panel hd-modal-surface relative z-[121] flex min-h-0 w-full max-w-5xl flex-col bg-white rounded-[28px] shadow-2xl overflow-hidden" role="dialog" aria-modal="true" aria-label={isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên đơn đặt hàng'}>
             <div className={`shrink-0 border-b border-gray-100 flex items-start justify-between gap-4 ${(isCompactManualDetailStage || isManualSetupStage) ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-emerald-600">{isEditingRequest ? 'Chỉnh sửa đơn đặt hàng' : 'Lên Đơn Đặt'}</p>
@@ -65654,7 +62873,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
             <form onSubmit={handleSubmitOrderRequests} className="flex min-h-0 flex-1 flex-col overflow-hidden">
               {isModeSelectionStage && (
-                <div className="min-h-0 flex-1 overflow-y-auto p-5 bg-slate-50">
+                <div className="hd-modal-body min-h-0 flex-1 overflow-y-auto p-5 bg-slate-50">
                   {(availableCustomers.length === 0 || activeProducts.length === 0) && (
                     <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
                       {availableCustomers.length === 0
@@ -65686,7 +62905,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {isManualSetupStage && primaryDraft && primaryDraftItem && (
-                <div className="min-h-0 flex-1 overflow-y-auto space-y-2 bg-slate-50 px-2 pb-2 pt-1.5 sm:px-3 sm:pb-3 sm:pt-2">
+                <div className="hd-modal-body min-h-0 flex-1 overflow-y-auto space-y-2 bg-slate-50 px-2 pb-2 pt-1.5 sm:px-3 sm:pb-3 sm:pt-2">
                   <div className="space-y-3 rounded-2xl bg-white px-2 py-2 shadow-sm sm:px-3">
                     <div className="relative space-y-1.5">
                       <label className="block text-[11px] font-bold uppercase text-gray-500">Họ tên khách hàng</label>
@@ -65859,10 +63078,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
               {isOrderDetailStage && (
                 <>
-              <div
-                className={`min-h-0 flex-1 overflow-y-auto bg-slate-50 ${isCompactManualDetailStage ? 'space-y-2 px-2 pt-1.5 pb-28' : 'space-y-4 p-5'}`}
-                style={isCompactManualDetailStage ? { paddingBottom: `${compactOrderFormBodyBottomPadding}px` } : undefined}
-              >
+              <div className={`hd-modal-body min-h-0 flex-1 overflow-y-auto bg-slate-50 ${isCompactManualDetailStage ? 'space-y-2 px-2 pt-1.5 pb-3' : 'space-y-4 p-5'}`}>
                 {orderVoiceStatus && (
                   <div role="status" className="flex items-start gap-2 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-700">
                     <span className="min-w-0 flex-1">{orderVoiceStatus}</span>
@@ -66400,12 +63616,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               </div>
 
               <div
-                className={`shrink-0 border-t border-slate-200 bg-white space-y-3 ${
+                className={`hd-modal-actions shrink-0 border-t border-slate-200 bg-white space-y-3 ${
                   isCompactManualDetailStage
-                    ? 'sticky z-[130] rounded-t-3xl px-3 py-2 pb-[calc(env(safe-area-inset-bottom)+10px)] shadow-[0_-18px_36px_rgba(15,23,42,0.16)]'
+                    ? 'relative z-[130] rounded-t-3xl px-3 py-2 pb-2 shadow-[0_-18px_36px_rgba(15,23,42,0.16)]'
                     : 'p-4 pb-[calc(env(safe-area-inset-bottom)+28px)]'
                 }`}
-                style={isCompactManualDetailStage ? { bottom: `calc(env(safe-area-inset-bottom) + ${compactOrderFormActionBottom}px)` } : undefined}
               >
                 {!isCompactManualDetailStage && (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -66454,7 +63669,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               )}
 
               {!isOrderDetailStage && (
-                <div className={`hd-order-request-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white ${isManualSetupStage ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+8px)] pt-2' : 'p-4 space-y-3 pb-[calc(env(safe-area-inset-bottom)+28px)]'}`}>
+                <div className={`hd-order-request-modal-actions hd-modal-actions relative z-[122] shrink-0 border-t border-slate-200 bg-white ${isManualSetupStage ? 'px-3 pb-2 pt-2' : 'p-4 space-y-3 pb-4'}`}>
                   <div className="flex gap-3">
                     <button type="button" onClick={closeOrderRequestForm} disabled={isRequestSubmitting} className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60">Hủy</button>
                     {isManualSetupStage && (
@@ -68624,8 +65839,27 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
     const customerLookup = new Map(customers.map(customer => [customer.id, customer]));
     const productLookup = new Map(activeProducts.map(product => [product.id, product]));
-    const orderRequestDepositByCustomer = (orderRequests || [])
-      .filter(request => !request?.isArchived && resolveEntityDateKey(request, dispatchDate) === dispatchDate)
+    const activeOrderRequests = (orderRequests || []).filter(request => !request?.isArchived);
+    const orderRequestsByCustomerId = new Map();
+    const orderRequestsByCustomerName = new Map();
+    activeOrderRequests.forEach((request) => {
+      const requestCustomer = customerLookup.get(request.customerId);
+      const requestCustomerName = normalizeLookupText(
+        request.customerNameSnapshot || request.customerName || requestCustomer?.name || ''
+      );
+      if (request.customerId) {
+        const customerRequests = orderRequestsByCustomerId.get(request.customerId) || [];
+        customerRequests.push(request);
+        orderRequestsByCustomerId.set(request.customerId, customerRequests);
+      }
+      if (requestCustomerName) {
+        const namedCustomerRequests = orderRequestsByCustomerName.get(requestCustomerName) || [];
+        namedCustomerRequests.push(request);
+        orderRequestsByCustomerName.set(requestCustomerName, namedCustomerRequests);
+      }
+    });
+    const orderRequestDepositByCustomer = activeOrderRequests
+      .filter(request => resolveEntityDateKey(request, dispatchDate) === dispatchDate)
       .reduce((depositMap, request) => {
         const deposit = parseLooseMoneyValue(request.upfrontPayment ?? request.depositAmount ?? request.prepaidAmount);
         if (deposit <= 0) return depositMap;
@@ -68683,20 +65917,12 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         || dispatch.requestDate
         || dispatch.requestDateKey
         || dispatchDate;
-      const dispatchTimestamp = getEntityTimestamp(dispatch)
-        || new Date(`${dispatch.date || dispatchDate}T23:59:59.999`).getTime();
       const sourceRequestId = `${dispatch.sourceOrderRequestId || dispatch.orderRequestId || ''}`.trim();
       const sourceRequestRowKey = `${dispatch.sourceOrderRequestRowKey || dispatch.orderRequestRowKey || dispatch.requestRowKey || ''}`.trim();
-      const candidateDates = new Set([sourceRequestDate, dispatchDate].filter(Boolean));
-      const candidateRequests = (orderRequests || [])
-        .filter(request => !request?.isArchived)
-        .filter((request) => {
-          if (sourceRequestId && request.id === sourceRequestId) return true;
-          const requestDate = resolveEntityDateKey(request, dispatchDate);
-          if (sourceRequestDate && requestDate === sourceRequestDate) return true;
-          if (candidateDates.has(requestDate)) return true;
-          return requestDate <= dispatchDate;
-        });
+      const candidateRequests = [...new Set([
+        ...(orderRequestsByCustomerId.get(dispatchCustomerId) || []),
+        ...(orderRequestsByCustomerName.get(normalizedCustomerName) || []),
+      ])];
       const matchedPriceCandidates = [];
 
       for (const request of candidateRequests) {
@@ -68704,10 +65930,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         const requestTimestamp = getEntityTimestamp(request)
           || new Date(`${requestDate || dispatchDate}T00:00:00.000`).getTime();
         const isExactSourceRequest = Boolean(sourceRequestId && request.id === sourceRequestId);
-        if (!isExactSourceRequest && dispatchTimestamp && requestTimestamp && requestTimestamp > dispatchTimestamp) {
-          continue;
-        }
-
         const requestCustomer = customerLookup.get(request.customerId);
         const requestCustomerName = request.customerNameSnapshot || request.customerName || requestCustomer?.name || '';
         const requestCustomerMatches = Boolean(
@@ -68773,18 +65995,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         }
       }
 
-      matchedPriceCandidates.sort((a, b) => (
-        b.exactRow - a.exactRow
-        || b.exactRequest - a.exactRequest
-        || b.sameSourceDate - a.sameSourceDate
-        || b.quantityMatch - a.quantityMatch
-        || b.weightMatch - a.weightMatch
-        || b.sizeMatch - a.sizeMatch
-        || b.unitMatch - a.unitMatch
-        || b.exactProductId - a.exactProductId
-        || b.requestTimestamp - a.requestTimestamp
-      ));
-      return matchedPriceCandidates[0] || {
+      const latestMatchingPrice = selectWarehouseDispatchOrderPriceCandidate(matchedPriceCandidates);
+      return latestMatchingPrice || {
         price: dispatchSourceUnitPrice || 0,
         billingUnit: dispatchSourcePricingUnit,
       };
@@ -69709,6 +66921,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       {selectedOrder && (() => {
         const canEditSelectedOrder = canEditOrderRecord(selectedOrder);
         const detailItems = selectedOrder.items || [];
+        const detailCustomer = customers.find(customer => customer.id === selectedOrder.customerId);
+        const detailOutstanding = Math.max(0, parseLooseMoneyValue(selectedOrder.outstandingAmount ?? (parseLooseMoneyValue(selectedOrder.amount) - parseLooseMoneyValue(selectedOrder.appliedAmount))));
         const selectedOrderFeeAmount = parseLooseMoneyValue(selectedOrder.extraExpenseAmount ?? selectedOrder.customerExtraExpense);
         const sellerFeeAmount = parseLooseMoneyValue(selectedOrder.sellerExtraExpense);
         const hasAnyFee = selectedOrderFeeAmount > 0 || parseLooseMoneyValue(selectedOrder.customerExtraExpense) > 0 || sellerFeeAmount > 0;
@@ -69736,8 +66950,18 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               style={{ scrollPaddingBottom: 'calc(var(--hd-safe-bottom) + 7rem)' }}
             >
               <section aria-label="Thao tác hóa đơn" className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                <div className="rounded-lg border border-slate-200 bg-white">
-                  <h3 className="px-3 py-2.5 text-[12px] font-bold text-slate-700">Sửa mặt hàng ({detailItems.length})</h3>
+                <div className="mb-4 grid grid-cols-2 gap-3 border-b border-slate-100 pb-4" aria-label="Thông tin hóa đơn">
+                  <div className="min-w-0 space-y-1">
+                    <h3 className="break-words text-base font-extrabold text-slate-900">{detailCustomer?.name || selectedOrder.customerName || 'Khách hàng'}</h3>
+                    <p className="break-words text-sm text-slate-600">{detailCustomer?.phone || ''}</p>
+                    <p className="break-words text-xs text-slate-500">{detailCustomer?.address || ''}</p>
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <h3 className="text-base font-extrabold text-slate-900">HÓA ĐƠN BÁN HÀNG</h3>
+                    <p className="mt-2 break-words text-xs font-semibold text-slate-500">{formatOrderCode(selectedOrder.id)} • {formatDateTimeLabel(selectedOrder.date)}</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
                   {detailItems.length === 0 && (
                     <p className="p-4 text-center text-sm text-gray-400">Chưa có chi tiết mặt hàng trong đơn này.</p>
                   )}
@@ -69769,7 +66993,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                 )}
 
                 {(canEditSelectedOrder || canRecordOrderPayment) && (
-                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <div className="mt-3 grid grid-cols-3 gap-2">
                     {canEditSelectedOrder && (
                     <button
                       type="button"
@@ -69796,12 +67020,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                       >
                         Thu tiền
                       </button>
-                    )}
-                    {canEditSelectedOrder && (
-                      <button type="button" onClick={() => promptEditOrderMoney(selectedOrder, 'discount')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-[11px] font-bold text-slate-700">Giảm giá</button>
-                    )}
-                    {canEditSelectedOrder && parseLooseMoneyValue(selectedOrder.appliedAmount) > 0 && (
-                      <button type="button" onClick={() => promptEditOrderMoney(selectedOrder, 'paid')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-[11px] font-bold text-slate-700">Sửa đã thu</button>
                     )}
                   </div>
                 )}
@@ -69901,6 +67119,12 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   </div>
                 )}
 
+                <div aria-label="Trạng thái thanh toán" className="mt-4 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-600">
+                  <span className="rounded-full bg-slate-50 px-3 py-2">Tổng {formatCurrency(selectedOrder.amount || 0)} đ</span>
+                  {parseLooseMoneyValue(selectedOrder.appliedAmount) > 0 && <button type="button" disabled={!canEditSelectedOrder} onClick={() => promptEditOrderMoney(selectedOrder, 'paid')} className="rounded-full bg-emerald-50 px-3 py-2 text-emerald-700">Đã thu {formatCurrency(selectedOrder.appliedAmount)} đ</button>}
+                  {detailOutstanding > 0 ? <span className="rounded-full bg-amber-50 px-3 py-2 text-amber-700">Còn nợ {formatCurrency(detailOutstanding)} đ</span> : <><span className="rounded-full bg-emerald-50 px-3 py-2 text-emerald-700">Hết nợ</span><span className="text-emerald-700">ĐÃ THANH TOÁN</span></>}
+                </div>
+                {canEditSelectedOrder && <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer">Điều chỉnh khác</summary><button type="button" onClick={() => promptEditOrderMoney(selectedOrder, 'discount')} className="mt-2 rounded-lg border border-slate-200 px-3 py-2">Giảm giá {parseLooseMoneyValue(selectedOrder.discount) > 0 ? `${formatCurrency(selectedOrder.discount)} đ` : ''}</button></details>}
               </section>
 
               {orderShareStatus && (
@@ -71139,6 +68363,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
 function ProductManagementView({ isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showForm, setShowForm] = useState(false);
+  useModalScrollLock(showForm);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const productSaveInFlightRef = useRef(false);
   const [showArchived, setShowArchived] = useState(false);
   const [actionItem, setActionItem] = useState(null);
   const [editingProd, setEditingProd] = useState(null);
@@ -71433,6 +68660,9 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (productSaveInFlightRef.current) return;
+    productSaveInFlightRef.current = true;
+    setIsSavingProduct(true);
     let pData = { 
       ...prodData,
       name: toTitleCase((prodData.name || '').trim()),
@@ -71463,6 +68693,9 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       }
     } catch (error) {
       setBarcodeScanStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu sản phẩm. Vui lòng kiểm tra lại thông tin.'));
+    } finally {
+      productSaveInFlightRef.current = false;
+      setIsSavingProduct(false);
     }
   };
 
@@ -71807,7 +69040,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       </div>
       )}
 
-      {!showArchived && canCreate && (productTab !== 'products' || activeProducts.length > 0) && (
+      {!showArchived && canCreate && (
         <div className="hd-module-fab hd-product-module-fab fixed right-4 z-50 pointer-events-none flex justify-end">
            <button aria-label="Thêm sản phẩm" onClick={() => openCreateProductForm()} className="pointer-events-auto bg-blue-600 text-white rounded-full w-14 h-14 shadow-[0_4px_15px_rgba(37,99,235,0.4)] flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all">
               <Plus size={28}/>
@@ -71816,15 +69049,15 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       )}
 
       {showForm && (
-        <div className="hd-product-editor-layer fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 px-0 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:p-4">
-          <div className="hd-product-editor bg-white rounded-t-3xl sm:rounded-2xl p-5 w-full max-w-md animate-in slide-in-from-bottom-full duration-300 flex flex-col max-h-[calc(100dvh-120px)] sm:max-h-[90vh]">
+        <div className="hd-product-editor-layer hd-modal-layer fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 px-0 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:p-4" data-hd-modal-root="true">
+          <div className="hd-product-editor hd-modal-surface bg-white rounded-t-3xl sm:rounded-2xl p-5 w-full max-w-md animate-in slide-in-from-bottom-full duration-300 flex flex-col max-h-[calc(100dvh-120px)] sm:max-h-[90vh]" role="dialog" aria-modal="true" aria-label={editingProd ? 'Sửa sản phẩm' : 'Tạo sản phẩm'}>
             <div className="hd-product-editor__header flex justify-between items-center mb-4 shrink-0 border-b border-gray-100 pb-3">
               <button type="button" aria-label="Quay lại" onClick={()=>setShowForm(false)} className="hd-product-editor__back"><ChevronLeft size={24}/></button>
               <h3 className="font-bold text-lg text-gray-800">{editingProd ? 'Sửa sản phẩm' : 'Tạo sản phẩm'}</h3>
             </div>
             
             <form onSubmit={handleSubmit} className="hd-product-editor__form flex min-h-0 flex-1 flex-col">
-              <div className="hd-product-editor__body space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
+              <div className="hd-product-editor__body hd-modal-body space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
               
               <div className="hd-product-editor__row hd-product-editor__row--barcode">
                 <label className="hd-product-editor__field">
@@ -71964,9 +69197,9 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
 
               </div>
 
-              <div className="hd-product-editor__actions -mx-5 flex gap-3 shrink-0 border-t border-gray-100 bg-white px-5 pt-3 pb-[calc(8px+env(safe-area-inset-bottom))]">
-                <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
+              <div className="hd-product-editor__actions hd-modal-actions -mx-5 flex gap-3 shrink-0 border-t border-gray-100 bg-white px-5 pt-3 pb-[calc(8px+env(safe-area-inset-bottom))]">
+                <button type="button" onClick={()=>setShowForm(false)} disabled={isSavingProduct} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold disabled:opacity-50">Hủy</button>
+                <button type="submit" disabled={isSavingProduct} aria-busy={isSavingProduct} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold disabled:opacity-50">{isSavingProduct ? 'Đang lưu...' : 'Lưu'}</button>
               </div>
             </form>
           </div>
@@ -78607,6 +75840,8 @@ function HolidayConfigCard({
 }
 
 function EmployeeView({
+  showSettings = false,
+  setShowSettings = () => {},
   isVpsMode = false,
   currentEmployee = null,
   currentCompany = {},
@@ -78664,8 +75899,9 @@ function EmployeeView({
   const [editingCompanyDepartmentId, setEditingCompanyDepartmentId] = useState('');
   const [companyDepartmentStatus, setCompanyDepartmentStatus] = useState('');
   const [isSavingCompanyDepartment, setIsSavingCompanyDepartment] = useState(false);
+  const [employeeSettingsSection, setEmployeeSettingsSection] = useState('');
   const [reviewMonth, setReviewMonth] = useState(getTodayString().slice(0, 7));
-  const [salesRevenueMonth, setSalesRevenueMonth] = useState(getTodayString().slice(0, 7));
+  const salesRevenueMonth = getTodayString().slice(0, 7);
   const [reviewTargetEmp, setReviewTargetEmp] = useState(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewCriteriaScores, setReviewCriteriaScores] = useState(() => buildDefaultEmployeeReviewCriteriaScores(5));
@@ -78694,11 +75930,17 @@ function EmployeeView({
     () => new Map(salesRevenueRows.map(row => [row.employee.id, row.summary])),
     [salesRevenueRows]
   );
-  const salesRevenueOverview = useMemo(() => salesRevenueRows.reduce((summary, row) => ({
-    revenue: summary.revenue + (row.summary.revenue || 0),
-    orderCount: summary.orderCount + (row.summary.orderCount || 0),
-    customerCount: summary.customerCount + (row.summary.customerCount || 0)
-  }), { revenue: 0, orderCount: 0, customerCount: 0 }), [salesRevenueRows]);
+  useEffect(() => {
+    if (!showSettings) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        setEmployeeSettingsSection('');
+        setShowSettings(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [setShowSettings, showSettings]);
   const selectedSecondaryPositions = normalizeEmployeePositionList(empData.secondaryPositions)
     .filter(position => position && position !== normalizeEmployeePosition(empData.position) && !isOwnerPosition(position));
   const draftEmployeeShape = {
@@ -79032,7 +76274,11 @@ function EmployeeView({
   const openCreateEmployeeForm = () => {
     if (!canCreateEmployee) return;
     setEditingEmp(null);
-    setEmpData(createEmployeeFormState());
+    setEmpData(createEmployeeFormState('Kế toán & nhân sự', {
+      createLogin: isVpsMode,
+      loginPassword: '12345678',
+      loginPasswordConfirm: '12345678',
+    }));
     setEmployeeStatus('');
     setShowForm(true);
   };
@@ -79126,6 +76372,11 @@ function EmployeeView({
       employeeDocuments: normalizeEmployeeDocuments(emp.employeeDocuments || emp.documents || emp.identityDocuments)
     });
     setShowForm(true);
+  };
+
+  const closeEmployeeEditor = () => {
+    setShowForm(false);
+    setEditingEmp(null);
   };
 
   const handleSubmit = async (e) => {
@@ -79496,161 +76747,172 @@ function EmployeeView({
 
   return (
     <div className="space-y-4 animate-in fade-in pb-16">
-      <div className="flex items-center mb-2">
-        <h2 className="text-lg font-bold text-gray-800">Tài khoản bộ phận</h2>
-      </div>
-      {salesRevenueRows.length > 0 && (
-        <div className="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-600 to-teal-600 p-4 text-white shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="flex items-center text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">
-                <span>Doanh thu</span>
-                <SectionInfoHint
-                  description="Mỗi tháng được tính độc lập theo ngày phát sinh đơn hàng."
-                  label="Doanh thu"
-                  className="[&>button]:text-white"
-                />
-              </p>
-            </div>
-            <label className="relative flex min-h-11 min-w-[9rem] shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/30 bg-white/15 px-3 text-xs font-black text-white">
-              <span aria-hidden="true">{formatMonthYearShortLabel(salesRevenueMonth)}</span>
-              <input
-                type="month"
-                value={salesRevenueMonth}
-                onChange={event => setSalesRevenueMonth(normalizePayrollMonthKey(event.target.value) || getTodayString().slice(0, 7))}
-                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                aria-label="Chọn tháng doanh thu"
-              />
-            </label>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
-              <p className="text-[9px] font-bold uppercase text-emerald-100">Doanh thu</p>
-              <p className="mt-1 text-sm font-black">{formatCurrency(salesRevenueOverview.revenue)} đ</p>
-            </div>
-            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
-              <p className="text-[9px] font-bold uppercase text-emerald-100">Đơn hàng</p>
-              <p className="mt-1 text-sm font-black">{formatNumber(salesRevenueOverview.orderCount)}</p>
-            </div>
-            <div className="rounded-2xl bg-white/12 px-2 py-2.5">
-              <p className="text-[9px] font-bold uppercase text-emerald-100">Lượt khách</p>
-              <p className="mt-1 text-sm font-black">{formatNumber(salesRevenueOverview.customerCount)}</p>
-            </div>
-          </div>
-        </div>
-      )}
-      <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm text-blue-900">
-        <p className="flex items-center font-bold uppercase text-[11px] tracking-[0.16em] text-blue-700">
-          <span>Mô hình tài khoản</span>
-          <SectionInfoHint
-            description="Tạo và quản lý tài khoản theo bộ phận, vai trò và quyền truy cập của công ty."
-            label="Mô hình tài khoản"
-          />
-        </p>
-      </div>
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-black text-slate-900">Bộ phận công ty</h3>
-            <p className="mt-1 text-xs text-slate-500">{companyDepartments.length} bộ phận</p>
-          </div>
-          <Building size={19} className="shrink-0 text-emerald-600" />
-        </div>
-        {canManageCompanyDepartments && (
-          <form onSubmit={handleSaveCompanyDepartment} className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <input
-              type="text"
-              value={companyDepartmentNameDraft}
-              onChange={(event) => setCompanyDepartmentNameDraft(event.target.value)}
-              placeholder="Tên bộ phận"
-              aria-label="Tên bộ phận công ty"
-              maxLength={60}
-              className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-400"
-            />
-            <div className="flex gap-2">
-              {editingCompanyDepartmentId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingCompanyDepartmentId('');
-                    setCompanyDepartmentNameDraft('');
-                    setCompanyDepartmentStatus('');
-                  }}
-                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600"
-                >Hủy</button>
-              )}
-              <button
-                type="submit"
-                disabled={isSavingCompanyDepartment || !companyDepartmentNameDraft.trim()}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
-              >
-                {editingCompanyDepartmentId ? <Save size={14} /> : <Plus size={14} />}
-                {editingCompanyDepartmentId ? 'Lưu' : 'Thêm'}
-              </button>
-            </div>
-          </form>
-        )}
-        {companyDepartmentStatus && (
-          <p
-            role="status"
-            className={`mt-2 text-xs font-semibold ${companyDepartmentStatus.startsWith('Đã') ? 'text-emerald-700' : 'text-rose-600'}`}
-          >{companyDepartmentStatus}</p>
-        )}
-        <div className="mt-3 space-y-2">
-          {companyDepartments.length ? companyDepartments.map((department) => {
-            const assignedCount = (employees || []).filter(
-              (employee) => !employee?.isArchived && getEmployeeCompanyDepartment(employee)?.id === department.id,
-            ).length;
-            return (
-              <div key={department.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-slate-800">{department.name}</p>
-                  <p className="text-[11px] text-slate-500">{assignedCount} nhân sự</p>
-                </div>
-                {canManageCompanyDepartments && (
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingCompanyDepartmentId(department.id);
-                        setCompanyDepartmentNameDraft(department.name);
-                        setCompanyDepartmentStatus('');
-                      }}
-                      className="rounded-lg p-2 text-slate-500 hover:bg-white hover:text-emerald-700"
-                      aria-label={`Sửa bộ phận ${department.name}`}
-                      title="Sửa"
-                    ><Edit3 size={15} /></button>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveCompanyDepartment(department.id)}
-                      disabled={isSavingCompanyDepartment}
-                      className="rounded-lg p-2 text-rose-500 hover:bg-white disabled:opacity-50"
-                      aria-label={`Xóa bộ phận ${department.name}`}
-                      title={assignedCount ? 'Chuyển nhân sự trước khi xóa' : 'Xóa'}
-                    ><Trash2 size={15} /></button>
-                  </div>
-                )}
-              </div>
-            );
-          }) : (
-            <p className="rounded-xl bg-slate-50 px-3 py-3 text-xs text-slate-500">
-              Chưa có bộ phận. Thêm bộ phận để phân loại hồ sơ nhân sự của công ty.
-            </p>
-          )}
-        </div>
-      </section>
       {employeeStatus && (
         <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           {employeeStatus}
         </div>
       )}
-      {(canViewEmployees || canManageHolidayConfig || isSuperAdmin) && (
-        <HolidayConfigCard
-          holidays={holidays}
-          onAddHoliday={onAddHoliday}
-          onDeleteHoliday={onDeleteHoliday}
-          canManage={Boolean(isSuperAdmin || canManageHolidayConfig)}
-        />
+      {showSettings && (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/45 p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] sm:items-center"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setEmployeeSettingsSection('');
+              setShowSettings(false);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="employee-settings-title"
+            onMouseDown={(event) => event.stopPropagation()}
+            className="flex max-h-[80dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <header className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3">
+              <h2 id="employee-settings-title" className="text-base font-black text-slate-900">Cài đặt nhân sự</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setEmployeeSettingsSection('');
+                  setShowSettings(false);
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+                aria-label="Đóng cài đặt nhân sự"
+                title="Đóng"
+              ><X size={18} /></button>
+            </header>
+            <div className="min-h-0 space-y-2 overflow-y-auto overscroll-contain p-3">
+              <button
+                type="button"
+                aria-expanded={employeeSettingsSection === 'departments'}
+                aria-controls="employee-department-settings"
+                onClick={() => setEmployeeSettingsSection(current => current === 'departments' ? '' : 'departments')}
+                className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left hover:bg-slate-50"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700"><Building size={18} /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold text-slate-900">Bộ phận công ty</span>
+                  <span className="block text-xs text-slate-500">{companyDepartments.length} bộ phận</span>
+                </span>
+                {employeeSettingsSection === 'departments' ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+              </button>
+              {employeeSettingsSection === 'departments' && (
+                <section id="employee-department-settings" className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                  {canManageCompanyDepartments && (
+                    <form onSubmit={handleSaveCompanyDepartment} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                      <input
+                        type="text"
+                        value={companyDepartmentNameDraft}
+                        onChange={(event) => setCompanyDepartmentNameDraft(event.target.value)}
+                        placeholder="Tên bộ phận"
+                        aria-label="Tên bộ phận công ty"
+                        maxLength={60}
+                        className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-400"
+                      />
+                      <div className="flex gap-2">
+                        {editingCompanyDepartmentId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingCompanyDepartmentId('');
+                              setCompanyDepartmentNameDraft('');
+                              setCompanyDepartmentStatus('');
+                            }}
+                            className="rounded-xl bg-slate-200 px-3 py-2 text-xs font-bold text-slate-600"
+                          >Hủy</button>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={isSavingCompanyDepartment || !companyDepartmentNameDraft.trim()}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+                        >
+                          {editingCompanyDepartmentId ? <Save size={14} /> : <Plus size={14} />}
+                          {editingCompanyDepartmentId ? 'Lưu' : 'Thêm'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                  {companyDepartmentStatus && (
+                    <p role="status" className={`mt-2 text-xs font-semibold ${companyDepartmentStatus.startsWith('Đã') ? 'text-emerald-700' : 'text-rose-600'}`}>
+                      {companyDepartmentStatus}
+                    </p>
+                  )}
+                  <div className="mt-3 space-y-2">
+                    {companyDepartments.length ? companyDepartments.map((department) => {
+                      const assignedCount = (employees || []).filter(
+                        (employee) => !employee?.isArchived && getEmployeeCompanyDepartment(employee)?.id === department.id,
+                      ).length;
+                      return (
+                        <div key={department.id} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-bold text-slate-800">{department.name}</p>
+                            <p className="text-[11px] text-slate-500">{assignedCount} nhân sự</p>
+                          </div>
+                          {canManageCompanyDepartments && (
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingCompanyDepartmentId(department.id);
+                                  setCompanyDepartmentNameDraft(department.name);
+                                  setCompanyDepartmentStatus('');
+                                }}
+                                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-emerald-700"
+                                aria-label={`Sửa bộ phận ${department.name}`}
+                                title="Sửa"
+                              ><Edit3 size={15} /></button>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCompanyDepartment(department.id)}
+                                disabled={isSavingCompanyDepartment}
+                                className="rounded-lg p-2 text-rose-500 hover:bg-slate-100 disabled:opacity-50"
+                                aria-label={`Xóa bộ phận ${department.name}`}
+                                title={assignedCount ? 'Chuyển nhân sự trước khi xóa' : 'Xóa'}
+                              ><Trash2 size={15} /></button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }) : (
+                      <p className="rounded-xl bg-white px-3 py-3 text-xs text-slate-500">
+                        Chưa có bộ phận. Thêm bộ phận để phân loại hồ sơ nhân sự của công ty.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              )}
+              {(canViewEmployees || canManageHolidayConfig || isSuperAdmin) && (
+                <>
+                  <button
+                    type="button"
+                    aria-expanded={employeeSettingsSection === 'holidays'}
+                    aria-controls="employee-holiday-settings"
+                    onClick={() => setEmployeeSettingsSection(current => current === 'holidays' ? '' : 'holidays')}
+                    className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left hover:bg-slate-50"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-purple-700"><CalendarDays size={18} /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-bold text-slate-900">Ngày lễ</span>
+                      <span className="block text-xs text-slate-500">{holidays.length} ngày đã cài</span>
+                    </span>
+                    {employeeSettingsSection === 'holidays' ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                  </button>
+                  {employeeSettingsSection === 'holidays' && (
+                    <div id="employee-holiday-settings">
+                      <HolidayConfigCard
+                        holidays={holidays}
+                        onAddHoliday={onAddHoliday}
+                        onDeleteHoliday={onDeleteHoliday}
+                        canManage={Boolean(isSuperAdmin || canManageHolidayConfig)}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+        </div>
       )}
       <div className="space-y-3">
         {employees.map(emp => {
@@ -79784,7 +77046,7 @@ function EmployeeView({
       <input ref={employeeAvatarInputRef} type="file" accept="image/*" onChange={handleEmployeeAvatarSelect} className="hidden" />
       <input ref={employeeDocumentInputRef} type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleEmployeeDocumentSelect} className="hidden" />
       {canCreateEmployee && (
-      <div className="hd-employee-module-fab fixed bottom-[92px] right-4 z-40 pointer-events-none flex justify-end">
+      <div className="hd-employee-module-fab fixed right-4 z-40 pointer-events-none flex justify-end">
         <button type="button" onClick={openCreateEmployeeForm} aria-label="Thêm nhân viên" className="pointer-events-auto h-14 w-14 rounded-full bg-gradient-to-br from-emerald-500 to-blue-600 text-white shadow-2xl shadow-emerald-900/25 flex items-center justify-center border border-white/40 active:scale-95 transition">
           <Plus size={28} strokeWidth={2.8} />
         </button>
@@ -79910,11 +77172,39 @@ function EmployeeView({
         </div>
       )}
 
-      {showForm && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl p-5 w-full max-w-md my-auto animate-in zoom-in-95">
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <h3 className="font-bold text-lg">{editingEmp ? 'Sửa tài khoản' : 'Tạo tài khoản bộ phận'}</h3>
+      {showForm && createPortal(
+        <div
+          className={editingEmp
+            ? 'hd-modal-layer fixed inset-0 z-[80] flex flex-col bg-slate-50 pt-[env(safe-area-inset-top)]'
+            : 'fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4'}
+          data-hd-modal-root="true"
+        >
+          <div
+            role={editingEmp ? 'dialog' : undefined}
+            aria-modal={editingEmp ? 'true' : undefined}
+            aria-label={editingEmp ? `Hồ sơ nhân sự ${editingEmp.name || ''}` : undefined}
+            className={editingEmp
+              ? 'hd-modal-surface flex min-h-0 w-full flex-1 flex-col bg-slate-50'
+              : 'my-auto w-full max-w-md animate-in zoom-in-95 rounded-2xl bg-white p-5'}
+          >
+            <div className={`mb-4 flex shrink-0 justify-between gap-3 ${editingEmp ? 'items-center border-b border-blue-800 bg-blue-700 px-4 py-3 text-white' : 'items-start'}`}>
+              {editingEmp ? (
+                <div className="flex min-w-0 items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={closeEmployeeEditor}
+                    aria-label="Quay lại danh sách nhân sự"
+                    title="Quay lại danh sách nhân sự"
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white hover:bg-white/15"
+                  ><ChevronLeft size={23} /></button>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold">Hồ sơ nhân sự</h3>
+                    <p className="truncate text-xs text-blue-100">{editingEmp.name}</p>
+                  </div>
+                </div>
+              ) : (
+                <h3 className="font-bold text-lg">Tạo tài khoản bộ phận</h3>
+              )}
               <div className="flex items-center gap-2">
                 {canDeleteEmployee && editingEmp && !(editingEmp.role === 'super_admin' || isOwnerPosition(editingEmp.position)) && (
                   <button
@@ -79922,39 +77212,42 @@ function EmployeeView({
                     onClick={async () => {
                       const deleted = await handleDeleteEmployeeClick(editingEmp);
                       if (deleted) {
-                        setShowForm(false);
-                        setEditingEmp(null);
+                        closeEmployeeEditor();
                       }
                     }}
-                    className="h-9 w-9 rounded-full border border-red-100 bg-red-50 text-red-500 flex items-center justify-center hover:bg-red-100"
+                    className={`inline-flex h-9 w-9 items-center justify-center rounded-full ${editingEmp ? 'bg-white/15 text-white hover:bg-white/25' : 'border border-red-100 bg-red-50 text-red-500 hover:bg-red-100'}`}
                     aria-label="Xóa nhân sự"
                   >
                     <Trash2 size={16} />
                   </button>
                 )}
-                <button type="button" onClick={() => setShowForm(false)} className="h-9 w-9 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center hover:bg-gray-200" aria-label="Đóng">
-                  <X size={16} />
-                </button>
+                {!editingEmp && (
+                  <button type="button" onClick={closeEmployeeEditor} className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200" aria-label="Đóng">
+                    <X size={16} />
+                  </button>
+                )}
               </div>
             </div>
-            <form onSubmit={handleSubmit} className="space-y-3 max-h-[70vh] overflow-y-auto pr-2">
+            <form onSubmit={handleSubmit} className={editingEmp ? 'flex min-h-0 flex-1 flex-col' : ''}>
+              <div className={editingEmp
+                ? 'min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 pb-4'
+                : 'max-h-[70vh] space-y-3 overflow-y-auto pr-2'}>
               {employeeStatus && (
                 <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
                   {employeeStatus}
                 </div>
               )}
-              <input required type="text" placeholder={isEditingOwner ? 'Tên chủ doanh nghiệp' : 'Tên nhân sự / tài khoản bộ phận'} value={empData.name} onChange={e=>setEmpData({...empData, name: toTitleCase(e.target.value)})} className="w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
               <div className="grid grid-cols-2 gap-3">
-                <input required type="tel" placeholder="SĐT (Đăng nhập)" value={empData.phone} onChange={e=>setEmpData({...empData, phone: e.target.value})} className="w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                <input required type="text" placeholder={isEditingOwner ? 'Tên chủ doanh nghiệp' : 'Tên nhân sự'} value={empData.name} onChange={e=>setEmpData({...empData, name: toTitleCase(e.target.value)})} className="min-w-0 w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
                 {isEditingOwner ? (
                   <div className="w-full border border-amber-200 bg-amber-50 px-3 py-3 rounded-xl text-sm font-bold text-amber-700 flex items-center">Chủ doanh nghiệp</div>
                 ) : (
-                  <select value={empData.position} onChange={e=>handlePositionChange(e.target.value)} className="w-full border p-3 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                  <select aria-label="Bộ phận" value={empData.position} onChange={e=>handlePositionChange(e.target.value)} className="min-w-0 w-full border p-3 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                     {employeeDepartmentOptions.map(option => <option key={option} value={option}>{option}</option>)}
                   </select>
                 )}
               </div>
-              {!isEditingOwner && (
+              {editingEmp && !isEditingOwner && (
                 <label className="block space-y-1.5">
                   <span className="text-xs font-bold text-slate-600">Bộ phận công ty</span>
                   <select
@@ -79977,7 +77270,13 @@ function EmployeeView({
                   </select>
                 </label>
               )}
-              {isVpsMode && !isEditingOwner && (
+              <div className={`grid gap-3 ${editingEmp ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                <input required type="tel" placeholder="SĐT (Đăng nhập)" value={empData.phone} onChange={e=>setEmpData({...empData, phone: e.target.value})} className="min-w-0 w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                {!editingEmp && (
+                  <input aria-label="Mật khẩu" type="text" value="12345678" readOnly autoComplete="off" className="min-w-0 w-full border border-slate-200 bg-slate-50 p-3 rounded-xl text-sm font-semibold text-slate-700" />
+                )}
+              </div>
+              {isVpsMode && editingEmp && !isEditingOwner && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
                   {editingEmp?.userId ? (
                     <div>
@@ -80014,7 +77313,7 @@ function EmployeeView({
                   )}
                 </div>
               )}
-              <p className="text-[11px] text-gray-500 leading-relaxed">{isEditingOwner ? 'Tài khoản chủ doanh nghiệp là tài khoản gốc của công ty và không tạo thêm từ màn này.' : 'Bộ phận được chọn sẽ quyết định quyền truy cập và màn hình mặc định của tài khoản này.'}</p>
+              {isEditingOwner && <p className="text-[11px] text-gray-500 leading-relaxed">Tài khoản chủ doanh nghiệp là tài khoản gốc của công ty và không tạo thêm từ màn này.</p>}
               {editingEmp && !isEditingOwner && canResetEmployeePassword && (
                 <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
                   <div className="min-w-0">
@@ -80040,9 +77339,6 @@ function EmployeeView({
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <h4 className="text-xs font-black uppercase tracking-[0.12em] text-emerald-800">Kiêm nhiệm bộ phận</h4>
-                      <p className="mt-1 text-[10px] leading-relaxed text-emerald-700">
-                        Chọn thêm bộ phận mà nhân sự có thể làm. App sẽ nhận diện cả bộ phận chính và bộ phận kiêm nhiệm trong các màn liên quan.
-                      </p>
                     </div>
                     {selectedSecondaryPositions.length > 0 && (
                       <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-emerald-600 border border-emerald-100">
@@ -80091,6 +77387,7 @@ function EmployeeView({
                   )}
                 </div>
               )}
+              {editingEmp && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -80176,6 +77473,7 @@ function EmployeeView({
                   </div>
                 )}
               </div>
+              )}
 
               {isSalesAccountDraft && !isEditingOwner && canAssignSalesLeader && (
                 <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3">
@@ -80249,7 +77547,7 @@ function EmployeeView({
               </div>
               )}
 
-              {!isEditingOwner && (
+              {editingEmp && !isEditingOwner && (
               <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -80516,13 +77814,15 @@ function EmployeeView({
                 )}
               </div>
 
-              <div className="flex gap-2 mt-4 pt-2">
-                <button type="button" onClick={()=>setShowForm(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu</button>
+              </div>
+              <div className={`mt-4 flex shrink-0 gap-2 pt-2 ${editingEmp ? 'border-t border-slate-200 bg-white px-4 pb-[calc(12px+env(safe-area-inset-bottom))]' : ''}`}>
+                <button type="button" onClick={closeEmployeeEditor} className="flex-1 rounded-xl bg-gray-100 py-3 font-bold text-gray-700">Hủy</button>
+                <button type="submit" className="flex-1 rounded-xl bg-emerald-500 py-3 font-bold text-white">Lưu</button>
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -86188,17 +83488,10 @@ function CustomerPortalView({
     { id: 'orders', label: 'Đơn hàng', icon: Package },
     { id: 'more', label: 'Thêm', icon: MoreHorizontal }
   ];
-  const customerGreetingHonorific = getQuoteCustomerHonorificLabel(customerProfile);
-  const customerGreetingName = getCustomerPlainName(customerProfile) || customerProfile.name || '';
-  const customerGreetingLine = customerGreetingHonorific === 'Quý khách'
-    ? `Xin chào quý khách${customerGreetingName ? ` ${customerGreetingName}` : ''}`
-    : `Xin chào quý ${customerGreetingHonorific}${customerGreetingName ? ` ${customerGreetingName}` : ''}`;
-
   const renderHome = () => (
     <div className="space-y-4">
       <div className="rounded-[2rem] bg-gradient-to-br from-emerald-500 to-teal-600 text-white p-5 shadow-lg">
-        <h1 className="truncate text-xl font-extrabold">{customerGreetingLine}</h1>
-        <div className="grid grid-cols-2 gap-3 mt-5">
+        <div className="grid grid-cols-2 gap-3">
           <div className="flex min-h-[78px] flex-col items-center justify-center rounded-2xl bg-white/15 p-3 text-center">
             <p className="text-[11px] uppercase tracking-wider opacity-80">Công nợ</p>
             <p className="mt-1 text-lg font-black">{formatCurrency(ledger.currentDebt || 0)}</p>
@@ -87413,13 +84706,13 @@ function CustomerPortalView({
         <button
           type="button"
           onClick={openCustomerProfileEditor}
-          className="flex items-center gap-3 min-w-0 text-left rounded-2xl pr-2 active:scale-[0.99] transition"
+          className="flex flex-1 items-center gap-3 min-w-0 text-left rounded-2xl pr-2 active:scale-[0.99] transition"
           title="Bấm để chỉnh sửa hồ sơ khách hàng"
         >
-          <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-black overflow-hidden">
+          {activeTab === 'home' ? <AccountGreeting name={getCustomerPlainName(customerProfile) || customerProfile.name || currentUser?.phone || 'Bạn'} companyName={getCompanyDisplayName(currentCompany)} logoUrl={getCompanyLogoUrl(currentCompany)} /> : <><div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-black overflow-hidden">
             {customerProfile.avatarUrl ? <img src={customerProfile.avatarUrl} alt="" className="w-full h-full object-cover" /> : getInitials(customerProfile.name || 'KH')}
           </div>
-          <div className="min-w-0"><p className="text-xs text-gray-400 font-bold uppercase">{currentCompany?.name || 'HD Manager'}</p><h1 className="font-extrabold truncate">{customerProfile.name || currentUser?.phone}</h1></div>
+          <div className="min-w-0"><p className="text-xs text-gray-400 font-bold uppercase">{currentCompany?.name || 'HD Manager'}</p><h1 className="font-extrabold truncate">{customerProfile.name || currentUser?.phone}</h1></div></>}
         </button>
         <div className="flex items-center gap-2">
           <button
@@ -87450,7 +84743,7 @@ function CustomerPortalView({
               </span>
             )}
           </button>
-          <button onClick={() => setActiveTab('more')} className="w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center"><UserCircle size={22} className="text-emerald-600" /></button>
+          {activeTab !== 'home' && <button onClick={() => setActiveTab('more')} className="w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center"><UserCircle size={22} className="text-emerald-600" /></button>}
         </div>
       </HDHeader>
       {submitMessage && (
@@ -87956,6 +85249,33 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
   const [isRegistering, setIsRegistering] = useState(false);
   const [identitySetupContext, setIdentitySetupContext] = useState(null);
   const biometricAutoLoginStartedRef = useRef(false);
+  const quickLoginBusyRef = useRef(false);
+  const [quickLoginAvailable, setQuickLoginAvailable] = useState(false);
+  useEffect(() => {
+    let active = true;
+    if (!vpsStagingMode) getQuickLoginAvailability().then(result => { if (active) setQuickLoginAvailable(result.available); });
+    return () => { active = false; };
+  }, [vpsStagingMode]);
+  const handleQuickLogin = async () => {
+    if (quickLoginBusyRef.current || isLoggingIn) return;
+    quickLoginBusyRef.current = true;
+    setIsLoggingIn(true);
+    setLoginError('');
+    setLoginMessage('Đang xác thực Face ID / vân tay...');
+    try {
+      const result = await onBiometricLogin({ manual: true });
+      if (result?.success && result?.requiresSetup) {
+        setIdentitySetupContext(result);
+      } else if (!result?.success) {
+        setLoginError(result?.message || (result?.unavailable ? 'Hãy đăng nhập bằng mật khẩu rồi bật Face ID / vân tay trong Bảo mật tài khoản trước.' : 'Xác thực chưa hoàn tất. Bạn có thể thử lại hoặc dùng mật khẩu.'));
+      }
+    } catch (error) { setLoginError(error?.message || 'Không thể xác thực. Vui lòng dùng mật khẩu.'); }
+    finally {
+      quickLoginBusyRef.current = false;
+      setIsLoggingIn(false);
+      setLoginMessage('');
+    }
+  };
 
   useEffect(() => {
     // Warm the auth Function while the user is entering credentials so the
@@ -88239,6 +85559,7 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
                 </button>
               )}
             </form>
+            {!showForgotPassword && !vpsStagingMode && quickLoginAvailable && <button type="button" onClick={handleQuickLogin} disabled={isLoggingIn} className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white px-4 py-3 font-semibold text-emerald-700 disabled:opacity-50"><Fingerprint size={22} />Face ID / Vân tay</button>}
             {!showForgotPassword && !vpsStagingMode && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
           </div>
         ) : (

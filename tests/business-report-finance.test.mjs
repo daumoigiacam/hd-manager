@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
-import { getReportPeriod, getTopSalesEmployees } from '../src/features/business-report/reportViewModel.js';
+import { aggregateReportRows, getReportPeriod, getTopSalesEmployees } from '../src/features/business-report/reportViewModel.js';
 
 test('all report periods include payroll once while cash outflow stays unchanged', () => {
   const snapshot = buildExecutiveDashboardSnapshot({
@@ -31,6 +31,22 @@ test('all report periods include payroll once while cash outflow stays unchanged
   assert.equal(finance.series30Days.find(row => row.date === '2026-09-26').expense, 220);
   assert.equal(finance.series12Months.find(row => row.month === '2026-09').expense, 420);
   assert.equal(finance.costBreakdown.reduce((sum, row) => sum + row.value, 0), 420);
+});
+
+test('Vietnamese single-digit date strings are included in report period totals', () => {
+  const { finance } = buildExecutiveDashboardSnapshot({
+    now: '2026-09-26T12:00:00',
+    orders: [{ date: '26/9/2026 13:52', amount: 100 }],
+    expenses: [{ date: '25/9/2026 08:05', category: 'Xăng dầu', amount: 30 }],
+  });
+
+  assert.equal(finance.revenueToday, 100);
+  for (const period of ['week', 'month', 'quarter', 'year']) {
+    const report = getReportPeriod(finance, period);
+    assert.equal(report.revenue, 100, `${period} revenue`);
+    assert.equal(report.expense, 30, `${period} expense`);
+    assert.equal(report.profit, 70, `${period} profit`);
+  }
 });
 
 test('salary advances stay in cash flow but do not reduce recognized salary cost', () => {
@@ -98,7 +114,53 @@ test('receivables and top debtors use reconciled Sổ nợ balances, not order t
   });
   assert.equal(snapshot.finance.receivables, 700);
   assert.deepEqual(snapshot.business.topCustomersByDebt.map(row => row.debt), [500, 200]);
+  assert.equal(snapshot.business.debtCustomerCount, 2);
   assert.equal(getReportPeriod(snapshot.finance, 'year').receivables, 700);
+});
+
+test('detailed product, cost category, and payroll rows reconcile for the selected month', () => {
+  const snapshot = buildExecutiveDashboardSnapshot({
+    now: '2026-09-26T12:00:00',
+    employees: [
+      { id: 'e1', name: 'Lan', department: 'Kinh doanh' },
+      { id: 'e2', name: 'Minh', department: 'Kho' },
+    ],
+    products: [
+      { id: 'chicken', name: 'Gà ta' },
+      { id: 'duck', name: 'Vịt sống' },
+    ],
+    orders: [
+      { id: 'o1', date: '2026-09-26', customerId: 'c1', customerName: 'Khách A', total: 150, profit: 100, items: [
+        { productId: 'chicken', productName: 'Gà ta', quantity: 2, unitPrice: 50, costPrice: 30, total: 100 },
+        { productId: 'duck', productName: 'Vịt sống', quantity: 1, unitPrice: 50, costPrice: 20, total: 50 },
+      ] },
+      { id: 'o2', date: '2026-08-31', customerId: 'c2', customerName: 'Khách B', total: 80, profit: 40, items: [
+        { productId: 'chicken', productName: 'Gà ta', quantity: 1, unitPrice: 80, costPrice: 40, total: 80 },
+      ] },
+    ],
+    expenses: [
+      { id: 'x1', date: '2026-09-26', category: 'Xăng dầu', amount: 70 },
+      { id: 'x2', date: '2026-08-31', category: 'Điện nước', amount: 50 },
+    ],
+    payrollCosts: [
+      { id: 'p1', date: '2026-09-26', employeeId: 'e1', amount: 120 },
+      { id: 'p2', date: '2026-08-31', employeeId: 'e2', amount: 80 },
+    ],
+  });
+  const { finance, business } = snapshot;
+  const report = getReportPeriod(finance, 'month');
+  const categories = aggregateReportRows(finance.expenseCategoryRows, report, { groupBy: 'category', valueFields: ['value'] });
+  const salaries = aggregateReportRows(finance.salaryEmployeeRows, report, { groupBy: 'employeeId', valueFields: ['value'] });
+  const productsForPeriod = aggregateReportRows(business.productPerformanceRows, report, { groupBy: 'id', valueFields: ['revenue', 'profit', 'quantity'] });
+  const customersForPeriod = aggregateReportRows(business.customerPerformanceRows, report, { groupBy: 'id', valueFields: ['revenue', 'profit', 'orders'] });
+
+  assert.equal(categories.reduce((sum, row) => sum + row.value, 0), report.expense);
+  assert.equal(categories.find(row => row.name === 'Lương').value, finance.salaryExpenseMonth);
+  assert.equal(salaries.reduce((sum, row) => sum + row.value, 0), finance.salaryExpenseMonth);
+  assert.deepEqual(productsForPeriod.reduce((sum, row) => sum + row.revenue, 0), report.revenue);
+  assert.equal(productsForPeriod.reduce((sum, row) => sum + row.profit, 0), 70);
+  assert.equal(customersForPeriod.reduce((sum, row) => sum + row.revenue, 0), report.revenue);
+  assert.deepEqual(salaries.map(row => row.name), ['Lan']);
 });
 
 test('top sales employees change with day, week, month and quarter', () => {

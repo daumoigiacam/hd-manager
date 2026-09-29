@@ -56,5 +56,8 @@ assert(moreMenuStart >= 0 && moreMenuEnd > moreMenuStart, 'More menu source must
 const moreMenuSource = appSource.slice(moreMenuStart, moreMenuEnd);
 assert.doesNotMatch(moreMenuSource, /aria-label="Giao diện"|Đang dùng:|Giao diện Sáng|Giao diện Tối|Giao diện Hệ thống/);
 assert.doesNotMatch(moreMenuSource, /Thông báo chấm công|Chưa chấm vào ca|Mở mục chấm công/);
+assert.doesNotMatch(moreMenuSource, /id: 'maps'.*Bản đồ/);
+assert.doesNotMatch(appSource, /quick_maps|MapManagementView/);
+assert.match(appSource, /tab === 'maps' \? 'more'/, 'legacy saved map routes should return to More instead of opening a removed screen.');
 
 console.log('Footer navigation role and contextual action tests passed.');
