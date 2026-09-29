@@ -38,6 +38,10 @@ try {
     await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
     await page.waitForTimeout(900);
 
+    // Home intentionally has no global-search icon; test from the customer module.
+    const more = page.getByRole('button', { name: 'Thêm', exact: true }).filter({ visible: true }).first();
+    await more.click();
+    await page.locator('main').getByRole('button', { name: 'Khách hàng', exact: true }).click();
     const trigger = page.locator('.hd-header-global-search-button:visible').first();
     assert.ok(await trigger.count(), `global search trigger is visible at ${viewport.width}px`);
     await trigger.click();

@@ -105,7 +105,7 @@ try {
   await page.keyboard.press('Escape');
   await settingsDialog.waitFor({ state: 'hidden' });
 
-  const firstEmployeeCard = page.locator('[role="button"][tabindex="0"]').first();
+  const firstEmployeeCard = page.locator('main div[role="button"][tabindex="0"]:visible').first();
   await firstEmployeeCard.click();
   const employeeProfile = page.getByRole('dialog', { name: /^Hồ sơ nhân sự/ });
   await employeeProfile.waitFor({ state: 'visible' });

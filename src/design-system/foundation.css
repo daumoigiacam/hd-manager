@@ -1938,11 +1938,14 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   z-index: 51;
 }
 
-.hd-shell--staff:has(.hd-employee-module-fab, .hd-order-module-fab, .hd-product-module-fab) > main {
+/* Only an open modal may cover the shell navigation, never a normal page. */
+.hd-shell--staff > main:has([role="dialog"][aria-modal="true"]) {
   z-index: 50;
 }
 
 @media (max-width: 1023px) {
+  .hd-shell--staff:has(.hd-employee-module-fab) > nav.hd-app-navigation > .hd-contextual-fab-slot,
+  .hd-shell--staff:has(.hd-order-module-fab) > nav.hd-app-navigation > .hd-contextual-fab-slot,
   .hd-shell--staff:has(.hd-product-module-fab) > nav.hd-app-navigation > .hd-contextual-fab-slot {
     display: none;
   }
@@ -2198,7 +2201,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   margin: 0 !important;
   padding: 0.625rem 1rem;
   border: 0 !important;
-  border-bottom: 2px solid #e1a57f !important;
+  border-bottom: 1px solid #e1e4e9 !important;
   color: #333333;
   background: #ffffff;
 }
@@ -2206,7 +2209,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 .hd-shell--staff .hd-product-editor__header h3 {
   flex: 1;
   margin: 0;
-  color: #c47a4a;
+  color: #1c2230;
   text-align: center;
   font-family: var(--hd-font-sans);
   font-size: 24px;
@@ -2227,14 +2230,15 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 .hd-shell--staff .hd-product-editor__header .hd-product-editor__back {
   right: auto;
   left: 1rem;
-  color: #c47a4a !important;
+  color: #4165cf !important;
 }
 
 .hd-shell--staff .hd-product-editor__body {
   display: grid;
-  gap: 0;
+  align-content: start;
+  gap: 8px;
   padding: 0 0 0.75rem !important;
-  background: #f6f7f9;
+  background: #ffffff;
 }
 
 .hd-shell--staff .hd-product-editor__body > * {
@@ -2268,8 +2272,9 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   justify-content: flex-start;
   gap: 0.625rem;
   padding: 0.625rem 0.75rem;
-  border: 1px solid #e1e4e9;
-  border-radius: 0.625rem;
+  border: 0;
+  border-bottom: 1px solid #d9dce3;
+  border-radius: 0;
   color: #c47a4a;
   background: #ffffff;
   font-family: var(--hd-font-sans);
@@ -2340,27 +2345,28 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   align-items: center;
   gap: 0.625rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #e1e4e9;
-  border-radius: 0.625rem;
+  border: 0;
+  border-bottom: 1px solid #d9dce3;
+  border-radius: 0;
   background: #ffffff;
   transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
 }
 
 .hd-shell--staff .hd-product-editor__field:hover {
-  border-color: #d8b49d;
+  border-color: #99a5ba;
 }
 
 .hd-shell--staff .hd-product-editor__field:focus-within {
-  border-color: #c47a4a;
-  background: #fffdfb;
-  box-shadow: 0 0 0 3px rgb(225 165 127 / 0.18);
+  border-color: #4165cf;
+  background: #ffffff;
+  box-shadow: 0 1px 0 #4165cf;
 }
 
 .hd-shell--staff .hd-product-editor__field-icon {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
-  color: #c47a4a;
+  color: #4165cf;
 }
 
 .hd-shell--staff .hd-product-editor__field-control {
@@ -2374,7 +2380,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 .hd-shell--staff .hd-product-editor__field-label {
   display: block;
   overflow: hidden;
-  color: #9a5d38;
+  color: #707887;
   font-family: var(--hd-font-sans);
   font-size: 13px;
   font-weight: 600;
@@ -2396,7 +2402,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   background: transparent !important;
   box-shadow: none !important;
   font-family: var(--hd-font-sans);
-  font-size: 13px !important;
+  font-size: 16px !important;
   font-weight: 600;
   line-height: 1rem;
   letter-spacing: 0;

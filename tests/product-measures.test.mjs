@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { purchaseAmount, productStockBalance } from '../src/utils/productMeasures.js';
+const record = { productId: 'p', totalKg: 25, quantity: 10, quantityUnit: 'Con', unitPrice: 60000 };
+assert.equal(purchaseAmount(record, 'Kg'), 1500000);
+assert.equal(purchaseAmount(record, 'Con'), 600000);
+assert.equal(purchaseAmount(record, 'Thùng'), 0);
+assert.deepEqual(productStockBalance({ id: 'p', stockUnit: 'Con', stockQuantity: 2 }, [record], [{ ...record, quantity: 4 }]), { incoming: 10, outgoing: 4, remaining: 8 });
+assert.equal(productStockBalance({ id: 'p', stockUnit: 'Kg' }, [record], [{ ...record, totalKg: 5 }]).remaining, 20);
+assert.equal(productStockBalance({ id: 'p', stockUnit: 'Con' }, [{ ...record, isArchived: true }], []).remaining, 0);
+assert.equal(productStockBalance({ id: 'p', stockUnit: 'Con' }, [], [{ ...record, quantity: 4 }]).remaining, -4);
+console.log('PASS independent purchase and stock units');

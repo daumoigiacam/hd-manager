@@ -1,5 +1,23 @@
 .hd-account-greeting { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; text-align: left; letter-spacing: 0; }
-.hd-account-greeting__salutation { flex: 0 0 auto; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.hd-account-greeting__salutation { flex: 0 0 auto; white-space: nowrap; }
 .hd-account-greeting__logo { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 6px; object-fit: contain; background: #fff; }
 .hd-account-greeting__monogram { display: grid; place-items: center; color: #1658cf; font-size: 14px; font-weight: 700; }
-.hd-account-greeting__name { min-width: 0; font-size: 14px; font-weight: 700; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hd-account-greeting__name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hd-account-greeting { font-family: inherit; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.hd-account-greeting__salutation, .hd-account-greeting__name { font: inherit; color: inherit; }
+header:has(.hd-account-greeting),
+.business-report-header:has(.hd-account-greeting),
+.hd-shell--staff .hd-dashboard-masthead:has(.hd-account-greeting),
+.hd-dashboard-masthead:has(.hd-account-greeting),
+.hd-staff-greeting-surface {
+  background: #edf5f3 !important;
+  color: #214d46 !important;
+  border-bottom: 1px solid #d8e6e2;
+  box-shadow: 0 1px 4px rgb(33 77 70 / 5%);
+}
+header:has(.hd-account-greeting) button,
+.hd-dashboard-masthead .hd-account-greeting,
+.hd-staff-greeting-surface .hd-account-greeting { color: #214d46; }
+.hd-dashboard-masthead:has(.hd-account-greeting)::before,
+.hd-dashboard-masthead:has(.hd-account-greeting)::after { display: none; }
+.hd-staff-greeting-surface .text-emerald-50 { color: #42675f; }

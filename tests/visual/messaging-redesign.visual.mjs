@@ -163,7 +163,7 @@ try {
   await module.getByRole('button', { name: 'Xóa tìm kiếm' }).click();
   await module.getByRole('button', { name: 'Tạo cuộc trò chuyện' }).click();
   await module.getByRole('button', { name: 'Lọc tin nhắn' }).click();
-  await module.getByRole('button', { name: 'Tin chưa đọc' }).click();
+  await module.getByRole('button', { name: 'Tin chưa đọc', exact: true }).click();
   await page.screenshot({ path: `${outputDir}/06_unread_state.png` });
   await module.getByRole('button', { name: 'Tạo cuộc trò chuyện' }).click();
   await module.getByRole('button', { name: 'Làm mới' }).click();

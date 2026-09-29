@@ -3,6 +3,7 @@ import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
+import { isSamePendingWriteRevision } from './utils/pendingWriteRevision.js';
 import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
@@ -350,6 +351,7 @@ import {
   putUnitPriceIntoMap,
   resolveProductUnitPrice,
 } from './services/productPricingUnits.js';
+import { purchaseAmount, productStockBalance } from './utils/productMeasures.js';
 import {
   buildCustomerProductPreferenceCacheKey,
   buildCustomerProductPreferenceId,
@@ -999,8 +1001,8 @@ const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
 // from opening dozens of tenant-wide collection listeners at startup.
 const BASELINE_REALTIME_COLLECTION_NAMES = ['companies', 'employees', 'notifications'];
 const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
-  home: ['customers', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches'],
-  executive_dashboard: ['customers', 'products', 'orders', 'orderRequests', 'payments', 'expenses', 'financials', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'assets', 'assetCostLogs', 'deliveryReports', 'attendance', 'performance'],
+  home: ['customers', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches', 'payrollPeriods', 'employeeReviews', 'customerComplaints', 'holidays', 'deliveryReports'],
+  executive_dashboard: ['customers', 'products', 'orders', 'orderRequests', 'payments', 'expenses', 'financials', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'assets', 'assetCostLogs', 'deliveryReports', 'attendance', 'performance', 'payrollPeriods', 'employeeReviews', 'customerComplaints', 'holidays'],
   order_requests: ['customers', 'products', 'orderRequests', 'warehouseDispatches', 'employees'],
   orders: ['customers', 'products', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'zalo_send_queue'],
   warehouse_import: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts'],
@@ -1018,6 +1020,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   asset_management: ['assets', 'assetCostLogs', 'employees'],
   pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios', 'pricingChangeLogs'],
   price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
+  products: ['products', 'orders', 'warehouseImports', 'warehouseDispatches'],
   messages: ['employees', 'customers', 'orders', 'orderRequests', 'payments', 'expenses', 'products', 'messages', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
   settings: ['reward_catalog', 'promotions', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'ai_reply_rules'],
   customer_home: ['customer_cart', 'customer_points', 'customerLoans', 'reward_catalog', 'promotions', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'messages', 'bankAccounts', 'products', 'pricingInputs', 'pricingRules'],
@@ -6456,8 +6459,9 @@ const warmOrderShareAssetCache = async ({
 };
 
 const scheduleOrderShareWarmup = (options = {}) => {
-  const run = () => warmOrderShareAssetCache(options).catch(() => null);
-  setTimeout(run, 0);
+  void warmOrderShareAssetCache(options).catch(() => {
+    recordPerformanceEvent('share_invoice.warmup_failed', { reason: options.reason || 'background' }, 'warn');
+  });
 };
 
 const ORDER_REQUEST_SHARE_WARMUP_EVENT = 'hd-order-request-share-warmup';
@@ -9772,7 +9776,7 @@ const calculatePositiveDailyPayrollExpenseFromSalary = (options = {}) => (
 
 const buildDashboardPayrollCostRows = ({
   employees = [], attendance = {}, financials = [], performance = {}, customers = [],
-  orders = [], payments = [], holidays = [], now = new Date()
+  orders = [], payments = [], holidays = [], now = new Date(), company = {}, payrollPeriods = [], lockedPayroll = {}, employeeReviews = [], deliveryReports = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false
 } = {}) => {
   const firstMonth = new Date(now.getFullYear(), Math.min(0, now.getMonth() - 11), 1);
   const lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -9791,10 +9795,26 @@ const buildDashboardPayrollCostRows = ({
       const key = getDateKeyFromAnyValue(order.date || order.orderDate || order.createdAt);
       return key.startsWith(monthKey) && key <= todayKey;
     });
-    policyEmployees
+    const locked = getLockedPayrollPeriod(payrollPeriods, company.id, monthKey);
+    const snapshotRows = lockedPayroll[monthKey]?.snapshots || [];
+    const salaryEmployees = locked ? snapshotRows.map(snapshot => ({ ...snapshot.employee, id: snapshot.employeeId })) : policyEmployees;
+    const evaluationContext = {
+      attendance: monthAttendance, orders: monthOrders,
+      deliveryReports: deliveryReports.filter(row => normalizeEmployeeReviewMonthKey(row.date || row.createdAt) === monthKey),
+      reviews: employeeReviews.filter(row => normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey),
+      complaints: complaintsLoaded && Array.isArray(customerComplaints) ? customerComplaints.filter(row => row.companyId === company.id && normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey) : null,
+      attendanceLoaded, complaintsLoaded, companyId: company.id, currentCompany: company,
+      criteriaList: getEmployeeReviewCriteriaList(company), monthKey
+    };
+    salaryEmployees
       .filter(emp => emp?.id && !emp.isArchived && emp.role !== 'super_admin' && !isOwnerPosition(emp.position))
       .forEach(emp => {
-        const details = buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true });
+        const details = locked
+          ? snapshotRows.find(snapshot => snapshot.employeeId === emp.id)?.salaryDetails
+          : applyEvaluationBonusToSalaryDetails(
+            buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true }),
+            projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey })
+          );
         const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
         if (!amount) return;
         const earningDays = [...new Set((details.attendanceEntries || [])
@@ -9808,6 +9828,7 @@ const buildDashboardPayrollCostRows = ({
         dates.forEach((date, index) => rows.push({
           date,
           employeeId: emp.id,
+          employeeName: emp.name,
           amount: index === dates.length - 1 ? amount - baseAmount * (dates.length - 1) : baseAmount
         }));
       });
@@ -10707,7 +10728,9 @@ const buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []
       const totalKg = parseLooseQuantityValue(item.totalKg ?? item.weightKg ?? item.kg);
       const unitPrice = parseLooseMoneyValue(item.unitPrice ?? item.price);
       const rawAmount = parseLooseMoneyValue(item.amount ?? item.totalAmount ?? item.value ?? item.total);
-      const amount = roundMoneyValue(rawAmount || (totalKg > 0 && unitPrice > 0 ? totalKg * unitPrice : 0));
+      const amount = roundMoneyValue(item.amount != null || item.totalAmount != null || item.value != null || item.total != null
+        ? rawAmount
+        : purchaseAmount({ ...item, totalKg, quantity: parseLooseQuantityValue(item.quantity), unitPrice }, item.purchaseUnit || 'Kg'));
       return { ...item, amount };
     })
     .filter(item => item.amount > 0)
@@ -12200,6 +12223,7 @@ export default function App() {
     const previousWrite = pendingFirebaseWritesRef.current.find(item => item?.key === key);
     const nextWrite = {
       key,
+      revision: `${now}:${Math.random().toString(36).slice(2)}`,
       companyId,
       collectionName,
       documentId,
@@ -12623,20 +12647,18 @@ export default function App() {
           timeoutMs,
           'Firebase phan hoi cham khi xac nhan dong bo du lieu.'
         );
-        const nextWrites = pendingFirebaseWritesRef.current.filter(item => !(
-          item?.key === key && `${item?.companyId || ''}`.trim() === companyId
-        ));
+        const nextWrites = pendingFirebaseWritesRef.current.filter(item => !isSamePendingWriteRevision(item, pendingWrite));
         if (activeTenantScopeRef.current === companyId) {
           persistPendingFirebaseWrites(nextWrites);
           scheduleCollectionRefresh(pendingWrite.collectionName, [300, 1800]);
           setRealtimeStatus({
-            state: 'online',
+            state: nextWrites.length ? 'queued' : 'online',
             collection: pendingWrite.collectionName,
             lastAt: new Date().toISOString(),
             error: ''
           });
         } else {
-          const scopedWrites = loadPendingFirebaseWrites(companyId).filter(item => item?.key !== key);
+          const scopedWrites = loadPendingFirebaseWrites(companyId).filter(item => !isSamePendingWriteRevision(item, pendingWrite));
           savePendingFirebaseWrites(scopedWrites, companyId);
         }
         return { confirmed: true, id: pendingWrite.documentId };
@@ -12647,7 +12669,7 @@ export default function App() {
           ? pendingFirebaseWritesRef.current
           : loadPendingFirebaseWrites(companyId);
         const nextWrites = sourceWrites.map(item => (
-          item?.key === key && `${item?.companyId || ''}`.trim() === companyId ? {
+          isSamePendingWriteRevision(item, pendingWrite) ? {
           ...item,
           attempts: (item.attempts || 0) + 1,
           updatedAt: now,
@@ -12669,6 +12691,12 @@ export default function App() {
       }
     })().finally(() => {
       pendingFirebaseWritePromisesRef.current.delete(inFlightKey);
+    }).then(result => {
+      const hasNewerWrite = activeTenantScopeRef.current === companyId
+        && pendingFirebaseWritesRef.current.some(item => item?.key === key && item?.companyId === companyId);
+      return hasNewerWrite
+        ? flushPendingFirebaseWriteNow(collectionName, documentId, timeoutMs, companyId)
+        : result;
     });
 
     pendingFirebaseWritePromisesRef.current.set(inFlightKey, task);
@@ -19591,7 +19619,9 @@ export default function App() {
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
     const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
     const unitPrice = parseLooseMoneyValue(importData.unitPrice);
-    const amount = parseLooseMoneyValue(importData.amount ?? importData.totalAmount) || (totalKg > 0 && unitPrice > 0 ? totalKg * unitPrice : 0);
+    const amount = importData.amount != null || importData.totalAmount != null
+      ? parseLooseMoneyValue(importData.amount ?? importData.totalAmount)
+      : purchaseAmount({ ...importData, totalKg, quantity, unitPrice }, importData.purchaseUnit || 'Kg');
     const groupName = normalizeLeadingLabel(importData.groupName || importData.productGroup || 'Nhóm hàng');
     const quantityUnit = normalizeLeadingLabel(importData.quantityUnit || importData.unit || 'Con');
     const sourceType = normalizeWarehouseImportSourceType(importData.sourceType);
@@ -19728,7 +19758,9 @@ export default function App() {
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
     const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
     const unitPrice = parseLooseMoneyValue(importData.unitPrice);
-    const amount = parseLooseMoneyValue(importData.amount ?? importData.totalAmount) || (totalKg > 0 && unitPrice > 0 ? totalKg * unitPrice : 0);
+    const amount = importData.amount != null || importData.totalAmount != null
+      ? parseLooseMoneyValue(importData.amount ?? importData.totalAmount)
+      : purchaseAmount({ ...importData, totalKg, quantity, unitPrice }, importData.purchaseUnit || 'Kg');
     const groupName = normalizeLeadingLabel(importData.groupName || importData.productGroup || 'Nhóm hàng');
     const quantityUnit = normalizeLeadingLabel(importData.quantityUnit || importData.unit || 'Con');
     const sourceType = normalizeWarehouseImportSourceType(importData.sourceType);
@@ -20716,11 +20748,11 @@ export default function App() {
       rememberRecentLocalWrite('orders', orderId, patch);
       setRawOrders(previous => previous.map(order => order.id === orderId ? { ...order, ...patch } : order));
       const savedOrder = { ...existingOrder, ...patch };
-      const shareAsset = await warmOrderShareAssetCache({
+      scheduleOrderShareWarmup({
         order: savedOrder, company: currentCompany, customers, orders, payments, products,
         ensurePayment: handleEnsureOrderPayosPayment, reason: 'invoice_template_saved'
       });
-      return { success: true, order: savedOrder, shareReady: Boolean(shareAsset) };
+      return { success: true, order: savedOrder, shareReady: false };
     } catch (error) {
       return { success: false, message: error?.message || 'Không lưu được mẫu hóa đơn.' };
     }
@@ -20846,7 +20878,7 @@ export default function App() {
       }
     }
 
-    const shareAsset = await warmOrderShareAssetCache({
+    scheduleOrderShareWarmup({
       order: updatedOrderForSync,
       company: currentCompany,
       customers,
@@ -20857,7 +20889,7 @@ export default function App() {
       reason: 'order_updated'
     });
 
-    return { success: true, order: updatedOrderForSync, shareReady: Boolean(shareAsset) };
+    return { success: true, order: updatedOrderForSync, shareReady: false };
   };
 
   const getOrderCurrentPaymentDueAmount = (order = {}) => (
@@ -25112,7 +25144,7 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-    <MemoizedExecutiveDashboardView employee={employee} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+<MemoizedExecutiveDashboardView employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
@@ -25188,7 +25220,7 @@ function MainAppView({
           });
         }
 return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
-      case 'products': return <ProductManagementView isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'products': return <ProductManagementView warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
       case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
       case 'employee_reviews': return (
@@ -40427,6 +40459,7 @@ const getCachedDashboardValue = (cache, key, dependencies, calculate) => {
 };
 
 function ExecutiveDashboardView({
+  payrollPeriods = [], onLoadPayrollPeriodSnapshots, employeeReviews = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false,
   employee,
   accountName,
   company,
@@ -40518,12 +40551,31 @@ function ExecutiveDashboardView({
     }));
   };
   const dashboardDayKey = getTodayString();
+  const [lockedPayroll, setLockedPayroll] = useState({});
+  const [payrollLoadError, setPayrollLoadError] = useState('');
+  const payrollLoading = payrollPeriods.some(period => getLockedPayrollPeriod([period], company?.id, period.monthKey) && !lockedPayroll[period.monthKey]);
+  const payrollLoaderRef = useRef(onLoadPayrollPeriodSnapshots);
+  payrollLoaderRef.current = onLoadPayrollPeriodSnapshots;
+  useEffect(() => {
+    let active = true;
+    setLockedPayroll({});
+    setPayrollLoadError('');
+    const periods = payrollPeriods.filter(period => getLockedPayrollPeriod([period], company?.id, period.monthKey));
+    if (!periods.length) return () => { active = false; };
+    void Promise.all(periods.map(async period => {
+      const result = await payrollLoaderRef.current?.({ monthKey: period.monthKey });
+      if (!result?.success) throw new Error(result?.message || 'Chưa tải được bảng lương đã chốt.');
+      return [period.monthKey, result];
+    })).then(entries => { if (active) setLockedPayroll(Object.fromEntries(entries)); })
+      .catch(error => { if (active) setPayrollLoadError(error.message); });
+    return () => { active = false; };
+  }, [payrollPeriods, company?.id]);
   const payrollCosts = useMemo(() => getCachedDashboardValue(
     dashboardCache,
     'payrollCosts',
-    [employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey],
-    () => buildDashboardPayrollCostRows({ employees, attendance, financials, performance, customers, orders, payments, holidays })
-  ), [dashboardCache, employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey]);
+    [employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded],
+    () => buildDashboardPayrollCostRows({ employees, attendance, financials, performance, customers, orders, payments, holidays, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded })
+  ), [dashboardCache, employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded]);
   const debtLedger = useMemo(() => getCachedDashboardValue(
     dashboardCache,
     'debtLedger',
@@ -41513,6 +41565,8 @@ function ExecutiveDashboardView({
 
   if (isMobileReport) {
     return <>
+      {payrollLoading && !payrollLoadError && <p role="status" className="p-3 text-sm text-slate-600">Đang lấy chi phí từ bảng lương đã chốt…</p>}
+      {payrollLoadError && <p role="alert" className="p-3 text-sm text-red-700">Chi phí lương chưa đầy đủ: {payrollLoadError}</p>}
       <BusinessReportWorkspace snapshot={snapshot} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
       <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
     </>;
@@ -41520,6 +41574,8 @@ function ExecutiveDashboardView({
 
   return (
     <div className="hd-premium-dashboard">
+      {payrollLoading && !payrollLoadError && <p role="status" className="p-3 text-sm text-slate-600">Đang lấy chi phí từ bảng lương đã chốt…</p>}
+      {payrollLoadError && <p role="alert" className="p-3 text-sm text-red-700">Chi phí lương chưa đầy đủ: {payrollLoadError}</p>}
       <section className="hd-dashboard-masthead">
         <div className="hd-dashboard-masthead__inner">
           <div className="hd-dashboard-masthead__identity">
@@ -42178,7 +42234,7 @@ function EmployeePersonalHomeView({
 
   return (
     <div className="space-y-5">
-      <div className="rounded-[2rem] bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 p-5 text-white shadow-xl">
+      <div className="hd-staff-greeting-surface rounded-lg p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <button type="button" className="w-full min-w-0 text-left" onClick={() => setActiveTab('profile')} aria-label="Mở hồ sơ cá nhân">
@@ -43778,7 +43834,7 @@ const getOrderItemCost = (item = {}, product = null) => {
   const unitCost = parseLooseMoneyValue(item?.costPrice ?? product?.costPrice);
   return quantity * unitCost;
 };
-const buildInventoryMetrics = (products = [], orders = [], { untilDate = '' } = {}) => {
+const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', warehouseImports = null, warehouseDispatches = null } = {}) => {
   const productMap = new Map((products || []).map(product => [product.id, product]));
   const soldByProductId = new Map();
   const revenueByProductId = new Map();
@@ -43807,8 +43863,9 @@ const buildInventoryMetrics = (products = [], orders = [], { untilDate = '' } = 
     .filter(product => !product?.isArchived)
     .map(product => {
       const openingStock = getProductOpeningStock(product);
-      const soldQuantity = soldByProductId.get(product.id) || 0;
-      const remainingStock = Math.max(0, openingStock - soldQuantity);
+      const balance = warehouseImports && warehouseDispatches ? productStockBalance(product, warehouseImports, warehouseDispatches, untilDate) : null;
+      const soldQuantity = balance ? balance.outgoing : soldByProductId.get(product.id) || 0;
+      const remainingStock = balance ? balance.remaining : Math.max(0, openingStock - soldQuantity);
       const stockUnit = getProductInventoryUnit(product);
       const costPrice = parseLooseMoneyValue(product.costPrice);
       const stockValue = remainingStock * costPrice;
@@ -51073,6 +51130,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       productId: product.id || '',
       productName: product.name || product.productName || '',
       productCode: code,
+      purchaseUnit: product.purchaseUnit || 'Kg',
       productBarcode: product.barcode || product.productBarcode || code,
       groupName: groupName || prev.groupName,
       quantityUnit: rememberedUnit
@@ -52501,10 +52559,8 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   }, [canOpenActualStockForm, onQuickActionHandled, quickActionIntent?.id, quickActionIntent?.type, warehouseStockChecklistRows]);
 
   const suggestedAmount = useMemo(() => {
-    const totalKg = parseLooseQuantityValue(draft.totalKg);
-    const unitPrice = parseLooseMoneyValue(draft.unitPrice);
-    return totalKg > 0 && unitPrice > 0 ? totalKg * unitPrice : 0;
-  }, [draft.totalKg, draft.unitPrice]);
+    return purchaseAmount({ ...draft, totalKg: parseLooseQuantityValue(draft.totalKg), quantity: parseLooseQuantityValue(draft.quantity), unitPrice: parseLooseMoneyValue(draft.unitPrice) }, draft.purchaseUnit || 'Kg');
+  }, [draft]);
   const isEditingImport = Boolean(editingImportId);
   const canSubmitImportForm = isEditingImport ? canEditWarehouseImport : canCreateWarehouseImport;
 
@@ -52552,6 +52608,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       supplierCustomerId: '',
       supplierPhone: '',
       unitPrice: '',
+      purchaseUnit: 'Kg',
       amount: '',
       note: ''
     }));
@@ -52583,6 +52640,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       supplierCustomerId: item.supplierCustomerId || '',
       supplierPhone: item.supplierPhone || '',
       unitPrice: parseLooseMoneyValue(item.unitPrice) || '',
+      purchaseUnit: item.purchaseUnit || 'Kg',
       amount: parseLooseMoneyValue(item.amount) || '',
       note: item.note || ''
     });
@@ -52790,6 +52848,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     const totalKg = parseLooseQuantityValue(draft.totalKg);
     const unitPrice = parseLooseMoneyValue(draft.unitPrice);
     const amount = suggestedAmount;
+    if (unitPrice > 0 && amount <= 0) {
+      setStatus(`Vui lòng nhập số lượng theo đơn vị nhập ${draft.purchaseUnit || 'Kg'} để tính tiền.`);
+      return;
+    }
     const sourceType = normalizeWarehouseImportSourceType(draft.sourceType);
     const supplierCustomer = findSupplierCustomerMatch(draft.supplier, draft.supplierCustomerId);
     const supplierName = `${draft.supplier || ''}`.trim() || (supplierCustomer ? getSupplierCustomerLabel(supplierCustomer) : '');
@@ -52837,6 +52899,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
         totalKg,
         quantity,
         quantityUnit: normalizeLeadingLabel(draft.quantityUnit || 'Con'),
+        purchaseUnit: draft.purchaseUnit || 'Kg',
         sourceType,
         sourceLabel: getWarehouseImportSourceLabel(sourceType),
         supplier: supplierName,
@@ -52871,6 +52934,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
         quantity: '',
         extraMeasures: [],
         unitPrice: '',
+        purchaseUnit: 'Kg',
         amount: '',
         note: ''
       }));
@@ -53377,7 +53441,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
                 value={draft.unitPrice}
                 onKeyDown={event => handleWarehouseImportEnter(event, 'submit')}
                 onChange={event => updateDraft({ unitPrice: event.target.value })}
-                placeholder="Giá / kg"
+                placeholder={`Giá / ${draft.purchaseUnit || 'Kg'}`}
                 className="w-full min-w-0 rounded-2xl border border-gray-200 bg-white px-3 py-3 text-center text-sm font-medium text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
               />
             </label>
@@ -68361,7 +68425,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   );
 }
 
-function ProductManagementView({ isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function ProductManagementView({ warehouseImports = [], warehouseDispatches = [], isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showForm, setShowForm] = useState(false);
   useModalScrollLock(showForm);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
@@ -68432,7 +68496,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
   });
 
   const activeProducts = products.filter(p => !!p.isArchived === showArchived);
-  const inventoryMetrics = useMemo(() => buildInventoryMetrics(products, orders, { untilDate: getTodayString() }), [products, orders]);
+  const inventoryMetrics = useMemo(() => buildInventoryMetrics(products, orders, { untilDate: getTodayString(), warehouseImports, warehouseDispatches }), [products, orders, warehouseImports, warehouseDispatches]);
   const inventoryByProductId = useMemo(
     () => new Map(inventoryMetrics.productRows.map(row => [row.id, row])),
     [inventoryMetrics.productRows]
@@ -68622,6 +68686,9 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
     shortName: '',
     category: '',
     unit: 'Cái',
+    purchaseUnit: 'Kg',
+    stockUnit: 'Con',
+    stockQuantity: '',
     costPrice: '',
     sellingPrice: '',
     barcode: '',
@@ -68649,7 +68716,10 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
     setEditingProd(p);
     setBarcodeScanStatus('');
     setProdData({ 
-      name: p.name, category: p.category, unit: p.unit, 
+      name: p.name, category: p.category, unit: p.unit,
+      purchaseUnit: p.purchaseUnit || 'Kg',
+      stockUnit: p.stockUnit || p.inventoryUnit || p.unit || 'Con',
+      stockQuantity: getProductOpeningStock(p),
       costPrice: p.costPrice || '', sellingPrice: p.sellingPrice || '',
       shortName: getProductShortName(p),
       barcode: p.barcode || '', image: p.image || '', discount: p.discount || '',
@@ -68675,7 +68745,8 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
       productAttributes: getProductAttributes({ attributes: prodData.attributes }),
       attributeText: `${prodData.attributes || ''}`.trim(),
       stockQuantity: parseLooseQuantityValue(prodData.stockQuantity),
-      stockUnit: `${prodData.stockUnit || prodData.unit || ''}`.trim()
+      stockUnit: `${prodData.stockUnit || prodData.unit || ''}`.trim(),
+      purchaseUnit: normalizeProductPricingUnit(prodData.purchaseUnit || 'Kg')
     };
     try {
       if (editingProd) {
@@ -69059,7 +69130,7 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
             <form onSubmit={handleSubmit} className="hd-product-editor__form flex min-h-0 flex-1 flex-col">
               <div className="hd-product-editor__body hd-modal-body space-y-4 overflow-y-auto pr-1 pb-4 flex-1">
               
-              <div className="hd-product-editor__row hd-product-editor__row--barcode">
+              {editingProd && <div className="hd-product-editor__row hd-product-editor__row--barcode">
                 <label className="hd-product-editor__field">
                   <Barcode size={19} className="hd-product-editor__field-icon" />
                   <span className="hd-product-editor__field-control">
@@ -69073,7 +69144,8 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 </button>
                 <input ref={barcodeImageInputRef} type="file" accept="image/*" onChange={e => handleBarcodeImageScan(e.target.files?.[0])} className="hidden" />
                 {barcodeScanStatus && <p className={`hd-product-editor__status ${barcodeScanStatus.startsWith('Đã nhận mã') ? 'text-emerald-600' : barcodeScanStatus.startsWith('Đang quét') ? 'text-blue-600' : 'text-orange-600'}`}>{barcodeScanStatus}</p>}
-              </div>
+              </div>}
+              {!editingProd && barcodeScanStatus && <p role="alert" className="text-red-600">{barcodeScanStatus}</p>}
 
               <div className="hd-product-editor__row hd-product-editor__row--name-image">
                 <label className="hd-product-editor__field">
@@ -69117,8 +69189,8 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 <label className="hd-product-editor__field">
                   <Store size={18} className="hd-product-editor__field-icon" />
                   <span className="hd-product-editor__field-control">
-                    <span className="hd-product-editor__field-label">Đơn vị tính *</span>
-                    <input aria-label="Đơn vị tính" required type="text" value={prodData.unit} onChange={e=>setProdData({...prodData, unit: toTitleCase(e.target.value)})} list="unit-list" className="hd-product-editor__field-input" />
+                    <span className="hd-product-editor__field-label">Đơn vị bán *</span>
+                    <input aria-label="Đơn vị bán" required type="text" value={prodData.unit} onChange={e=>setProdData({...prodData, unit: toTitleCase(e.target.value)})} list="unit-list" className="hd-product-editor__field-input" />
                   </span>
                   <datalist id="unit-list">
                     <option value="Cái" /><option value="Kg" /><option value="Con" /><option value="Lít" /><option value="Hộp" /><option value="Thùng" /><option value="Gói" />
@@ -69141,6 +69213,13 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                 )}
               </div>
 
+              <label className="hd-product-editor__field">
+                <Store size={18} className="hd-product-editor__field-icon" />
+                <span className="hd-product-editor__field-control">
+                  <span className="hd-product-editor__field-label">Đơn vị nhập *</span>
+                  <input aria-label="Đơn vị nhập" required type="text" value={prodData.purchaseUnit || 'Kg'} onChange={e => setProdData({ ...prodData, purchaseUnit: e.target.value })} list="unit-list" className="hd-product-editor__field-input" />
+                </span>
+              </label>
               <div className="hd-product-editor__row hd-product-editor__row--prices">
                 <label className="hd-product-editor__field">
                   <Banknote size={19} className="hd-product-editor__field-icon" />
@@ -69178,9 +69257,9 @@ function ProductManagementView({ isAccounting, currentCompany = {}, products, or
                   <label className="hd-product-editor__field">
                     <Store size={19} className="hd-product-editor__field-icon" />
                     <span className="hd-product-editor__field-control">
-                      <span className="hd-product-editor__field-label">Loại tồn</span>
+                      <span className="hd-product-editor__field-label">Đơn vị tồn</span>
                     <input
-                      aria-label="Loại tồn"
+                      aria-label="Đơn vị tồn"
                       type="text"
                       value={prodData.stockUnit}
                       onChange={e => setProdData({ ...prodData, stockUnit: toTitleCase(e.target.value) })}

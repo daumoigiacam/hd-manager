@@ -300,9 +300,7 @@ try {
       };
     });
 
-    assert(formStructure.barcodeHasScanAction, `${viewport.name}: barcode must share a row with Quét ảnh/QR`);
-    assert.equal(formStructure.scanButtonBorderStyle, 'solid', `${viewport.name}: scan action must use the same visible field frame`);
-    assert.notEqual(formStructure.barcodeColumns, 'none', `${viewport.name}: barcode row must be a grid`);
+    assert.equal(formStructure.barcodeHasScanAction, false, `${viewport.name}: new products must not show barcode scanning`);
     assert(formStructure.imagePickerSharesNameRow, `${viewport.name}: image picker must share the product-name row`);
     assert.notEqual(formStructure.shortCategoryColumns, 'none', `${viewport.name}: short name and group must share a row`);
     assert.notEqual(formStructure.unitAttributesColumns, 'none', `${viewport.name}: unit and attributes must share a row`);
@@ -317,19 +315,19 @@ try {
     assert(Math.max(...formStructure.fieldHeights) - Math.min(...formStructure.fieldHeights) <= 1, `${viewport.name}: every field must have equal height`);
     assert(formStructure.pairedLabelTopDeltas.every(delta => delta <= 1), `${viewport.name}: paired field labels must share the same baseline`);
     assert.equal(formStructure.titleTypography.fontSize, '24px', `${viewport.name}: editor title must use the recommended 24px mobile heading size`);
-    assert.match(formStructure.titleTypography.fontFamily, /Times New Roman|Liberation Serif|Georgia|serif/i, `${viewport.name}: editor title must use the approved serif heading stack`);
-    assert.equal(formStructure.titleTypography.color, 'rgb(196, 122, 74)', `${viewport.name}: editor title must use the readable platinum-orange heading color`);
+    assert.match(formStructure.titleTypography.fontFamily, /Inter|sans-serif/i, `${viewport.name}: editor title uses the body font family`);
+    assert.equal(formStructure.titleTypography.color, 'rgb(28, 34, 48)', `${viewport.name}: editor title uses dark neutral text`);
     assert(['normal', '0px'].includes(formStructure.titleTypography.letterSpacing), `${viewport.name}: editor title must not use negative letter spacing`);
     assert.equal(formStructure.labelTypography.fontSize, '13px', `${viewport.name}: compact field titles must use the selected 13px size`);
     assert.match(formStructure.labelTypography.fontFamily, /Inter|sans-serif/i, `${viewport.name}: field captions must use the product body sans-serif stack`);
     assert(['normal', '0px'].includes(formStructure.labelTypography.letterSpacing), `${viewport.name}: field captions must not use negative letter spacing`);
-    assert.equal(formStructure.inputTypography.fontSize, formStructure.labelTypography.fontSize, `${viewport.name}: field values and field titles must use the same size`);
+    assert.equal(formStructure.inputTypography.fontSize, '16px', `${viewport.name}: values avoid mobile input zoom`);
     assert.equal(formStructure.inputTypography.fontFamily, formStructure.labelTypography.fontFamily, `${viewport.name}: field values and field titles must use the same font`);
     assert.equal(formStructure.inputTypography.fontWeight, formStructure.labelTypography.fontWeight, `${viewport.name}: field values and field titles must use the same weight`);
     assert.match(formStructure.inputTypography.fontFamily, /Inter|sans-serif/i, `${viewport.name}: field values must use the product body sans-serif stack`);
     assert.equal(formStructure.inputTypography.color, 'rgb(17, 17, 17)', `${viewport.name}: field values must use clean black text`);
     assert(['normal', '0px'].includes(formStructure.inputTypography.letterSpacing), `${viewport.name}: field values must not use negative letter spacing`);
-    assert(formStructure.allInputTypography.every(style => style.fontSize === formStructure.labelTypography.fontSize), `${viewport.name}: every text and numeric input must match the field-title size`);
+    assert(formStructure.allInputTypography.every(style => style.fontSize === '16px'), `${viewport.name}: all input values use 16px`);
     assert(formStructure.allInputTypography.every(style => style.fontFamily === formStructure.labelTypography.fontFamily), `${viewport.name}: every text and numeric input must match the field-title font`);
     assert(formStructure.allInputTypography.every(style => style.fontWeight === formStructure.labelTypography.fontWeight), `${viewport.name}: every text and numeric input must match the field-title weight`);
     assert(formStructure.allInputTypography.every(style => style.color === 'rgb(17, 17, 17)'), `${viewport.name}: every text and numeric input must render in black`);

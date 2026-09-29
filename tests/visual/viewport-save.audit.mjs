@@ -10,7 +10,8 @@ const claims = {
   accountType: 'employee', role: 'super_admin', name: 'Quản trị Demo', phone: '0909000001',
 };
 const token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
-const today = new Date().toISOString().slice(0, 10);
+const localNow = new Date();
+const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 const store = {
   orderRequests: {
     or_viewport_audit: {

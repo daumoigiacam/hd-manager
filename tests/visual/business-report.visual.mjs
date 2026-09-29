@@ -61,8 +61,8 @@ try {
     }
     const report = page.locator('.business-report-workspace');
     await report.waitFor({ timeout: 15000 });
-    await report.locator('.business-report-header__brand strong').waitFor();
-    assert.equal(await report.locator('.business-report-header__brand strong').innerText(), 'Công ty HD Preview');
+    await report.locator('.hd-account-greeting__name').waitFor();
+    assert.equal(await report.locator('.hd-account-greeting__name').innerText(), 'Công ty HD Preview');
     assert.equal(await report.locator('.business-report-kpi').count(), 4, 'Home shows exactly four totals');
     for (const heading of ['Doanh thu & lợi nhuận', 'Cơ cấu doanh thu tháng', 'Top nhân viên kinh doanh', 'Khách hàng nổi bật', 'Top sản phẩm', 'Cảnh báo cần chú ý', 'Nhận định & gợi ý']) {
       await report.getByRole('heading', { name: heading, exact: true }).waitFor();
