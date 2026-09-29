@@ -8,10 +8,12 @@ export default function AccountGreeting({ name, logoUrl = '', companyName = '' }
     const update = () => setGreeting(getAccountGreeting());
     const timer = window.setInterval(update, 30000);
     window.addEventListener('focus', update);
+    window.addEventListener('pageshow', update);
     document.addEventListener('visibilitychange', update);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('focus', update);
+      window.removeEventListener('pageshow', update);
       document.removeEventListener('visibilitychange', update);
     };
   }, []);

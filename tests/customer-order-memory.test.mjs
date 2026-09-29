@@ -319,6 +319,7 @@ test('order request UI exposes only configured customer products before the plus
 
 test('successful save records the new order ID before updating memory', () => {
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(savedRequests\)/);
+  assert.match(appSource, /onPersisted: \(\{ id, request \}\) => \{/);
+  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
   assert.match(appSource, /mergeCustomerOrderMemoryHistory\(/);
 });
