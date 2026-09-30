@@ -38,11 +38,22 @@ public class NativeSafeAreaPlugin extends Plugin {
             Insets status = windowInsets.getInsets(WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.displayCutout());
             Insets navigation = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars());
             float density = getContext().getResources().getDisplayMetrics().density;
+            // Capacitor may already inset the WebView on older Android WebViews.
+            // CSS must reserve only the part still overlapping its actual bounds.
+            View webView = getBridge().getWebView();
+            int[] webLocation = new int[2];
+            int[] decorLocation = new int[2];
+            webView.getLocationInWindow(webLocation);
+            decorView.getLocationInWindow(decorLocation);
+            int topGap = Math.max(0, webLocation[1] - decorLocation[1]);
+            int bottomGap = Math.max(0, decorView.getHeight() - topGap - webView.getHeight());
+            int leftGap = Math.max(0, webLocation[0] - decorLocation[0]);
+            int rightGap = Math.max(0, decorView.getWidth() - leftGap - webView.getWidth());
             JSObject result = new JSObject();
-            result.put("top", Math.ceil(status.top / density));
-            result.put("right", Math.ceil(Math.max(status.right, navigation.right) / density));
-            result.put("bottom", Math.ceil(navigation.bottom / density));
-            result.put("left", Math.ceil(Math.max(status.left, navigation.left) / density));
+            result.put("top", Math.ceil(Math.max(0, status.top - topGap) / density));
+            result.put("right", Math.ceil(Math.max(0, Math.max(status.right, navigation.right) - rightGap) / density));
+            result.put("bottom", Math.ceil(Math.max(0, navigation.bottom - bottomGap) / density));
+            result.put("left", Math.ceil(Math.max(0, Math.max(status.left, navigation.left) - leftGap) / density));
             call.resolve(result);
         } catch (RuntimeException error) {
             call.reject("Unable to read system window insets", error);

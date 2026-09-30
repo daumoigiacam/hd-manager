@@ -4,6 +4,9 @@
   "webDir": "dist",
   "bundledWebRuntime": false,
   "plugins": {
+    "SystemBars": {
+      "style": "LIGHT"
+    },
     "LocalNotifications": {
       "presentationOptions": [
         "badge",

@@ -10,7 +10,7 @@ header:has(.hd-account-greeting),
 .hd-shell--staff .hd-dashboard-masthead:has(.hd-account-greeting),
 .hd-dashboard-masthead:has(.hd-account-greeting),
 .hd-staff-greeting-surface {
-  background: #edf5f3 !important;
+  background: #d4e7e2 !important;
   color: #214d46 !important;
   border-bottom: 1px solid #d8e6e2;
   box-shadow: 0 1px 4px rgb(33 77 70 / 5%);
