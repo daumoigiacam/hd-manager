@@ -268,3 +268,13 @@ Current transformation working-tree files are listed below. Earlier committed sh
 5. Android Chrome completion outliers and native confirmation-inclusive durations are preserved. Universal instant operation or 100% external delivery cannot be honestly promised from these measurements.
 
 All audit-owned test servers/Firestore emulator processes were closed by their test lifecycle or explicitly stopped after identity verification. The user's existing localhost server and emulator were left available. No new commit/push/deploy is implied by this local validation report. The master task's full production-ready acceptance gate remains **NOT SATISFIED**, despite the verified local improvements above.
+
+## Requested Release Follow-Up
+
+The owner subsequently requested a GitHub push and APK/AAB packaging. Android packaging targets `com.hdmanager.app`, version `1.0.3`, versionCode `26100101`, with the existing private signing configuration outside Git. The signer matches the previous 1.0.2 APK. This is not a new claim of full production acceptance.
+
+The initial source push `7106d839` triggered workflow 147, which stopped before deployment at the production dependency audit. The newly published advisories affect the locked DOMPurify and gRPC versions. Narrow overrides update DOMPurify to `3.4.16` and gRPC to `1.14.5` in the app/Functions dependency trees; Firebase is not downgraded and no security gate is disabled. See the maintainer advisories for [DOMPurify](https://github.com/advisories/GHSA-p98j-92pf-mc4p), [gRPC authentication](https://github.com/advisories/GHSA-m9gg-hp2v-232j), and [gRPC error disclosure](https://github.com/advisories/GHSA-f596-whhp-79r4).
+
+After the dependency patch, the app production audit reports zero vulnerabilities; the Functions audit passes its existing high-severity threshold with three remaining moderate advisories. The full functional suite passes again. Actual SDK local-emulator tests also pass for persistence, atomic rollback, offline/reconnect, idempotency and six customer messaging/realtime cases. The earlier SDK measurement JSON is preserved as `test-results/release-1.0.3-before-sdk-patch.json`; new results and logs are separate release follow-up evidence, not replacements for the before/after timings above. The emulator server additionally emitted Netty warnings during this local run; passing client assertions do not certify the emulator implementation or production transport.
+
+Final artifact hashes, build ID and deployment outcome belong to the release artifact record. No upload to Google Play or physical-device acceptance is implied by packaging.
