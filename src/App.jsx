@@ -4,6 +4,7 @@ import { startTransition } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
 import { isSamePendingWriteRevision } from './utils/pendingWriteRevision.js';
+import { retainCollectionIdentity } from './utils/collectionIdentity.js';
 import { canSaveLocallyFirst, coalescePendingWrite } from './utils/localFirstSave.js';
 import { ATOMIC_SAVE_COLLECTION, validateAtomicWrites, mergeAtomicWrites, expandPendingWrites, commitAtomicWrites } from './utils/atomicSave.js';
 import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
@@ -296,7 +297,8 @@ import { Geolocation } from '@capacitor/geolocation';
 import { Share as CapacitorShare } from '@capacitor/share';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { useChunkedList, useDebouncedValue } from './services/renderOptimization';
+import { useChunkedList, useDebouncedValue, usePagedList } from './services/renderOptimization';
+import { ListPagination } from './design-system/ListPagination.jsx';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
 import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
 import {
@@ -328,6 +330,8 @@ import {
   isPerformanceMonitorEnabled,
   recordFirestoreOperation,
   recordPerformanceEvent,
+  recordReactRender,
+  trackRealtimeSubscription,
 } from './services/performanceMonitor.js';
 import { recordStartupEvent } from './services/startupTelemetry.js';
 import {
@@ -959,9 +963,11 @@ const onSnapshot = (targetRef, ...snapshotArgs) => {
 
   try {
     const unsubscribe = firebaseOnSnapshot(targetRef, ...wrappedArgs);
+    const closeSubscription = trackRealtimeSubscription({ provider: 'firestore', path });
     subscribeSpan.end({ status: 'subscribed' });
     return () => {
       recordPerformanceEvent('realtime.unsubscribe', { provider: 'firestore', path });
+      closeSubscription();
       unsubscribe();
     };
   } catch (error) {
@@ -2584,10 +2590,13 @@ const resolveSalaryMonthDays = (employee = {}, monthKey = getTodayString().subst
   return parsed > 0 ? parsed : getActualCalendarDaysInMonth(monthKey);
 };
 
+const viNumberFormatter = new Intl.NumberFormat('vi-VN');
+const viPercentFormatter = new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 });
+
 const formatInputCurrency = (val) => {
   if (val === '' || val === undefined || val === null) return '';
   const num = parseInt(val.toString().replace(/\D/g, ''), 10);
-  return isNaN(num) ? '' : new Intl.NumberFormat('vi-VN').format(num);
+  return isNaN(num) ? '' : viNumberFormatter.format(num);
 };
 
 const parseInputCurrency = (val) => {
@@ -2688,7 +2697,7 @@ const calculateAttendanceTiming = (employee = {}, entry = {}) => {
 
 const formatCurrency = (amount) => {
   if (amount === undefined || amount === null || isNaN(amount)) return '0';
-  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(amount) || 0));
+  return viNumberFormatter.format(Math.round(Number(amount) || 0));
 };
 
 const roundMoneyValue = (amount) => {
@@ -2762,9 +2771,7 @@ const getEmployeeSalaryAdvanceLimitConfig = (company = null, employee = null, cu
     : { isUnlimited: false, percent: companyPercent, source: 'company' };
 };
 
-const formatPercentValue = (value) => new Intl.NumberFormat('vi-VN', {
-  maximumFractionDigits: 2
-}).format(normalizeSalaryAdvancePercent(value));
+const formatPercentValue = (value) => viPercentFormatter.format(normalizeSalaryAdvancePercent(value));
 
 const parseSalaryAdvancePercentSettingInput = (value) => {
   const text = `${value ?? ''}`.trim();
@@ -2804,12 +2811,12 @@ const describeSalaryAdvanceLimitInput = (value) => {
   const parsed = parseSalaryAdvancePercentSettingInput(value);
   if (parsed.isUnlimited) return 'Không giới hạn, chờ duyệt';
   if (parsed.invalid) return 'Cần nhập số % hợp lệ';
-  return `Tối đa ${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(parsed.percent)}% lương`;
+  return `Tối đa ${viPercentFormatter.format(parsed.percent)}% lương`;
 };
 
 const formatNumber = (value) => {
   if (value === undefined || value === null || Number.isNaN(value)) return '0';
-  return new Intl.NumberFormat('vi-VN').format(value);
+  return viNumberFormatter.format(value);
 };
 
 const isDateOnlyString = (value = '') => /^\d{4}-\d{2}-\d{2}$/.test(`${value || ''}`.trim());
@@ -6985,8 +6992,7 @@ const normalizeCustomerPriceOverrides = (source = {}) => {
   }, {});
 };
 
-const normalizeCustomerProductIds = (customer = {}, products = []) => {
-  const validProductIds = new Set((products || []).map(product => product.id).filter(Boolean));
+const normalizeCustomerProductIds = (customer = {}, products = [], validProductIds = new Set((products || []).map(product => product.id).filter(Boolean))) => {
   const savedIds = Array.isArray(customer?.customerProductIds)
     ? customer.customerProductIds
     : (Array.isArray(customer?.quotedProductIds) ? customer.quotedProductIds : []);
@@ -12209,11 +12215,11 @@ export default function App() {
     if (isInitialDataLoaded) recordStartupEvent('background.sync.completed');
   }, [isInitialDataLoaded]);
 
-  const persistPendingFirebaseWrites = (writes = []) => {
+  const persistPendingFirebaseWrites = (writes = [], { alreadyPersisted = false } = {}) => {
     const companyId = activeTenantScopeRef.current;
     const safeWrites = (Array.isArray(writes) ? writes : []).filter(item => item?.companyId === companyId);
     pendingFirebaseWritesRef.current = safeWrites;
-    savePendingFirebaseWrites(safeWrites, companyId);
+    if (!alreadyPersisted) savePendingFirebaseWrites(safeWrites, companyId);
     setPendingFirebaseWriteCount(safeWrites.length);
   };
 
@@ -12251,7 +12257,8 @@ export default function App() {
       window.localStorage.setItem(storageKey, serialized);
       if (window.localStorage.getItem(storageKey) !== serialized) throw new Error('Không thể lưu tạm phiếu trên thiết bị.');
     }
-    persistPendingFirebaseWrites(nextWrites);
+    // Durable enqueue has already written and verified this exact revision.
+    persistPendingFirebaseWrites(nextWrites, { alreadyPersisted: durable });
     const pendingMessage = durable || isFirestoreInternalAssertionError(error)
       ? `Đã ghi nhận thao tác và đang đồng bộ nền ${nextWrites.length} lệnh.`
       : `Firebase đang hết quota hoặc phản hồi chậm. Đã lưu tạm ${nextWrites.length} lệnh và sẽ tự đồng bộ lại.`;
@@ -13961,7 +13968,7 @@ export default function App() {
             if (hasCollectionValue(stableValue, isObject)) return stableValue;
           }
           if (!nextHasData && !hasCollectionValue(prevValue, isObject)) return prevValue;
-          return nextValue;
+          return retainCollectionIdentity(prevValue, nextValue);
         });
 
         markCollectionLoaded(colName);
@@ -25254,7 +25261,7 @@ function MainAppView({
   );
 
   const renderExecutiveDashboard = () => (
-<MemoizedExecutiveDashboardView employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+<MemoizedExecutiveDashboardView isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
   );
 
   const renderClassicDashboard = () => (
@@ -25665,7 +25672,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
     || rolePermissionActions?.customers?.view_assigned_customers
   );
   const shellSearchCustomers = useMemo(() => {
-    if (!tabPermissions.customers) return [];
+    if (!shellSearchOpen || !tabPermissions.customers) return [];
     const salesVisibleEmployeeIds = new Set();
     if (employee?.id) {
       salesVisibleEmployeeIds.add(employee.id);
@@ -25695,17 +25702,17 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       if (isEmployeeSalesPosition(employee)) return salesVisibleEmployeeIds.has(customer.empId);
       return customer.empId === employee?.id;
     });
-  }, [customers, employees, employee, shellCanViewAllCustomers, shellCanViewAssignedCustomers, tabPermissions.customers, warehouseDispatches]);
+  }, [shellSearchOpen, customers, employees, employee, shellCanViewAllCustomers, shellCanViewAssignedCustomers, tabPermissions.customers, warehouseDispatches]);
   const shellCanViewEmployees = Boolean(isOwnerAccount || isSuperAdmin || canRoleAction('employees', 'view_employees'));
   const shellSearchEmployees = useMemo(() => (
-    tabPermissions.employees && shellCanViewEmployees
+    shellSearchOpen && tabPermissions.employees && shellCanViewEmployees
       ? (employees || []).filter(item => item && !item.isArchived)
       : []
-  ), [employees, shellCanViewEmployees, tabPermissions.employees]);
+  ), [shellSearchOpen, employees, shellCanViewEmployees, tabPermissions.employees]);
   const shellCanViewCashflow = Boolean(isOwnerAccount || canRoleAction('finance', 'view_all_cashflow'));
   const shellCanApproveCashflow = Boolean(isOwnerAccount || canRoleAction('finance', 'approve_driver_cashflow'));
   const shellSearchTransactions = useMemo(() => {
-    if (!tabPermissions.finance) return [];
+    if (!shellSearchOpen || !tabPermissions.finance) return [];
     const isVisibleTransaction = (item = {}) => (
       shellCanViewCashflow
       || shellCanApproveCashflow
@@ -25742,13 +25749,13 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           method: getPaymentMethodLabel(item),
         };
       });
-  }, [employee?.id, expenses, isOwnerAccount, payments, rolePermissionActions, rolePermissionKey, shellCanApproveCashflow, shellCanViewCashflow, shellSearchCustomers, tabPermissions.finance]);
+  }, [shellSearchOpen, employee?.id, expenses, isOwnerAccount, payments, rolePermissionActions, rolePermissionKey, shellCanApproveCashflow, shellCanViewCashflow, shellSearchCustomers, tabPermissions.finance]);
   const shellCanViewSuppliers = Boolean(
     tabPermissions.warehouse_import
     && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import'))
   );
   const shellSearchSuppliers = useMemo(() => {
-    if (!shellCanViewSuppliers) return [];
+    if (!shellSearchOpen || !shellCanViewSuppliers) return [];
     const unique = new Map();
     (warehouseImports || [])
       .filter(item => item && !item.isArchived)
@@ -25767,7 +25774,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         });
       });
     return Array.from(unique.values());
-  }, [shellCanViewSuppliers, warehouseImports]);
+  }, [shellSearchOpen, shellCanViewSuppliers, warehouseImports]);
   const shellCanViewAssets = Boolean(
     tabPermissions.asset_management
     && (isOwnerAccount || isSuperAdmin || canRoleAction('asset_management', 'view_assets'))
@@ -25779,12 +25786,13 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
     tabPermissions.products
     && (isOwnerAccount || isSuperAdmin || canRoleAction('products', 'view_products'))
   );
-  const shellSearchProducts = useMemo(() => (products || []).filter(product => (
+  const shellSearchProducts = useMemo(() => !shellSearchOpen ? [] : (products || []).filter(product => (
     shellCanViewProducts
     && product
     && (!product.isArchived || isOwnerAccount || isSuperAdmin || canRoleAction('products', 'view_archived_products'))
-  )), [isOwnerAccount, isSuperAdmin, products, rolePermissionActions, rolePermissionKey, shellCanViewProducts]);
+  )), [shellSearchOpen, isOwnerAccount, isSuperAdmin, products, rolePermissionActions, rolePermissionKey, shellCanViewProducts]);
   const shellSearchDocuments = useMemo(() => {
+    if (!shellSearchOpen) return [];
     const documents = [];
     if (shellCanViewAssets) {
       (assets || []).filter(asset => asset && !asset.isArchived).forEach(asset => {
@@ -25835,8 +25843,8 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       });
     }
     return documents;
-  }, [assets, employees, shellCanViewAssets, shellCanViewEmployeeDocuments]);
-  const shellSearchEntitySections = useMemo(() => buildGlobalSearchSections({
+  }, [shellSearchOpen, assets, employees, shellCanViewAssets, shellCanViewEmployeeDocuments]);
+  const shellSearchEntitySections = useMemo(() => !shellSearchOpen ? [] : buildGlobalSearchSections({
     query: debouncedShellSearchKeyword,
     customers: shellSearchCustomers,
     visibleCustomers: shellSearchCustomers,
@@ -25861,6 +25869,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
     },
     limitPerSection: 4,
   }), [
+    shellSearchOpen,
     isOwnerAccount,
     isSuperAdmin,
     orders,
@@ -26209,7 +26218,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       {renderHeader()}
       {renderShellSearchDialog()}
 
-      <main ref={mainContentRef} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
+      <main ref={mainContentRef} data-hd-module={activeTab} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
         {keepExecutiveDashboardMounted && (
           <div style={{ display: (activeTab === 'home' || activeTab === 'executive_dashboard') && canAccess(activeTab) ? undefined : 'none' }}>
@@ -26218,7 +26227,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
               resetKey={currentCompany?.id || ''}
               onReset={() => setRootActiveTab(primaryWorkTab || 'home')}
             >
-              {renderExecutiveDashboard()}
+              <React.Profiler id="ExecutiveDashboard" onRender={recordReactRender}>
+                {renderExecutiveDashboard()}
+              </React.Profiler>
             </AppSectionErrorBoundary>
           </div>
         )}
@@ -26227,7 +26238,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           resetKey={activeTab}
           onReset={() => setRootActiveTab(primaryWorkTab || 'home')}
         >
-          {renderContent()}
+          <React.Profiler id={`Module:${activeTab}`} onRender={recordReactRender}>
+            {renderContent()}
+          </React.Profiler>
         </AppSectionErrorBoundary>
       </main>
 
@@ -37084,6 +37097,23 @@ const buildPricingGroupRowsFromInputs = (latestInputsByGroup = {}, salesGroupsBy
   return [...activePresetGroups, ...dynamicGroups];
 };
 
+const buildPricingCandidateIndexes = (productCandidates) => {
+  const pricedCandidateByCell = new Map();
+  const catalogCandidateByCell = new Map();
+  productCandidates.forEach(item => {
+    const typeKey = inferPricingTypeKeyFromText(item.name);
+    const groupKey = inferPricingGroupKeyFromText(`${item.groupName} ${item.name}`);
+    const priceKey = `${groupKey}:${typeKey}`;
+    if (item.price > 0 && !pricedCandidateByCell.has(priceKey)) pricedCandidateByCell.set(priceKey, item);
+    if (item.isCatalogProduct) {
+      const catalogGroup = getPricingProductGroupKey({ name: item.name, groupName: item.groupName });
+      const catalogKey = `${catalogGroup}:${typeKey}`;
+      if (!catalogCandidateByCell.has(catalogKey)) catalogCandidateByCell.set(catalogKey, item);
+    }
+  });
+  return { pricedCandidateByCell, catalogCandidateByCell };
+};
+
 const buildPricingTodayPriceMatrix = ({
   groupPresets = PRICING_LOSS_GROUP_PRESETS,
   typeColumns = PRICING_TODAY_PRICE_COLUMNS,
@@ -37119,6 +37149,9 @@ const buildPricingTodayPriceMatrix = ({
     })),
   ].filter(item => item.name || item.groupName);
 
+  // Preserve first-match priority, but classify each candidate once per matrix.
+  const { pricedCandidateByCell, catalogCandidateByCell } = buildPricingCandidateIndexes(productCandidates);
+
   return groupPresets.map(group => {
     const groupMargin = getPricingGroupMargin(marginByGroup, group.key, fallbackMargin);
     const stages = Array.isArray(lossStageGroups?.[group.key]) ? lossStageGroups[group.key] : group.stages;
@@ -37139,20 +37172,9 @@ const buildPricingTodayPriceMatrix = ({
         inferPricingTypeKeyFromText(part?.partName) === column.key &&
         parseLooseMoneyValue(part?.suggestedPrice) > 0
       ));
-      const matchingProduct = productCandidates.find(item => {
-        const groupKey = inferPricingGroupKeyFromText(`${item.groupName} ${item.name}`);
-        const typeKey = inferPricingTypeKeyFromText(item.name);
-        return groupKey === group.key && typeKey === column.key && item.price > 0;
-      });
-      const matchingCatalogProduct = productCandidates.find(item => {
-        if (!item.isCatalogProduct) return false;
-        const groupKey = getPricingProductGroupKey({
-          name: item.name,
-          groupName: item.groupName,
-        });
-        const typeKey = inferPricingTypeKeyFromText(item.name);
-        return groupKey === group.key && typeKey === column.key;
-      });
+      const cellKey = `${group.key}:${column.key}`;
+      const matchingProduct = pricedCandidateByCell.get(cellKey);
+      const matchingCatalogProduct = catalogCandidateByCell.get(cellKey);
       const productMargin = matchingCatalogProduct
         ? getPricingProductTargetMargin(normalizedProductMargins, matchingCatalogProduct.productKey, hasProductMarginConfig ? 0 : groupMargin)
         : groupMargin;
@@ -39785,7 +39807,6 @@ function SimplePricingEngineView({
 
 function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, customers = [], products = [], orders = [], payments = [], isAccounting = false, isSales = false, isOwnerAccount = false, onEditCustomer }) {
   const [selectedProductIds, setSelectedProductIds] = useState([]);
-  const [productSearch, setProductSearch] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [selectedQuoteCustomerId, setSelectedQuoteCustomerId] = useState('');
   const [quoteStatus, setQuoteStatus] = useState('');
@@ -39798,6 +39819,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
   const [selectedBatchCustomerIds, setSelectedBatchCustomerIds] = useState([]);
   const [isApplyingBatchPrice, setIsApplyingBatchPrice] = useState(false);
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
+  const activeProductIdSet = useMemo(() => new Set(activeProducts.map(product => product.id).filter(Boolean)), [activeProducts]);
   const activeProductIdKey = activeProducts.map(product => product.id).join('|');
 
   useEffect(() => {
@@ -39857,9 +39879,9 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
   const allFixedBatchProductCustomers = useMemo(() => {
     if (!batchPriceProductId) return [];
     return managedCustomers
-      .filter(customer => normalizeCustomerProductIds(customer, activeProducts).includes(batchPriceProductId))
+      .filter(customer => normalizeCustomerProductIds(customer, activeProducts, activeProductIdSet).includes(batchPriceProductId))
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi'));
-  }, [activeProducts, batchPriceProductId, managedCustomers]);
+  }, [activeProducts, activeProductIdSet, batchPriceProductId, managedCustomers]);
   const fixedBatchProductCustomers = useMemo(() => {
     const keyword = normalizeLookupText(batchCustomerSearch);
     if (!keyword) return allFixedBatchProductCustomers;
@@ -39880,11 +39902,6 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
     [fixedBatchProductCustomerIdSet, selectedBatchCustomerIds]
   );
 
-  const filteredProducts = useMemo(() => {
-    const keyword = normalizeLookupText(productSearch);
-    if (!keyword) return activeProducts;
-    return activeProducts.filter(product => productMatchesLookup(product, keyword));
-  }, [activeProducts, productSearch]);
   const selectedQuoteCustomer = useMemo(
     () => managedCustomers.find(customer => customer.id === selectedQuoteCustomerId) || null,
     [managedCustomers, selectedQuoteCustomerId]
@@ -40412,7 +40429,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
             </div>
 
             {quoteStatus && (
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-700">
+              <div role="status" className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-700">
                 {quoteStatus}
               </div>
             )}
@@ -40436,48 +40453,6 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
               Gửi thông báo Zalo
             </button>
           </div>
-        )}
-      </div>
-
-      <div className="hidden rounded-3xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-black text-slate-900">Chọn sản phẩm báo giá</p>
-            <p className="text-xs text-slate-500 mt-1">Mặc định lấy đúng sản phẩm đã chọn trong hồ sơ khách hàng.</p>
-          </div>
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setSelectedProductIds(activeProducts.map(product => product.id))} className="rounded-full border border-emerald-100 px-3 py-1.5 text-[11px] font-bold text-emerald-600">
-              Chọn tất cả
-            </button>
-            <button type="button" onClick={() => setSelectedProductIds([])} className="rounded-full border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">
-              Bỏ chọn
-            </button>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-          <Search size={16} className="text-gray-400" />
-          <input data-hd-search-input="true" value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm sản phẩm để chọn báo giá" />
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {filteredProducts.map(product => {
-            const isSelected = selectedProductIds.includes(product.id);
-            return (
-              <button
-                key={product.id}
-                type="button"
-                onClick={() => toggleProduct(product.id)}
-                className={`shrink-0 min-w-[150px] rounded-2xl border px-3 py-3 text-left transition-colors ${isSelected ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-100 bg-white text-slate-600 hover:bg-slate-50'}`}
-              >
-                <p className="text-sm font-black leading-5">{product.name}</p>
-                <p className="mt-1 text-[11px] font-semibold">{formatCurrency(product.sellingPrice || 0)} đ/{product.unit || 'đv'}</p>
-              </button>
-            );
-          })}
-        </div>
-        {filteredProducts.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-gray-200 px-3 py-4 text-center text-xs text-gray-400">
-            Không có sản phẩm phù hợp.
-          </p>
         )}
       </div>
 
@@ -40527,11 +40502,6 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
           </button>
         </div>
         <textarea readOnly value={quotePreview} className="min-h-[220px] w-full rounded-2xl border border-gray-100 bg-slate-50 p-3 text-sm leading-6 outline-none" />
-        {quoteStatus && (
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-700">
-            {quoteStatus}
-          </div>
-        )}
         <button
           type="button"
           onClick={handleShareAll}
@@ -41848,7 +41818,18 @@ function ExecutiveDashboardView({
   );
 }
 
-const MemoizedExecutiveDashboardView = React.memo(ExecutiveDashboardView);
+const areExecutiveDashboardPropsEqual = (previousProps, nextProps) => {
+  // Keep the dashboard mounted so returning Home is instant, but freeze its
+  // expensive report tree while another module owns the screen.
+  if (!nextProps.isActive) return !previousProps.isActive;
+  if (!previousProps.isActive) return false;
+  const previousKeys = Object.keys(previousProps);
+  const nextKeys = Object.keys(nextProps);
+  return previousKeys.length === nextKeys.length
+    && nextKeys.every(key => Object.is(previousProps[key], nextProps[key]));
+};
+
+const MemoizedExecutiveDashboardView = React.memo(ExecutiveDashboardView, areExecutiveDashboardPropsEqual);
 
 function ExecutivePeriodSummaryCard({
   title,
@@ -47345,6 +47326,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   }, [periodTransactions, transactionTypeFilter, searchKeyword, expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter, hasExpenseDetailFilter, employeeNameMap, customerNameMap, orderByIdMap, orderByCodeMap, assetByIdMap, deliveryReportByIdMap]);
 
   const officialTransactions = filteredTransactions.filter(item => isCashflowOfficial(item));
+  const transactionPage = usePagedList(filteredTransactions, JSON.stringify([
+    filterDate, periodType, transactionTypeFilter, searchKeyword,
+    expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter,
+  ]));
   const pendingTransactions = filteredTransactions.filter(item => getCashflowApprovalMeta(item).status === CASHFLOW_APPROVAL_STATUS.pending);
   const totalExpense = officialTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
   const totalIncome = officialTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
@@ -47725,9 +47710,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
           <p className="p-4 text-center text-sm text-gray-400">Chưa có giao dịch nào trong ngày đã chọn.</p>
         ) : (
           <div className="space-y-2 bg-slate-50/70 p-3">
-            {filteredTransactions.map(transaction => {
+            <ListPagination pagination={transactionPage} label="Phân trang thu chi" />
+            {transactionPage.items.map(transaction => {
                         const isExpense = transaction.transactionType === 'expense';
-                        const empName = employees.find(emp => emp.id === transaction.empId)?.name || 'Kế toán';
+                        const empName = employeeNameMap[transaction.empId] || 'Kế toán';
                         const customerName = resolvePaymentCustomerName(transaction) || customerNameMap[transaction.customerId] || 'Khách hàng';
                         const approvalMeta = getCashflowApprovalMeta(transaction);
                         const isOfficialTransaction = isCashflowOfficial(transaction);
@@ -68559,7 +68545,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
     return false;
   });
 
-  const activeProducts = products.filter(p => !!p.isArchived === showArchived);
+  const activeProducts = useMemo(() => products.filter(p => !!p.isArchived === showArchived), [products, showArchived]);
   const inventoryMetrics = useMemo(() => buildInventoryMetrics(products, orders, { untilDate: getTodayString(), warehouseImports, warehouseDispatches }), [products, orders, warehouseImports, warehouseDispatches]);
   const inventoryByProductId = useMemo(
     () => new Map(inventoryMetrics.productRows.map(row => [row.id, row])),
@@ -68609,6 +68595,9 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
     [displayedProducts, inventoryByProductId]
   );
   const visibleProducts = productTab === 'inventory' ? inventoryProducts : displayedProducts;
+  const productPage = usePagedList(visibleProducts, JSON.stringify([
+    productTab, productSearch, activeCategory, selectedUnit, discountFilter, showArchived,
+  ]));
   const hasProductFilters = hasTokenSearchQuery(productSearch)
     || activeCategory !== 'Tất cả'
     || selectedUnit !== 'Tất cả'
@@ -69072,8 +69061,10 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
             </div>
         </div>
       ) : (
+      <>
+        <ListPagination pagination={productPage} label="Phân trang sản phẩm" />
       <div className="hd-product-list" role="list" aria-label={productTab === 'inventory' ? 'Danh sách tồn kho sản phẩm' : 'Danh sách sản phẩm'}>
-        {visibleProducts.map(p => {
+        {productPage.items.map(p => {
           const inventoryRow = inventoryByProductId.get(p.id) || {};
           const isInventoryTracked = (inventoryRow.openingStock || 0) > 0;
           const isLowStock = isInventoryTracked && (inventoryRow.remainingStock || 0) <= Math.max(1, (inventoryRow.openingStock || 0) * 0.12);
@@ -69087,7 +69078,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
               title={p.barcode ? `Mã: ${p.barcode}` : p.name}
             >
               <div className="hd-product-list__image">
-                {p.image ? <img src={p.image} alt={p.name} /> : <Package size={20}/>}
+                {p.image ? <img src={p.image} alt={p.name} loading="lazy" decoding="async" /> : <Package size={20}/>}
               </div>
 
               <div className="hd-product-list__info">
@@ -69173,6 +69164,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
           />
         )}
       </div>
+      </>
       )}
 
       {!showArchived && canCreate && (
@@ -77102,7 +77094,7 @@ function EmployeeView({
                     title={canEditEmployee ? 'Bấm để đổi ảnh đại diện' : 'Ảnh đại diện'}
                   >
                     {avatarUrl ? (
-                      <img src={avatarUrl} alt={`Ảnh đại diện ${emp.name || ''}`} className="h-full w-full object-cover" />
+                      <img src={avatarUrl} alt={`Ảnh đại diện ${emp.name || ''}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                     ) : (
                       <span>{initials}</span>
                     )}

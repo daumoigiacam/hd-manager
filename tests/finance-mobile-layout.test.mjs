@@ -17,7 +17,9 @@ assert.match(finance, /label: 'T\u1ed5ng thu'[\s\S]*?label: 'T\u1ed5ng chi'[\s\S
 assert.doesNotMatch(finance, /Ch\u00eanh l\u1ec7ch thu chi trong ng\u00e0y/);
 assert.doesNotMatch(finance, /groupedCashflowJournal/);
 assert.match(finance, />Danh s\u00e1ch thu chi<\/h3>/);
-assert.match(finance, /filteredTransactions\.map\(transaction =>/);
+assert.match(finance, /usePagedList\(filteredTransactions,/);
+assert.match(finance, /transactionPage\.items\.map\(transaction =>/);
+assert.match(finance, /officialTransactions = filteredTransactions\.filter/);
 assert.match(finance, /const timestampDiff = getCashflowSortTimestamp\(b\) - getCashflowSortTimestamp\(a\)/);
 assert.doesNotMatch(finance, /showCashflowCreateMenu/);
 assert.match(finance, /relative hidden md:block[\s\S]*?aria-label="M\u1edf thao t\u00e1c thu chi"/);

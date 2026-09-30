@@ -8,6 +8,7 @@ import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
 import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
+import { resolveKeyboardViewport } from './utils/keyboardViewport.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
@@ -73,10 +74,10 @@ function installResponsiveViewportVars() {
     const focusedEditable = isKeyboardEditableElement(document.activeElement);
     if (viewportHeight > 0 && (!stableViewportHeight || !isTouchLayout || (viewportWidth !== stableViewportWidth && !focusedEditable))) {
       stableViewportHeight = viewportHeight;
+      stableViewportWidth = viewportWidth;
       root.style.setProperty('--hd-viewport-height', `${stableViewportHeight}px`);
     }
     if (viewportWidth > 0) {
-      stableViewportWidth = viewportWidth;
       root.style.setProperty('--hd-viewport-width', `${viewportWidth}px`);
     }
 
@@ -116,15 +117,19 @@ function installResponsiveViewportVars() {
     const layoutHeight = window.innerHeight || document.documentElement.clientHeight || 0;
     const viewportHeight = viewport?.height || layoutHeight;
     const viewportOffsetTop = viewport?.offsetTop || 0;
-    const keyboardHeight = Math.max(0, Math.round(layoutHeight - viewportHeight - viewportOffsetTop));
     const isSmallTouchScreen = Boolean(window.matchMedia?.('(max-width: 768px)')?.matches && navigator.maxTouchPoints > 0);
-    const keyboardVisibleByViewport = focusedEditable && isSmallTouchScreen && keyboardHeight > 110;
+    const viewportState = resolveKeyboardViewport({
+      layoutHeight, visualHeight: viewportHeight, visualTop: viewportOffsetTop,
+      stableHeight: Math.round(window.innerWidth) === stableViewportWidth ? stableViewportHeight : layoutHeight,
+      focusedEditable, smallTouchScreen: isSmallTouchScreen,
+    });
+    const { keyboardHeight, keyboardVisible: keyboardVisibleByViewport } = viewportState;
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const shouldHideBottomNav = Boolean(focusedEditable && (keyboardVisibleByViewport || (isSmallTouchScreen && isIosWeb)));
 
     root.style.setProperty('--hd-keyboard-height', `${keyboardHeight}px`);
-    root.style.setProperty('--hd-modal-viewport-height', `${Math.round(keyboardVisibleByViewport ? viewportHeight : stableViewportHeight || layoutHeight)}px`);
-    root.style.setProperty('--hd-modal-viewport-top', `${Math.round(keyboardVisibleByViewport ? viewportOffsetTop : 0)}px`);
+    root.style.setProperty('--hd-modal-viewport-height', `${viewportState.modalHeight}px`);
+    root.style.setProperty('--hd-modal-viewport-top', `${viewportState.modalTop}px`);
     root.style.setProperty('--hd-modal-safe-bottom', keyboardVisibleByViewport ? '0px' : 'var(--hd-safe-bottom)');
     root.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
     document.body?.classList.toggle('hd-keyboard-open', shouldHideBottomNav);

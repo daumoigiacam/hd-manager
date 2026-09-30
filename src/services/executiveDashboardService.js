@@ -1,6 +1,9 @@
 import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Dashboard builds are synchronous. Cache only for that call, never across
+// saves, tenants or local-timezone changes.
+let activeBuildCache = null;
 
 const toNumber = (value, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -85,9 +88,12 @@ const parseDate = (value) => {
 };
 
 const dateKey = (value) => {
+  const cache = (typeof value === 'string' || typeof value === 'number') ? activeBuildCache?.dates : null;
+  if (cache?.has(value)) return cache.get(value);
   const date = parseDate(value);
-  if (!date) return '';
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const key = date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : '';
+  cache?.set(value, key);
+  return key;
 };
 
 const monthKey = (value) => dateKey(value).slice(0, 7);
@@ -145,10 +151,14 @@ const itemCost = (item = {}) => toNumber(
 );
 
 const itemBillingSnapshot = (item = {}) => {
+  const cache = item && typeof item === 'object' ? activeBuildCache?.billing : null;
+  if (cache?.has(item)) return cache.get(item);
   const snapshot = resolveTransactionBillingSnapshot({ record: item });
-  return snapshot.hasFrozenPricing || toNumber(item.billingSnapshotVersion) > 0
+  const result = snapshot.hasFrozenPricing || toNumber(item.billingSnapshotVersion) > 0
     ? snapshot
     : null;
+  cache?.set(item, result);
+  return result;
 };
 
 const itemLineTotal = (item = {}) => {
@@ -2521,7 +2531,15 @@ export const DashboardService = {
   }
 };
 
-export const buildExecutiveDashboardSnapshot = (input = {}) => DashboardService.build(input);
+export const buildExecutiveDashboardSnapshot = (input = {}) => {
+  const previous = activeBuildCache;
+  activeBuildCache = { dates: new Map(), billing: new WeakMap() };
+  try {
+    return DashboardService.build(input);
+  } finally {
+    activeBuildCache = previous;
+  }
+};
 
 export const buildProductDailyReportSeries = ({ orders = [], products = [], profitability = {}, product = {}, dateKeys = [] } = {}) => {
   const productsById = new Map(toCollectionArray(products).map((item) => [item.id, item]));

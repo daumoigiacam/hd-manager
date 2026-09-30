@@ -3,7 +3,6 @@ const FALSE_VALUES = new Set(['0', 'false', 'no', 'off', 'disabled']);
 
 const DEFAULT_LOG_LIMIT = 800;
 const SLOW_SCREEN_MS = 2000;
-const SLOW_RENDER_MS = 16;
 const MEMORY_SAMPLE_MS = 15000;
 const LOW_FPS_THRESHOLD = 50;
 const PERFORMANCE_ENV = Object.freeze({
@@ -29,6 +28,10 @@ let lastNavigationTs = 0;
 const performanceEvents = [];
 const observers = [];
 const runtimeCleanups = [];
+let interactionSeq = 0;
+let interaction = null;
+let subscriptionSeq = 0;
+const activeSubscriptions = new Map();
 
 const getWindow = () => (typeof window !== 'undefined' ? window : null);
 const getPerformance = () => (typeof performance !== 'undefined' ? performance : null);
@@ -109,6 +112,7 @@ const normalizeError = (error) => ({
 });
 
 const now = () => getPerformance()?.now?.() ?? Date.now();
+const preciseMs = value => Math.round(value * 100) / 100;
 
 const pushEvent = (type, detail = {}, level = 'info') => {
   if (!monitorEnabled) return null;
@@ -119,6 +123,7 @@ const pushEvent = (type, detail = {}, level = 'info') => {
     level,
     at: new Date().toISOString(),
     msSinceOpen: Math.round(now()),
+    interactionId: Object.hasOwn(detail, 'interactionId') ? detail.interactionId : interaction?.id,
     screen: currentScreen || undefined,
     detail: safeJson(detail),
   };
@@ -133,7 +138,6 @@ const pushEvent = (type, detail = {}, level = 'info') => {
 
   if (toBooleanFlag(envFlag('VITE_PERFORMANCE_CONSOLE')) === true) {
     const method = level === 'error' ? 'warn' : 'debug';
-    // eslint-disable-next-line no-console
     console[method]('[HD Performance]', type, entry.detail);
   }
 
@@ -154,18 +158,21 @@ export const createPerformanceSpan = (type, detail = {}) => {
 
   const startTs = now();
   const startAt = Date.now();
+  const interactionId = interaction?.id ?? null;
   let finished = false;
 
   return {
     end(extra = {}) {
       if (finished) return null;
       finished = true;
-      const durationMs = Math.round(now() - startTs);
+      const durationMs = preciseMs(now() - startTs);
       const level = durationMs >= SLOW_SCREEN_MS ? 'warn' : 'info';
       return pushEvent(type, {
         ...detail,
         ...extra,
         durationMs,
+        interactionId,
+        startTimeMs: preciseMs(startTs),
         startedAt: new Date(startAt).toISOString(),
       }, level);
     },
@@ -175,7 +182,9 @@ export const createPerformanceSpan = (type, detail = {}) => {
       return pushEvent(type, {
         ...detail,
         ...extra,
-        durationMs: Math.round(now() - startTs),
+        durationMs: preciseMs(now() - startTs),
+        interactionId,
+        startTimeMs: preciseMs(startTs),
         error: normalizeError(error),
       }, 'error');
     },
@@ -195,7 +204,10 @@ export const measurePerformance = async (type, detail, task) => {
 };
 
 export const recordFirestoreOperation = async (operation, detail, task) => {
-  const span = createPerformanceSpan('database.query', { provider: 'firestore', operation, ...detail });
+  // SDK wall time includes cache, network and retries; it is not database execution time.
+  const span = createPerformanceSpan('firestore.operation', {
+    provider: 'firestore', operation, ...detail, databaseDurationMs: null,
+  });
   try {
     const result = await task();
     span.end({
@@ -213,7 +225,6 @@ export const recordFirestoreOperation = async (operation, detail, task) => {
 export const recordReactRender = (id, phase, actualDuration, baseDuration, startTime, commitTime) => {
   if (!monitorEnabled) return;
   const durationMs = Number(actualDuration || 0);
-  if (durationMs < SLOW_RENDER_MS && phase !== 'mount') return;
 
   pushEvent('render.react', {
     component: id,
@@ -223,6 +234,76 @@ export const recordReactRender = (id, phase, actualDuration, baseDuration, start
     startTimeMs: Math.round(Number(startTime || 0)),
     commitTimeMs: Math.round(Number(commitTime || 0)),
   }, durationMs >= 50 ? 'warn' : 'info');
+};
+
+export const trackRealtimeSubscription = (detail) => {
+  if (!monitorEnabled) return () => {};
+  const id = ++subscriptionSeq;
+  activeSubscriptions.set(id, detail);
+  pushEvent('realtime.active', { id, ...detail, activeCount: activeSubscriptions.size });
+  return () => {
+    if (!activeSubscriptions.delete(id)) return;
+    pushEvent('realtime.closed', { id, ...detail, activeCount: activeSubscriptions.size });
+  };
+};
+
+// Explicit scopes avoid attributing background work to the last tap indefinitely.
+// A test finishes only after checking the expected UI, not after an arbitrary delay.
+export const beginPerformanceInteraction = (action, module) => {
+  if (!monitorEnabled) return null;
+  if (interaction) finishPerformanceInteraction('superseded');
+  interaction = { id: ++interactionSeq, action, module, armedAt: now(), eventStart: null };
+  pushEvent('interaction.armed', { ...interaction });
+  return interaction.id;
+};
+
+export const finishPerformanceInteraction = (status = 'observed', expectedId = interaction?.id) => {
+  if (!interaction || interaction.id !== expectedId) return null;
+  const { id, action, module, eventStart, armedAt } = interaction;
+  const end = now();
+  const result = pushEvent('PERF_INTERACTION', {
+    interactionId: id, action, module, status,
+    startTimeMs: eventStart, endTimeMs: end,
+    totalMs: eventStart === null ? null : preciseMs(end - eventStart),
+    automationBeforeEventMs: eventStart === null ? null : preciseMs(eventStart - armedAt),
+    databaseDurationMs: null,
+    attribution: 'overlapping work, not proof of causality',
+  });
+  interaction = null;
+  return result;
+};
+
+const installInteractionObserver = () => {
+  const win = getWindow();
+  if (!win) return;
+  const capture = (event) => {
+    if (!interaction) return;
+    const current = interaction;
+    const started = now();
+    if (current.eventStart === null) current.eventStart = started;
+    // Do not collect input values, labels, customer names or record identifiers.
+    pushEvent('interaction.event', {
+      event: event.type, trusted: event.isTrusted, tag: event.target?.tagName,
+      inputType: event.target?.type, startTimeMs: started,
+    });
+    queueMicrotask(() => {
+      if (interaction !== current) return;
+      pushEvent('interaction.event_turn', {
+        durationMs: preciseMs(now() - started),
+        scope: 'capture listener to its microtask; not isolated application handler time',
+      });
+    });
+    win.requestAnimationFrame(() => win.requestAnimationFrame(() => {
+      if (interaction !== current) return;
+      pushEvent('interaction.frame_opportunity', {
+        durationMs: preciseMs(now() - started),
+        scope: 'two animation frames; not compositor paint or UI readiness',
+      });
+    }));
+  };
+  const events = ['click', 'input', 'change', 'submit'];
+  events.forEach(type => win.addEventListener(type, capture, true));
+  runtimeCleanups.push(() => events.forEach(type => win.removeEventListener(type, capture, true)));
 };
 
 const getFetchUrl = (input) => {
@@ -388,6 +469,7 @@ const observePerformanceEntries = () => {
   observe(['longtask'], (entry) => {
     longTaskBudgetMs += entry.duration || 0;
     pushEvent('thread.long_task', {
+      startTimeMs: entry.startTime,
       durationMs: Math.round(entry.duration || 0),
       name: entry.name,
       attribution: entry.attribution?.map?.((item) => ({
@@ -556,6 +638,9 @@ const exposeDebugApi = () => {
     enabled: () => monitorEnabled,
     events: () => performanceEvents.slice(),
     record: recordPerformanceEvent,
+    beginInteraction: beginPerformanceInteraction,
+    finishInteraction: finishPerformanceInteraction,
+    subscriptions: () => Array.from(activeSubscriptions.values()),
     export: exportPerformanceLog,
     download: downloadPerformanceLog,
     clear: () => {
@@ -590,6 +675,7 @@ export const initPerformanceMonitor = (options = {}) => {
   observePerformanceEntries();
   startFpsMonitor();
   installErrorHandlers();
+  installInteractionObserver();
   sampleMemory();
   memoryTimer = setInterval(sampleMemory, MEMORY_SAMPLE_MS);
 
@@ -616,4 +702,9 @@ export const stopPerformanceMonitor = () => {
   historyPatched = false;
 
   monitorEnabled = false;
+  monitorInitialized = false;
+  interaction = null;
+  activeSubscriptions.clear();
+  fpsLastTs = 0;
+  fpsFrames = 0;
 };

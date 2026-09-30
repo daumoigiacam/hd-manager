@@ -798,6 +798,32 @@ body {
 
 /* The app shell stays at its layout height; only the modal tracks the visible
  * viewport while an editable field has the keyboard open. */
+.hd-list-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  font-size: 0.8125rem;
+  color: var(--hd-color-muted);
+}
+.hd-list-pagination > span { margin-right: auto; font-variant-numeric: tabular-nums; }
+.hd-list-pagination > button,
+.hd-list-pagination > select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--hd-color-border);
+  border-radius: 0.375rem;
+  background: var(--hd-color-surface);
+  color: var(--hd-color-ink);
+}
+.hd-list-pagination > button:disabled { opacity: 0.4; cursor: default; }
+
 .hd-modal-layer {
   margin: 0 !important;
   top: var(--hd-modal-viewport-top, 0px) !important;

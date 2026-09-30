@@ -9,7 +9,7 @@ export default [
     ]
   },
   {
-    files: ['src/App.jsx'],
+    files: ['src/App.jsx', 'src/main.jsx', 'src/design-system/ListPagination.jsx'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

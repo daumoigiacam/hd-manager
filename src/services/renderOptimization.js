@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getListPage } from '../utils/listPage.js';
+
+export const usePagedList = (items, resetKey = '', pageSize = 50) => {
+  const [selection, setSelection] = useState({ key: resetKey, page: 0 });
+  const info = getListPage(items.length, selection.key === resetKey ? selection.page : 0, pageSize);
+  const visibleItems = useMemo(() => items.slice(info.start, info.end), [items, info.start, info.end]);
+  const setPage = useCallback(page => setSelection({ key: resetKey, page }), [resetKey]);
+  return { ...info, items: visibleItems, setPage };
+};
 
 const DEFAULT_DEBOUNCE_MS = 160;
 const DEFAULT_THROTTLE_MS = 120;

@@ -27,6 +27,8 @@ export default defineConfig(({ mode }) => {
     .replace(/[^a-zA-Z0-9._-]/g, '-');
   const allowPreviewBuild = env.VITE_ALLOW_PREVIEW_BUILD === 'true';
   const usePreviewData = env.VITE_DATA_MODE === 'preview' && (mode !== 'production' || allowPreviewBuild);
+  // Opt-in diagnostic build only. Never ship the profiling React runtime to cloud users.
+  const profileInteractions = usePreviewData && env.VITE_PERFORMANCE_PROFILE === 'true';
   const vpsDataMode = `${env.VITE_DATA_MODE || ''}`.trim();
   const devApiProxyTarget = `${env.HD_MANAGER_DEV_API_PROXY_TARGET || ''}`
     .trim()
@@ -69,6 +71,9 @@ export default defineConfig(({ mode }) => {
   ));
   const runtimeAliases = {
     ...firebaseAliases,
+    ...(profileInteractions ? {
+      'react-dom/client': fileURLToPath(new URL('./node_modules/react-dom/profiling.js', import.meta.url)),
+    } : {}),
     '@hd/identity-center': identityCenterAlias,
     '@hd/hd-connect-runtime': fileURLToPath(new URL(
       isVpsStagingBuild ? './src/api/hdConnectStaging.js' : './src/config/firebase-only-runtime.js',
@@ -121,7 +126,7 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 3200,
       cssCodeSplit: true,
       minify: 'esbuild',
-      sourcemap: false,
+      sourcemap: profileInteractions,
       rollupOptions: {
         output: {
           manualChunks(id) {
