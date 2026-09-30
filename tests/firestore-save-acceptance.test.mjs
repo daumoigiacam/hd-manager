@@ -78,6 +78,80 @@ try {
   ]));
   assert.equal((await getDocFromServer(doc(reader, path('orders', 'atomic-order')))).data().amount, 63, 'Rejected expense must also roll back the order');
 
+  const costGroup = [
+    { collectionName: 'assetCostLogs', documentId: 'cost-log', payload: { companyId: 'acceptance', amount: 200000 } },
+    { collectionName: 'expenses', documentId: 'cost-expense', payload: { companyId: 'acceptance', amount: 200000 } },
+  ];
+  await commit(costGroup);
+  await assertFails(commit([
+    { ...costGroup[0], payload: { companyId: 'acceptance', amount: 999 } },
+    { ...costGroup[1], documentId: 'denied-atomic' },
+  ]));
+  assert.equal((await getDocFromServer(doc(reader, path('assetCostLogs', 'cost-log')))).data().amount, 200000);
+
+  const deliveryGroup = [
+    { collectionName: 'deliveryReports', documentId: 'delivery-command', payload: { companyId: 'acceptance', collectedAmount: 60, deliveryExpenseAmount: 3 } },
+    { collectionName: 'payments', documentId: 'delivery-payment', ifAbsent: true, payload: { companyId: 'acceptance', amount: 60, customerId: 'c', relatedDeliveryReportId: 'delivery-command' } },
+    { collectionName: 'expenses', documentId: 'delivery-expense', payload: { companyId: 'acceptance', amount: 3, relatedDeliveryReportId: 'delivery-command' } },
+    { collectionName: 'assetCostLogs', documentId: 'delivery-cost', payload: { companyId: 'acceptance', amount: 3, relatedDeliveryReportId: 'delivery-command' } },
+  ];
+  await commit(deliveryGroup);
+  await commit(JSON.parse(JSON.stringify(deliveryGroup)));
+  await assertFails(commit([
+    { ...deliveryGroup[0], payload: { companyId: 'acceptance', collectedAmount: 999 } },
+    { ...deliveryGroup[2], documentId: 'denied-atomic' },
+    { ...deliveryGroup[3], payload: { companyId: 'acceptance', amount: 999 } },
+  ]));
+  assert.equal((await getDocFromServer(doc(reader, path('deliveryReports', 'delivery-command')))).data().collectedAmount, 60);
+  assert.equal((await getDocFromServer(doc(reader, path('assetCostLogs', 'delivery-cost')))).data().amount, 3);
+
+  const resolution = [
+    { collectionName: 'orders', documentId: 'resolution-order', payload: { companyId: 'acceptance', amount: 63 } },
+    { collectionName: 'deliveryReports', documentId: 'resolution-report', payload: { companyId: 'acceptance', resolutionStatus: 'lost_charged' } },
+    { collectionName: 'financials', documentId: 'resolution-penalty', ifAbsent: true, payload: { companyId: 'acceptance', empId: 'employee', type: 'penalty', amount: 3, date: '2026-09-30', sourceDeliveryReportId: 'resolution-report' } },
+  ];
+  await commit(resolution);
+  await commit(JSON.parse(JSON.stringify(resolution)));
+  await assert.rejects(commit([
+    { ...resolution[0], payload: { companyId: 'acceptance', amount: 999 } },
+    { ...resolution[2], payload: { ...resolution[2].payload, amount: 999 } },
+  ]), error => error.code === 'firestore/financial-command-conflict');
+  assert.equal((await getDocFromServer(doc(reader, path('orders', 'resolution-order')))).data().amount, 63);
+  assert.equal((await getDocFromServer(doc(reader, path('financials', 'resolution-penalty')))).data().amount, 3);
+
+  await setDoc(doc(db, path('deliveryReports', 'resolve-once')), { companyId: 'acceptance', resolutionStatus: 'pending' });
+  const once = [
+    { collectionName: 'orders', documentId: 'resolve-once-order', payload: { companyId: 'acceptance', amount: 63 } },
+    { collectionName: 'deliveryReports', documentId: 'resolve-once', resolveOnce: true, payload: { companyId: 'acceptance', resolutionStatus: 'accepted', linkedOrderId: 'resolve-once-order' }, options: { merge: true } },
+  ];
+  await commit(once);
+  await setDoc(doc(db, path('orders', 'resolve-once-order')), { amount: 70 }, { merge: true });
+  const replayOnce = await commit(JSON.parse(JSON.stringify(once)));
+  assert.equal(replayOnce.existingDocuments[0].payload.amount, 70);
+  await assert.rejects(commit([{ ...once[1], payload: { ...once[1].payload, resolutionStatus: 'rejected' } }]), error => error.code === 'firestore/delivery-resolution-conflict');
+  assert.equal((await getDocFromServer(doc(reader, path('deliveryReports', 'resolve-once')))).data().resolutionStatus, 'accepted');
+  assert.equal((await getDocFromServer(doc(reader, path('orders', 'resolve-once-order')))).data().amount, 70);
+
+  await setDoc(doc(db, path('deliveryReports', 'competing-decisions')), { companyId: 'acceptance', resolutionStatus: 'pending' });
+  const decision = status => [{ collectionName: 'deliveryReports', documentId: 'competing-decisions', resolveOnce: true, payload: { companyId: 'acceptance', resolutionStatus: status }, options: { merge: true } }];
+  const competing = await Promise.allSettled([commit(decision('accepted')), commit(decision('rejected'))]);
+  assert.equal(competing.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(competing.find(result => result.status === 'rejected').reason.code, 'firestore/delivery-resolution-conflict');
+
+  const paymentGroup = [
+    { collectionName: 'payments', documentId: 'conditional-payment', ifAbsent: true, payload: { companyId: 'acceptance', customerId: 'c', amount: 60, method: 'cash' } },
+    { collectionName: 'notifications', documentId: 'conditional-notice', ifAbsent: true, payload: { companyId: 'acceptance', status: 'unread' } },
+    { collectionName: 'zalo_campaign_queue', documentId: 'conditional-zalo', ifAbsent: true, payload: { companyId: 'acceptance', status: 'pending' } },
+  ];
+  await commit(paymentGroup);
+  await setDoc(doc(db, path('notifications', 'conditional-notice')), { status: 'read' }, { merge: true });
+  await setDoc(doc(db, path('zalo_campaign_queue', 'conditional-zalo')), { status: 'sent' }, { merge: true });
+  await commit(JSON.parse(JSON.stringify(paymentGroup)));
+  assert.equal((await getDocFromServer(doc(reader, path('notifications', 'conditional-notice')))).data().status, 'read');
+  assert.equal((await getDocFromServer(doc(reader, path('zalo_campaign_queue', 'conditional-zalo')))).data().status, 'sent');
+  await assert.rejects(commit([{ ...paymentGroup[0], payload: { ...paymentGroup[0].payload, amount: 63 } }]), error => error.code === 'firestore/payment-command-conflict');
+  assert.equal((await getDocFromServer(doc(reader, path('payments', 'conditional-payment')))).data().amount, 60);
+
   const reference = doc(db, path('orderRequests', 'offline-edit'));
   await setDoc(reference, { companyId: 'acceptance', revision: 0, amount: 60000 });
   await disableNetwork(db);
@@ -104,7 +178,7 @@ try {
   assert.equal(restored.data().revision, 2);
   assert.equal(restored.data().amount, 63000);
   await assertFails(setDoc(doc(db, path('orders', 'wrong-tenant')), { companyId: 'other', amount: 1 }));
-  const report = { environment: 'Firestore Emulator, actual SDK and security rules; not app UI or production network', samples, coalescedReplayMatchesSequentialWrites: true, offlineLatestEditPreserved: true, permissionDeniedVerified: true, reconnectMs: Math.round(performance.now() - reconnectStart) };
+  const report = { environment: 'Firestore Emulator, actual SDK and security rules; not app UI or production network', samples, coalescedReplayMatchesSequentialWrites: true, offlineLatestEditPreserved: true, permissionDeniedVerified: true, assetCostAtomicRollback: true, deliveryCompoundAtomicRollback: true, deliveryPenaltyAtomicRollback: true, deliveryResolutionCompetingDecisionsRejected: true, deliveryResolutionRetryPreservesLaterOrderEdit: true, paymentConditionalRetryPreservesReadAndSent: true, paymentIdReuseRejected: true, reconnectMs: Math.round(performance.now() - reconnectStart) };
   await writeFile('test-results/firestore-save-acceptance.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
 } finally {

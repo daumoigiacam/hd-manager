@@ -8,14 +8,14 @@ import './design-system/foundation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
 import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
-import { resolveKeyboardViewport } from './utils/keyboardViewport.js';
+import { resolveKeyboardViewport, resolveStableViewport } from './utils/keyboardViewport.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
   const pluginRegistry = globalThis.__HD_MANAGER_CAPACITOR_PLUGINS__ ||= {};
   const nativeSafeArea = pluginRegistry.NativeSafeArea ||= registerPlugin('NativeSafeArea');
   let pendingFrame = 0;
-  let pendingKeyboardFrame = 0;
+  let viewportUpdateNeeded = false;
   let nativeInsetsRequest = null;
   let nativeInsetsRetries = 0;
   let stableViewportHeight = 0;
@@ -48,6 +48,10 @@ function installResponsiveViewportVars() {
     || window.matchMedia?.('(display-mode: standalone)')?.matches
   );
 
+  const isMobileViewport = () => (
+    isNativePlatform() || isIosWebRuntime() || /Android/.test(navigator.userAgent || '')
+  );
+
   const refreshNativeSafeArea = () => {
     if (nativeInsetsRequest) return;
     nativeInsetsRequest = nativeSafeArea.getInsets()
@@ -67,14 +71,15 @@ function installResponsiveViewportVars() {
   };
 
   const updateVars = () => {
-    pendingFrame = 0;
     const viewportHeight = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
     const viewportWidth = Math.round(window.innerWidth || document.documentElement.clientWidth || 0);
-    const isTouchLayout = navigator.maxTouchPoints > 0 && window.matchMedia?.('(pointer: coarse)')?.matches;
-    const focusedEditable = isKeyboardEditableElement(document.activeElement);
-    if (viewportHeight > 0 && (!stableViewportHeight || !isTouchLayout || (viewportWidth !== stableViewportWidth && !focusedEditable))) {
-      stableViewportHeight = viewportHeight;
-      stableViewportWidth = viewportWidth;
+    const isTouchLayout = isMobileViewport()
+      || (navigator.maxTouchPoints > 0 && window.matchMedia?.('(pointer: coarse)')?.matches);
+    if (viewportHeight > 0) {
+      const stable = resolveStableViewport({ height: viewportHeight, width: viewportWidth,
+        stableHeight: stableViewportHeight, stableWidth: stableViewportWidth, touch: isTouchLayout });
+      stableViewportHeight = stable.height;
+      stableViewportWidth = stable.width;
       root.style.setProperty('--hd-viewport-height', `${stableViewportHeight}px`);
     }
     if (viewportWidth > 0) {
@@ -111,13 +116,13 @@ function installResponsiveViewportVars() {
   };
 
   const updateKeyboardState = () => {
-    pendingKeyboardFrame = 0;
     const viewport = window.visualViewport;
     const focusedEditable = isKeyboardEditableElement(document.activeElement);
     const layoutHeight = window.innerHeight || document.documentElement.clientHeight || 0;
     const viewportHeight = viewport?.height || layoutHeight;
     const viewportOffsetTop = viewport?.offsetTop || 0;
-    const isSmallTouchScreen = Boolean(window.matchMedia?.('(max-width: 768px)')?.matches && navigator.maxTouchPoints > 0);
+    const isSmallTouchScreen = Boolean(isMobileViewport()
+      || (window.matchMedia?.('(max-width: 768px)')?.matches && navigator.maxTouchPoints > 0));
     const viewportState = resolveKeyboardViewport({
       layoutHeight, visualHeight: viewportHeight, visualTop: viewportOffsetTop,
       stableHeight: Math.round(window.innerWidth) === stableViewportWidth ? stableViewportHeight : layoutHeight,
@@ -135,20 +140,19 @@ function installResponsiveViewportVars() {
     document.body?.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
   };
 
-  const scheduleUpdate = () => {
+  const scheduleFrame = (updateViewport) => {
+    viewportUpdateNeeded ||= updateViewport;
     if (pendingFrame) return;
-    pendingFrame = window.requestAnimationFrame(updateVars);
+    pendingFrame = window.requestAnimationFrame(() => {
+      pendingFrame = 0;
+      // Modal geometry must use the new stable viewport, even if focus queued first.
+      if (viewportUpdateNeeded) updateVars();
+      viewportUpdateNeeded = false;
+      updateKeyboardState();
+    });
   };
-
-  const scheduleKeyboardUpdate = () => {
-    if (pendingKeyboardFrame) return;
-    pendingKeyboardFrame = window.requestAnimationFrame(updateKeyboardState);
-  };
-
-  const scheduleViewportAndKeyboardUpdate = () => {
-    scheduleUpdate();
-    scheduleKeyboardUpdate();
-  };
+  const scheduleKeyboardUpdate = () => scheduleFrame(false);
+  const scheduleViewportAndKeyboardUpdate = () => scheduleFrame(true);
 
   updateVars();
   updateKeyboardState();

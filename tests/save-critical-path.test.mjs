@@ -112,6 +112,7 @@ test('actual enqueue keeps a durable merged revision and rejects full storage wi
   const storage = new Map();
   let full = false;
   const bindings = {
+    firebaseUser: { uid: 'writer' },
     activeTenantScopeRef: { current: 'a' }, pendingFirebaseWritesRef: queue,
     coalescePendingWrite, ATOMIC_SAVE_COLLECTION, mergeAtomicWrites, getFriendlyFirebaseErrorMessage: () => '',
     getTenantStorageKey: (key, company) => `${key}:${company}`, PENDING_FIREBASE_WRITES_STORAGE_KEY: 'pending',

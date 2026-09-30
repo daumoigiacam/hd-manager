@@ -1,5 +1,10 @@
 export default [
   {
+    files: ['src/utils/shareCanvas*.js', 'scripts/audit-interactions.mjs', 'tests/save-integrity-regressions.test.mjs', 'tests/visual/share-canvas.encoding.mjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    rules: { 'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }], 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
     ignores: [
       'android/**',
       'dist/**',
@@ -9,7 +14,7 @@ export default [
     ]
   },
   {
-    files: ['src/App.jsx', 'src/main.jsx', 'src/design-system/ListPagination.jsx'],
+    files: ['src/App.jsx', 'src/main.jsx', 'src/design-system/ListPagination.jsx', 'src/layout/SyncQueueStatus.jsx'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

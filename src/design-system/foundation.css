@@ -1,3 +1,27 @@
+.hd-sync-queue {
+  position: fixed;
+  inset-inline: 12px;
+  bottom: calc(var(--hd-footer-height, 4rem) + 8px);
+  z-index: 55;
+  max-width: 30rem;
+  margin-inline: auto;
+  border: 1px solid #e4c687;
+  border-radius: 8px;
+  background: #fff9ed;
+  color: #624713;
+  font-size: 12px;
+  box-shadow: 0 2px 8px #00000014;
+}
+.hd-sync-queue summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+.hd-sync-queue summary svg { flex: 0 0 auto; }
+.hd-sync-queue__content { max-height: min(16rem, calc(var(--hd-modal-viewport-height, 100svh) - 12rem)); overflow-y: auto; padding: 0 12px 8px; }
+.hd-sync-queue__item { display: flex; align-items: center; gap: 8px; padding-block: 8px; border-top: 1px solid #eadab9; }
+.hd-sync-queue__item > div { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.hd-sync-queue__item p { margin: 4px 0 0; }
+.hd-sync-queue__item button { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; }
+html.hd-keyboard-open .hd-sync-queue { display: none; }
+@media (min-width: 1024px) { .hd-sync-queue { inset-inline-start: auto; width: min(30rem, calc(100% - 24px)); bottom: 12px; } }
+
 :root {
   color-scheme: light;
   --hd-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -832,6 +856,7 @@ body {
   max-block-size: var(--hd-modal-viewport-height, 100svh);
   padding-block-end: var(--hd-modal-safe-bottom, 0px) !important;
   overflow: hidden;
+  transition-property: opacity !important;
 }
 
 .hd-modal-surface {
@@ -840,6 +865,7 @@ body {
   min-block-size: 0;
   max-block-size: 100%;
   overflow: hidden;
+  transition-property: opacity !important;
 }
 
 .hd-modal-body {
@@ -1758,6 +1784,7 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 
 .hd-shell--staff .hd-app-content {
   min-height: 0;
+  max-block-size: max(0px, calc(var(--hd-modal-viewport-height) - var(--hd-header-height) - var(--hd-safe-top)));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
@@ -2196,14 +2223,12 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   backdrop-filter: blur(2px);
 }
 
-/* Layout containment turns fixed descendants into scroll-relative layers.
- * Release it only while the product editor is open so the fullscreen editor
- * remains pinned to the physical viewport after navigating a long list. */
-.hd-shell--staff:has(.hd-product-editor-layer) {
+/* A fixed modal must use the viewport, not its scrollable module ancestor. */
+.hd-shell--staff:has([data-hd-modal-root="true"]) {
   contain: style;
 }
 
-.hd-shell--staff:has(.hd-product-editor-layer) > main {
+.hd-shell--staff:has([data-hd-modal-root="true"]) > main {
   position: relative;
   z-index: 60;
   overflow: visible !important;
@@ -2472,8 +2497,8 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   .hd-shell--staff .hd-product-editor {
     width: 100%;
     max-width: none;
-    height: 100dvh;
-    max-height: 100dvh !important;
+    height: var(--hd-modal-viewport-height, 100svh);
+    max-height: var(--hd-modal-viewport-height, 100svh) !important;
     border: 0;
     border-radius: 0 !important;
   }
@@ -2496,7 +2521,56 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   }
 }
 
-/* Customer creation is a child view of the customer module, not a modal. */
+/* Inline child forms share the visible viewport, without moving the app shell. */
+.hd-shell--staff .hd-app-content:has(.hd-child-view) {
+  --hd-child-nav-height: var(--hd-footer-height);
+  --hd-child-outer-gap: 0px;
+  overflow: clip;
+  padding-block: 0 !important;
+}
+
+.hd-child-view {
+  block-size: max(0px, calc(var(--hd-modal-viewport-height) - var(--hd-header-height) - var(--hd-safe-top) - var(--hd-child-nav-height) - var(--hd-child-outer-gap)));
+  min-block-size: 0;
+  margin-block: 0 !important;
+  padding-block: 0;
+}
+
+.hd-child-view__surface,
+.hd-child-view__form {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.hd-child-view__surface { block-size: 100%; }
+.hd-child-view__form { flex: 1 1 auto; }
+.hd-child-view__header,
+.hd-child-view__actions { flex: 0 0 auto; }
+.hd-child-view__body {
+  min-block-size: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+html.hd-keyboard-open .hd-shell--staff .hd-app-content {
+  padding-bottom: var(--hd-space-3) !important;
+}
+
+@media (min-width: 600px) {
+  .hd-shell--staff .hd-app-content:has(.hd-child-view) { --hd-child-nav-height: 0px; }
+}
+
+@media (min-width: 1024px) {
+  .hd-shell--staff .hd-app-content:has(.hd-child-view) { --hd-child-outer-gap: 2rem; }
+}
+
+html.hd-keyboard-open .hd-app-content:has(.hd-child-view) { --hd-child-nav-height: 0px; }
+
+/* Customer creation remains a child view of the customer module, not a modal. */
 .premium-customer-module:has(.hd-customer-create-view) > :not(.hd-customer-create-view) {
   display: none !important;
 }
@@ -2507,8 +2581,6 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 
 .hd-customer-create-view {
   width: 100%;
-  min-height: 100%;
-  padding-bottom: 1rem;
   font-family: var(--hd-font-sans);
   letter-spacing: 0;
 }
@@ -3700,14 +3772,13 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
 }
 
 .hd-customer-create-view__actions {
-  position: sticky;
-  bottom: 0;
+  position: relative;
   z-index: 3;
   display: grid;
   grid-template-columns: minmax(5rem, 0.7fr) minmax(0, 2fr);
   gap: var(--hd-space-3);
-  margin: var(--hd-space-4) calc(var(--hd-space-4) * -1) calc(var(--hd-space-4) * -1);
-  padding: var(--hd-space-3) var(--hd-space-4) max(var(--hd-space-3), env(safe-area-inset-bottom));
+  margin: 0;
+  padding: var(--hd-space-3) var(--hd-space-4);
   border-top: 1px solid #e7e9ee;
   background: rgb(255 255 255 / 0.96);
   backdrop-filter: blur(12px);
@@ -3743,9 +3814,6 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   }
 
   .hd-customer-create-view__actions {
-    margin-right: -0.75rem;
-    margin-bottom: -0.75rem;
-    margin-left: -0.75rem;
     padding-right: 0.75rem;
     padding-left: 0.75rem;
   }

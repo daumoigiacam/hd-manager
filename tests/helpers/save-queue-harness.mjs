@@ -9,6 +9,7 @@ export function createSaveQueueHarness(initial = []) {
   const stats = { writes: 0, reads: 0, bytes: 0, updates: 0 };
   const fault = { full: false, corrupt: false };
   const bindings = {
+    firebaseUser: { uid: 'fixture-writer' },
     activeTenantScopeRef: { current: 'fixture' }, pendingFirebaseWritesRef: queue,
     getTenantStorageKey: (key, company) => `${key}:${company}`,
     PENDING_FIREBASE_WRITES_STORAGE_KEY: 'pending',

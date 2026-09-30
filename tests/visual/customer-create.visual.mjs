@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 
 const baseUrl = process.env.HD_MANAGER_CUSTOMER_CREATE_URL || 'http://127.0.0.1:5179/';
@@ -458,6 +458,7 @@ try {
     await filterSheet.waitFor({ state: 'visible', timeout: 10000 });
     const customerFilterPanel = page.locator('[data-customer-filter-panel="true"]');
     await customerFilterPanel.waitFor({ state: 'visible', timeout: 10000 });
+    await page.waitForFunction(() => document.querySelector('#hd-customer-filter-sheet')?.contains(document.activeElement), null, { timeout: 1000 });
     assert.equal(await page.locator('[data-customer-summary="true"]').count(), 0, `${viewport.name}: customer summary must yield to the filter panel`);
     const filterLayout = await filterSheet.evaluate(sheet => {
       const bounds = sheet.getBoundingClientRect();
@@ -645,6 +646,22 @@ try {
     }), `${viewport.name}: suggested products must be ordered by real usage`);
     assert.equal(layout.productGridOverflowY, 'visible', `${viewport.name}: customer product list must not create a nested scrollbar`);
     assert.equal(layout.productGridMaxHeight, 'none', `${viewport.name}: customer product list must expand with its content`);
+
+    const frame = await createView.evaluate(view => {
+      const rect = selector => view.querySelector(selector).getBoundingClientRect().toJSON();
+      return { actions: rect('.hd-child-view__actions'), header: rect('.hd-child-view__header'),
+        body: rect('.hd-child-view__body'), height: visualViewport.height,
+        main: view.closest('main').getBoundingClientRect().toJSON(),
+        appHeader: document.querySelector('.hd-app-header').getBoundingClientRect().toJSON(),
+        viewportVars: document.documentElement.style.cssText,
+        mainOverflow: getComputedStyle(view.closest('main')).overflowY,
+        bodyOverflow: getComputedStyle(view.querySelector('.hd-child-view__body')).overflowY };
+    });
+    await writeFile(`${outputDir}/${viewport.name}-frame.json`, JSON.stringify(frame, null, 2));
+    assert.equal(frame.mainOverflow, 'clip', `${viewport.name}: parent page must not create a second form scrollbar`);
+    assert.equal(frame.bodyOverflow, 'auto', `${viewport.name}: form fields must have one scrollbar`);
+    assert.ok(frame.actions.bottom <= frame.height + 1, `${viewport.name}: save must remain within the visible viewport`);
+    assert.ok(frame.body.bottom <= frame.actions.top + 1 && frame.body.top >= frame.header.bottom - 1, `${viewport.name}: form content must not overlap header or actions`);
 
     const groupInput = createView.getByLabel('Nhóm khách hàng', { exact: true });
     await groupInput.focus();

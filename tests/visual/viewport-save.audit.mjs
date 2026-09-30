@@ -170,10 +170,25 @@ try {
     assert.ok(Math.abs(afterRotation.footerBottom - detailBefore.footerBottom) <= 2, 'returning to portrait must restore modal actions');
     assert.ok(saveMs < 1500, `preview save took ${saveMs}ms`);
     assert.equal(saveTrace.length, 1, 'a document save must emit exactly one performance trace');
-    assert.equal(saveTrace[0].status, 'confirmed', 'preview save must complete successfully');
+    assert.equal(saveTrace[0].status, 'queued', 'durable local save must not claim a server confirmation');
+    assert.equal(saveTrace[0].remoteConfirmed, false);
+    assert.equal(saveTrace[0].writeSource, 'durable-local-queue');
+    const persistedRequest = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests.or_viewport_audit);
+    assert.equal(persistedRequest.items[0].unitPrice, 290000, 'edited price must survive a local reload');
     assert.equal(saveTrace[0].retryCount, 0, 'preview save must not retry');
     assert.ok(saveTrace[0].payloadBytes > 0, 'trace must report payload size without exposing its content');
   }
+  await module.getByRole('button', { name: '290.000' }).first().click();
+  await editor.getByRole('textbox').first().fill('291000');
+  const capturedSave = editor.getByRole('button', { name: 'Lưu', exact: true });
+  await capturedSave.hover();
+  await page.mouse.down();
+  await page.evaluate(() => window.__auditVisualViewport(500));
+  await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--hd-modal-viewport-height') === '500px');
+  await page.mouse.up();
+  await editor.waitFor({ state: 'hidden' });
+  await module.getByRole('button', { name: '291.000' }).first().waitFor();
+  await page.evaluate(() => window.__auditVisualViewport(844));
   await context.close();
 } finally {
   await browser.close();

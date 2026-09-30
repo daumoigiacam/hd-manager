@@ -312,12 +312,21 @@ const waitForApplication = async (page) => {
   await page.waitForTimeout(550);
 };
 
+const restoreNavigation = async (page, kind) => {
+  const nav = page.locator(`[data-hd-navigation="${kind}"]`);
+  if (!await nav.isVisible()) {
+    await page.getByRole('button', { name: 'Quay lại', exact: true }).first().click();
+    await nav.waitFor({ state: 'visible' });
+  }
+};
+
 const navigateRoute = async (page, route) => {
+  await restoreNavigation(page, 'sidebar');
   const target = routeNavigation[route];
   if (!target) throw new Error(`No visual QA navigation mapping for ${route}`);
   const shellSearchPopover = page.locator('.hd-shell-search-popover');
   if (await shellSearchPopover.isVisible().catch(() => false)) {
-    await page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
+    await page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click();
     await shellSearchPopover.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
   }
   if (route === 'delivery_reports') {
@@ -362,6 +371,7 @@ const mobileMoreLabels = {
 };
 
 const navigateMobileRoute = async (page, route) => {
+  await restoreNavigation(page, 'bottom');
   const bottom = page.locator('[data-hd-navigation="bottom"]');
   const direct = bottom.getByRole('button', { name: routeNavigation[route]?.label || route, exact: true });
   const directVisible = await direct.isVisible().catch(() => false);
@@ -380,6 +390,7 @@ const navigateMobileRoute = async (page, route) => {
 };
 
 const navigateTabletRoute = async (page, route) => {
+  await restoreNavigation(page, 'rail');
   const target = routeNavigation[route];
   if (!target) throw new Error(`No visual QA navigation mapping for ${route}`);
   if (route === 'delivery_reports') {
@@ -459,7 +470,15 @@ for (const [name, width, height] of viewports) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   const diagnostics = attachDiagnostics(page);
   const response = await page.goto(authShellUrl, { waitUntil: 'commit', timeout: 20000 });
-  await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
+  try {
+    await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
+  } catch (error) {
+    await page.screenshot({ path: `${outputDir}/auth-load-failure-${name}.png` });
+    await writeFile(`${outputDir}/auth-load-failure-${name}.json`, JSON.stringify({
+      url: page.url(), body: await page.locator('body').innerText(), ...diagnostics,
+    }, null, 2));
+    throw error;
+  }
   await page.waitForTimeout(350);
   const layout = await inspectLayout(page, 'auth shell');
   const screenshotPath = `${outputDir}/auth-${name}.png`;
@@ -516,7 +535,7 @@ try {
   if (searchWorked) await searchResult.click();
   const shellSearchPopover = interactionSession.page.locator('.hd-shell-search-popover');
   if (await shellSearchPopover.isVisible().catch(() => false)) {
-    await interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click({ force: true });
+    await interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click();
   }
   interactionResults.push({ interaction: 'sidebar module search', passed: searchWorked && moduleSearchFocus.searchFocusChecked > 0 && moduleSearchFocus.searchFocusFailures.length === 0 });
 
@@ -550,9 +569,7 @@ try {
   await navigateRoute(interactionSession.page, 'more');
   const darkThemeButton = interactionSession.page.getByRole('button', { name: 'Giao diện Tối', exact: true });
   const themeControlAvailable = await darkThemeButton.isVisible().catch(() => false);
-  if (themeControlAvailable) await darkThemeButton.click();
-  await interactionSession.page.waitForTimeout(300);
-  const darkThemeState = await interactionSession.page.evaluate(() => {
+  const lightThemeState = await interactionSession.page.evaluate(() => {
     const shell = document.querySelector('[data-hd-shell="enterprise"]');
     const neutralSurface = shell?.querySelector('.bg-white');
     return {
@@ -562,37 +579,33 @@ try {
       surfaceColor: neutralSurface ? getComputedStyle(neutralSurface).backgroundColor : '',
     };
   });
-  const darkThemeWorked = themeControlAvailable
-    && darkThemeState.documentTheme === 'dark'
-    && darkThemeState.shellTheme === 'dark'
-    && darkThemeState.preference === 'dark'
-    && darkThemeState.surfaceColor === 'rgb(17, 27, 46)';
-  interactionResults.push({ interaction: 'dark theme palette and persistence', passed: darkThemeWorked, details: darkThemeState });
+  interactionResults.push({
+    interaction: 'light surface without removed theme controls',
+    passed: !themeControlAvailable && lightThemeState.documentTheme === 'light'
+      && lightThemeState.shellTheme === 'light' && lightThemeState.surfaceColor === 'rgb(255, 255, 255)',
+    details: lightThemeState,
+  });
 
+  await interactionSession.page.evaluate(() => {
+    localStorage.setItem('hd_manager_theme_preference', 'light');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'hd_manager_theme_preference', newValue: 'light' }));
+  });
   await interactionSession.page.emulateMedia({ colorScheme: 'dark' });
-  const systemThemeButton = interactionSession.page.getByRole('button', { name: 'Giao diện Hệ thống', exact: true });
-  const systemThemeAvailable = await systemThemeButton.isVisible().catch(() => false);
-  if (systemThemeAvailable) await systemThemeButton.click();
-  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'dark', null, { timeout: 2500 }).catch(() => {});
-  const systemDarkState = await interactionSession.page.evaluate(() => document.documentElement.dataset.hdTheme);
-  await interactionSession.page.emulateMedia({ colorScheme: 'light' });
-  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'light', null, { timeout: 2500 }).catch(() => {});
-  const systemThemeTracksDevice = await interactionSession.page.evaluate(() => (
-    window.localStorage.getItem('hd_manager_theme_preference') === 'system'
+  await interactionSession.page.waitForFunction(() => (
+    localStorage.getItem('hd_manager_theme_preference') === 'light'
     && document.documentElement.dataset.hdTheme === 'light'
     && document.querySelector('[data-hd-shell="enterprise"]')?.dataset.hdTheme === 'light'
   ));
-  interactionResults.push({ interaction: 'system theme tracks device changes', passed: systemThemeAvailable && systemDarkState === 'dark' && systemThemeTracksDevice });
-
-  if (themeControlAvailable) await darkThemeButton.click();
-  await interactionSession.page.waitForFunction(() => document.documentElement.dataset.hdTheme === 'dark', null, { timeout: 2500 }).catch(() => {});
+  interactionResults.push({ interaction: 'explicit light preference survives dark device mode', passed: true });
+  await interactionSession.page.emulateMedia({ colorScheme: 'light' });
   await interactionSession.page.reload({ waitUntil: 'commit' });
   await waitForApplication(interactionSession.page);
-  const darkThemeRestored = await interactionSession.page.evaluate(() => (
-    document.documentElement.dataset.hdTheme === 'dark'
-    && document.querySelector('[data-hd-shell="enterprise"]')?.dataset.hdTheme === 'dark'
+  const lightThemeRestored = await interactionSession.page.evaluate(() => (
+    document.documentElement.dataset.hdTheme === 'light'
+    && document.querySelector('[data-hd-shell="enterprise"]')?.dataset.hdTheme === 'light'
+    && localStorage.getItem('hd_manager_theme_preference') === 'light'
   ));
-  interactionResults.push({ interaction: 'theme survives app reload', passed: darkThemeRestored });
+  interactionResults.push({ interaction: 'light preference survives app reload', passed: lightThemeRestored });
 } finally {
   await interactionSession.context.close();
 }
@@ -718,7 +731,7 @@ try {
     route: 'portal shell',
     viewport: { name: 'mobile-standard', width: 390, height: 844 },
     httpStatus: customerSession.response?.status() || null,
-    navigationWorked: portalText.includes('Cửa hàng Lan Anh'),
+    navigationWorked: portalText.toLocaleLowerCase('vi').includes('cửa hàng lan anh'),
     screenshotPath: `${outputDir}/sections/mobile-portal-shell.png`,
     layout: portalLayout,
     ...customerSession.diagnostics,
@@ -800,12 +813,15 @@ const sendEmployeeReply = async ({ employeeId, name, phone, store, customerName,
   const session = await openEmployeeMessages({ employeeId, name, phone, store });
   try {
     const conversationOpened = await clickConversationByText(session.page, customerName, messageText);
-    const composer = session.page.locator('input[placeholder="Nhập nội dung..."]');
+    const composer = session.page.getByRole('textbox', { name: 'Nhập tin nhắn', exact: true });
     const composerVisible = await composer.isVisible().catch(() => false);
     if (conversationOpened && composerVisible) {
       await composer.fill(text);
       await composer.press('Enter');
-      await session.page.getByText('Đã gửi và đồng bộ tin nhắn.', { exact: true }).waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      await session.page.waitForFunction(({ text, employeeId }) => {
+        const store = JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview') || '{}');
+        return Object.values(store.messages || {}).some(message => message.text === text && message.senderEmpId === employeeId);
+      }, { text, employeeId }, { timeout: 5000 });
     }
     const nextStore = await readPreviewStore(session.page);
     const savedMessage = Object.values(nextStore.messages || {}).find(message => (

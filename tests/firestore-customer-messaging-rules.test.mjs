@@ -48,13 +48,7 @@ const customerContext = (customerId, contextSuffix = '') => environment.authenti
   customerId,
   accountType: 'customer',
   role: 'customer'
-}).firestore({
-  // The Firestore emulator's HTTP/2 stream can become unusable on Windows after
-  // expected permission-denied assertions. Long polling keeps this rules test on
-  // the same browser-compatible realtime transport used by constrained clients.
-  experimentalForceLongPolling: true,
-  experimentalAutoDetectLongPolling: false
-});
+}).firestore();
 
 const waitForSnapshot = (queryRef, predicate, timeoutMs = 5_000) => new Promise((resolve, reject) => {
   let unsubscribe = () => {};
@@ -79,6 +73,7 @@ const waitForSnapshot = (queryRef, predicate, timeoutMs = 5_000) => new Promise(
 });
 
 try {
+  await environment.clearFirestore();
   await environment.withSecurityRulesDisabled(async context => {
     const database = context.firestore();
     const seed = (collectionName, id, data) => setDoc(
@@ -295,9 +290,7 @@ try {
   });
 
   await test('customer A realtime inbox listener receives only A updates', async () => {
-    // Expected permission-denied writes above can leave the emulator gRPC
-    // stream unusable in the same SDK client. Use a fresh authenticated client
-    // so this remains a real listener and tenant-isolation check.
+    // Keep the realtime assertions independent of the write-denial client.
     const realtimeCustomerADb = customerContext(customerA, 'realtime');
     const realtimeNotificationCollection = collection(realtimeCustomerADb, `artifacts/${appId}/public/data/notifications`);
     const realtimeOwnNotificationQuery = query(

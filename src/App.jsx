@@ -3,10 +3,18 @@ import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
+import SyncQueueStatus from './layout/SyncQueueStatus.jsx';
+import { createCommandFocusGuard, createCommandClickGuard } from './layout/commandFocus.js';
+import { canAutomaticallyRetryWrite, isRetryableWriteError, pendingWriteFailure } from './utils/pendingWriteRetry.js';
 import { isSamePendingWriteRevision } from './utils/pendingWriteRevision.js';
 import { retainCollectionIdentity } from './utils/collectionIdentity.js';
+import { createCustomerLedgerMapBuilder } from './utils/customerLedgerIndex.js';
 import { canSaveLocallyFirst, coalescePendingWrite } from './utils/localFirstSave.js';
 import { ATOMIC_SAVE_COLLECTION, validateAtomicWrites, mergeAtomicWrites, expandPendingWrites, commitAtomicWrites } from './utils/atomicSave.js';
+import { createDeliverySavePlan } from './utils/deliverySavePlan.js';
+import { createRecordedShareCanvas } from './utils/shareCanvas.js';
+import { createPreloadableModule } from './utils/preloadableModule.js';
+import { createDraftRevision } from './utils/draftRevision.js';
 import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoice-templates/invoiceTemplateModel.js';
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
@@ -87,8 +95,6 @@ import {
   applyEvaluationBonusToSalaryDetails,
   projectEvaluationSummaryToPayroll
 } from './utils/payrollEvaluationBonus.js';
-import PayrollWorkspace from './features/payroll/PayrollWorkspace.jsx';
-import PayrollCloseDialog from './features/payroll/PayrollCloseDialog.jsx';
 import {
   PAYROLL_AUTO_LOCK_PLAN_STATUS,
   PAYROLL_RULES_VERSION,
@@ -165,7 +171,6 @@ import {
   readGlobalSearchHistory,
   writeGlobalSearchHistory,
 } from './utils/globalSearch.js';
-import AssetManagementWorkspace from './features/assets/AssetManagementWorkspace.jsx';
 import BusinessReportWorkspace from './features/business-report/BusinessReportWorkspace.jsx';
 import {
   AttachmentPanel, ChatAvatar, ChatSearchBar, ChatState, ChatTabs,
@@ -176,7 +181,6 @@ import {
   CHAT_LIST_TABS, CHAT_SEARCH_TABS, filterChatConversations,
   getChatCategory, getChatSearchResult, normalizeChatSearch
 } from './features/messaging/messagingUiModel.js';
-import AttendanceWorkspace from './features/attendance/AttendanceWorkspace.jsx';
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
 import { canAttemptAutoWifiCheckIn, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
@@ -268,6 +272,7 @@ import {
   collection,
   doc,
   getDoc as firebaseGetDoc,
+  getDocFromServer as firebaseGetDocFromServer,
   getDocs as firebaseGetDocs,
   setDoc as firebaseSetDoc,
   deleteDoc as firebaseDeleteDoc,
@@ -3359,6 +3364,18 @@ const buildCompanyMonogram = (companyName = '') => {
 
 const getCompanyDisplayName = (company = null) => `${company?.displayName || company?.name || 'Doanh nghiệp'}`.trim() || 'Doanh nghiệp';
 const getCompanyLogoUrl = (company = null) => `${company?.logoUrl || company?.logo || ''}`.trim();
+const shouldUpdateCompanyProfile = (current, incoming) => {
+  if (!incoming || current === incoming) return false;
+  if (incoming.id !== current?.id) return true;
+  if (incoming.updatedAt !== current?.updatedAt) {
+    const currentTime = Date.parse(current?.updatedAt || '');
+    const incomingTime = Date.parse(incoming.updatedAt || '');
+    return !(Number.isFinite(currentTime) && Number.isFinite(incomingTime) && incomingTime < currentTime);
+  }
+  // Claims contain only a company ID/name. Older company documents may have
+  // no revision timestamp, so identity alone cannot prove profile equality.
+  return JSON.stringify(current) !== JSON.stringify(incoming);
+};
 const getCompanySlogan = (company = null) => `${company?.slogan || company?.companySlogan || ''}`.trim();
 const getEmployeeAvatarUrl = (employee = null) => `${employee?.avatarUrl || employee?.photoUrl || employee?.avatar || ''}`.trim();
 
@@ -4280,6 +4297,13 @@ const fetchImageAsDataUrl = async (url = '', options = {}) => {
 };
 
 const canvasToBlob = (canvas, type = 'image/png', quality) => new Promise((resolve, reject) => {
+  if (typeof canvas.convertToBlob === 'function') {
+    canvas.convertToBlob({ type, ...(quality === undefined ? {} : { quality }) }).then(blob => {
+      recordPerformanceEvent('share.canvas_encode', { mode: canvas.encodingMode || 'offscreen', bytes: blob.size });
+      resolve(blob);
+    }, reject);
+    return;
+  }
   canvas.toBlob((blob) => {
     if (blob) resolve(blob);
     else reject(new Error('Không thể tạo file ảnh từ hóa đơn.'));
@@ -4345,14 +4369,17 @@ const wrapCanvasText = (ctx, text = '', maxWidth) => {
   return lines;
 };
 
-const withTimeout = (promise, timeoutMs = 12000, errorMessage = 'timeout') => Promise.race([
-  promise,
-  new Promise((_, reject) => setTimeout(() => {
+const withTimeout = (promise, timeoutMs = 12000, errorMessage = 'timeout') => {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
     const timeoutError = new Error(errorMessage);
     timeoutError.code = 'HD_TIMEOUT';
     reject(timeoutError);
-  }, timeoutMs))
-]);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+};
 
 const getErrorText = (error) => `${error?.code || ''} ${error?.message || error || ''}`;
 
@@ -6324,6 +6351,8 @@ const warmOrderShareAssetCache = async ({
     await pendingForOrder;
     const warmedForCurrentVersion = getCachedOrderShareAsset(order, company, cacheContext);
     if (warmedForCurrentVersion) return warmedForCurrentVersion;
+    const currentVersionPending = orderShareAssetPendingCache.get(cacheKey);
+    if (currentVersionPending) return currentVersionPending;
   }
 
   let prepareSpan = null;
@@ -6390,7 +6419,9 @@ const warmOrderShareAssetCache = async ({
       });
     }
     let paymentPreparationError = null;
-    if (paymentDueAmount > 0 && !legacyStoredQrCanBeReused && (!paymentSource
+    // A valid local VietQR already includes the receiving profile, current
+    // balance and transfer memo. Payment-link metadata must not block its PNG.
+    if (paymentDueAmount > 0 && !localQrPayload && !legacyStoredQrCanBeReused && (!paymentSource
       || !isOrderPaymentSourceAlignedWithTransferProfile(orderForShare, company)
       || !isOrderSharePaymentAmountAligned(orderForShare, paymentDueAmount)
       || !paymentQrFingerprintAligned)) {
@@ -9781,6 +9812,14 @@ const calculatePositiveDailyPayrollExpenseFromSalary = (options = {}) => (
   buildPositiveDailyPayrollRowsFromSalary(options)
     .reduce((sum, row) => sum + (row.dailyAmount || 0), 0)
 );
+const payrollModule = createPreloadableModule(() => import('./features/payroll/PayrollWorkspace.jsx'));
+const payrollCloseModule = createPreloadableModule(() => import('./features/payroll/PayrollCloseDialog.jsx'));
+const assetModule = createPreloadableModule(() => import('./features/assets/AssetManagementWorkspace.jsx'));
+const attendanceModule = createPreloadableModule(() => import('./features/attendance/AttendanceWorkspace.jsx'));
+const PayrollWorkspace = React.lazy(payrollModule.load);
+const PayrollCloseDialog = React.lazy(payrollCloseModule.load);
+const AssetManagementWorkspace = React.lazy(assetModule.load);
+const AttendanceWorkspace = React.lazy(attendanceModule.load);
 
 const buildDashboardPayrollCostRows = ({
   employees = [], attendance = {}, financials = [], performance = {}, customers = [],
@@ -10683,34 +10722,10 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
   };
 };
 
-const buildCustomerLedgerMap = (customers = [], orders = [], payments = []) => {
-  const ordersByCustomerId = new Map();
-  const paymentsByCustomerId = new Map();
-
-  (Array.isArray(orders) ? orders : []).forEach((order) => {
-    const customerId = `${order?.customerId || ''}`.trim();
-    if (!customerId) return;
-    const customerOrders = ordersByCustomerId.get(customerId) || [];
-    customerOrders.push(order);
-    ordersByCustomerId.set(customerId, customerOrders);
-  });
-  (Array.isArray(payments) ? payments : []).forEach((payment) => {
-    const customerId = `${payment?.customerId || ''}`.trim();
-    if (!customerId) return;
-    const customerPayments = paymentsByCustomerId.get(customerId) || [];
-    customerPayments.push(payment);
-    paymentsByCustomerId.set(customerId, customerPayments);
-  });
-
-  return Object.fromEntries((Array.isArray(customers) ? customers : []).map((customer) => [
-    customer.id,
-    buildCustomerLedger(
-      customer,
-      ordersByCustomerId.get(`${customer.id || ''}`.trim()) || [],
-      paymentsByCustomerId.get(`${customer.id || ''}`.trim()) || []
-    )
-  ]));
-};
+const indexedCustomerLedgerMap = createCustomerLedgerMapBuilder(buildCustomerLedger);
+const buildCustomerLedgerMap = (customers = [], orders = [], payments = []) => (
+  indexedCustomerLedgerMap(customers, orders, payments, getTodayString())
+);
 
 const buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []) => {
   const customerRecord = typeof customerOrId === 'object' && customerOrId !== null ? customerOrId : null;
@@ -11820,8 +11835,6 @@ const useMobileKeyboardViewportGuard = () => {
 
     const editableSelector = 'input, textarea, select, [contenteditable="true"]';
     const isEditableElement = (target) => target instanceof Element && target.matches(editableSelector);
-    const nativeRuntime = isNativeRuntime();
-    const timers = new Set();
     let frameId = 0;
 
     const scrollFocusedInputIntoView = () => {
@@ -11831,55 +11844,40 @@ const useMobileKeyboardViewportGuard = () => {
         if (!isEditableElement(activeElement)) return;
         if (activeElement.closest('[data-keyboard-guard="off"]')) return;
 
-        activeElement.scrollIntoView({
-          behavior: nativeRuntime ? 'auto' : 'smooth',
-          block: nativeRuntime ? 'nearest' : 'center',
-          inline: 'nearest'
-        });
+        // Scroll only the content owner, never the modal shell or background.
+        for (let owner = activeElement.parentElement; owner && owner !== document.body; owner = owner.parentElement) {
+          if (!/(auto|scroll)/.test(getComputedStyle(owner).overflowY) || owner.scrollHeight <= owner.clientHeight) continue;
+          const content = owner.getBoundingClientRect();
+          const labeledField = activeElement.closest('label')?.getBoundingClientRect();
+          const field = labeledField && labeledField.height < content.height - 24
+            ? labeledField : activeElement.getBoundingClientRect();
+          const delta = field.bottom > content.bottom - 12 ? field.bottom - content.bottom + 12
+            : field.top < content.top + 12 ? field.top - content.top - 12 : 0;
+          if (delta) owner.scrollBy({ top: delta, behavior: 'instant' });
+          break;
+        }
       });
-    };
-
-    const scheduleScroll = (delay = 0) => {
-      const timerId = window.setTimeout(() => {
-        timers.delete(timerId);
-        scrollFocusedInputIntoView();
-      }, delay);
-      timers.add(timerId);
     };
 
     const handleFocusIn = (event) => {
       if (!isEditableElement(event.target)) return;
-      if (nativeRuntime) {
-        scheduleScroll(120);
-        return;
-      }
-      scheduleScroll(60);
-      scheduleScroll(260);
-      scheduleScroll(520);
+      scrollFocusedInputIntoView();
     };
 
     const handleViewportChange = () => {
-      if (nativeRuntime && !isEditableElement(document.activeElement)) return;
-      scheduleScroll(nativeRuntime ? 120 : 30);
+      if (!isEditableElement(document.activeElement)) return;
+      scrollFocusedInputIntoView();
     };
 
     document.addEventListener('focusin', handleFocusIn, true);
     window.visualViewport?.addEventListener('resize', handleViewportChange);
-    if (!nativeRuntime) {
-      window.visualViewport?.addEventListener('scroll', handleViewportChange);
-    }
     window.addEventListener('resize', handleViewportChange);
 
     return () => {
       document.removeEventListener('focusin', handleFocusIn, true);
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
-      if (!nativeRuntime) {
-        window.visualViewport?.removeEventListener('scroll', handleViewportChange);
-      }
       window.removeEventListener('resize', handleViewportChange);
       window.cancelAnimationFrame(frameId);
-      timers.forEach(timerId => window.clearTimeout(timerId));
-      timers.clear();
     };
   }, []);
 };
@@ -11892,7 +11890,7 @@ const useDismissModalOnBackdropClick = () => {
       if (!(element instanceof HTMLElement)) return false;
       const className = `${element.getAttribute('class') || ''}`;
       if (!className.includes('fixed') || !className.includes('inset-0')) return false;
-      return /\bbg-(black|slate)-[^\s]*\/\d+/.test(className) || className.includes('backdrop-blur');
+      return /\bbg-(black|slate)(?:-[^\s/]+)?\/\d+/.test(className) || className.includes('backdrop-blur');
     };
 
     const getButtonText = (button) => normalizeLookupText([
@@ -11907,9 +11905,22 @@ const useDismissModalOnBackdropClick = () => {
       return Boolean(button.querySelector('svg.lucide-x, svg[class*="lucide-x"], svg[class*="lucide-circle-x"]'));
     };
 
+    let pointerBackdrop = null;
+    const commandFocus = createCommandFocusGuard(document);
+    const guardCommandClick = createCommandClickGuard();
+    const handlePointerDown = (event) => {
+      pointerBackdrop = isBackdropElement(event.target) ? event.target : null;
+      commandFocus.pointerdown(event);
+    };
+
     const handleBackdropClick = (event) => {
       const target = event.target;
       if (!isBackdropElement(target)) return;
+      if (pointerBackdrop !== target) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const dismissButton = Array.from(target.querySelectorAll('button')).find(isDismissButton);
       if (!dismissButton) return;
       event.preventDefault();
@@ -11917,8 +11928,16 @@ const useDismissModalOnBackdropClick = () => {
       dismissButton.click();
     };
 
+    document.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: false });
+    document.addEventListener('click', guardCommandClick, true);
     document.addEventListener('click', handleBackdropClick, true);
-    return () => document.removeEventListener('click', handleBackdropClick, true);
+    document.addEventListener('click', commandFocus.click);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('click', guardCommandClick, true);
+      document.removeEventListener('click', handleBackdropClick, true);
+      document.removeEventListener('click', commandFocus.click);
+    };
   }, []);
 };
 
@@ -12045,6 +12064,7 @@ export default function App() {
   const orderCreateInFlightRef = useRef(new Set());
   const orderRequestCreateInFlightRef = useRef(new Set());
   const orderRequestOptimisticEditRevisionsRef = useRef(new Map());
+  const deliveryResolutionInFlightRef = useRef(new Set());
   const customerProductPreferenceCacheRef = useRef(new Map());
   const pointRedemptionRequestRef = useRef(new Map());
   const refreshCollectionsInFlightRef = useRef(false);
@@ -12229,12 +12249,14 @@ export default function App() {
     const now = new Date().toISOString();
     const key = `${collectionName}:${documentId}`;
     const previousWrite = pendingFirebaseWritesRef.current.find(item => item?.key === key);
+    if (previousWrite?.actorUid && previousWrite.actorUid !== firebaseUser?.uid) throw new Error('Lệnh đang chờ thuộc tài khoản khác.');
     if (collectionName === ATOMIC_SAVE_COLLECTION && previousWrite?.payload?.actorUid
       && previousWrite.payload.actorUid !== payload.actorUid) throw new Error('Lệnh đang chờ thuộc phiên đăng nhập khác.');
     const nextWrite = {
       key,
       revision: `${now}:${Math.random().toString(36).slice(2)}`,
       companyId,
+      actorUid: firebaseUser?.uid || '',
       collectionName,
       documentId,
       ...(collectionName === ATOMIC_SAVE_COLLECTION
@@ -12242,7 +12264,10 @@ export default function App() {
         : coalescePendingWrite(previousWrite, payload, options)),
       createdAt: previousWrite?.createdAt || now,
       updatedAt: now,
-      attempts: previousWrite?.attempts || 0,
+      attempts: 0,
+      syncState: 'queued',
+      nextRetryAt: null,
+      lastErrorCode: '',
       lastError: getFriendlyFirebaseErrorMessage(error, '').slice(0, 500)
     };
     if (collectionName === ATOMIC_SAVE_COLLECTION) validateAtomicWrites(nextWrite.payload.writes, companyId);
@@ -12488,6 +12513,30 @@ export default function App() {
     });
   };
 
+  const restoreRejectedPendingWrite = async (command) => {
+    const stillRejected = () => activeTenantScopeRef.current === command.companyId
+      && pendingFirebaseWritesRef.current.some(item => isSamePendingWriteRevision(item, command) && item.syncState === 'blocked');
+    if (!stillRejected()) return;
+    await Promise.all(expandPendingWrites([command]).map(async write => {
+      const key = `${write.collectionName}:${write.documentId}`;
+      recentLocalWritesRef.current.delete(key);
+      const snapshot = await withTimeout(firebaseGetDocFromServer(doc(db, 'artifacts', appId, 'public', 'data', write.collectionName, write.documentId)), 12000, 'Chưa tải được dữ liệu đã xác nhận để đối chiếu.');
+      if (!stillRejected()) return;
+      if (snapshot.exists()) {
+        if (snapshot.data().companyId !== command.companyId) throw new Error('Không được khôi phục dữ liệu ngoài công ty.');
+        applyLocalCollectionWrite(write.collectionName, write.documentId, snapshot.data());
+      } else {
+        const binding = getLocalCollectionBinding(write.collectionName);
+        if (!binding) return;
+        const [setValue, isObject = false] = binding;
+        setValue(previous => isObject
+          ? Object.fromEntries(Object.entries(previous || {}).filter(([id]) => id !== write.documentId))
+          : (previous || []).filter(row => row.id !== write.documentId));
+        updateStableCollectionLocalValue(write.collectionName, write.documentId, {}, isObject, 'delete');
+      }
+    }));
+  };
+
   const upsertLocalListRecord = (setFn, record = {}) => {
     if (!record?.id || typeof setFn !== 'function') return;
     setFn(prev => {
@@ -12637,8 +12686,15 @@ export default function App() {
       );
 
       try {
+        if (pendingWrite.actorUid && pendingWrite.actorUid !== firebaseUser?.uid) {
+          const error = new Error('Hãy đăng nhập lại tài khoản đã lưu lệnh này để đồng bộ.');
+          error.code = 'firestore/actor-changed';
+          throw error;
+        }
         if (pendingWrite.collectionName === ATOMIC_SAVE_COLLECTION && pendingWrite.payload.actorUid !== firebaseUser?.uid) {
-          throw new Error('Hãy đăng nhập lại tài khoản đã lưu lệnh này để đồng bộ.');
+          const error = new Error('Hãy đăng nhập lại tài khoản đã lưu lệnh này để đồng bộ.');
+          error.code = 'firestore/actor-changed';
+          throw error;
         }
         const commitPendingWrite = pendingWrite.collectionName === ATOMIC_SAVE_COLLECTION
           ? commitAtomicWrites({
@@ -12664,19 +12720,17 @@ export default function App() {
             }, 'warn');
           }
         });
-        // Keep the entity lock until an atomic commit actually settles.
-        if (pendingWrite.collectionName === ATOMIC_SAVE_COLLECTION) await commitPendingWrite;
-        else await withTimeout(
-          commitPendingWrite,
-          timeoutMs,
-          'Firebase phan hoi cham khi xac nhan dong bo du lieu.'
-        );
+        // A UI deadline must not unlock an unresolved write and allow an older
+        // SDK/REST commit to overwrite a newer revision.
+        const commitResult = await commitPendingWrite;
+        if (activeTenantScopeRef.current === companyId && pendingFirebaseWritesRef.current.some(item => isSamePendingWriteRevision(item, pendingWrite))) {
+          for (const write of commitResult?.existingDocuments || []) applyLocalCollectionWrite(write.collectionName, write.documentId, write.payload);
+        }
         const nextWrites = pendingFirebaseWritesRef.current.filter(item => !isSamePendingWriteRevision(item, pendingWrite));
         if (activeTenantScopeRef.current === companyId) {
           persistPendingFirebaseWrites(nextWrites);
-          for (const name of new Set(expandPendingWrites([pendingWrite]).map(write => write.collectionName))) {
-            scheduleCollectionRefresh(name, [300, 1800]);
-          }
+          // The write ACK confirms this command. Active listeners and route
+          // freshness own collection updates; an ACK needs no full reread.
           setRealtimeStatus({
             state: nextWrites.length ? 'queued' : 'online',
             collection: pendingWrite.collectionName,
@@ -12697,7 +12751,7 @@ export default function App() {
         const nextWrites = sourceWrites.map(item => (
           isSamePendingWriteRevision(item, pendingWrite) ? {
           ...item,
-          attempts: (item.attempts || 0) + 1,
+          ...pendingWriteFailure(item, error),
           updatedAt: now,
           lastError: getFriendlyFirebaseErrorMessage(error, '').slice(0, 500)
           } : item
@@ -12705,14 +12759,19 @@ export default function App() {
         if (activeTenantScopeRef.current === companyId) {
           persistPendingFirebaseWrites(nextWrites);
           setRealtimeStatus({
-            state: 'queued',
+            state: nextWrites.some(write => write.syncState === 'blocked' || write.syncState === 'paused') ? 'error' : 'queued',
             collection: pendingWrite.collectionName,
             lastAt: now,
-            error: `Con ${nextWrites.length} thao tac chua duoc Firebase xac nhan.`
+            error: getFriendlyFirebaseErrorMessage(error, `Còn ${nextWrites.length} thao tác chưa được máy chủ xác nhận.`)
           });
         } else {
           savePendingFirebaseWrites(nextWrites, companyId);
         }
+        const rejected = nextWrites.find(item => isSamePendingWriteRevision(item, pendingWrite) && item.syncState === 'blocked');
+        if (rejected) void restoreRejectedPendingWrite(rejected).catch(restoreError => {
+          recordStartupEvent('firestore.pending_write.rollback_failed', { code: restoreError?.code || 'rollback-failed' }, 'error');
+          if (activeTenantScopeRef.current === companyId) setRealtimeStatus(previous => ({ ...previous, state: 'error', error: getFriendlyFirebaseErrorMessage(restoreError, 'Chưa đối chiếu được dữ liệu sau lỗi lưu.') }));
+        });
         throw error;
       }
     })().finally(() => {
@@ -12732,13 +12791,14 @@ export default function App() {
   const requireSharedWriteConfirmation = async (writeResult, collectionName, documentId) => {
     if (!writeResult?.queued) return writeResult;
     try {
-      return await flushPendingFirebaseWriteNow(
+      return await withTimeout(flushPendingFirebaseWriteNow(
         collectionName,
         documentId,
         12000,
         writeResult?.companyId || activeTenantScopeRef.current
-      );
+      ), 12000, 'Máy chủ chưa xác nhận thao tác. Bản lưu tạm vẫn được giữ.');
     } catch (error) {
+      if (!isRetryableWriteError(error)) throw error;
       const syncError = new Error(
         'Chua xac nhan duoc du lieu tren may chu. App da giu thao tac trong hang cho; vui long giu ket noi mang va thu lai sau khi dong bo xong.'
       );
@@ -12767,12 +12827,22 @@ export default function App() {
       payload: { companyId, actorUid: firebaseUser.uid, writes: scopedWrites }, durable: true,
     });
     for (const write of scopedWrites) {
+      if (write.ifAbsent && write.collectionName !== 'payments') continue;
       rememberRecentLocalWrite(write.collectionName, write.documentId, write.payload, 90000);
       applyLocalCollectionWrite(write.collectionName, write.documentId, write.payload, write.options);
     }
     void flushPendingFirebaseWriteNow(ATOMIC_SAVE_COLLECTION, entityKey, 12000, companyId)
       .catch(error => recordStartupEvent('firestore.atomic_save.pending', { code: error?.code || 'pending' }, 'warn'));
     return result;
+  };
+
+  const retryPendingFirebaseWrite = async (write) => {
+    if (!firebaseUser || write.companyId !== activeTenantScopeRef.current) throw new Error('Phiên công ty đã thay đổi.');
+    if (write.actorUid && write.actorUid !== firebaseUser.uid) throw new Error('Hãy đăng nhập tài khoản đã lưu lệnh này để đồng bộ.');
+    if (write.payload?.actorUid && write.payload.actorUid !== firebaseUser.uid) throw new Error('Hãy đăng nhập tài khoản đã lưu lệnh này để đồng bộ.');
+    persistPendingFirebaseWrites(pendingFirebaseWritesRef.current.map(item => item.key === write.key
+      ? { ...item, attempts: 0, nextRetryAt: null, syncState: 'queued', lastError: '', lastErrorCode: '' } : item));
+    return requireSharedWriteConfirmation({ queued: true, companyId: write.companyId }, write.collectionName, write.documentId);
   };
 
   const saveDataDocument = async (collectionName, documentId, payload, options = {}, timeoutMs = 4500, timeoutMessage = 'Firebase SDK phản hồi chậm') => {
@@ -12993,16 +13063,11 @@ export default function App() {
       pendingFirebaseFlushInFlightRef.current.add(companyId);
       try {
         const batch = pendingFirebaseWritesRef.current
-          .filter(write => write?.companyId === companyId)
+          .filter(write => write?.companyId === companyId && canAutomaticallyRetryWrite(write, firebaseUser.uid)
+            && !pendingFirebaseWritePromisesRef.current.has(`${normalizeTenantStorageScope(companyId)}:${write.key}`))
           .slice(0, 8);
-        for (const write of batch) {
-          if (cancelled) break;
-          try {
-            await flushPendingFirebaseWriteNow(write.collectionName, write.documentId, 8000, companyId);
-          } catch (error) {
-            if (isFirebaseQuotaError(error)) break;
-          }
-        }
+        if (!cancelled) await Promise.allSettled(batch.map(write =>
+          flushPendingFirebaseWriteNow(write.collectionName, write.documentId, 8000, companyId)));
       } finally {
         pendingFirebaseFlushInFlightRef.current.delete(companyId);
       }
@@ -13140,11 +13205,10 @@ export default function App() {
           setCurrentUser(null);
           setCurrentCompany(null);
           setActiveTab('home');
-        } else {
-          // Firebase has completed persistence hydration. Only an explicitly
-          // supplied initial token may bootstrap here; otherwise Login stays open.
-          void bootstrapUnauthenticatedAuth();
         }
+        // A stale cached UI session must not prevent an explicitly supplied,
+        // verified custom token from establishing a new Firebase session.
+        void bootstrapUnauthenticatedAuth();
         return;
       }
       if (u.isAnonymous) {
@@ -13882,7 +13946,8 @@ export default function App() {
     }
 
     const mergePendingArrayItems = (colName, arr = []) => {
-      const pendingWrites = expandPendingWrites(pendingFirebaseWritesRef.current)
+      const pendingWrites = expandPendingWrites(pendingFirebaseWritesRef.current.filter(write => write.syncState !== 'blocked'))
+        .filter(write => !write.ifAbsent || write.collectionName === 'payments')
         .filter(write => write?.collectionName === colName && write?.documentId && write?.payload);
       pruneRecentLocalMutations();
       const deletedIds = getRecentLocalDeleteIds(colName);
@@ -14642,7 +14707,7 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
     const matchedCompany = rawCompanies.find(comp => comp.id === currentUser.companyId);
-    if (matchedCompany && (matchedCompany.id !== currentCompany?.id || matchedCompany.updatedAt !== currentCompany?.updatedAt)) {
+    if (shouldUpdateCompanyProfile(currentCompany, matchedCompany)) {
       setCurrentCompany(matchedCompany);
     }
   }, [rawCompanies, currentUser, currentCompany]);
@@ -16251,7 +16316,7 @@ export default function App() {
       }));
       return;
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !empId) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
     const key = `${targetDate}_${empId}`;
     await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
       companyId: myCompanyId,
@@ -16285,7 +16350,7 @@ export default function App() {
       }));
       return;
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !empId) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
     const key = `${targetDate}_${empId}`;
     await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
       companyId: myCompanyId,
@@ -16309,7 +16374,7 @@ export default function App() {
       }));
       return;
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const key = `${currentDate}_${empId}`;
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, status: 'leave', checkIn: null, checkOut: null }, { merge: true });
   };
@@ -16318,7 +16383,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS attendance editing requires an approved adjustment contract; direct time overwrite is disabled.');
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const key = `${targetDate}_${empId}`;
     const actingEmployee = employees.find(item => item.id === currentUser?.id) || {};
     const adjustmentMethodMeta = {
@@ -16532,7 +16597,7 @@ export default function App() {
   };
 
   const handleToggleArchive = async (collectionName, itemId, currentStatus) => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, itemId), { isArchived: !currentStatus }, { merge: true });
   };
 
@@ -17225,11 +17290,11 @@ export default function App() {
     ].join('\n');
   };
 
-  const createPaymentConfirmationNotice = async (paymentPayload = {}) => {
-    if (!firebaseUser || !myCompanyId || !paymentPayload?.id) return;
+  const buildPaymentConfirmationWrites = (paymentPayload = {}) => {
+    if (!firebaseUser || !myCompanyId || !paymentPayload?.id) return [];
     const customerId = paymentPayload.customerId || '';
     const amount = parseLooseMoneyValue(paymentPayload.amount);
-    if (!customerId || amount <= 0) return;
+    if (!customerId || amount <= 0) return [];
 
     const customer = customers.find(item => item.id === customerId) || {};
     const matchedOrder = paymentPayload.matchedOrderId
@@ -17266,7 +17331,7 @@ export default function App() {
       || currentCompany?.zaloDebtPaymentConfirmationEnabled
     );
 
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', notificationId), {
+    const writes = [{ collectionName: 'notifications', documentId: notificationId, ifAbsent: true, payload: {
       id: notificationId,
       companyId: myCompanyId,
       customerId,
@@ -17291,14 +17356,12 @@ export default function App() {
       updatedAt: now,
       createdAt: now,
       isArchived: false
-    }, { merge: true });
+    } }];
 
-    if (!shouldQueueZalo || !customer.zaloGroupLink) return;
+    if (!shouldQueueZalo || !customer.zaloGroupLink) return writes;
     const queueId = `payment_confirmation_${confirmedPayment.id}_${customerId}`;
-    const existingSentQueue = rawZaloCampaignQueue.find(item => item.id === queueId && item.status === 'sent');
-    if (existingSentQueue) return;
 
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'zalo_campaign_queue', queueId), {
+    writes.push({ collectionName: 'zalo_campaign_queue', documentId: queueId, ifAbsent: true, payload: {
       id: queueId,
       companyId: myCompanyId,
       campaignId: 'payment_confirmation',
@@ -17319,15 +17382,21 @@ export default function App() {
       sentBy: '',
       sourcePaymentId: confirmedPayment.id,
       isArchived: false
-    }, { merge: true });
+    } });
+    return writes;
   };
 
-  const handleAddPayment = async (paymentData) => {
+  const createPaymentConfirmationNotice = (paymentPayload = {}) => {
+    const writes = buildPaymentConfirmationWrites(paymentPayload);
+    return writes.length ? Promise.resolve(saveAtomicDocuments(`payment_notice_${paymentPayload.id}`, writes)) : Promise.resolve();
+  };
+
+  const handleAddPayment = async (paymentData, writePlan = null) => {
     if (isVpsStagingMode) {
       throw new Error('Payment posting is blocked in VPS staging until the finance payment contract is approved.');
     }
-    if (!firebaseUser) return;
-    const id = `p_${Date.now()}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const id = paymentData.clientMutationId || `p_${crypto.randomUUID()}`;
     const matchedOrder = resolveMatchedOrderFromTransfer({ paymentData, orders, company: currentCompany });
     const resolvedCustomerId = matchedOrder?.customerId || paymentData.customerId || '';
     const normalizedNote = capitalizeFirst(paymentData.note || paymentData.bankContent || '');
@@ -17354,27 +17423,13 @@ export default function App() {
       createdAt: new Date().toISOString()
     };
 
-    upsertLocalListRecord(setRawPayments, paymentPayload);
-    rememberRecentLocalWrite('payments', id, paymentPayload);
-
-    let savedToCloudOrQueue = false;
-    try {
-      const saveResult = await saveDataDocument(
-        'payments',
-        id,
-        paymentPayload,
-        { merge: true },
-        4500,
-        'Firebase SDK phản hồi chậm khi lưu khoản thu.'
-      );
-      savedToCloudOrQueue = true;
-      if (approvalStatus === CASHFLOW_APPROVAL_STATUS.approved && !saveResult?.queued) {
-        await createPaymentConfirmationNotice(paymentPayload);
-      }
-    } catch (error) {
-      if (!savedToCloudOrQueue) rollbackLocalListRecord(setRawPayments, id);
-      throw error;
-    }
+    if (!resolvedCustomerId || parseLooseMoneyValue(paymentPayload.amount) <= 0) throw new Error('Vui lòng chọn khách hàng và nhập số tiền lớn hơn 0.');
+    const writes = [
+      { collectionName: 'payments', documentId: id, ifAbsent: true, payload: paymentPayload },
+      ...(approvalStatus === CASHFLOW_APPROVAL_STATUS.approved ? buildPaymentConfirmationWrites(paymentPayload) : []),
+    ];
+    if (writePlan) { writePlan.push(...writes); return { planned: true }; }
+    return saveAtomicDocuments(`payment_${id}`, writes);
   };
 
   const handleLinkCustomerBankAccount = async (customerId, accountData = {}) => {
@@ -17505,7 +17560,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('Payment editing is blocked in VPS staging until the finance payment contract is approved.');
     }
-    if (!firebaseUser || !paymentId) return;
+    if (!firebaseUser || !myCompanyId || !paymentId) throw new Error('Phiên làm việc hoặc khoản thu không hợp lệ.');
     const previousPayment = rawPayments.find(item => item.id === paymentId) || {};
     const patch = { ...paymentData, updatedAt: new Date().toISOString(), updatedByEmpId: currentUser?.id || '' };
     if (paymentData.amount !== undefined) patch.amount = parseLooseMoneyValue(paymentData.amount);
@@ -17531,9 +17586,10 @@ export default function App() {
       patch.rejectedAt = new Date().toISOString();
       patch.rejectedByEmpId = currentUser?.id || '';
     }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), patch, { merge: true });
+    if (previousPayment.companyId !== myCompanyId) throw new Error('Không tìm thấy khoản thu của công ty này.');
+    const writes = [{ collectionName: 'payments', documentId: paymentId, payload: { ...patch, companyId: myCompanyId }, options: { merge: true } }];
     if (patch.approvalStatus === CASHFLOW_APPROVAL_STATUS.approved) {
-      await createPaymentConfirmationNotice({
+      writes.push(...buildPaymentConfirmationWrites({
         ...previousPayment,
         ...patch,
         id: paymentId,
@@ -17543,8 +17599,9 @@ export default function App() {
         note: patch.note ?? previousPayment.note ?? '',
         method: patch.method ?? previousPayment.method ?? previousPayment.paymentMethod ?? '',
         paymentMethod: patch.paymentMethod ?? previousPayment.paymentMethod ?? previousPayment.method ?? ''
-      });
+      }));
     }
+    return saveAtomicDocuments(`payment_${paymentId}`, writes);
   };
   useEffect(() => {
     if (!firebaseUser || !myCompanyId || !isInitialDataLoaded || !isOrderCodeAutoMatchEnabled(currentCompany)) return;
@@ -17649,7 +17706,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('Payment deletion is blocked in VPS staging until the finance payment contract is approved.');
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !paymentId) throw new Error('Phiên làm việc hoặc khoản thu không hợp lệ.');
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), {
       isArchived: true,
       archivedAt: new Date().toISOString(),
@@ -17657,7 +17714,7 @@ export default function App() {
     }, { merge: true });
   };
 
-  const handleAddExpense = async (empId, expenseData) => {
+  const handleAddExpense = async (empId, expenseData, writePlan = null) => {
     if (isVpsStagingMode) {
       const amount = parseLooseMoneyValue(expenseData?.amount);
       if (amount <= 0) throw new Error('VPS expense requires a positive amount.');
@@ -17687,14 +17744,17 @@ export default function App() {
       upsertLocalListRecord(setRawExpenses, normalized);
       return normalized.id;
     }
-    if (!firebaseUser) return;
-    const id = `exp_${Date.now()}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const id = expenseData.clientMutationId || `exp_${crypto.randomUUID()}`;
+    const amount = parseLooseMoneyValue(expenseData.amount);
+    if (!/^[A-Za-z0-9_-]+$/.test(id) || amount <= 0) throw new Error('Khoản chi phải có mã hợp lệ và số tiền lớn hơn 0.');
     const needsApproval = Boolean(expenseData.requiresApproval || expenseData.approvalStatus === CASHFLOW_APPROVAL_STATUS.pending);
     const approvalStatus = needsApproval
       ? CASHFLOW_APPROVAL_STATUS.pending
       : (expenseData.approvalStatus || CASHFLOW_APPROVAL_STATUS.approved);
     const expensePayload = {
       ...expenseData,
+      amount,
       category: normalizeExpenseCategoryLabel(expenseData.category || 'Chi phí khác'),
       note: normalizeLeadingLabel(expenseData.note || 'Khoản chi'),
       sourceType: expenseData.sourceType || 'manual_accounting_expense',
@@ -17708,31 +17768,27 @@ export default function App() {
       createdAt: new Date().toISOString()
     };
 
-    upsertLocalListRecord(setRawExpenses, expensePayload);
-    rememberRecentLocalWrite('expenses', id, expensePayload);
-
-    try {
-      await saveDataDocument(
-        'expenses',
-        id,
-        expensePayload,
-        { merge: true },
-        4500,
-        'Firebase SDK phản hồi chậm khi lưu khoản chi.'
-      );
-    } catch (error) {
-      rollbackLocalListRecord(setRawExpenses, id);
-      throw error;
+    if (writePlan) {
+      writePlan.push({ collectionName: 'expenses', documentId: id, payload: expensePayload, options: { merge: true } });
+      return { planned: true, id };
     }
+    const result = await saveDataDocument('expenses', id, expensePayload, { merge: true });
+    return { ...result, id };
   };
 
-  const handleEditExpense = async (expenseId, expenseData = {}) => {
+  const handleEditExpense = async (expenseId, expenseData = {}, writePlan = null) => {
     if (isVpsStagingMode) {
       throw new Error('VPS finance expenses are immutable after creation; use the approved expense approval/post workflow.');
     }
-    if (!firebaseUser || !expenseId) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    if (!rawExpenses.some(expense => expense.id === expenseId && expense.companyId === myCompanyId)) {
+      throw new Error('Không tìm thấy khoản chi của công ty này.');
+    }
     const patch = { ...expenseData, updatedAt: new Date().toISOString(), updatedByEmpId: currentUser?.id || '' };
-    if (expenseData.amount !== undefined) patch.amount = parseLooseMoneyValue(expenseData.amount);
+    if (expenseData.amount !== undefined) {
+      patch.amount = parseLooseMoneyValue(expenseData.amount);
+      if (patch.amount <= 0) throw new Error('Số tiền chi phải lớn hơn 0.');
+    }
     if (expenseData.category !== undefined) patch.category = normalizeExpenseCategoryLabel(expenseData.category || 'Chi phí khác');
     if (expenseData.note !== undefined) patch.note = normalizeLeadingLabel(expenseData.note || patch.category || 'Khoản chi');
     if (expenseData.approvalStatus === CASHFLOW_APPROVAL_STATUS.approved) {
@@ -17747,27 +17803,36 @@ export default function App() {
       patch.rejectedAt = new Date().toISOString();
       patch.rejectedByEmpId = currentUser?.id || '';
     }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', expenseId), patch, { merge: true });
+    if (writePlan) {
+      writePlan.push({ collectionName: 'expenses', documentId: expenseId, payload: patch, options: { merge: true } });
+      return { planned: true };
+    }
+    return saveDataDocument('expenses', expenseId, patch, { merge: true });
   };
 
   const handleDeleteExpense = async (expenseId) => {
     if (isVpsStagingMode) {
       throw new Error('VPS finance expenses cannot be archived or deleted without an approved cancellation contract.');
     }
-    if (!firebaseUser) return;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', expenseId), {
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    if (!rawExpenses.some(expense => expense.id === expenseId && expense.companyId === myCompanyId)) {
+      throw new Error('Không tìm thấy khoản chi của công ty này.');
+    }
+    return saveDataDocument('expenses', expenseId, {
       isArchived: true,
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     }, { merge: true });
   };
 
-  const addFinancialRecord = async (empId, type, amount, reason, date = getTodayString(), extraData = {}) => {
+  const addFinancialRecord = async (empId, type, amount, reason, date = getTodayString(), extraData = {}, writePlan = null) => {
     if (isVpsStagingMode) {
       throw new Error('Financial record writes are blocked in VPS staging until the accounting contract is approved.');
     }
-    if (!firebaseUser) return;
-    const id = `f_${Date.now()}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    if (!employees.some(employee => employee.id === empId && employee.companyId === myCompanyId)) throw new Error('Không tìm thấy nhân sự của công ty này.');
+    if (!['bonus', 'penalty', 'advance', 'allowance', 'employee_purchase'].includes(type) || parseLooseMoneyValue(amount) <= 0) throw new Error('Khoản lương/thưởng/phạt không hợp lệ.');
+    const id = `f_${extraData.clientMutationId || crypto.randomUUID()}`;
     const financialPayload = {
       ...extraData,
       id,
@@ -17781,11 +17846,11 @@ export default function App() {
       createdAt: new Date().toISOString()
     };
 
-    upsertLocalListRecord(setRawFinancials, financialPayload);
-    rememberRecentLocalWrite('financials', id, financialPayload);
-
-    try {
-      await saveDataDocument(
+    if (writePlan) {
+      writePlan.push({ collectionName: 'financials', documentId: id, payload: financialPayload, ifAbsent: true });
+      return { planned: true, id };
+    }
+    return saveDataDocument(
         'financials',
         id,
         financialPayload,
@@ -17793,17 +17858,13 @@ export default function App() {
         4500,
         'Firebase SDK phản hồi chậm khi lưu khoản lương/thưởng/phạt.'
       );
-    } catch (error) {
-      rollbackLocalListRecord(setRawFinancials, id);
-      throw error;
-    }
   };
 
   const handleEditFinancialRecord = async (financialId, patchData = {}) => {
     if (isVpsStagingMode) {
       throw new Error('Financial record editing is blocked in VPS staging until the accounting contract is approved.');
     }
-    if (!firebaseUser || !financialId) return;
+    if (!firebaseUser || !myCompanyId || !financialId) throw new Error('Phiên làm việc hoặc khoản lương không hợp lệ.');
     const patch = {
       ...patchData,
       updatedAt: new Date().toISOString(),
@@ -17819,7 +17880,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('Financial record deletion is blocked in VPS staging until the accounting contract is approved.');
     }
-    if (!firebaseUser || !financialId) return;
+    if (!firebaseUser || !myCompanyId || !financialId) throw new Error('Phiên làm việc hoặc khoản lương không hợp lệ.');
     const patch = {
       isArchived: true,
       archivedAt: new Date().toISOString(),
@@ -18367,7 +18428,7 @@ export default function App() {
   };
 
   const updatePerformance = async (empId, overtime, monthKey = getTodayString().substring(0, 7)) => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const safeMonthKey = /^\d{4}-\d{2}$/.test(`${monthKey}`) ? `${monthKey}` : getTodayString().substring(0, 7);
     const performanceId = `${safeMonthKey}_${empId}`;
     const performancePayload = {
@@ -18705,7 +18766,7 @@ export default function App() {
       return savedCustomer.id;
     }
 
-    if (!firebaseUser) throw new Error('Chưa kết nối dữ liệu. Vui lòng tải lại app rồi thử lại.');
+    if (!firebaseUser || !myCompanyId) throw new Error('Chưa kết nối dữ liệu. Vui lòng tải lại app rồi thử lại.');
     const assignedEmpId = empId || customerData?.empId || currentUser?.id || '';
     if (!assignedEmpId) {
       throw new Error('Vui lòng chọn nhân viên phụ trách trước khi lưu khách hàng.');
@@ -18716,16 +18777,16 @@ export default function App() {
     if (!normalizedPhone) {
       throw new Error('Vui lòng nhập số điện thoại khách hàng để tránh trùng dữ liệu.');
     }
+    const id = `c_${customerData.clientMutationId || crypto.randomUUID()}`;
     const duplicatedCustomer = rawCustomers.find((customer) =>
       customer.companyId === myCompanyId &&
       !customer.isArchived &&
-      customer.id !== customerData?.id &&
+      customer.id !== id &&
       buildCustomerPhoneDuplicateKey(customer.phone) === normalizedPhone
     );
     if (duplicatedCustomer) {
       throw new Error(`Số điện thoại này đã có trong danh sách khách hàng: ${duplicatedCustomer.name || 'khách hàng cũ'}.`);
     }
-    const id = `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
     const debtLimitMode = `${customerData?.debtLimitMode || customerData?.creditLimitMode || ''}`.trim() || 'no_debt';
     const payload = {
@@ -18799,8 +18860,9 @@ export default function App() {
       return savedCustomer;
     }
 
-    if (!firebaseUser) return;
-    const currentCustomer = rawCustomers.find(customer => customer.id === customerId);
+    if (!firebaseUser || !myCompanyId || !customerId) throw new Error('Phiên sửa khách hàng không hợp lệ. Vui lòng đăng nhập lại.');
+    const currentCustomer = rawCustomers.find(customer => customer.id === customerId && customer.companyId === myCompanyId);
+    if (!currentCustomer) throw new Error('Không tìm thấy khách hàng trong công ty hiện tại.');
     const nextName = updatedData?.name !== undefined
       ? toTitleCase(stripCustomerHonorificPrefix(updatedData.name || '')).trim()
       : currentCustomer?.name;
@@ -18830,7 +18892,7 @@ export default function App() {
       updatedAt: now
     };
     try {
-      await saveDataDocument('customers', customerId, payload, { merge: true });
+      return await saveDataDocument('customers', customerId, payload, { merge: true });
     } catch (error) {
       if (currentCustomer) {
         upsertLocalListRecord(setRawCustomers, currentCustomer);
@@ -18928,13 +18990,15 @@ export default function App() {
       return { success: true, mode: 'soft-deleted' };
     }
 
-    if (!firebaseUser) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', customerId), {
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const customer = rawCustomers.find(item => item.id === customerId && item.companyId === myCompanyId);
+    if (!customer) throw new Error('Không tìm thấy khách hàng trong công ty này.');
+    const result = await saveDataDocument('customers', customerId, {
       isArchived: true,
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     }, { merge: true });
-    return { success: true, mode: 'archived' };
+    return { success: true, queued: Boolean(result?.queued), mode: 'archived' };
   };
 
   const handleAddCustomerLoan = async (customerId, loanData = {}) => {
@@ -19009,8 +19073,10 @@ export default function App() {
       return savedProduct.id;
     }
 
-    if (!firebaseUser) return;
-    const id = `prod_${Date.now()}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ để lưu sản phẩm.');
+    if (!`${productData?.name || ''}`.trim()) throw new Error('Vui lòng nhập tên sản phẩm.');
+    const id = `prod_${productData.clientMutationId || globalThis.crypto.randomUUID()}`;
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Mã thao tác sản phẩm không hợp lệ.');
     await saveDataDocument('products', id, {
       ...productData,
       id,
@@ -19033,7 +19099,10 @@ export default function App() {
       return savedProduct;
     }
 
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ để sửa sản phẩm.');
+    if (!rawProducts.some(product => product.id === prodId && product.companyId === myCompanyId)) {
+      throw new Error('Không tìm thấy sản phẩm trong công ty này.');
+    }
     return saveDataDocument('products', prodId, updatedData, { merge: true }, 4500, 'Firebase phản hồi chậm khi cập nhật sản phẩm.');
   };
 
@@ -19048,8 +19117,11 @@ export default function App() {
       return { success: true, mode: 'soft-deleted' };
     }
 
-    if (!firebaseUser) return;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', prodId), {
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ để xóa sản phẩm.');
+    if (!rawProducts.some(product => product.id === prodId && product.companyId === myCompanyId)) {
+      throw new Error('Không tìm thấy sản phẩm trong công ty này.');
+    }
+    return saveDataDocument('products', prodId, {
       isArchived: true,
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
@@ -19115,7 +19187,7 @@ export default function App() {
       }
     }
 
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên tạo đơn hàng không hợp lệ. Vui lòng đăng nhập lại.');
     const customer = customers.find(c => c.id === orderData.customerId);
     const salesEmpId = orderData.salesEmpId || empId || customer?.empId || '';
     const now = new Date().toISOString();
@@ -19362,7 +19434,7 @@ export default function App() {
     updatedByEmpId = '',
   } = {}) => {
     const companyId = myCompanyId || currentCompany?.id || '';
-    if (!firebaseUser || !companyId || !customerId || !productId || !inputUnit) return null;
+    if (!firebaseUser || !companyId || !customerId || !productId || !inputUnit) throw new Error('Phiên làm việc hoặc thông tin sản phẩm không hợp lệ.');
     const identity = { companyId, customerId, productId };
     const currentPreference = existingPreference === undefined
       ? await handleGetCustomerProductPreference(identity)
@@ -19385,7 +19457,7 @@ export default function App() {
   };
 
   const handleAddOrderRequest = async (empId, requestData = {}, saveOptions = {}) => {
-    if (!firebaseUser) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const customer = customers.find(c => c.id === requestData.customerId);
     const customerSalesEmpId = customer?.empId
       || customer?.salesEmpId
@@ -19575,8 +19647,9 @@ export default function App() {
   };
 
   const handleEditOrderRequest = async (requestId, updatedData, empId = '', saveOptions = {}) => {
-    if (!firebaseUser || !requestId) return;
-    const existingRequest = orderRequests.find(request => request?.id === requestId) || {};
+    if (!firebaseUser || !myCompanyId || !requestId) throw new Error('Phiên làm việc hoặc đơn đặt hàng không hợp lệ.');
+    const existingRequest = orderRequests.find(request => request?.id === requestId && request.companyId === myCompanyId);
+    if (!existingRequest) throw new Error('Không tìm thấy đơn đặt hàng của công ty này.');
     const customer = customers.find(c => c.id === (updatedData.customerId || existingRequest.customerId));
     const customerSalesEmpId = customer?.empId
       || customer?.salesEmpId
@@ -19699,7 +19772,8 @@ export default function App() {
   };
 
   const handleDeleteOrderRequest = async (requestId) => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !requestId) throw new Error('Phiên làm việc hoặc đơn đặt hàng không hợp lệ.');
+    if (!orderRequests.some(request => request.id === requestId && request.companyId === myCompanyId)) throw new Error('Không tìm thấy đơn đặt hàng của công ty này.');
     const archivedPayload = {
       isArchived: true,
       archivedAt: new Date().toISOString(),
@@ -19740,8 +19814,9 @@ export default function App() {
       upsertLocalListRecord(setRawWarehouseImports, normalized);
       return normalized.id;
     }
-    if (!firebaseUser) return null;
-    const id = `wi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ để lưu nhập kho.');
+    const id = `wi_${importData.clientMutationId || globalThis.crypto.randomUUID()}`;
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Mã thao tác nhập kho không hợp lệ.');
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
     const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
     const unitPrice = parseLooseMoneyValue(importData.unitPrice);
@@ -19877,7 +19952,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
     }
-    if (!firebaseUser || !importId) return;
+    if (!firebaseUser || !myCompanyId || !importId) throw new Error('Phiên làm việc hoặc phiếu nhập không hợp lệ.');
     const quantity = parseLooseQuantityValue(importData.quantity ?? importData.totalQuantity);
     const totalKg = parseLooseQuantityValue(importData.totalKg ?? importData.weightKg);
     const unitPrice = parseLooseMoneyValue(importData.unitPrice);
@@ -19964,7 +20039,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
     }
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !importId) throw new Error('Phiên làm việc hoặc phiếu nhập không hợp lệ.');
     const archivedAt = new Date().toISOString();
     const archivedPayload = {
       id: importId,
@@ -19988,7 +20063,7 @@ export default function App() {
   };
 
   const handleAddPricingInput = async (empId, inputData = {}) => {
-    if (!firebaseUser || !myCompanyId) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const id = `pricing_input_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const createdAt = new Date().toISOString();
     const weightKg = parseLooseQuantityValue(inputData.weightKg ?? inputData.totalKg);
@@ -20028,7 +20103,7 @@ export default function App() {
   };
 
   const handleEditPricingInput = async (inputId, inputData = {}) => {
-    if (!firebaseUser || !myCompanyId || !inputId) return;
+    if (!firebaseUser || !myCompanyId || !inputId) throw new Error('Phiên làm việc hoặc dữ liệu giá không hợp lệ.');
     const updatedAt = new Date().toISOString();
     const weightKg = parseLooseQuantityValue(inputData.weightKg ?? inputData.totalKg);
     const quantity = parseLooseQuantityValue(inputData.quantity ?? inputData.count);
@@ -20061,7 +20136,7 @@ export default function App() {
   };
 
   const handleDeletePricingInput = async (inputId) => {
-    if (!firebaseUser || !inputId) return;
+    if (!firebaseUser || !myCompanyId || !inputId) throw new Error('Phiên làm việc hoặc dữ liệu giá không hợp lệ.');
     const archivedAt = new Date().toISOString();
     const payload = {
       isArchived: true,
@@ -20077,7 +20152,7 @@ export default function App() {
   };
 
   const handleSavePricingRules = async (rulesData = {}) => {
-    if (!firebaseUser || !myCompanyId) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const id = rulesData.id || 'pricing_engine_rules';
     const updatedAt = new Date().toISOString();
     const payload = {
@@ -20088,14 +20163,12 @@ export default function App() {
       updatedByEmpId: employeeInfo?.id || currentUser?.id || '',
       isArchived: false
     };
-    setRawPricingRules(prev => [payload, ...(Array.isArray(prev) ? prev.filter(item => item?.id !== id) : [])]);
-    rememberRecentLocalWrite('pricingRules', id, payload);
-    await saveDataDocument('pricingRules', id, payload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi lưu cấu hình giá.');
-    return id;
+    const receipt = await saveDataDocument('pricingRules', id, payload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi lưu cấu hình giá.');
+    return { id, queued: receipt?.queued === true };
   };
 
   const handleSavePricingScenario = async (empId, scenarioData = {}) => {
-    if (!firebaseUser || !myCompanyId) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const id = scenarioData.id || `pricing_scenario_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const now = new Date().toISOString();
     const payload = {
@@ -20163,8 +20236,9 @@ export default function App() {
       upsertLocalListRecord(setRawWarehouseStockCounts, payload);
       return payload.id;
     }
-    if (!firebaseUser) return null;
-    const id = `wsc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ để lưu kiểm tồn.');
+    const id = `wsc_${countData.clientMutationId || globalThis.crypto.randomUUID()}`;
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Mã thao tác kiểm tồn không hợp lệ.');
     const quantity = parseLooseQuantityValue(countData.quantity ?? countData.totalQuantity);
     const totalKg = parseLooseQuantityValue(countData.totalKg ?? countData.weightKg);
     const measures = buildWarehouseImportMeasureEntries({
@@ -20194,8 +20268,6 @@ export default function App() {
       isArchived: false,
       createdAt: new Date().toISOString()
     };
-    upsertLocalListRecord(setRawWarehouseStockCounts, payload);
-    rememberRecentLocalWrite('warehouseStockCounts', id, payload);
     await saveDataDocument('warehouseStockCounts', id, payload, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu tồn kho thực tế.');
     return id;
   };
@@ -20204,7 +20276,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock count editing requires the approved stock-count session contract.');
     }
-    if (!firebaseUser || !stockCountId) return;
+    if (!firebaseUser || !myCompanyId || !stockCountId) throw new Error('Phiên làm việc hoặc phiếu kiểm kê không hợp lệ.');
     const quantity = parseLooseQuantityValue(countData.quantity ?? countData.totalQuantity);
     const totalKg = parseLooseQuantityValue(countData.totalKg ?? countData.weightKg);
     const measures = buildWarehouseImportMeasureEntries({
@@ -20240,7 +20312,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock count deletion requires an approved cancellation contract.');
     }
-    if (!firebaseUser || !stockCountId) return;
+    if (!firebaseUser || !myCompanyId || !stockCountId) throw new Error('Phiên làm việc hoặc phiếu kiểm kê không hợp lệ.');
     const archivedAt = new Date().toISOString();
     const payload = {
       id: stockCountId,
@@ -20254,7 +20326,7 @@ export default function App() {
   };
 
   const handleAddAsset = async (empId, assetData = {}) => {
-    if (!firebaseUser) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const id = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const assignedDriverIds = getDeliveryAssignmentIds(assetData);
     const assignedDriverId = assignedDriverIds[0] || '';
@@ -20298,7 +20370,7 @@ export default function App() {
   };
 
   const handleEditAsset = async (assetId, assetData = {}, empId = '') => {
-    if (!firebaseUser || !assetId) return;
+    if (!firebaseUser || !myCompanyId || !assetId) throw new Error('Phiên làm việc hoặc tài sản không hợp lệ.');
     const previousAsset = assets.find(asset => asset.id === assetId) || {};
     const assignedDriverIds = getDeliveryAssignmentIds(assetData);
     const assignedDriverId = assignedDriverIds[0] || '';
@@ -20351,7 +20423,7 @@ export default function App() {
   };
 
   const handleDeleteAsset = async (assetId) => {
-    if (!firebaseUser || !assetId) return;
+    if (!firebaseUser || !myCompanyId || !assetId) throw new Error('Phiên làm việc hoặc tài sản không hợp lệ.');
     await saveDataDocument('assets', assetId, {
       isArchived: true,
       archivedAt: new Date().toISOString(),
@@ -20359,9 +20431,9 @@ export default function App() {
     }, { merge: true });
   };
 
-  const handleAddAssetCostLog = async (empId, logData = {}) => {
-    if (!firebaseUser) return null;
-    const id = `acl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const handleAddAssetCostLog = async (empId, logData = {}, writePlan = null) => {
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const id = `${logData.clientMutationId || `acl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`}`.trim();
     const liters = parseLooseQuantityValue(logData.liters);
     const unitPrice = parseLooseMoneyValue(logData.unitPrice);
     const amount = parseLooseMoneyValue(logData.amount) || (liters > 0 && unitPrice > 0 ? liters * unitPrice : parseLooseMoneyValue(logData.totalAmount));
@@ -20423,29 +20495,19 @@ export default function App() {
       createdAt: nowIso
     } : null;
 
-    upsertLocalListRecord(setRawAssetCostLogs, logPayload);
-    rememberRecentLocalWrite('assetCostLogs', id, logPayload);
-    if (expensePayload) {
-      upsertLocalListRecord(setRawExpenses, expensePayload);
-      rememberRecentLocalWrite('expenses', expenseId, expensePayload);
-    }
-
-    try {
-      await saveDataDocument('assetCostLogs', id, logPayload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi lưu chi phí tài sản.');
-      if (expensePayload) {
-        await saveDataDocument('expenses', expenseId, expensePayload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi đồng bộ chi phí tài sản sang Thu chi.');
-      }
-    } catch (error) {
-      rollbackLocalListRecord(setRawAssetCostLogs, id);
-      if (expensePayload) rollbackLocalListRecord(setRawExpenses, expenseId);
-      throw error;
-    }
+    const writes = [
+      { collectionName: 'assetCostLogs', documentId: id, payload: logPayload, options: { merge: true } },
+      ...(expensePayload ? [{ collectionName: 'expenses', documentId: expenseId, payload: expensePayload, options: { merge: true } }] : []),
+    ];
+    if (writePlan) writePlan.push(...writes);
+    else saveAtomicDocuments(`asset_cost_${id}`, writes);
     return id;
   };
 
-  const handleEditAssetCostLog = async (logId, logData = {}, empId = '') => {
-    if (!firebaseUser || !logId) return;
-    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
+  const handleEditAssetCostLog = async (logId, logData = {}, empId = '', writePlan = null) => {
+    if (!firebaseUser || !logId) throw new Error('Phiên làm việc không hợp lệ.');
+    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`);
+    if (!currentLog || currentLog.companyId !== myCompanyId) throw new Error('Không tìm thấy chi phí của công ty này.');
     const liters = parseLooseQuantityValue(logData.liters);
     const unitPrice = parseLooseMoneyValue(logData.unitPrice);
     const amount = parseLooseMoneyValue(logData.amount) || (liters > 0 && unitPrice > 0 ? liters * unitPrice : parseLooseMoneyValue(logData.totalAmount));
@@ -20471,9 +20533,6 @@ export default function App() {
     };
     const localLogPayload = { ...currentLog, ...logPatch, id: logId, companyId: currentLog.companyId || myCompanyId };
 
-    upsertLocalListRecord(setRawAssetCostLogs, localLogPayload);
-    rememberRecentLocalWrite('assetCostLogs', logId, localLogPayload);
-
     let expensePatch = null;
     if (linkedExpense && !linkedExpense.isArchived) {
       const nextCategory = normalizeExpenseCategoryLabel(logData.category || linkedExpense.category || logData.costType || getAssetCostTypeLabel(logData.type || currentLog.type || 'other'));
@@ -20492,25 +20551,19 @@ export default function App() {
         updatedAt: nowIso,
         updatedByEmpId: empId || employeeInfo?.id || currentUser?.id || ''
       };
-      upsertLocalListRecord(setRawExpenses, expensePatch);
-      rememberRecentLocalWrite('expenses', linkedExpense.id, expensePatch);
     }
-
-    try {
-      await saveDataDocument('assetCostLogs', logId, logPatch, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật chi phí tài sản.');
-      if (expensePatch) {
-        await saveDataDocument('expenses', linkedExpense.id, expensePatch, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật phiếu chi tài sản.');
-      }
-    } catch (error) {
-      upsertLocalListRecord(setRawAssetCostLogs, currentLog);
-      if (linkedExpense) upsertLocalListRecord(setRawExpenses, linkedExpense);
-      throw error;
-    }
+    const writes = [
+      { collectionName: 'assetCostLogs', documentId: logId, payload: localLogPayload, options: { merge: true } },
+      ...(expensePatch ? [{ collectionName: 'expenses', documentId: linkedExpense.id, payload: expensePatch, options: { merge: true } }] : []),
+    ];
+    if (writePlan) { writePlan.push(...writes); return { planned: true }; }
+    return saveAtomicDocuments(`asset_cost_${logId}`, writes);
   };
 
   const handleDeleteAssetCostLog = async (logId) => {
-    if (!firebaseUser || !logId) return;
-    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`) || {};
+    if (!firebaseUser || !logId) throw new Error('Phiên làm việc không hợp lệ.');
+    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`);
+    if (!currentLog || currentLog.companyId !== myCompanyId) throw new Error('Không tìm thấy chi phí của công ty này.');
     const linkedExpense = expenses.find(expense => (
       `${expense.id || ''}` === `${currentLog.expenseId || ''}` ||
       `${expense.assetCostLogId || ''}` === `${logId}` ||
@@ -20520,6 +20573,7 @@ export default function App() {
     const nowIso = new Date().toISOString();
     const archivedByEmpId = employeeInfo?.id || currentUser?.id || '';
     const logPatch = {
+      companyId: myCompanyId,
       isArchived: true,
       archivedAt: nowIso,
       archivedByEmpId
@@ -20531,19 +20585,10 @@ export default function App() {
       archivedByEmpId
     } : null;
 
-    upsertLocalListRecord(setRawAssetCostLogs, { ...currentLog, ...logPatch, id: logId });
-    if (expensePatch) upsertLocalListRecord(setRawExpenses, expensePatch);
-
-    try {
-      await saveDataDocument('assetCostLogs', logId, logPatch, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi xóa chi phí tài sản.');
-      if (expensePatch) {
-        await saveDataDocument('expenses', linkedExpense.id, expensePatch, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi xóa phiếu chi tài sản.');
-      }
-    } catch (error) {
-      if (currentLog.id) upsertLocalListRecord(setRawAssetCostLogs, currentLog);
-      if (linkedExpense) upsertLocalListRecord(setRawExpenses, linkedExpense);
-      throw error;
-    }
+    return saveAtomicDocuments(`asset_cost_${logId}`, [
+      { collectionName: 'assetCostLogs', documentId: logId, payload: logPatch, options: { merge: true } },
+      ...(expensePatch ? [{ collectionName: 'expenses', documentId: linkedExpense.id, payload: expensePatch, options: { merge: true } }] : []),
+    ]);
   };
 
   const handleAddWarehouseDispatch = async (empId, dispatchData) => {
@@ -20577,7 +20622,7 @@ export default function App() {
       upsertLocalListRecord(setRawWarehouseDispatches, normalized);
       return { id: normalized.id, queued: false };
     }
-    if (!firebaseUser) return null;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên tạo phiếu xuất không hợp lệ. Vui lòng đăng nhập lại.');
     const nowMs = Date.now();
     const createdAtIso = new Date(nowMs).toISOString();
     const clientMutationId = `${dispatchData.clientMutationId || ''}`.trim();
@@ -20662,7 +20707,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
     }
-    if (!firebaseUser || !dispatchId) return;
+    if (!firebaseUser || !myCompanyId || !dispatchId) throw new Error('Phiên làm việc hoặc phiếu xuất không hợp lệ.');
     const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
     const mergedData = { ...(previousDispatch || {}), ...(updatedData || {}) };
     const customer = customers.find(c => c.id === mergedData.customerId);
@@ -20719,7 +20764,7 @@ export default function App() {
     if (isVpsStagingMode) {
       throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
     }
-    if (!firebaseUser || !dispatchId) return;
+    if (!firebaseUser || !myCompanyId || !dispatchId) throw new Error('Phiên làm việc hoặc phiếu xuất không hợp lệ.');
     const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
     const archivedPayload = {
       isArchived: true,
@@ -20740,13 +20785,14 @@ export default function App() {
     }
   };
 
-  const handleAddDeliveryReport = async (empId, reportData = {}) => {
-    if (!firebaseUser) return null;
+  const handleAddDeliveryReport = async (empId, reportData = {}, writePlan = null) => {
+    if (!firebaseUser || !myCompanyId) throw new Error('Chưa kết nối phiên làm việc.');
     const idempotencyKey = `${reportData.idempotencyKey || ''}`.trim();
     const mapDeliveryId = reportData.source === 'map_delivery' && reportData.dispatchId
       ? `dr_map_${reportData.dispatchId}`
       : '';
-    const id = reportData.id || mapDeliveryId || `dr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const id = reportData.id || mapDeliveryId || `dr_${reportData.clientMutationId || crypto.randomUUID()}`;
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Mã báo cáo giao hàng không hợp lệ.');
     const existingReport = (deliveryReports || []).find(report => (
       report.id === id || (idempotencyKey && report.idempotencyKey === idempotencyKey)
     ));
@@ -20779,52 +20825,88 @@ export default function App() {
       isArchived: false,
       createdAt: new Date().toISOString()
     };
-    setRawDeliveryReports(prev => {
-      const nextReports = (prev || []).filter(report => report.id !== id);
-      return [newReportDocument, ...nextReports];
-    });
-    rememberRecentLocalWrite('deliveryReports', id, newReportDocument);
-    try {
-      await saveDataDocument('deliveryReports', id, newReportDocument);
-    } catch (error) {
-      setRawDeliveryReports(prev => prev.filter(report => report.id !== id));
-      throw error;
-    }
+    if (writePlan) writePlan.push({ collectionName: 'deliveryReports', documentId: id, payload: newReportDocument });
+    else await saveDataDocument('deliveryReports', id, newReportDocument);
     return id;
   };
 
-  const handleUpdateDeliveryReport = async (reportId, patch = {}) => {
-    if (!firebaseUser || !reportId) return { success: false };
+  const handleUpdateDeliveryReport = async (reportId, patch = {}, writePlan = null) => {
+    if (!firebaseUser || !myCompanyId) throw new Error('Chưa kết nối phiên làm việc.');
+    if (!deliveryReports.some(report => report.id === reportId && report.companyId === myCompanyId)
+      && !writePlan?.some(write => write.collectionName === 'deliveryReports' && write.documentId === reportId && write.payload.companyId === myCompanyId)) {
+      throw new Error('Không tìm thấy báo cáo giao hàng trong công ty này.');
+    }
     const updatePayload = {
       ...patch,
       updatedAt: new Date().toISOString()
     };
-    setRawDeliveryReports(prev => prev.map(report => report.id === reportId ? { ...report, ...updatePayload } : report));
-    rememberRecentLocalWrite('deliveryReports', reportId, updatePayload);
-    await saveDataDocument('deliveryReports', reportId, updatePayload, { merge: true });
-    return { success: true };
+    if (writePlan) {
+      writePlan.push({ collectionName: 'deliveryReports', documentId: reportId, payload: updatePayload, options: { merge: true } });
+      return { planned: true };
+    }
+    const result = await saveDataDocument('deliveryReports', reportId, updatePayload, { merge: true });
+    return { success: true, queued: Boolean(result?.queued) };
+  };
+
+  const handleSaveDeliveryCommand = async (empId, { commandId, operations } = {}) => {
+    if (isVpsStagingMode || !firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    if (!/^[A-Za-z0-9_-]+$/.test(commandId || '') || !Array.isArray(operations) || !operations.length || operations.length > 40) {
+      throw new Error('Lệnh lưu giao hàng không hợp lệ.');
+    }
+    const writes = [];
+    // Build and validate every linked document before accepting one durable command.
+    for (const operation of operations) {
+      switch (operation.type) {
+        case 'addReport': await handleAddDeliveryReport(empId, operation.payload, writes); break;
+        case 'editReport': await handleUpdateDeliveryReport(operation.id, operation.payload, writes); break;
+        case 'editOrder': {
+          const result = await handleEditOrder(operation.id, operation.payload, null, writes);
+          if (!result?.success) throw new Error(result?.message || 'Không lưu được hóa đơn liên quan.');
+          break;
+        }
+        case 'addPayment': await handleAddPayment(operation.payload, writes); break;
+        case 'addExpense': await handleAddExpense(empId, operation.payload, writes); break;
+        case 'editExpense': await handleEditExpense(operation.id, operation.payload, writes); break;
+        case 'addCost': await handleAddAssetCostLog(empId, operation.payload, writes); break;
+        case 'editCost': await handleEditAssetCostLog(operation.id, operation.payload, empId, writes); break;
+        default: throw new Error('Thao tác giao hàng không hợp lệ.');
+      }
+    }
+    const result = saveAtomicDocuments(`delivery_${commandId}`, mergeAtomicWrites([], writes));
+    return { success: true, queued: Boolean(result.queued) };
   };
 
   const handleResolveDeliveryReportIssue = async ({ reportId, action = 'rejected', orderId = '', orderData = null, penaltyData = null, note = '' } = {}) => {
-    if (!firebaseUser || !reportId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    const normalizedAction = ['accepted', 'rejected', 'lost_charged'].includes(action) ? action : 'rejected';
+    if (!firebaseUser || !myCompanyId || !/^[A-Za-z0-9_-]+$/.test(reportId)) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const report = deliveryReports.find(item => item.id === reportId && item.companyId === myCompanyId);
+    if (!report) return { success: false, message: 'Không tìm thấy báo cáo giao hàng của công ty này.' };
+    if (!['accepted', 'rejected', 'lost_charged'].includes(action)) return { success: false, message: 'Thao tác xử lý không hợp lệ.' };
+    if (['accepted', 'rejected', 'lost_charged'].includes(report.resolutionStatus) && report.resolutionStatus !== action) return { success: false, message: 'Báo cáo đã được xử lý. Hãy tải dữ liệu mới trước khi thay đổi.' };
+    const commandKey = `${myCompanyId}:${reportId}`;
+    if (deliveryResolutionInFlightRef.current.has(commandKey)) return { success: false, message: 'Báo cáo này đang được xử lý. Vui lòng không gửi lại.' };
+    deliveryResolutionInFlightRef.current.add(commandKey);
+    const normalizedAction = action;
     const now = new Date().toISOString();
     const penaltyAmount = parseLooseMoneyValue(penaltyData?.amount);
     const penaltyEmpId = penaltyData?.empId || '';
+    const writes = [];
 
     try {
       if ((normalizedAction === 'accepted' || normalizedAction === 'lost_charged') && orderId && orderData) {
-        const editResult = await handleEditOrder(orderId, orderData);
+        const editResult = await handleEditOrder(orderId, orderData, null, writes);
         if (editResult?.success === false) return editResult;
       }
 
-      if (normalizedAction === 'lost_charged' && penaltyEmpId && penaltyAmount > 0) {
+      if (normalizedAction === 'lost_charged') {
+        if (!penaltyEmpId || penaltyAmount <= 0) throw new Error('Thiếu nhân sự hoặc số tiền bồi thường hợp lệ.');
         await addFinancialRecord(
           penaltyEmpId,
           'penalty',
           penaltyAmount,
           capitalizeFirst(penaltyData?.reason || 'Bồi thường hàng thất lạc'),
-          penaltyData?.date || getTodayString()
+          penaltyData?.date || getTodayString(),
+          { clientMutationId: `delivery_resolution_${reportId}`, sourceDeliveryReportId: reportId },
+          writes
         );
       }
 
@@ -20840,12 +20922,13 @@ export default function App() {
         updatedAt: now
       };
 
-      setRawDeliveryReports(prev => prev.map(report => report.id === reportId ? { ...report, ...resolutionPatch } : report));
-      rememberRecentLocalWrite('deliveryReports', reportId, resolutionPatch);
-      await saveDataDocument('deliveryReports', reportId, resolutionPatch, { merge: true });
-      return { success: true };
+      writes.push({ collectionName: 'deliveryReports', documentId: reportId, resolveOnce: true, payload: { ...resolutionPatch, companyId: myCompanyId }, options: { merge: true } });
+      const result = saveAtomicDocuments(`delivery_resolution_${reportId}`, mergeAtomicWrites([], writes));
+      return { success: true, queued: Boolean(result.queued) };
     } catch (error) {
       return { success: false, message: getFriendlyFirebaseErrorMessage(error, 'Không thể xử lý cảnh báo lệch cân.') };
+    } finally {
+      deliveryResolutionInFlightRef.current.delete(commandKey);
     }
   };
 
@@ -20874,7 +20957,7 @@ export default function App() {
     }
   };
 
-  const handleEditOrder = async (orderId, orderData, collectedPaymentData = null) => {
+  const handleEditOrder = async (orderId, orderData, collectedPaymentData = null, writePlan = null) => {
     if (isVpsStagingMode) {
       if (collectedPaymentData) {
         throw new Error('Payment collection is not enabled in the VPS staging order flow.');
@@ -20986,6 +21069,10 @@ export default function App() {
       }
     }
 
+    if (writePlan) {
+      writePlan.push(...writes);
+      return { success: true, planned: true, order: updatedOrderForSync };
+    }
     const writeResult = saveAtomicDocuments(`order_${orderId}`, writes);
     // Derived rewards and share assets follow server confirmation, not the Save UI.
     void flushPendingFirebaseWriteNow(ATOMIC_SAVE_COLLECTION, `order_${orderId}`, 12000, myCompanyId).then(async () => {
@@ -21609,7 +21696,7 @@ export default function App() {
       };
     }
 
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !orderId) throw new Error('Phiên làm việc hoặc hóa đơn không hợp lệ.');
     const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
     const archivedPayload = {
       isArchived: true,
@@ -22474,13 +22561,13 @@ export default function App() {
   };
 
   const handleAddHoliday = async (holidayData) => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const id = `hol_${Date.now()}`;
     await saveDataDocument('holidays', id, { ...holidayData, id, companyId: myCompanyId, isArchived: false });
   };
 
   const handleDeleteHoliday = async (holidayId) => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !myCompanyId || !holidayId) throw new Error('Phiên làm việc hoặc ngày lễ không hợp lệ.');
     await saveDataDocument('holidays', holidayId, {
       isArchived: true,
       archivedAt: new Date().toISOString(),
@@ -22838,6 +22925,7 @@ export default function App() {
     return (
       <>
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
+        <SyncQueueStatus writes={pendingFirebaseWritesRef.current} onRetry={retryPendingFirebaseWrite} />
         <CustomerPortalView
           firebaseUser={firebaseUser}
           currentUser={currentUser}
@@ -22875,6 +22963,7 @@ export default function App() {
   return (
     <>
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
+      <SyncQueueStatus writes={pendingFirebaseWritesRef.current} onRetry={retryPendingFirebaseWrite} />
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
@@ -22899,7 +22988,7 @@ export default function App() {
         onAddWarehouseImport={handleAddWarehouseImport} onEditWarehouseImport={handleEditWarehouseImport} onDeleteWarehouseImport={handleDeleteWarehouseImport} onAddWarehouseStockCount={handleAddWarehouseStockCount} onPostInventoryOpeningBalance={handlePostInventoryOpeningBalance} onEditWarehouseStockCount={handleEditWarehouseStockCount} onDeleteWarehouseStockCount={handleDeleteWarehouseStockCount}
         onAddWarehouseDispatch={handleAddWarehouseDispatch} onEditWarehouseDispatch={handleEditWarehouseDispatch} onDeleteWarehouseDispatch={handleDeleteWarehouseDispatch}
         onAddAsset={handleAddAsset} onEditAsset={handleEditAsset} onDeleteAsset={handleDeleteAsset} onAddAssetCostLog={handleAddAssetCostLog} onEditAssetCostLog={handleEditAssetCostLog} onDeleteAssetCostLog={handleDeleteAssetCostLog}
-        onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport}
+        onAddDeliveryReport={handleAddDeliveryReport} onUpdateDeliveryReport={handleUpdateDeliveryReport} onSaveDeliveryCommand={handleSaveDeliveryCommand}
         onResolveDeliveryReportIssue={handleResolveDeliveryReportIssue}
         onAddPayment={handleAddPayment} onEditPayment={handleEditPayment} onDeletePayment={handleDeletePayment}
         onAddExpense={handleAddExpense} onEditExpense={handleEditExpense} onDeleteExpense={handleDeleteExpense}
@@ -23421,7 +23510,7 @@ function MainAppView({
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
   onChangeDate,
   autoWifiCheckInStatus = '', onAutoWifiStatus, onAutoWifiAttendanceRecorded,
-  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
+  onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onSaveDeliveryCommand, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
   onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
@@ -23523,6 +23612,18 @@ function MainAppView({
     billing: canAccess('billing'),
     messages: canAccess('messages')
   }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions]);
+
+  useEffect(() => {
+    const loaders = activeTab === 'more'
+      ? [['payroll', payrollModule.preload], ['asset_management', assetModule.preload], ['company_attendance', attendanceModule.preload]]
+      : activeTab === 'payroll' ? [['payroll', payrollCloseModule.preload]] : [];
+    for (const [module, load] of loaders) {
+      if (!tabPermissions[module]) continue;
+      void load().catch(error => recordPerformanceEvent('navigation.module_prefetch_error', {
+        module, error: error?.message || String(error),
+      }, 'warn'));
+    }
+  }, [activeTab, tabPermissions]);
 
   const primaryWorkTab = useMemo(() => {
     if (tabPermissions.home) return 'home';
@@ -24291,8 +24392,15 @@ function MainAppView({
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform?.() || Capacitor.getPlatform?.() !== 'android') return;
-    const darkIcons = ['home', 'executive_dashboard', 'messages'].includes(activeTab);
-    SystemBars.setStyle({ style: darkIcons ? 'LIGHT' : 'DARK', bar: 'StatusBar' }).catch(() => {});
+    const updateStatusBar = () => {
+      const hasModal = Number(document.documentElement.dataset.hdOpenModalCount || 0) > 0;
+      const darkIcons = hasModal || ['home', 'executive_dashboard', 'messages'].includes(activeTab);
+      SystemBars.setStyle({ style: darkIcons ? 'LIGHT' : 'DARK', bar: 'StatusBar' })
+        .catch(error => recordStartupEvent('native.status_bar.style_error', { code: error?.code || 'unknown' }, 'warn'));
+    };
+    updateStatusBar();
+    window.addEventListener('hd-modal-visibility', updateStatusBar);
+    return () => window.removeEventListener('hd-modal-visibility', updateStatusBar);
   }, [activeTab]);
 
   useEffect(() => {
@@ -25449,7 +25557,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} quickActionIntent={activeTab === 'warehouse_dispatch' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
-        return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
+        return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={reconciledLedgerMap} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onUpdateOrderInvoiceTemplate={onUpdateOrderInvoiceTemplate} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
@@ -26239,7 +26347,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           onReset={() => setRootActiveTab(primaryWorkTab || 'home')}
         >
           <React.Profiler id={`Module:${activeTab}`} onRender={recordReactRender}>
-            {renderContent()}
+            <React.Suspense fallback={<div data-hd-module-loading role="status" aria-busy="true" className="flex min-h-24 items-center justify-center gap-2 text-sm text-slate-600"><Loader2 size={18} className="animate-spin" />Đang mở...</div>}>
+              {renderContent()}
+            </React.Suspense>
           </React.Profiler>
         </AppSectionErrorBoundary>
       </main>
@@ -26553,6 +26663,11 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
 
 function ContextualQuickActionButton({ actions = [], onSelect = () => {} }) {
   const [isOpen, setIsOpen] = useState(false);
+  useAppScreenBack(() => {
+    if (!isOpen) return false;
+    setIsOpen(false);
+    return true;
+  });
 
   useEffect(() => {
     if (!isOpen || typeof window === 'undefined') return undefined;
@@ -27223,7 +27338,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
 
   useEffect(() => setAutoWifiEnabled(Boolean(currentEmployee?.attendanceAutoWifiEnabled)), [currentEmployee?.attendanceAutoWifiEnabled]);
   useAppScreenBack(() => {
-    if (attendanceScreen === 'dashboard') return false;
+    if (attendanceScreen === 'dashboard' || (isCompanyAccount && attendanceScreen === 'team')) return false;
     setAttendanceScreen(attendanceScreen === 'wifi-permission' ? 'wifi' : 'dashboard');
     return true;
   });
@@ -35013,6 +35128,7 @@ const getAssetFormDefaults = (asset = {}) => ({
 });
 
 const getAssetCostFormDefaults = (log = {}) => ({
+  clientMutationId: log.clientMutationId || log.id || `acl_${crypto.randomUUID()}`,
   type: log.type || 'fuel',
   assetId: log.assetId || '',
   driverId: log.driverId || '',
@@ -35186,6 +35302,9 @@ function AssetManagementView({
   const [costForm, setCostForm] = useState(getAssetCostFormDefaults());
   const [isSavingAsset, setIsSavingAsset] = useState(false);
   const [isSavingCost, setIsSavingCost] = useState(false);
+  const costSaveInFlightRef = useRef(false);
+  const [costSaveStatus, setCostSaveStatus] = useState('');
+  useModalScrollLock(showAssetForm || showCostForm);
   const [assetDocumentFiles, setAssetDocumentFiles] = useState({ registration: [], inspection: [] });
   const [isReadingAssetDocuments, setIsReadingAssetDocuments] = useState(false);
   const [assetDocumentStatus, setAssetDocumentStatus] = useState('');
@@ -35238,6 +35357,7 @@ function AssetManagementView({
     setEditingCostLog(log);
     setCostForm(getAssetCostFormDefaults(log || {}));
     setShowCostForm(true);
+    setCostSaveStatus('');
   };
   const closeCostForm = () => {
     setEditingCostLog(null);
@@ -35387,16 +35507,37 @@ function AssetManagementView({
   };
   const handleCostSubmit = async (event) => {
     event.preventDefault();
+    if (costSaveInFlightRef.current) return;
     const nextForm = {
       ...costForm,
       amount: parseLooseMoneyValue(costForm.amount) || (parseLooseQuantityValue(costForm.liters) * parseLooseMoneyValue(costForm.unitPrice))
     };
+    costSaveInFlightRef.current = true;
     setIsSavingCost(true);
     try {
-      if (editingCostLog) await onEditAssetCostLog?.(editingCostLog.id, nextForm);
+      if (editingCostLog?.id) await onEditAssetCostLog?.(editingCostLog.id, nextForm);
       else await onAddAssetCostLog?.(nextForm);
       closeCostForm();
+      setCostSaveStatus('Đã lưu trên thiết bị. Nhật ký và phiếu chi đang chờ xác nhận đồng bộ.');
+    } catch (error) {
+      setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu chi phí. Vui lòng thử lại.'));
     } finally {
+      costSaveInFlightRef.current = false;
+      setIsSavingCost(false);
+    }
+  };
+  const handleCostDelete = async () => {
+    if (costSaveInFlightRef.current || !editingCostLog?.id || !window.confirm('Xóa nhật ký chi phí này?')) return;
+    costSaveInFlightRef.current = true;
+    setIsSavingCost(true);
+    try {
+      await onDeleteAssetCostLog(editingCostLog.id);
+      closeCostForm();
+      setCostSaveStatus('Đã lưu yêu cầu xóa trên thiết bị. Nhật ký và phiếu chi đang chờ xác nhận đồng bộ.');
+    } catch (error) {
+      setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa chi phí. Vui lòng thử lại.'));
+    } finally {
+      costSaveInFlightRef.current = false;
       setIsSavingCost(false);
     }
   };
@@ -35409,6 +35550,7 @@ function AssetManagementView({
 
   return (
     <div className="space-y-4 animate-in fade-in">
+      {costSaveStatus && !showCostForm && <p role="status" className="text-sm text-slate-700">{costSaveStatus}</p>}
       <AssetManagementWorkspace
         backBlocked={showAssetForm || showCostForm}
         employees={employees}
@@ -35608,8 +35750,8 @@ function AssetManagementView({
       )}
 
       {showAssetForm && (
-        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/40 px-3 pt-3 pb-[calc(96px+env(safe-area-inset-bottom))] sm:items-center sm:p-4" onClick={closeAssetForm}>
-          <form onSubmit={handleAssetSubmit} onClick={event => event.stopPropagation()} className="w-full max-w-xl max-h-[calc(100vh-116px)] overflow-y-auto rounded-3xl bg-white p-5 pb-0 space-y-3 sm:max-h-[88vh]">
+        <div className="hd-modal-layer fixed inset-0 z-[90] flex items-end justify-center bg-black/40 p-3 sm:items-center sm:p-4" data-hd-modal-root="true" onClick={closeAssetForm}>
+          <form onSubmit={handleAssetSubmit} onClick={event => event.stopPropagation()} className="hd-modal-surface w-full max-w-xl rounded-3xl bg-white p-5 pb-0 space-y-3" role="dialog" aria-modal="true" aria-label={editingAsset ? 'Sửa tài sản' : 'Thêm tài sản'}>
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Tài sản</p>
@@ -35617,6 +35759,7 @@ function AssetManagementView({
               </div>
               <button type="button" onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
+            <div className="hd-modal-body space-y-3">
             <div className="rounded-3xl border border-gray-100 bg-white p-3 space-y-3">
               <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Thông tin chính</p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -35742,7 +35885,8 @@ function AssetManagementView({
                 </label>
               </div>
             </div>
-            <div className="sticky bottom-0 -mx-5 flex gap-2 border-t border-gray-100 bg-white/95 px-5 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur">
+            </div>
+            <div className="hd-modal-actions -mx-5 flex gap-2 border-t border-gray-100 bg-white px-5 pt-3">
               {editingAsset && canDeleteAsset && <button type="button" onClick={() => { if (window.confirm('Xóa/ngừng sử dụng tài sản này?')) { onDeleteAsset?.(editingAsset.id); closeAssetForm(); } }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
               <button type="button" onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
               <button disabled={isSavingAsset} type="submit" className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-black">{isSavingAsset ? 'Đang lưu...' : 'Lưu'}</button>
@@ -35752,15 +35896,16 @@ function AssetManagementView({
       )}
 
       {showCostForm && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" onClick={closeCostForm}>
-          <form onSubmit={handleCostSubmit} onClick={event => event.stopPropagation()} className="bg-white rounded-3xl p-5 w-full max-w-xl max-h-[88vh] overflow-y-auto space-y-3">
+        <div className="hd-modal-layer fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-3" data-hd-modal-root="true" onClick={closeCostForm}>
+          <form onSubmit={handleCostSubmit} onClick={event => event.stopPropagation()} className="hd-modal-surface bg-white rounded-3xl p-5 w-full max-w-xl space-y-3" role="dialog" aria-modal="true" aria-label={editingCostLog?.id ? 'Sửa chi phí' : 'Thêm chi phí'}>
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-xs font-black uppercase tracking-widest text-blue-600">Nhật ký chi phí</p>
-                <h3 className="text-xl font-black">{editingCostLog ? 'Sửa chi phí' : 'Thêm chi phí'}</h3>
+                <h3 className="text-xl font-black">{editingCostLog?.id ? 'Sửa chi phí' : 'Thêm chi phí'}</h3>
               </div>
               <button type="button" onClick={closeCostForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
+            <div className="hd-modal-body space-y-3">
             <div className="grid grid-cols-2 gap-2">
               <select value={costForm.type} onChange={e => setCostForm(prev => ({ ...prev, type: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                 <option value="fuel">Đổ xăng/dầu</option>
@@ -35811,8 +35956,10 @@ function AssetManagementView({
               )}
             </div>
             <textarea value={costForm.note} onChange={e => setCostForm(prev => ({ ...prev, note: e.target.value }))} className="w-full border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Ghi chú" />
-            <div className="flex gap-2">
-              {editingCostLog && canDeleteAssetCostLog && <button type="button" onClick={() => { if (window.confirm('Xóa nhật ký chi phí này?')) { onDeleteAssetCostLog?.(editingCostLog.id); closeCostForm(); } }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
+            {costSaveStatus && <p role="alert" className="text-sm text-red-700">{costSaveStatus}</p>}
+            </div>
+            <div className="hd-modal-actions flex gap-2">
+              {editingCostLog?.id && canDeleteAssetCostLog && <button type="button" disabled={isSavingCost} onClick={handleCostDelete} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
               <button type="button" onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
               <button disabled={isSavingCost} type="submit" className="flex-1 py-3 rounded-2xl bg-blue-500 text-white font-black">{isSavingCost ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
@@ -37582,8 +37729,10 @@ function PricingEngineView({
     if (!canEditRules || !onSavePricingRules) return;
     setIsSavingPricing(true);
     try {
-      await onSavePricingRules(parsedRules);
-      setStatusText('Đã lưu cấu hình giá, hao hụt và biên lợi nhuận.');
+      const receipt = await onSavePricingRules(parsedRules);
+      setStatusText(receipt?.queued
+        ? 'Đã lưu tạm cấu hình giá, hao hụt và biên lợi nhuận. Đang đồng bộ.'
+        : 'Đã lưu cấu hình giá, hao hụt và biên lợi nhuận.');
     } catch (error) {
       setStatusText(`Lưu cấu hình giá lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     } finally {
@@ -38054,14 +38203,28 @@ function SimplePricingEngineView({
     pricePerKg: '',
     pricePerUnit: '',
   });
-  const [rulesDraft, setRulesDraft] = useState(normalizedSavedRules);
+  const pricingDraftRevisionRef = useRef(createDraftRevision());
+  const pricingSaveInFlightRef = useRef(false);
+  const [rulesDraft, replaceRulesDraft] = useState(normalizedSavedRules);
+  const setRulesDraft = useCallback(next => {
+    pricingDraftRevisionRef.current.edit();
+    replaceRulesDraft(next);
+  }, []);
   const [activeLossGroupKey, setActiveLossGroupKey] = useState(normalizedSavedRules.activeLossGroupKey || 'duck');
-  const [lossStageGroupsDraft, setLossStageGroupsDraft] = useState(
+  const [lossStageGroupsDraft, replaceLossStageGroupsDraft] = useState(
     normalizePricingLossStageGroups(normalizedSavedRules.lossStageGroups, normalizedSavedRules.lossStages),
   );
-  const [cutPartGroupsDraft, setCutPartGroupsDraft] = useState(
+  const setLossStageGroupsDraft = useCallback(next => {
+    pricingDraftRevisionRef.current.edit();
+    replaceLossStageGroupsDraft(next);
+  }, []);
+  const [cutPartGroupsDraft, replaceCutPartGroupsDraft] = useState(
     normalizePricingCutPartGroups(normalizedSavedRules.cutPartGroups, normalizedSavedRules.cutParts),
   );
+  const setCutPartGroupsDraft = useCallback(next => {
+    pricingDraftRevisionRef.current.edit();
+    replaceCutPartGroupsDraft(next);
+  }, []);
   const latestWarehouseInputsByGroup = useMemo(
     () => buildLatestPricingInputsByGroup(warehouseImports),
     [warehouseImports],
@@ -38098,15 +38261,18 @@ function SimplePricingEngineView({
     };
   }, [activeGroupLatestInput]);
 
-  useEffect(() => {
+  const syncPricingDraftFromSavedRules = () => {
+    // A previous save's snapshot must not replace the next unsaved edit.
+    if (pricingDraftRevisionRef.current.isDirty()) return;
     const nextRules = normalizePricingRuleDraft(savedRules);
     const nextGroups = normalizePricingLossStageGroups(nextRules.lossStageGroups, nextRules.lossStages);
     const nextActiveKey = nextGroups[nextRules.activeLossGroupKey] ? nextRules.activeLossGroupKey : 'duck';
-    setRulesDraft(nextRules);
+    replaceRulesDraft(nextRules);
     setActiveLossGroupKey(nextActiveKey);
-    setLossStageGroupsDraft(nextGroups);
-    setCutPartGroupsDraft(normalizePricingCutPartGroups(nextRules.cutPartGroups, nextRules.cutParts));
-  }, [savedRules?.id, savedRules?.updatedAt]);
+    replaceLossStageGroupsDraft(nextGroups);
+    replaceCutPartGroupsDraft(normalizePricingCutPartGroups(nextRules.cutPartGroups, nextRules.cutParts));
+  };
+  useEffect(syncPricingDraftFromSavedRules, [savedRules?.id, savedRules?.updatedAt]);
 
   useEffect(() => {
     if (!pricingGroupRows.length) return;
@@ -38816,22 +38982,28 @@ function SimplePricingEngineView({
   };
 
   const handleSavePricingRules = async () => {
-    if (!canEditRules || !onSavePricingRules) return;
+    if (!canEditRules || !onSavePricingRules || pricingSaveInFlightRef.current) return;
+    pricingSaveInFlightRef.current = true;
+    const submittedRevision = pricingDraftRevisionRef.current.capture();
     setIsSavingPricing(true);
     try {
       const savedProductMargins = Object.keys(parsedRules.marginByProduct || {}).length
         ? parsedRules.marginByProduct
         : buildSeedProductMargins();
-      await onSavePricingRules({
+      const receipt = await onSavePricingRules({
         ...parsedRules,
         marginByProduct: savedProductMargins,
         id: 'pricing_engine_rules',
         operationMode: 'assistant',
       });
-      setStatusText('Đã lưu hao hụt và biên lợi nhuận cho ngành giết mổ.');
+      pricingDraftRevisionRef.current.saved(submittedRevision);
+      setStatusText(receipt?.queued
+        ? 'Đã lưu tạm hao hụt và biên lợi nhuận cho ngành giết mổ. Đang đồng bộ.'
+        : 'Đã lưu hao hụt và biên lợi nhuận cho ngành giết mổ.');
     } catch (error) {
       setStatusText(`Lưu cấu hình giá lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     } finally {
+      pricingSaveInFlightRef.current = false;
       setIsSavingPricing(false);
     }
   };
@@ -39818,6 +39990,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
   const [batchCustomerSearch, setBatchCustomerSearch] = useState('');
   const [selectedBatchCustomerIds, setSelectedBatchCustomerIds] = useState([]);
   const [isApplyingBatchPrice, setIsApplyingBatchPrice] = useState(false);
+  const applyingBatchPriceRef = useRef(false);
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
   const activeProductIdSet = useMemo(() => new Set(activeProducts.map(product => product.id).filter(Boolean)), [activeProducts]);
   const activeProductIdKey = activeProducts.map(product => product.id).join('|');
@@ -40007,6 +40180,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
   );
 
   const handleApplyBatchCustomerPrice = async () => {
+    if (applyingBatchPriceRef.current) return;
     if (!onEditCustomer) {
       setQuoteStatus('Tài khoản hiện tại chưa có quyền cập nhật giá riêng cho khách hàng.');
       return;
@@ -40029,10 +40203,11 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
       return;
     }
 
+    applyingBatchPriceRef.current = true;
     setIsApplyingBatchPrice(true);
     setQuoteStatus(`Đang áp giá ${product.name} cho ${targetCustomers.length} khách...`);
     try {
-      await Promise.all(targetCustomers.map(customer => {
+      const receipts = await Promise.all(targetCustomers.map(customer => {
         const currentOverrides = normalizeCustomerPriceOverrides(customer);
         const currentProductIds = normalizeCustomerProductIds(customer, activeProducts);
         const currentConfig = currentOverrides[product.id] || {};
@@ -40050,10 +40225,13 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
         });
       }));
       setSelectedProductIds(prev => prev.includes(product.id) ? prev : [...prev, product.id]);
-      setQuoteStatus(`Đã áp giá ${product.name} cho ${targetCustomers.length} khách. Khi lên đơn hoặc gửi báo giá, app sẽ tự lấy giá riêng này.`);
+      setQuoteStatus(receipts.some(receipt => receipt?.queued)
+        ? `Đã lưu tạm giá ${product.name} cho ${targetCustomers.length} khách. Đang đồng bộ với máy chủ.`
+        : `Đã áp giá ${product.name} cho ${targetCustomers.length} khách. Khi lên đơn hoặc gửi báo giá, app sẽ tự lấy giá riêng này.`);
     } catch (error) {
       setQuoteStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể áp giá hàng loạt. Vui lòng thử lại.'));
     } finally {
+      applyingBatchPriceRef.current = false;
       setIsApplyingBatchPrice(false);
     }
   };
@@ -46947,6 +47125,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       return true;
     }
     if (showExpenseModal || showPaymentModal) {
+      if (expenseSubmitInFlightRef.current || paymentSubmitInFlightRef.current) return true;
       setShowExpenseModal(false);
       setShowPaymentModal(false);
       return true;
@@ -46957,6 +47136,14 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     }
     return false;
   });
+  const paymentSubmitInFlightRef = useRef(false);
+  const paymentMutationIdRef = useRef('');
+  const expenseSubmitInFlightRef = useRef(false);
+  const expenseMutationIdRef = useRef('');
+  const [expenseSaving, setExpenseSaving] = useState(false);
+  const [expenseSaveError, setExpenseSaveError] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentSaveError, setPaymentSaveError] = useState('');
   const isDriverFinanceMode = Boolean(isDriver || isEmployeeDriverPosition(employee));
   useEffect(() => {
     if (!searchFocusDate) return;
@@ -47113,6 +47300,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const openCashflowComposer = (type) => {
     setShowDesktopCreateMenu(false);
     if (type === 'income') {
+      paymentMutationIdRef.current = `p_${crypto.randomUUID()}`;
+      setPaymentSaveError('');
       setShowExpenseModal(false);
       setPaymentCustomerSearch('');
       setShowPaymentCustomerDropdown(false);
@@ -47121,6 +47310,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       return;
     }
     setShowPaymentModal(false);
+    expenseMutationIdRef.current = `exp_${crypto.randomUUID()}`;
+    setExpenseSaveError('');
     setNewExpense(previous => ({
       ...previous,
       category: isDriverFinanceMode ? '' : (previous.category || 'Chi mua hàng hóa'),
@@ -47353,13 +47544,19 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     setShowFilterPanel(false);
   };
 
-  const handleExpenseSubmit = (e) => {
+  const handleExpenseSubmit = async (e) => {
     e.preventDefault();
-    if (!canCreateExpense) return;
+    if (!canCreateExpense || expenseSubmitInFlightRef.current) return;
     const selectedCategory = normalizeExpenseCategoryLabel(newExpense.category);
     if (!selectedCategory || !newExpense.amount) return;
 
-    onAddExpense({
+    expenseSubmitInFlightRef.current = true;
+    expenseMutationIdRef.current ||= `exp_${crypto.randomUUID()}`;
+    setExpenseSaving(true);
+    setExpenseSaveError('');
+    try {
+    await onAddExpense({
+      clientMutationId: expenseMutationIdRef.current,
       category: selectedCategory,
       amount: parseInputCurrency(newExpense.amount),
       note: normalizeLeadingLabel(isDriverFinanceMode ? selectedCategory : newExpense.note),
@@ -47372,7 +47569,14 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     });
 
     setShowExpenseModal(false);
+    expenseMutationIdRef.current = '';
     setNewExpense({ category: 'Chi mua hàng hóa', customCategory: '', amount: '', note: '', date: getTodayString() });
+    } catch (error) {
+      setExpenseSaveError(getFriendlyFirebaseErrorMessage(error, 'Không lưu được khoản chi. Nội dung đang nhập vẫn được giữ.'));
+    } finally {
+      expenseSubmitInFlightRef.current = false;
+      setExpenseSaving(false);
+    }
   };
 
   const paymentSourceOptions = [
@@ -47382,9 +47586,9 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     { value: 'accounting_recovery', label: 'Kế toán thu hồi công nợ', note: 'Kế toán thu hồi công nợ' }
   ];
 
-  const handlePaymentSubmit = (e) => {
+  const handlePaymentSubmit = async (e) => {
     e.preventDefault();
-    if (!canCreateIncome) return;
+    if (!canCreateIncome || paymentSubmitInFlightRef.current) return;
     const matchedCustomer = newPayment.customerId
       ? customers.find(customer => customer.id === newPayment.customerId)
       : (
@@ -47399,7 +47603,13 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     const resolvedSourceType = isDriverFinanceMode ? driverSourceType : (cashflowNeedsApproval ? 'employee_reported_income' : newPayment.sourceType);
     const selectedSource = paymentSourceOptions.find(option => option.value === resolvedSourceType);
 
-    onAddPayment({
+    paymentSubmitInFlightRef.current = true;
+    paymentMutationIdRef.current ||= `p_${crypto.randomUUID()}`;
+    setPaymentSaving(true);
+    setPaymentSaveError('');
+    try {
+    await onAddPayment({
+      clientMutationId: paymentMutationIdRef.current,
       customerId: resolvedCustomerId,
       amount: parseInputCurrency(newPayment.amount),
       note: capitalizeFirst(newPayment.note || selectedSource?.note || 'Thu công nợ'),
@@ -47425,6 +47635,13 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       method: 'Tiền mặt',
       sourceType: 'driver_cash'
     });
+    paymentMutationIdRef.current = '';
+    } catch (error) {
+      setPaymentSaveError(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu khoản thu. Bản nhập vẫn được giữ.'));
+    } finally {
+      paymentSubmitInFlightRef.current = false;
+      setPaymentSaving(false);
+    }
   };
 
   const handleApproveTransaction = async (transaction) => {
@@ -47725,7 +47942,10 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                             key={transaction.id}
                             role={canOpenTransaction ? 'button' : undefined}
                             tabIndex={canOpenTransaction ? 0 : undefined}
-                            onClick={() => openCashflowEditor(transaction)}
+                            onClick={(event) => {
+                              // A second tap after a modal closes must not open the row underneath it.
+                              if (event.detail <= 1) openCashflowEditor(transaction);
+                            }}
                             onKeyDown={(event) => {
                               if (canOpenTransaction && (event.key === 'Enter' || event.key === ' ')) {
                                 event.preventDefault();
@@ -47938,7 +48158,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                   type="text"
                   list="expense-category-list"
                   value={newExpense.category}
-                  onChange={e=>setNewExpense({...newExpense, category: capitalizeFirstPreservingSpacing(e.target.value)})}
+                  onChange={e=>setNewExpense(previous => ({...previous, category: capitalizeFirstPreservingSpacing(e.target.value)}))}
                   placeholder={isDriverFinanceMode ? 'Chi mua hàng gì' : 'Nhập hoặc chọn loại chi phí'}
                   className="w-full border p-2.5 rounded-xl text-sm outline-none bg-white"
                 />
@@ -47951,14 +48171,15 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                   </p>
                 )}
               </div>
-              <input required type="tel" value={formatInputCurrency(newExpense.amount)} onChange={e=>setNewExpense({...newExpense, amount: parseInputCurrency(e.target.value)})} placeholder="Số tiền" className="w-full border p-2.5 rounded-xl text-sm" />
+              <input required type="tel" value={formatInputCurrency(newExpense.amount)} onChange={e=>setNewExpense(previous => ({...previous, amount: parseInputCurrency(e.target.value)}))} placeholder="Số tiền" className="w-full border p-2.5 rounded-xl text-sm" />
               {!isDriverFinanceMode && (
-                <input type="text" value={newExpense.note} onChange={e=>setNewExpense({...newExpense, note: capitalizeFirstPreservingSpacing(e.target.value)})} placeholder="Nội dung chi" className="w-full border p-2.5 rounded-xl text-sm" />
+                <input type="text" value={newExpense.note} onChange={e=>setNewExpense(previous => ({...previous, note: capitalizeFirstPreservingSpacing(e.target.value)}))} placeholder="Nội dung chi" className="w-full border p-2.5 rounded-xl text-sm" />
               )}
-              <input type="date" value={newExpense.date} onChange={e=>setNewExpense({...newExpense, date: e.target.value})} className="w-full border p-2.5 rounded-xl text-sm bg-white" />
+              <input type="date" value={newExpense.date} onChange={e=>setNewExpense(previous => ({...previous, date: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm bg-white" />
+              {expenseSaveError && <p role="alert" className="text-sm text-red-600">{expenseSaveError}</p>}
               <div className="flex gap-2 pt-2">
-                <button type="button" onClick={()=>setShowExpenseModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                <button type="submit" className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold">Lưu khoản chi</button>
+                <button type="button" disabled={expenseSaving} onClick={()=>setShowExpenseModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                <button type="submit" disabled={expenseSaving} className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold">{expenseSaving ? 'Đang lưu...' : 'Lưu khoản chi'}</button>
               </div>
             </form>
           </div>
@@ -48029,8 +48250,9 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
               <input type="date" value={newPayment.date} onChange={e=>setNewPayment({...newPayment, date: e.target.value})} className="w-full border p-2.5 rounded-xl text-sm bg-white" />
               <div className="flex gap-2 pt-2">
                 <button type="button" onClick={()=>setShowPaymentModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Lưu khoản thu</button>
+                <button type="submit" disabled={paymentSaving} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{paymentSaving ? 'Đang lưu…' : 'Lưu khoản thu'}</button>
               </div>
+              {paymentSaveError && <p role="alert" className="text-sm text-red-700">{paymentSaveError}</p>}
             </form>
           </div>
         </div>
@@ -48125,7 +48347,7 @@ const DeliveryReconciliationCard = React.memo(function DeliveryReconciliationCar
   && previous.onOpen === next.onOpen
 ));
 
-function DeliveryReportView({ employee, customers = [], products = [], orderRequests = [], orders = [], payments = [], warehouseImports = [], warehouseDispatches = [], deliveryReports = [], expenses = [], assets = [], assetCostLogs = [], onAddDeliveryReport, onUpdateDeliveryReport, onEditOrder, onAddPayment, onAddExpense, onAddAssetCostLog, onEditAssetCostLog, canViewDeliveryReports = true, canCreateDeliveryReport = true, canEditDeliveryReport = false, canDeleteDeliveryReport = false, canUploadDeliveryPhoto = true, canDeleteOldDeliveryPhotos = false, canRecordDeliveryIncome = false, canRecordDeliveryExpense = false, canCreateAssetCostLog = false, canEditAssetCostLog = false }) {
+function DeliveryReportView({ employee, customers = [], products = [], orderRequests = [], orders = [], payments = [], warehouseImports = [], warehouseDispatches = [], deliveryReports = [], expenses = [], assets = [], assetCostLogs = [], onAddDeliveryReport, onUpdateDeliveryReport, onSaveDeliveryCommand, onEditOrder, onAddPayment, onAddExpense, onAddAssetCostLog, onEditAssetCostLog, canViewDeliveryReports = true, canCreateDeliveryReport = true, canEditDeliveryReport = false, canDeleteDeliveryReport = false, canUploadDeliveryPhoto = true, canDeleteOldDeliveryPhotos = false, canRecordDeliveryIncome = false, canRecordDeliveryExpense = false, canCreateAssetCostLog = false, canEditAssetCostLog = false }) {
   const [workingDate, setWorkingDate] = useState(getTodayString());
   const [customerSearch, setCustomerSearch] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
@@ -48147,10 +48369,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const [deliveryExpenseKmAt, setDeliveryExpenseKmAt] = useState('');
   const [deliveryExpenseLiters, setDeliveryExpenseLiters] = useState('');
   const [deliveryExpenseUnitPrice, setDeliveryExpenseUnitPrice] = useState('');
-  const [standaloneExpenseCategory, setStandaloneExpenseCategory] = useState('');
-  const [standaloneExpenseAmount, setStandaloneExpenseAmount] = useState('');
-  const [standaloneExpenseAssetId, setStandaloneExpenseAssetId] = useState('');
-  const [standaloneExpenseAssetTouched, setStandaloneExpenseAssetTouched] = useState(false);
   const [standaloneExpenseNote, setStandaloneExpenseNote] = useState('');
   const [standaloneExpensePhotoUrl, setStandaloneExpensePhotoUrl] = useState('');
   const [customStandaloneExpenseCategories, setCustomStandaloneExpenseCategories] = useState(() => {
@@ -48179,6 +48397,9 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   const [statusTone, setStatusTone] = useState('emerald');
   const [editingReportId, setEditingReportId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const deliverySaveInFlightRef = useRef(false);
+  const deliveryCommandIdRef = useRef('');
+  const standaloneExpenseCommandIdRef = useRef('');
   const reconciliationExpandedSessionKey = `hd_delivery_reconciliation_expanded:${employee?.id || 'shared'}`;
   const [isReconciliationExpanded, setIsReconciliationExpanded] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -48281,16 +48502,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     if (!editingReportId && !deliveryExpenseAssetTouched && !deliveryExpenseAssetId) {
       setDeliveryExpenseAssetId(defaultDeliveryAssetId);
     }
-    if (!standaloneExpenseAssetTouched && !standaloneExpenseAssetId) {
-      setStandaloneExpenseAssetId(defaultDeliveryAssetId);
-    }
   }, [
     defaultDeliveryAssetId,
     deliveryExpenseAssetId,
     deliveryExpenseAssetTouched,
     editingReportId,
-    standaloneExpenseAssetId,
-    standaloneExpenseAssetTouched
   ]);
   const formatDeliveryAssetOptionLabel = (asset = {}) => {
     const name = asset.name || asset.vehicleName || asset.vehicleModel || asset.vehicleBrand || asset.type || 'Xe/tài sản';
@@ -49398,6 +49614,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   };
 
   const resetReportForm = () => {
+    deliveryCommandIdRef.current = '';
+    standaloneExpenseCommandIdRef.current = '';
     setEditingReportId('');
     setActualWeight('');
     setActualQuantity('');
@@ -49414,6 +49632,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     setDeliveryExpenseKmAt('');
     setDeliveryExpenseLiters('');
     setDeliveryExpenseUnitPrice('');
+    setStandaloneExpenseNote('');
+    setStandaloneExpensePhotoUrl('');
     setShowIncomeReportSection(false);
     setShowExpenseReportSection(false);
     setShowReturnReportSection(false);
@@ -49784,14 +50004,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   };
 
   const handleSaveStandaloneDeliveryExpense = async () => {
+    if (deliverySaveInFlightRef.current) return;
     if (!canRecordDeliveryExpense) {
       setStatusTone('amber');
       setStatusMessage('Tai khoan chua co quyen tao khoan chi giao hang.');
       return;
     }
-    const amountValue = parseInputCurrency(standaloneExpenseAmount);
-    const category = normalizeExpenseCategoryLabel(standaloneExpenseCategory || 'Chi phi giao hang');
-    const effectiveStandaloneExpenseAssetId = standaloneExpenseAssetId || (!standaloneExpenseAssetTouched ? defaultDeliveryAssetId : '');
+    const amountValue = parseInputCurrency(deliveryExpenseAmount);
+    const category = normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng');
+    const effectiveStandaloneExpenseAssetId = deliveryExpenseAssetId || (!deliveryExpenseAssetTouched ? defaultDeliveryAssetId : '');
     const selectedExpenseAsset = effectiveStandaloneExpenseAssetId ? assetLookup.get(effectiveStandaloneExpenseAssetId) : null;
     const selectedExpenseAssetName = selectedExpenseAsset?.name || selectedExpenseAsset?.vehicleName || selectedExpenseAsset?.vehicleModel || selectedExpenseAsset?.vehicleBrand || '';
     const selectedExpenseAssetPlate = selectedExpenseAsset?.plateNumber || selectedExpenseAsset?.licensePlate || selectedExpenseAsset?.plate || selectedExpenseAsset?.vehiclePlate || '';
@@ -49802,8 +50023,13 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       return;
     }
     try {
+      deliverySaveInFlightRef.current = true;
       setIsSaving(true);
       setStatusMessage('');
+      standaloneExpenseCommandIdRef.current ||= crypto.randomUUID();
+      const plan = createDeliverySavePlan(standaloneExpenseCommandIdRef.current);
+      const onAddExpense = plan.addExpense;
+      const onAddAssetCostLog = plan.addCost;
       await onAddExpense?.({
         amount: amountValue,
         category,
@@ -49844,6 +50070,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           photoUrl: standaloneExpensePhotoUrl || ''
         });
       }
+      if (typeof onSaveDeliveryCommand !== 'function') throw new Error('Chưa kết nối chức năng lưu giao hàng.');
+      const result = await onSaveDeliveryCommand({ commandId: plan.commandId, operations: plan.operations });
+      if (!result?.success) throw new Error(result?.message || 'Không lưu được chi phí chuyến giao.');
+      standaloneExpenseCommandIdRef.current = '';
       setCustomStandaloneExpenseCategories(prev => {
         const next = Array.from(new Set([...prev, category].filter(Boolean)));
         if (typeof window !== 'undefined') {
@@ -49853,24 +50083,28 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
         }
         return next.slice(-30);
       });
-      setStandaloneExpenseCategory('');
-      setStandaloneExpenseAmount('');
-      setStandaloneExpenseAssetTouched(false);
-      setStandaloneExpenseAssetId(defaultDeliveryAssetId || '');
+      setDeliveryExpenseCategory('');
+      setDeliveryExpenseAmount('');
+      setDeliveryExpenseAssetTouched(false);
+      setDeliveryExpenseAssetId(defaultDeliveryAssetId || '');
       setStandaloneExpenseNote('');
       setStandaloneExpensePhotoUrl('');
       setStatusTone('emerald');
-      setStatusMessage('Đã lưu chi phí chuyến giao, chờ kế toán/chủ doanh nghiệp xác nhận.');
+      setStatusMessage(result.queued
+        ? 'Đã lưu tạm chi phí chuyến giao, đang đồng bộ.'
+        : 'Đã lưu chi phí chuyến giao, chờ kế toán/chủ doanh nghiệp xác nhận.');
     } catch (error) {
       setStatusTone('red');
       setStatusMessage(getFriendlyFirebaseErrorMessage(error, 'Không lưu được chi phí phát sinh.'));
     } finally {
+      deliverySaveInFlightRef.current = false;
       setIsSaving(false);
     }
   };
 
   const handleSubmitReport = async (event) => {
     event.preventDefault();
+    if (deliverySaveInFlightRef.current) return false;
     const isEditingReport = Boolean(editingReportId);
     if (!isEditingReport && !canCreateDeliveryReport) {
       setStatusTone('red');
@@ -49887,9 +50121,20 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       setStatusMessage('Bạn hãy chọn khách hàng trước khi lưu báo cáo.');
       return false;
     }
+    deliverySaveInFlightRef.current = true;
     setIsSaving(true);
     setStatusMessage('');
     try {
+      deliveryCommandIdRef.current ||= crypto.randomUUID();
+      const plan = createDeliverySavePlan(deliveryCommandIdRef.current);
+      const onAddDeliveryReport = plan.addReport;
+      const onUpdateDeliveryReport = plan.editReport;
+      const onEditOrder = plan.editOrder;
+      const onAddPayment = plan.addPayment;
+      const onAddExpense = plan.addExpense;
+      const onEditExpense = plan.editExpense;
+      const onAddAssetCostLog = plan.addCost;
+      const onEditAssetCostLog = plan.editCost;
       const rowsToSave = normalizeActualRowsForSave();
       if (rowsToSave.length === 0) {
         setStatusTone('red');
@@ -49914,6 +50159,12 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       const linkedAssetCostLog = editingReportId
         ? assetCostLogs.find(log => log.id === currentEditingReport?.assetCostLogId || log.relatedDeliveryReportId === editingReportId)
         : null;
+      const linkedExpense = editingReportId
+        ? expenses.find(expense => !expense.isArchived && (
+          expense.id === currentEditingReport?.expenseId || expense.relatedDeliveryReportId === editingReportId
+        ))
+        : null;
+      let reportExpenseId = linkedExpense?.id || '';
       const shouldSyncAssetCostLog = deliveryExpenseAmountValue > 0 && effectiveDeliveryExpenseAssetId && (canCreateAssetCostLog || canEditAssetCostLog);
       const returnWeightKgValue = returnWeight ? parseLooseQuantityValue(returnWeight) : 0;
       const returnQuantityValue = returnQuantity ? parseLooseQuantityValue(returnQuantity) : 0;
@@ -50072,6 +50323,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       }
       if (!wasEditing && collectedAmountValue > 0 && canRecordDeliveryIncome) {
         await onAddPayment?.({
+          clientMutationId: `p_delivery_${reportId}`,
           customerId: selectedCustomerId,
           amount: collectedAmountValue,
           method: collectedMethod,
@@ -50088,11 +50340,11 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           empId: employee?.id || ''
         });
       }
-      if (!wasEditing && deliveryExpenseAmountValue > 0 && canRecordDeliveryExpense) {
-        await onAddExpense?.({
+      if (deliveryExpenseAmountValue > 0 && canRecordDeliveryExpense) {
+        const expensePayload = {
           amount: deliveryExpenseAmountValue,
           category: normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng'),
-          note: deliveryExpenseCategory || 'Chi phí giao hàng',
+          note: standaloneExpenseNote || deliveryExpenseCategory || 'Chi phí giao hàng',
           date: workingDate,
           assetId: effectiveDeliveryExpenseAssetId || '',
           assetName: selectedExpenseAsset?.name || selectedExpenseAsset?.vehicleName || selectedExpenseAsset?.vehicleModel || '',
@@ -50108,7 +50360,15 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           createdByRole: 'driver',
           relatedDeliveryReportId: reportId || '',
           dispatchId: firstRow.dispatchId || ''
-        });
+        };
+        if (linkedExpense) await onEditExpense(linkedExpense.id, expensePayload);
+        else reportExpenseId = await onAddExpense(expensePayload);
+        if (reportId) await onUpdateDeliveryReport(reportId, { expenseId: reportExpenseId });
+      } else if (linkedExpense && canRecordDeliveryExpense) {
+        await onEditExpense(linkedExpense.id, { isArchived: true, archivedAt: new Date().toISOString() });
+        if (linkedAssetCostLog && canEditAssetCostLog) {
+          await onEditAssetCostLog(linkedAssetCostLog.id, { ...linkedAssetCostLog, isArchived: true, archivedAt: new Date().toISOString() });
+        }
       }
       if (shouldSyncAssetCostLog) {
         const normalizedCategory = normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng');
@@ -50129,6 +50389,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           sourceType: 'delivery_report_expense',
           sourceLabel: 'Tự động từ báo cáo giao hàng',
           relatedDeliveryReportId: reportId || '',
+          expenseId: reportExpenseId,
           dispatchId: firstRow.dispatchId || ''
         };
         if (linkedAssetCostLog?.id && canEditAssetCostLog) {
@@ -50140,11 +50401,14 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
           }
         }
       }
+      if (typeof onSaveDeliveryCommand !== 'function') throw new Error('Chưa kết nối chức năng lưu giao hàng.');
+      const result = await onSaveDeliveryCommand({ commandId: plan.commandId, operations: plan.operations });
+      if (!result?.success) throw new Error(result?.message || 'Không lưu được báo cáo giao hàng.');
       if (!wasEditing) {
         stageReportedReconciliationRows(rowsToSave.map(row => row.dispatchId));
       }
       setStatusTone(mismatchRows.length > 0 ? 'amber' : 'emerald');
-      setStatusMessage(wasEditing
+      setStatusMessage(result.queued ? 'Đã lưu tạm báo cáo và các chứng từ liên quan, đang đồng bộ.' : wasEditing
         ? 'Đã cập nhật báo cáo giao hàng.'
         : !firstRow.dispatchId
         ? 'Đã lưu báo cáo giao hàng trước. Khi có phiếu xuất kho, kế toán/chủ doanh nghiệp có thể đối chiếu lại sau.'
@@ -50158,6 +50422,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       setStatusMessage(getFriendlyFirebaseErrorMessage(error, 'Không lưu được báo cáo giao hàng.'));
       return false;
     } finally {
+      deliverySaveInFlightRef.current = false;
       setIsSaving(false);
     }
   };
@@ -50177,11 +50442,6 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   };
 
   const toggleDeliveryReportPanel = (panel) => {
-    const willOpenIncomePanel = panel === 'income' && !showIncomeReportSection;
-    if (!editingReportId && !willOpenIncomePanel) {
-      setCollectedAmount('');
-      setCollectedAmountManuallyEdited(false);
-    }
     setShowIncomeReportSection(prev => (panel === 'income' ? !prev : false));
     setShowExpenseReportSection(prev => (panel === 'expense' ? !prev : false));
     setShowReturnReportSection(prev => (panel === 'return' ? !prev : false));
@@ -50603,6 +50863,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 <button
                   key={panel.key}
                   type="button"
+                  data-hd-keep-input-focus="true"
+                  aria-expanded={panel.active}
                   onClick={() => toggleDeliveryReportPanel(panel.key)}
                   className={`min-w-0 rounded-2xl border px-2 py-2.5 text-center shadow-sm transition ${
                     panel.active
@@ -50668,8 +50930,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 <label className="flex h-11 items-center justify-center rounded-2xl border border-orange-100 bg-white px-3 text-center">
                   <input
                     type="tel"
-                    value={formatInputCurrency(standaloneExpenseAmount)}
-                    onChange={(event) => setStandaloneExpenseAmount(parseInputCurrency(event.target.value))}
+                    value={formatInputCurrency(deliveryExpenseAmount)}
+                    onChange={(event) => setDeliveryExpenseAmount(parseInputCurrency(event.target.value))}
                     placeholder="Số tiền"
                     className="h-full w-full appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-orange-600 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                   />
@@ -50677,8 +50939,8 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                 <label className="flex h-11 items-center justify-center rounded-2xl border border-orange-100 bg-white px-3 text-center">
                   <input
                     list="delivery-expense-category-options"
-                    value={standaloneExpenseCategory}
-                    onChange={(event) => setStandaloneExpenseCategory(capitalizeFirst(event.target.value))}
+                    value={deliveryExpenseCategory}
+                    onChange={(event) => setDeliveryExpenseCategory(capitalizeFirst(event.target.value))}
                     placeholder="Loại chi"
                     className="h-full w-full appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                   />
@@ -50687,10 +50949,10 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
               {deliveryAssetOptions.length > 0 && (
                 <label className="relative flex h-11 items-center justify-center rounded-2xl border border-orange-100 bg-white px-3 text-center">
                   <select
-                    value={standaloneExpenseAssetId}
+                    value={deliveryExpenseAssetId}
                     onChange={(event) => {
-                      setStandaloneExpenseAssetTouched(true);
-                      setStandaloneExpenseAssetId(event.target.value);
+                      setDeliveryExpenseAssetTouched(true);
+                      setDeliveryExpenseAssetId(event.target.value);
                     }}
                     className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                   >
@@ -50700,7 +50962,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                     ))}
                   </select>
                   <p className="pointer-events-none truncate text-sm font-semibold leading-tight text-slate-800">
-                    {standaloneExpenseAssetId ? formatDeliveryAssetOptionLabel(assetLookup.get(standaloneExpenseAssetId) || {}) : 'Xe/tài sản nếu có'}
+                    {deliveryExpenseAssetId ? formatDeliveryAssetOptionLabel(assetLookup.get(deliveryExpenseAssetId) || {}) : 'Xe/tài sản nếu có'}
                   </p>
                 </label>
               )}
@@ -50712,6 +50974,12 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                   className="h-full w-full appearance-none border-0 bg-transparent p-0 text-center text-sm font-semibold leading-tight text-slate-800 shadow-none outline-none placeholder:text-slate-300 focus:ring-0"
                 />
               </label>
+              {!editingReportId && (
+                <button type="button" disabled={isSaving} onClick={handleSaveStandaloneDeliveryExpense}
+                  className="min-h-11 w-full rounded-lg border border-orange-200 bg-white px-3 text-sm font-semibold text-orange-700 disabled:opacity-60">
+                  {isSaving ? 'Đang lưu...' : 'Lưu chi phí riêng'}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -50884,7 +51152,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
                     <button
                       key={group.key}
                       type="button"
-                      onClick={() => setSelectedReportCustomerKey(group.key)}
+                      onClick={(event) => { if (event.detail <= 1) setSelectedReportCustomerKey(group.key); }}
                       className="grid w-full items-stretch gap-0 text-center text-[10px] font-semibold text-slate-700 transition hover:bg-emerald-50/60"
                       style={{ gridTemplateColumns: 'minmax(64px, 1.05fr) minmax(0, 3fr)' }}
                     >
@@ -50971,6 +51239,11 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   });
   const [status, setStatus] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const importSubmitRef = useRef(false);
+  const importCommandRef = useRef(globalThis.crypto.randomUUID());
+  const stockCountSubmitRef = useRef(false);
+  const stockCountCommandRef = useRef(globalThis.crypto.randomUUID());
+  const [groupSyncStatus, setGroupSyncStatus] = useState('');
   const [editingImportId, setEditingImportId] = useState('');
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [groupSearchTerm, setGroupSearchTerm] = useState('');
@@ -51621,8 +51894,15 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
   const buildWarehouseGroupSyncNote = (syncResult = {}) => {
     if (syncResult.created) return ' Nhóm mới đã được thêm vào danh sách nhóm hàng.';
-    if (syncResult.error) return ` Phiếu đã lưu, nhưng nhóm mới chưa cập nhật vào danh sách: ${syncResult.error}`;
+    if (syncResult.error) return ` Nhóm mới chưa cập nhật vào danh sách: ${syncResult.error}`;
     return '';
+  };
+  const syncWarehouseGroupInBackground = (groupName) => {
+    if (isVpsMode) return;
+    setGroupSyncStatus('');
+    void ensureWarehouseInventoryGroupExists(groupName).then(result => {
+      setGroupSyncStatus(buildWarehouseGroupSyncNote(result));
+    }).catch(error => setGroupSyncStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa cập nhật được danh sách nhóm hàng.')));
   };
 
   const productLookup = useMemo(() => new Map((products || []).map(product => [product.id, product])), [products]);
@@ -52792,6 +53072,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
   const handleSubmitStockCount = async (event) => {
     event?.preventDefault?.();
+    if (stockCountSubmitRef.current) return;
     const isEditingStockCount = Boolean(editingStockCountId);
     if (isEditingStockCount && (!canEditActualStockCount || !onEditWarehouseStockCount)) {
       setStockCountStatus('Tài khoản này chưa có quyền sửa tồn kho thực tế.');
@@ -52826,8 +53107,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     }
 
     try {
+      stockCountSubmitRef.current = true;
       setIsSavingStockCount(true);
       const payload = {
+        clientMutationId: stockCountCommandRef.current,
         groupName,
         totalKg,
         quantity,
@@ -52844,15 +53127,14 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       } else {
         await onAddWarehouseStockCount(payload);
       }
-      const syncResult = isVpsMode
-        ? { created: false }
-        : await ensureWarehouseInventoryGroupExists(groupName);
-      const syncNote = buildWarehouseGroupSyncNote(syncResult);
-      setStockCountStatus(`${isEditingStockCount ? 'Đã cập nhật phiếu tồn thực tế' : 'Đã ghi nhận tồn thực tế'} ${groupName}.${syncNote}`);
+      setStockCountStatus(`${isEditingStockCount ? 'Đã tiếp nhận cập nhật' : 'Đã tiếp nhận'} phiếu tồn thực tế ${groupName}. Kiểm tra trạng thái đồng bộ.`);
+      stockCountCommandRef.current = globalThis.crypto.randomUUID();
       resetStockCountDraft();
+      syncWarehouseGroupInBackground(groupName);
     } catch (error) {
       setStockCountStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được tồn kho thực tế.'));
     } finally {
+      stockCountSubmitRef.current = false;
       setIsSavingStockCount(false);
     }
   };
@@ -52931,6 +53213,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
   const handleSubmit = async (event) => {
     event?.preventDefault?.();
+    if (importSubmitRef.current) return;
     if (isEditingImport && (!canEditWarehouseImport || !onEditWarehouseImport)) {
       setStatus('Tài khoản này chưa có quyền sửa phiếu nhập kho.');
       return;
@@ -52978,8 +53261,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     }
 
     try {
+      importSubmitRef.current = true;
       setIsSaving(true);
       const payload = {
+        clientMutationId: importCommandRef.current,
         warehouseId: draft.warehouseId || '',
         unitId: draft.unitId || '',
         unitLabel: vpsUnits.find(unit => unit.id === draft.unitId)?.symbol
@@ -53013,11 +53298,10 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       } else {
         await onAddWarehouseImport(payload);
       }
-      const syncResult = isVpsMode
-        ? { created: false }
-        : await ensureWarehouseInventoryGroupExists(groupName);
-      const syncNote = buildWarehouseGroupSyncNote(syncResult);
-      setStatus(`${isEditingImport ? 'Đã cập nhật phiếu nhập kho' : 'Đã lưu nhập kho'} ${groupName}.${syncNote}`);
+      setStatus(isVpsMode
+        ? `Đã lưu nhập kho ${groupName}.`
+        : `Đã lưu tạm ${isEditingImport ? 'cập nhật' : 'phiếu'} nhập kho ${groupName} và phiếu chi đi kèm. Đang đồng bộ.`);
+      importCommandRef.current = globalThis.crypto.randomUUID();
       setDraft(prev => ({
         ...prev,
         warehouseId: '',
@@ -53036,15 +53320,18 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
       }));
       setWarehouseProductScanStatus('');
       setEditingImportId('');
+      syncWarehouseGroupInBackground(groupName);
     } catch (error) {
       setStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa lưu được phiếu nhập kho.'));
     } finally {
+      importSubmitRef.current = false;
       setIsSaving(false);
     }
   };
 
   return (
     <div className="premium-data-module premium-inventory-module space-y-4 pb-6">
+      {groupSyncStatus && <p role="status" className="text-sm text-amber-700">{groupSyncStatus}</p>}
       <div className="premium-data-toolbar grid grid-cols-3 gap-2 rounded-[26px] border border-emerald-100 bg-white p-2 shadow-sm">
         {[
           { key: 'import', label: 'Nhập', count: dayImports.length },
@@ -54537,6 +54824,7 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
   onSave,
   onDelete
 }) {
+  useModalScrollLock(open);
   useEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
     const handleKeyDown = (event) => {
@@ -54554,10 +54842,8 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/55 px-3 py-6 backdrop-blur-[2px]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !isBusy) onCancel?.();
-      }}
+      className="hd-modal-layer fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/55 px-3 py-6 backdrop-blur-[2px]"
+      data-hd-modal-root="true"
     >
       <form
         role="dialog"
@@ -54567,9 +54853,9 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
           event.preventDefault();
           if (canSave && !isBusy) onSave?.();
         }}
-        className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-2xl"
+        className="hd-modal-surface w-full max-w-sm overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-2xl"
       >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div className="min-w-0">
             {eyebrow && <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600">{eyebrow}</p>}
             <h3 className="mt-1 text-lg font-black text-slate-950">{title || `Sửa ${fieldLabel}`}</h3>
@@ -54586,7 +54872,7 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
           </button>
         </div>
 
-        <div className="px-5 py-5">
+        <div className="hd-modal-body px-5 py-5">
           <div className={hasInlineSecondaryField ? 'grid grid-cols-[minmax(0,1fr)_minmax(7rem,0.58fr)] gap-3' : ''}>
             <div className="min-w-0">
               <label className="block text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">{fieldLabel}</label>
@@ -54663,7 +54949,7 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
           </p>
         </div>
 
-        <div className={`grid gap-2 border-t border-slate-100 bg-slate-50/80 px-4 py-4 ${canDelete && canSave ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        <div className={`hd-modal-actions grid gap-2 border-t border-slate-100 bg-slate-50/80 px-4 py-4 ${canDelete && canSave ? 'grid-cols-3' : 'grid-cols-2'}`}>
           <button
             type="button"
             onClick={onCancel}
@@ -61843,8 +62129,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const lineHeight = 30;
     const cellPaddingX = 14;
     const columnTitles = ['Tên', 'Loại', 'Số lượng', 'Size', 'Đơn giá'];
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasWidth;
+    const canvas = createRecordedShareCanvas(canvasWidth);
     const ctx = canvas.getContext('2d');
 
     if (!ctx) {
@@ -64234,6 +64519,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const [showQuickAddCus, setShowQuickAddCus] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [orderSaving, setOrderSaving] = useState(false);
+  const orderEditInFlightRef = useRef(null);
   const [isSharingOrder, setIsSharingOrder] = useState(false);
   const orderShareInProgressRef = useRef(false);
   const [orderShareStatus, setOrderShareStatus] = useState('');
@@ -64662,7 +64948,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     orderSalesEmpFilter,
     normalizeLookupText(deferredOrderSearchKeyword)
   ].join('|');
-  const visibleDisplayOrders = useChunkedList(displayOrders, 32, 40, displayOrderRenderKey);
+  const orderPage = usePagedList(displayOrders, displayOrderRenderKey);
   const hasOrderListFilters = Boolean(
     orderSearchKeyword.trim() || orderDateFilter || orderProductFilter || orderPaymentFilter || orderSalesEmpFilter || tab !== 'all'
   );
@@ -64912,15 +65198,23 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   };
 
   const commitOrderEdit = async (order, payload, collectedPaymentData = null) => {
+    const key = JSON.stringify([order.id, payload, collectedPaymentData]);
+    if (orderEditInFlightRef.current) {
+      if (orderEditInFlightRef.current.key === key) return orderEditInFlightRef.current.promise;
+      throw new Error('Đang lưu thay đổi trước đó. Vui lòng chờ xác nhận.');
+    }
     setOrderSaving(true);
-    try {
+    const promise = Promise.resolve().then(async () => {
       const result = await onEditOrder(order.id, payload, collectedPaymentData);
       if (!result?.success) throw new Error(result?.message || 'Không lưu được thay đổi hóa đơn.');
       if (result.order) selectedOrderSnapshotRef.current = normalizeOrderPaymentSnapshot(result.order);
       return result;
-    } finally {
+    }).finally(() => {
+      orderEditInFlightRef.current = null;
       setOrderSaving(false);
-    }
+    });
+    orderEditInFlightRef.current = { key, promise };
+    return promise;
   };
 
   const promptEditOrderMoney = async (order, field) => {
@@ -64950,8 +65244,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     const basePayload = buildEditableOrderPayload(order, field === 'discount' || field === 'fee' ? config.patch(nextValue) : {});
 
     try {
+      let result;
       if (field === 'paid') {
-        await commitOrderEdit(order, basePayload, {
+        result = await commitOrderEdit(order, basePayload, {
           amount: nextValue,
           method: paymentToEdit?.method || 'Chuyển khoản',
           note: paymentToEdit?.note || `Khách thanh toán - ${formatOrderCode(order.id)}`,
@@ -64959,9 +65254,9 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           existingSourceType: paymentToEdit?.sourceType || 'order_upfront'
         });
       } else {
-        await commitOrderEdit(order, basePayload);
+        result = await commitOrderEdit(order, basePayload);
       }
-      setOrderShareStatus(`Đã cập nhật ${config.label}.`);
+      setOrderShareStatus(result.queued ? 'Đã lưu tạm thay đổi hóa đơn, đang đồng bộ.' : `Đã cập nhật ${config.label}.`);
     } catch (error) {
       setOrderShareStatus(getFriendlyFirebaseErrorMessage(error, `Không thể cập nhật ${config.label}.`));
     }
@@ -64972,6 +65267,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     const dueAmount = Math.max(0, parseLooseMoneyValue(order.outstandingAmount ?? order.amount));
     setOrderPaymentDraft({
       open: true,
+      clientMutationId: `p_${crypto.randomUUID()}`,
       orderId: order.id,
       amount: dueAmount > 0 ? formatCurrency(dueAmount) : '',
       method: 'Chuyển khoản',
@@ -65005,7 +65301,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     setOrderPaymentDraft(prev => ({ ...prev, isSaving: true, error: '' }));
 
     try {
-      await onAddPayment({
+      const paymentResult = await onAddPayment({
+        clientMutationId: orderPaymentDraft.clientMutationId,
         customerId: order.customerId,
         amount,
         method: orderPaymentDraft.method,
@@ -65022,7 +65319,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         collectorName: employee?.name || ''
       });
       closeOrderPaymentModal();
-      setOrderShareStatus(`Đã ghi nhận thu ${formatCurrency(amount)} đ cho ${orderCode}.`);
+      setOrderShareStatus(paymentResult?.queued ? 'Đã lưu khoản thu trên thiết bị, đang chờ máy chủ xác nhận.' : `Đã ghi nhận thu ${formatCurrency(amount)} đ cho ${orderCode}.`);
     } catch (error) {
       setOrderPaymentDraft(prev => ({
         ...prev,
@@ -65056,14 +65353,14 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     const sellerFee = payer === 'seller' ? feeAmount : payer === 'shared' ? feeAmount / 2 : 0;
 
     try {
-      await commitOrderEdit(order, buildEditableOrderPayload(order, {
+      const result = await commitOrderEdit(order, buildEditableOrderPayload(order, {
         extraExpenseName: feeAmount > 0 ? capitalizeFirst(feeDraft.name || 'Phụ phí') : '',
         extraExpenseAmount: feeAmount,
         extraExpensePayer: payer,
         customerExtraExpense: customerFee,
         sellerExtraExpense: sellerFee
       }));
-      setOrderShareStatus(feeAmount > 0 ? 'Đã cập nhật phụ phí.' : 'Đã xóa phụ phí khỏi đơn.');
+      setOrderShareStatus(result.queued ? 'Đã lưu tạm phụ phí, đang đồng bộ.' : feeAmount > 0 ? 'Đã cập nhật phụ phí.' : 'Đã xóa phụ phí khỏi đơn.');
       closeOrderFeeEditor();
     } catch (error) {
       setOrderShareStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật phụ phí.'));
@@ -65133,7 +65430,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     const nextDiscount = parseLooseMoneyValue(order.discount) + discountAmount;
 
     try {
-      await commitOrderEdit(order, {
+      const result = await commitOrderEdit(order, {
         ...buildEditableOrderPayload(order, discountAmount > 0 ? { discount: nextDiscount } : {}),
         returnGoods: nextReturnGoods,
         returnGoodsUpdatedAt: nowIso,
@@ -65147,7 +65444,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
             ? 'Đã giảm giá hàng trả'
             : 'Đã ghi nhận hàng trả'
       });
-      setOrderShareStatus(status === 'pending_pickup'
+      setOrderShareStatus(result.queued ? 'Đã lưu tạm thông tin trả hàng, đang đồng bộ.' : status === 'pending_pickup'
         ? 'Đã ghi nhận hàng trả chưa lấy về kho. Khách hàng sẽ có cảnh báo để nhân viên lấy lại.'
         : status === 'discounted_sale'
           ? 'Đã ghi nhận hàng trả và giảm giá bán luôn cho khách.'
@@ -65206,10 +65503,10 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       : item);
 
     try {
-      await commitOrderEdit(order, buildEditableOrderPayload(order, { items: nextItems }));
+      const result = await commitOrderEdit(order, buildEditableOrderPayload(order, { items: nextItems }));
       const quantityChanged = nextQuantity !== currentQuantity;
       const priceChanged = nextUnitPrice !== currentUnitPrice;
-      setOrderShareStatus(quantityChanged && priceChanged
+      setOrderShareStatus(result.queued ? 'Đã lưu tạm thay đổi hóa đơn, đang đồng bộ.' : quantityChanged && priceChanged
         ? 'Đã cập nhật số lượng và đơn giá.'
         : quantityChanged
           ? 'Đã cập nhật số lượng.'
@@ -65254,8 +65551,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       : item);
 
     try {
-      await commitOrderEdit(order, buildEditableOrderPayload(order, { items: nextItems }));
-      setOrderShareStatus(isQuantity ? 'Đã cập nhật số lượng.' : 'Đã cập nhật đơn giá.');
+      const result = await commitOrderEdit(order, buildEditableOrderPayload(order, { items: nextItems }));
+      setOrderShareStatus(result.queued ? 'Đã lưu tạm thay đổi hóa đơn, đang đồng bộ.' : isQuantity ? 'Đã cập nhật số lượng.' : 'Đã cập nhật đơn giá.');
     } catch (error) {
       setOrderShareStatus(getFriendlyFirebaseErrorMessage(error, isQuantity ? 'Không thể cập nhật số lượng.' : 'Không thể cập nhật đơn giá.'));
     }
@@ -65319,7 +65616,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           note: 'Từ chối cảnh báo, giữ nguyên dữ liệu đơn đã lên.'
         });
         if (result?.success === false) throw new Error(result.message);
-        setOrderShareStatus('Đã từ chối cảnh báo. Đơn hàng giữ nguyên dữ liệu đã lên.');
+        setOrderShareStatus(result?.queued ? 'Đã lưu tạm xử lý cảnh báo, đang đồng bộ. Đơn hàng giữ nguyên.' : 'Đã từ chối cảnh báo. Đơn hàng giữ nguyên dữ liệu đã lên.');
         return;
       }
 
@@ -65358,7 +65655,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           }
         });
         if (result?.success === false) throw new Error(result.message);
-        setOrderShareStatus(`Đã cập nhật đơn theo thực tế và ghi khoản trừ lương ${formatCurrency(defaultPenalty)} đ.`);
+        setOrderShareStatus(result?.queued ? `Đã lưu tạm cập nhật đơn và khoản trừ lương ${formatCurrency(defaultPenalty)} đ, đang đồng bộ.` : `Đã cập nhật đơn theo thực tế và ghi khoản trừ lương ${formatCurrency(defaultPenalty)} đ.`);
         return;
       }
 
@@ -65370,7 +65667,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         note: `Chấp nhận cảnh báo, cập nhật đơn theo thực tế ${formatNumber(issuePatch.nextQuantity)} kg.`
       });
       if (result?.success === false) throw new Error(result.message);
-      setOrderShareStatus('Đã chấp nhận cảnh báo và cập nhật đơn hàng theo số lượng thực tế.');
+      setOrderShareStatus(result?.queued ? 'Đã lưu tạm xử lý cảnh báo và cập nhật đơn, đang đồng bộ.' : 'Đã chấp nhận cảnh báo và cập nhật đơn hàng theo số lượng thực tế.');
     } catch (error) {
       setOrderShareStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể xử lý cảnh báo lệch cân.'));
     }
@@ -66870,7 +67167,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           />
         )}
 
-        {visibleDisplayOrders.map((order, orderIndex) => {
+        {orderPage.items.map((order, orderIndex) => {
           const statusMeta = getOrderStatusMeta(order);
           const reviewMeta = getOrderReviewMeta(order);
           const zaloMeta = getOrderZaloSendMeta(order);
@@ -66899,7 +67196,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
 
           return (
             <div
-              key={`detail_${order.id || order._id || order.orderId || 'legacy'}_${orderIndex}`}
+              key={order.id || order._id || order.orderId || `legacy_${orderPage.start + orderIndex}`}
               className="hd-render-contained relative"
             >
               {canDeleteOrder && (
@@ -66987,34 +67284,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
           );
         })}
 
-        {false && activeOrders.reverse().map(o => {
-          const cus = customers.find(c => c.id === o.customerId);
-          const createdBy = employees.find(e => e.id === (o.createdByEmpId || o.empId));
-          const salesOwner = employees.find(e => e.id === getOrderSalesEmpId(o, customers));
-          return (
-            <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-50 relative group">
-              {canDeleteOrder && <button onClick={() => { if(window.confirm('Xóa vĩnh viễn đơn hàng này?')) onDeleteOrder(o.id); }} className="absolute top-3 right-3 text-gray-300 hover:text-red-500"><Trash2 size={14}/></button>}
-              <div className="flex justify-between items-start mb-2 pr-6">
-                <h3 className="font-bold text-gray-800">{cus?.name}</h3>
-                <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded font-bold">Đã giao</span>
-              </div>
-              <div className="text-xs text-gray-500 mb-3 border-b border-gray-50 pb-3">
-                {formatTime(o.date)} {new Date(o.date).toLocaleDateString('vi-VN')} - HD{o.id.substring(o.id.length-6).toUpperCase()}<br/>
-                Tạo bởi {createdBy?.name || 'Admin'}
-                <span className="block mt-1">NVKD phụ trách: {salesOwner?.name || 'Chưa gán'}</span>
-                {o.extraExpenseName && o.customerExtraExpense > 0 && <span className="block mt-1 text-blue-600 font-medium">+ {o.extraExpenseName} ({formatCurrency(o.customerExtraExpense)})</span>}
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Tổng cộng</span>
-                <div className="text-right">
-                  <span className="text-base font-black text-gray-800 block">{formatCurrency(o.amount)} đ</span>
-                  <span className="text-[10px] text-orange-500 font-medium">Ghi nhận nợ</span>
-                </div>
-              </div>
-            </div>
-          )
-        })}
       </div>
+      <ListPagination pagination={orderPage} label="Phân trang đơn hàng" />
 
       {canCreateAnyOrder && (
       <div
@@ -68480,6 +68751,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
   useModalScrollLock(showForm);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const productSaveInFlightRef = useRef(false);
+  const productCreateCommandRef = useRef(null);
   const [showArchived, setShowArchived] = useState(false);
   const [actionItem, setActionItem] = useState(null);
   const [editingProd, setEditingProd] = useState(null);
@@ -68752,6 +69024,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
   });
 
   const openCreateProductForm = useCallback((prefill = {}) => {
+    productCreateCommandRef.current = crypto.randomUUID();
     setEditingProd(null);
     setBarcodeScanStatus('');
     setProdData(emptyProductForm(prefill));
@@ -68806,7 +69079,8 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
         await Promise.resolve(onEditProduct(editingProd.id, pData));
         productWorkflowReturnRef.current = null;
       } else {
-        await Promise.resolve(onAddProduct(pData));
+        productCreateCommandRef.current ||= crypto.randomUUID();
+        await Promise.resolve(onAddProduct({ ...pData, clientMutationId: productCreateCommandRef.current }));
       }
       setBarcodeScanStatus('');
       setShowForm(false);
@@ -69542,6 +69816,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const [showCustomerQuickActions, setShowCustomerQuickActions] = useState(false);
   const [isPickingCustomerContact, setIsPickingCustomerContact] = useState(false);
   const [customerContactStatus, setCustomerContactStatus] = useState('');
+  const customerCreateSubmitRef = useRef(false);
+  const customerCreateCommandRef = useRef(crypto.randomUUID());
+  const customerProfileSubmitRef = useRef(false);
+  const [isSavingNewCustomer, setIsSavingNewCustomer] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [customerListMode, setCustomerListMode] = useState('customers');
   const [localCustomerSearchKeyword, setLocalCustomerSearchKeyword] = useState('');
@@ -69764,8 +70042,12 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     return lookup;
   }, [customerPoints]);
 
+  const customerLedgerIndex = useMemo(
+    () => buildCustomerReconciledLedgerMap(activeCustomers, orders, payments, safeCustomerWarehouseImports),
+    [activeCustomers, orders, payments, safeCustomerWarehouseImports]
+  );
   const buildCustomerSummary = useCallback((cus) => {
-    const ledger = buildCustomerReconciledLedger(cus, orders, payments, safeCustomerWarehouseImports);
+    const ledger = customerLedgerIndex[cus.id] || buildCustomerReconciledLedger(cus, orders, payments, safeCustomerWarehouseImports);
     const purchaseReconciliationEnabled = Boolean(
       cus?.purchaseReconciliationEnabled ||
       cus?.isPurchaseReconciliationEnabled ||
@@ -69823,7 +70105,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         .map(driverId => employees.find(emp => emp.id === driverId && isEmployeeDeliveryParticipant(emp))?.name)
         .filter(Boolean)
     };
-  }, [orders, payments, safeCustomerWarehouseImports, currentCompany, customerPointLookup, employees]);
+  }, [customerLedgerIndex, orders, payments, safeCustomerWarehouseImports, currentCompany, customerPointLookup, employees]);
 
   const customerSummaries = useMemo(
     () => activeCustomers.map(buildCustomerSummary),
@@ -69894,11 +70176,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       : matches;
   }, [debouncedCustomerSearch, supplierEntries, supplierSortFilter]);
 
-  const visibleFilteredSuppliers = useChunkedList(
+  const supplierPage = usePagedList(
     filteredSuppliers,
-    70,
-    90,
-    `suppliers|${debouncedCustomerSearch}`
+    `suppliers|${debouncedCustomerSearch}|${supplierSortFilter}`
   );
 
   const filteredCustomers = useMemo(() => {
@@ -69973,10 +70253,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     });
   }, [activeProductForPricingLookup, customerSummaries, debouncedCustomerSearch, customerStatusFilter, customerSortFilter, customerDateFilter, customerManagerFilter, employees, canSeeCustomerStats, canSeeCustomerPhone, canSeeCustomerLocation, canSeeCustomerDebt]);
 
-  const visibleFilteredCustomers = useChunkedList(
+  const customerPage = usePagedList(
     filteredCustomers,
-    70,
-    90,
     `${debouncedCustomerSearch}|${customerStatusFilter}|${customerSortFilter}|${customerDateFilter}|${customerManagerFilter}`
   );
 
@@ -70939,6 +71217,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
   const handleAddCustomerSubmit = async (e) => {
     e.preventDefault();
+    if (customerCreateSubmitRef.current) return;
     const finalEmpId = isSales ? employee?.id || '' : newCus.empId;
     if (!finalEmpId) {
       setCustomerContactStatus('Vui lòng chọn nhân viên phụ trách trước khi lưu khách hàng.');
@@ -70958,6 +71237,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         return;
       }
     }
+    customerCreateSubmitRef.current = true;
+    setIsSavingNewCustomer(true);
     setCustomerContactStatus('');
     try {
       const validProductIds = new Set(activeProductsForPricing.map(product => product.id));
@@ -70967,6 +71248,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       const openingDebtAmount = normalizeCustomerOpeningDebtAmount(newCus.openingDebtAmount);
       const openingPayableAmount = normalizeCustomerOpeningPayableAmount(newCus.openingPayableAmount);
       await onAddCustomer(finalEmpId, {
+        clientMutationId: customerCreateCommandRef.current,
         customerHonorific: newCus.customerHonorific,
         name: newCus.name,
         phone: newCus.phone,
@@ -70990,6 +71272,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
           : undefined
       });
       closeAddCustomerModal();
+      customerCreateCommandRef.current = crypto.randomUUID();
       setNewCus({ name: '', phone: '', address: '', customerGroup: '', empId: employee?.id || '', zaloGroupLink: '', location: null, locationInput: '', openingBalanceType: 'receivable', debtLimitMode: 'no_debt', debtLimitAmount: '', openingDebtAmount: '', openingDebtNote: '', openingPayableAmount: '', openingPayableNote: '', createLogin: false, loginPassword: '', loginPasswordConfirm: '' });
       setNewCustomerProductIds([]);
       setNewCustomerProductSearch('');
@@ -71001,6 +71284,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       }
     } catch (error) {
       setCustomerContactStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu khách hàng. Vui lòng kiểm tra lại thông tin.'));
+    } finally {
+      customerCreateSubmitRef.current = false;
+      setIsSavingNewCustomer(false);
     }
   };
 
@@ -71443,6 +71729,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
   const handleSaveCustomerProfile = async (e) => {
     e.preventDefault();
+    if (customerProfileSubmitRef.current) return;
     if (!selectedCustomer || !onEditCustomer) return;
     if (customerEditPhoneDuplicate) {
       setCustomerEditStatus(`Số điện thoại này đã trùng với khách hàng: ${getDuplicateCustomerDisplayName(customerEditPhoneDuplicate)}. Vui lòng kiểm tra lại trước khi lưu.`);
@@ -71462,6 +71749,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         return;
       }
     }
+    customerProfileSubmitRef.current = true;
     setIsSavingCustomerProfile(true);
     setCustomerEditStatus('');
     try {
@@ -71490,7 +71778,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         openingPayableDate: openingPayableAmount > 0 ? (selectedCustomer.openingPayableDate || getTodayString()) : '',
         openingPayableNote: `${customerEditForm.openingPayableNote || ''}`.trim()
       };
-      await onEditCustomer(selectedCustomer.id, {
+      const saveResult = await onEditCustomer(selectedCustomer.id, {
         ...updatedCustomerProfile,
         ...(loginAccount ? { account: loginAccount } : {})
       });
@@ -71498,7 +71786,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         ...(selectedCustomerSnapshotRef.current || selectedCustomer),
         ...updatedCustomerProfile
       };
-      setCustomerEditStatus('Đã cập nhật thông tin khách hàng.');
+      setCustomerEditStatus(saveResult?.queued ? 'Đã lưu tạm thông tin khách hàng. Đang đồng bộ với máy chủ.' : 'Đã cập nhật thông tin khách hàng.');
       setCustomerEditForm(prev => ({
         ...prev,
         createLogin: false,
@@ -71508,6 +71796,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     } catch (error) {
       setCustomerEditStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật thông tin khách hàng.'));
     } finally {
+      customerProfileSubmitRef.current = false;
       setIsSavingCustomerProfile(false);
     }
   };
@@ -71919,21 +72208,15 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
   const buildDebtShareText = (customer) => {
     if (!customer) return '';
-    const order = { id: customer?.id || '', date: getTodayString(), amount: 0, outstandingAmount: 0 };
-
     const lines = [
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
+      'BẢNG ĐỐI SOÁT CÔNG NỢ',
+      currentCompany?.name || currentCompany?.companyName || '',
+      `Khách hàng: ${customer.displayName || getCustomerDisplayName(customer) || customer.name || ''}`,
+      customer.phone ? `SĐT: ${customer.phone}` : '',
+      `Còn phải thu: ${formatCurrency(customer.currentDebt || 0)} đ`,
+      `Tiền dư / nợ khách: ${formatCurrency(customer.creditBalance || 0)} đ`,
       '',
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      `HÓA ĐƠN ${formatOrderCode(order.id)}`,
-      '',
-      'Danh sách hàng hóa:'
+      'Danh sách đơn hàng:'
     ];
 
     if ((customer.orders || []).length === 0) {
@@ -71946,10 +72229,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
 
     lines.push('', 'Lịch sử thanh toán:');
     if ((customer.payments || []).length === 0) {
-      lines.push('- Chưa có đơn hàng nào.');
+      lines.push('- Chưa có khoản thu nào.');
     } else {
       customer.payments.forEach((payment, index) => {
-        lines.push(`${index + 1}. ${formatOrderCode(order.id)} - ${formatDateLabel(order.date)} - Tổng ${formatCurrency(order.amount || 0)} đ - Còn nợ ${formatCurrency(order.outstandingAmount || 0)} đ`);
+        lines.push(`${index + 1}. ${formatDateLabel(getPaymentDateKey(payment) || payment.date)} - ${getPaymentMethodLabel(payment)} - Đã thu ${formatCurrency(payment.amount || 0)} đ - Đã phân bổ ${formatCurrency(payment.appliedAmount || 0)} đ`);
       });
     }
 
@@ -74077,7 +74360,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
           </div>
         )}
 
-        {visibleFilteredCustomers.map(cus => {
+        {customerPage.items.map(cus => {
           const displayName = cus.displayName || getCustomerDisplayName(cus) || cus.name || '';
           const isDuplicatePhone = duplicateCustomerPhoneKeySet.has(buildCustomerPhoneDuplicateKey(cus.phone));
           const needsImmediateCollection = shouldCollectCustomerDebtImmediately(cus.debtLimitStatus);
@@ -74139,6 +74422,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
             </div>
           );
         })}
+        <ListPagination pagination={customerPage} label="Phân trang khách hàng" />
       </div>}
 
       {customerListMode === 'suppliers' && (
@@ -74149,7 +74433,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               {debouncedCustomerSearch ? 'Không tìm thấy nhà cung cấp phù hợp.' : 'Chưa có nhà cung cấp nào.'}
             </div>
           )}
-          {visibleFilteredSuppliers.map(supplier => {
+          {supplierPage.items.map(supplier => {
             const SupplierCard = supplier.customerId ? 'button' : 'div';
             return (
               <SupplierCard
@@ -74177,6 +74461,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
               </SupplierCard>
             );
           })}
+          <ListPagination pagination={supplierPage} label="Phân trang nhà cung cấp" />
         </div>
       )}
 
@@ -74221,9 +74506,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       )}
 
       {showAddCustomer && (
-        <div className="hd-customer-create-view animate-in fade-in" aria-label="Tạo khách hàng">
-          <div className="hd-customer-create-view__surface">
-            <div className="hd-customer-create-view__header">
+        <div className="hd-customer-create-view hd-child-view animate-in fade-in" aria-label="Tạo khách hàng">
+          <div className="hd-customer-create-view__surface hd-child-view__surface">
+            <div className="hd-customer-create-view__header hd-child-view__header">
               <button type="button" onClick={closeAddCustomerModal} aria-label="Quay lại danh sách khách hàng">
                 <ChevronLeft size={22} />
               </button>
@@ -74231,7 +74516,8 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 <h3>Tạo khách hàng</h3>
               </div>
             </div>
-            <form onSubmit={handleAddCustomerSubmit} className="hd-customer-create-view__form space-y-3 text-[14px]">
+            <form onSubmit={handleAddCustomerSubmit} className="hd-child-view__form text-[14px]">
+              <div className="hd-customer-create-view__form hd-child-view__body space-y-3">
               {customerContactStatus && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700">
                   {customerContactStatus}
@@ -74460,9 +74746,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
                 </div>
               </div>
 
-              <div className="hd-customer-create-view__actions">
-                <button type="button" onClick={closeAddCustomerModal}>Hủy</button>
-                <button type="submit" disabled={!!newCustomerPhoneDuplicate}>Lưu khách hàng</button>
+              </div>
+              <div className="hd-customer-create-view__actions hd-child-view__actions">
+                <button type="button" disabled={isSavingNewCustomer} onClick={closeAddCustomerModal}>Hủy</button>
+                <button type="submit" disabled={isSavingNewCustomer || !!newCustomerPhoneDuplicate}>{isSavingNewCustomer ? 'Đang lưu...' : 'Lưu khách hàng'}</button>
               </div>
             </form>
           </div>
@@ -80448,6 +80735,10 @@ function DebtManagementViewLegacy({ isAccounting, isDriver, employee, customers,
 function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [isSavingDebtPayment, setIsSavingDebtPayment] = useState(false);
+  const [debtPaymentStatus, setDebtPaymentStatus] = useState('');
+  const debtPaymentSubmitRef = useRef(false);
+  useModalScrollLock(showPaymentModal);
   const [paymentTargetOrderId, setPaymentTargetOrderId] = useState('');
   const [localSearchKeyword, setLocalSearchKeyword] = useState('');
   const [localShowSearchBox, setLocalShowSearchBox] = useState(false);
@@ -80495,8 +80786,12 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     [warehouseImports]
   );
 
+  const debtLedgerIndex = useMemo(
+    () => buildCustomerReconciledLedgerMap(customers, orders, payments, safeDebtWarehouseImports),
+    [customers, orders, payments, safeDebtWarehouseImports]
+  );
   const customerLedgers = useMemo(() => customers.map(customer => {
-    const ledger = buildCustomerReconciledLedger(customer, orders, payments, safeDebtWarehouseImports);
+    const ledger = debtLedgerIndex[customer.id];
     const manager = employees.find(emp => emp.id === customer.empId);
     const debtTransactions = [
       ...(ledger.orders || []).map(order => {
@@ -80528,7 +80823,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       latestDebtTransactionAt: transactionTimes.length ? Math.max(...transactionTimes) : 0,
       oldestDebtTransactionAt: transactionTimes.length ? Math.min(...transactionTimes) : 0
     };
-  }), [customers, orders, payments, safeDebtWarehouseImports, employees]);
+  }), [customers, debtLedgerIndex, employees]);
 
   const accessibleCustomers = useMemo(() => customerLedgers.filter(customer => {
     if (customer.isArchived) return false;
@@ -80696,10 +80991,8 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       });
   }, [accessibleCustomers, debtDateRange, debtSalesEmpId, debtTransactionSort, debtViewFilter, debouncedDebtSearchKeyword]);
 
-  const visibleDebtCustomers = useChunkedList(
+  const debtCustomerPage = usePagedList(
     filteredCustomers,
-    70,
-    90,
     `${debouncedDebtSearchKeyword}|${debtViewFilter}|${debtTransactionSort}|${debtSalesEmpId}|${debtDateRange?.start || ''}|${debtDateRange?.end || ''}`
   );
 
@@ -80736,9 +81029,11 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
   const openPaymentModal = (order = null) => {
     if (!canRecordCustomerPayment) return;
+    setDebtPaymentStatus('');
     const dueAmount = Math.max(0, parseLooseMoneyValue(order?.outstandingAmount ?? 0));
     setPaymentTargetOrderId(order?.id || '');
     setNewPayment({
+      clientMutationId: `p_${crypto.randomUUID()}`,
       amount: dueAmount > 0 ? String(dueAmount) : '',
       date: getTodayString(),
       method: 'Chuyển khoản'
@@ -80748,6 +81043,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
+    if (debtPaymentSubmitRef.current) return;
     if (!selectedCustomer || !canRecordCustomerPayment) return;
 
     const paymentAmount = parseLooseMoneyValue(newPayment.amount);
@@ -80767,7 +81063,11 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     const matchedOrderCode = matchedOrder ? getLedgerOrderDisplayCode(matchedOrder) : '';
 
     try {
-      await onAddPayment({
+      debtPaymentSubmitRef.current = true;
+      setIsSavingDebtPayment(true);
+      setDebtPaymentStatus('');
+      const result = await onAddPayment({
+        clientMutationId: newPayment.clientMutationId,
         customerId: selectedCustomer.id,
         amount: paymentAmount,
         date: newPayment.date,
@@ -80792,15 +81092,15 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
         collectedByName: collectorName
       });
 
+      if (!result) throw new Error('Chưa nhận được xác nhận tiếp nhận khoản thu.');
+      setDebtPaymentStatus(result.queued ? 'Đã lưu tạm khoản thu. Đang đồng bộ, chưa xác nhận từ máy chủ.' : 'Đã ghi nhận khoản thu.');
       resetPaymentDraft();
     } catch (error) {
       const friendlyMessage = getFriendlyFirebaseErrorMessage(error, 'Không thể ghi nhận khoản thu. Vui lòng thử lại.');
-      if (isRecoverableSyncNoticeMessage(friendlyMessage)) {
-        emitRecoverableSyncNotice(friendlyMessage);
-        resetPaymentDraft();
-        return;
-      }
-      window.alert(friendlyMessage);
+      setDebtPaymentStatus(friendlyMessage);
+    } finally {
+      debtPaymentSubmitRef.current = false;
+      setIsSavingDebtPayment(false);
     }
   };
 
@@ -80976,6 +81276,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
     return (
       <div className="premium-data-module premium-debt-module premium-debt-detail space-y-4 animate-in fade-in pb-16">
+        {debtPaymentStatus && !showPaymentModal && <p role="status" className="text-sm text-slate-600">{debtPaymentStatus}</p>}
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -81185,8 +81486,8 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
         </div>
 
         {showPaymentModal && canRecordCustomerPayment && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
+          <div className="hd-modal-layer fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" data-hd-modal-root="true">
+            <div className="hd-modal-surface bg-white rounded-2xl p-5 w-full max-w-sm" role="dialog" aria-modal="true" aria-label="Ghi nhận thanh toán">
               <h3 className="font-bold text-lg mb-1">{paymentTargetOrder ? 'Thu nợ đơn hàng' : 'Ghi nhận thanh toán'}</h3>
               {paymentTargetOrder && (
                 <p className="mb-4 text-xs font-semibold text-blue-600">
@@ -81194,7 +81495,8 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
                 </p>
               )}
               {!paymentTargetOrder && <div className="mb-4" />}
-              <form onSubmit={handlePaymentSubmit} className="space-y-3">
+              <form onSubmit={handlePaymentSubmit} className="min-h-0 flex flex-col">
+                <div className="hd-modal-body space-y-3">
                 <input required type="tel" value={formatInputCurrency(newPayment.amount)} onChange={e=>setNewPayment({...newPayment, amount: parseInputCurrency(e.target.value)})} className="w-full border p-3 rounded-xl text-lg font-bold text-emerald-600 outline-none" placeholder="Số tiền (VNĐ)" />
                 <select value={newPayment.method} onChange={e=>setNewPayment({...newPayment, method: e.target.value})} className="w-full border p-3 rounded-xl text-sm bg-white outline-none">
                   <option value="Tiền mặt">Tiền mặt</option>
@@ -81205,9 +81507,11 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
                   <p className="text-[10px] font-black uppercase tracking-wide text-emerald-600">Người thu</p>
                   <p className="mt-1 text-sm font-black text-emerald-800">{employee?.name || employee?.displayName || 'Tài khoản đang đăng nhập'}</p>
                 </div>
-                <div className="flex gap-2 mt-4">
-                  <button type="button" onClick={resetPaymentDraft} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                  <button type="submit" className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">Xác nhận thu</button>
+                {debtPaymentStatus && <p role="status" className="text-sm text-rose-700">{debtPaymentStatus}</p>}
+                </div>
+                <div className="hd-modal-actions flex gap-2 mt-4">
+                  <button type="button" disabled={isSavingDebtPayment} onClick={resetPaymentDraft} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
+                  <button type="submit" disabled={isSavingDebtPayment} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{isSavingDebtPayment ? 'Đang lưu...' : 'Xác nhận thu'}</button>
                 </div>
               </form>
             </div>
@@ -81342,7 +81646,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       )}
 
       <div className="space-y-3">
-        {visibleDebtCustomers.map(customer => (
+        {debtCustomerPage.items.map(customer => (
           <div key={customer.id} onClick={() => openDebtCustomerDetail(customer)} className="hd-render-contained bg-white p-4 rounded-xl shadow-sm border border-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition">
             <div>
               <h3 className="font-bold text-gray-800 text-sm">{customer.name}</h3>
@@ -81377,6 +81681,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
           </div>
         )}
       </div>
+      <ListPagination pagination={debtCustomerPage} label="Phân trang công nợ" />
     </div>
   );
 }

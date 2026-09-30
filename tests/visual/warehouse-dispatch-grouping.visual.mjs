@@ -5,7 +5,8 @@ import { chromium } from 'playwright-core';
 const baseUrl = process.env.HD_MANAGER_VISUAL_QA_URL || 'http://127.0.0.1:5176/';
 const outputDir = process.env.HD_MANAGER_VISUAL_QA_OUTPUT || 'test-results/warehouse-dispatch-grouping-visual';
 const browserPath = process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const today = new Date().toISOString().slice(0, 10);
+const now = new Date();
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 const previewAuthToken = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify({
   uid: 'emp_admin',
   identityId: 'emp_admin',

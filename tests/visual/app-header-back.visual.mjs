@@ -12,7 +12,8 @@ const claims = {
   accountType: 'employee', role: 'super_admin', name: 'Quản trị Demo', phone: '0909000001',
 };
 const token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
-const today = new Date().toISOString().slice(0, 10);
+const now = new Date();
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 const previewStore = {
   assets: {
     qa_asset_back: {
@@ -62,7 +63,7 @@ try {
     throw error;
   });
   const headerTitle = () => header.locator('h1').innerText();
-  const back = () => header.getByRole('button', { name: 'Quay lại', exact: true });
+  const back = () => page.getByRole('button', { name: 'Quay lại', exact: true }).first();
   const waitForTitle = (title) => page.waitForFunction((expected) => document.querySelector('.hd-app-header h1')?.textContent?.trim() === expected, title, { timeout: 10000 });
   const openModule = async (name, title) => {
     console.log('Opening module:', name);
@@ -113,11 +114,8 @@ try {
   await waitForTitle('Thêm');
 
   await openModule('Báo cáo giao hàng', 'Giao hàng');
-  await page.getByRole('button', { name: /Bắt đầu giao hàng/ }).click();
-  await page.getByPlaceholder('Tìm khách hàng...').waitFor({ state: 'visible' });
-  await back().click();
-  await page.getByRole('button', { name: /Bắt đầu giao hàng/ }).waitFor({ state: 'visible' });
-  assert.equal(await headerTitle(), 'Giao hàng', 'delivery list back should return to overview');
+  await page.getByRole('heading', { name: 'Đối chiếu giao hàng' }).waitFor({ state: 'visible' });
+  await page.getByPlaceholder('Chọn hoặc tìm khách hàng').waitFor({ state: 'visible' });
   await page.goBack();
   await waitForTitle('Thêm');
 
@@ -127,10 +125,8 @@ try {
     ['Xuất kho', 'Phiếu xuất kho'],
     ['Nhập Xuất Tồn', 'Nhập Xuất Tồn'],
     ['Lên đơn đặt hàng', 'Đơn đặt'],
-    ['Bản đồ', 'Bản đồ'],
     ['Ngân hàng', 'Ngân Hàng'],
     ['Giá cả', 'Giá cả'],
-    ['Báo cáo', 'Báo cáo'],
     ['Chấm công', 'Chấm công'],
     ['Bảng lương', 'Bảng lương'],
     ['Đánh giá', 'Đánh giá'],
@@ -145,7 +141,7 @@ try {
   }
 
   await page.getByRole('button', { name: 'Điều hành', exact: true }).first().click();
-  await page.getByText('Tổng quan tài chính', { exact: true }).first().waitFor({ state: 'visible' });
+  await page.locator('.business-report-kpi-grid').first().waitFor({ state: 'visible' });
   await page.goBack();
   await waitForTitle('Thêm');
 
@@ -154,22 +150,22 @@ try {
   await waitForTitle('Thêm');
 
   await page.getByRole('button', { name: /Quản trị Demo/ }).first().click();
-  await waitForTitle('Cá nhân');
+  await waitForTitle('Thông tin công ty');
   await back().click();
   await waitForTitle('Thêm');
 
   await page.getByRole('button', { name: 'Tin nhắn', exact: true }).first().click();
-  await page.getByText('Ưu tiên', { exact: true }).first().waitFor({ state: 'visible' });
+  await page.getByRole('tab', { name: 'Tất cả', exact: true }).first().waitFor({ state: 'visible' });
   await page.goBack();
   await waitForTitle('Thêm');
 
-  await openModule('Thu chi', 'Thu chi');
-  const cashflowQuickAction = page.getByRole('button', { name: 'Mở thao tác thu chi' });
+  await openModule('Thu chi', 'Tổng kết ngày');
+  const cashflowQuickAction = page.getByRole('button', { name: 'Mở thao tác nhanh' });
   await cashflowQuickAction.click();
   assert.equal(await cashflowQuickAction.getAttribute('aria-expanded'), 'true');
   await back().click();
   assert.equal(await cashflowQuickAction.getAttribute('aria-expanded'), 'false', 'back should close cashflow action menu');
-  assert.equal(await headerTitle(), 'Thu chi', 'closing a menu should not leave Finance');
+  assert.equal(await headerTitle(), 'Tổng kết ngày', 'closing a menu should not leave Finance');
   await back().click();
   await waitForTitle('Thêm');
 

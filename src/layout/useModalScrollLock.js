@@ -14,6 +14,8 @@ export function useModalScrollLock(active) {
       document.documentElement.style.overflow = 'hidden';
     }
     activeModalLocks += 1;
+    document.documentElement.dataset.hdOpenModalCount = String(activeModalLocks);
+    window.dispatchEvent(new CustomEvent('hd-modal-visibility', { detail: { count: activeModalLocks } }));
 
     const blockBackgroundScroll = (event) => {
       if (!event.target?.closest?.('.hd-modal-body')) event.preventDefault();
@@ -25,6 +27,8 @@ export function useModalScrollLock(active) {
       document.removeEventListener('wheel', blockBackgroundScroll, true);
       document.removeEventListener('touchmove', blockBackgroundScroll, true);
       activeModalLocks -= 1;
+      document.documentElement.dataset.hdOpenModalCount = String(activeModalLocks);
+      window.dispatchEvent(new CustomEvent('hd-modal-visibility', { detail: { count: activeModalLocks } }));
       if (activeModalLocks === 0) {
         document.body.style.overflow = previousBodyOverflow;
         document.documentElement.style.overflow = previousDocumentOverflow;

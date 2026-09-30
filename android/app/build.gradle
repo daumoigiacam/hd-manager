@@ -5,6 +5,7 @@ def releaseStorePassword = project.findProperty('HD_RELEASE_STORE_PASSWORD') ?: 
 def releaseKeyAlias = project.findProperty('HD_RELEASE_KEY_ALIAS') ?: System.getenv('HD_RELEASE_KEY_ALIAS')
 def releaseKeyPassword = project.findProperty('HD_RELEASE_KEY_PASSWORD') ?: System.getenv('HD_RELEASE_KEY_PASSWORD')
 def hasReleaseSigning = releaseStoreFilePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+def acceptanceAssets = project.findProperty('HD_ACCEPTANCE_ASSETS')
 gradle.taskGraph.whenReady { graph ->
     def releaseTaskRequested = graph.allTasks.any { task ->
         task.name.toLowerCase().contains('release')
@@ -16,6 +17,9 @@ gradle.taskGraph.whenReady { graph ->
             'HD_RELEASE_KEY_ALIAS, and HD_RELEASE_KEY_PASSWORD outside version control.'
         )
     }
+    if (releaseTaskRequested && acceptanceAssets) {
+        throw new GradleException('Isolated acceptance assets must never be packaged in a release.')
+    }
 }
 
 android {
@@ -23,10 +27,11 @@ android {
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         applicationId "com.hdmanager.app"
+        if (acceptanceAssets) applicationIdSuffix ".acceptance"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 26093001
-        versionName "1.0.2"
+        versionCode 26100101
+        versionName "1.0.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -53,6 +58,9 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    if (acceptanceAssets) {
+        sourceSets.main.assets.srcDirs = [file(acceptanceAssets)]
+    }
 }
 
 repositories {
@@ -77,7 +85,7 @@ apply from: 'capacitor.build.gradle'
 
 try {
     def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
+    if (!acceptanceAssets && servicesJSON.text) {
         apply plugin: 'com.google.gms.google-services'
         apply plugin: 'com.google.firebase.crashlytics'
         apply plugin: 'com.google.firebase.firebase-perf'

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 
 const baseUrl = process.env.HD_MANAGER_INVOICE_QA_URL || 'http://127.0.0.1:5207/tests/visual/invoice-harness.html';
@@ -14,8 +14,27 @@ try {
     for (const width of [320, 360, 375, 390, 414, 768, 1024]) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
       const errors = [];
+      const requests = new Map();
+      const responses = [];
       page.on('pageerror', (error) => errors.push(error.message));
-      const response = await page.goto(`${baseUrl}?template=${templateId}`, { waitUntil: 'domcontentloaded' });
+      page.on('request', request => requests.set(request, request.url()));
+      page.on('requestfinished', request => requests.delete(request));
+      page.on('requestfailed', request => {
+        requests.delete(request);
+        responses.push({ url: request.url(), failure: request.failure() });
+      });
+      page.on('response', response => responses.push({ url: response.url(), status: response.status() }));
+      let response;
+      try {
+        response = await page.goto(`${baseUrl}?template=${templateId}`, { waitUntil: 'domcontentloaded' });
+      } catch (error) {
+        await page.screenshot({ path: `${outputDir}/load-failure.png` });
+        await writeFile(`${outputDir}/load-failure.json`, JSON.stringify({
+          url: page.url(), pending: [...requests.values()], responses, errors,
+          body: await page.locator('body').innerText(),
+        }, null, 2));
+        throw error;
+      }
       assert.equal(response?.status(), 200);
       const invoice = page.locator('.invoice-document');
       await invoice.waitFor();
