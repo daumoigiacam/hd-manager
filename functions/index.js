@@ -180,7 +180,7 @@ const resolveOrderPaymentDueAmount = (order = {}, requestedAmount = 0) => {
 
 const safeDocIdPart = (value = '') => `${value || ''}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
 
-const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase()}`;
+const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
 
 const formatVnd = (value) => `${parseMoney(value).toLocaleString('vi-VN')} d`;
 

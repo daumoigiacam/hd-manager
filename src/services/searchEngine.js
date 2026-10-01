@@ -173,7 +173,7 @@ const getOrderCode = (order = {}) => order?.orderCode || order?.invoiceCode || o
 
 const getDisplayedOrderCode = (order = {}) => {
   const orderId = `${order?.id || ''}`.trim();
-  return orderId ? `HD${orderId.slice(-6).toUpperCase()}` : '';
+  return orderId ? `HD${orderId.slice(-6).toUpperCase().replace(/[^A-Z0-9]/g, '')}` : '';
 };
 
 export const getOrderSearchFields = (order = {}, { getItemText, getCustomerText } = {}) => {

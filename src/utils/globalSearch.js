@@ -27,7 +27,7 @@ const getOrderCode = (order = {}) => (
   || asText(order.invoiceCode)
   || asText(order.code)
   || asText(order.paymentCode)
-  || (order.id ? `HD${`${order.id}`.slice(-6).toUpperCase()}` : 'Đơn hàng')
+  || (order.id ? `HD${`${order.id}`.slice(-6).toUpperCase().replace(/[^A-Z0-9]/g, '')}` : 'Đơn hàng')
 );
 
 const compactDetail = (values) => values.map(asText).filter(Boolean).join(' · ');

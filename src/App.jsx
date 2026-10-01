@@ -3015,7 +3015,7 @@ const getAttendanceCompactSource = (record = {}, direction = 'checkIn') => {
     : '';
 };
 
-const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase()}`;
+const formatOrderCode = (orderId = '') => `HD${String(orderId || '').slice(-6).toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
 const getLedgerOrderDisplayCode = (order = {}) => (
   order?.isOpeningDebt
     ? 'Nợ cũ'
@@ -73878,7 +73878,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
           <div className="divide-y divide-gray-50">
             {filteredOrders.length === 0 && <p className="p-4 text-center text-sm text-gray-400">Không có đơn hàng phù hợp với bộ lọc hiện tại.</p>}
             {filteredOrders.map(order => {
-              const orderCode = `HD${(order.id || '').slice(-6).toUpperCase()}`;
+              const orderCode = formatOrderCode(order.id);
               const itemSummary = (order.items || []).map(item => `${item.description} x${item.quantity || 0}`).join(', ');
               return (
                 <div key={order.id} className="p-4">
