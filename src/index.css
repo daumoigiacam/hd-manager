@@ -2675,3 +2675,44 @@ html.hd-low-power-ui .hd-soft-red-outline {
   border-radius: 0;
   background: transparent;
 }
+
+/* Use the same app navigation on phones, tablets and desktop. */
+@media (min-width: 600px) {
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell {
+    display: flex !important;
+    flex-direction: column;
+    width: 100% !important;
+    max-width: 1440px !important;
+    height: var(--hd-viewport-height, 100dvh) !important;
+    min-height: 0 !important;
+    max-height: var(--hd-viewport-height, 100dvh) !important;
+    margin: 0 auto !important;
+    border-radius: 0;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > main {
+    flex: 1;
+    min-height: 0;
+    padding: 16px 24px calc(var(--hd-footer-height, 76px) + 20px) !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > main:has(.business-report-workspace) {
+    padding: 0 0 calc(var(--hd-footer-height, 76px) + 20px) !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation {
+    position: absolute !important;
+    inset: auto 0 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    padding: 0 0 env(safe-area-inset-bottom, 0px) !important;
+    border-radius: 0;
+    border-right: 0;
+    border-top: 1px solid #e2e8f0 !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation > .mobile-footer-nav {
+    display: flex !important;
+    justify-content: space-around;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation > .desktop-sidebar-nav,
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation > .tablet-navigation-rail {
+    display: none !important;
+  }
+}

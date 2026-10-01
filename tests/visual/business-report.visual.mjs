@@ -53,14 +53,19 @@ try {
     const response = await page.goto(baseUrl, { waitUntil: 'commit', timeout: 30000 });
     assert.equal(response?.status(), 200);
     await page.locator('[data-hd-shell="enterprise"]').waitFor({ timeout: 30000 });
-    if (width >= 1024) {
-      await page.locator('.hd-premium-dashboard').waitFor({ timeout: 15000 });
-      await page.screenshot({ path: `${outputDir}/desktop-${width}.png` });
-      await page.close();
-      continue;
-    }
+    assert.equal(await page.locator('.hd-premium-dashboard').count(), 0, 'All screen sizes use the current report');
     const report = page.locator('.business-report-workspace');
     await report.waitFor({ timeout: 15000 });
+    if (process.env.HD_REPORT_LAYOUT_ONLY === '1') {
+      await page.locator('.mobile-footer-nav').waitFor();
+      assert.equal(await page.locator('.desktop-sidebar-nav').isVisible(), false);
+      assert.equal(await page.locator('.tablet-navigation-rail').isVisible(), false);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      await page.screenshot({ path: `${outputDir}/unified-${width}.png` });
+      await page.close();
+      console.log(`PASS unified layout ${width}px`);
+      continue;
+    }
     await report.locator('.hd-account-greeting__name').waitFor();
     assert.equal(await report.locator('.hd-account-greeting__name').innerText(), 'Công ty HD Preview');
     assert.equal(await report.locator('.business-report-kpi').count(), 4, 'Home shows exactly four totals');

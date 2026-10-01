@@ -40563,14 +40563,7 @@ function ExecutiveDashboardView({
   setActiveTab,
   onOpenGlobalSearch = () => {}
 }) {
-  const [isMobileReport, setIsMobileReport] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches);
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const media = window.matchMedia('(max-width: 1023px)');
-    const update = () => setIsMobileReport(media.matches);
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
+  const isMobileReport = true;
   const [activeExecutiveTab, setActiveExecutiveTab] = useState('overview');
   const [showMobileReportAssistant, setShowMobileReportAssistant] = useState(false);
   const [showExecutiveWidgetCustomizer, setShowExecutiveWidgetCustomizer] = useState(false);
