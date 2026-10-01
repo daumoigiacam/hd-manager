@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft, BarChart3, Battery, Bell, CalendarDays, Check, CheckCircle2,
   ChevronLeft, ChevronRight, Clock3, MapPin, RefreshCw, Settings2,
   ShieldCheck, Wifi, WifiOff, Zap
 } from 'lucide-react';
 import './AttendanceWorkspace.css';
+import AttendanceRoleSelector from './AttendanceRoleSelector.jsx';
 
 const formatTime = value => {
   const date = value ? new Date(value) : null;
@@ -40,7 +41,9 @@ export default function AttendanceWorkspace({
   wifiInfo, wifiLoading, wifiPermission, wifiMatches, wifiConfigured, wifiMessage, onOpenWifi,
   onRefreshWifi, onRequestWifiPermission, onOpenWifiSettings, onSaveCompanyWifi,
   autoEnabled, autoSaving, onToggleAuto, canManage, canManageWifi, onManage,
-  selfMethod, onSelectMethod, onCheckIn, onCheckOut, onLeave, submitting
+  wifiSupported = false, autoBlockedReason = '', backScreen = 'dashboard', companyWifiSaving = false,
+  selfMethod, onSelectMethod, onCheckIn, onCheckOut, onLeave, submitting,
+  workRoles = [], workRole, onSelectWorkRole
 }) {
   const [battery, setBattery] = useState(null);
   const [showShift, setShowShift] = useState(false);
@@ -96,7 +99,7 @@ export default function AttendanceWorkspace({
   };
   const goBack = () => {
     if (screen === 'wifi-permission') onScreenChange('wifi');
-    else if (screen !== 'dashboard') onScreenChange('dashboard');
+    else if (screen !== 'dashboard') onScreenChange(backScreen);
     else onExit?.();
   };
   const title = screen === 'wifi' || screen === 'wifi-permission' ? 'WiFi nội bộ'
@@ -121,6 +124,7 @@ export default function AttendanceWorkspace({
             <button type="button" onClick={() => setShowShift(value => !value)}>{showShift ? 'Ẩn ca' : 'Xem ca'}</button>
           </div>
           {showShift && <div className="attendance-inline-note">Ca làm của {currentEmployee?.name}: {shiftLabel}</div>}
+          <AttendanceRoleSelector positions={workRoles} value={workRole} onChange={onSelectWorkRole} disabled={submitting} />
           <div className="attendance-hero">
             <div className={`attendance-hero__circle ${record?.checkIn ? 'is-complete' : ''}`}>
               <span className="attendance-hero__mark">{record?.checkIn ? <Check size={28} /> : <Clock3 size={27} />}</span>
@@ -147,7 +151,7 @@ export default function AttendanceWorkspace({
             </button>
           </div>
           {isToday && !record?.checkIn && record?.status !== 'leave' && (
-            <div className="attendance-actions"><button type="button" className="attendance-primary" disabled={submitting || (selfMethod === 'wifi' && !wifiMatches)} onClick={onCheckIn}>{submitting ? 'Đang chấm công...' : `Chấm công vào qua ${selfMethod === 'wifi' ? 'WiFi' : 'GPS'}`}</button><button type="button" onClick={onLeave}>Xin nghỉ</button></div>
+            <div className="attendance-actions"><button type="button" className="attendance-primary" disabled={submitting || (selfMethod === 'wifi' && !wifiMatches)} onClick={onCheckIn}>{submitting ? 'Đang chấm công...' : `Chấm công vào qua ${selfMethod === 'wifi' ? 'WiFi' : 'GPS'}`}</button><button type="button" disabled={submitting} onClick={onLeave}>Xin nghỉ</button></div>
           )}
           {isToday && record?.checkIn && !record?.checkOut && record?.status !== 'leave' && <button type="button" className="attendance-primary attendance-primary--out" disabled={submitting} onClick={onCheckOut}>{submitting ? 'Đang chấm công...' : 'Chấm công ra'}</button>}
           {(statusMessage || autoStatus) && <div className="attendance-inline-note" role="status">{statusMessage || autoStatus}</div>}
@@ -161,17 +165,21 @@ export default function AttendanceWorkspace({
 
       {screen === 'wifi' && (
         <div className="attendance-page">
-          <div className={`attendance-wifi-banner ${wifiMatches ? 'is-connected' : ''}`}><span>{wifiMatches ? <Check size={24} /> : <WifiOff size={24} />}</span><div><strong>{wifiMatches ? 'Đã kết nối WiFi công ty' : 'Chưa kết nối WiFi công ty'}</strong><small>{wifiMatches ? 'App sẽ tự chấm công vào khi đủ điều kiện ca làm.' : 'Kết nối đúng WiFi công ty để sử dụng chấm công tự động.'}</small></div></div>
+          <div className={`attendance-wifi-banner ${wifiMatches ? 'is-connected' : ''}`}><span>{wifiMatches ? <Check size={24} /> : <WifiOff size={24} />}</span><div><strong>{!wifiSupported ? 'Thiết bị chưa hỗ trợ WiFi tự động' : wifiMatches ? 'Đã kết nối WiFi công ty' : 'Chưa kết nối WiFi công ty'}</strong><small>{!wifiSupported ? 'Tính năng hiện hỗ trợ app Android, chưa hỗ trợ web và bản iPhone.' : wifiMatches ? autoEnabled ? 'Đang bật tự động cho công việc chính.' : 'Chấm công tự động đang tắt.' : 'Chưa xác minh đúng SSID và BSSID công ty.'}</small></div></div>
           <section className="attendance-panel"><h2>WiFi hiện tại</h2><div className="attendance-wifi-current"><div><strong>{wifiInfo?.ssid || 'Chưa xác định'}</strong><small>BSSID: {wifiInfo?.bssid || 'Chưa xác định'}</small></div><span className={`attendance-pill attendance-pill--${wifiMatches ? 'success' : 'warning'}`}>{wifiMatches ? 'WiFi công ty' : 'Chưa xác minh'}</span></div></section>
-          <section className="attendance-panel attendance-toggle-row"><span className="attendance-toggle-row__icon"><Zap size={22} /></span><div><h2>Tự động chấm công vào</h2><small>Ghi nhận khi kết nối đúng WiFi công ty trong giờ làm việc.</small></div><button type="button" role="switch" aria-checked={autoEnabled} aria-label="Tự động chấm công vào" className={`attendance-switch ${autoEnabled ? 'is-on' : ''}`} disabled={autoSaving || !wifiConfigured} onClick={onToggleAuto}><span /></button></section>
+          <section className="attendance-panel"><h2>WiFi công ty</h2><div className="attendance-wifi-current"><div><strong>{currentCompany?.attendanceWifiSsid || currentCompany?.attendanceWifi?.ssid || 'Chưa cấu hình'}</strong><small>BSSID: {currentCompany?.attendanceWifiBssid || currentCompany?.attendanceWifi?.bssid || 'Chưa cấu hình'}</small></div></div></section>
+          <section className="attendance-panel attendance-toggle-row"><span className="attendance-toggle-row__icon"><Zap size={22} /></span><div><h2>Tự động chấm công vào</h2><small>{currentEmployee?.position || 'Công việc chính'} · {autoSaving ? 'Đang lưu cài đặt...' : 'Giờ vào xác nhận bởi máy chủ'}</small></div><button type="button" role="switch" aria-checked={autoEnabled} aria-busy={autoSaving} aria-label="Tự động chấm công vào" className={`attendance-switch ${autoEnabled ? 'is-on' : ''}`} disabled={autoSaving || (!autoEnabled && (!wifiSupported || !wifiPermission?.granted || !wifiConfigured || Boolean(autoBlockedReason)))} onClick={onToggleAuto}><span /></button></section>
+          {autoBlockedReason && <div className="attendance-inline-note" role="status">{autoBlockedReason}</div>}
+          {wifiSupported && <div className="attendance-inline-note">Tự động khi app đang mở hoặc được mở lại, trong khung giờ ca làm. Không tự chấm ra hoặc chấm đồng thời công việc kiêm nhiệm. Khi app bị tắt, giờ kết nối WiFi trước đó không được ghi hồi tố.</div>}
           <section className={`attendance-panel attendance-status-panel ${wifiMatches ? '' : 'is-warning'}`}><h2>Trạng thái</h2><p className={wifiPermission?.granted ? '' : 'is-warning'}><ShieldCheck size={17} /> {wifiPermission?.granted ? 'Đã cấp quyền WiFi' : 'Chưa cấp quyền WiFi'}</p><p className={wifiMatches ? '' : 'is-warning'}><Wifi size={17} /> {wifiMatches ? 'Đang kết nối WiFi công ty' : 'Chưa kết nối đúng WiFi công ty'}</p><p className={autoEnabled ? '' : 'is-warning'}><Zap size={17} /> {autoEnabled ? 'Tự động chấm công đang bật' : 'Tự động chấm công đang tắt'}</p></section>
           <button type="button" className="attendance-secondary" disabled={wifiLoading} onClick={onRefreshWifi}><RefreshCw size={17} /> {wifiLoading ? 'Đang kiểm tra...' : 'Kiểm tra WiFi hiện tại'}</button>
           {wifiMessage && !wifiMatches && <div className="attendance-inline-note" role="status">{wifiMessage}</div>}
-          {!wifiPermission?.granted && <button type="button" className="attendance-primary" onClick={() => onScreenChange('wifi-permission')}>Cấp quyền WiFi</button>}
-          {canManageWifi && <button type="button" className="attendance-secondary" disabled={!wifiInfo?.bssid || !wifiInfo?.ssid} onClick={onSaveCompanyWifi}>Đặt WiFi hiện tại cho công ty</button>}
+          {wifiSupported && !wifiPermission?.granted && <button type="button" className="attendance-primary" onClick={() => onScreenChange('wifi-permission')}>Cấp quyền WiFi</button>}
+          {canManageWifi && <button type="button" className="attendance-secondary" disabled={companyWifiSaving || !wifiSupported || !wifiInfo?.bssid || !wifiInfo?.ssid} onClick={onSaveCompanyWifi}>{companyWifiSaving ? 'Đang lưu WiFi công ty...' : 'Đặt WiFi hiện tại cho công ty'}</button>}
           {!wifiConfigured && <div className="attendance-inline-note">Công ty chưa cài đầy đủ SSID và BSSID cho chấm công tự động.</div>}
           {(statusMessage || autoStatus) && <div className="attendance-inline-note" role="status">{statusMessage || autoStatus}</div>}
-          {wifiMatches && !record?.checkIn && isToday && <button type="button" className="attendance-primary" disabled={submitting} onClick={onCheckIn}>Chấm công vào qua WiFi</button>}
+          <section className="attendance-panel"><h2>Chấm công · {date}</h2><AttendanceRoleSelector positions={workRoles} value={workRole} onChange={onSelectWorkRole} disabled={submitting} /><AttendanceEvent time={record?.checkIn} title={record?.checkIn ? 'Đã ghi nhận vào ca' : record?.status === 'leave' ? 'Nghỉ phép' : 'Chưa ghi nhận vào ca'} method={record?.checkInMethod} network={record?.checkInMethodMeta?.ssid} pending={!record?.checkIn} status={record?.checkIn ? record.status : null} /></section>
+          {wifiMatches && !record?.checkIn && record?.status !== 'leave' && isToday && <button type="button" className="attendance-primary" disabled={submitting} onClick={onCheckIn}>Chấm công vào qua WiFi</button>}
         </div>
       )}
 
@@ -189,13 +197,14 @@ export default function AttendanceWorkspace({
 
       {screen === 'history' && (
         <div className="attendance-page attendance-history">
+          <AttendanceRoleSelector positions={workRoles} value={workRole} onChange={onSelectWorkRole} disabled={submitting} />
           <div className="attendance-calendar"><div className="attendance-calendar__month"><button type="button" aria-label="Tháng trước" onClick={() => changeMonth(-1)}><ChevronLeft size={20} /></button><strong>{monthTitle(date)}</strong><button type="button" aria-label="Tháng sau" onClick={() => changeMonth(1)}><ChevronRight size={20} /></button></div><div className="attendance-calendar__week">{weekDates.map((day, index) => <button type="button" key={day} className={day === date ? 'is-current' : ''} onClick={() => onChangeDate?.(day)}><small>{['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'][index]}</small><strong>{Number(day.slice(8))}</strong></button>)}</div></div>
           <div className="attendance-kpis"><div><CheckCircle2 size={19} /><strong>{summary.worked}</strong><span>Ngày làm</span></div><div><Clock3 size={19} /><strong>{summary.late}</strong><span>Đi muộn</span></div><div><CalendarDays size={19} /><strong>{summary.leave}</strong><span>Nghỉ phép</span></div></div>
           <div className="attendance-history__list"><section className="attendance-day"><div className="attendance-day__heading"><strong>{dateTitle(date)}</strong><span className={`attendance-pill attendance-pill--${selectedRecord?.status === 'late' ? 'warning' : selectedRecord?.checkIn ? 'success' : 'neutral'}`}>{selectedRecord?.status === 'leave' ? 'Nghỉ phép' : selectedRecord?.checkIn ? selectedRecord.status === 'late' ? 'Đi muộn' : 'Đúng giờ' : 'Chưa chấm'}</span></div><AttendanceEvent time={selectedRecord?.checkIn} title={selectedRecord?.checkIn ? 'Chấm công vào' : 'Chưa chấm công vào'} method={selectedRecord?.checkInMethod} network={selectedRecord?.checkInMethodMeta?.ssid} pending={!selectedRecord?.checkIn} /><AttendanceEvent time={selectedRecord?.checkOut} title={selectedRecord?.checkOut ? 'Chấm công ra' : 'Chưa chấm công ra'} method={selectedRecord?.checkOutMethod} network={selectedRecord?.checkOutMethodMeta?.ssid} pending={!selectedRecord?.checkOut} tone="out" /></section>{monthRecords.filter(item => item.date !== date).slice(0, 20).map(item => <button type="button" key={item.date} className="attendance-history-row" onClick={() => onChangeDate?.(item.date)}><span><strong>{dateTitle(item.date)}</strong><small>{formatTime(item.checkIn)} - {formatTime(item.checkOut)}</small></span><ChevronRight size={17} /></button>)}</div>
         </div>
       )}
 
-      {screen === 'reports' && <div className="attendance-page"><h2 className="attendance-page-title">{monthTitle(date)}</h2><div className="attendance-kpis"><div><CheckCircle2 size={19} /><strong>{summary.worked}</strong><span>Ngày làm</span></div><div><Clock3 size={19} /><strong>{summary.late}</strong><span>Đi muộn</span></div><div><CalendarDays size={19} /><strong>{summary.leave}</strong><span>Nghỉ phép</span></div></div><section className="attendance-panel"><h2>Thống kê chấm công</h2><p>Dữ liệu từ hồ sơ chấm công của {currentEmployee?.name} trong tháng đã chọn.</p><div className="attendance-report-bars">{monthRecords.slice(0, 14).reverse().map(item => <div key={item.date} title={`${item.date}: ${formatTime(item.checkIn)} - ${formatTime(item.checkOut)}`}><span style={{ height: item.checkIn ? item.checkOut ? '82%' : '48%' : '10%' }} /><small>{Number(item.date.slice(8))}</small></div>)}</div></section></div>}
+      {screen === 'reports' && <div className="attendance-page"><h2 className="attendance-page-title">{monthTitle(date)}</h2><AttendanceRoleSelector positions={workRoles} value={workRole} onChange={onSelectWorkRole} disabled={submitting} /><div className="attendance-kpis"><div><CheckCircle2 size={19} /><strong>{summary.worked}</strong><span>Ngày làm</span></div><div><Clock3 size={19} /><strong>{summary.late}</strong><span>Đi muộn</span></div><div><CalendarDays size={19} /><strong>{summary.leave}</strong><span>Nghỉ phép</span></div></div><section className="attendance-panel"><h2>Thống kê chấm công</h2><p>Dữ liệu từ hồ sơ chấm công của {currentEmployee?.name} trong tháng đã chọn.</p><div className="attendance-report-bars">{monthRecords.slice(0, 14).reverse().map(item => <div key={item.date} title={`${item.date}: ${formatTime(item.checkIn)} - ${formatTime(item.checkOut)}`}><span style={{ height: item.checkIn ? item.checkOut ? '82%' : '48%' : '10%' }} /><small>{Number(item.date.slice(8))}</small></div>)}</div></section></div>}
 
       {screen === 'settings' && <div className="attendance-page"><section className="attendance-panel"><h2>Phương thức chấm công</h2><button type="button" className="attendance-settings-row" onClick={onOpenWifi}><Wifi size={21} /><span><strong>WiFi nội bộ</strong><small>{autoEnabled ? 'Tự động chấm công đang bật' : 'Thiết lập WiFi công ty'}</small></span><ChevronRight size={18} /></button><button type="button" className="attendance-settings-row" onClick={() => { onSelectMethod('gps'); onScreenChange('dashboard'); }}><MapPin size={21} /><span><strong>GPS vị trí</strong><small>Chấm công thủ công</small></span><ChevronRight size={18} /></button></section>{canManage && <section className="attendance-panel"><h2>Quản lý</h2><button type="button" className="attendance-settings-row" onClick={onManage}><CalendarDays size={21} /><span><strong>Chấm công nhân sự</strong><small>Xem, lọc và điều chỉnh chấm công</small></span><ChevronRight size={18} /></button></section>}<section className="attendance-panel"><h2>Ca làm hiện tại</h2><p>{shiftPolicy.shiftName} · {shiftLabel}</p></section></div>}
 

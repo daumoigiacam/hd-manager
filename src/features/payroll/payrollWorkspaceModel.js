@@ -14,6 +14,7 @@ export const summarizePayrollWorkspace = (rows = []) => {
     bonus: 0,
     penalty: 0,
     totalAdvance: 0,
+    totalDeductions: 0,
     payable: 0,
     carryForward: 0,
     readyCount: 0,
@@ -31,6 +32,7 @@ export const summarizePayrollWorkspace = (rows = []) => {
     summary.bonus += amount('totalBonus') + amount('evaluationBonus');
     summary.penalty += amount('totalPenalty');
     summary.totalAdvance += amount('totalAdvance');
+    summary.totalDeductions += amount('deductionTotal');
     summary.payable += amount('netSalary');
     summary.carryForward += amount('endingDebt');
     summary[`${getPayrollEmployeeState(row)}Count`] += 1;

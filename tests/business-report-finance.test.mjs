@@ -1,7 +1,81 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
-import { aggregateReportRows, getReportPeriod, getTopSalesEmployees } from '../src/features/business-report/reportViewModel.js';
+import { aggregateReportRows, getExpenseSourceRows, getPayrollPeriodSummary, getPeriodGuidance, getReportPeriod, getTopSalesEmployees } from '../src/features/business-report/reportViewModel.js';
+
+test('payroll period summary includes every employee and only dates in the selected period', () => {
+  const { finance } = buildExecutiveDashboardSnapshot({ now: '2026-09-26T12:00:00', payrollCosts: [
+    ...Array.from({ length: 25 }, (_, i) => ({ employeeId: `e${i}`, employeeName: `Employee ${i}`, date: '2026-09-26', amount: 10 })),
+    ...['2026-09-22', '2026-09-01', '2026-07-01', '2026-01-01'].map(date => ({ employeeId: 'e0', date, amount: 100 })),
+  ] });
+  for (const [period, expected] of [['today', 250], ['week', 350], ['month', 450], ['quarter', 550], ['year', 650]]) {
+    const summary = getPayrollPeriodSummary(finance, getReportPeriod(finance, period));
+    assert.equal(summary.total, expected, period);
+    assert.equal(summary.employees.length, 25, period);
+  }
+});
+
+test('expense drilldown preserves individual vouchers and the selected date range', () => {
+  const { finance } = buildExecutiveDashboardSnapshot({ now: '2026-10-01T12:00:00', expenses: [
+    { id: 'one', date: '2026-10-01', name: 'Fuel', category: 'Xăng dầu', amount: 100, note: 'Receipt one' },
+    { id: 'two', date: '2026-10-01', name: 'Fuel', category: 'Xăng dầu', amount: 200 },
+    { id: 'old', date: '2026-09-30', name: 'Fuel', category: 'Xăng dầu', amount: 300 },
+    { id: 'other', date: '2026-10-01', name: 'Water', amount: 50 },
+  ] });
+  const rows = getExpenseSourceRows(finance.expenseDetailRows, getReportPeriod(finance, 'today'), { name: 'Fuel' });
+  assert.deepEqual(rows.map(row => row.sourceId).sort(), ['one', 'two']);
+  assert.equal(rows.reduce((sum, row) => sum + row.value, 0), 300);
+  assert.equal(rows.find(row => row.sourceId === 'one').detail, 'Receipt one');
+  assert.equal(rows.find(row => row.sourceId === 'two').originalAmount, 200);
+});
+
+test('October 1 month and quarter match today but year includes earlier months', () => {
+  const { finance } = buildExecutiveDashboardSnapshot({
+    now: '2026-10-01T18:00:00',
+    orders: [
+      { date: '2026-10-01', amount: 60 },
+      { date: '2026-09-30', amount: 100 },
+      { date: '2026-01-15', amount: 200 },
+      { date: '2025-12-31', amount: 900 },
+    ],
+    expenses: [
+      { date: '2026-10-01', category: 'Xăng dầu', amount: 10 },
+      { date: '2026-09-30', category: 'Xăng dầu', amount: 20 },
+    ],
+  });
+  for (const period of ['today', 'month', 'quarter']) {
+    const report = getReportPeriod(finance, period);
+    assert.equal(report.revenue, 60, period);
+    assert.equal(report.expense, 10, period);
+  }
+  const year = getReportPeriod(finance, 'year');
+  assert.equal(year.startDate, '2026-01-01');
+  assert.equal(year.revenue, 360);
+  assert.equal(year.expense, 30);
+  assert.equal(year.profit, 330);
+});
+
+test('home product breakdown and rankings use the selected day/week/month/quarter/year', () => {
+  const finance = { todayKey: '2026-09-26', currentMonthKey: '2026-09', weekStartKey: '2026-09-21', weekEndKey: '2026-09-26' };
+  const rows = ['2026-09-26', '2026-09-22', '2026-09-01', '2026-07-01', '2026-01-01', '2025-12-31'].map((date, index) => ({ date, id: String(index), name: `Product ${index}`, revenue: 10, profit: 2, quantity: 1 }));
+  for (const [period, count] of [['today', 1], ['week', 2], ['month', 3], ['quarter', 4], ['year', 5]]) {
+    const result = aggregateReportRows(rows, getReportPeriod(finance, period), { groupBy: 'id', valueFields: ['revenue', 'profit', 'quantity'] });
+    assert.equal(result.length, count, period);
+    assert.equal(result.reduce((sum, row) => sum + row.revenue, 0), count * 10);
+  }
+});
+
+test('period guidance replaces monthly financial advice and keeps current operational alerts explicit', () => {
+  const snapshot = { alerts: [{ id: 'negativeProfit', message: 'stale month' }, { id: 'attendance', message: 'Absent today' }], recommendations: [{ id: 'cost-control', impact: 'stale month' }, { id: 'collect-debt', impact: 'Current debt' }] };
+  const positive = getPeriodGuidance(snapshot, { label: 'Tuần này', profit: 10, expense: 100 }, [], [{ name: 'Fuel', value: 40 }]);
+  assert.equal(positive.alerts.some(row => row.id === 'negativeProfit'), false);
+  assert.match(positive.alerts[0].message, /Hiện tại/);
+  assert.match(positive.recommendations.find(row => row.id === 'cost-control').impact, /Tuần này.*40%/);
+  const empty = getPeriodGuidance(snapshot, { label: 'Hôm nay', profit: 0, expense: 0 }, [], []);
+  assert.equal(empty.recommendations.some(row => row.id === 'cost-control'), false);
+  const negative = getPeriodGuidance(snapshot, { label: 'Quý 3', profit: -10, expense: 50 }, [], []);
+  assert.match(negative.alerts.find(row => row.id === 'negativeProfit').message, /Quý 3/);
+});
 
 test('all report periods include payroll once while cash outflow stays unchanged', () => {
   const snapshot = buildExecutiveDashboardSnapshot({

@@ -3,7 +3,7 @@ const TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const normalizeSsid = value => `${value || ''}`.trim().replace(/^"|"$/g, '');
 const normalizeBssid = value => `${value || ''}`.trim().toLowerCase();
 const isValidBssid = value => /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(normalizeBssid(value))
-  && normalizeBssid(value) !== '02:00:00:00:00:00';
+  && !['02:00:00:00:00:00', '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff'].includes(normalizeBssid(value));
 
 const matchesCompanyWifi = (network = {}, company = {}) => {
   const configuredSsid = normalizeSsid(company.attendanceWifiSsid || company.attendanceWifi?.ssid);
@@ -49,26 +49,32 @@ const getShiftWindow = (employee = {}, now = new Date()) => {
     ? Math.max(0, Number(employee.graceMinutes)) : defaults[2];
   const { date, minutes } = getVietnamParts(now);
   const overnight = endMinutes <= startMinutes;
-  const workDate = overnight && minutes >= startMinutes ? nextDay(date) : date;
+  const workDate = overnight && minutes >= Math.max(0, startMinutes - 30) ? nextDay(date) : date;
   const startDate = overnight ? new Date(Date.parse(`${workDate}T00:00:00Z`) - 86400000).toISOString().slice(0, 10) : workDate;
   const startAt = Date.parse(`${startDate}T00:00:00+07:00`) + startMinutes * 60000;
   const endAt = Date.parse(`${workDate}T00:00:00+07:00`) + endMinutes * 60000;
   return {
     workDate,
+    startAt,
+    endAt,
     inWindow: now.getTime() >= startAt - 30 * 60000 && now.getTime() <= endAt,
     status: now.getTime() > startAt + graceMinutes * 60000 ? 'late' : 'present'
   };
 };
 
-const evaluateAutoWifiCheckIn = ({ claims = {}, company = {}, employee = {}, network = {}, record = {}, now = new Date() }) => {
+const evaluateAutoWifiCheckIn = ({ claims = {}, company = {}, employee = {}, network = {}, record = {}, period = {}, now = new Date() }) => {
   if (claims.accountType !== 'employee' || !claims.companyId || !claims.appUserId
     || claims.companyId !== company.id || employee.companyId !== company.id
     || claims.appUserId !== employee.id) return { eligible: false, reason: 'tenant_or_identity' };
   if (employee.isArchived || employee.attendanceAutoWifiEnabled !== true) return { eligible: false, reason: 'disabled' };
   if (!matchesCompanyWifi(network, company)) return { eligible: false, reason: 'wifi_mismatch' };
   const shift = getShiftWindow(employee, now);
+  if (record.companyId && record.companyId !== company.id) return { eligible: false, reason: 'tenant_or_identity' };
+  if (['LOCKED', 'ADJUSTED'].includes(`${period.status || ''}`.toUpperCase())) return { eligible: false, reason: 'payroll_locked', workDate: shift.workDate };
+  if (employee.attendanceLocationEnabled || employee.fixedAttendanceLocationEnabled || employee.attendanceGpsRequired) return { eligible: false, reason: 'gps_required', workDate: shift.workDate };
   if (!shift.inWindow) return { eligible: false, reason: 'outside_shift', workDate: shift.workDate };
-  if (record.checkIn || record.status === 'leave') return { eligible: false, reason: 'already_recorded', workDate: shift.workDate };
+  const primaryRecord = record.workRoles?.[employee.position] || record;
+  if (primaryRecord.checkIn || primaryRecord.status === 'leave') return { eligible: false, reason: 'already_recorded', workDate: shift.workDate };
   return { eligible: true, workDate: shift.workDate, status: shift.status };
 };
 

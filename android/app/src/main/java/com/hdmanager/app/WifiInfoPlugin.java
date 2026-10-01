@@ -9,6 +9,7 @@ import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.TransportInfo;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
@@ -48,6 +49,11 @@ public class WifiInfoPlugin extends Plugin {
     private static final String TAG = "HDManagerWifiInfo";
 
     private BroadcastReceiver wifiReceiver;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private volatile WifiInfo callbackWifiInfo;
+    private volatile Network callbackNetwork;
+    private String lastNetworkSignature = "";
 
     @Override
     public void load() {
@@ -55,7 +61,8 @@ public class WifiInfoPlugin extends Plugin {
             @Override
             public void onReceive(Context context, Intent intent) {
                 JSObject event = new JSObject();
-                event.put("connected", WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(intent.getAction()));
+                WifiManager manager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                event.put("connected", manager != null && isConnectedToWifi(connectivityManager, manager));
                 notifyListeners("wifiConnectionChanged", event);
             }
         };
@@ -72,10 +79,59 @@ public class WifiInfoPlugin extends Plugin {
             wifiReceiver = null;
             Log.w(TAG, "Unable to register optional WiFi receiver", error);
         }
+        connectivityManager = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        class WifiNetworkCallback extends ConnectivityManager.NetworkCallback {
+            WifiNetworkCallback() { super(); }
+            WifiNetworkCallback(int flags) { super(flags); }
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                WifiInfo info = null;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && capabilities.getTransportInfo() instanceof WifiInfo) {
+                    info = (WifiInfo) capabilities.getTransportInfo();
+                }
+                callbackWifiInfo = info;
+                callbackNetwork = network;
+                String signature = network.toString() + ":" + (info == null ? "" : info.getSSID() + ":" + info.getBSSID());
+                if (signature.equals(lastNetworkSignature)) return;
+                lastNetworkSignature = signature;
+                JSObject event = new JSObject();
+                event.put("connected", true);
+                notifyListeners("wifiConnectionChanged", event);
+            }
+
+            @Override
+            public void onLost(Network network) {
+                if (network.equals(callbackNetwork)) {
+                    callbackWifiInfo = null;
+                    callbackNetwork = null;
+                    lastNetworkSignature = "";
+                }
+                JSObject event = new JSObject();
+                event.put("connected", false);
+                notifyListeners("wifiConnectionChanged", event);
+            }
+        }
+        networkCallback = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            ? new WifiNetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO)
+            : new WifiNetworkCallback();
+        try {
+            connectivityManager.registerNetworkCallback(new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), networkCallback);
+        } catch (RuntimeException error) {
+            networkCallback = null;
+            Log.w(TAG, "Unable to register WiFi network callback", error);
+        }
     }
 
     @Override
     protected void handleOnDestroy() {
+        if (connectivityManager != null && networkCallback != null) {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+            networkCallback = null;
+            callbackWifiInfo = null;
+            callbackNetwork = null;
+        }
         if (wifiReceiver != null) {
             getContext().unregisterReceiver(wifiReceiver);
             wifiReceiver = null;
@@ -442,10 +498,18 @@ public class WifiInfoPlugin extends Plugin {
             if (activeNetwork != null) {
                 NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(activeNetwork);
                 if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    WifiInfo current = callbackWifiInfo;
+                    if (activeNetwork.equals(callbackNetwork) && current != null
+                        && !TextUtils.isEmpty(sanitizeSsid(current.getSSID()))
+                        && !WifiManager.UNKNOWN_SSID.equals(sanitizeSsid(current.getSSID()))
+                        && !TextUtils.isEmpty(sanitizeBssid(current.getBSSID()))) return current;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         TransportInfo transportInfo = capabilities.getTransportInfo();
                         if (transportInfo instanceof WifiInfo) {
-                            return (WifiInfo) transportInfo;
+                            WifiInfo info = (WifiInfo) transportInfo;
+                            if (!WifiManager.UNKNOWN_SSID.equals(sanitizeSsid(info.getSSID()))
+                                && !TextUtils.isEmpty(sanitizeSsid(info.getSSID()))
+                                && !TextUtils.isEmpty(sanitizeBssid(info.getBSSID()))) return info;
                         }
                     }
                 }
@@ -484,7 +548,8 @@ public class WifiInfoPlugin extends Plugin {
     }
 
     private String sanitizeBssid(String rawValue) {
-        if (TextUtils.isEmpty(rawValue) || "02:00:00:00:00:00".equals(rawValue)) {
+        if (TextUtils.isEmpty(rawValue) || "02:00:00:00:00:00".equals(rawValue)
+            || "00:00:00:00:00:00".equals(rawValue) || "ff:ff:ff:ff:ff:ff".equalsIgnoreCase(rawValue)) {
             return null;
         }
         return rawValue;

@@ -3,10 +3,15 @@ import { readFileSync } from 'node:fs';
 import { getLockedPayrollPeriod } from '../src/utils/payrollPeriodLock.js';
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const body = source.slice(source.indexOf('const buildDashboardPayrollCostRows ='), source.indexOf('const compareLedgerItems ='));
-const dateKey = value => {
+const toDateInputString = value => {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
+const dateHelperBody = source.slice(source.indexOf('const getDateKeyFromAnyValue ='), source.indexOf('const getDaysBetweenDateKeys ='));
+const dateKey = new Function('toDateInputString', 'parseEntityTimestampValue', 'parseVietnameseDateTimeString', `${dateHelperBody}; return getDateKeyFromAnyValue;`)(toDateInputString, () => null, () => null);
+assert.equal(dateKey(new Date(2026, 9, 1)), '2026-10-01');
+assert.equal(dateKey(new Date(NaN)), '');
+assert.equal(dateKey({ toDate: () => new Date(2026, 9, 1) }), '2026-10-01');
 let liveCalls = 0;
 const bindings = {
   getDateKeyFromAnyValue: dateKey,

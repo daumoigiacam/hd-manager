@@ -2,7 +2,7 @@ export const normalizeAttendanceSsid = value => `${value || ''}`.trim().replace(
 export const normalizeAttendanceBssid = value => `${value || ''}`.trim().toLowerCase();
 
 export const isUsableAttendanceBssid = value => /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(normalizeAttendanceBssid(value))
-  && normalizeAttendanceBssid(value) !== '02:00:00:00:00:00';
+  && !['02:00:00:00:00:00', '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff'].includes(normalizeAttendanceBssid(value));
 
 export const matchesAttendanceWifi = (network = {}, company = {}) => {
   const expectedSsid = normalizeAttendanceSsid(company.attendanceWifiSsid || company.attendanceWifi?.ssid);

@@ -1,7 +1,7 @@
 .hd-app-shell[data-active-tab="company_attendance"] { position: relative; background: #f6f9ff; }
-.hd-app-shell[data-active-tab="company_attendance"] > .hd-app-header { display: none; }
-.hd-app-shell[data-active-tab="company_attendance"] > .hd-app-content { padding: 0 0 calc(82px + var(--hd-safe-bottom, 0px)) !important; background: #f6f9ff; }
-.hd-app-shell[data-active-tab="company_attendance"] > .hd-app-navigation { display: none; }
+.hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-header { display: none; }
+.hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-content { padding: 0 0 calc(82px + var(--hd-safe-bottom, 0px)) !important; background: #f6f9ff; }
+.hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-navigation { display: none; }
 .attendance-workspace { min-height: 100%; color: #17233b; font-family: Inter, Roboto, Arial, sans-serif; background: #f6f9ff; padding-bottom: 28px; }
 .attendance-workspace :where(button) { cursor: pointer; }
 .attendance-workspace :where(button:disabled) { cursor: not-allowed; opacity: .55; }
@@ -147,4 +147,4 @@
 .attendance-nav button.is-active { color: #1b63dd; }
 .attendance-nav button.is-active svg { fill: #e5f0ff; }
 .attendance-nav span { font-size: 11px; font-weight: 650; }
-@media (min-width: 700px) { .attendance-header { padding-left: max(20px, calc((100% - 690px) / 2)); padding-right: max(20px, calc((100% - 690px) / 2)); } .attendance-nav { position: sticky; margin: 12px auto 0; max-width: 690px; border-radius: 18px 18px 0 0; } .hd-app-shell[data-active-tab="company_attendance"] > .hd-app-content { padding-bottom: 0 !important; } }
+@media (min-width: 700px) { .attendance-header { padding-left: max(20px, calc((100% - 690px) / 2)); padding-right: max(20px, calc((100% - 690px) / 2)); } .attendance-nav { position: sticky; margin: 12px auto 0; max-width: 690px; border-radius: 18px 18px 0 0; } .hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-content { padding-bottom: 0 !important; } }

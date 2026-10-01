@@ -26,6 +26,48 @@ export const REPORT_PERIODS = [
 
 const sumRows = (rows, field) => rows.reduce((sum, row) => sum + number(row?.[field]), 0);
 
+export function getPayrollPeriodSummary(finance = {}, report = {}) {
+  const employees = aggregateReportRows(finance.salaryEmployeeRows || [], report, {
+    groupBy: 'employeeId', valueFields: ['value'], limit: Infinity,
+  });
+  employees.forEach(employee => {
+    const source = (finance.salaryEmployeeRows || []).find(row => (row.id || String(row.employeeId || row.name || 'Khác')) === employee.id && (!report.startDate || row.date >= report.startDate) && (!report.endDate || row.date <= report.endDate));
+    employee.employeeId = source?.employeeId || '';
+    employee.date = report.endDate || source?.date || '';
+  });
+  return { employees, total: sumRows(employees, 'value') };
+}
+
+const isPayrollExpenseRow = row => row.sourceType === 'payroll' || row.category === 'Lương';
+
+export function getNonPayrollExpenseItems(rows = [], report = {}) {
+  return aggregateReportRows(rows.filter(row => !isPayrollExpenseRow(row)), report, {
+    groupBy: 'name', valueFields: ['value'], limit: Infinity,
+  });
+}
+
+export function getExpenseSourceRows(rows = [], report = {}, selected = {}) {
+  return rows.filter(row => !isPayrollExpenseRow(row) && row.name === selected.name && row.date
+    && (!report.startDate || row.date >= report.startDate)
+    && (!report.endDate || row.date <= report.endDate))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export function getPeriodGuidance(snapshot, report, customers, costs) {
+  const alerts = (snapshot.alerts || []).filter(row => !['negativeProfit', 'expenseSpike'].includes(row.id))
+    .map(row => ({ ...row, message: `Hiện tại: ${row.message}` }));
+  if (report.profit < 0) alerts.unshift({ id: 'negativeProfit', title: 'Lợi nhuận âm', message: `${report.label}: lợi nhuận ${formatVnd(report.profit)}. Cần kiểm tra giá vốn, giá bán và chi phí.`, targetTab: 'executive_dashboard' });
+  const change = getChangePercent(report.expense, report.previous?.expense);
+  if (change > 30) alerts.push({ id: 'expenseSpike', title: 'Chi phí tăng đột biến', message: `${report.label}: chi phí tăng ${formatPercent(change)} so với kỳ trước.`, targetTab: 'finance' });
+  const recommendations = (snapshot.recommendations || []).filter(row => !['adjust-low-margin', 'cost-control', 'handle-first-alert'].includes(row.id))
+    .map(row => ({ ...row, impact: `Hiện tại: ${row.impact}` }));
+  const customer = customers.find(row => row.revenue > 0 && row.profit / row.revenue < 0.02);
+  if (customer) recommendations.push({ id: 'adjust-low-margin', title: `Rà soát giá bán khách ${customer.name}`, impact: `${report.label}: biên lợi nhuận ${formatPercent(customer.profit / customer.revenue * 100)}`, targetTab: 'customers' });
+  const cost = costs[0];
+  if (cost?.value > 0 && report.expense > 0) recommendations.push({ id: 'cost-control', title: `Kiểm soát ${cost.name.toLowerCase()}`, impact: `${report.label}: khoản này chiếm ${formatPercent(cost.value / report.expense * 100)} tổng chi`, targetTab: 'finance' });
+  return { alerts, recommendations };
+}
+
 export function getReportPeriod(finance = {}, period = 'today', customRange = null) {
   const today = String(finance.todayKey || '');
   const month = String(finance.currentMonthKey || today.slice(0, 7));

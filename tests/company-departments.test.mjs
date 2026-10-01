@@ -59,7 +59,16 @@ const employeeViewSource = appSource.slice(
 );
 assert.match(appSource, /employeeDepartments:\s*settingsData\.employeeDepartments/);
 assert.match(appSource, /onUpdateCompanySettings=\{handleUpdateCompanySettings\}/);
-assert.match(employeeViewSource, /aria-label="Bộ phận công ty"/);
+assert.match(employeeViewSource, /aria-label="Bộ phận"/);
 assert.match(employeeViewSource, /companyDepartmentId/);
+
+const merged = normalizeCompanyDepartments([
+  { id: 'existing-sales', name: 'Kinh doanh' },
+  { id: 'care', name: 'Chăm sóc khách hàng' },
+  'Kinh doanh', 'Sản xuất', 'cham soc khach hang',
+]);
+assert.deepEqual(merged.map(item => item.name), ['Kinh doanh', 'Chăm sóc khách hàng', 'Sản xuất']);
+assert.equal(merged[0].id, 'existing-sales');
+assert.equal(merged[1].id, 'care');
 
 console.log('Company department tests passed.');

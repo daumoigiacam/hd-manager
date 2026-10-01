@@ -20,7 +20,9 @@ test('client and server both require matching SSID and BSSID', () => {
     { ssid: 'OTHER', bssid: network.bssid },
     { ssid: network.ssid, bssid: 'aa:bb:cc:11:22:33' },
     { ssid: network.ssid, bssid: '' },
-    { ssid: network.ssid, bssid: '02:00:00:00:00:00' }
+    { ssid: network.ssid, bssid: '02:00:00:00:00:00' },
+    { ssid: network.ssid, bssid: '00:00:00:00:00:00' },
+    { ssid: network.ssid, bssid: 'ff:ff:ff:ff:ff:ff' }
   ]) {
     assert.equal(matchesAttendanceWifi(bad, company), false);
     assert.equal(matchesCompanyWifi(bad, company), false);
@@ -65,4 +67,21 @@ test('disabled setup and leave prevent auto check-in', () => {
   assert.equal(evaluateAutoWifiCheckIn(input({ employee: { ...employee, attendanceAutoWifiEnabled: false } })).reason, 'disabled');
   assert.equal(evaluateAutoWifiCheckIn(input({ company: { ...company, attendanceWifiEnabled: false } })).reason, 'wifi_mismatch');
   assert.equal(evaluateAutoWifiCheckIn(input({ record: { status: 'leave' } })).reason, 'already_recorded');
+});
+
+test('early arrival before a night shift belongs to its end date, including month boundary', () => {
+  const night = { ...employee, shiftStart: '23:00', shiftEnd: '11:00' };
+  const now = new Date('2026-09-30T15:40:00Z');
+  assert.equal(evaluateAutoWifiCheckIn(input({ employee: night, now })).workDate, '2026-10-01');
+  assert.equal(evaluateAutoWifiCheckIn(input({ employee: night, now })).eligible, true);
+  assert.equal(evaluateAutoWifiCheckIn(input({ employee: night, now: new Date('2026-09-30T15:29:00Z') })).eligible, false);
+});
+
+test('locked payroll, mandatory GPS and foreign attendance records are not bypassed', () => {
+  for (const status of ['LOCKED', 'ADJUSTED', 'locked']) assert.equal(evaluateAutoWifiCheckIn(input({ period: { status } })).reason, 'payroll_locked');
+  for (const field of ['attendanceLocationEnabled', 'fixedAttendanceLocationEnabled', 'attendanceGpsRequired']) {
+    assert.equal(evaluateAutoWifiCheckIn(input({ employee: { ...employee, [field]: true } })).reason, 'gps_required');
+  }
+  assert.equal(evaluateAutoWifiCheckIn(input({ record: { companyId: 'other' } })).reason, 'tenant_or_identity');
+  assert.equal(evaluateAutoWifiCheckIn(input({ record: { workRoles: { [employee.position]: { checkIn: atShiftStart.toISOString() } } } })).reason, 'already_recorded');
 });

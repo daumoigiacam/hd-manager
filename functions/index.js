@@ -5,7 +5,8 @@ const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
 const { createIdentityCenter } = require('./identityCenter');
-const { evaluateAutoWifiCheckIn, getShiftWindow, normalizeSsid, normalizeBssid } = require('./attendanceWifi');
+const { normalizeSsid, normalizeBssid } = require('./attendanceWifi');
+const { recordAutoWifiAttendance } = require('./attendanceAutoWifi');
 const {
   authorizeTenantRequest,
   authorizeTenantOrderAccess,
@@ -1280,52 +1281,12 @@ exports.attendanceAutoWifiCheckIn = functions.https.onRequest(async (req, res) =
       return sendJson(res, 403, { success: false, code: 'employee_required' });
     }
     const companyId = `${claims.companyId || ''}`;
-    const employeeId = `${claims.appUserId || ''}`;
     if (!companyId) return sendJson(res, 403, { success: false, code: 'company_required' });
     const network = {
       ssid: normalizeSsid(req.body?.network?.ssid),
       bssid: normalizeBssid(req.body?.network?.bssid)
     };
-    const companyRef = db.collection(collectionPath(appId, 'companies')).doc(companyId);
-    const employeeRef = db.collection(collectionPath(appId, 'employees')).doc(employeeId);
-    const result = await db.runTransaction(async transaction => {
-      const [companySnap, employeeSnap] = await Promise.all([
-        transaction.get(companyRef), transaction.get(employeeRef)
-      ]);
-      if (!companySnap.exists || !employeeSnap.exists) return { success: false, code: 'profile_missing', statusCode: 404 };
-      const company = { ...companySnap.data(), id: companySnap.id };
-      const employee = { ...employeeSnap.data(), id: employeeSnap.id };
-      const now = new Date();
-      const shift = getShiftWindow(employee, now);
-      const recordId = `${shift.workDate}_${employeeId}`;
-      const attendanceRef = db.collection(collectionPath(appId, 'attendance')).doc(recordId);
-      const recordSnap = await transaction.get(attendanceRef);
-      const decision = evaluateAutoWifiCheckIn({
-        claims, company, employee, network, record: recordSnap.data() || {}, now
-      });
-      if (!decision.eligible) return { success: true, created: false, reason: decision.reason, workDate: shift.workDate };
-      const timestamp = now.toISOString();
-      transaction.set(attendanceRef, {
-        companyId,
-        checkIn: timestamp,
-        checkInMethod: `WiFi: ${network.ssid}`,
-        checkInMethodMeta: {
-          type: 'wifi', source: 'android-native-auto', ssid: network.ssid,
-          bssid: network.bssid, automatic: true
-        },
-        status: decision.status
-      }, { merge: true });
-      const notificationRef = db.collection(collectionPath(appId, 'notifications')).doc(`attendance_auto_${recordId}`);
-      transaction.set(notificationRef, {
-        id: notificationRef.id, companyId, employeeId, recipientId: employeeId,
-        recipientType: 'employee', category: 'attendance', type: 'attendance_auto_check_in',
-        title: 'Đã chấm công vào',
-        message: `Đã ghi nhận vào ca lúc ${new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit' }).format(now)} qua WiFi công ty.`,
-        tab: 'company_attendance', status: 'unread', readStatus: 'unread',
-        date: decision.workDate, createdAt: timestamp, createdAtMs: now.getTime(), isArchived: false
-      }, { merge: true });
-      return { success: true, created: true, workDate: decision.workDate, checkIn: timestamp, status: decision.status };
-    });
+    const result = await recordAutoWifiAttendance({ db, collectionPath, appId, claims, network });
     res.set('Cache-Control', 'private, no-store, max-age=0');
     return sendJson(res, result.statusCode || 200, result);
   } catch (error) {
@@ -2177,6 +2138,8 @@ exports.autoLockPayrollPeriods = onSchedule({
   region: 'asia-southeast1',
   timeoutSeconds: 120
 }, async () => {
+  // Keep existing plans and snapshots intact while automatic closing is disabled.
+  if (!require('./payrollAutomationConfig.json').autoLockEnabled) return;
   const initialClock = getVietnamClock();
   const outcomes = [];
 

@@ -23,6 +23,12 @@ assert.equal(summary.allowances, 600_000);
 assert.equal(summary.bonus, 300_000);
 assert.equal(summary.penalty, 50_000);
 assert.equal(summary.totalAdvance, 7_000_000);
+assert.equal(summarizePayrollWorkspace([]).totalDeductions, 0);
+assert.equal(summarizePayrollWorkspace([
+  { details: { deductionTotal: 59_815_700, totalAdvance: 0, netSalary: 0 } },
+  { details: { deductionTotal: '250000', totalAdvance: 100_000, openingDebtApplied: 150_000 } },
+  { details: {} }
+]).totalDeductions, 60_065_700, 'Use full deductions without counting advances or opening debt twice');
 assert.equal(summarizePayrollWorkspace([]).totalAdvance, 0);
 assert.equal(summarizePayrollWorkspace([
   ...rows,

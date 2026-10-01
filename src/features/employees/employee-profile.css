@@ -1,0 +1,148 @@
+.employee-profile.hd-modal-surface {
+  background: #fff;
+  color: #20242e;
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.employee-profile > div:first-child {
+  background: #fff;
+  color: #20242e;
+  border-color: #dedfe3;
+  margin-bottom: 0;
+}
+
+.employee-profile > div:first-child :is(h3, p, button) {
+  color: #20242e;
+}
+
+.employee-profile > div:first-child h3 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.employee-profile-fields {
+  padding: 20px 20px 28px;
+  scrollbar-gutter: stable;
+}
+
+.employee-profile-fields :is(div, p, span, label, h4, input, select, button) {
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.employee-profile-fields :is(p, span, label, h4) {
+  color: #20242e;
+  text-transform: none;
+}
+
+.employee-profile-fields :is(label, span, p) {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.employee-profile-fields > div[class*="bg-"] {
+  background: #fff;
+  border: 0;
+  border-top: 1px solid #dedfe3;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 20px 0;
+  margin-top: 24px;
+}
+
+.employee-profile-fields h4 {
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 700;
+  border: 0;
+  padding-bottom: 8px;
+}
+
+.employee-profile-fields div[class*="bg-"],
+.employee-profile-fields label[class*="bg-"] {
+  background-color: #fff;
+  border-color: #dedfe3;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.employee-profile-fields button {
+  color: #20242e;
+  background-color: #f1f3f5;
+  border-color: #cfd1d7;
+  box-shadow: none;
+}
+
+.employee-profile-fields button[class*="bg-emerald-600"] {
+  background-color: #dce4ef;
+  border-color: #607696;
+}
+
+.employee-profile-fields :is(input:not([type="checkbox"]):not([type="file"]), select) {
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  border-bottom: 1px solid #cfd1d7;
+  border-radius: 0;
+  background: #fff;
+  color: #20242e;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.5;
+  box-shadow: none;
+}
+
+.employee-profile-fields input::placeholder {
+  color: #777e8b;
+  opacity: 1;
+}
+
+.employee-profile-fields :is(input, select):focus-visible {
+  outline: 2px solid #4665a4;
+  outline-offset: 2px;
+}
+
+.employee-profile-fields :is(input, select):disabled {
+  background: #f5f6f7;
+  color: #686f7b;
+}
+
+.employee-profile-fields button {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.employee-profile-fields > .grid {
+  gap: 16px;
+}
+
+.employee-profile-fields .employee-overtime-toggle {
+  margin-inline: -12px;
+  padding-inline: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.employee-profile-fields .employee-overtime-toggle input {
+  flex-shrink: 0;
+}
+
+.employee-experience-row > div > :is(input, select) {
+  margin-top: auto;
+  height: 48px;
+}
+
+.employee-leader-row > div {
+  min-width: 0;
+}
+
+.employee-profile-fields .employee-leader-row :is(input, select) {
+  height: 48px;
+}
+
+@media (min-width: 900px) {
+  .employee-profile-fields {
+    padding-inline: max(24px, calc((100% - 960px) / 2));
+  }
+}

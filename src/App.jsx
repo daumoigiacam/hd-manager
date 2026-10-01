@@ -3,6 +3,11 @@ import { useCallback, useDeferredValue } from 'react';
 import { startTransition } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
+import './features/employees/employee-profile.css';
+import EmployeeBankQr from './features/employees/EmployeeBankQr.jsx';
+import AttendanceRoleSelector from './features/attendance/AttendanceRoleSelector.jsx';
+import { getWorkRoleRecord, buildWorkRoleAttendancePatch, employeeForWorkRole, attendanceForWorkRole, getWorkRoleMonthEntries, calculateWorkRoleSalary } from './utils/attendanceWorkRoles.js';
+import payrollAutomationConfig from '../functions/payrollAutomationConfig.json';
 import SyncQueueStatus from './layout/SyncQueueStatus.jsx';
 import { createCommandFocusGuard, createCommandClickGuard } from './layout/commandFocus.js';
 import { canAutomaticallyRetryWrite, isRetryableWriteError, pendingWriteFailure } from './utils/pendingWriteRetry.js';
@@ -184,7 +189,8 @@ import {
 } from './features/messaging/messagingUiModel.js';
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
-import { canAttemptAutoWifiCheckIn, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
+import { isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
+import { createAutoWifiAttendanceController } from './utils/autoWifiAttendance.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
 import {
@@ -10973,6 +10979,7 @@ const getCustomerCareSettings = (company = null) => {
 
 const getDateKeyFromAnyValue = (value = '') => {
   if (!value) return '';
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : toDateInputString(value);
   if (typeof value === 'number' && Number.isFinite(value)) return toDateInputString(new Date(value));
   if (typeof value?.toDate === 'function') {
     const parsedDate = value.toDate();
@@ -11335,11 +11342,11 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const probationEndDate = resolveProbationEndDate(emp.startDate, emp.probationDuration, emp.probationUnit);
 
   Object.keys(attendance).forEach(key => {
-    if (!key.endsWith(`_${empId}`)) return;
-    const rec = attendance[key];
+    if (!key.endsWith(`_${empId}`) || !key.startsWith(`${monthKey}-`)) return;
+    const rec = getWorkRoleRecord(attendance[key], emp.position);
     const dateStr = key.split('_')[0];
 
-    if (rec.status !== 'present' && rec.status !== 'late') return;
+    if (rec?.status !== 'present' && rec?.status !== 'late') return;
     const attendanceTiming = calculateAttendanceTiming(emp, {
       date: dateStr,
       status: rec.status,
@@ -11368,14 +11375,13 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const responsibilitySalaryCalc = roundMoneyValue((responsibilitySalary / basicSalaryMonthDays) * workDays);
   const roleSalaryRows = normalizeEmployeeRoleSalaryComponents(emp.roleSalaryComponents || emp.departmentSalaryComponents || emp.salaryByDepartment)
     .map(row => {
-      const dailyRoleWage = parseLooseMoneyValue(row.amount) / salaryMonthDays;
-      const calculatedAmount = roundMoneyValue((workDaysProbation * dailyRoleWage * probationRate) + (workDaysOfficial * dailyRoleWage));
-      return { ...row, calculatedAmount };
+      const entries = row.position === emp.position ? [] : getWorkRoleMonthEntries(attendance, emp, row.position, monthKey, calculateAttendanceTiming);
+      return { ...row, ...calculateWorkRoleSalary(parseLooseMoneyValue(row.amount), entries, salaryMonthDays, probationEndDate, probationRate) };
     });
   const roleSalaryCalc = roundMoneyValue(roleSalaryRows.reduce((sum, row) => sum + (row.calculatedAmount || 0), 0));
 
   const experienceDetails = calculateExperienceSalary(emp.startDate, experienceSalary, emp.experienceSalaryPeriod || 'months');
-  const experienceSalaryCalc = roundMoneyValue(experienceDetails.total);
+  const experienceSalaryCalc = roundMoneyValue((experienceDetails.total / salaryMonthDays) * workDays);
   const expMonths = experienceDetails.expMonths;
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
@@ -11500,25 +11506,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
 
   const probationEndDate = resolveProbationEndDate(emp.startDate, emp.probationDuration, emp.probationUnit);
 
-  const attendanceEntries = Object.keys(attendance)
-    .filter(key => key.endsWith(`_${empId}`) && key.startsWith(monthKey))
-    .map(key => {
-      const rec = attendance[key];
-      const dateStr = key.split('_')[0];
-      const entry = {
-        date: dateStr,
-        status: rec?.status || 'missing',
-        checkIn: rec?.checkIn || null,
-        checkOut: rec?.checkOut || null,
-        checkInMethod: rec?.checkInMethod || '',
-        checkOutMethod: rec?.checkOutMethod || ''
-      };
-      return {
-        ...entry,
-        ...calculateAttendanceTiming(emp, entry)
-      };
-    })
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  const attendanceEntries = getWorkRoleMonthEntries(attendance, emp, emp.position, monthKey, calculateAttendanceTiming);
 
   attendanceEntries.forEach(entry => {
     if (entry.status === 'present' || entry.status === 'late') {
@@ -11555,11 +11543,13 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const responsibilitySalaryCalc = isSalesCollaborator ? 0 : roundMoneyValue((responsibilitySalary / basicSalaryMonthDays) * workDays);
   const roleSalaryRows = normalizeEmployeeRoleSalaryComponents(emp.roleSalaryComponents || emp.departmentSalaryComponents || emp.salaryByDepartment)
     .map(row => {
-      const dailyRoleWage = parseLooseMoneyValue(row.amount) / salaryMonthDays;
-      const calculatedAmount = isSalesCollaborator ? 0 : roundMoneyValue((workDaysProbation * dailyRoleWage * probationRate) + (workDaysOfficial * dailyRoleWage));
-      return { ...row, calculatedAmount };
+      const entries = row.position === emp.position ? [] : getWorkRoleMonthEntries(attendance, emp, row.position, monthKey, calculateAttendanceTiming);
+      attendanceEntries.push(...entries);
+      const days = calculateWorkRoleSalary(parseLooseMoneyValue(row.amount), entries, salaryMonthDays, probationEndDate, probationRate);
+      return { ...row, ...days, calculatedAmount: isSalesCollaborator ? 0 : days.calculatedAmount };
     });
   const roleSalaryCalc = isSalesCollaborator ? 0 : roundMoneyValue(roleSalaryRows.reduce((sum, row) => sum + (row.calculatedAmount || 0), 0));
+  attendanceEntries.sort((a, b) => a.date.localeCompare(b.date) || a.workRole.localeCompare(b.workRole, 'vi'));
 
   const experienceDetails = calculateExperienceSalaryAtDate(
     emp.startDate,
@@ -11567,7 +11557,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
     emp.experienceSalaryPeriod || 'months',
     getMonthEndDateInputValue(monthKey)
   );
-  const experienceSalaryCalc = roundMoneyValue(experienceDetails.total);
+  const experienceSalaryCalc = roundMoneyValue((experienceDetails.total / salaryMonthDays) * workDays);
   const expMonths = experienceDetails.expMonths;
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
@@ -11607,7 +11597,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   let totalBonus = bonusRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
   const totalManualPenalty = penaltyRecords.reduce((sum, record) => sum + parseLooseMoneyValue(record.amount), 0);
   const latePenaltyRecords = attendanceEntries
-    .filter(entry => (entry.latePenaltyAmount || 0) > 0 || entry.noSalaryDay)
+    .filter(entry => entry.isPrimaryRole && ((entry.latePenaltyAmount || 0) > 0 || entry.noSalaryDay))
     .map(entry => ({
       id: `late-${entry.date}-${empId}`,
       type: 'late_penalty',
@@ -16294,16 +16284,42 @@ export default function App() {
     void Promise.allSettled([firebaseSignOutPromise, logoutAuditPromise]);
   };
 
-  const handleCheckIn = async (empId, method) => {
+  const saveWorkRoleAttendance = async (employee, targetDate, workRole, fields, action = '') => {
+    if (!employee?.id || employee.companyId !== myCompanyId) throw new Error('Nhân sự không thuộc công ty hiện tại.');
+    if (getLockedPayrollPeriod(payrollPeriods, myCompanyId, targetDate.substring(0, 7))) throw new Error('Kỳ lương đã khóa. Hãy dùng điều chỉnh lương để bổ sung.');
+    const payload = { companyId: myCompanyId, ...buildWorkRoleAttendancePatch(employee, getEmployeePositionValues(employee), workRole, fields) };
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'attendance', `${targetDate}_${employee.id}`);
+    await withTimeout(runTransaction(db, async transaction => {
+      const snapshot = await transaction.get(ref);
+      const previous = snapshot.exists() ? snapshot.data() : {};
+      if (previous.companyId && previous.companyId !== myCompanyId) throw new Error('Bản ghi chấm công không thuộc công ty hiện tại.');
+      const record = getWorkRoleRecord(previous, employee.position, workRole || employee.position);
+      if (action === 'in' && record?.checkIn) return;
+      if (action === 'out' && record?.checkOut) return;
+      if (action === 'out' && (!record?.checkIn || record.status === 'leave')) throw new Error('Công việc này chưa được chấm vào ca.');
+      const mergedPayload = payload.workRoles ? {
+        ...payload, workRoles: {
+          ...previous.workRoles,
+          [workRole]: { ...record, ...payload.workRoles[workRole] },
+        },
+      } : payload;
+      transaction.set(ref, mergedPayload, { merge: true });
+    }), 18000, 'Chưa xác nhận được chấm công. Kiểm tra mạng rồi thử lại.');
+  };
+
+  const handleCheckIn = async (empId, method, workRole = '') => {
+    if (!isVpsStagingMode && (!firebaseUser || !myCompanyId || !empId)) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
-    const targetDate = resolveAttendanceActionDateForShift(employee, attendanceRecords, currentDate, 'checkIn', now);
+    const roleEmployee = employeeForWorkRole(employee, workRole || employee?.position);
+    const targetDate = resolveAttendanceActionDateForShift(roleEmployee, attendanceForWorkRole(attendanceRecords, employee, workRole || employee?.position), currentDate, 'checkIn', now);
     const methodInfo = applyAttendanceFixedLocationGuard(
       normalizeAttendanceMethod(method, 'Chấm công'),
       employee,
       currentCompany
     );
     if (isVpsStagingMode) {
+      if (workRole && workRole !== employee?.position) throw new Error('Chấm công kiêm nhiệm chưa được hỗ trợ trên bản VPS staging.');
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: targetDate,
@@ -16318,26 +16334,27 @@ export default function App() {
       return;
     }
     if (!firebaseUser || !myCompanyId || !empId) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
-    const key = `${targetDate}_${empId}`;
-    await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
-      companyId: myCompanyId,
+    await saveWorkRoleAttendance(employee, targetDate, workRole, {
       checkIn: now.toISOString(),
       checkInMethod: methodInfo.label,
       checkInMethodMeta: methodInfo.meta,
-      status: calculateCheckInStatus(employee, now, targetDate)
-    }, { merge: true }), 18000, 'Không lưu được chấm công vào ca trong 18 giây. Kiểm tra mạng rồi thử lại.');
+      status: calculateCheckInStatus(roleEmployee, now, targetDate)
+    }, 'in');
   };
 
-  const handleCheckOut = async (empId, method) => {
+  const handleCheckOut = async (empId, method, workRole = '') => {
+    if (!isVpsStagingMode && (!firebaseUser || !myCompanyId || !empId)) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
-    const targetDate = resolveAttendanceActionDateForShift(employee, attendanceRecords, currentDate, 'checkOut', now);
+    const roleEmployee = employeeForWorkRole(employee, workRole || employee?.position);
+    const targetDate = resolveAttendanceActionDateForShift(roleEmployee, attendanceForWorkRole(attendanceRecords, employee, workRole || employee?.position), currentDate, 'checkOut', now);
     const methodInfo = applyAttendanceFixedLocationGuard(
       normalizeAttendanceMethod(method, 'Chấm công'),
       employee,
       currentCompany
     );
     if (isVpsStagingMode) {
+      if (workRole && workRole !== employee?.position) throw new Error('Chấm công kiêm nhiệm chưa được hỗ trợ trên bản VPS staging.');
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: targetDate,
@@ -16352,17 +16369,16 @@ export default function App() {
       return;
     }
     if (!firebaseUser || !myCompanyId || !empId) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
-    const key = `${targetDate}_${empId}`;
-    await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), {
-      companyId: myCompanyId,
+    await saveWorkRoleAttendance(employee, targetDate, workRole, {
       checkOut: now.toISOString(),
       checkOutMethod: methodInfo.label,
       checkOutMethodMeta: methodInfo.meta
-    }, { merge: true }), 18000, 'Không lưu được chấm công ra ca trong 18 giây. Kiểm tra mạng rồi thử lại.');
+    }, 'out');
   };
   
-  const handleLeave = async (empId) => {
+  const handleLeave = async (empId, workRole = '') => {
     if (isVpsStagingMode) {
+      if (workRole && workRole !== employees.find(emp => emp.id === empId)?.position) throw new Error('Chấm công kiêm nhiệm chưa được hỗ trợ trên bản VPS staging.');
       const record = await getHdConnectStagingApi().recordAttendance({
         employeeId: empId,
         workDate: currentDate,
@@ -16376,16 +16392,14 @@ export default function App() {
       return;
     }
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
-    const key = `${currentDate}_${empId}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), { companyId: myCompanyId, status: 'leave', checkIn: null, checkOut: null }, { merge: true });
+    await saveWorkRoleAttendance(employees.find(emp => emp.id === empId), currentDate, workRole, { status: 'leave', checkIn: null, checkOut: null });
   };
 
-  const handleEditAttendance = async (empId, targetDate, editData) => {
+  const handleEditAttendance = async (empId, targetDate, editData, workRole = '') => {
     if (isVpsStagingMode) {
       throw new Error('VPS attendance editing requires an approved adjustment contract; direct time overwrite is disabled.');
     }
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
-    const key = `${targetDate}_${empId}`;
     const actingEmployee = employees.find(item => item.id === currentUser?.id) || {};
     const adjustmentMethodMeta = {
       type: 'proxy',
@@ -16403,7 +16417,7 @@ export default function App() {
       checkOutMethod: editData.checkOut ? 'Kế toán điều chỉnh' : null,
       checkOutMethodMeta: editData.checkOut ? adjustmentMethodMeta : null
     };
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', key), attendancePayload, { merge: true });
+    await saveWorkRoleAttendance(employees.find(emp => emp.id === empId), targetDate, workRole, attendancePayload);
   };
 
   const handleAddAdvanceRequest = async (empId, amount, reason, extraData = {}) => {
@@ -16604,6 +16618,21 @@ export default function App() {
 
   const handleUpdateCompanySettings = async (settingsData) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const wifiKeys = ['attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt'];
+    if (settingsData?.attendanceWifiSsid !== undefined && Object.keys(settingsData).every(key => wifiKeys.includes(key))) {
+      if (!isAccountingPosition(employee?.position) && employee?.role !== 'super_admin') return { success: false, message: 'Chỉ chủ công ty hoặc kế toán được đặt WiFi chấm công.' };
+      const wifiPatch = {
+        attendanceWifiEnabled: settingsData.attendanceWifiEnabled !== false,
+        attendanceWifiSsid: normalizeWifiName(settingsData.attendanceWifiSsid),
+        attendanceWifiBssid: normalizeWifiName(settingsData.attendanceWifiBssid).toLowerCase(),
+        attendanceWifiUpdatedAt: new Date().toISOString()
+      };
+      if (!wifiPatch.attendanceWifiSsid || !isUsableAttendanceBssid(wifiPatch.attendanceWifiBssid)) return { success: false, message: 'SSID hoặc BSSID chưa hợp lệ.' };
+      await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId), wifiPatch, { merge: true }), 12000, 'Chưa nhận xác nhận lưu WiFi công ty.');
+      setCurrentCompany(previous => ({ ...previous, ...wifiPatch }));
+      setRawCompanies(previous => previous.map(company => company.id === myCompanyId ? { ...company, ...wifiPatch } : company));
+      return { success: true };
+    }
     const currentTransferProfile = getInvoiceTransferProfile(currentCompany);
     const currentLoyaltySettings = getCustomerLoyaltySettings(currentCompany);
     const currentCustomerCareSettings = getCustomerCareSettings(currentCompany);
@@ -18299,6 +18328,7 @@ export default function App() {
   };
 
   const handlePreparePayrollAutoLockPlan = async ({ period, snapshots, sourceSignature = '' } = {}) => {
+    if (!payrollAutomationConfig.autoLockEnabled) return { success: false, message: 'Đã tắt khóa lương tự động.' };
     if (isVpsStagingMode) {
       return { success: false, message: 'VPS payroll auto-lock requires the approved HR payroll scheduler contract; no Firebase write was attempted.' };
     }
@@ -22973,14 +23003,15 @@ export default function App() {
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} allCompanyOrders={rawOrders.filter(order => order.companyId === myCompanyId)} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         autoWifiCheckInStatus={autoWifiCheckInStatus} onAutoWifiStatus={setAutoWifiCheckInStatus}
-        onAutoWifiAttendanceRecorded={({ workDate, employeeId, companyId, checkIn, status, network }) => setRawAttendance(previous => ({
-          ...previous,
-          [`${workDate}_${employeeId}`]: {
-            ...(previous[`${workDate}_${employeeId}`] || {}), companyId, checkIn, status,
-            checkInMethod: `WiFi: ${network.ssid}`,
-            checkInMethodMeta: { type: 'wifi', source: 'android-native-auto', ssid: network.ssid, bssid: network.bssid, automatic: true }
-          }
-        }))}
+        onAutoWifiAttendanceRecorded={({ workDate, employeeId, companyId, checkIn, status, workRole, checkInMethod, checkInMethodMeta }) => setRawAttendance(previous => {
+          const key = `${workDate}_${employeeId}`;
+          const record = previous[key] || {};
+          const patch = { companyId, checkIn, status, workRole,
+            ...(checkInMethod !== undefined ? { checkInMethod } : {}),
+            ...(checkInMethodMeta !== undefined ? { checkInMethodMeta } : {}) };
+          return { ...previous, [key]: { ...record, ...patch,
+            ...(record.workRoles?.[workRole] ? { workRoles: { ...record.workRoles, [workRole]: { ...record.workRoles[workRole], ...patch } } } : {}) } };
+        })}
         onAddCustomer={handleAddCustomer} onEditCustomer={handleEditCustomer} onDeleteCustomer={handleDeleteCustomer} onAddOrder={handleAddOrder} onEditOrder={handleEditOrder} onUpdateOrderInvoiceTemplate={handleUpdateOrderInvoiceTemplate} onDeleteOrder={handleDeleteOrder} onApproveOrderZaloSend={handleApproveOrderZaloSend} onUpdateOrderZaloMessage={handleUpdateOrderZaloMessage} onSyncPayosPaymentStatus={handleSyncPayosPaymentStatus} onEnsureOrderPayosPayment={handleEnsureOrderPayosPayment}
         onMarkVpsNotificationsRead={handleMarkVpsNotificationsRead}
         onAddCustomerLoan={handleAddCustomerLoan} onEditCustomerLoan={handleEditCustomerLoan} onDeleteCustomerLoan={handleDeleteCustomerLoan}
@@ -23758,6 +23789,9 @@ function MainAppView({
   const appBackHandlerRef = useRef(null);
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
   const [showEmployeeSettings, setShowEmployeeSettings] = useState(false);
+  const [employeeFilterOpen, setEmployeeFilterOpen] = useState(false);
+  const [reportPayrollTarget, setReportPayrollTarget] = useState(null);
+  const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
   const [lastNotificationSeenAt, setLastNotificationSeenAt] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [shellSearchOpen, setShellSearchOpen] = useState(false);
@@ -24543,80 +24577,56 @@ function MainAppView({
     return true;
   };
 
+  const autoWifiContextRef = useRef(null);
+  autoWifiContextRef.current = { employee, company: currentCompany, onGetIdentityToken, onAutoWifiAttendanceRecorded, onAutoWifiStatus };
   useEffect(() => {
-    const company = currentCompany;
     if (!isAndroidNativeRuntime() || isVpsStagingMode || !auth?.currentUser
-      || !employee?.id || employee.attendanceAutoWifiEnabled !== true || !company?.id) return undefined;
-
+      || !employee?.id || employee.attendanceAutoWifiEnabled !== true || !currentCompany?.id) return undefined;
     let disposed = false;
-    let running = false;
-    let appActive = true;
-    let lastAttempt = 0;
     let wifiListener;
     let appListener;
-    const attempt = async () => {
-      if (disposed || running || !appActive || Date.now() - lastAttempt < 5000) return;
-      running = true;
-      lastAttempt = Date.now();
-      try {
-        const permission = await WifiInfo.getWifiPermissionStatus();
-        if (disposed || !permission?.granted) return;
-        const network = await getCurrentConnectedWifiForAttendance();
-        if (disposed || !canAttemptAutoWifiCheckIn({ native: true, employee, company, permissionGranted: true, network })) return;
-        const token = await onGetIdentityToken?.();
-        if (!token || disposed) return;
-        const projectId = activeFirebaseConfig?.projectId;
-        if (!projectId) return;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 18000);
-        let response;
-        try {
-          response = await fetch(`https://us-central1-${projectId}.cloudfunctions.net/attendanceAutoWifiCheckIn`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ appId, network: { ssid: network.ssid, bssid: network.bssid } }),
-            signal: controller.signal
-          });
-        } finally {
-          clearTimeout(timeout);
-        }
+    const worker = createAutoWifiAttendanceController({
+      getContext: () => ({ native: true, ...autoWifiContextRef.current }),
+      getPermission: () => WifiInfo.getWifiPermissionStatus(),
+      getNetwork: getCurrentConnectedWifiForAttendance,
+      requestCheckIn: async (network, signal) => {
+        const token = await autoWifiContextRef.current.onGetIdentityToken?.();
+        if (signal.aborted) return null;
+        if (!token || !activeFirebaseConfig?.projectId) throw new Error('Phiên đăng nhập không hợp lệ.');
+        const response = await fetch(`https://us-central1-${activeFirebaseConfig.projectId}.cloudfunctions.net/attendanceAutoWifiCheckIn`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ appId, network: { ssid: network.ssid, bssid: network.bssid } }), signal
+        });
         const result = await response.json();
-        if (disposed) return;
         if (!response.ok || !result?.success) throw new Error(result?.message || 'Máy chủ chưa nhận chấm công WiFi.');
-        if (result.created && result.workDate && result.checkIn) {
-          onAutoWifiAttendanceRecorded?.({ workDate: result.workDate, employeeId: employee.id, companyId: company.id, checkIn: result.checkIn, status: result.status, network });
-          onAutoWifiStatus?.('Đã tự động chấm công vào qua WiFi công ty.');
-        }
-      } catch (error) {
-        if (!disposed) onAutoWifiStatus?.(`Chấm công WiFi tự động chưa thành công: ${error?.message || 'Lỗi kết nối.'}`);
-      } finally {
-        running = false;
-      }
-    };
-    void attempt();
-    void WifiInfo.addListener('wifiConnectionChanged', attempt).then(handle => {
-      if (disposed) void handle.remove();
-      else wifiListener = handle;
+        return result;
+      },
+      onRecorded: value => autoWifiContextRef.current.onAutoWifiAttendanceRecorded?.(value),
+      onStatus: value => autoWifiContextRef.current.onAutoWifiStatus?.(value)
     });
-    void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-      appActive = isActive;
-      if (isActive) void attempt();
-    }).then(handle => {
+    const attempt = () => { void worker.attempt(); };
+    const attach = (promise, save) => void promise.then(handle => {
       if (disposed) void handle.remove();
-      else appListener = handle;
-    });
+      else save(handle);
+    }).catch(error => { if (!disposed) autoWifiContextRef.current.onAutoWifiStatus?.(`Không theo dõi được WiFi: ${error?.message || 'Thiếu hỗ trợ thiết bị.'}`); });
+    attach(WifiInfo.addListener('wifiConnectionChanged', attempt), handle => { wifiListener = handle; });
+    attach(CapacitorApp.addListener('appStateChange', ({ isActive }) => { void worker.setActive(isActive); }), handle => { appListener = handle; });
+    void CapacitorApp.getState().then(({ isActive }) => { if (!disposed) void worker.setActive(isActive); }).catch(attempt);
     const interval = window.setInterval(attempt, 60000);
     window.addEventListener('online', attempt);
+    window.addEventListener('hd-attendance-wifi-check', attempt);
     return () => {
       disposed = true;
+      worker.stop();
       window.clearInterval(interval);
       window.removeEventListener('online', attempt);
+      window.removeEventListener('hd-attendance-wifi-check', attempt);
       void wifiListener?.remove();
       void appListener?.remove();
     };
-  }, [employee?.id, employee?.attendanceAutoWifiEnabled, currentCompany?.id,
-    currentCompany?.attendanceWifiSsid, currentCompany?.attendanceWifiBssid,
-    currentUser?.id]);
+  }, [employee?.id, employee?.attendanceAutoWifiEnabled, employee?.shiftStart, employee?.shiftEnd, employee?.graceMinutes, employee?.position,
+    employee?.attendanceLocationEnabled, employee?.fixedAttendanceLocationEnabled, employee?.attendanceGpsRequired,
+    currentCompany?.id, currentCompany?.attendanceWifiEnabled, currentCompany?.attendanceWifiSsid, currentCompany?.attendanceWifiBssid, currentCompany?.attendanceWifi, currentUser?.id]);
 
   appBackHandlerRef.current = runAppBackAction;
 
@@ -24711,6 +24721,15 @@ function MainAppView({
     activeTabRef.current = nextTab;
     setRootActiveTab(nextTab);
   }, [setRootActiveTab]);
+  useEffect(() => {
+    const openPayroll = event => {
+      if (!tabPermissions.payroll || !event.detail?.employeeId) return;
+      setReportPayrollTarget({ ...event.detail, requestId: Date.now() });
+      setActiveTab('payroll');
+    };
+    window.addEventListener('hd-open-employee-payroll', openPayroll);
+    return () => window.removeEventListener('hd-open-employee-payroll', openPayroll);
+  }, [tabPermissions.payroll, setActiveTab]);
   const handleOpenCustomerDebtLedger = (customerId) => {
     if (!customerId || !canAccess('debt')) return false;
     setDebtFocusCustomerId(customerId);
@@ -25022,7 +25041,10 @@ function MainAppView({
       return <HDHeader className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-blue-700 to-blue-600 text-white p-3 shadow-sm shrink-0">
         <div className="flex min-h-10 items-center gap-2">
           <button type="button" onClick={() => setPayrollScreen('list')} aria-label="Quay lại danh sách nhân viên" className="flex h-10 w-10 shrink-0 items-center justify-center"><ChevronLeft size={23} /></button>
-          <h1 className="min-w-0 flex-1 text-base font-bold" style={{ color: '#fff' }}>Chi tiết lương</h1>
+          <div className="min-w-0 flex-1 text-white">
+            <h1 className="break-words text-base font-bold" style={{ color: '#fff' }}>{employees.find(item => item.id === selectedPayrollEmployeeId)?.name || 'Chi tiết lương'}</h1>
+            <p className="break-words text-xs">{employees.find(item => item.id === selectedPayrollEmployeeId)?.position || ''}</p>
+          </div>
           {renderNotificationBell()}
         </div>
       </HDHeader>;
@@ -25236,7 +25258,7 @@ function MainAppView({
             <div className="hd-header-actions flex items-center gap-3">
               {activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()}
               {renderGlobalSearchTrigger()}
-              <Filter size={20} />
+              {activeTab === 'employees' ? <button type="button" aria-label="Lọc nhân sự theo bộ phận" aria-expanded={employeeFilterOpen} onClick={() => setEmployeeFilterOpen(value => !value)} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : <Filter size={20} />}
               {renderHeaderIdentityActions()}
             </div>
           ) : (
@@ -25475,7 +25497,7 @@ function MainAppView({
             note: 'Khi có nhân sự, dữ liệu chấm công sẽ cập nhật realtime sang lương, ứng lương và cảnh báo.'
           });
         }
-return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id)=>onOverrideCheckIn(id, attendanceProxyMethod)} onOverrideCheckOut={(id)=>onOverrideCheckOut(id, attendanceProxyMethod)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
+return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id, role)=>onOverrideCheckIn(id, attendanceProxyMethod, role)} onOverrideCheckOut={(id, role)=>onOverrideCheckOut(id, attendanceProxyMethod, role)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
       case 'products': return <ProductManagementView warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
       case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
@@ -25516,6 +25538,8 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       );
       case 'employees': return (
         <EmployeeView
+          showDepartmentFilter={employeeFilterOpen}
+          onCloseDepartmentFilter={() => setEmployeeFilterOpen(false)}
           showSettings={showEmployeeSettings}
           setShowSettings={setShowEmployeeSettings}
           isVpsMode={isVpsMode}
@@ -25630,6 +25654,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         }
         return (
         <SalaryView
+          selectedPayrollEmployeeId={selectedPayrollEmployeeId}
+          setSelectedPayrollEmployeeId={setSelectedPayrollEmployeeId}
+          reportPayrollTarget={reportPayrollTarget}
           payrollScreen={payrollScreen}
           setPayrollScreen={setPayrollScreen}
           payrollSearchKeyword={payrollSearchKeyword}
@@ -27256,10 +27283,22 @@ function AttendanceGpsMetaCard({ title, meta }) {
 }
 
 function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccounting = false, canOverrideAttendance = false, currentCompany = {}, employees = [], attendance = {}, date = getTodayString(), onChangeDate, onCheckIn, onCheckOut, onLeave, onEditAttendance, onOverrideCheckIn, onOverrideCheckOut, onUpdateCompanySettings, onEditEmployee, autoWifiCheckInStatus = '', onGoBack, onOpenNotifications }) {
+  const [workRolesByEmployee, setWorkRolesByEmployee] = useState({});
+  const [editWorkRole, setEditWorkRole] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [proxySavingId, setProxySavingId] = useState('');
+  const attendanceSubmitRef = useRef(false);
   const [attendanceScreen, setAttendanceScreen] = useState(() => isCompanyAccount ? 'team' : 'dashboard');
   const [wifiPermission, setWifiPermission] = useState({ granted: false });
   const [autoWifiSaving, setAutoWifiSaving] = useState(false);
+  const [companyWifiSaving, setCompanyWifiSaving] = useState(false);
   const [autoWifiEnabled, setAutoWifiEnabled] = useState(Boolean(currentEmployee?.attendanceAutoWifiEnabled));
+  const autoWifiSaveRef = useRef(false);
+  const companyWifiSaveRef = useRef(false);
+  const wifiReadRef = useRef(null);
+  const wifiReadVersionRef = useRef(0);
+  useEffect(() => () => { wifiReadVersionRef.current += 1; }, []);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [formData, setFormData] = useState({ status: 'present', checkIn: '', checkOut: '' });
@@ -27300,7 +27339,20 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     if (!positions.includes(positionFilter)) setPositionFilter('Tất cả');
   }, [positions, positionFilter]);
 
-  const getRecord = (empId) => safeAttendance[`${safeDate}_${empId}`];
+  const getSelectedWorkRole = emp => {
+    const positions = getEmployeePositionValues(emp);
+    const selected = workRolesByEmployee[emp.id] || (positionFilter !== 'Tất cả' ? positionFilter : emp.position);
+    return positions.includes(selected) ? selected : emp.position;
+  };
+  const selectWorkRole = (emp, role) => {
+    setWorkRolesByEmployee(previous => ({ ...previous, [emp.id]: role }));
+    setSelfStatusMsg('');
+    setOptimisticSelfRecord(null);
+  };
+  const getRecord = empId => {
+    const emp = attendanceEmployees.find(item => item.id === empId) || currentEmployee;
+    return getWorkRoleRecord(safeAttendance[`${safeDate}_${empId}`], emp?.position, emp ? getSelectedWorkRole(emp) : '');
+  };
 
   const getStatusMeta = (record) => {
     if (record?.status === 'leave') {
@@ -27339,33 +27391,37 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
 
       return acc;
     }, { completed: 0, working: 0, leave: 0, pending: 0 });
-  }, [filteredEmployees, safeAttendance, safeDate]);
+  }, [filteredEmployees, safeAttendance, safeDate, workRolesByEmployee, positionFilter]);
 
   const filteredAlerts = useMemo(() => filteredEmployees
     .map(emp => {
-      const anomaly = resolveAttendanceAnomalyForDate(emp, safeAttendance, safeDate);
+      const workRole = getSelectedWorkRole(emp);
+      const anomaly = resolveAttendanceAnomalyForDate(employeeForWorkRole(emp, workRole), attendanceForWorkRole(safeAttendance, emp, workRole), safeDate);
       return anomaly ? { emp, ...anomaly } : null;
     })
-    .filter(Boolean), [filteredEmployees, safeAttendance, safeDate]);
+    .filter(Boolean), [filteredEmployees, safeAttendance, safeDate, workRolesByEmployee, positionFilter]);
 
+  const selfWorkRole = currentEmployee ? getSelectedWorkRole(currentEmployee) : '';
+  const selfWorkEmployee = employeeForWorkRole(currentEmployee, selfWorkRole);
+  const selfWorkAttendance = useMemo(() => attendanceForWorkRole(safeAttendance, currentEmployee, selfWorkRole), [safeAttendance, currentEmployee, selfWorkRole]);
   const currentCheckOutDate = currentEmployee?.id
-    ? resolveAttendanceActionDateForShift(currentEmployee, safeAttendance, safeDate, 'checkOut')
+    ? resolveAttendanceActionDateForShift(selfWorkEmployee, selfWorkAttendance, safeDate, 'checkOut')
     : safeDate;
   const currentCheckInDate = currentEmployee?.id
-    ? resolveAttendanceActionDateForShift(currentEmployee, safeAttendance, safeDate, 'checkIn')
+    ? resolveAttendanceActionDateForShift(selfWorkEmployee, selfWorkAttendance, safeDate, 'checkIn')
     : safeDate;
   const currentAttendanceDate = currentCheckOutDate !== safeDate ? currentCheckOutDate : currentCheckInDate;
-  const currentServerRecord = currentEmployee?.id ? safeAttendance[`${currentAttendanceDate}_${currentEmployee.id}`] : null;
-  const currentRecordKey = currentEmployee?.id ? `${currentAttendanceDate}_${currentEmployee.id}` : '';
+  const currentServerRecord = currentEmployee?.id ? selfWorkAttendance[`${currentAttendanceDate}_${currentEmployee.id}`] : null;
+  const currentRecordKey = currentEmployee?.id ? `${currentAttendanceDate}_${currentEmployee.id}_${selfWorkRole}` : '';
   const currentRecord = optimisticSelfRecord?.key === currentRecordKey
     ? { ...(currentServerRecord || {}), ...(optimisticSelfRecord.record || {}) }
     : currentServerRecord;
   const currentStatusMeta = getStatusMeta(currentRecord);
-  const currentShiftPolicy = resolveEmployeeShiftPolicy(currentEmployee);
+  const currentShiftPolicy = resolveEmployeeShiftPolicy(selfWorkEmployee);
   const currentAttendanceLocationSettings = getEmployeeAttendanceLocationSettings(currentEmployee, currentCompany);
   const attendanceWifiSettings = useMemo(() => getAttendanceWifiSettings(currentCompany), [currentCompany]);
   const selfWifiReady = isWifiAttendanceReady(selfWifiLookup, selfWifiLabel);
-  const selfWifiDefaultConfigured = Boolean(attendanceWifiSettings.ssid && isUsableAttendanceBssid(attendanceWifiSettings.bssid));
+  const selfWifiDefaultConfigured = Boolean(attendanceWifiSettings.enabled && attendanceWifiSettings.ssid && isUsableAttendanceBssid(attendanceWifiSettings.bssid));
   const selfWifiLabelMatchesDefault = selfWifiDefaultConfigured && normalizeWifiCompareKey(selfWifiLabel) === normalizeWifiCompareKey(attendanceWifiSettings.ssid);
   const selfWifiMatchesDefault = doesWifiMatchAttendanceDefault(selfWifiLookup?.wifi || {}, currentCompany);
   const isSelfCheckInDisabled = isSelfSubmitting || (selfMethod === 'wifi' && (!selfWifiReady || !selfWifiMatchesDefault));
@@ -27374,7 +27430,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   useEffect(() => setAutoWifiEnabled(Boolean(currentEmployee?.attendanceAutoWifiEnabled)), [currentEmployee?.attendanceAutoWifiEnabled]);
   useAppScreenBack(() => {
     if (attendanceScreen === 'dashboard' || (isCompanyAccount && attendanceScreen === 'team')) return false;
-    setAttendanceScreen(attendanceScreen === 'wifi-permission' ? 'wifi' : 'dashboard');
+    setAttendanceScreen(attendanceScreen === 'wifi-permission' ? 'wifi' : isCompanyAccount ? 'team' : 'dashboard');
     return true;
   });
 
@@ -27396,37 +27452,45 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   };
 
   const refreshAttendanceWifi = async () => {
+    if (wifiReadRef.current) return wifiReadRef.current;
+    const version = ++wifiReadVersionRef.current;
     setSelfWifiLookup({ loading: true, success: false, message: '', failureCode: null });
-    const permission = await readWifiPermission();
-    if (!permission.granted) {
-      setSelfWifiLookup({ loading: false, success: false, message: isAndroidNativeRuntime() ? 'Chưa cấp quyền đọc WiFi.' : 'Trình duyệt không đọc được WiFi thật. Hãy dùng APK Android.', failureCode: 'permission_denied' });
-      return;
-    }
-    const detected = await getCurrentConnectedWifiForAttendance();
-    setSelfWifiLabel(detected.supported ? detected.ssid : '');
-    setSelfWifiLookup({ loading: false, success: detected.supported, message: detected.message, failureCode: detected.failureCode, wifi: detected.supported ? detected : null });
+    const read = async () => {
+      const permission = await readWifiPermission();
+      if (!permission.granted) return { supported: false, message: isAndroidNativeRuntime() ? 'Chưa cấp quyền đọc WiFi.' : 'WiFi tự động chỉ hỗ trợ app Android. Web và bản iPhone hiện chưa hỗ trợ.', failureCode: 'permission_denied' };
+      return getCurrentConnectedWifiForAttendance();
+    };
+    wifiReadRef.current = withTimeout(read(), 8000, 'Chưa đọc được WiFi hiện tại.').then(detected => {
+      if (version !== wifiReadVersionRef.current) return;
+      setSelfWifiLabel(detected.supported ? detected.ssid : '');
+      setSelfWifiLookup({ loading: false, success: detected.supported, message: detected.message, failureCode: detected.failureCode, wifi: detected.supported ? detected : null });
+      window.dispatchEvent(new Event('hd-attendance-wifi-check'));
+    }).catch(error => {
+      if (version === wifiReadVersionRef.current) setSelfWifiLookup({ loading: false, success: false, message: error.message, failureCode: 'wifi_lookup_error' });
+    }).finally(() => { wifiReadRef.current = null; });
+    return wifiReadRef.current;
   };
 
   useEffect(() => {
-    if (!isAndroidNativeRuntime()) return undefined;
+    if (!isAndroidNativeRuntime() || attendanceScreen === 'team') return undefined;
     void refreshAttendanceWifi();
     let listener;
     let disposed = false;
     void WifiInfo.addListener('wifiConnectionChanged', () => { void refreshAttendanceWifi(); }).then(handle => {
       if (disposed) void handle.remove();
       else listener = handle;
-    });
+    }).catch(() => {});
     return () => {
       disposed = true;
       void listener?.remove();
     };
-  }, []);
+  }, [attendanceScreen]);
 
-  const openAttendanceWifi = async () => {
+  const openAttendanceWifi = () => {
     setSelfMethod('wifi');
-    const permission = await readWifiPermission();
-    setAttendanceScreen(permission.granted ? 'wifi' : 'wifi-permission');
-    if (permission.granted) void refreshAttendanceWifi();
+    setSelfStatusMsg('');
+    setAttendanceScreen('wifi');
+    void refreshAttendanceWifi();
   };
 
   const requestAttendanceWifiPermission = async () => {
@@ -27448,18 +27512,24 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   };
 
   const toggleAutoWifi = async () => {
-    if (!currentEmployee?.id || !onEditEmployee || autoWifiSaving) return;
+    if (!currentEmployee?.id || !onEditEmployee || autoWifiSaveRef.current) return;
     const next = !autoWifiEnabled;
+    if (next && (!isAndroidNativeRuntime() || !wifiPermission.granted || !selfWifiDefaultConfigured || getEmployeeAttendanceLocationSettings(currentEmployee, currentCompany).enabled)) {
+      setSelfStatusMsg('Chưa đủ điều kiện bật WiFi tự động: cần app Android, quyền WiFi, mạng công ty hợp lệ và hồ sơ không bắt buộc xác minh GPS.');
+      return;
+    }
+    autoWifiSaveRef.current = true;
     setAutoWifiSaving(true);
-    setAutoWifiEnabled(next);
     try {
-      const result = await onEditEmployee(currentEmployee.id, { attendanceAutoWifiEnabled: next });
+      const result = await withTimeout(onEditEmployee(currentEmployee.id, { attendanceAutoWifiEnabled: next }), 12000, 'Chưa nhận xác nhận lưu cài đặt.');
       if (result?.success === false) throw new Error(result.message);
+      setAutoWifiEnabled(next);
       setSelfStatusMsg(next ? 'Đã bật chấm công WiFi tự động.' : 'Đã tắt chấm công WiFi tự động.');
+      window.dispatchEvent(new Event('hd-attendance-wifi-check'));
     } catch (error) {
-      setAutoWifiEnabled(!next);
       setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được cài đặt tự động.'));
     } finally {
+      autoWifiSaveRef.current = false;
       setAutoWifiSaving(false);
     }
   };
@@ -27537,11 +27607,14 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       return;
     }
 
-    if (attendanceScreen === 'team') lookupSelfWifi();
+    if (attendanceScreen === 'team') void refreshAttendanceWifi();
   }, [selfMethod, attendanceScreen]);
 
-  const openEditModal = (employee, record) => {
+  const openEditModal = (employee, record, role = getSelectedWorkRole(employee)) => {
     if (!canManageAttendance) return;
+    setEditWorkRole(role);
+    setEditError('');
+    setWorkRolesByEmployee(previous => ({ ...previous, [employee.id]: role }));
     setSelectedEmployee(employee);
     setFormData({
       status: record?.status || 'present',
@@ -27558,12 +27631,12 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   };
 
   const buildDateTime = (timeValue, field = 'checkIn') => (
-    buildAttendanceDateTimeForShift(safeDate, timeValue, selectedEmployee, field)
+    buildAttendanceDateTimeForShift(safeDate, timeValue, employeeForWorkRole(selectedEmployee, editWorkRole), field)
   );
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedEmployee) return;
+    if (!selectedEmployee || editSaving || attendanceSubmitRef.current) return;
 
     const nextStatus = formData.status || 'present';
     const editData = {
@@ -27572,12 +27645,25 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       checkOut: nextStatus === 'leave' ? null : buildDateTime(formData.checkOut, 'checkOut')
     };
 
-    if (typeof onEditAttendance === 'function') onEditAttendance(selectedEmployee.id, safeDate, editData);
-    closeEditModal();
+    try {
+      attendanceSubmitRef.current = true;
+      setEditSaving(true);
+      setEditError('');
+      if (nextStatus !== 'leave' && !editData.checkIn) throw new Error('Hãy nhập giờ vào cho công việc đã chọn.');
+      if (editData.checkOut && editData.checkOut < editData.checkIn) throw new Error('Giờ ra phải sau giờ vào của ca làm.');
+      if (typeof onEditAttendance !== 'function') throw new Error('Chưa thể lưu chấm công.');
+      await onEditAttendance(selectedEmployee.id, safeDate, editData, editWorkRole);
+      closeEditModal();
+    } catch (error) {
+      setEditError(getFriendlyFirebaseErrorMessage(error, 'Không lưu được chấm công.'));
+    } finally {
+      attendanceSubmitRef.current = false;
+      setEditSaving(false);
+    }
   };
 
   const handleSaveDefaultAttendanceWifi = async () => {
-    if (!isAccounting || !onUpdateCompanySettings) return;
+    if (!isAccounting || !onUpdateCompanySettings || companyWifiSaveRef.current) return;
     const detectedWifi = selfWifiLookup?.wifi || {};
     const nextSsid = normalizeWifiName(detectedWifi.ssid || selfWifiLabel);
     if (!isAndroidNativeRuntime() || !selfWifiLookup.success || !nextSsid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
@@ -27586,6 +27672,8 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     }
 
     try {
+      companyWifiSaveRef.current = true;
+      setCompanyWifiSaving(true);
       setSelfStatusMsg('');
       const result = await onUpdateCompanySettings({
         attendanceWifiEnabled: true,
@@ -27597,11 +27685,14 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       setSelfStatusMsg(`Đã đặt WiFi "${nextSsid}" làm WiFi mặc định để chấm công.`);
     } catch (error) {
       setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được WiFi mặc định. Hãy thử lại.'));
+    } finally {
+      companyWifiSaveRef.current = false;
+      setCompanyWifiSaving(false);
     }
   };
 
   const handleSelfAttendance = async (type) => {
-    if (!currentEmployee?.id) return;
+    if (!currentEmployee?.id || attendanceSubmitRef.current) return;
     if (type === 'in' && selfMethod === 'wifi' && !selfWifiDefaultConfigured) {
       setSelfStatusMsg('Chưa cài WiFi mặc định để chấm công. Kế toán hoặc chủ doanh nghiệp hãy dò WiFi hiện tại rồi đặt làm mặc định trước.');
       return;
@@ -27612,6 +27703,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     }
 
     try {
+      attendanceSubmitRef.current = true;
       setIsSelfSubmitting(true);
       setSelfStatusMsg('');
       const methodPayload = await withTimeout(
@@ -27625,13 +27717,13 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       const submittedAt = new Date();
       if (type === 'out') {
         await withTimeout(
-          onCheckOut(currentEmployee.id, methodPayload),
+          onCheckOut(currentEmployee.id, methodPayload, selfWorkRole),
           20000,
           'Không lưu được chấm công ra ca trong 20 giây. Kiểm tra mạng rồi thử lại.'
         );
       } else {
         await withTimeout(
-          onCheckIn(currentEmployee.id, methodPayload),
+          onCheckIn(currentEmployee.id, methodPayload, selfWorkRole),
           20000,
           'Không lưu được chấm công vào ca trong 20 giây. Kiểm tra mạng rồi thử lại.'
         );
@@ -27650,7 +27742,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
             checkIn: submittedAt.toISOString(),
             checkInMethod: methodPayload.label,
             checkInMethodMeta: methodPayload,
-            status: calculateCheckInStatus(currentEmployee, submittedAt, currentAttendanceDate)
+            status: calculateCheckInStatus(selfWorkEmployee, submittedAt, currentAttendanceDate)
           }
       });
       setSelfStatusMsg(type === 'in' ? 'Đã chấm vào ca thành công.' : 'Đã chấm ra ca thành công.');
@@ -27662,12 +27754,13 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     } catch (error) {
       setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không thể chấm công với phương thức này.'));
     } finally {
+      attendanceSubmitRef.current = false;
       setIsSelfSubmitting(false);
     }
   };
 
   const handleBulkOverride = async (type) => {
-    if (!canManageAttendance) return;
+    if (!canManageAttendance || attendanceSubmitRef.current) return;
 
     const eligibleEmployees = filteredEmployees.filter(emp => {
       const record = getRecord(emp.id);
@@ -27681,24 +27774,61 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     }
 
     try {
+      attendanceSubmitRef.current = true;
       setIsBulkSubmitting(true);
       setBulkStatusMsg('');
       for (const emp of eligibleEmployees) {
-        if (type === 'in') await onOverrideCheckIn(emp.id);
-        else await onOverrideCheckOut(emp.id);
+        if (type === 'in') await onOverrideCheckIn(emp.id, getSelectedWorkRole(emp));
+        else await onOverrideCheckOut(emp.id, getSelectedWorkRole(emp));
       }
       setBulkStatusMsg(type === 'in'
         ? `Đã chấm vào hộ ${eligibleEmployees.length} nhân sự theo bộ lọc hiện tại.`
         : `Đã chấm ra hộ ${eligibleEmployees.length} nhân sự theo bộ lọc hiện tại.`);
+    } catch (error) {
+      setBulkStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Chưa hoàn tất chấm công cho danh sách.'));
     } finally {
+      attendanceSubmitRef.current = false;
       setIsBulkSubmitting(false);
+    }
+  };
+
+  const handleSelfLeave = async () => {
+    if (attendanceSubmitRef.current || !currentEmployee?.id) return;
+    attendanceSubmitRef.current = true;
+    setIsSelfSubmitting(true);
+    try {
+      await onLeave(currentEmployee.id, selfWorkRole);
+      setSelfStatusMsg('Đã ghi nhận nghỉ phép.');
+    } catch (error) {
+      setSelfStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được nghỉ phép.'));
+    } finally {
+      attendanceSubmitRef.current = false;
+      setIsSelfSubmitting(false);
+    }
+  };
+
+  const handleRoleOverride = async (emp, type) => {
+    if (attendanceSubmitRef.current) return;
+    attendanceSubmitRef.current = true;
+    setProxySavingId(emp.id);
+    try {
+      await (type === 'in' ? onOverrideCheckIn : onOverrideCheckOut)(emp.id, getSelectedWorkRole(emp));
+      setBulkStatusMsg(`Đã chấm công ${getSelectedWorkRole(emp)} cho ${emp.name}.`);
+    } catch (error) {
+      setBulkStatusMsg(getFriendlyFirebaseErrorMessage(error, 'Không lưu được chấm công.'));
+    } finally {
+      attendanceSubmitRef.current = false;
+      setProxySavingId('');
     }
   };
 
   if (attendanceScreen !== 'team') {
     return <AttendanceWorkspace
       screen={attendanceScreen} onScreenChange={setAttendanceScreen} onExit={onGoBack} onOpenNotifications={onOpenNotifications}
-      currentEmployee={currentEmployee} currentCompany={currentCompany} attendance={safeAttendance}
+      backScreen={isCompanyAccount ? 'team' : 'dashboard'} wifiSupported={isAndroidNativeRuntime() && !isVpsStagingMode}
+      autoBlockedReason={getEmployeeAttendanceLocationSettings(currentEmployee, currentCompany).enabled ? 'Hồ sơ yêu cầu xác minh GPS, không thể chấm tự động chỉ bằng WiFi.' : ''}
+      currentEmployee={currentEmployee} currentCompany={currentCompany} attendance={selfWorkAttendance}
+      workRoles={getEmployeePositionValues(currentEmployee)} workRole={selfWorkRole} onSelectWorkRole={role => selectWorkRole(currentEmployee, role)}
       date={safeDate} onChangeDate={onChangeDate} record={currentRecord} shiftPolicy={currentShiftPolicy}
       statusMessage={selfStatusMsg} autoStatus={autoWifiCheckInStatus}
       wifiInfo={selfWifiLookup?.wifi} wifiLoading={selfWifiLookup.loading} wifiPermission={wifiPermission}
@@ -27708,10 +27838,11 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       onRequestWifiPermission={requestAttendanceWifiPermission}
       onOpenWifiSettings={() => isAndroidNativeRuntime() ? WifiInfo.openWifiAppSettings() : setSelfStatusMsg('Cài đặt quyền WiFi chỉ có trên Android.')}
       onSaveCompanyWifi={handleSaveDefaultAttendanceWifi} autoEnabled={autoWifiEnabled}
+      companyWifiSaving={companyWifiSaving}
       autoSaving={autoWifiSaving} onToggleAuto={toggleAutoWifi} canManage={canManageAttendance} canManageWifi={isAccounting}
       onManage={() => setAttendanceScreen('team')} selfMethod={selfMethod} onSelectMethod={setSelfMethod}
       onCheckIn={() => handleSelfAttendance('in')} onCheckOut={() => handleSelfAttendance('out')}
-      onLeave={() => onLeave?.(currentEmployee?.id)} submitting={isSelfSubmitting}
+      onLeave={handleSelfLeave} submitting={isSelfSubmitting}
     />;
   }
 
@@ -27773,11 +27904,12 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
             </div>
           </div>
 
+          <AttendanceRoleSelector positions={getEmployeePositionValues(currentEmployee)} value={selfWorkRole} onChange={role => selectWorkRole(currentEmployee, role)} disabled={isSelfSubmitting} />
           <div className="grid grid-cols-2 gap-3 mt-4">
             <button type="button" onClick={() => setSelfMethod('gps')} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'gps' ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-gray-200 bg-white text-gray-600'}`}>
               GPS vị trí
             </button>
-            <button type="button" onClick={() => setSelfMethod('wifi')} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'wifi' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 bg-white text-gray-600'}`}>
+            <button type="button" onClick={openAttendanceWifi} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'wifi' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 bg-white text-gray-600'}`}>
               WiFi nội bộ
             </button>
           </div>
@@ -27902,7 +28034,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                 <button type="button" disabled={isSelfCheckInDisabled} onClick={() => handleSelfAttendance('in')} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold disabled:opacity-60 disabled:cursor-not-allowed hover:bg-emerald-600 transition-colors">
                   {isSelfSubmitting ? 'Đang chấm...' : 'Vào ca'}
                 </button>
-                <button type="button" onClick={() => typeof onLeave === 'function' && onLeave(currentEmployee.id)} className="flex-1 bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold">
+                <button type="button" disabled={isSelfSubmitting} onClick={handleSelfLeave} className="flex-1 bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold">
                   Xin nghỉ
                 </button>
               </>
@@ -27965,7 +28097,8 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
         {[...filteredEmployees].sort((a, b) => attendanceDepartment(a, currentCompany).localeCompare(attendanceDepartment(b, currentCompany), 'vi')).map((emp, index, roster) => {
           const record = getRecord(emp.id);
           const statusMeta = getStatusMeta(record);
-          const shiftPolicy = resolveEmployeeShiftPolicy(emp);
+          const selectedRole = getSelectedWorkRole(emp);
+          const shiftPolicy = resolveEmployeeShiftPolicy(employeeForWorkRole(emp, selectedRole));
 
           return (
             <React.Fragment key={emp.id}>
@@ -27993,6 +28126,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                 )}
               </div>
 
+              <AttendanceRoleSelector positions={getEmployeePositionValues(emp)} value={selectedRole} onChange={role => selectWorkRole(emp, role)} disabled={isBulkSubmitting || Boolean(proxySavingId)} />
               <div className="grid grid-cols-2 gap-3 mt-4">
                 <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] uppercase text-gray-500 mb-1">Giờ vào</p>
@@ -28027,16 +28161,16 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                 <div className="flex gap-2 mt-4">
                   <button
                     type="button"
-                    onClick={() => onOverrideCheckIn(emp.id)}
-                    disabled={Boolean(record?.checkIn) || record?.status === 'leave'}
+                    onClick={() => handleRoleOverride(emp, 'in')}
+                    disabled={isBulkSubmitting || Boolean(proxySavingId) || Boolean(record?.checkIn) || record?.status === 'leave'}
                     className="flex-1 bg-emerald-500 text-white py-2.5 rounded-xl text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-emerald-600 transition-colors"
                   >
                     Chấm vào hộ
                   </button>
                   <button
                     type="button"
-                    onClick={() => onOverrideCheckOut(emp.id)}
-                    disabled={!record?.checkIn || Boolean(record?.checkOut) || record?.status === 'leave'}
+                    onClick={() => handleRoleOverride(emp, 'out')}
+                    disabled={isBulkSubmitting || Boolean(proxySavingId) || !record?.checkIn || Boolean(record?.checkOut) || record?.status === 'leave'}
                     className="flex-1 bg-orange-500 text-white py-2.5 rounded-xl text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-orange-600 transition-colors"
                   >
                     Chấm ra hộ
@@ -28063,15 +28197,18 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                 <h3 className="font-bold text-lg text-gray-800">Chỉnh sửa chấm công</h3>
                 <p className="text-xs text-gray-500 mt-1">{selectedEmployee.name} • {displayDate}</p>
               </div>
-              <button type="button" onClick={closeEditModal} className="text-gray-400 hover:text-gray-600">
+              <button type="button" disabled={editSaving} onClick={closeEditModal} aria-label="Đóng chỉnh sửa chấm công" className="text-gray-400 hover:text-gray-600">
                 <X />
               </button>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              <AttendanceRoleSelector positions={getEmployeePositionValues(selectedEmployee)} value={editWorkRole} disabled={editSaving} onChange={role => openEditModal(selectedEmployee, getWorkRoleRecord(safeAttendance[`${safeDate}_${selectedEmployee.id}`], selectedEmployee.position, role), role)} />
+              {editError && <p role="alert" className="text-sm text-red-700">{editError}</p>}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">Trạng thái</label>
                 <select
+                  disabled={editSaving}
                   value={formData.status}
                   onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                   className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-purple-500 bg-white"
@@ -28088,6 +28225,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                     <label className="block text-xs font-semibold text-gray-700 mb-1">Giờ vào</label>
                     <input
                       type="time"
+                      disabled={editSaving}
                       value={formData.checkIn}
                       onChange={(e) => setFormData({ ...formData, checkIn: e.target.value })}
                       className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-purple-500"
@@ -28097,6 +28235,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                     <label className="block text-xs font-semibold text-gray-700 mb-1">Giờ ra</label>
                     <input
                       type="time"
+                      disabled={editSaving}
                       value={formData.checkOut}
                       onChange={(e) => setFormData({ ...formData, checkOut: e.target.value })}
                       className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-purple-500"
@@ -28106,11 +28245,11 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
               )}
 
               <div className="flex gap-2 pt-2">
-                <button type="button" onClick={closeEditModal} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold">
+                <button type="button" disabled={editSaving} onClick={closeEditModal} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold">
                   Hủy
                 </button>
-                <button type="submit" className="flex-1 bg-purple-600 text-white py-3 rounded-xl font-bold hover:bg-purple-700 transition-colors">
-                  Lưu chỉnh sửa
+                <button type="submit" disabled={editSaving} className="flex-1 bg-purple-600 text-white py-3 rounded-xl font-bold hover:bg-purple-700 transition-colors disabled:opacity-60">
+                  {editSaving ? 'Đang lưu...' : 'Lưu chỉnh sửa'}
                 </button>
               </div>
             </form>
@@ -75607,9 +75746,6 @@ function EmployeeReviewRadarChart({
             </g>
           );
         })}
-        <text x={center} y={center - 58} textAnchor="middle" className="fill-slate-400 text-[11px] font-bold">5.0</text>
-        <text x={center} y={center - 18} textAnchor="middle" className="fill-slate-400 text-[11px] font-bold">4.0</text>
-        <text x={center} y={center + 16} textAnchor="middle" className="fill-slate-400 text-[11px] font-bold">3.0</text>
         {datasets.map(dataset => (
           <g key={dataset.id}>
             <polygon points={pointsForScores(dataset.scores)} fill={dataset.fill || 'rgba(16,185,129,.12)'} stroke={dataset.color || '#10b981'} strokeWidth="3" opacity="0.95" />
@@ -76340,9 +76476,12 @@ function EmployeeView({
   canViewAllEmployeeReviews = false,
   canManageHolidayConfig = false,
   canResetEmployeePassword = false,
+  showDepartmentFilter = false,
+  onCloseDepartmentFilter,
   onResetEmployeePassword
 }) {
   const employeeAvatarInputRef = useRef(null);
+  const [departmentFilter, setDepartmentFilter] = useState('');
   const employeeDocumentInputRef = useRef(null);
   const [showForm, setShowForm] = useState(false);
   const [editingEmp, setEditingEmp] = useState(null);
@@ -76352,6 +76491,16 @@ function EmployeeView({
   const [isSavingEmployee, setIsSavingEmployee] = useState(false);
   const [employeeStatus, setEmployeeStatus] = useState('');
   const [resettingEmployeeId, setResettingEmployeeId] = useState('');
+  const [temporaryEmployeePassword, setTemporaryEmployeePassword] = useState('');
+  const [showEmployeePassword, setShowEmployeePassword] = useState(false);
+  const employeeCredentialSession = useRef(0);
+  const employeeResetPending = useRef(false);
+  useEffect(() => {
+    employeeCredentialSession.current += 1;
+    setTemporaryEmployeePassword('');
+    setShowEmployeePassword(false);
+    return () => { employeeCredentialSession.current += 1; };
+  }, [editingEmp?.id, showForm, canResetEmployeePassword]);
   const [avatarUploadEmp, setAvatarUploadEmp] = useState(null);
   const [documentUploadEmp, setDocumentUploadEmp] = useState(null);
   const [documentUploadType, setDocumentUploadType] = useState('id_card');
@@ -76435,15 +76584,23 @@ function EmployeeView({
   );
   const employeeDepartmentOptions = useMemo(() => {
     const canKeepCurrentCollaborator = isSalesCollaboratorPosition(empData.position);
-    if (canCreateSalesCollaborator || canKeepCurrentCollaborator) return DEPARTMENT_ACCOUNT_OPTIONS;
-    return DEPARTMENT_ACCOUNT_OPTIONS.filter(option => !isSalesCollaboratorPosition(option));
-  }, [canCreateSalesCollaborator, empData.position]);
+    const options = normalizeCompanyDepartments([
+      ...DEPARTMENT_ACCOUNT_OPTIONS,
+      ...normalizeCompanyDepartments(currentCompany?.employeeDepartments)
+        .map(department => normalizeEmployeePosition(department.name)),
+    ]).map(department => department.name).filter(option => !isOwnerPosition(option));
+    if (canCreateSalesCollaborator || canKeepCurrentCollaborator) return options;
+    return options.filter(option => !isSalesCollaboratorPosition(option));
+  }, [canCreateSalesCollaborator, empData.position, currentCompany?.employeeDepartments]);
   const companyDepartments = useMemo(
     () => normalizeCompanyDepartments(currentCompany?.employeeDepartments),
     [currentCompany?.employeeDepartments],
   );
   const companyDepartmentById = useMemo(
-    () => new Map(companyDepartments.map((department) => [department.id, department])),
+    () => new Map(normalizeCompanyDepartments([
+      ...companyDepartments,
+      ...DEPARTMENT_ACCOUNT_OPTIONS,
+    ]).map((department) => [department.id, department])),
     [companyDepartments],
   );
   const getEmployeeCompanyDepartment = (employee) => {
@@ -76770,6 +76927,8 @@ function EmployeeView({
         position: normalizedPosition,
         secondaryPositions,
         roleSalaryComponents,
+        companyDepartmentId: [...companyDepartmentById.values()].find(department => normalizeEmployeePosition(department.name) === normalizedPosition)?.id || '',
+        companyDepartmentName: [...companyDepartmentById.values()].find(department => normalizeEmployeePosition(department.name) === normalizedPosition)?.name || '',
         shiftName: shiftDefaults.shiftName,
         shiftStart: shiftDefaults.shiftStart,
         shiftEnd: shiftDefaults.shiftEnd,
@@ -77072,7 +77231,7 @@ function EmployeeView({
   };
 
   const handleResetEmployeePassword = async (emp) => {
-    if (!emp?.id || !canResetEmployeePassword || !onResetEmployeePassword) return;
+    if (!emp?.id || !canResetEmployeePassword || !onResetEmployeePassword || employeeResetPending.current) return;
     if (emp.role === 'super_admin' || isOwnerPosition(emp.position)) {
       setEmployeeStatus('Không thể đặt lại tài khoản chủ doanh nghiệp từ hồ sơ nhân sự.');
       return;
@@ -77083,16 +77242,24 @@ function EmployeeView({
     );
     if (!confirmed) return;
 
+    employeeResetPending.current = true;
+    const credentialSession = employeeCredentialSession.current;
+    setTemporaryEmployeePassword('');
+    setShowEmployeePassword(false);
     setResettingEmployeeId(emp.id);
     setEmployeeStatus('Đang đặt lại đăng nhập và thu hồi các phiên cũ...');
     try {
       const result = await onResetEmployeePassword(emp.id);
+      if (credentialSession !== employeeCredentialSession.current) return;
+      if (result?.success) setTemporaryEmployeePassword(result.temporaryPassword || '');
       setEmployeeStatus(result?.success
-        ? `Đã đặt lại tài khoản. Mật khẩu mặc định: ${result.temporaryPassword || '12345678'}. Nhân sự phải đổi mật khẩu và PIN khi đăng nhập.`
+        ? 'Đã đặt lại tài khoản. Nhân sự phải đổi mật khẩu và PIN khi đăng nhập.'
         : (result?.message || 'Không thể đặt lại đăng nhập cho nhân sự.'));
     } catch (error) {
+      if (credentialSession !== employeeCredentialSession.current) return;
       setEmployeeStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể đặt lại đăng nhập cho nhân sự.'));
     } finally {
+      employeeResetPending.current = false;
       setResettingEmployeeId('');
     }
   };
@@ -77384,130 +77551,40 @@ function EmployeeView({
         </div>
       )}
       <div className="space-y-3">
-        {employees.map(emp => {
+        {showDepartmentFilter && (
+          <div className="flex items-end gap-3 border-b pb-3">
+            <label className="min-w-0 flex-1 text-sm font-semibold">Bộ phận
+              <select aria-label="Lọc theo bộ phận" value={departmentFilter} onChange={event => setDepartmentFilter(event.target.value)} className="mt-2 w-full rounded-lg border bg-white p-3">
+                <option value="">Tất cả bộ phận</option>
+                {normalizeCompanyDepartments([...DEPARTMENT_ACCOUNT_OPTIONS, ...companyDepartments, ...employees.map(emp => emp.position).filter(Boolean)]).map(item => <option key={item.id} value={normalizeEmployeePosition(item.name)}>{item.name}</option>)}
+              </select>
+            </label>
+            <button type="button" aria-label="Đóng bộ lọc nhân sự" onClick={onCloseDepartmentFilter} className="p-3"><X size={20} /></button>
+          </div>
+        )}
+        {departmentFilter && <button type="button" onClick={() => setDepartmentFilter('')} className="text-sm underline">{departmentFilter} · Bỏ lọc</button>}
+        {employees.filter(emp => !departmentFilter || [emp.position, emp.primaryPosition, ...(emp.secondaryPositions || []), ...(emp.additionalPositions || []), getEmployeeCompanyDepartment(emp)?.name].some(position => normalizeEmployeePosition(position) === departmentFilter)).map(emp => {
+          const bankName = emp.salaryBankName || emp.payrollBankName || emp.bankName || '';
+          const bankCode = emp.salaryBankId || emp.payrollBankId || emp.bankId || bankName;
+          const accountNumber = emp.salaryBankAccountNumber || emp.payrollBankAccountNumber || emp.bankAccountNumber || emp.accountNumber || '';
+          const accountName = emp.salaryBankAccountName || emp.payrollBankAccountName || emp.bankAccountName || emp.accountName || emp.name || '';
+          const qrPayload = buildVietQrEmvPayload({ bankCode, accountNumber, accountName });
+          const shift = resolveEmployeeShiftPolicy(emp);
+          const departmentName = getEmployeeCompanyDepartment(emp)?.name || emp.companyDepartmentName || getEmployeePositionSummary(emp);
           const avatarUrl = getEmployeeAvatarUrl(emp);
-          const initials = (emp.name || 'NV').trim().split(/\s+/).slice(-2).map(part => part.charAt(0)).join('').toUpperCase() || 'NV';
-          const assignedAssets = getAssignedAssetsForEmployee(emp.id);
-          const salesRevenueSummary = salesRevenueByEmployeeId.get(emp.id) || null;
+          const initials = (emp.name || 'NV').trim().split(/\s+/).slice(-2).map(part => part.charAt(0)).join('').toUpperCase();
           return (
-            <div
-              key={emp.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleOpenEdit(emp)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  handleOpenEdit(emp);
-                }
-              }}
-              className={`bg-white p-4 rounded-xl shadow-sm border border-gray-50 transition ${canEditEmployee ? 'cursor-pointer hover:border-emerald-200 hover:shadow-md' : ''}`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center space-x-3">
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleOpenAvatarPicker(emp);
-                    }}
-                    className={`w-12 h-12 shrink-0 overflow-hidden rounded-full border border-emerald-100 bg-emerald-50 flex items-center justify-center text-sm font-black text-emerald-600 ${canEditEmployee ? 'cursor-pointer hover:ring-2 hover:ring-emerald-300' : 'cursor-default'}`}
-                    aria-label={`Đổi ảnh đại diện ${emp.name || 'nhân sự'}`}
-                    title={canEditEmployee ? 'Bấm để đổi ảnh đại diện' : 'Ảnh đại diện'}
-                  >
-                    {avatarUrl ? (
-                      <img src={avatarUrl} alt={`Ảnh đại diện ${emp.name || ''}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
-                    ) : (
-                      <span>{initials}</span>
-                    )}
-                  </button>
-                  <div className="min-w-0">
-                    <h3 className="font-semibold text-gray-800 truncate">{emp.name}</h3>
-                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full inline-block mt-1 ${isOwnerPosition(emp.position) || emp.role === 'super_admin' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>{getEmployeePositionSummary(emp)}</span>
-                    {(getEmployeeCompanyDepartment(emp)?.name || emp.companyDepartmentName) && (
-                      <span className="ml-1 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                        {getEmployeeCompanyDepartment(emp)?.name || emp.companyDepartmentName}
-                      </span>
-                    )}
-                    {salesRevenueSummary && (
-                      <div className="mt-1 text-[10px] font-semibold text-emerald-700">
-                        {formatMonthYearLabel(salesRevenueMonth)}: <strong>{formatCurrency(salesRevenueSummary.revenue)} đ</strong>
-                        {' • '}{formatNumber(salesRevenueSummary.orderCount)} đơn
-                        {' • '}{formatNumber(salesRevenueSummary.customerCount)} khách
-                      </div>
-                    )}
-                    {isSalesCollaboratorPosition(emp.position) ? (
-                      <div className="text-[10px] text-emerald-600 mt-1">Hoa hồng: <strong>{formatCommissionPercentLabel(emp.commissionRate)}</strong> trên doanh thu</div>
-                    ) : (
-                      <>
-                        <div className="text-[10px] text-gray-500 mt-1">LCB: <strong className="text-gray-700">{formatCurrency(parseLooseMoneyValue(emp.basicSalary))}</strong> đ</div>
-                        <div className="text-[10px] text-gray-500 mt-1">{resolveEmployeeShiftPolicy(emp).shiftName}: {formatShiftRangeLabel(resolveEmployeeShiftPolicy(emp))}</div>
-                      </>
-                    )}
-                    {(emp.salaryBankAccountNumber || emp.payrollBankAccountNumber || emp.bankAccountNumber || emp.accountNumber) && (
-                      <div className="text-[10px] text-sky-600 mt-1 truncate">
-                        {"TK l\u01b0\u01a1ng: "}
-                        <strong>{emp.salaryBankName || emp.payrollBankName || emp.bankName || emp.salaryBankId || emp.payrollBankId || emp.bankId || 'Ng\u00e2n h\u00e0ng'}</strong>
-                        {" \u2022 "}
-                        {emp.salaryBankAccountNumber || emp.payrollBankAccountNumber || emp.bankAccountNumber || emp.accountNumber}
-                      </div>
-                    )}
-                    {getSalesLeaderId(emp) && (
-                      <div className="text-[10px] text-emerald-600 mt-1">
-                        Cấp trên: <strong>{employees.find(item => item.id === getSalesLeaderId(emp))?.name || 'Chưa rõ'}</strong>
-                        {getSalesLeaderCommissionPercent(emp) > 0 ? ` • ${getSalesLeaderCommissionPercent(emp)}% doanh thu` : ''}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <ChevronRight size={18} className="shrink-0 text-gray-300" />
-              </div>
-              {assignedAssets.length > 0 ? (
-                <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">Tài sản được bàn giao</p>
-                    <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-emerald-700">{assignedAssets.length} tài sản</span>
-                  </div>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    {assignedAssets.slice(0, 4).map(asset => {
-                      const costInfo = employeeAssetCostLookup.get(asset.id) || { monthTotal: 0, count: 0, latest: null };
-                      const latestLog = costInfo.latest;
-                      const assetName = asset.name || asset.vehicleName || asset.vehicleBrand || asset.type || 'Tài sản';
-                      const plateNumber = asset.plateNumber || asset.licensePlate || asset.vehiclePlate || '';
-                      const handoverLabel = asset.handoverDate ? formatDateLabel(asset.handoverDate) : 'Chưa ghi ngày';
-                      return (
-                        <div key={asset.id} className="rounded-xl border border-white/70 bg-white px-3 py-2 shadow-sm">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-xs font-black text-slate-900">{assetName}{plateNumber ? ` • ${plateNumber}` : ''}</p>
-                              <p className="mt-0.5 text-[10px] font-semibold text-slate-500">Bàn giao {handoverLabel}</p>
-                            </div>
-                            <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">
-                              {getAssetStatusLabel(asset.status)}
-                            </span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-bold">
-                            <span className="rounded-lg bg-slate-50 px-2 py-1 text-slate-500">Chi tháng <strong className="block text-slate-900">{formatCurrency(costInfo.monthTotal || 0)} đ</strong></span>
-                            <span className="rounded-lg bg-slate-50 px-2 py-1 text-slate-500">Số lần <strong className="block text-slate-900">{formatNumber(costInfo.count || 0)}</strong></span>
-                          </div>
-                          {latestLog && (
-                            <p className="mt-1 truncate text-[10px] font-semibold text-amber-700">
-                              Gần nhất: {getAssetCostTypeLabel(latestLog.type === 'fuel' ? 'fuel' : latestLog.costType || latestLog.type)} • {formatCurrency(latestLog.amount || 0)} đ
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {assignedAssets.length > 4 && (
-                    <p className="mt-2 text-[10px] font-bold text-emerald-700">+{assignedAssets.length - 4} tài sản khác</p>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-3 rounded-2xl border border-dashed border-gray-100 bg-gray-50 px-3 py-2 text-[11px] font-bold text-gray-400">
-                  Tài sản được bàn giao: chưa có
-                </div>
-              )}
+            <div key={emp.id} data-employee-list-row className="flex flex-nowrap items-center gap-2 border-b border-gray-300 bg-white py-3 sm:gap-3">
+              <button type="button" onClick={() => handleOpenAvatarPicker(emp)} disabled={!canEditEmployee} aria-label={`Đổi ảnh đại diện ${emp.name}`} title="Đổi ảnh đại diện" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-gray-200 bg-gray-100 text-xs font-semibold text-gray-700 sm:h-12 sm:w-12">
+                {avatarUrl ? <img src={avatarUrl} alt={`Ảnh đại diện ${emp.name}`} loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <span>{initials}</span>}
+              </button>
+              <button type="button" onClick={() => handleOpenEdit(emp)} className="min-w-0 flex-1 self-stretch text-left" aria-label={`Mở hồ sơ ${emp.name}`}>
+                <h3 className="break-words text-sm font-semibold text-gray-800">{emp.name}</h3>
+                <p className="mt-1 break-words text-xs text-gray-600">{departmentName}</p>
+                <p className="mt-2 break-words text-xs text-gray-600">{shift.shiftName}</p>
+                <p className="mt-1 text-xs text-gray-600">{formatShiftRangeLabel(shift)}</p>
+              </button>
+              <EmployeeBankQr payload={qrPayload} name={emp.name} bankName={bankName || bankCode} accountNumber={accountNumber} accountName={accountName} generateImage={buildLocalPaymentQrDataUrl} shareFile={shareBlobFile} />
             </div>
           );
         })}
@@ -77653,7 +77730,7 @@ function EmployeeView({
             aria-modal={editingEmp ? 'true' : undefined}
             aria-label={editingEmp ? `Hồ sơ nhân sự ${editingEmp.name || ''}` : undefined}
             className={editingEmp
-              ? 'hd-modal-surface flex min-h-0 w-full flex-1 flex-col bg-slate-50'
+              ? 'employee-profile hd-modal-surface flex min-h-0 w-full flex-1 flex-col bg-slate-50'
               : 'my-auto w-full max-w-md animate-in zoom-in-95 rounded-2xl bg-white p-5'}
           >
             <div className={`mb-4 flex shrink-0 justify-between gap-3 ${editingEmp ? 'items-center border-b border-blue-800 bg-blue-700 px-4 py-3 text-white' : 'items-start'}`}>
@@ -77699,7 +77776,7 @@ function EmployeeView({
             </div>
             <form onSubmit={handleSubmit} className={editingEmp ? 'flex min-h-0 flex-1 flex-col' : ''}>
               <div className={editingEmp
-                ? 'min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 pb-4'
+                ? 'employee-profile-fields min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 pb-4'
                 : 'max-h-[70vh] space-y-3 overflow-y-auto pr-2'}>
               {employeeStatus && (
                 <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
@@ -77716,9 +77793,12 @@ function EmployeeView({
                   </select>
                 )}
               </div>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                <label className="min-w-0 block space-y-1.5">
+                  <input required aria-label="Số điện thoại" type="tel" placeholder="SĐT (Đăng nhập)" value={empData.phone} onChange={e=>setEmpData({...empData, phone: e.target.value})} className="min-w-0 w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
+                </label>
               {editingEmp && !isEditingOwner && (
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-bold text-slate-600">Bộ phận công ty</span>
+                <label className="min-w-0 block space-y-1.5">
                   <select
                     value={empData.companyDepartmentId || ''}
                     onChange={(event) => {
@@ -77729,18 +77809,16 @@ function EmployeeView({
                         companyDepartmentName: department?.name || '',
                       }));
                     }}
-                    aria-label="Bộ phận công ty"
-                    className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-emerald-400"
+                    aria-label="Bộ phận"
+                    className="min-w-0 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-emerald-400"
                   >
                     <option value="">Chưa phân bộ phận</option>
-                    {companyDepartments.map((department) => (
+                    {[...companyDepartmentById.values()].filter(department => !isOwnerPosition(department.name)).map((department) => (
                       <option key={department.id} value={department.id}>{department.name}</option>
                     ))}
                   </select>
                 </label>
               )}
-              <div className={`grid gap-3 ${editingEmp ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                <input required type="tel" placeholder="SĐT (Đăng nhập)" value={empData.phone} onChange={e=>setEmpData({...empData, phone: e.target.value})} className="min-w-0 w-full border p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500"/>
                 {!editingEmp && (
                   <input aria-label="Mật khẩu" type="text" value="12345678" readOnly autoComplete="off" className="min-w-0 w-full border border-slate-200 bg-slate-50 p-3 rounded-xl text-sm font-semibold text-slate-700" />
                 )}
@@ -77784,15 +77862,15 @@ function EmployeeView({
               )}
               {isEditingOwner && <p className="text-[11px] text-gray-500 leading-relaxed">Tài khoản chủ doanh nghiệp là tài khoản gốc của công ty và không tạo thêm từ màn này.</p>}
               {editingEmp && !isEditingOwner && canResetEmployeePassword && (
-                <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-xs font-black text-amber-800">
-                      <KeyRound size={15} /> Khôi phục đăng nhập
+                <div>
+                  <label htmlFor="employee-temporary-password" className="text-xs font-bold text-slate-600">Mật khẩu</label>
+                  <div className="mt-1.5 flex items-center gap-3">
+                    <div className="relative min-w-0 flex-1">
+                      <input id="employee-temporary-password" type={showEmployeePassword ? 'text' : 'password'} value={temporaryEmployeePassword} readOnly autoComplete="off" placeholder="Không thể xem mật khẩu hiện tại" className="w-full min-w-0 rounded-xl border bg-white py-3 pl-3 pr-11 text-sm" />
+                      <button type="button" disabled={!temporaryEmployeePassword} onClick={() => setShowEmployeePassword(value => !value)} aria-label={showEmployeePassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} aria-pressed={showEmployeePassword} title={showEmployeePassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} className="absolute right-0 top-0 flex h-full w-11 items-center justify-center text-slate-600 disabled:opacity-40">
+                        {showEmployeePassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                     </div>
-                    <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
-                      Dùng khi nhân sự quên cả mật khẩu và PIN. Phiên cũ sẽ bị thu hồi an toàn.
-                    </p>
-                  </div>
                   <button
                     type="button"
                     onClick={() => handleResetEmployeePassword(editingEmp)}
@@ -77801,6 +77879,8 @@ function EmployeeView({
                   >
                     {resettingEmployeeId === editingEmp.id ? 'Đang đặt lại...' : 'Đặt lại'}
                   </button>
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-500">Chỉ xem được mật khẩu mới trong lần đặt lại này. Phiên đăng nhập cũ sẽ bị thu hồi.</p>
                 </div>
               )}
               {!isEditingOwner && (
@@ -77856,106 +77936,14 @@ function EmployeeView({
                   )}
                 </div>
               )}
-              {editingEmp && (
-              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3 space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h4 className="text-xs font-black uppercase tracking-[0.12em] text-slate-800">{"Giấy tờ nhân sự"}</h4>
-                    <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                      {"Lưu căn cước, bằng lái, hợp đồng lao động, đơn xin việc hoặc giấy tờ liên quan."}
-                    </p>
-                  </div>
-                  {editingEmp && (
-                    <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 border border-slate-200">
-                      {visibleEmployeeDocuments.length} file
-                    </span>
-                  )}
-                </div>
-                {editingEmp ? (
-                  <>
-                    <div className="grid grid-cols-[1fr_auto] gap-2">
-                      <select
-                        value={documentUploadType}
-                        onChange={e => setDocumentUploadType(e.target.value)}
-                        disabled={!canManageDocuments}
-                        className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100"
-                      >
-                        {EMPLOYEE_DOCUMENT_TYPES.map(type => (
-                          <option key={type.id} value={type.id}>{type.label}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDocumentPicker(editingEmp, documentUploadType)}
-                        disabled={!canManageDocuments}
-                        className="rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white shadow-sm disabled:opacity-50"
-                      >
-                        {"Tải lên"}
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-400">
-                      {"Tạm giới hạn 450 KB/file và 700 KB/hồ sơ để lưu ổn định trên Firestore. File lớn nên chuyển sang Firebase Storage."}
-                    </p>
-                    <div className="space-y-2">
-                      {visibleEmployeeDocuments.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs text-slate-400">
-                          {"Chưa có giấy tờ nào."}
-                        </div>
-                      ) : (
-                        visibleEmployeeDocuments.map(doc => (
-                          <div key={doc.id} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                              <FileText size={16} />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs font-bold text-slate-800">{doc.fileName}</p>
-                              <p className="text-[10px] text-slate-500">
-                                {doc.typeLabel || getEmployeeDocumentTypeLabel(doc.type)}{formatEmployeeDocumentSize(doc.size) ? ` • ${formatEmployeeDocumentSize(doc.size)}` : ''}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadEmployeeDocument(doc)}
-                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-500"
-                              aria-label="Tải giấy tờ"
-                            >
-                              <Download size={14} />
-                            </button>
-                            {canManageDocuments && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteEmployeeDocument(editingEmp, doc.id)}
-                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-50 text-red-500"
-                                aria-label="Xóa giấy tờ"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
-                    {"Lưu nhân sự trước, sau đó mở lại hồ sơ để tải giấy tờ lên."}
-                  </div>
-                )}
-              </div>
-              )}
 
               {isSalesAccountDraft && !isEditingOwner && canAssignSalesLeader && (
                 <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3">
-                  <div>
-                    <h4 className="text-xs font-bold text-emerald-800 border-b border-emerald-200 pb-1">Cấp trên kinh doanh</h4>
-                    <p className="text-[10px] text-emerald-700 mt-1.5 leading-relaxed">
-                      Chọn cấp trên nếu nhân sự này thuộc đội của một kinh doanh/CTV khác. Cấp trên sẽ được cộng thêm % nhỏ trên doanh thu của cấp dưới trong bảng lương.
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="employee-leader-row grid grid-cols-2 items-end gap-2">
+                    <label htmlFor="employee-sales-leader" className="text-sm font-bold">Cấp trên</label>
+                    <label htmlFor="employee-sales-leader-percent" className="text-sm font-bold">% cấp trên hưởng</label>
                     <div>
-                      <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Cấp trên</label>
-                      <select value={empData.salesLeaderId || ''} onChange={e=>setEmpData({...empData, salesLeaderId: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                      <select id="employee-sales-leader" aria-label="Cấp trên" value={empData.salesLeaderId || ''} onChange={e=>setEmpData({...empData, salesLeaderId: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                         <option value="">Không có</option>
                         {salesManagerOptions.map(manager => (
                           <option key={manager.id} value={manager.id}>{manager.name}</option>
@@ -77963,8 +77951,7 @@ function EmployeeView({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">% cấp trên hưởng</label>
-                      <input type="number" min="0" step="0.01" placeholder="Ví dụ: 0.5" value={empData.salesLeaderCommissionPercent} onChange={e=>setEmpData({...empData, salesLeaderCommissionPercent: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                      <input id="employee-sales-leader-percent" type="number" min="0" step="0.01" placeholder="Ví dụ: 0.5" value={empData.salesLeaderCommissionPercent} onChange={e=>setEmpData({...empData, salesLeaderCommissionPercent: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
                     </div>
                   </div>
                   {isSalesCollaboratorDraft && (
@@ -77975,17 +77962,9 @@ function EmployeeView({
                 </div>
               )}
               
-              <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
-                <label className="block text-[10px] font-bold text-blue-700 uppercase mb-1">Ngày bắt đầu vào làm (Tính thâm niên)</label>
-                <input required type="date" value={empData.startDate} onChange={e=>setEmpData({...empData, startDate: e.target.value})} className="w-full border border-blue-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"/>
-                <p className="text-[10px] text-blue-600 mt-1.5 font-medium">Hệ thống dùng ngày này để tính số chu kỳ thâm niên đã hoàn thành theo tháng, quý hoặc năm.</p>
-              </div>
 
               {!isSalesCollaboratorDraft && (
               <div className="bg-amber-50 p-3 rounded-xl border border-amber-100 space-y-3">
-                <div>
-                  <h4 className="text-xs font-bold text-amber-800 border-b border-amber-200 pb-1">Ca làm việc & Cảnh báo chấm công</h4>
-                </div>
                 <div>
                   <label className="block text-[10px] font-bold text-amber-700 uppercase mb-1">Tên ca</label>
                   <input type="text" value={empData.shiftName} disabled={!canManageShiftPolicy} onChange={e=>setEmpData({...empData, shiftName: capitalizeFirst(e.target.value)})} className="w-full border border-amber-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-500 disabled:bg-amber-50/60 disabled:text-gray-500" placeholder="Ví dụ: Ca sản xuất sớm" />
@@ -78016,72 +77995,11 @@ function EmployeeView({
               </div>
               )}
 
-              {editingEmp && !isEditingOwner && (
-              <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h4 className="text-xs font-bold text-emerald-800 border-b border-emerald-200 pb-1">Vị trí GPS chấm công</h4>
-                    <p className="text-[10px] text-emerald-700 mt-1.5 leading-relaxed">Nếu bật, tài khoản này chỉ chấm công GPS thành công khi đứng gần vị trí cố định trong bán kính đã cài.</p>
-                  </div>
-                  <label className="inline-flex items-center gap-2 text-[11px] font-bold text-emerald-700">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(empData.attendanceLocationEnabled)}
-                      disabled={!canManageShiftPolicy}
-                      onChange={e => setEmpData({ ...empData, attendanceLocationEnabled: e.target.checked })}
-                      className="h-4 w-4 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-40"
-                    />
-                    Bật
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Tên vị trí</label>
-                    <input
-                      type="text"
-                      value={empData.attendanceLocationLabel || ''}
-                      disabled={!canManageShiftPolicy}
-                      onChange={e => setEmpData({ ...empData, attendanceLocationLabel: capitalizeFirst(e.target.value) })}
-                      className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-emerald-50/60 disabled:text-gray-500"
-                      placeholder="Văn phòng, bãi xe, nhà máy"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Bán kính (m)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={empData.attendanceLocationRadiusMeters || DEFAULT_ATTENDANCE_LOCATION_RADIUS_METERS}
-                      disabled={!canManageShiftPolicy}
-                      onChange={e => setEmpData({ ...empData, attendanceLocationRadiusMeters: e.target.value })}
-                      className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-emerald-50/60 disabled:text-gray-500"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Tọa độ GPS cố định</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={empData.attendanceLocationInput || ''}
-                      disabled={!canManageShiftPolicy}
-                      onChange={e => setEmpData({ ...empData, attendanceLocationInput: e.target.value })}
-                      className="min-w-0 flex-1 border border-emerald-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-emerald-50/60 disabled:text-gray-500"
-                      placeholder="10.123456, 106.123456"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleUseCurrentAttendanceLocation}
-                      disabled={!canManageShiftPolicy}
-                      className="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white disabled:opacity-50"
-                    >
-                      Lấy GPS
-                    </button>
-                  </div>
-                </div>
-              </div>
-              )}
 
+              <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
+                <label htmlFor="employee-start-date" className="block text-[10px] font-bold text-blue-700 uppercase mb-1">Ngày bắt đầu vào làm (Tính thâm niên)</label>
+                <input id="employee-start-date" required type="date" value={empData.startDate} onChange={e=>setEmpData({...empData, startDate: e.target.value})} className="w-full border border-blue-200 p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"/>
+              </div>
               {!isSalesCollaboratorDraft && (
               <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-3 mt-2">
                 <div>
@@ -78124,19 +78042,16 @@ function EmployeeView({
                     <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Phụ cấp cố định</label>
                     <input type="tel" placeholder="Nhập tiền phụ cấp" value={formatInputCurrency(empData.supportSalary)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, supportSalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
                   </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">{"L\u01b0\u01a1ng t\u0103ng ca / gi\u1edd"}</label>
-                    <input type="number" placeholder="Ví dụ: 50000" value={empData.overtimeRate} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, overtimeRate: e.target.value})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
+                  <div className="min-w-0">
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Lương trách nhiệm</label>
+                    <input type="tel" placeholder="Ví dụ: 1.000.000" value={formatInputCurrency(empData.responsibilitySalary)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, responsibilitySalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
                   </div>
                 </div>
 
                 <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-3 space-y-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-amber-700">Mốc phạt đi muộn</p>
-                      <p className="text-[11px] text-amber-700/80">App tự lấy giờ vào ca để tính phạt hoặc không tính lương ngày đó.</p>
-                    </div>
-                    <button type="button" onClick={addLatePenaltyTier} disabled={!canManageLatePenaltyPolicy} className="px-3 py-2 rounded-xl bg-white border border-amber-200 text-amber-700 text-xs font-bold disabled:opacity-50">
+                    <p className="min-w-0 text-[10px] font-black uppercase text-amber-700">Mốc phạt</p>
+                    <button type="button" onClick={addLatePenaltyTier} disabled={!canManageLatePenaltyPolicy} className="shrink-0 whitespace-nowrap px-3 py-2 rounded-xl bg-white border border-amber-200 text-amber-700 text-xs font-bold disabled:opacity-50">
                       + Mốc
                     </button>
                   </div>
@@ -78163,33 +78078,31 @@ function EmployeeView({
                       </div>
                     ))}
                   </div>
-                  <label className="flex items-center justify-between gap-3 rounded-xl bg-white border border-emerald-100 p-3">
+                  <label className="employee-overtime-toggle flex items-center justify-between gap-3 py-3">
                     <span>
                       <span className="block text-sm font-bold text-gray-800">Tính đi sớm thành tăng ca</span>
-                      <span className="block text-[11px] text-gray-500">Nếu vào ca trước giờ chuẩn, app cộng phút đi sớm vào tiền tăng ca.</span>
                     </span>
                     <input type="checkbox" checked={empData.autoEarlyOvertimeEnabled !== false} disabled={!canManageEarlyOvertimePolicy} onChange={e => setEmpData(prev => ({ ...prev, autoEarlyOvertimeEnabled: e.target.checked }))} className="h-5 w-5 accent-emerald-600 disabled:opacity-40" />
                   </label>
-                  <label className="flex items-center justify-between gap-3 rounded-xl bg-white border border-blue-100 p-3">
+                  <label className="employee-overtime-toggle flex items-center justify-between gap-3 py-3">
                     <span>
                       <span className="block text-sm font-bold text-gray-800">Tính ra sau ca thành tăng ca</span>
-                      <span className="block text-[11px] text-gray-500">Nếu chấm ra sau giờ kết thúc ca, app tự cộng phần ra muộn vào tiền tăng ca.</span>
                     </span>
                     <input type="checkbox" checked={empData.autoLateCheckoutOvertimeEnabled !== false} disabled={!canManageEarlyOvertimePolicy} onChange={e => setEmpData(prev => ({ ...prev, autoLateCheckoutOvertimeEnabled: e.target.checked }))} className="h-5 w-5 accent-blue-600 disabled:opacity-40" />
                   </label>
-                </div>
-
-                <div className="pt-2">
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Lương trách nhiệm</label>
-                  <input type="tel" placeholder="Ví dụ: 1.000.000" value={formatInputCurrency(empData.responsibilitySalary)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, responsibilitySalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 pt-2">
                   <div>
+                    <label htmlFor="employee-overtime-rate" className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Lương tăng ca / giờ</label>
+                    <input id="employee-overtime-rate" type="text" inputMode="numeric" placeholder="Ví dụ: 50.000" value={formatInputCurrency(empData.overtimeRate)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, overtimeRate: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
+                  </div>
+                </div>
+
+
+                <div className="employee-experience-row grid grid-cols-2 gap-2 pt-2">
+                  <div className="min-w-0 flex flex-col">
                     <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Lương kinh nghiệm / chu kỳ</label>
                     <input type="tel" placeholder="Ví dụ: 200.000" value={formatInputCurrency(empData.experienceSalary)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, experienceSalary: parseInputCurrency(e.target.value)})} className="w-full border p-2.5 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"/>
                   </div>
-                  <div>
+                  <div className="min-w-0 flex flex-col">
                     <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Chu kỳ cộng</label>
                     <select value={empData.experienceSalaryPeriod} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, experienceSalaryPeriod: e.target.value})} className="w-full border p-2.5 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500">
                       <option value="months">Hằng tháng</option>
@@ -78576,6 +78489,8 @@ const PayrollCompactMetric = React.memo(function PayrollCompactMetric({ label, v
 });
 
 function SalaryView({
+  selectedPayrollEmployeeId, setSelectedPayrollEmployeeId,
+  reportPayrollTarget,
   payrollScreen, setPayrollScreen, payrollSearchKeyword, payrollFilterOpen,
   currentCompany,
   currentUser,
@@ -78687,7 +78602,17 @@ function SalaryView({
   const [payrollConfigNoticeHidden, setPayrollConfigNoticeHidden] = useState(false);
 
   const [salaryMonth, setSalaryMonth] = useState(getTodayString().substring(0, 7));
-  const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
+  const handledReportPayrollTarget = useRef(null);
+  useEffect(() => {
+    if (handledReportPayrollTarget.current === reportPayrollTarget) return;
+    const id = reportPayrollTarget?.employeeId;
+    if (!id || (!canViewCompanyPayroll && id !== currentEmployee?.id)) return;
+    if (!(employees || []).some(item => item.id === id)) return;
+    handledReportPayrollTarget.current = reportPayrollTarget;
+    setSelectedPayrollEmployeeId(id);
+    if (/^\d{4}-(0[1-9]|1[0-2])$/.test(reportPayrollTarget.monthKey || '')) setSalaryMonth(reportPayrollTarget.monthKey);
+    setPayrollScreen('detail');
+  }, [reportPayrollTarget, canViewCompanyPayroll, currentEmployee?.id, employees, setPayrollScreen]);
   useAppScreenBack(() => {
     if (showPayrollLockConfirm) {
       setShowPayrollLockConfirm(false);
@@ -79057,7 +78982,8 @@ function SalaryView({
     && typeof onLockPayrollPeriod === 'function'
   );
   const canPreparePayrollAutoLock = Boolean(
-    canManagePayrollByRole
+    payrollAutomationConfig.autoLockEnabled
+    && canManagePayrollByRole
     && canViewCompanyPayroll
     && !isPayrollLocked
     && currentMonth <= getVietnamPayrollDateKey().substring(0, 7)
@@ -79853,7 +79779,7 @@ function SalaryView({
         </div>
       )}
 
-      {payrollScreen === 'overview' && canManagePayrollByRole && canViewCompanyPayroll && !isPayrollLocked && (
+      {payrollAutomationConfig.autoLockEnabled && payrollScreen === 'overview' && canManagePayrollByRole && canViewCompanyPayroll && !isPayrollLocked && (
         <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-sky-900 shadow-sm">
           <div className="flex items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white"><Clock size={17} /></span>

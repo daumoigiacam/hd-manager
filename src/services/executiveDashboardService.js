@@ -2218,7 +2218,7 @@ export const DashboardService = {
         const recordedSalary = salaryDisbursementByMonth.get(key) || 0;
         const accruedSalary = payrollByMonth.get(key) || 0;
         const salaryFactor = recordedSalary > 0 ? Math.max(0, recordedSalary - accruedSalary) / recordedSalary : 0;
-        return { ...expense, amount: isSalaryAdvanceExpense(expense) ? 0 : moneyOfExpense(expense) * (isPayrollDisbursementExpense(expense) ? salaryFactor : 1) };
+        return { ...expense, originalAmount: moneyOfExpense(expense), amount: isSalaryAdvanceExpense(expense) ? 0 : moneyOfExpense(expense) * (isPayrollDisbursementExpense(expense) ? salaryFactor : 1) };
       });
     const costOfGoodsToday = toNumber(inventorySoldCostByDate.get(finance.todayKey));
     const costOfGoodsYesterday = toNumber(inventorySoldCostByDate.get(finance.yesterdayKey));
@@ -2349,7 +2349,10 @@ export const DashboardService = {
       const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
       const name = expense.name || expense.title || expense.description || expense.reason || expense.category || category;
       expenseCategoryRows.push({ date, category, name: category, detail: name, value });
-      expenseDetailRows.push({ date, category, name, detail: name, value });
+      expenseDetailRows.push({ date, category, name, detail: expense.note || expense.description || expense.reason || name, value,
+        sourceType: 'expense', sourceId: expense.id || '', originalAmount: expense.originalAmount,
+        recipient: expense.recipient || expense.payee || expense.employeeName || expense.staffName || '',
+      });
       if (category === 'Lương') salaryEmployeeRows.push({
         date,
         employeeId,
@@ -2361,7 +2364,7 @@ export const DashboardService = {
     inventorySoldCostByDate.forEach((value, date) => {
       if (date <= finance.todayKey && toNumber(value) > 0) {
         expenseCategoryRows.push({ date, category: 'Giá vốn', name: 'Giá vốn đã dùng', detail: 'Hàng đã bán', value: toNumber(value) });
-        expenseDetailRows.push({ date, category: 'Giá vốn', name: 'Giá vốn hàng đã bán', detail: 'Theo giá vốn tồn kho', value: toNumber(value) });
+        expenseDetailRows.push({ date, category: 'Giá vốn', name: 'Giá vốn hàng đã bán', detail: 'Giá vốn hàng đã bán trong ngày, không phải phiếu chi tiền.', sourceType: 'costOfGoods', value: toNumber(value) });
       }
     });
     const payrollEmployeeRows = [];
@@ -2380,7 +2383,7 @@ export const DashboardService = {
       };
       payrollEmployeeRows.push(item);
       expenseCategoryRows.push({ date, category: 'Lương', name: 'Lương', detail: item.name, value });
-      expenseDetailRows.push({ date, category: 'Lương', name: `Lương • ${item.name}`, detail: item.department, value });
+      expenseDetailRows.push({ date, category: 'Lương', name: `Lương • ${item.name}`, detail: item.department, sourceType: 'payroll', employeeId, value });
     });
     salaryEmployeeRows.push(...payrollEmployeeRows);
     const expenseByDepartmentMap = new Map([['Giá vốn', costOfGoodsMonth]]);
