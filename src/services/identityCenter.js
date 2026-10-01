@@ -564,6 +564,10 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
 export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) => {
   if (!isNativeRuntime()) throw new Error('Trên website, hãy đăng ký Passkey trong phần bảo mật tài khoản.');
   if (enabled && !(await getBiometricAvailability()).available) throw new Error('Hãy bật Face ID hoặc vân tay trong cài đặt thiết bị trước.');
+  if (enabled) {
+    const verification = await authenticateBiometric('Xác nhận kích hoạt đăng nhập sinh trắc học');
+    if (!verification.success) throw new Error(verification.message);
+  }
   const device = getIdentityDevice();
   const accountScope = rememberIdentityAccountScope(identity);
   let secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: false, accountScope });

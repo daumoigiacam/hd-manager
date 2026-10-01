@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
 import PasskeySettings from './PasskeySettings.jsx';
+import SecurityDialog from './SecurityDialog.jsx';
 
 export default function IdentitySecurityCenter({
+  standalone = false,
   identityApi,
   identityUser,
   vpsMode = false,
@@ -23,7 +25,7 @@ export default function IdentitySecurityCenter({
     identitySetBiometric,
     identityVerifyPin,
   } = identityApi;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(standalone);
   const [devices, setDevices] = useState([]);
   const [auditEntries, setAuditEntries] = useState([]);
   const [securityStatus, setSecurityStatus] = useState('');
@@ -50,13 +52,17 @@ export default function IdentitySecurityCenter({
   }, [identityApi, vpsMode]);
   const device = useMemo(() => getIdentityDevice(), [getIdentityDevice]);
   const identityReady = Boolean(identityUser?.phone || identityUser?.id);
+  const tokenGetter = useRef(onGetIdentityToken);
+  tokenGetter.current = onGetIdentityToken;
+  const refreshInFlight = useRef(false);
 
   const refreshSecurityData = useCallback(async () => {
-    if (!identityReady) return;
+    if (!identityReady || refreshInFlight.current) return;
+    refreshInFlight.current = true;
     setIsLoading(true);
     setSecurityStatus('');
     try {
-      const idToken = vpsMode ? undefined : await onGetIdentityToken?.();
+      const idToken = vpsMode ? undefined : await tokenGetter.current?.();
       if (!vpsMode && !idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
       const [deviceResult, auditResult] = await Promise.allSettled([
         identityListDevices(vpsMode ? {} : { idToken }),
@@ -75,9 +81,10 @@ export default function IdentitySecurityCenter({
     } catch (error) {
       setSecurityStatus(error?.message || 'Không thể tải thông tin bảo mật.');
     } finally {
+      refreshInFlight.current = false;
       setIsLoading(false);
     }
-  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, onGetIdentityToken, vpsMode]);
+  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, vpsMode]);
 
   useEffect(() => {
     if (expanded) refreshSecurityData();
@@ -288,15 +295,20 @@ export default function IdentitySecurityCenter({
 
   const formatAuditTime = (value) => {
     try {
-      return new Date(value).toLocaleString('vi-VN');
+      if (!value) return 'Chưa có thời gian';
+      const date = typeof value.toDate === 'function' ? value.toDate()
+        : typeof value === 'object' && ('seconds' in value || '_seconds' in value)
+          ? new Date(Number(value.seconds ?? value._seconds) * 1000)
+          : new Date(value);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString('vi-VN') : 'Chưa có thời gian';
     } catch {
-      return '';
+      return 'Chưa có thời gian';
     }
   };
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <button type="button" onClick={() => setExpanded(value => !value)} className="flex w-full items-center justify-between gap-3 p-4 text-left">
+      {!standalone && <button type="button" onClick={() => setExpanded(value => !value)} className="flex w-full items-center justify-between gap-3 p-4 text-left">
         <span className="flex min-w-0 items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white"><Lock size={18} /></span>
           <span>
@@ -305,7 +317,7 @@ export default function IdentitySecurityCenter({
           </span>
         </span>
         {expanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
-      </button>
+      </button>}
       {expanded && (
         <div className="space-y-4 border-t border-slate-100 p-4">
           {!identityReady ? (
@@ -318,14 +330,23 @@ export default function IdentitySecurityCenter({
                   <strong className="mt-1 block text-slate-800">{vpsMode ? (identityUser.email || 'Chưa cập nhật') : (identityUser.phone || 'Chưa cập nhật')}</strong>
                 </div>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button type="button" onClick={() => setActiveEditor(activeEditor === 'password' ? '' : 'password')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
+              <div className="flex flex-col divide-y divide-gray-200">
+                <button type="button" onClick={() => { setSecurityStatus(''); setActiveEditor('password'); }} className="px-3 py-3 text-left text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
                 {vpsMode && <button type="button" onClick={() => { resetEmailChangeState(); setActiveEditor(activeEditor === 'email-start' ? '' : 'email-start'); }} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi email</button>}
-                {!vpsMode && <button type="button" onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi PIN 6 số</button>}
-                {!vpsMode && quickLogin.native && <button type="button" onClick={toggleBiometric} disabled={isLoading || (!quickLogin.available && !biometricEnabled)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700 disabled:opacity-50">{biometricEnabled ? 'Tắt Face ID / vân tay' : 'Bật Face ID / vân tay'}</button>}
+                <button type="button" disabled={vpsMode || isLoading} onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="px-3 py-3 text-left text-sm font-semibold disabled:opacity-50">Đổi mã PIN</button>
+                {['Face ID', 'Vân tay'].map(label => <div key={label} className="flex items-center justify-between gap-3 px-3 py-3 text-sm">
+                  <span>{label}</span>
+                  <button type="button" aria-label={`Kích hoạt ${label}`} disabled={vpsMode || isLoading || !quickLogin.available} onClick={() => quickLogin.native ? toggleBiometric() : setActiveEditor('biometric')} className="rounded-lg border border-gray-200 px-3 py-2 font-semibold disabled:opacity-50">{quickLogin.native && biometricEnabled ? 'Tắt' : 'Kích hoạt'}</button>
+                </div>)}
+                {!quickLogin.available && <p className="px-3 py-2 text-xs text-gray-500">Thiết bị hoặc trình duyệt chưa hỗ trợ xác thực sinh trắc học.</p>}
+                <button type="button" onClick={() => setActiveEditor(activeEditor === 'devices' ? '' : 'devices')} className="px-3 py-3 text-left text-sm font-semibold">Thiết bị tin cậy</button>
+                <button type="button" disabled={vpsMode || isLoading} onClick={() => setActiveEditor(activeEditor === 'delete' ? '' : 'delete')} className="px-3 py-3 text-left text-sm font-semibold text-red-600 disabled:opacity-50">Xóa tài khoản</button>
               </div>
-              {!vpsMode && !quickLogin.native && quickLogin.available && <PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} />}
+              {activeEditor === 'biometric' && !vpsMode && !quickLogin.native && quickLogin.available && <SecurityDialog title="Kích hoạt Face ID / Vân tay" onClose={() => setActiveEditor('')}><PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} /></SecurityDialog>}
               {(activeEditor === 'password' || activeEditor === 'pin') && (
+                <SecurityDialog title={activeEditor === 'password' ? 'Đổi mật khẩu' : 'Đổi mã PIN'} busy={isLoading} onClose={() => {
+                  setActiveEditor(''); setCurrentPassword(''); setCurrentPin(''); setNewPassword(''); setNewPasswordConfirm(''); setNewPin(''); setNewPinConfirm(''); setSecurityStatus('');
+                }}>
                 <form onSubmit={runSensitiveUpdate} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   {activeEditor === 'password' && (
                     <>
@@ -345,7 +366,9 @@ export default function IdentitySecurityCenter({
                     <input type="password" inputMode="numeric" maxLength={6} value={currentPin} onChange={event => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-500" placeholder="PIN hiện tại để xác nhận" />
                   )}
                   <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang lưu...' : 'Xác nhận thay đổi'}</button>
+                  {securityStatus && <p role="status" className="text-sm text-red-700">{securityStatus}</p>}
                 </form>
+                </SecurityDialog>
               )}
               {activeEditor === 'email-start' && (
                 <form onSubmit={startEmailChange} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -365,7 +388,7 @@ export default function IdentitySecurityCenter({
                   <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-emerald-700 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang cập nhật...' : 'Xác nhận đổi email'}</button>
                 </form>
               )}
-              <div className="space-y-2">
+              {activeEditor === 'devices' && <><div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-bold text-slate-900">Thiết bị tin cậy</h4>
                   <button type="button" onClick={refreshSecurityData} disabled={isLoading} className="text-xs font-semibold text-emerald-700">Làm mới</button>
@@ -390,7 +413,8 @@ export default function IdentitySecurityCenter({
                   </div>
                 )) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}
               </div>
-              {!vpsMode && <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
+              </>}
+              {activeEditor === 'delete' && !vpsMode && <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
                 <div>
                   <h4 className="text-sm font-bold text-red-800">Xóa tài khoản</h4>
                   <p className="mt-1 text-xs leading-5 text-red-700">Thao tác này xóa phiên đăng nhập, mật khẩu, PIN và dữ liệu xác thực. Đơn hàng, công nợ, bảng lương và hồ sơ nghiệp vụ được giữ lại theo chính sách lưu trữ.</p>

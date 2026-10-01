@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { createPasskeyService } = require('./identityPasskeys');
+const { asIso } = require('./identityTime');
 
 const IDENTITY_ACCOUNT_COLLECTION = 'identity_accounts';
 const IDENTITY_AUDIT_COLLECTION = 'identity_audit_logs';
@@ -73,7 +74,6 @@ const isPhoneIdentifier = (value = '') => {
   return /^[+\d\s().-]+$/.test(raw) && normalizePhone(raw).length >= 9;
 };
 const safeIdPart = (value = '') => `${value || ''}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
-const asIso = (value = new Date()) => value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 const timingSafeTextEqual = (left = '', right = '') => {
   const leftBuffer = Buffer.from(`${left || ''}`);
   const rightBuffer = Buffer.from(`${right || ''}`);

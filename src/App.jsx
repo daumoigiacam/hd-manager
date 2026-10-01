@@ -25520,7 +25520,7 @@ function MainAppView({
       case 'executive_dashboard': return keepExecutiveDashboardMounted ? null : renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
-      case 'settings': return <SettingsView isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
+      case 'settings': return <SettingsView currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
       case 'company_attendance':
@@ -28626,17 +28626,6 @@ function ProfileView({ employee, currentUser, currentCompany, isCompanyAccount: 
       </form>}
 
       <form onSubmit={handleCompanySubmit} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="min-w-0 text-sm font-black uppercase tracking-[0.16em] text-cyan-700">Báo cáo công việc</p>
-          <div>
-            <h3 className="font-bold text-lg text-gray-900">Thông tin doanh nghiệp</h3>
-            <p className="text-xs text-gray-500 mt-1">Tên và logo ở trang chính sẽ lấy từ phần này.</p>
-          </div>
-          <span className={`text-[11px] px-3 py-1 rounded-full font-bold ${canEditCompanyProfile ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}>
-            {canEditCompanyProfile ? 'Được chỉnh sửa' : 'Chỉ xem'}
-          </span>
-        </div>
-
         <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 flex items-center gap-4">
           <div className="w-16 h-16 rounded-2xl bg-white border border-gray-200 flex items-center justify-center overflow-hidden shrink-0">
             {companyPreviewLogo ? (
@@ -28754,7 +28743,6 @@ function ProfileView({ employee, currentUser, currentCompany, isCompanyAccount: 
         </button>
       </form>
 
-      {isCompanyAccount && identitySecurityPanel}
     </div>
   );
 }
@@ -32851,6 +32839,9 @@ function ZaloCampaignPanel({
 }
 
 function SettingsView({
+  currentUser,
+  onGetIdentityToken,
+  onLogout,
   isAccounting,
   employee,
   currentCompany,
@@ -33055,6 +33046,7 @@ function SettingsView({
   const canOpenBankPaymentCenter = Boolean(canViewBankPayments || canManageBankTransferSettings || isAccounting);
   const canManageSalaryAdvanceSettings = Boolean(canConfigureSalaryAdvanceLimit || isAccounting);
   const canAccessSettings = Boolean(
+    currentUser ||
     isAccounting ||
     canEditCompanyProfile ||
     canManageBankTransferSettings ||
@@ -33068,6 +33060,7 @@ function SettingsView({
     canResetCompanyData
   );
   const settingsPanels = [
+    { id: 'security', label: 'Bảo mật tài khoản', description: 'Mật khẩu, PIN và thiết bị tin cậy', icon: Lock, enabled: Boolean(currentUser) },
     { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
     { id: 'bank_payments', label: 'Ngân hàng', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
     { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
@@ -33384,6 +33377,7 @@ function SettingsView({
   return (
     <div data-settings-page={safeActiveSettingsPanel} className="space-y-4 pb-20 [&>section]:rounded-none [&>section]:border-0 [&>section]:shadow-none">
 
+      {safeActiveSettingsPanel === 'security' && <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyIdentitySecurityCenter standalone identityApi={identitySecurityApi} identityUser={currentUser} vpsMode={isVpsMode} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} /></React.Suspense>}
       {safeActiveSettingsPanel === 'account' && <CompanyBankAccounts company={currentCompany} banks={BANK_ID_OPTIONS} canEdit={canManageBankTransferSettings} onSave={onUpdateCompanySettings} draft={bankAccountDraft} setDraft={setBankAccountDraft} />}
 
 
@@ -67164,7 +67158,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               className="hd-order-detail-content flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-[calc(var(--hd-safe-bottom)+7rem)] space-y-4"
               style={{ scrollPaddingBottom: 'calc(var(--hd-safe-bottom) + 7rem)' }}
             >
-              <section aria-label="Thao tác hóa đơn" className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+              <section aria-label="Thao tác hóa đơn" className="hd-invoice-detail-sheet bg-white p-3">
                 <div className="mb-4 grid grid-cols-2 gap-3 border-b border-slate-100 pb-4" aria-label="Thông tin hóa đơn">
                   <div className="min-w-0 space-y-1">
                     <h3 className="break-words text-base font-extrabold text-slate-900">{detailCustomer?.name || selectedOrder.customerName || 'Khách hàng'}</h3>
@@ -67339,7 +67333,6 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
                   {parseLooseMoneyValue(selectedOrder.appliedAmount) > 0 && <button type="button" disabled={!canEditSelectedOrder} onClick={() => promptEditOrderMoney(selectedOrder, 'paid')} className="rounded-full bg-emerald-50 px-3 py-2 text-emerald-700">Đã thu {formatCurrency(selectedOrder.appliedAmount)} đ</button>}
                   {detailOutstanding > 0 ? <span className="rounded-full bg-amber-50 px-3 py-2 text-amber-700">Còn nợ {formatCurrency(detailOutstanding)} đ</span> : <><span className="rounded-full bg-emerald-50 px-3 py-2 text-emerald-700">Hết nợ</span><span className="text-emerald-700">ĐÃ THANH TOÁN</span></>}
                 </div>
-                {canEditSelectedOrder && <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer">Điều chỉnh khác</summary><button type="button" onClick={() => promptEditOrderMoney(selectedOrder, 'discount')} className="mt-2 rounded-lg border border-slate-200 px-3 py-2">Giảm giá {parseLooseMoneyValue(selectedOrder.discount) > 0 ? `${formatCurrency(selectedOrder.discount)} đ` : ''}</button></details>}
               </section>
 
               {orderShareStatus && (

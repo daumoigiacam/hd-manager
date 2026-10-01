@@ -2633,3 +2633,45 @@ html.hd-low-power-ui .hd-soft-red-outline {
     gap: 1.25rem;
   }
 }
+.hd-order-detail-content .hd-invoice-detail-sheet {
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2937;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.hd-invoice-detail-sheet :where(p, span, h3, button) {
+  font-family: inherit;
+  font-size: 14px !important;
+  line-height: 1.5;
+  letter-spacing: 0 !important;
+}
+.hd-invoice-detail-sheet :where(h3, button, .font-black, .font-extrabold) { font-weight: 600 !important; }
+.hd-invoice-detail-sheet [aria-label="Thông tin hóa đơn"],
+.hd-invoice-detail-sheet [class~="border-b"] { border-bottom-color: #d1d5db; }
+.hd-invoice-detail-sheet button[title="Sửa số lượng"],
+.hd-invoice-detail-sheet button[title="Sửa đơn giá"] {
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 1px solid #d1d5db;
+  border-radius: 0 !important;
+  background: #fff !important;
+  color: #1f2937 !important;
+  box-shadow: none !important;
+  overflow-wrap: anywhere;
+}
+.hd-invoice-detail-sheet button:focus-visible { outline: 2px solid #315bea; outline-offset: 2px; }
+.hd-invoice-detail-sheet [aria-label="Trạng thái thanh toán"] {
+  padding-top: 12px;
+  border-top: 1px solid #d1d5db;
+}
+.hd-invoice-detail-sheet [aria-label="Trạng thái thanh toán"] > * {
+  padding: 4px 0;
+  margin-right: 12px;
+  border-radius: 0;
+  background: transparent;
+}
