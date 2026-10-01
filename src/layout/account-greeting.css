@@ -10,14 +10,22 @@ header:has(.hd-account-greeting),
 .hd-shell--staff .hd-dashboard-masthead:has(.hd-account-greeting),
 .hd-dashboard-masthead:has(.hd-account-greeting),
 .hd-staff-greeting-surface {
-  background: #d4e7e2 !important;
-  color: #214d46 !important;
-  border-bottom: 1px solid #d8e6e2;
+  background: #14584e !important;
+  color: #ffffff !important;
+  border-bottom: 1px solid #10473f;
   box-shadow: 0 1px 4px rgb(33 77 70 / 5%);
 }
 header:has(.hd-account-greeting) button,
 .hd-dashboard-masthead .hd-account-greeting,
-.hd-staff-greeting-surface .hd-account-greeting { color: #214d46; }
+.hd-staff-greeting-surface .hd-account-greeting { color: #ffffff !important; }
 .hd-dashboard-masthead:has(.hd-account-greeting)::before,
 .hd-dashboard-masthead:has(.hd-account-greeting)::after { display: none; }
-.hd-staff-greeting-surface .text-emerald-50 { color: #42675f; }
+.hd-staff-greeting-surface .text-emerald-50,
+.hd-staff-greeting-surface .text-emerald-100 { color: #ffffff; }
+.hd-staff-greeting-surface .text-emerald-100 { font-size: 11px; letter-spacing: 0; }
+header:has(.hd-account-greeting) .hd-account-greeting,
+.business-report-header:has(.hd-account-greeting) .hd-account-greeting,
+.business-report-header:has(.hd-account-greeting) button,
+.hd-staff-greeting-surface .hd-header-global-search-button {
+  color: #ffffff !important;
+}
