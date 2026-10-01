@@ -526,8 +526,9 @@ service cloud.firestore {
       let localTime = request.time + duration.value(7, 'h');
       let localMonth = localTime.month();
       let localMonthKey = string(localTime.year()) + '-' + (localMonth < 10 ? '0' : '') + string(localMonth);
-      return monthKey == localMonthKey
-        && (localTime + duration.value(1, 'd')).month() != localMonth;
+      return monthKey.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && (monthKey < localMonthKey || (monthKey == localMonthKey
+          && (localTime + duration.value(1, 'd')).month() != localMonth));
     }
 
     function isValidLockedPayrollPeriodCreate(appId, docId) {

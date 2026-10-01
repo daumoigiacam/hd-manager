@@ -4,6 +4,7 @@ import {
   buildPayrollPeriodId,
   buildPayrollSnapshotId,
   canLockPayrollPeriodAtDate,
+  getPayrollLockBlockers,
   createPayrollEmployeeSnapshot,
   createPayrollPeriodRecord,
   getLockedPayrollPeriod,
@@ -66,9 +67,21 @@ test('does not allow locking before the final day', () => {
   assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-08-30'), false);
 });
 
-test('allows locking only on the final day, not a later date', () => {
+test('allows locking on the final day and recovering overdue periods', () => {
   assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-08-31'), true);
-  assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-09-01'), false);
+  assert.equal(canLockPayrollPeriodAtDate('2026-08', '2026-09-01'), true);
+  assert.equal(canLockPayrollPeriodAtDate('2026-09', '2026-10-01'), true);
+  assert.equal(canLockPayrollPeriodAtDate('2026-10', '2026-10-01'), false);
+});
+
+test('explains missing historical policy and server blockers without manufacturing evidence', () => {
+  const snapshot = createPayrollEmployeeSnapshot({companyId, monthKey, employee: {...employee, payrollPolicies: []}, salaryDetails, lockedAt});
+  const reasons = getPayrollLockBlockers([snapshot], {gateState: 'RULES_PENDING', eligibilityBlockers: ['employees.changed']});
+  assert.ok(reasons.some(reason => reason.includes(employee.name)));
+  assert.ok(reasons.some(reason => reason.includes('chính sách lương')));
+  assert.ok(reasons.some(reason => reason.includes('Máy chủ')));
+  assert.ok(reasons.some(reason => reason.includes('Danh sách nhân sự')));
+  assert.equal(createPayrollPeriodRecord({companyId, monthKey, snapshots: [snapshot], lockedAt}), null);
 });
 
 test('uses Vietnam calendar dates across UTC day and month boundaries', () => {

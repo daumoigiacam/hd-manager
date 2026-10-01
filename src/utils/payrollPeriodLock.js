@@ -168,7 +168,28 @@ export const getVietnamPayrollDateKey = (date = new Date()) => {
 export const canLockPayrollPeriodAtDate = (monthKey = '', todayKey = '') => {
   const monthEndDateKey = getPayrollMonthEndDateKey(monthKey);
   const normalizedTodayKey = normalizeDateKey(todayKey);
-  return Boolean(monthEndDateKey && normalizedTodayKey && normalizedTodayKey === monthEndDateKey);
+  return Boolean(monthEndDateKey && normalizedTodayKey && normalizedTodayKey >= monthEndDateKey);
+};
+
+export const getPayrollLockBlockers = (snapshots = [], plan = null) => {
+  const reasons = snapshots.length ? [] : ['Chưa có dữ liệu nhân sự để chốt kỳ lương.'];
+  for (const snapshot of snapshots) {
+    const inspection = inspectPayrollSnapshot(snapshot);
+    if (inspection.isComplete) continue;
+    const name = snapshot?.employee?.name || snapshot?.employeeId || 'Nhân sự chưa xác định';
+    const fields = [...inspection.missingFields, ...inspection.invalidFields];
+    reasons.push(`${name}: ${!snapshot?.policySnapshot ? 'Thiếu chính sách lương đã lưu có hiệu lực trong tháng. ' : ''}Cần kiểm tra: ${fields.join(', ') || inspection.issues.join(', ')}.`);
+  }
+  const labels = {
+    'production_rules_not_confirmed': 'Máy chủ chưa xác nhận phiên bản quy tắc khóa lương.',
+    'employees.changed': 'Danh sách nhân sự đã thay đổi so với kế hoạch chốt.',
+    'adjustments.pending': 'Còn điều chỉnh lương đang chờ xử lý.',
+    'stagedSnapshots.missing': 'Thiếu bản chụp lương đã chuẩn bị.',
+    'plan.closingSchedule': 'Lịch chốt lương không hợp lệ.'
+  };
+  if (plan?.gateState === 'RULES_PENDING') reasons.push(labels.production_rules_not_confirmed);
+  for (const reason of plan?.eligibilityBlockers || []) reasons.push(labels[reason] || `Máy chủ yêu cầu kiểm tra: ${reason}`);
+  return [...new Set(reasons)];
 };
 
 export const buildPayrollPeriodId = (companyId = '', monthKey = '') => {

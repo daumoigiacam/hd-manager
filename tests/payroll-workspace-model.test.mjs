@@ -22,6 +22,12 @@ assert.equal(summary.baseSalary, 12_000_000);
 assert.equal(summary.allowances, 600_000);
 assert.equal(summary.bonus, 300_000);
 assert.equal(summary.penalty, 50_000);
+assert.equal(summary.totalAdvance, 7_000_000);
+assert.equal(summarizePayrollWorkspace([]).totalAdvance, 0);
+assert.equal(summarizePayrollWorkspace([
+  ...rows,
+  { emp: { id: 'd' }, details: { totalAdvance: '1250000', openingDebt: 500_000, endingDebt: 250_000 } }
+]).totalAdvance, 8_250_000);
 assert.equal(summary.payable, rows.reduce((sum, row) => sum + row.details.netSalary, 0));
 assert.equal(summary.carryForward, 2_000_000);
 assert.deepEqual([summary.readyCount, summary.carryCount, summary.reviewCount], [1, 1, 1]);

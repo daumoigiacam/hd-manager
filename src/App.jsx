@@ -100,6 +100,7 @@ import {
   PAYROLL_RULES_VERSION,
   buildPayrollPeriodId,
   canLockPayrollPeriodAtDate,
+  getPayrollLockBlockers,
   createPayrollEmployeeSnapshot,
   createPayrollPeriodRecord,
   getLockedPayrollPeriod,
@@ -17993,7 +17994,7 @@ export default function App() {
       return { success: false, message: 'Chỉ chủ doanh nghiệp hoặc kế toán được khóa kỳ lương.' };
     }
     if (!canLockPayrollPeriodAtDate(safeMonthKey, getVietnamPayrollDateKey())) {
-      return { success: false, message: 'Kỳ lương chỉ được chốt đúng ngày cuối cùng của tháng.' };
+      return { success: false, message: 'Kỳ lương chỉ được chốt từ ngày cuối cùng của tháng trở đi.' };
     }
     if (getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey)) {
       return { success: false, message: 'Kỳ lương này đã được khóa trước đó.' };
@@ -23726,6 +23727,17 @@ function MainAppView({
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
   const [productSearchKeyword, setProductSearchKeyword] = useState('');
+  const [payrollScreen, setPayrollScreen] = useState('overview');
+  const [payrollSearchKeyword, setPayrollSearchKeyword] = useState('');
+  const [payrollSearchOpen, setPayrollSearchOpen] = useState(false);
+  const [payrollFilterOpen, setPayrollFilterOpen] = useState(false);
+  useEffect(() => {
+    if (activeTab !== 'payroll') {
+      setPayrollScreen('overview');
+      setPayrollSearchOpen(false);
+      setPayrollFilterOpen(false);
+    }
+  }, [activeTab]);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productFilterOpen, setProductFilterOpen] = useState(false);
   const [orderRequestFilterOpen, setOrderRequestFilterOpen] = useState(false);
@@ -25006,6 +25018,25 @@ function MainAppView({
         </HDHeader>
       );
     }
+    if (activeTab === 'payroll' && payrollScreen === 'detail') {
+      return <HDHeader className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-blue-700 to-blue-600 text-white p-3 shadow-sm shrink-0">
+        <div className="flex min-h-10 items-center gap-2">
+          <button type="button" onClick={() => setPayrollScreen('list')} aria-label="Quay lại danh sách nhân viên" className="flex h-10 w-10 shrink-0 items-center justify-center"><ChevronLeft size={23} /></button>
+          <h1 className="min-w-0 flex-1 text-base font-bold" style={{ color: '#fff' }}>Chi tiết lương</h1>
+          {renderNotificationBell()}
+        </div>
+      </HDHeader>;
+    }
+    if (activeTab === 'payroll' && payrollScreen === 'list') {
+      return <HDHeader className="hd-app-header hd-safe-header-compact bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-3 shadow-sm shrink-0">
+        <div className="flex min-h-10 items-center gap-2">
+          <button type="button" onClick={() => { setPayrollSearchOpen(false); setPayrollScreen('overview'); }} aria-label="Quay lại bảng lương" className="flex h-10 w-10 shrink-0 items-center justify-center"><ChevronLeft size={23} /></button>
+          {payrollSearchOpen ? <input autoFocus aria-label="Tìm nhân viên" placeholder="Tìm nhân viên" value={payrollSearchKeyword} onChange={event => setPayrollSearchKeyword(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setPayrollSearchOpen(false); }} className="h-10 min-w-0 flex-1 rounded-lg bg-white px-3 text-base text-slate-900" /> : <h1 className="min-w-0 flex-1 text-base font-bold">Danh sách nhân viên</h1>}
+          <button type="button" title={payrollSearchOpen ? 'Đóng tìm kiếm' : 'Tìm nhân viên'} aria-label={payrollSearchOpen ? 'Đóng tìm kiếm' : 'Tìm nhân viên'} aria-expanded={payrollSearchOpen} onClick={() => setPayrollSearchOpen(value => !value)} className="flex h-10 w-10 shrink-0 items-center justify-center">{payrollSearchOpen ? <X size={20} /> : <Search size={20} />}</button>
+          <button type="button" title="Lọc nhân viên" aria-label="Lọc nhân viên" aria-expanded={payrollFilterOpen} onClick={() => setPayrollFilterOpen(value => !value)} className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${payrollFilterOpen ? 'bg-white/20' : ''}`}><Filter size={20} /></button>
+        </div>
+      </HDHeader>;
+    }
     const hideHeaderSearchFilter = activeTab === 'price_quotes' || activeTab === 'order_requests' || activeTab === 'warehouse_dispatch';
     const showHeaderSearchFilterActions = ['finance', 'orders', 'debt', 'customers', 'products'].includes(activeTab);
     const headerSearchKeyword = activeTab === 'finance'
@@ -25599,6 +25630,10 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         }
         return (
         <SalaryView
+          payrollScreen={payrollScreen}
+          setPayrollScreen={setPayrollScreen}
+          payrollSearchKeyword={payrollSearchKeyword}
+          payrollFilterOpen={payrollFilterOpen}
           currentCompany={currentCompany}
           currentUser={currentUser}
           currentEmployee={employee}
@@ -78541,6 +78576,7 @@ const PayrollCompactMetric = React.memo(function PayrollCompactMetric({ label, v
 });
 
 function SalaryView({
+  payrollScreen, setPayrollScreen, payrollSearchKeyword, payrollFilterOpen,
   currentCompany,
   currentUser,
   currentEmployee,
@@ -78651,7 +78687,6 @@ function SalaryView({
   const [payrollConfigNoticeHidden, setPayrollConfigNoticeHidden] = useState(false);
 
   const [salaryMonth, setSalaryMonth] = useState(getTodayString().substring(0, 7));
-  const [payrollScreen, setPayrollScreen] = useState('overview');
   const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
   useAppScreenBack(() => {
     if (showPayrollLockConfirm) {
@@ -79025,7 +79060,7 @@ function SalaryView({
     canManagePayrollByRole
     && canViewCompanyPayroll
     && !isPayrollLocked
-    && currentMonth === getTodayString().substring(0, 7)
+    && currentMonth <= getVietnamPayrollDateKey().substring(0, 7)
     && liveSalaryRows.length > 0
     && typeof onPreparePayrollAutoLockPlan === 'function'
   );
@@ -79055,6 +79090,10 @@ function SalaryView({
     return { period, snapshots };
   }, [aggregateData, currentEmployee, currentEmployeeId, currentMonth, currentUser, liveSalaryRows, payrollCompanyId]);
 
+  const payrollLockBlockers = useMemo(() => getPayrollLockBlockers(
+    buildPayrollLockPayload().snapshots, activePayrollAutoLockPlan
+  ), [buildPayrollLockPayload, activePayrollAutoLockPlan]);
+
   const payrollAutoLockPlanSignature = useMemo(() => JSON.stringify({
     companyId: payrollCompanyId,
     monthKey: currentMonth,
@@ -79062,6 +79101,7 @@ function SalaryView({
       employeeId: emp?.id || '',
       employeeName: emp?.name || '',
       employeePosition: emp?.position || '',
+      payrollPolicies: emp?.payrollPolicies || emp?.salaryPolicyHistory || [],
       salaryDetails: details
     }))
   }), [currentMonth, liveSalaryRows, payrollCompanyId]);
@@ -79083,7 +79123,7 @@ function SalaryView({
       || activePayrollAutoLockPlan.rulesVersion !== PAYROLL_RULES_VERSION
     )) {
       payrollAutoLockPlanSignatureRef.current = payrollAutoLockPlanSignature;
-      setPayrollAutoLockPlanStatus('Káº¿ hoáº¡ch khĂ³a hiá»‡n táº¡i cáº§n rĂ  soĂ¡t; app khĂ´ng tá»± ghi Ä‘Ă¨ snapshot lá»‹ch sá»­.');
+      setPayrollAutoLockPlanStatus('Kế hoạch đang được máy chủ xử lý hoặc cần rà soát; không tự ghi đè dữ liệu đã kiểm tra.');
       return undefined;
     }
     if (
@@ -79103,7 +79143,7 @@ function SalaryView({
     const timeoutId = window.setTimeout(async () => {
       const payload = buildPayrollLockPayload();
       if (!payload?.period || payload.snapshots.length === 0) {
-        setPayrollAutoLockPlanStatus('Chưa đủ dữ liệu để chuẩn bị khóa tự động.');
+        setPayrollAutoLockPlanStatus(getPayrollLockBlockers(payload.snapshots).join(' '));
         return;
       }
       payrollAutoLockPlanSavingRef.current = true;
@@ -79143,7 +79183,7 @@ function SalaryView({
     const { period, snapshots } = buildPayrollLockPayload();
 
     if (!period || snapshots.length === 0) {
-      setPayrollLockStatus('Chưa có dữ liệu nhân sự hợp lệ để khóa kỳ lương.');
+      setPayrollLockStatus(getPayrollLockBlockers(snapshots).join(' '));
       return;
     }
 
@@ -79728,6 +79768,8 @@ function SalaryView({
 
       <PayrollWorkspace
         screen={payrollScreen}
+        searchText={payrollSearchKeyword}
+        filterOpen={payrollFilterOpen}
         onScreenChange={setPayrollScreen}
         rows={salaryRows}
         monthKey={currentMonth}
@@ -79811,20 +79853,21 @@ function SalaryView({
         </div>
       )}
 
-      {payrollScreen === 'overview' && canPreparePayrollAutoLock && (
+      {payrollScreen === 'overview' && canManagePayrollByRole && canViewCompanyPayroll && !isPayrollLocked && (
         <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-sky-900 shadow-sm">
           <div className="flex items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white"><Clock size={17} /></span>
             <div className="min-w-0">
               <p className="text-sm font-black">Khóa lương tự động cuối tháng</p>
               <p className="mt-1 text-xs leading-relaxed text-sky-700">
-                Hệ thống sẽ khóa {currentMonthLabel.toLowerCase()} lúc 23:59:59 ngày {payrollMonthEndLabel || 'cuối tháng'} bằng ảnh chụp hiện tại.
+                Kỳ {currentMonthLabel.toLowerCase()} đến hạn khóa lúc 23:59:59 ngày {payrollMonthEndLabel || 'cuối tháng'}. Máy chủ chỉ khóa sau khi kế hoạch và dữ liệu được kiểm tra hợp lệ.
               </p>
               <p className={`mt-1 text-[11px] font-bold ${payrollAutoLockPlanStatus && !activePayrollAutoLockPlan ? 'text-amber-700' : 'text-sky-700'}`}>
                 {[PAYROLL_AUTO_LOCK_PLAN_STATUS.OPEN, 'READY'].includes(`${activePayrollAutoLockPlan?.status || ''}`.toUpperCase())
                   ? 'Kỳ lương đang mở; dữ liệu xem trước sẽ được kiểm tra lại khi đến thời điểm chốt.'
                   : (payrollAutoLockPlanStatus || 'Đang chuẩn bị ảnh chụp khóa tự động...')}
               </p>
+              {payrollLockBlockers.length > 0 && <ul className="mt-2 space-y-1 break-words text-xs text-amber-800" aria-label="Lý do chưa thể khóa lương">{payrollLockBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul>}
             </div>
           </div>
         </div>

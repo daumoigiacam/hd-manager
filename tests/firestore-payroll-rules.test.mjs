@@ -257,11 +257,9 @@ try {
     await assertFails(writeAtomicLock(employeeDb, lock));
   });
 
-  await test('an owner cannot backdate a payroll close; historical records remain readable', async () => {
-    await assertFails(writeAtomicLock(ownerDb, lock));
-    await testEnvironment.withSecurityRulesDisabled(async context => {
-      await writeAtomicLock(context.firestore(), lock);
-    });
+  await test('an owner can close an overdue period with server-confirmed close time', async () => {
+    await assertSucceeds(writeAtomicLock(ownerDb, lock));
+    await assertFails(writeAtomicLock(ownerDb, buildLockDocuments({monthKey: '2099-01'})));
     const savedSnapshot = await assertSucceeds(getDoc(doc(ownerDb, pathFor(appId, 'payrollSnapshots', lock.snapshotId))));
     assert.equal(savedSnapshot.data().salaryDetails.endingDebt, 2_000_000);
   });
@@ -530,16 +528,16 @@ try {
     });
 
     const outcomes = await Promise.allSettled([lockOnce(), lockOnce()]);
-    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 0);
-    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 2);
+    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 1);
     await testEnvironment.withSecurityRulesDisabled(async context => {
       const adminDb = context.firestore();
       const periods = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollPeriods`));
       const snapshots = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollSnapshots`));
       const carryovers = await getDocs(collection(adminDb, `artifacts/${concurrencyAppId}/public/data/payrollDebtCarryovers`));
-      assert.equal(periods.size, 0);
-      assert.equal(snapshots.size, 0);
-      assert.equal(carryovers.size, 0);
+      assert.equal(periods.size, 1);
+      assert.equal(snapshots.size, 1);
+      assert.equal(carryovers.size, 1);
     });
   });
 

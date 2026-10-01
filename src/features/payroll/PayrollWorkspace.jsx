@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft,
-  ChevronRight, ClipboardList, Clock3, Filter, Gift, LockKeyhole, Search,
+  AlertTriangle, ArrowRight, Banknote, CalendarDays, CheckCircle2, ChevronLeft,
+  ChevronRight, Clock3, Gift, LockKeyhole,
   ShieldCheck, UsersRound, Wallet
 } from 'lucide-react';
 import {
@@ -22,9 +22,17 @@ const closedAtLabel = period => {
   return Number.isNaN(date.getTime()) ? 'Đã chốt' : date.toLocaleString('vi-VN');
 };
 
-function MonthControl({ monthKey, onChange, locked }) {
+function MonthControl({ monthKey, onChange, locked, compact = false }) {
   const range = getPayrollMonthRange(monthKey);
   if (!range) return null;
+  if (compact) return <div className="flex min-w-0 flex-col justify-center rounded-lg border border-slate-100 bg-white p-2 shadow-sm" aria-label="Chọn tháng lương">
+    <div className="flex items-center justify-between">
+      <button type="button" aria-label="Tháng trước" onClick={() => onChange(shiftPayrollMonth(monthKey, -1))} className="flex h-10 w-8 shrink-0 items-center justify-center text-slate-600"><ChevronLeft size={18} /></button>
+      <p className="min-w-0 text-center text-xs font-bold text-slate-900">{monthKey.slice(5)}/{monthKey.slice(0, 4)}</p>
+      <button type="button" aria-label="Tháng sau" onClick={() => onChange(shiftPayrollMonth(monthKey, 1))} className="flex h-10 w-8 shrink-0 items-center justify-center text-slate-600"><ChevronRight size={18} /></button>
+    </div>
+    <p className="text-center text-[10px] leading-relaxed text-slate-500">{range.firstLabel}<br />{range.lastLabel}</p>
+  </div>;
   return (
     <div className="flex items-center gap-2 rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
       <button type="button" className="flex h-10 w-9 shrink-0 items-center justify-center text-slate-600" aria-label="Tháng trước" onClick={() => onChange(shiftPayrollMonth(monthKey, -1))}><ChevronLeft size={20} /></button>
@@ -41,10 +49,12 @@ function MonthControl({ monthKey, onChange, locked }) {
 function Metric({ icon: Icon, label, value, tone = 'blue' }) {
   const colors = { blue: 'text-blue-600 bg-blue-50', green: 'text-emerald-600 bg-emerald-50', orange: 'text-orange-600 bg-orange-50', red: 'text-red-600 bg-red-50', violet: 'text-violet-600 bg-violet-50' };
   return (
-    <div className="min-w-0 rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-      <span className={`mb-2 flex h-8 w-8 items-center justify-center rounded-lg ${colors[tone]}`}><Icon size={17} /></span>
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className="mt-1 break-words text-sm font-bold text-slate-900">{value}</p>
+    <div className="min-w-0 rounded-xl border border-slate-100 bg-white p-2 shadow-sm" data-payroll-metric>
+      <div className="flex h-6 items-center gap-1">
+        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${colors[tone]}`}><Icon size={16} aria-hidden="true" /></span>
+        <p className="whitespace-nowrap text-[11px] font-medium text-slate-500">{label}</p>
+      </div>
+      <p className="mt-2 flex min-h-8 items-center justify-center whitespace-nowrap text-center font-bold tabular-nums text-slate-900" style={{ fontSize: String(value).length > 17 ? '0.625rem' : String(value).length > 12 ? '0.75rem' : '1rem' }}>{value}</p>
     </div>
   );
 }
@@ -52,14 +62,13 @@ function Metric({ icon: Icon, label, value, tone = 'blue' }) {
 export default function PayrollWorkspace({
   screen, onScreenChange, rows, monthKey, onMonthChange, isLocked, lockedPeriod,
   periods, carryovers, employees, companyId, canManage, canViewCompany, canClose, closeDateLabel, onCloseRequest,
-  onEmployeeOpen, selectedEmployeeId, onOpenAdvance
+  onEmployeeOpen, selectedEmployeeId, onOpenAdvance, searchText = '', filterOpen = false
 }) {
   const [listTab, setListTab] = useState('all');
-  const [searchText, setSearchText] = useState('');
   const [department, setDepartment] = useState('all');
-  const [filterOpen, setFilterOpen] = useState(false);
   const [detailTab, setDetailTab] = useState('overview');
   const summary = useMemo(() => summarizePayrollWorkspace(rows), [rows]);
+  const totalPayLabel = money(summary.payable);
   const range = getPayrollMonthRange(monthKey);
   const selectedRow = rows.find(row => row.emp?.id === selectedEmployeeId);
   const departments = [...new Set(rows.map(row => `${row.emp?.department || row.emp?.position || ''}`.trim()).filter(Boolean))];
@@ -103,12 +112,7 @@ export default function PayrollWorkspace({
 
   if (screen === 'list') return (
     <section className="space-y-3" data-payroll-screen="employees">
-      <div className="flex items-center justify-between gap-2">
-        <button type="button" onClick={() => onScreenChange('overview')} className="inline-flex min-h-10 items-center gap-1 text-base font-bold text-slate-900"><ChevronLeft size={20} /> Danh sách nhân viên</button>
-        <button type="button" onClick={() => setFilterOpen(value => !value)} aria-label="Lọc nhân viên" className="flex h-10 w-10 items-center justify-center text-blue-600"><Filter size={20} /></button>
-      </div>
       <MonthControl monthKey={monthKey} onChange={onMonthChange} locked={isLocked} />
-      <label className="flex h-11 items-center gap-2 rounded-xl bg-slate-100 px-3 text-slate-500"><Search size={18} /><input value={searchText} onChange={event => setSearchText(event.target.value)} placeholder="Tìm nhân viên" aria-label="Tìm nhân viên" className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 outline-none" /></label>
       {filterOpen && <select aria-label="Bộ phận" value={department} onChange={event => setDepartment(event.target.value)} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"><option value="all">Tất cả bộ phận</option>{departments.map(value => <option key={value} value={value}>{value}</option>)}</select>}
       <div className="hd-payroll-tabs flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Tình trạng lương">
         {[
@@ -146,9 +150,14 @@ export default function PayrollWorkspace({
       ['Công nợ khách hàng', details.badDebt], ['Ứng kỳ trước đã trừ', details.openingDebtApplied]
     ];
     return <section className="space-y-3" data-payroll-screen="detail">
-      <button type="button" onClick={() => onScreenChange('list')} className="inline-flex min-h-10 items-center gap-1 text-base font-bold text-slate-900"><ChevronLeft size={20} /> Chi tiết lương</button>
-      <div className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm"><span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700">{`${selectedRow.emp?.name || '?'}`.trim().charAt(0)}</span><div className="min-w-0 flex-1"><p className="truncate font-bold text-slate-900">{selectedRow.emp?.name}</p><p className="text-xs text-slate-500">{selectedRow.emp?.position || selectedRow.emp?.department || 'Nhân sự'}</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${stateStyles[state]}`}>{stateLabels[state]}</span></div>
-      <MonthControl monthKey={monthKey} onChange={onMonthChange} locked={isLocked} />
+      <div className="grid grid-cols-2 items-stretch gap-2" data-payroll-detail-summary>
+        <div className="min-w-0 rounded-lg border border-slate-100 bg-white p-3 shadow-sm">
+          <p className="break-words text-sm font-bold text-slate-900">{selectedRow.emp?.name}</p>
+          <p className="mt-1 break-words text-xs text-slate-500">{selectedRow.emp?.position || selectedRow.emp?.department || 'Nhân sự'}</p>
+          <span className={`mt-2 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${stateStyles[state]}`}>{stateLabels[state]}</span>
+        </div>
+        <MonthControl monthKey={monthKey} onChange={onMonthChange} locked={isLocked} compact />
+      </div>
       <div className="hd-payroll-tabs flex gap-1 overflow-x-auto" role="tablist" aria-label="Chi tiết lương">{[['overview', 'Tổng quan'], ['attendance', 'Ngày công'], ['allowance', 'Phụ cấp'], ['adjustments', 'Thưởng/Phạt']].map(([key, label]) => <button role="tab" aria-selected={detailTab === key} key={key} onClick={() => setDetailTab(key)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold ${detailTab === key ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}>{label}</button>)}</div>
       {detailTab === 'overview' && <>
         <div className="rounded-xl bg-white p-4 shadow-sm"><p className="text-sm font-semibold text-slate-800">Tổng lương thực nhận</p><p className={`mt-2 break-words text-2xl font-bold ${debt ? 'text-red-600' : 'text-blue-700'}`}>{debt ? `-${money(debt)}` : money(details.netSalary)}</p>{debt > 0 && <p className="mt-1 text-xs text-slate-500">Thực trả kỳ này: {money(details.netSalary)}</p>}<div className="mt-3 grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 pt-3 text-sm"><div className="min-w-0 pr-2"><p className="text-xs text-slate-500">Tổng thu nhập</p><strong className="mt-1 block break-words text-emerald-700">{money(details.grossSalary)}</strong></div><div className="min-w-0 pl-2"><p className="text-xs text-slate-500">Tổng khấu trừ</p><strong className="mt-1 block break-words text-red-600">{money(details.deductionTotal)}</strong></div></div></div>
@@ -165,13 +174,27 @@ export default function PayrollWorkspace({
   if (screen === 'history') return <section className="space-y-3" data-payroll-screen="history"><button type="button" onClick={() => onScreenChange('overview')} className="inline-flex min-h-10 items-center gap-1 text-base font-bold text-slate-900"><ChevronLeft size={20} /> Lịch sử chốt lương</button><div className="divide-y divide-slate-100 rounded-xl bg-white px-4 shadow-sm">{history.map(period => <button key={period.id} type="button" onClick={() => { onMonthChange(period.monthKey); onScreenChange('overview'); }} className="flex min-h-20 w-full items-center gap-3 py-3 text-left"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700"><LockKeyhole size={18} /></span><span className="min-w-0 flex-1"><strong className="block text-sm text-slate-900">{getPayrollMonthRange(period.monthKey)?.label || period.monthKey}</strong><span className="block text-xs text-slate-500">{closedAtLabel(period)} · {period.lockedByName || 'Hệ thống'}</span><span className="block text-xs text-slate-500">{period.employeeCount || 0} nhân viên · Chuyển kỳ {money(period.totalEndingDebt)}</span></span><span className="shrink-0 text-right text-xs font-bold text-blue-700">{money(period.totals?.totalSalary)}<ChevronRight className="ml-auto text-slate-400" size={16} /></span></button>)}{history.length === 0 && <p className="py-6 text-center text-sm text-slate-500">Chưa có kỳ lương đã chốt.</p>}</div></section>;
 
   return <section className="space-y-3" data-payroll-screen="overview">
+    <div className="rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 p-3 text-white shadow-md" data-payroll-total>
+      <div className="flex min-h-7 items-center gap-2">
+        <Wallet className="shrink-0 text-blue-100" size={20} aria-hidden="true" />
+        <p className="shrink-0 text-sm font-medium text-blue-100">{canViewCompany ? 'Tổng lương' : 'Lương thực nhận'}</p>
+        <p className="min-w-0 flex-1 whitespace-nowrap text-right font-bold tabular-nums" style={{ fontSize: totalPayLabel.length > 17 ? '0.75rem' : totalPayLabel.length > 13 ? '0.875rem' : '1.125rem' }}>{totalPayLabel}</p>
+      </div>
+      {changePercent !== null && <p className="mt-1 text-xs font-semibold text-white">{changePercent >= 0 ? '+' : ''}{changePercent.toFixed(1)}% so với tháng trước</p>}
+    </div>
     <MonthControl monthKey={monthKey} onChange={onMonthChange} locked={isLocked} />
-    <div className="flex items-center justify-between"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${isLocked ? stateStyles.ready : stateStyles.carry}`}>{isLocked ? 'ĐÃ CHỐT' : 'CHƯA CHỐT'}</span>{canViewCompany && <button type="button" onClick={() => onScreenChange('history')} className="inline-flex min-h-10 items-center gap-1 text-xs font-semibold text-blue-700"><ClipboardList size={16} /> Lịch sử chốt</button>}</div>
-    <div className="rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 p-5 text-white shadow-md"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-medium text-blue-100">{canViewCompany ? 'Tổng chi phí lương' : 'Lương thực nhận'}</p><p className="mt-2 break-words text-2xl font-bold">{money(summary.payable)}</p><p className="mt-2 text-xs text-blue-100">{canViewCompany ? `${summary.employeeCount} nhân viên · ` : ''}{Number(summary.workDays).toLocaleString('vi-VN')} ngày công</p>{changePercent !== null && <p className="mt-2 text-xs font-semibold text-white">{changePercent >= 0 ? '+' : ''}{changePercent.toFixed(1)}% so với tháng trước</p>}</div><Wallet className="shrink-0 text-blue-100" size={30} /></div></div>
-    <div className="grid grid-cols-2 gap-2"><Metric icon={UsersRound} label="Tổng nhân viên" value={summary.employeeCount} /><Metric icon={CalendarDays} label="Tổng ngày công" value={Number(summary.workDays).toLocaleString('vi-VN')} tone="green" /><Metric icon={Wallet} label="Tổng lương cơ bản" value={money(summary.baseSalary)} tone="violet" /><Metric icon={ShieldCheck} label="Tổng phụ cấp" value={money(summary.allowances)} tone="blue" /><Metric icon={Gift} label="Tổng thưởng" value={money(summary.bonus)} tone="orange" /><Metric icon={AlertTriangle} label="Tổng phạt" value={money(summary.penalty)} tone="red" /></div>
+    <div className="grid grid-cols-2 gap-2">
+      <Metric icon={UsersRound} label="Tổng nhân viên" value={summary.employeeCount} />
+      <Metric icon={CalendarDays} label="Tổng ngày công" value={Number(summary.workDays).toLocaleString('vi-VN')} tone="green" />
+      <Metric icon={Wallet} label="Tổng lương cơ bản" value={money(summary.baseSalary)} tone="violet" />
+      <Metric icon={ShieldCheck} label="Tổng phụ cấp" value={money(summary.allowances)} tone="blue" />
+      <Metric icon={Gift} label="Tổng thưởng" value={money(summary.bonus)} tone="orange" />
+      <Metric icon={AlertTriangle} label="Tổng phạt" value={money(summary.penalty)} tone="red" />
+      <Metric icon={Banknote} label="Tổng ứng" value={money(summary.totalAdvance)} tone="orange" />
+    </div>
     <div className="rounded-xl bg-white p-4 shadow-sm"><h3 className="mb-2 text-sm font-bold text-slate-900">Tình trạng lương tháng này</h3>{[['ready', summary.readyCount, CheckCircle2], ['carry', summary.carryCount, Clock3], ['review', summary.reviewCount, AlertTriangle]].map(([state, count, Icon]) => <button key={state} type="button" onClick={() => { setListTab(state); onScreenChange('list'); }} className="flex min-h-12 w-full items-center gap-3 border-b border-slate-100 text-left last:border-0"><span className={`flex h-7 w-7 items-center justify-center rounded-full ${stateStyles[state]}`}><Icon size={16} /></span><span className="min-w-0 flex-1 text-xs text-slate-700"><strong className="block text-slate-900">{stateLabels[state]}</strong>{count} nhân viên</span><span className="text-xs font-bold text-slate-500">{summary.employeeCount ? (count * 100 / summary.employeeCount).toFixed(1) : '0.0'}%</span></button>)}</div>
     {summary.carryForward > 0 && <button type="button" onClick={() => onScreenChange('carryover')} className="flex w-full items-center justify-between rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-sm font-semibold text-amber-900"><span>Cần chuyển kỳ sau ({summary.carryCount})</span><strong>{money(summary.carryForward)}</strong></button>}
     <button type="button" onClick={() => { setListTab('all'); onScreenChange('list'); }} className="flex min-h-11 w-full items-center justify-between rounded-xl border border-blue-100 bg-white px-4 text-sm font-semibold text-blue-700">Danh sách nhân viên <ArrowRight size={18} /></button>
-    {canManage && (isLocked ? <p className="text-center text-sm font-semibold text-emerald-700">Đã chốt ngày {lockedPeriod?.lockedAt ? new Date(lockedPeriod.lockedAt).toLocaleDateString('vi-VN') : closeDateLabel}</p> : <><button type="button" disabled={!canClose} onClick={onCloseRequest} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-blue-300"><LockKeyhole size={17} /> Chốt lương {range?.label.toLocaleLowerCase('vi-VN')}</button><p className="text-center text-xs text-slate-500">Chỉ có thể chốt ngày cuối tháng ({closeDateLabel})</p></>)}
+{canManage && (isLocked ? <p className="text-center text-sm font-semibold text-emerald-700">Đã chốt ngày {lockedPeriod?.lockedAt ? new Date(lockedPeriod.lockedAt).toLocaleDateString('vi-VN') : closeDateLabel}</p> : <><button type="button" disabled={!canClose} onClick={onCloseRequest} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-blue-300"><LockKeyhole size={17} /> Chốt lương {range?.label.toLocaleLowerCase('vi-VN')}</button><p className="text-center text-xs text-slate-500">Có thể chốt từ ngày cuối tháng ({closeDateLabel})</p></>)}
   </section>;
 }
