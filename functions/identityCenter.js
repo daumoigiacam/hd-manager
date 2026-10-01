@@ -23,6 +23,8 @@ const COMPANY_REGISTRATION_SETTING_KEYS = new Set([
   'autoReconcileByOrderCode',
   'customerLoyaltyEnabled',
   'loyaltyEarnAmountPerPoint',
+  'loyaltyEarnMode',
+  'loyaltyRevenuePercent',
   'loyaltyRedeemValuePerPoint',
   'customerCareReminderEnabled',
   'customerCareInactiveDays',

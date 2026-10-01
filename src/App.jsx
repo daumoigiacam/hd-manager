@@ -5,6 +5,11 @@ import { createPortal, flushSync } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
 import './features/employees/employee-profile.css';
 import EmployeeBankQr from './features/employees/EmployeeBankQr.jsx';
+import CompanyBankAccounts from './features/settings/CompanyBankAccounts.jsx';
+import './features/settings/settings-controls.css';
+import { calculateLoyaltyPoints } from '../functions/loyaltyRewards.mjs';
+import CustomerCareSettings, { CARE_RULES } from './features/settings/CustomerCareSettings.jsx';
+import { getCompanyBankAccounts } from './features/settings/companyBankAccounts.js';
 import AttendanceRoleSelector from './features/attendance/AttendanceRoleSelector.jsx';
 import { getWorkRoleRecord, buildWorkRoleAttendancePatch, employeeForWorkRole, attendanceForWorkRole, getWorkRoleMonthEntries, calculateWorkRoleSalary } from './utils/attendanceWorkRoles.js';
 import payrollAutomationConfig from '../functions/payrollAutomationConfig.json';
@@ -10944,6 +10949,8 @@ const getCustomerLoyaltySettings = (company = null) => {
 
   return {
     enabled: company?.customerLoyaltyEnabled === true,
+    earnMode: company?.loyaltyEarnMode === 'revenue_percent' ? 'revenue_percent' : 'fixed',
+    revenuePercent: Math.min(100, Math.max(0, Number(company?.loyaltyRevenuePercent) || 0)),
     earnAmountPerPoint: earnAmountPerPoint > 0 ? earnAmountPerPoint : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
     redeemValuePerPoint: redeemValuePerPoint > 0 ? redeemValuePerPoint : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
     eligibilityConditions: normalizeLoyaltyEligibilityConditions(company?.loyaltyEligibilityConditions)
@@ -11082,7 +11089,7 @@ const calculateCustomerLoyaltySummary = ({ customer = {}, ledger = null, company
     ?? customer?.usedLoyaltyPoints
     ?? 0
   )));
-  const computedEarnedPoints = loyaltySettings.enabled ? Math.floor(eligibleAmount / loyaltySettings.earnAmountPerPoint) : 0;
+  const computedEarnedPoints = loyaltySettings.enabled ? calculateLoyaltyPoints(eligibleAmount, loyaltySettings) : 0;
   const earnedPoints = Math.max(0, Math.floor(parseLooseMoneyValue(
     pointsRecord?.earned_points
     ?? pointsRecord?.earnedPoints
@@ -14996,7 +15003,13 @@ export default function App() {
     const eligibleOrders = eligibilityEvaluations
       .filter(({ eligibility }) => eligibility.eligible)
       .map(({ order }) => order);
-    const eligibleAmount = roundMoneyValue(eligibleOrders.reduce((sum, order) => {
+    const paidEligibleOrders = eligibleOrders.filter(order => Number(ledgerOrdersById.get(order.id)?.outstandingAmount ?? Infinity) <= 0);
+    const pendingTodayOrders = eligibleOrders.filter(order =>
+      getDateKeyFromAnyValue(order.date || order.createdAt) === getTodayString()
+      && Number(ledgerOrdersById.get(order.id)?.outstandingAmount || 0) > 0);
+    const pendingRewardRevenue = pendingTodayOrders.reduce((sum, order) => sum + parseLooseMoneyValue(order.finalTotal ?? order.totalAmount ?? order.total ?? order.amount ?? 0), 0);
+    const pendingRewardPoints = loyaltySettings.enabled ? calculateLoyaltyPoints(pendingRewardRevenue, loyaltySettings) : 0;
+    const eligibleAmount = roundMoneyValue(paidEligibleOrders.reduce((sum, order) => {
       const total = order.finalTotal
         ?? order.totalAmount
         ?? order.total
@@ -15007,7 +15020,7 @@ export default function App() {
       return sum + parseLooseMoneyValue(total);
     }, 0));
     const earnedPoints = loyaltySettings.enabled
-      ? Math.floor(Math.max(0, eligibleAmount) / loyaltySettings.earnAmountPerPoint)
+      ? calculateLoyaltyPoints(eligibleAmount, loyaltySettings)
       : 0;
     const bonusPoints = Math.max(0, Math.floor(parseLooseMoneyValue(
       existingPointDoc.bonus_points
@@ -15057,6 +15070,11 @@ export default function App() {
       customer_id: customerId,
       customerName: customer.name || existingPointDoc.customerName || existingPointDoc.customer_name || '',
       earnAmountPerPoint: loyaltySettings.earnAmountPerPoint,
+      pendingRewardDate: getTodayString(),
+      pendingRewardPoints,
+      pendingRewardMoney: pendingRewardPoints * loyaltySettings.redeemValuePerPoint,
+      pendingRewardCheckedAt: now,
+      pendingRewardSettings: JSON.stringify(loyaltySettings),
       redeemValuePerPoint: loyaltySettings.redeemValuePerPoint,
       loyaltyEligibilityConditions: loyaltySettings.eligibilityConditions,
       eligible_amount: eligibleAmount,
@@ -15114,14 +15132,13 @@ export default function App() {
 
   useEffect(() => {
     const loyaltySettings = getCustomerLoyaltySettings(currentCompany);
-    const enabledConditions = getEnabledLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions);
-    if (!firebaseUser || !myCompanyId || !loyaltySettings.enabled || enabledConditions.length === 0) {
+    if (!firebaseUser || !myCompanyId || !loyaltySettings.enabled) {
       loyaltyEligibilitySyncFingerprintRef.current = new Map();
       loyaltyEligibilitySyncPrimedRef.current = false;
       return;
     }
 
-    const conditionsSignature = JSON.stringify(loyaltySettings.eligibilityConditions);
+    const conditionsSignature = JSON.stringify(loyaltySettings);
     const nextFingerprints = new Map();
     (orders || []).forEach(order => {
       const customerId = order?.customerId || order?.customer_id;
@@ -16697,6 +16714,8 @@ export default function App() {
       bankName: settingsData.bankName !== undefined ? normalizeLeadingLabel(settingsData.bankName || '') : currentTransferProfile.bankName,
       bankAccountName: settingsData.bankAccountName !== undefined ? `${settingsData.bankAccountName || ''}`.trim().toUpperCase() : currentTransferProfile.accountName,
       bankAccountNumber: normalizedBankAccountNumber,
+      companyBankAccounts: settingsData.companyBankAccounts ?? getCompanyBankAccounts(currentCompany),
+      primaryCompanyBankAccountId: settingsData.primaryCompanyBankAccountId ?? currentCompany?.primaryCompanyBankAccountId ?? '',
       sepayVirtualAccountNumber: normalizedSepayVirtualAccountNumber,
       sepayVaAccountNumber: normalizedSepayVirtualAccountNumber,
       sepayVaNumber: normalizedSepayVirtualAccountNumber,
@@ -16710,12 +16729,15 @@ export default function App() {
       invoiceTemplateId: normalizeInvoiceTemplateId(settingsData.invoiceTemplateId || currentCompany?.invoiceTemplateId),
       autoReconcileByOrderCode: settingsData.autoReconcileByOrderCode ?? isOrderCodeAutoMatchEnabled(currentCompany),
       customerLoyaltyEnabled: settingsData.customerLoyaltyEnabled ?? currentLoyaltySettings.enabled,
+      loyaltyEarnMode: settingsData.loyaltyEarnMode ?? currentLoyaltySettings.earnMode,
+      loyaltyRevenuePercent: settingsData.loyaltyRevenuePercent ?? currentLoyaltySettings.revenuePercent,
       loyaltyEarnAmountPerPoint: normalizedLoyaltyEarnAmount > 0 ? normalizedLoyaltyEarnAmount : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
       loyaltyRedeemValuePerPoint: normalizedLoyaltyRedeemValue > 0 ? normalizedLoyaltyRedeemValue : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
       loyaltyEligibilityConditions: settingsData.loyaltyEligibilityConditions !== undefined
         ? normalizeLoyaltyEligibilityConditions(settingsData.loyaltyEligibilityConditions)
         : normalizeLoyaltyEligibilityConditions(currentLoyaltySettings.eligibilityConditions),
       customerCareReminderEnabled: settingsData.customerCareReminderEnabled ?? currentCustomerCareSettings.enabled,
+      customerCareRules: settingsData.customerCareRules ?? currentCompany?.customerCareRules ?? {},
       customerCareInactiveDays: normalizedCustomerCareInactiveDays > 0 ? normalizedCustomerCareInactiveDays : DEFAULT_CUSTOMER_CARE_SETTINGS.inactiveDays,
       warehouseOrderAutoCancelDays: normalizedWarehouseAutoCancelDays,
       warehouseStockResetAt: settingsData.warehouseStockResetAt !== undefined
@@ -16824,15 +16846,22 @@ export default function App() {
       updatedAt: new Date().toISOString()
     };
 
-    await saveDataDocument(
+    const isLoyaltySettingsUpdate = Object.prototype.hasOwnProperty.call(settingsData, 'customerLoyaltyEnabled') || Object.prototype.hasOwnProperty.call(settingsData, 'customerCareRules');
+    const settingsPatch = isLoyaltySettingsUpdate
+      ? Object.fromEntries([...Object.keys(settingsData), 'updatedAt'].map(key => [key, normalizedSettings[key]]))
+      : normalizedSettings;
+    const settingsWriteResult = await saveDataDocument(
       'companies',
       myCompanyId,
-      normalizedSettings,
+      settingsPatch,
       { merge: true },
       4500,
       'Firebase SDK phản hồi chậm khi lưu cấu hình công ty.'
     );
-    const nextCompany = { ...(currentCompany || {}), id: myCompanyId, ...normalizedSettings };
+    if (isLoyaltySettingsUpdate) {
+      await requireSharedWriteConfirmation(settingsWriteResult, 'companies', myCompanyId);
+    }
+    const nextCompany = { ...(currentCompany || {}), id: myCompanyId, ...settingsPatch };
     setCurrentCompany(nextCompany);
     setRawCompanies(prev => [...prev.filter(company => company.id !== myCompanyId), nextCompany]);
     return { success: true };
@@ -23790,6 +23819,14 @@ function MainAppView({
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
   const [showEmployeeSettings, setShowEmployeeSettings] = useState(false);
   const [employeeFilterOpen, setEmployeeFilterOpen] = useState(false);
+  const [bankHeaderMenuOpen, setBankHeaderMenuOpen] = useState(false);
+  useEffect(() => { setBankHeaderMenuOpen(false); }, [activeTab]);
+  const [settingsHeaderTitle, setSettingsHeaderTitle] = useState('Cài đặt');
+  useEffect(() => {
+    const updateTitle = event => setSettingsHeaderTitle(event.detail || 'Cài đặt');
+    window.addEventListener('hd-settings-title', updateTitle);
+    return () => window.removeEventListener('hd-settings-title', updateTitle);
+  }, []);
   const [reportPayrollTarget, setReportPayrollTarget] = useState(null);
   const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
   const [lastNotificationSeenAt, setLastNotificationSeenAt] = useState(0);
@@ -25206,13 +25243,13 @@ function MainAppView({
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
                activeTab === 'debt' ? 'Sổ nợ' :
-               activeTab === 'bank_payments' ? 'Ngân Hàng' :
+               activeTab === 'bank_payments' ? 'TT giao dịch' :
                activeTab === 'finance' ? 'Tổng kết ngày' :
                activeTab === 'company_attendance' ? 'Chấm công' : 
                activeTab === 'payroll' ? 'Bảng lương' : 
                activeTab === 'employee_reviews' ? 'Đánh giá' :
                activeTab === 'employees' ? 'Nhân sự' : 
-               activeTab === 'settings' ? 'Cài đặt' : 
+               activeTab === 'settings' ? settingsHeaderTitle :
                activeTab === 'role_permissions' ? 'Vai trò' : 
                activeTab === 'billing' ? 'Gói cước' : 'Quản lý'}
             </h1>
@@ -25256,9 +25293,14 @@ function MainAppView({
             </div>
           ) : !hideHeaderSearchFilter ? (
             <div className="hd-header-actions flex items-center gap-3">
-              {activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()}
-              {renderGlobalSearchTrigger()}
-              {activeTab === 'employees' ? <button type="button" aria-label="Lọc nhân sự theo bộ phận" aria-expanded={employeeFilterOpen} onClick={() => setEmployeeFilterOpen(value => !value)} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : <Filter size={20} />}
+              {activeTab === 'bank_payments' ? <div className="relative">
+                <button type="button" aria-label="Cài đặt TT giao dịch" title="Cài đặt TT giao dịch" aria-expanded={bankHeaderMenuOpen} aria-controls="bank-settings-menu" onClick={() => setBankHeaderMenuOpen(value => !value)} className="flex h-10 w-10 items-center justify-center"><Settings size={20} /></button>
+                {bankHeaderMenuOpen && <div id="bank-settings-menu" className="absolute right-0 top-full z-50 mt-2 w-48 rounded-lg border border-gray-200 bg-white p-2 text-gray-800 shadow-lg" onKeyDown={event => { if (event.key === 'Escape') setBankHeaderMenuOpen(false); }}>
+                  <button type="button" onClick={() => { setBankHeaderMenuOpen(false); window.dispatchEvent(new Event('hd-bank-customer-accounts')); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm font-bold hover:bg-gray-50"><Users size={18} />TK Khách hàng</button>
+                </div>}
+              </div> : activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()}
+              {activeTab === 'company_attendance' ? <button type="button" aria-label="Tìm nhân sự chấm công" onClick={() => window.dispatchEvent(new CustomEvent('hd-attendance-toolbar', { detail: 'search' }))} className="flex h-10 w-10 items-center justify-center"><Search size={20} /></button> : renderGlobalSearchTrigger()}
+              {activeTab === 'company_attendance' ? <button type="button" aria-label="Lọc chấm công theo bộ phận" onClick={() => window.dispatchEvent(new CustomEvent('hd-attendance-toolbar', { detail: 'filter' }))} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : activeTab === 'employees' ? <button type="button" aria-label="Lọc nhân sự theo bộ phận" aria-expanded={employeeFilterOpen} onClick={() => setEmployeeFilterOpen(value => !value)} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : <Filter size={20} />}
               {renderHeaderIdentityActions()}
             </div>
           ) : (
@@ -27304,6 +27346,12 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   const [formData, setFormData] = useState({ status: 'present', checkIn: '', checkOut: '' });
   const [positionFilter, setPositionFilter] = useState('Tất cả');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [attendanceToolbar, setAttendanceToolbar] = useState('');
+  useEffect(() => {
+    const onToolbar = event => setAttendanceToolbar(value => value === event.detail ? '' : event.detail);
+    window.addEventListener('hd-attendance-toolbar', onToolbar);
+    return () => window.removeEventListener('hd-attendance-toolbar', onToolbar);
+  }, []);
   const [selfMethod, setSelfMethod] = useState('gps');
   const [selfWifiLabel, setSelfWifiLabel] = useState('');
   const [selfWifiLookup, setSelfWifiLookup] = useState(EMPTY_WIFI_LOOKUP_STATE);
@@ -27393,14 +27441,6 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
     }, { completed: 0, working: 0, leave: 0, pending: 0 });
   }, [filteredEmployees, safeAttendance, safeDate, workRolesByEmployee, positionFilter]);
 
-  const filteredAlerts = useMemo(() => filteredEmployees
-    .map(emp => {
-      const workRole = getSelectedWorkRole(emp);
-      const anomaly = resolveAttendanceAnomalyForDate(employeeForWorkRole(emp, workRole), attendanceForWorkRole(safeAttendance, emp, workRole), safeDate);
-      return anomaly ? { emp, ...anomaly } : null;
-    })
-    .filter(Boolean), [filteredEmployees, safeAttendance, safeDate, workRolesByEmployee, positionFilter]);
-
   const selfWorkRole = currentEmployee ? getSelectedWorkRole(currentEmployee) : '';
   const selfWorkEmployee = employeeForWorkRole(currentEmployee, selfWorkRole);
   const selfWorkAttendance = useMemo(() => attendanceForWorkRole(safeAttendance, currentEmployee, selfWorkRole), [safeAttendance, currentEmployee, selfWorkRole]);
@@ -27487,6 +27527,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   }, [attendanceScreen]);
 
   const openAttendanceWifi = () => {
+    if (attendanceSubmitRef.current) return;
     setSelfMethod('wifi');
     setSelfStatusMsg('');
     setAttendanceScreen('wifi');
@@ -27848,7 +27889,6 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
 
   return (
     <div className="space-y-4 animate-in fade-in pb-36">
-      <button type="button" onClick={() => isCompanyAccount ? onGoBack?.() : setAttendanceScreen('dashboard')} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-bold text-blue-700"><ChevronLeft size={17} /> {isCompanyAccount ? 'Quay lại' : 'Chấm công'}</button>
       <div className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-2xl p-5 shadow-md">
         <button
           type="button"
@@ -27886,11 +27926,10 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       </div>
 
       {currentEmployee && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div data-attendance-self="true" className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+          <div className="flex flex-col gap-3">
             <div className="min-w-0">
-              <h3 className="font-bold text-gray-800 text-base">Chấm công của bạn</h3>
-              <p className="text-xs text-gray-500 mt-1">{currentEmployee.name} • {currentEmployee.position}</p>
+              <p className="text-sm font-bold text-gray-800">{currentEmployee.name} - {attendanceDepartment(currentEmployee, currentCompany)}</p>
               {!isSalesCollaboratorPosition(currentEmployee.position) && (
                 <p className="text-[11px] text-gray-500 mt-1">{currentShiftPolicy.shiftName}: {formatShiftRangeLabel(currentShiftPolicy)}</p>
               )}
@@ -27898,18 +27937,18 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                 {currentStatusMeta.label}
               </span>
             </div>
-            <div className="text-right text-xs text-gray-500">
-              <div>Vào: <strong className="text-gray-800">{formatTime(currentRecord?.checkIn)}</strong></div>
-              <div className="mt-1">Ra: <strong className="text-gray-800">{formatTime(currentRecord?.checkOut)}</strong></div>
+            <div className="grid grid-cols-2 gap-3 text-center text-xs text-gray-500">
+              <span>Vào: <strong className="text-gray-800">{formatTime(currentRecord?.checkIn)}</strong></span>
+              <span>Ra: <strong className="text-gray-800">{formatTime(currentRecord?.checkOut)}</strong></span>
             </div>
           </div>
 
           <AttendanceRoleSelector positions={getEmployeePositionValues(currentEmployee)} value={selfWorkRole} onChange={role => selectWorkRole(currentEmployee, role)} disabled={isSelfSubmitting} />
           <div className="grid grid-cols-2 gap-3 mt-4">
-            <button type="button" onClick={() => setSelfMethod('gps')} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'gps' ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-gray-200 bg-white text-gray-600'}`}>
+            <button type="button" disabled={isSelfSubmitting} aria-pressed={selfMethod === 'gps'} onClick={() => { if (!attendanceSubmitRef.current) { setSelfMethod('gps'); setSelfStatusMsg(''); } }} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'gps' ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-gray-200 bg-white text-gray-600'}`}>
               GPS vị trí
             </button>
-            <button type="button" onClick={openAttendanceWifi} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'wifi' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 bg-white text-gray-600'}`}>
+            <button type="button" disabled={isSelfSubmitting} aria-pressed={selfMethod === 'wifi'} onClick={openAttendanceWifi} className={`rounded-xl border px-3 py-2.5 text-sm font-bold transition-colors ${selfMethod === 'wifi' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 bg-white text-gray-600'}`}>
               WiFi nội bộ
             </button>
           </div>
@@ -27999,7 +28038,6 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
 
           {selfMethod === 'gps' && (
             <div className="mt-3 space-y-2">
-              <p className="text-[11px] text-gray-500">Khi chấm công GPS, app sẽ xin quyền vị trí chính xác và chỉ nhận khi sai số không quá {MAX_ATTENDANCE_GPS_ACCURACY_METERS}m.</p>
               {currentAttendanceLocationSettings.enabled && (
                 <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-700">
                   Vị trí cố định: {currentAttendanceLocationSettings.label || 'Đã cài'} • bán kính {currentAttendanceLocationSettings.radiusMeters}m
@@ -28049,19 +28087,17 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
         </div>
       )}
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-gray-800">Lọc theo vị trí</h3>
-          <span className="text-xs text-gray-400">{filteredEmployees.length}/{attendanceEmployees.length} nhân sự</span>
-        </div>
-        <div className="bg-gray-50 px-3 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
+      {attendanceToolbar && <div role="dialog" aria-label={attendanceToolbar === 'search' ? 'Tìm nhân sự chấm công' : 'Lọc chấm công'} className="fixed inset-x-4 top-20 z-50 rounded-lg border border-gray-200 bg-white p-4 shadow-lg">
+        <button type="button" aria-label="Đóng tìm kiếm và lọc chấm công" onClick={() => setAttendanceToolbar('')} className="mb-2 ml-auto flex h-9 w-9 items-center justify-center"><X size={20} /></button>
+        {attendanceToolbar === 'search' && <div className="bg-gray-50 px-3 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
           <Search size={18} className="text-gray-400" />
           <input data-hd-search-input="true" type="text" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} placeholder="Tìm theo tên, SĐT, vị trí..." className="flex-1 text-sm bg-transparent outline-none" />
-        </div>
-        <select value={positionFilter} onChange={(e) => setPositionFilter(e.target.value)} className="w-full border border-gray-200 rounded-xl p-3 text-sm bg-white outline-none">
+        </div>}
+        {attendanceToolbar === 'filter' && <select aria-label="Lọc chấm công theo bộ phận" value={positionFilter} onChange={(e) => setPositionFilter(e.target.value)} className="w-full border border-gray-200 rounded-xl p-3 text-sm bg-white outline-none">
           {positions.map(position => <option key={position} value={position}>{position}</option>)}
-        </select>
-
+        </select>}
+      </div>}
+      {(canManageAttendance || bulkStatusMsg) && <div className="space-y-3">
         {canManageAttendance && (
           <div className="grid grid-cols-2 gap-2">
             <button type="button" disabled={isBulkSubmitting} onClick={() => handleBulkOverride('in')} className="bg-emerald-500 text-white py-2.5 rounded-xl text-sm font-bold disabled:opacity-60">
@@ -28074,24 +28110,8 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
         )}
 
         {bulkStatusMsg && <div className="text-sm text-blue-600 bg-blue-50 border border-blue-100 rounded-xl p-3">{bulkStatusMsg}</div>}
-      </div>
+      </div>}
 
-      {filteredAlerts.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-amber-900 flex items-center gap-2"><AlertCircle size={16}/> Cảnh báo thiếu chấm công</h3>
-            <span className="text-xs text-amber-700">{filteredAlerts.length} cần kiểm tra</span>
-          </div>
-          <div className="space-y-2">
-            {filteredAlerts.map(alert => (
-              <div key={`${alert.emp.id}_${alert.type}`} className="bg-white border border-amber-100 rounded-xl p-3">
-                  <p className="text-sm font-bold text-gray-800">{alert.emp.name} • {getEmployeePositionLabel(alert.emp.position)}</p>
-                <p className="text-xs text-amber-800 mt-1">{alert.message}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="space-y-3">
         {[...filteredEmployees].sort((a, b) => attendanceDepartment(a, currentCompany).localeCompare(attendanceDepartment(b, currentCompany), 'vi')).map((emp, index, roster) => {
@@ -32880,11 +32900,28 @@ function SettingsView({
   const [showWarehouseSettings, setShowWarehouseSettings] = useState(false);
   const [showAdvanceSettings, setShowAdvanceSettings] = useState(false);
   const [showBubbleSettings, setShowBubbleSettings] = useState(false);
-  const [activeSettingsPanel, setActiveSettingsPanel] = useState('account');
+  const [activeSettingsPanel, setActiveSettingsPanel] = useState('');
+  const [bankAccountDraft, setBankAccountDraft] = useState(null);
+  const [careRuleId, setCareRuleId] = useState('');
+  useAppScreenBack(() => {
+    if (activeSettingsPanel === 'care' && careRuleId) {
+      setCareRuleId('');
+      return true;
+    }
+    if (activeSettingsPanel === 'account' && bankAccountDraft) {
+      setBankAccountDraft(null);
+      return true;
+    }
+    if (!activeSettingsPanel) return false;
+    setActiveSettingsPanel('');
+    return true;
+  });
   const [selectedResetScopes, setSelectedResetScopes] = useState(() => RESET_DATA_SCOPE_OPTIONS.map(option => option.id));
   const [resetDateRange, setResetDateRange] = useState({ dateFrom: '', dateTo: '' });
   const [bankSaveStatus, setBankSaveStatus] = useState('');
   const [loyaltySaveStatus, setLoyaltySaveStatus] = useState('');
+  const [isSavingLoyalty, setIsSavingLoyalty] = useState(false);
+  const loyaltySaveInFlight = useRef(false);
   const [customerCareSaveStatus, setCustomerCareSaveStatus] = useState('');
   const [warehouseSaveStatus, setWarehouseSaveStatus] = useState('');
   const [advanceSaveStatus, setAdvanceSaveStatus] = useState('');
@@ -32912,6 +32949,8 @@ function SettingsView({
     const loyaltySettings = getCustomerLoyaltySettings(currentCompany);
     return {
       customerLoyaltyEnabled: loyaltySettings.enabled,
+      loyaltyEarnMode: loyaltySettings.earnMode,
+      loyaltyRevenuePercent: String(loyaltySettings.revenuePercent),
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
       loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
       loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
@@ -32949,6 +32988,8 @@ function SettingsView({
     });
     setLoyaltyForm({
       customerLoyaltyEnabled: loyaltySettings.enabled,
+      loyaltyEarnMode: loyaltySettings.earnMode,
+      loyaltyRevenuePercent: String(loyaltySettings.revenuePercent),
       loyaltyEarnAmountPerPoint: formatInputCurrency(loyaltySettings.earnAmountPerPoint),
       loyaltyRedeemValuePerPoint: formatInputCurrency(loyaltySettings.redeemValuePerPoint),
       loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltySettings.eligibilityConditions)
@@ -33028,9 +33069,9 @@ function SettingsView({
   );
   const settingsPanels = [
     { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
-    { id: 'bank_payments', label: 'Ngân hàng & Thanh toán', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
+    { id: 'bank_payments', label: 'Ngân hàng', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
     { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
-    { id: 'care', label: 'Nhắc khách hàng', description: `${customerCareInactiveDaysPreview} ngày chưa mua`, icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
+    { id: 'care', label: 'Nhắc khách hàng', description: 'Tin nhắn tự động', icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
     { id: 'warehouse', label: 'Xu\u1ea5t kho', description: warehouseAutoCancelDaysPreview > 0 ? `T\u1ef1 \u1ea9n sau ${warehouseAutoCancelDaysPreview} ng\u00e0y` : 'Kh\u00f4ng t\u1ef1 \u1ea9n \u0111\u01a1n \u0111\u1eb7t', icon: Archive, enabled: canManageWarehouseSettings || isAccounting },
     { id: 'salary_advance', label: 'Ứng lương', description: advanceLimitPreview, icon: Banknote, enabled: canManageSalaryAdvanceSettings },
     { id: 'bubble', label: 'Bong bóng +', description: bubbleForm.floatingQuickActionEnabled ? 'Đang bật' : 'Đang tắt', icon: PlusCircle, enabled: isAccounting },
@@ -33039,7 +33080,16 @@ function SettingsView({
   ].filter(panel => panel.enabled);
   const safeActiveSettingsPanel = settingsPanels.some(panel => panel.id === activeSettingsPanel)
     ? activeSettingsPanel
-    : (settingsPanels[0]?.id || 'account');
+    : '';
+  const settingsPageTitle = safeActiveSettingsPanel === 'care' && careRuleId
+    ? CARE_RULES.find(([id]) => id === careRuleId)?.[1] || 'Nhắc khách hàng'
+    : safeActiveSettingsPanel === 'account' && bankAccountDraft
+    ? (bankAccountDraft.bankName || 'Tài khoản mới')
+    : settingsPanels.find(panel => panel.id === safeActiveSettingsPanel)?.label || 'Cài đặt';
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('hd-settings-title', { detail: settingsPageTitle }));
+    return () => window.dispatchEvent(new CustomEvent('hd-settings-title', { detail: 'Cài đặt' }));
+  }, [settingsPageTitle]);
   const todayAutoBackupState = getAutoBackupStateForCompany(currentCompany?.id || '', getTodayString());
   const toggleResetScope = (scopeId) => {
     setSelectedResetScopes(prev => (
@@ -33080,17 +33130,32 @@ function SettingsView({
 
   const handleLoyaltySettingSubmit = async (event) => {
     event.preventDefault();
+    if (loyaltySaveInFlight.current) return;
     if (!canManageLoyaltySettings) {
       setLoyaltySaveStatus('Bạn chưa được cấp quyền chỉnh sửa tích điểm khách hàng.');
       return;
     }
+    loyaltySaveInFlight.current = true;
+    setIsSavingLoyalty(true);
+    setLoyaltySaveStatus('Đang chờ máy chủ xác nhận...');
+    try {
     const result = await onUpdateCompanySettings?.({
       customerLoyaltyEnabled: Boolean(loyaltyForm.customerLoyaltyEnabled),
+      loyaltyEarnMode: loyaltyForm.loyaltyEarnMode === 'revenue_percent' ? 'revenue_percent' : 'fixed',
+      loyaltyRevenuePercent: Math.min(100, Math.max(0, Number(loyaltyForm.loyaltyRevenuePercent) || 0)),
       loyaltyEarnAmountPerPoint: parseInputCurrency(loyaltyForm.loyaltyEarnAmountPerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
       loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
       loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions)
     });
     setLoyaltySaveStatus(result?.success ? 'Đã lưu cài đặt tích điểm khách hàng.' : (result?.message || 'Không thể lưu cài đặt tích điểm.'));
+    } catch (error) {
+      setLoyaltySaveStatus(error?.code === 'firestore/sync-pending'
+        ? 'Máy chủ chưa xác nhận. Cài đặt đang chờ đồng bộ; vui lòng kiểm tra kết nối mạng.'
+        : getFriendlyFirebaseErrorMessage(error, 'Không thể lưu cài đặt tích điểm. Vui lòng thử lại.'));
+    } finally {
+      loyaltySaveInFlight.current = false;
+      setIsSavingLoyalty(false);
+    }
   };
 
   const handleCustomerCareSettingSubmit = async (event) => {
@@ -33279,292 +33344,67 @@ function SettingsView({
     return <div className="p-4 text-center text-sm text-gray-500">Bạn không có quyền truy cập mục cài đặt.</div>;
   }
 
-  return (
-    <div className="space-y-4 animate-in fade-in pb-20">
-      <div className="rounded-3xl border border-rose-100 bg-gradient-to-br from-white via-rose-50/70 to-emerald-50/70 p-4 shadow-sm hd-soft-red-outline">
-        <p className="text-xs font-black uppercase tracking-[0.22em] text-emerald-600">Cài đặt</p>
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+  if (!safeActiveSettingsPanel) return (
+    <div data-settings-page="menu" className="divide-y divide-gray-200 bg-white pb-20">
           {settingsPanels.map((panel) => {
             const PanelIcon = panel.icon;
-            const isActive = safeActiveSettingsPanel === panel.id;
             return (
               <button
                 key={panel.id}
                 type="button"
-                onClick={() => setActiveSettingsPanel(panel.id)}
-                className={`rounded-2xl border p-3 text-left transition ${isActive ? 'border-emerald-300 bg-white text-emerald-700 shadow-md shadow-emerald-500/10' : 'border-white/70 bg-white/70 text-gray-600 shadow-sm'}`}
+                onClick={() => {
+                  if (panel.id === 'bank_payments') {
+                    setActiveTab?.('bank_payments');
+                    return;
+                  }
+                  setShowBankSettings(true);
+                  setShowLoyaltySettings(true);
+                  setShowCustomerCareSettings(true);
+                  setShowWarehouseSettings(true);
+                  setShowAdvanceSettings(true);
+                  setShowBubbleSettings(true);
+                  setActiveSettingsPanel(panel.id);
+                }}
+                className="flex w-full items-center gap-3 px-3 py-4 text-left text-gray-800 hover:bg-gray-50"
               >
-                <span className={`mb-2 flex h-9 w-9 items-center justify-center rounded-2xl ${isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-50 text-gray-400'}`}>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center text-emerald-600">
                   <PanelIcon size={18} />
                 </span>
-                <span className="block text-[12px] font-black text-gray-900">{panel.label}</span>
-                <span className="mt-1 block text-[10px] font-bold leading-4 text-gray-500">{panel.description}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold">{panel.label}</span>
+                  <span className="mt-1 block text-xs text-gray-500">{panel.description}</span>
+                </span>
+                <ChevronRight size={18} className="shrink-0 text-gray-400" />
               </button>
             );
           })}
-        </div>
-      </div>
+    </div>
+  );
 
-      {safeActiveSettingsPanel === 'account' && <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
-              <CreditCard size={21} />
-            </div>
-            <div>
-              <h3 className="text-lg font-black text-gray-900">Tài khoản nhận chuyển khoản</h3>
-              <p className="mt-1 text-xs text-gray-500">Dùng để tạo mã QR trên hóa đơn và hỗ trợ đối soát theo mã đơn hàng.</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowBankSettings(prev => !prev)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm"
-          >
-            {showBankSettings ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            {showBankSettings ? 'Đóng' : 'Mở'}
-          </button>
-        </div>
+  return (
+    <div data-settings-page={safeActiveSettingsPanel} className="space-y-4 pb-20 [&>section]:rounded-none [&>section]:border-0 [&>section]:shadow-none">
 
-        <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-wide text-gray-400">Trạng thái</p>
-              <p className="mt-1 text-sm font-bold text-gray-900">{hasBankConfig ? bankAccountDescription : 'Chưa có tài khoản nhận tiền'}</p>
-              <p className="mt-1 text-xs text-gray-500">{hasBankConfig ? bankForm.bankAccountName : 'Bấm Mở để thêm hoặc chỉnh sửa tài khoản ngân hàng.'}</p>
-            </div>
-            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-black ${bankStatusClasses}`}>
-              {hasBankConfig ? 'Đã thiết lập' : 'Chưa thiết lập'}
-            </span>
-          </div>
-        </div>
+      {safeActiveSettingsPanel === 'account' && <CompanyBankAccounts company={currentCompany} banks={BANK_ID_OPTIONS} canEdit={canManageBankTransferSettings} onSave={onUpdateCompanySettings} draft={bankAccountDraft} setDraft={setBankAccountDraft} />}
 
-        {showBankSettings && (
-          <form onSubmit={handleBankSettingSubmit} className="mt-4 space-y-3">
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(76px,0.72fr)_minmax(0,1fr)] gap-2">
-              <label className="block">
-                <span className="mb-1 block text-xs font-bold text-gray-500">Mã ngân hàng</span>
-                <input
-                  list="bank-id-options"
-                  value={bankForm.bankId}
-                  onChange={(event) => {
-                    const nextBankId = event.target.value.toUpperCase();
-                    const matchedBank = BANK_ID_OPTIONS.find(option => option.value === nextBankId);
-                    setBankForm(prev => ({
-                      ...prev,
-                      bankId: nextBankId,
-                      bankName: matchedBank?.label || prev.bankName
-                    }));
-                  }}
-                  className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold uppercase outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="BIDV"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-bold text-gray-500">Tên ngân hàng</span>
-                <input
-                  value={bankForm.bankName}
-                  onChange={(event) => setBankForm(prev => ({ ...prev, bankName: event.target.value }))}
-                  className="w-full rounded-xl border border-gray-300 p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="VD: BIDV"
-                />
-              </label>
-            </div>
-            <datalist id="bank-id-options">
-              {BANK_ID_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </datalist>
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-bold text-gray-500">Số tài khoản</span>
-              <input
-                value={bankForm.bankAccountNumber}
-                onChange={(event) => setBankForm(prev => ({ ...prev, bankAccountNumber: event.target.value.replace(/\s+/g, '') }))}
-                className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="Nhập số tài khoản nhận tiền"
-              />
-            </label>
-
-            <div className="rounded-2xl border border-sky-100 bg-sky-50/80 p-3">
-              <div className="flex items-end gap-3">
-                <label className="block min-w-0 flex-1">
-                  <span className="mb-1 block text-xs font-bold text-sky-700">Số tài khoản ảo SePay (VA)</span>
-                  <input
-                    value={bankForm.sepayVirtualAccountNumber}
-                    onChange={(event) => setBankForm(prev => ({ ...prev, sepayVirtualAccountNumber: event.target.value.replace(/\s+/g, '').toUpperCase() }))}
-                    className="w-full rounded-xl border border-sky-200 bg-white p-3 text-sm font-black uppercase outline-none focus:ring-2 focus:ring-sky-500"
-                    placeholder="VD: 96247HD"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setBankForm(prev => ({ ...prev, sepayUseVirtualAccount: !prev.sepayUseVirtualAccount }))}
-                  className={`mb-0.5 shrink-0 rounded-xl border px-3 py-3 text-xs font-black transition ${bankForm.sepayUseVirtualAccount ? 'border-sky-300 bg-sky-600 text-white shadow-sm shadow-sky-500/20' : 'border-gray-200 bg-white text-gray-500'}`}
-                >
-                  {bankForm.sepayUseVirtualAccount ? 'Dùng VA' : 'Tắt VA'}
-                </button>
-              </div>
-              <p className="mt-2 text-[11px] font-semibold leading-4 text-sky-700">
-                Nếu ngân hàng trên SePay ghi “chỉ hỗ trợ VA”, hãy nhập VA tại đây. QR hóa đơn sẽ nhận tiền vào VA để webhook về tức thì.
-              </p>
-            </div>
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-bold text-gray-500">Chủ tài khoản</span>
-              <input
-                value={bankForm.bankAccountName}
-                onChange={(event) => setBankForm(prev => ({ ...prev, bankAccountName: event.target.value.toUpperCase() }))}
-                className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold uppercase outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="VD: CONG TY HD"
-              />
-            </label>
-
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-bold text-gray-500">Mẫu QR</span>
-                <select
-                  value={bankForm.invoiceQrTemplate}
-                  onChange={(event) => setBankForm(prev => ({ ...prev, invoiceQrTemplate: event.target.value }))}
-                  className="w-full rounded-xl border border-gray-300 bg-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="qr_only">Chỉ mã QR</option>
-                  <option value="compact2">Compact 2</option>
-                  <option value="compact">Compact</option>
-                  <option value="print">Print</option>
-                </select>
-              </label>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                <p className="text-[11px] font-black uppercase text-emerald-700">Nội dung mẫu</p>
-                <p className="mt-2 text-sm font-black text-emerald-900">TT HD000001</p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setBankForm(prev => ({ ...prev, autoReconcileByOrderCode: !prev.autoReconcileByOrderCode }))}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-left"
-            >
-              <span>
-                <span className="block text-xs font-black uppercase text-gray-500">Tự động đối soát</span>
-                <span className="mt-1 block text-xs text-gray-500">Nếu nội dung chuyển khoản có đúng mã hóa đơn, app sẽ hỗ trợ trừ nợ đúng khách.</span>
-              </span>
-              <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${bankForm.autoReconcileByOrderCode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-white text-gray-500'}`}>
-                {bankForm.autoReconcileByOrderCode ? 'Bật' : 'Tắt'}
-              </span>
-            </button>
-
-            <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
-              <p className="mb-3 text-xs font-black uppercase text-emerald-700">Thanh toán SePay</p>
-              <div className="flex items-center gap-4">
-                <div className="flex h-28 w-28 items-center justify-center rounded-2xl border border-dashed border-emerald-200 bg-white text-emerald-500">
-                  <CreditCard size={28} />
-                </div>
-                <div className="min-w-0 text-xs leading-6 text-gray-600">
-                  <p className="mb-1 font-bold text-emerald-700">QR/link sẽ được SePay tạo riêng cho từng hóa đơn.</p>
-                  <p><span className="font-bold text-gray-900">Ngân hàng:</span> {bankForm.bankName || 'Chưa nhập'}</p>
-                  <p><span className="font-bold text-gray-900">Số TK nhận:</span> {sepayEffectiveAccountNumber || 'Chưa nhập'}{bankForm.sepayUseVirtualAccount && sepayEffectiveAccountNumber ? ' (VA)' : ''}</p>
-                  <p><span className="font-bold text-gray-900">Chủ TK:</span> {bankForm.bankAccountName || 'Chưa nhập'}</p>
-                </div>
-              </div>
-            </div>
-
-            {bankSaveStatus && (
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
-                {bankSaveStatus}
-              </div>
-            )}
-
-            <button type="submit" className="w-full rounded-xl bg-emerald-600 py-3.5 text-sm font-black text-white shadow-md shadow-emerald-500/20">
-              Lưu tài khoản nhận chuyển khoản
-            </button>
-          </form>
-        )}
-      </section>}
-
-      {safeActiveSettingsPanel === 'bank_payments' && <section className="rounded-3xl border border-sky-100 bg-gradient-to-br from-white via-sky-50/70 to-emerald-50/70 p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-50 text-sky-600">
-            <Wallet size={21} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-lg font-black text-gray-900">Ngân hàng & Thanh toán</h3>
-            <p className="mt-1 text-xs leading-5 text-gray-500">
-              Theo dõi SePay, QR hóa đơn, giao dịch ngân hàng và đối soát công nợ tự động.
-            </p>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <div className="rounded-2xl border border-white/80 bg-white/90 p-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Tài khoản nhận</p>
-                <p className="mt-1 truncate text-sm font-black text-slate-900">
-                  {bankAccountDescription || 'Chưa cài'}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/80 bg-white/90 p-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Đối soát QR</p>
-                <p className="mt-1 text-sm font-black text-emerald-700">
-                  {bankForm.autoReconcileByOrderCode ? 'Đang bật' : 'Đang tắt'}
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setActiveTab?.('bank_payments')}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3.5 text-sm font-black text-white shadow-md shadow-sky-500/20"
-            >
-              <CreditCard size={17} />
-              Mở Ngân hàng & Thanh toán
-            </button>
-          </div>
-        </div>
-      </section>}
 
       {safeActiveSettingsPanel === 'loyalty' && <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
-              <Gift size={21} />
-            </div>
-            <div>
-              <h3 className="text-lg font-black text-gray-900">Tích điểm khách hàng</h3>
-              <p className="mt-1 text-xs text-gray-500">Bật/tắt tích điểm cho toàn bộ khách hàng và cấu hình quy đổi điểm.</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowLoyaltySettings(prev => !prev)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm"
-          >
-            {showLoyaltySettings ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            {showLoyaltySettings ? 'Đóng' : 'Mở'}
+        <div className="flex min-h-16 items-center justify-between gap-4 border-b border-gray-200 pb-3">
+          <span id="loyalty-status-label" className="text-sm font-bold text-gray-800">Trạng thái</span>
+          <button type="button" role="switch" aria-labelledby="loyalty-status-label" aria-checked={loyaltyForm.customerLoyaltyEnabled} disabled={!canManageLoyaltySettings && !isAccounting} onClick={() => setLoyaltyForm(prev => ({ ...prev, customerLoyaltyEnabled: !prev.customerLoyaltyEnabled }))} className="loyalty-power-switch" data-on={loyaltyForm.customerLoyaltyEnabled}>
+            <span className="loyalty-power-switch__label" aria-hidden="true">{loyaltyForm.customerLoyaltyEnabled ? 'Bật' : 'Tắt'}</span>
+            <span className="loyalty-power-switch__thumb" aria-hidden="true" />
           </button>
         </div>
-
-        <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-wide text-gray-400">Trạng thái</p>
-              <p className="mt-1 text-sm font-bold text-gray-900">{loyaltyForm.customerLoyaltyEnabled ? 'Đang bật tích điểm' : 'Đang tắt tích điểm'}</p>
-              <p className="mt-1 text-xs text-gray-500">{formatCurrency(loyaltyEarnPreview)} đ = 1 điểm - 1 điểm = {formatCurrency(loyaltyRedeemPreview)} đ</p>
-            </div>
-            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-black ${loyaltyStatusClasses}`}>
-              {loyaltyForm.customerLoyaltyEnabled ? 'Bật' : 'Tắt'}
-            </span>
-          </div>
-        </div>
-
         {showLoyaltySettings && (
           <form onSubmit={handleLoyaltySettingSubmit} className="mt-4 space-y-3">
-            <button
-              type="button"
-              onClick={() => setLoyaltyForm(prev => ({ ...prev, customerLoyaltyEnabled: !prev.customerLoyaltyEnabled }))}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-left"
-            >
-              <span>
-                <span className="block text-xs font-black uppercase text-gray-500">Bật tích điểm</span>
-                <span className="mt-1 block text-xs text-gray-500">Khi bật, mọi khách hàng đều được cộng điểm theo đơn đã thanh toán.</span>
-              </span>
-              <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${loyaltyStatusClasses}`}>
-                {loyaltyForm.customerLoyaltyEnabled ? 'Bật' : 'Tắt'}
-              </span>
-            </button>
+            <label className="block text-xs font-bold text-gray-700">Kiểu tích điểm
+              <select value={loyaltyForm.loyaltyEarnMode || 'fixed'} onChange={event => setLoyaltyForm(prev => ({ ...prev, loyaltyEarnMode: event.target.value }))} className="mt-1 w-full rounded-lg border border-gray-300 bg-white p-3 text-sm">
+                <option value="fixed">Số tiền đổi điểm</option><option value="revenue_percent">% doanh thu đổi điểm</option>
+              </select>
+            </label>
+            {loyaltyForm.loyaltyEarnMode === 'revenue_percent' && <label className="block text-xs font-bold text-gray-700">Tỷ lệ thưởng trên doanh thu đơn hàng (%)
+              <input aria-label="Tỷ lệ tích điểm theo doanh thu" type="number" min="0" max="100" step="0.01" value={loyaltyForm.loyaltyRevenuePercent} onChange={event => setLoyaltyForm(prev => ({ ...prev, loyaltyRevenuePercent: event.target.value }))} className="mt-1 w-full rounded-lg border border-gray-300 p-3 text-sm" />
+            </label>}
 
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
@@ -33576,6 +33416,7 @@ function SettingsView({
                   className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold text-amber-700 outline-none focus:ring-2 focus:ring-amber-500"
                   placeholder="100.000"
                 />
+                <p className="mt-1 text-[9px] leading-3 font-normal text-gray-500">Số {formatCurrency(loyaltyEarnPreview)} vnd đổi 1 tích điểm</p>
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-bold text-gray-500">1 điểm quy đổi</span>
@@ -33586,6 +33427,7 @@ function SettingsView({
                   className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold text-amber-700 outline-none focus:ring-2 focus:ring-amber-500"
                   placeholder="1.000"
                 />
+                <p className="mt-1 text-[9px] leading-3 font-normal text-gray-500">1 tích điểm đổi số {formatCurrency(loyaltyRedeemPreview)} vnd</p>
               </label>
             </div>
 
@@ -33638,104 +33480,19 @@ function SettingsView({
             </div>
 
             {loyaltySaveStatus && (
-              <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+              <div role="status" aria-live="polite" className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
                 {loyaltySaveStatus}
               </div>
             )}
 
-            <button type="submit" className="w-full rounded-xl bg-amber-500 py-3.5 text-sm font-black text-white shadow-md shadow-amber-500/20">
-              Lưu cài đặt tích điểm
+            <button type="submit" disabled={isSavingLoyalty || !canManageLoyaltySettings} aria-busy={isSavingLoyalty} className="w-full rounded-xl bg-amber-500 py-3.5 text-sm font-black text-white shadow-md shadow-amber-500/20 disabled:opacity-60">
+              {isSavingLoyalty ? 'Đang lưu...' : 'Lưu'}
             </button>
           </form>
         )}
       </section>}
 
-      {safeActiveSettingsPanel === 'care' && <section className="rounded-3xl border border-sky-100 bg-white p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-50 text-sky-600">
-              <Bell size={21} />
-            </div>
-            <div>
-              <h3 className="text-lg font-black text-gray-900">{'Nh\u1eafc ch\u0103m s\u00f3c kh\u00e1ch h\u00e0ng'}</h3>
-              <p className="mt-1 text-xs text-gray-500">{'T\u1ef1 \u0111\u1ed9ng b\u00e1o cho kinh doanh khi kh\u00e1ch l\u00e2u ch\u01b0a c\u00f3 \u0111\u01a1n m\u1edbi.'}</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowCustomerCareSettings(prev => !prev)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm"
-          >
-            {showCustomerCareSettings ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            {showCustomerCareSettings ? '\u0110\u00f3ng' : 'M\u1edf'}
-          </button>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-wide text-gray-400">{'Tr\u1ea1ng th\u00e1i'}</p>
-              <p className="mt-1 text-sm font-bold text-gray-900">
-                {customerCareForm.customerCareReminderEnabled ? '\u0110ang b\u1eadt nh\u1eafc ch\u0103m s\u00f3c' : '\u0110ang t\u1eaft nh\u1eafc ch\u0103m s\u00f3c'}
-              </p>
-              <p className="mt-1 text-xs text-gray-500">
-                {`Sau ${customerCareInactiveDaysPreview} ng\u00e0y kh\u00f4ng c\u00f3 \u0111\u01a1n m\u1edbi, app s\u1ebd b\u00e1o trong chu\u00f4ng th\u00f4ng b\u00e1o.`}
-              </p>
-            </div>
-            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-black ${customerCareStatusClasses}`}>
-              {customerCareForm.customerCareReminderEnabled ? 'B\u1eadt' : 'T\u1eaft'}
-            </span>
-          </div>
-        </div>
-
-        {showCustomerCareSettings && (
-          <form onSubmit={handleCustomerCareSettingSubmit} className="mt-4 space-y-3">
-            <button
-              type="button"
-              disabled={!canManageCustomerCareSettings}
-              onClick={() => setCustomerCareForm(prev => ({ ...prev, customerCareReminderEnabled: !prev.customerCareReminderEnabled }))}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-left disabled:opacity-60"
-            >
-              <span>
-                <span className="block text-xs font-black uppercase text-gray-500">{'B\u1eadt nh\u1eafc t\u1ef1 \u0111\u1ed9ng'}</span>
-                <span className="mt-1 block text-xs text-gray-500">{'Kinh doanh s\u1ebd th\u1ea5y \u0111\u00fang kh\u00e1ch m\u00ecnh ph\u1ee5 tr\u00e1ch; ch\u1ee7 doanh nghi\u1ec7p v\u00e0 k\u1ebf to\u00e1n xem \u0111\u01b0\u1ee3c to\u00e0n b\u1ed9.'}</span>
-              </span>
-              <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${customerCareStatusClasses}`}>
-                {customerCareForm.customerCareReminderEnabled ? 'B\u1eadt' : 'T\u1eaft'}
-              </span>
-            </button>
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-bold text-gray-500">{'S\u1ed1 ng\u00e0y ch\u01b0a c\u00f3 \u0111\u01a1n'}</span>
-              <input
-                type="tel"
-                disabled={!canManageCustomerCareSettings}
-                value={customerCareForm.customerCareInactiveDays}
-                onChange={(event) => setCustomerCareForm(prev => ({
-                  ...prev,
-                  customerCareInactiveDays: event.target.value.replace(/[^\d]/g, '')
-                }))}
-                className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold text-sky-700 outline-none focus:ring-2 focus:ring-sky-500 disabled:bg-gray-100"
-                placeholder="7"
-              />
-            </label>
-
-            {customerCareSaveStatus && (
-              <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700">
-                {customerCareSaveStatus}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={!canManageCustomerCareSettings}
-              className="w-full rounded-xl bg-sky-600 py-3.5 text-sm font-black text-white shadow-md shadow-sky-500/20 disabled:opacity-60"
-            >
-              {'L\u01b0u nh\u1eafc ch\u0103m s\u00f3c'}
-            </button>
-          </form>
-        )}
-      </section>}
+{safeActiveSettingsPanel === 'care' && <CustomerCareSettings company={currentCompany} selected={careRuleId} onSelect={setCareRuleId} onSave={onUpdateCompanySettings} canEdit={canManageCustomerCareSettings} />}
 
       {safeActiveSettingsPanel === 'warehouse' && <section className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm hd-soft-red-outline">
         <div className="flex items-start justify-between gap-3">
@@ -33812,43 +33569,25 @@ function SettingsView({
       </section>}
 
       {safeActiveSettingsPanel === 'salary_advance' && <section className="rounded-3xl border border-orange-100 bg-white p-4 shadow-sm hd-soft-red-outline">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-orange-50 text-orange-600">
-              <Banknote size={21} />
-            </div>
-            <div>
-              <h3 className="text-lg font-black text-gray-900">Cấu hình % ứng tự động</h3>
-              <p className="mt-1 text-xs text-gray-500">
-                Có % thì app tự tính số tiền ứng tối đa theo lương. Bỏ trống thì nhân viên tự nhập số tiền muốn ứng và vẫn chờ phê duyệt.
-              </p>
-            </div>
-          </div>
+        <div className="flex min-h-16 items-center justify-between gap-4 border-b border-gray-200 pb-3">
+          <span id="advance-config-label" className="text-sm font-bold text-gray-800">Cấu hình</span>
           <button
             type="button"
+            role="switch"
+            aria-labelledby="advance-config-label"
+            aria-checked={showAdvanceSettings}
+            aria-controls="advance-config-form"
             onClick={() => setShowAdvanceSettings(prev => !prev)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm"
+            className="loyalty-power-switch"
+            data-on={showAdvanceSettings}
           >
-            {showAdvanceSettings ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            {showAdvanceSettings ? 'Đóng' : 'Mở'}
+            <span className="loyalty-power-switch__label" aria-hidden="true">{showAdvanceSettings ? 'Bật' : 'Tắt'}</span>
+            <span className="loyalty-power-switch__thumb" aria-hidden="true" />
           </button>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-wide text-gray-400">Mặc định toàn công ty</p>
-              <p className="mt-1 text-sm font-bold text-gray-900">{advanceLimitPreview}</p>
-              <p className="mt-1 text-xs text-gray-500">Mức theo bộ phận bên dưới sẽ ưu tiên hơn mức mặc định.</p>
-            </div>
-            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-black ${advanceStatusClasses}`}>
-              {advanceLimitIsUnlimited ? 'Tự do' : 'Có hạn mức'}
-            </span>
-          </div>
-        </div>
-
         {showAdvanceSettings && (
-          <form onSubmit={handleAdvanceSettingSubmit} className="mt-4 space-y-4">
+          <form id="advance-config-form" onSubmit={handleAdvanceSettingSubmit} className="mt-4 space-y-4">
             <label className="block rounded-2xl border border-orange-100 bg-orange-50/70 p-3">
               <span className="mb-2 block text-xs font-black uppercase text-orange-700">Mặc định toàn công ty (%)</span>
               <input
@@ -33914,7 +33653,7 @@ function SettingsView({
               disabled={!canManageSalaryAdvanceSettings}
               className="w-full rounded-xl bg-orange-500 py-3.5 text-sm font-black text-white shadow-md shadow-orange-500/20 disabled:opacity-60"
             >
-              Lưu cấu hình ứng lương
+              Lưu
             </button>
           </form>
         )}
@@ -36165,8 +35904,17 @@ function BankPaymentCenterView({
   const safePayments = useMemo(() => (Array.isArray(payments) ? payments.filter(Boolean) : []), [payments]);
   const safeBankAccounts = useMemo(() => (Array.isArray(bankAccounts) ? bankAccounts.filter(Boolean) : []), [bankAccounts]);
   const safeBankTransactions = useMemo(() => (Array.isArray(bankTransactions) ? bankTransactions.filter(Boolean) : []), [bankTransactions]);
-  const [isBankSettingsOpen, setIsBankSettingsOpen] = useState(false);
   const [bankSettingsView, setBankSettingsView] = useState(null);
+  useEffect(() => {
+    const openCustomers = () => setBankSettingsView('customers');
+    window.addEventListener('hd-bank-customer-accounts', openCustomers);
+    return () => window.removeEventListener('hd-bank-customer-accounts', openCustomers);
+  }, []);
+  useAppScreenBack(() => {
+    if (!bankSettingsView) return false;
+    setBankSettingsView(null);
+    return true;
+  });
   const transactionListRef = useRef(null);
 
   const customerMap = useMemo(() => new Map(safeCustomers.map(customer => [customer.id, customer])), [safeCustomers]);
@@ -36175,41 +35923,6 @@ function BankPaymentCenterView({
   const transferAccountNumber = transferProfile.sepayReceivingAccountNumber || transferProfile.accountNumber;
   const todayKey = getTodayString();
 
-  const receivingAccounts = useMemo(() => {
-    const configuredAccountKeys = ['receivingAccounts', 'bankReceivingAccounts', 'paymentAccounts', 'companyBankAccounts'];
-    const configuredAccounts = configuredAccountKeys.flatMap(key => (
-      Array.isArray(currentCompany?.[key]) ? currentCompany[key] : []
-    ));
-    const candidates = [
-      {
-        bankId: transferProfile.bankId,
-        bankName: transferProfile.bankName,
-        accountNumber: transferAccountNumber,
-        accountName: transferProfile.accountName
-      },
-      ...configuredAccounts
-    ];
-    const seenBanks = new Set();
-
-    return candidates.reduce((items, account = {}) => {
-      const bankId = `${account.bankId || account.bankCode || account.code || ''}`.trim().toUpperCase();
-      const bankName = `${account.bankName || account.name || getBankOptionLabel(bankId) || ''}`.trim();
-      const accountNumber = `${account.sepayReceivingAccountNumber || account.accountNumber || account.bankAccountNumber || ''}`
-        .replace(/[^\dA-Za-z]/g, '')
-        .trim()
-        .toUpperCase();
-      const bankKey = bankId || bankName.toLowerCase();
-      if (!bankKey || !accountNumber || seenBanks.has(bankKey)) return items;
-      seenBanks.add(bankKey);
-      items.push({
-        id: account.id || `${bankKey}-${accountNumber}`,
-        bankName: bankName || bankId,
-        accountNumber,
-        accountName: `${account.accountName || account.bankAccountName || ''}`.trim()
-      });
-      return items;
-    }, []);
-  }, [currentCompany, transferAccountNumber, transferProfile]);
 
   const linkedAccounts = useMemo(() => (
     safeBankAccounts.filter(account => !account.isArchived)
@@ -36287,80 +36000,13 @@ function BankPaymentCenterView({
     };
   }, [bankPaymentRows, linkedAccounts, sortedTransactions, todayKey]);
 
-  const toggleBankSettings = () => {
-    setIsBankSettingsOpen(previous => {
-      if (previous) setBankSettingsView(null);
-      return !previous;
-    });
-  };
   const scrollToTransactionList = () => {
     transactionListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  return (
-    <div className="space-y-4 pb-[calc(96px+env(safe-area-inset-bottom))] animate-in fade-in">
-      <section className="rounded-[1.5rem] border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-emerald-50 p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-black text-slate-900">Trung tâm giao dịch</h2>
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="Cài đặt tài khoản ngân hàng"
-              aria-controls="bank-settings-menu"
-              aria-expanded={isBankSettingsOpen}
-              title="Cài đặt"
-              onClick={toggleBankSettings}
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sky-700 shadow-sm transition hover:bg-sky-50"
-            >
-              <Settings size={19} aria-hidden="true" />
-            </button>
-
-            {isBankSettingsOpen && (
-              <div id="bank-settings-menu" className="absolute right-0 top-[calc(100%+0.5rem)] z-20 w-56 rounded-2xl border border-slate-100 bg-white p-2 shadow-xl">
-                <p className="px-3 pb-1 pt-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Cài đặt</p>
-                {[
-                  { id: 'receiving', label: 'Danh sách TK', icon: CreditCard },
-                  { id: 'customers', label: 'TK Khách hàng', icon: Users }
-                ].map(item => {
-                  const Icon = item.icon;
-                  const isSelected = bankSettingsView === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      aria-pressed={isSelected}
-                      onClick={() => setBankSettingsView(item.id)}
-                      className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-black transition ${
-                        isSelected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {bankSettingsView === 'receiving' && (
-          <div className="mt-4 border-t border-sky-100 pt-4">
-            <h3 className="text-sm font-black text-slate-900">Danh sách TK</h3>
-            <div className="mt-2 space-y-1.5">
-              {receivingAccounts.length === 0 ? (
-                <p className="rounded-xl bg-white/80 px-3 py-2.5 text-sm font-semibold text-slate-500">Chưa có tài khoản nhận tiền.</p>
-              ) : receivingAccounts.map(account => (
-                <div key={account.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-white/80 px-3 py-2.5">
-                  <p className="truncate text-sm font-black text-slate-800">{account.bankName}</p>
-                  <p className="text-sm font-black tabular-nums text-slate-900">{account.accountNumber}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {bankSettingsView === 'customers' && (
+  if (bankSettingsView === 'customers') return (
+    <div data-bank-page="customers" className="pb-24">
+      <button type="button" onClick={() => setBankSettingsView(null)} aria-label="Quay lại TT giao dịch" className="flex h-10 w-10 items-center justify-center"><ChevronLeft size={20} /></button>
           <div className="mt-4 border-t border-sky-100 pt-4">
             <h3 className="text-sm font-black text-slate-900">TK Khách hàng</h3>
             <div className="mt-2 space-y-2">
@@ -36387,8 +36033,11 @@ function BankPaymentCenterView({
               })}
             </div>
           </div>
-        )}
-      </section>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4 pb-[calc(96px+env(safe-area-inset-bottom))] animate-in fade-in">
 
       <section className="grid grid-cols-2 gap-2">
         {[
@@ -45751,6 +45400,8 @@ function MessageCenterView({
     );
   };
   const sortConversationsByPriority = (a, b) => {
+    const unreadDiff = Number(getConversationUnreadCount(b) > 0) - Number(getConversationUnreadCount(a) > 0);
+    if (unreadDiff !== 0) return unreadDiff;
     const timeDiff = getConversationActivityAt(b) - getConversationActivityAt(a);
     if (timeDiff !== 0) return timeDiff;
     return `${a.title || a.id || ''}`.localeCompare(`${b.title || b.id || ''}`, 'vi');
@@ -46889,6 +46540,12 @@ function MessageCenterView({
           value={searchKeyword}
           onChange={setSearchKeyword}
           onClear={() => setSearchKeyword('')}
+          onFilter={() => {
+            setShowCreateConversationPanel(false);
+            setShowMessageFilterMenu(value => !value);
+          }}
+          filterOpen={showMessageFilterMenu}
+          filterActive={messageFilter !== 'all'}
           onCreate={() => {
             setShowMessageFilterMenu(false);
             setShowCreateConversationPanel((value) => !value);
@@ -46927,7 +46584,6 @@ function MessageCenterView({
                 <Users size={19} />
                 <span>Tạo nhóm</span>
               </button>
-              <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); setShowMessageFilterMenu(true); }}><Filter size={19} /><span>Lọc tin nhắn</span></button>
               <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); openHeaderCodeScanner(); }}><Scan size={19} /><span>Quét mã</span></button>
               <button type="button" className="hd-chat-create-menu-item" onClick={() => { setShowCreateConversationPanel(false); handleRefreshChats(); }}><RefreshCw size={19} /><span>Làm mới</span></button>
             </div>
@@ -85170,6 +84826,11 @@ function CustomerPortalView({
           {activeTab !== 'home' && <button onClick={() => setActiveTab('more')} className="w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center"><UserCircle size={22} className="text-emerald-600" /></button>}
         </div>
       </HDHeader>
+      {activeTab === 'home' && pointsInfo.pendingRewardDate === getTodayString() && Number(pointsInfo.pendingRewardPoints) > 0 && (
+        <div role="status" className="mx-4 mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          Hãy thanh toán để nhận số tiền {formatCurrency(pointsInfo.pendingRewardMoney)} đ tương đương {formatCurrency(pointsInfo.pendingRewardPoints)} tích điểm.
+        </div>
+      )}
       {submitMessage && (
         <div className="mx-4 mt-4 rounded-2xl bg-emerald-50 border border-emerald-100 p-3 text-sm font-semibold text-emerald-700 flex justify-between gap-3">
           <span>{submitMessage}</span><button onClick={() => setSubmitMessage('')}><X size={16} /></button>

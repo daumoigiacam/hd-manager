@@ -324,6 +324,7 @@ const allocateCustomerDebtPayment = ({ items = [], orderOutstandingById = {}, pa
 };
 
 module.exports = {
+  isOfficialPayment,
   MAX_CUSTOMER_DEBT_PAYMENT_ORDERS,
   allocateCustomerDebtPayment,
   buildCustomerDebtLedger,

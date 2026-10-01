@@ -1,6 +1,24 @@
 const functions = require('firebase-functions');
 const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
+const { sendLoyaltyReminders } = require('./loyaltyReminders');
+const { handleCareEvent, runCalendarCare } = require('./customerCare');
+for (const collection of ['orders', 'payments']) {
+  exports[`customerCare_${collection}`] = onDocumentWritten({ document: `artifacts/{appId}/public/data/${collection}/{id}`, region: 'asia-southeast1', retry: true }, async event => {
+    if (!event.data?.after.exists) return;
+    await handleCareEvent({ db, path: name => collectionPath(event.params.appId, name), collection,
+      before: event.data.before.exists ? event.data.before.data() : null,
+      after: event.data.after.data(), id: event.params.id, eventAt: event.time });
+  });
+}
+exports.customerCareDaily = onSchedule({ schedule: '0 9 * * *', timeZone: 'Asia/Ho_Chi_Minh', region: 'asia-southeast1', timeoutSeconds: 540 }, async () => {
+  for (const appId of getPayrollAutoLockAppIds()) await runCalendarCare({ db, path: name => collectionPath(appId, name) });
+});
+exports.customerLoyaltyReminder21h = onSchedule({ schedule: '0 21 * * *', timeZone: 'Asia/Ho_Chi_Minh', region: 'asia-southeast1', timeoutSeconds: 540 }, async () => {
+  for (const appId of getPayrollAutoLockAppIds()) {
+    await sendLoyaltyReminders({ db, appId, date: getVietnamDateKey(new Date()), pathBuilder: collectionPath });
+  }
+});
 const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
 const crypto = require('crypto');

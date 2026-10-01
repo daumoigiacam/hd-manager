@@ -33,6 +33,8 @@ const COMPANY_PUBLIC_FIELDS = [
   'sepayUseVirtualAccount',
   'customerLoyaltyEnabled',
   'loyaltyEarnAmountPerPoint',
+  'loyaltyEarnMode',
+  'loyaltyRevenuePercent',
   'loyaltyRedeemValuePerPoint',
   'loyaltyEligibilityConditions'
 ];

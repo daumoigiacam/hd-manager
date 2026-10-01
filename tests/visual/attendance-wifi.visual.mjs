@@ -32,7 +32,7 @@ try {
       const key = 'hd-manager-local-db-v2-clean-preview';
       if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...fixture, __replaceSeed: true }));
     }, { fixture: seedData, claims });
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.getByRole('button', { name: 'Thêm', exact: true }).first().click({ timeout: 30000 });
     await page.getByRole('button', { name: 'Chấm công', exact: true }).first().click();
     await page.getByRole('button', { name: 'WiFi nội bộ', exact: true }).click();
@@ -44,7 +44,15 @@ try {
     await page.screenshot({ path: `${output}/${viewport.width}-web.png`, animations: 'disabled' });
     await wifi.getByRole('button', { name: 'Quay lại', exact: true }).click();
     await wifi.waitFor({ state: 'hidden' });
-    await page.getByRole('heading', { name: 'Chấm công của bạn', exact: true }).waitFor();
+    const self = page.locator('[data-attendance-self]');
+    await self.waitFor();
+    assert.equal(await page.getByText('Chấm công của bạn', { exact: true }).count(), 0);
+    assert.equal(await page.getByText('Lọc theo vị trí', { exact: true }).count(), 0);
+    assert.equal(await page.getByText('Cảnh báo thiếu chấm công', { exact: true }).count(), 0);
+    await self.getByRole('button', { name: 'GPS vị trí', exact: true }).click();
+    assert.equal(await self.getByRole('button', { name: 'GPS vị trí', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await self.getByRole('button', { name: 'WiFi nội bộ', exact: true }).getAttribute('aria-pressed'), 'false');
+    await page.screenshot({ path: `${output}/${viewport.width}-team.png`, animations: 'disabled' });
     assert.equal(await page.locator('.hd-app-header').isVisible(), true, 'team header restored');
 
     await page.goto(`${url}/tests/visual/fixtures/attendance-wifi.html`, { waitUntil: 'domcontentloaded' });

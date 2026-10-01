@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft, Camera, CheckCheck, ChevronRight, Contact, FileText, Heart,
+  ArrowLeft, Camera, CheckCheck, ChevronRight, Contact, FileText, Filter, Heart,
   Image as ImageIcon, MapPin, Mic, MoreVertical, Package, Pause, Phone, Pin,
   Play, Plus, Search, Send, Smile, ThumbsUp, Users, Video, WifiOff, X
 } from 'lucide-react';
@@ -23,7 +23,7 @@ export function ChatAvatar({ conversation = {}, size = 'regular' }) {
   );
 }
 
-export function ChatSearchBar({ value, onChange, onClear, onCreate, placeholder, createEnabled = false, autoFocus = false }) {
+export function ChatSearchBar({ value, onChange, onClear, onCreate, onFilter, filterOpen = false, filterActive = false, placeholder, createEnabled = false, autoFocus = false }) {
   return (
     <div className="hd-chat-search-row">
       <label className="hd-chat-search-field">
@@ -39,6 +39,7 @@ export function ChatSearchBar({ value, onChange, onClear, onCreate, placeholder,
         />
         {value && <button type="button" className="hd-chat-search-clear" onClick={onClear} aria-label="Xóa tìm kiếm"><X size={17} /></button>}
       </label>
+      {onFilter && <button type="button" className="hd-chat-create" onClick={onFilter} aria-label="Lọc tin nhắn" title="Lọc tin nhắn" aria-expanded={filterOpen} data-filter-active={filterActive}><Filter size={21} /></button>}
       {createEnabled && <button type="button" className="hd-chat-create" onClick={onCreate} aria-label="Tạo cuộc trò chuyện"><Plus size={23} /></button>}
     </div>
   );
