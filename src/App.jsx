@@ -1042,8 +1042,8 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   warehouse_import: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts'],
   warehouse_dispatch: ['customers', 'products', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'employees'],
   delivery_reports: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'assets', 'assetCostLogs'],
-  customers: ['customers', 'orders', 'payments', 'payment_reconciliations', 'customer_points', 'customerLoans', 'products', 'warehouseImports', 'warehouseDispatches'],
-  debt: ['customers', 'orders', 'payments', 'bankTransactions', 'warehouseImports', 'employees'],
+  customers: ['customers', 'orders', 'payments', 'expenses', 'payment_reconciliations', 'customer_points', 'customerLoans', 'products', 'warehouseImports', 'warehouseDispatches'],
+  debt: ['customers', 'orders', 'payments', 'expenses', 'bankTransactions', 'warehouseImports', 'employees'],
   points: ['customer_points', 'reward_catalog'],
   finance: ['expenses', 'payments', 'orders', 'assets', 'deliveryReports', 'employees', 'customers'],
   bank_payments: ['customers', 'orders', 'payments', 'bankAccounts', 'bankTransactions', 'payment_reconciliations'],
@@ -10795,17 +10795,20 @@ const buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []
   };
 };
 
-const applyCustomerSupplierReconciliation = (ledger = {}, purchaseLedger = {}) => {
+const applyCustomerSupplierReconciliation = (ledger = {}, purchaseLedger = {}, repayments = []) => {
   const salesDebtBeforeReconcile = Math.max(0, roundMoneyValue(parseLooseMoneyValue(ledger.currentDebt)));
   const customerCreditBeforeReconcile = Math.max(0, roundMoneyValue(parseLooseMoneyValue(ledger.creditBalance)));
   const purchaseDebt = Math.max(0, roundMoneyValue(parseLooseMoneyValue(purchaseLedger.totalPurchaseDebt)));
-  const companyOwesBeforeReconcile = roundMoneyValue(customerCreditBeforeReconcile + purchaseDebt);
-  const reconciliationOffset = roundMoneyValue(Math.min(salesDebtBeforeReconcile, companyOwesBeforeReconcile));
+  const totalRepaid = roundMoneyValue(repayments.reduce((sum, item) => sum + Math.max(0, parseLooseMoneyValue(item.amount)), 0));
+  const companyOwesBeforeReconcile = roundMoneyValue(customerCreditBeforeReconcile + purchaseDebt - totalRepaid);
+  const reconciliationOffset = Math.max(0, roundMoneyValue(Math.min(salesDebtBeforeReconcile, companyOwesBeforeReconcile)));
   const currentDebt = Math.max(0, roundMoneyValue(salesDebtBeforeReconcile - companyOwesBeforeReconcile));
   const creditBalance = Math.max(0, roundMoneyValue(companyOwesBeforeReconcile - salesDebtBeforeReconcile));
 
   return {
     ...ledger,
+    repayments,
+    totalRepaid,
     currentDebt,
     creditBalance,
     hasPurchaseReconciliation: (purchaseLedger.imports || []).length > 0 || purchaseDebt > 0,
@@ -10828,17 +10831,30 @@ const applyCustomerSupplierReconciliation = (ledger = {}, purchaseLedger = {}) =
   };
 };
 
-const buildCustomerReconciledLedger = (customerOrId, allOrders = [], allPayments = [], warehouseImports = []) => {
-  const ledger = buildCustomerLedger(customerOrId, allOrders, allPayments);
-  const purchaseLedger = buildCustomerSupplierPurchaseLedger(customerOrId, warehouseImports);
-  return applyCustomerSupplierReconciliation(ledger, purchaseLedger);
+const getCustomerDebtRepayments = (customerOrId, expenses = []) => {
+  const customerId = typeof customerOrId === 'string' ? customerOrId : customerOrId?.id;
+  return expenses.filter(item => item && !item.isArchived && item.sourceType === 'customer_debt_repayment'
+    && item.customerId === customerId && isCashflowOfficial(item)
+    && (!customerOrId?.companyId || item.companyId === customerOrId.companyId));
 };
 
-const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments = [], warehouseImports = []) => {
+const buildCustomerReconciledLedger = (customerOrId, allOrders = [], allPayments = [], warehouseImports = [], expenses = []) => {
+  const ledger = buildCustomerLedger(customerOrId, allOrders, allPayments);
+  const purchaseLedger = buildCustomerSupplierPurchaseLedger(customerOrId, warehouseImports);
+  return applyCustomerSupplierReconciliation(ledger, purchaseLedger, getCustomerDebtRepayments(customerOrId, expenses));
+};
+
+const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments = [], warehouseImports = [], expenses = []) => {
   const salesLedgers = buildCustomerLedgerMap(customers, orders, payments);
   const importsByCustomerId = new Map();
   const importsByPhone = new Map();
   const importsByName = new Map();
+  const repaymentsByCustomer = new Map();
+  expenses.forEach(item => {
+    if (!item || item.isArchived || item.sourceType !== 'customer_debt_repayment') return;
+    if (!repaymentsByCustomer.has(item.customerId)) repaymentsByCustomer.set(item.customerId, []);
+    repaymentsByCustomer.get(item.customerId).push(item);
+  });
   const addImport = (index, key, item) => {
     if (!key) return;
     if (!index.has(key)) index.set(key, []);
@@ -10862,7 +10878,8 @@ const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments 
       ...(importsByName.get(name) || [])
     ])];
     const purchaseLedger = buildCustomerSupplierPurchaseLedger(customer, matchedImports);
-    return [customer.id, applyCustomerSupplierReconciliation(salesLedgers[customer.id], purchaseLedger)];
+    return [customer.id, applyCustomerSupplierReconciliation(salesLedgers[customer.id], purchaseLedger,
+      getCustomerDebtRepayments(customer, repaymentsByCustomer.get(customer.id) || []))];
   }));
 };
 
@@ -17819,6 +17836,19 @@ export default function App() {
     const id = expenseData.clientMutationId || `exp_${crypto.randomUUID()}`;
     const amount = parseLooseMoneyValue(expenseData.amount);
     if (!/^[A-Za-z0-9_-]+$/.test(id) || amount <= 0) throw new Error('Khoản chi phải có mã hợp lệ và số tiền lớn hơn 0.');
+    if (expenseData.sourceType === 'customer_debt_repayment') {
+      if (!hasCompanyRolePermissionAction({ company: currentCompany, employee: appCurrentEmployee, currentUser }, 'finance', 'create_expense')) {
+        throw new Error('Bạn chưa có quyền ghi nhận khoản chi.');
+      }
+      const customer = customers.find(item => item.id === expenseData.customerId && item.companyId === myCompanyId);
+      if (!customer) throw new Error('Không tìm thấy khách hàng của công ty.');
+      const existing = expenses.find(item => item.id === id);
+      if (existing && (existing.sourceType !== expenseData.sourceType || existing.customerId !== customer.id || existing.amount !== amount)) {
+        throw new Error('Mã khoản chi đã được sử dụng cho dữ liệu khác.');
+      }
+      const ledger = buildCustomerReconciledLedger(customer, orders, payments, warehouseImports, expenses.filter(item => item.id !== id));
+      if (!Number.isFinite(amount) || amount > ledger.creditBalance) throw new Error('Số tiền chi vượt khoản công ty còn nợ khách. Vui lòng kiểm tra lại sổ nợ.');
+    }
     const needsApproval = Boolean(expenseData.requiresApproval || expenseData.approvalStatus === CASHFLOW_APPROVAL_STATUS.pending);
     const approvalStatus = needsApproval
       ? CASHFLOW_APPROVAL_STATUS.pending
@@ -24052,8 +24082,8 @@ function MainAppView({
   }), [customers, notificationDateKey, orderRequests, products, warehouseDispatches]);
 
   const reconciledLedgerMap = useMemo(
-    () => buildCustomerReconciledLedgerMap(customers, orders, payments, warehouseImports),
-    [customers, orders, payments, warehouseImports]
+    () => buildCustomerReconciledLedgerMap(customers, orders, payments, warehouseImports, expenses),
+    [customers, orders, payments, warehouseImports, expenses]
   );
   const debtLimitAlerts = useMemo(() => {
     return (customers || [])
@@ -25640,7 +25670,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           onResetEmployeePassword={onResetEmployeePassword}
         />
       );
-      case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewSupplierImports={Boolean(tabPermissions.warehouse_import && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import')))} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
+      case 'customers': return <CustomerCRMView employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} expenses={expenses} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewSupplierImports={Boolean(tabPermissions.warehouse_import && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import')))} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
       case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (shouldShowMissingWorkflowSetup({ canCreate: isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'), dataReady: workflowDataReadiness.products, hasProducts: hasWorkflowProductData, requiresCustomers: false })) {
@@ -25668,7 +25698,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={reconciledLedgerMap} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onUpdateOrderInvoiceTemplate={onUpdateOrderInvoiceTemplate} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
+      case 'debt': return <DebtManagementView isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} expenses={expenses} onAddRepayment={(data) => onAddExpense(employee.id, data)} canRecordRepayment={isOwnerAccount || canRoleAction('finance', 'create_expense')} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
           return renderWorkflowGuide({
@@ -48419,12 +48449,12 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
   })();
   const selectedCustomerDebtInfo = useMemo(() => {
     if (!selectedCustomer) return { debt: 0, credit: 0 };
-    const ledger = buildCustomerReconciledLedger(selectedCustomer, orders, payments, warehouseImports);
+    const ledger = buildCustomerReconciledLedger(selectedCustomer, orders, payments, warehouseImports, expenses);
     return {
       debt: Math.max(0, parseLooseMoneyValue(ledger.currentDebt)),
       credit: Math.max(0, parseLooseMoneyValue(ledger.creditBalance))
     };
-  }, [orders, payments, selectedCustomer, warehouseImports]);
+  }, [orders, payments, selectedCustomer, warehouseImports, expenses]);
   const selectedProduct = selectedDispatch?.productId ? productLookup.get(selectedDispatch.productId) : null;
   const selectedProductShortLabel = getProductShortName(selectedProduct) || `${selectedDispatch?.productShortName || selectedDispatch?.productShortNameSnapshot || selectedDispatch?.shortName || ''}`.trim().toUpperCase();
   const selectedProductDisplayName = selectedProductShortLabel || selectedProduct?.name || selectedDispatch?.productNameSnapshot || 'Hàng hóa';
@@ -69653,7 +69683,7 @@ function CustomerCRMViewLegacy({ employee, customers, orders, payments, onAddCus
   );
 }
 
-function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customers, orders, payments, paymentReconciliations = [], customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, onOpenOrder = () => false, canOpenOrderDetails = false, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canViewSupplierImports = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
+function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customers, orders, payments, expenses = [], paymentReconciliations = [], customerPoints = [], customerLoans = [], products = [], warehouseImports = [], warehouseDispatches = [], onAddCustomer, onEditCustomer, onDeleteCustomer, onDeleteCustomerLoan, onAddCustomerLoan, onEditCustomerLoan, onOpenCustomerDebt, onOpenOrder = () => false, canOpenOrderDetails = false, employees, isSuperAdmin, canViewAllCustomers = false, canViewAssignedCustomers = false, canViewSupplierImports = false, canEditCustomer = false, canDeleteCustomerPermission = false, canAddCustomerPermission = false, canBulkImportCustomersPermission = false, canReassignCustomerManagerPermission = false, canManageFixedProducts = false, canManageCustomerPrices = false, canManageDriverDebtPermission = false, canViewCustomerLoyalty = false, canViewCustomerLoans = false, canCreateCustomerLoan = false, canReturnCustomerLoan = false, canEditCustomerLoan = false, canDeleteCustomerLoan = false, canManageCustomerDebtLimit = false, canViewCustomerDebtLimitAlerts = false, canViewCustomerPhone = false, canCopyCustomerPhone = false, canCallCustomerPhone = false, canViewCustomerLocation = false, canCopyCustomerLocation = false, canOpenCustomerMaps = false, canEditCustomerPhoneAddress = false, canEditCustomerLocation = false, canViewCustomerDebt = false, canViewCustomerStats = false, canViewCustomerOrderHistory = false, canViewCustomerPaymentHistory = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {}, searchInHeader = false }) {
   const accountLoginEnabled = isVpsMode || isVpsStagingMode;
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
@@ -69887,11 +69917,11 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   }, [customerPoints]);
 
   const customerLedgerIndex = useMemo(
-    () => buildCustomerReconciledLedgerMap(activeCustomers, orders, payments, safeCustomerWarehouseImports),
-    [activeCustomers, orders, payments, safeCustomerWarehouseImports]
+    () => buildCustomerReconciledLedgerMap(activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses),
+    [activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses]
   );
   const buildCustomerSummary = useCallback((cus) => {
-    const ledger = customerLedgerIndex[cus.id] || buildCustomerReconciledLedger(cus, orders, payments, safeCustomerWarehouseImports);
+    const ledger = customerLedgerIndex[cus.id] || buildCustomerReconciledLedger(cus, orders, payments, safeCustomerWarehouseImports, expenses);
     const purchaseReconciliationEnabled = Boolean(
       cus?.purchaseReconciliationEnabled ||
       cus?.isPurchaseReconciliationEnabled ||
@@ -69949,7 +69979,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         .map(driverId => employees.find(emp => emp.id === driverId && isEmployeeDeliveryParticipant(emp))?.name)
         .filter(Boolean)
     };
-  }, [customerLedgerIndex, orders, payments, safeCustomerWarehouseImports, currentCompany, customerPointLookup, employees]);
+  }, [customerLedgerIndex, orders, payments, safeCustomerWarehouseImports, expenses, currentCompany, customerPointLookup, employees]);
 
   const customerSummaries = useMemo(
     () => activeCustomers.map(buildCustomerSummary),
@@ -80371,7 +80401,7 @@ function DebtManagementViewLegacy({ isAccounting, isDriver, employee, customers,
   );
 }
 
-function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
+function DebtManagementView({ isAccounting, isDriver, employee, customers, orders, payments, expenses = [], onAddRepayment, canRecordRepayment = false, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [isSavingDebtPayment, setIsSavingDebtPayment] = useState(false);
@@ -80426,8 +80456,8 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   );
 
   const debtLedgerIndex = useMemo(
-    () => buildCustomerReconciledLedgerMap(customers, orders, payments, safeDebtWarehouseImports),
-    [customers, orders, payments, safeDebtWarehouseImports]
+    () => buildCustomerReconciledLedgerMap(customers, orders, payments, safeDebtWarehouseImports, expenses),
+    [customers, orders, payments, safeDebtWarehouseImports, expenses]
   );
   const customerLedgers = useMemo(() => customers.map(customer => {
     const ledger = debtLedgerIndex[customer.id];
@@ -80667,13 +80697,15 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   };
 
   const openPaymentModal = (order = null) => {
-    if (!canRecordCustomerPayment) return;
+    const repayment = !order && selectedCustomer?.ledger?.creditBalance > 0;
+    if (repayment ? !canRecordRepayment : !canRecordCustomerPayment) return;
     setDebtPaymentStatus('');
     const dueAmount = Math.max(0, parseLooseMoneyValue(order?.outstandingAmount ?? 0));
     setPaymentTargetOrderId(order?.id || '');
     setNewPayment({
       clientMutationId: `p_${crypto.randomUUID()}`,
-      amount: dueAmount > 0 ? String(dueAmount) : '',
+      kind: repayment ? 'repayment' : 'receipt',
+      amount: repayment ? String(selectedCustomer.ledger.creditBalance) : dueAmount > 0 ? String(dueAmount) : '',
       date: getTodayString(),
       method: 'Chuyển khoản'
     });
@@ -80683,11 +80715,16 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
     if (debtPaymentSubmitRef.current) return;
-    if (!selectedCustomer || !canRecordCustomerPayment) return;
+    const repayment = newPayment.kind === 'repayment';
+    if (!selectedCustomer || (repayment ? !canRecordRepayment : !canRecordCustomerPayment)) return;
 
     const paymentAmount = parseLooseMoneyValue(newPayment.amount);
-    if (paymentAmount <= 0) {
-      window.alert('Vui lòng nhập số tiền thu lớn hơn 0.');
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      window.alert('Vui lòng nhập số tiền lớn hơn 0.');
+      return;
+    }
+    if (repayment && paymentAmount > (selectedCustomer.ledger?.creditBalance || 0)) {
+      setDebtPaymentStatus('Số tiền chi không được vượt khoản công ty còn nợ khách.');
       return;
     }
 
@@ -80705,6 +80742,23 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       debtPaymentSubmitRef.current = true;
       setIsSavingDebtPayment(true);
       setDebtPaymentStatus('');
+      if (repayment) {
+        const result = await onAddRepayment({
+          clientMutationId: newPayment.clientMutationId,
+          customerId: selectedCustomer.id,
+          amount: paymentAmount,
+          date: newPayment.date,
+          method: newPayment.method,
+          category: 'Chi trả nợ khách hàng',
+          sourceType: 'customer_debt_repayment',
+          note: `Chi trả nợ khách hàng ${selectedCustomer.name || ''}`,
+          paidByName: employee?.name || employee?.displayName || '',
+        });
+        if (!result) throw new Error('Chưa nhận được xác nhận tiếp nhận khoản chi.');
+        setDebtPaymentStatus(result.queued ? 'Đã lưu tạm khoản chi trả nợ. Đang đồng bộ, chưa xác nhận từ máy chủ.' : 'Đã ghi nhận khoản chi trả nợ.');
+        resetPaymentDraft();
+        return;
+      }
       const result = await onAddPayment({
         clientMutationId: newPayment.clientMutationId,
         customerId: selectedCustomer.id,
@@ -80735,7 +80789,7 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
       setDebtPaymentStatus(result.queued ? 'Đã lưu tạm khoản thu. Đang đồng bộ, chưa xác nhận từ máy chủ.' : 'Đã ghi nhận khoản thu.');
       resetPaymentDraft();
     } catch (error) {
-      const friendlyMessage = getFriendlyFirebaseErrorMessage(error, 'Không thể ghi nhận khoản thu. Vui lòng thử lại.');
+      const friendlyMessage = getFriendlyFirebaseErrorMessage(error, repayment ? 'Không thể ghi nhận khoản chi trả nợ. Vui lòng thử lại.' : 'Không thể ghi nhận khoản thu. Vui lòng thử lại.');
       setDebtPaymentStatus(friendlyMessage);
     } finally {
       debtPaymentSubmitRef.current = false;
@@ -80923,10 +80977,10 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
               <p className="text-sm text-gray-500 mt-1">{selectedCustomer.phone || 'Chưa có số điện thoại'} • {selectedCustomer.managerName}</p>
               <p className="text-sm text-gray-500 mt-1">{selectedCustomer.address || 'Chưa có địa chỉ'}</p>
             </div>
-            <div className={`px-3 py-2 rounded-xl text-right min-w-[132px] ${ledger.currentDebt > 0 ? 'bg-red-50 text-red-600' : ledger.creditBalance > 0 ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>
+            <button type="button" disabled={!ledger.creditBalance} onClick={() => { setSelectedCustomerId(null); setDebtViewFilter('credit'); setSearchKeyword(''); setDebtDateFilterMode('all'); }} className={`px-3 py-2 rounded-xl text-right min-w-[132px] ${ledger.currentDebt > 0 ? 'bg-red-50 text-red-600' : ledger.creditBalance > 0 ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>
               <p className="text-[10px] font-bold uppercase tracking-wide">{ledger.currentDebt > 0 ? 'Còn phải thu' : ledger.creditBalance > 0 ? 'Nợ khách' : 'Đã cân bằng'}</p>
               <p className="text-lg font-black">{formatCurrency(ledger.currentDebt > 0 ? ledger.currentDebt : ledger.creditBalance)} đ</p>
-            </div>
+            </button>
           </div>
 
           <div className="grid grid-cols-2 gap-3 mt-4">
@@ -80951,13 +81005,13 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
             </div>
           )}
 
-          {canRecordCustomerPayment ? (
+          {(ledger.creditBalance > 0 ? canRecordRepayment : canRecordCustomerPayment) ? (
             <button onClick={() => openPaymentModal()} className="w-full mt-4 py-4 rounded-xl font-bold text-white shadow-lg flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-700">
-              <Wallet size={20}/> Ghi nhận khoản thu
+              <Wallet size={20}/> {ledger.creditBalance > 0 ? 'Ghi nhận khoản chi trả nợ' : 'Ghi nhận khoản thu'}
             </button>
           ) : (
             <div className="mt-4 bg-blue-50 border border-blue-100 text-blue-700 rounded-xl p-3 text-sm leading-relaxed">
-              Tài khoản này chưa được cấp quyền ghi nhận thu nợ. Nếu đã nhận tiền, hãy báo kế toán hoặc chủ doanh nghiệp xác nhận trên hệ thống.
+              {ledger.creditBalance > 0 ? 'Tài khoản này chưa được cấp quyền ghi nhận khoản chi. Hãy báo kế toán hoặc chủ doanh nghiệp xác nhận.' : 'Tài khoản này chưa được cấp quyền ghi nhận thu nợ. Nếu đã nhận tiền, hãy báo kế toán hoặc chủ doanh nghiệp xác nhận trên hệ thống.'}
             </div>
           )}
         </div>
@@ -81124,10 +81178,20 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
 
         </div>
 
-        {showPaymentModal && canRecordCustomerPayment && (
+        {(ledger.repayments || []).length > 0 && (
+          <section className="border-t border-gray-200 py-4" aria-label="Lịch sử chi trả nợ">
+            <h3 className="font-bold text-gray-800">Chi trả nợ khách hàng</h3>
+            {ledger.repayments.map(item => <div key={item.id} className="flex justify-between gap-3 border-b border-gray-100 py-3 text-sm">
+              <span>{formatDateLabel(item.date)} · {item.method}<br />{item.paidByName}</span>
+              <strong className="text-orange-700">-{formatCurrency(item.amount)} đ</strong>
+            </div>)}
+          </section>
+        )}
+
+        {showPaymentModal && (newPayment.kind === 'repayment' ? canRecordRepayment : canRecordCustomerPayment) && (
           <div className="hd-modal-layer fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" data-hd-modal-root="true">
             <div className="hd-modal-surface bg-white rounded-2xl p-5 w-full max-w-sm" role="dialog" aria-modal="true" aria-label="Ghi nhận thanh toán">
-              <h3 className="font-bold text-lg mb-1">{paymentTargetOrder ? 'Thu nợ đơn hàng' : 'Ghi nhận thanh toán'}</h3>
+              <h3 className="font-bold text-lg mb-1">{newPayment.kind === 'repayment' ? 'Ghi nhận khoản chi trả nợ' : paymentTargetOrder ? 'Thu nợ đơn hàng' : 'Ghi nhận thanh toán'}</h3>
               {paymentTargetOrder && (
                 <p className="mb-4 text-xs font-semibold text-blue-600">
                   {getLedgerOrderDisplayCode(paymentTargetOrder)} • Còn nợ {formatCurrency(paymentTargetOrder.outstandingAmount || 0)} đ
@@ -81143,14 +81207,14 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
                 </select>
                 <input type="date" value={newPayment.date} onChange={e=>setNewPayment({...newPayment, date: e.target.value})} className="w-full border p-3 rounded-xl text-sm bg-white outline-none" />
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-3">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-emerald-600">Người thu</p>
+                  <p className="text-[10px] font-black uppercase tracking-wide text-emerald-600">{newPayment.kind === 'repayment' ? 'Người chi' : 'Người thu'}</p>
                   <p className="mt-1 text-sm font-black text-emerald-800">{employee?.name || employee?.displayName || 'Tài khoản đang đăng nhập'}</p>
                 </div>
                 {debtPaymentStatus && <p role="status" className="text-sm text-rose-700">{debtPaymentStatus}</p>}
                 </div>
                 <div className="hd-modal-actions flex gap-2 mt-4">
                   <button type="button" disabled={isSavingDebtPayment} onClick={resetPaymentDraft} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                  <button type="submit" disabled={isSavingDebtPayment} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{isSavingDebtPayment ? 'Đang lưu...' : 'Xác nhận thu'}</button>
+                  <button type="submit" disabled={isSavingDebtPayment} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{isSavingDebtPayment ? 'Đang lưu...' : newPayment.kind === 'repayment' ? 'Xác nhận chi trả nợ' : 'Xác nhận thu'}</button>
                 </div>
               </form>
             </div>
@@ -81164,20 +81228,20 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16">
       {(canViewAllDebtRecords || accessibleCustomers.length > 0) && (
         <div className="-mt-4 -mx-4 grid grid-cols-2 overflow-hidden border-y border-slate-100 shadow-sm">
-          <div className="flex min-h-[96px] flex-col justify-center bg-gradient-to-r from-rose-600 to-orange-500 px-4 py-3 text-left text-white">
+          <button type="button" onClick={() => { setDebtViewFilter('debt'); setSearchKeyword(''); setDebtDateFilterMode('all'); }} aria-pressed={debtViewFilter === 'debt'} className="flex min-h-[96px] flex-col justify-center bg-gradient-to-r from-rose-600 to-orange-500 px-4 py-3 text-left text-white">
             <div className="flex items-center justify-between gap-2 text-[11px] font-bold leading-tight">
               <span>Khách nợ</span>
               <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.debtCustomerCount} khách</span>
             </div>
             <p className="mt-2 w-full whitespace-nowrap text-center text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalDebt)} đ</p>
-          </div>
-          <div className="flex min-h-[96px] flex-col items-end justify-center bg-gradient-to-l from-sky-600 to-cyan-500 px-4 py-3 text-right text-white">
+          </button>
+          <button type="button" onClick={() => { setDebtViewFilter('credit'); setSearchKeyword(''); setDebtDateFilterMode('all'); }} aria-pressed={debtViewFilter === 'credit'} className="flex min-h-[96px] flex-col items-end justify-center bg-gradient-to-l from-sky-600 to-cyan-500 px-4 py-3 text-right text-white">
             <div className="flex w-full items-center justify-between gap-2 text-[11px] font-bold leading-tight">
               <span className="whitespace-nowrap text-white/85">{debtOverviewSummary.creditCustomerCount} khách</span>
               <span>Nợ khách</span>
             </div>
             <p className="mt-2 w-full whitespace-nowrap text-center text-[12px] font-black leading-tight">{formatCurrency(debtOverviewSummary.totalCredit)} đ</p>
-          </div>
+          </button>
         </div>
       )}
 

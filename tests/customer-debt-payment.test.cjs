@@ -302,7 +302,7 @@ assert.ok(
 );
 assert.match(
   appSource,
-  /debt: \['customers', 'orders', 'payments', 'bankTransactions', 'warehouseImports', 'employees'\]/,
+  /debt: \['customers', 'orders', 'payments', 'expenses', 'bankTransactions', 'warehouseImports', 'employees'\]/,
   'The debt workspace must listen to bank transactions so invoice-code reconciliation can run while it is open.'
 );
 assert.ok(
