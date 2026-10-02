@@ -1,3 +1,5 @@
+import { getFirestoreRestOrigin } from './firebase-endpoints.js';
+
 export const buildFirebaseRestDocumentUrl = (
   projectId,
   appId,
@@ -7,7 +9,7 @@ export const buildFirebaseRestDocumentUrl = (
 ) => {
   if (!projectId || !appId || !collectionName || !documentId) return '';
 
-  const baseUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data/${encodeURIComponent(collectionName)}/${encodeURIComponent(documentId)}`;
+  const baseUrl = `${getFirestoreRestOrigin(projectId)}/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data/${encodeURIComponent(collectionName)}/${encodeURIComponent(documentId)}`;
   if (!merge || fieldPaths.length === 0) return baseUrl;
 
   const encodedFields = fieldPaths
@@ -18,5 +20,5 @@ export const buildFirebaseRestDocumentUrl = (
 
 export const buildFirebaseRestCollectionQueryUrl = (projectId, appId) => {
   if (!projectId || !appId) return '';
-  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data:runQuery`;
+  return `${getFirestoreRestOrigin(projectId)}/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/artifacts/${encodeURIComponent(appId)}/public/data:runQuery`;
 };

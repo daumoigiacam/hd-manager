@@ -1,0 +1,26 @@
+{
+  "scope": "Core architecture continuation; no production deployment",
+  "latestVerification": {
+    "date": "2026-10-02",
+    "report": "LOCAL_FIREBASE_RUNTIME_VERIFICATION_2026_10_02.md",
+    "localUiHttpCases": 11,
+    "correctionEvidenceRulesChecks": 16,
+    "inheritedRegressions": "Cursor 27/27; return 7/7; inventory 6/6; reversal 5/5; payment 7/7; debt 13 unit + 3 Emulator; all rerun PASS",
+    "valuationPolicy": "Owner confirmed manual company valuation; financial application implementation remains pending",
+    "overall": "NOT PASS"
+  },
+  "evidence": ["HD-Manager-Performance-Audit.html", "phase4c-staging-evidence.json"],
+  "items": [
+    {"area":"Payment multi-order allocation/reversal", "status":"PASS transaction-step scope only", "action":"EXCLUDE; do not rework unless direct E2E regression evidence", "evidence":"GAP_A_C_FINAL_CLOSURE_REPORT.md; tests/payment-correction.emulator.cjs", "tests":"7/7 real Emulator PASS; concurrency 2/5/10; original payment and B/C preserved; duplicate reversal/refund rejected", "commit":"Uncommitted working tree; baseline d4262219", "limits":"Not integrated into complete application E2E"},
+    {"area":"Inventory atomicity, oversell, idempotency, tenant rules and RBAC", "status":"PASS", "action":"EXCLUDE; inherited emulator and unit evidence"},
+    {"area":"Cursor engine and emulator pagination", "status":"PASS", "action":"EXCLUDE engine; real list-screen runtime now uses it for orders, requests, outbound, customers, products and pricing/quotes; finance, payroll and complete server-bounded search remain open"},
+    {"area":"Backfill and reconciliation primitives", "status":"PASS", "action":"EXCLUDE; real staging execution remains BLOCKED"},
+    {"area":"Search normalization and listener planner", "status":"PASS", "action":"EXCLUDE"},
+    {"area":"Firebase staging parity", "status":"BLOCKED", "action":"Project quota must be resolved; no production substitute"},
+    {"area":"Shared read lifecycle", "status":"PARTIAL", "action":"Cancel REST transport on timeout/session cleanup; reject malformed JSON instead of applying empty data"},
+    {"area":"Cursor screen integration", "status":"PARTIAL", "action":"27 application-runtime Emulator cases PASS at 100/1000/5000 for mapped list screens; totals/search/finance/payroll incomplete, so Gap A remains NOT PASS"},
+    {"area":"Order return inventory application workflow", "status":"PARTIAL", "action":"Real UI and Cloud Function support partial/repeated/full/damaged inventory return with 7/7 Emulator PASS; financial valuation, payment/debt/refund and full E2E remain NOT PASS"},
+    {"area":"Reversal/amendment", "status":"PARTIAL", "action":"Inherited low-level reversal is preserved; complete amendment caller remains unimplemented and must not be declared PASS"},
+    {"area":"Real-device performance and authenticated staging regression", "status":"UNKNOWN", "action":"Require actual staging/device evidence"}
+  ]
+}

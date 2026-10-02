@@ -1,7 +1,8 @@
 export function summarizeInteractionSamples(samples) {
   const stats = values => {
     const sorted = [...values].sort((a, b) => a - b);
-    return { n: sorted.length, min: sorted[0], average: sorted.reduce((a, b) => a + b, 0) / sorted.length, p95: sorted[Math.ceil(sorted.length * .95) - 1], max: sorted.at(-1) };
+    const percentile = fraction => sorted[Math.ceil(sorted.length * fraction) - 1];
+    return { n: sorted.length, min: sorted[0], average: sorted.reduce((a, b) => a + b, 0) / sorted.length, p50: percentile(.5), p90: percentile(.9), p95: percentile(.95), p99: percentile(.99), max: sorted.at(-1) };
   };
   const groups = new Map();
   for (const sample of samples) {

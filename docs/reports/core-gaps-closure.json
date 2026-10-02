@@ -1,0 +1,88 @@
+{
+  "finalStatus": "PARTIAL",
+  "ready": false,
+  "inheritedUnchanged": [
+    "Inventory atomic transaction, anti-oversell, idempotency",
+    "Firestore rules, tenant isolation and RBAC",
+    "Cursor, backfill and reconciliation engines",
+    "Search optimization and listener planner",
+    "Read cancellation/lifecycle and all existing regression assertions"
+  ],
+  "gapA": {
+    "status": "NOT COMPLETED",
+    "screensChanged": [],
+    "currentQuery": "Tenant-filtered collection hydration without a bound for general collections; global arrays also feed financial/payroll/dashboard calculations",
+    "newQuery": "Unchanged; no partial page substituted for a complete business dataset",
+    "affectedCollections": ["orders", "orderRequests", "warehouseDispatches", "customers", "products", "pricingInputs", "payments"],
+    "readReduction": "NOT MEASURED",
+    "pageSize": "Existing cursor primitive default 50; not integrated into these screens",
+    "missingCount": "UNMEASURED in screens",
+    "duplicateCount": "UNMEASURED in screens",
+    "regression": "Existing cursor emulator suite rerun PASS",
+    "remainingImplementation": "Separate paged list state from complete business aggregates; connect existing cursor and server read models. This is unfinished code, not solely a staging blocker."
+  },
+  "gapB": {
+    "status": "IMPLEMENTED FOR COLLECTION SYNC; BROADER COVERAGE INCOMPLETE",
+    "rootCause": "readCollection had no in-flight arbitration and could publish older REST results after a newer listener snapshot",
+    "implementation": "src/services/readArbiter.js integrated in src/App.jsx collection sync effect",
+    "logicalKey": "One arbiter per authenticated tenant/session effect; collection identifies its fixed query and parameters in that scope",
+    "ordinaryReads": "Reuse active request, including state application; no result cache",
+    "forcedReads": "Invalidate running read publication and coalesce pending forced callers into one trailing fresh read",
+    "listenerRace": "Applicable realtime snapshot invalidates the older read's result and error publication",
+    "cleanup": "Arbiter prevents late application or queued starts; existing lifecycle handles transport cancellation unchanged",
+    "writes": "Not intercepted or deduplicated",
+    "tests": "6 new tests PASS; existing 3 lifecycle tests PASS, including 50-cycle cleanup",
+    "benchmark": {
+      "evidence": "test-results/core-gaps/read-arbiter-benchmark.json",
+      "scope": "50 synthetic samples of 100 concurrent reads, 50 fixture records per response",
+      "requestsBefore": 100,
+      "requestsAfter": 1,
+      "forcedBurstTotalRequests": 2,
+      "stalePublicationsInTest": 0,
+      "p50BeforeMs": 8.6551,
+      "p50AfterMs": 8.2668,
+      "p95BeforeMs": 16.6313,
+      "p95AfterMs": 19.0738,
+      "firestoreReads": "UNMEASURED",
+      "listenerCount": "0 in synthetic benchmark; production planner unchanged",
+      "interpretation": "Request reduction proven for synthetic concurrency; p95 increased, so no latency improvement or real-device non-regression claim"
+    },
+    "remainingCoverage": "Authenticated live SDK/REST/Cloud Function and screen pagination measurements remain unverified"
+  },
+  "gapC": {
+    "status": "NOT IMPLEMENTED",
+    "evidence": {
+      "orderArchive": "src/App.jsx handleDeleteOrder archives and updates loyalty; does not reverse inventory or payment",
+      "dispatchEdit": "src/App.jsx handleEditWarehouseDispatch changes weight and price-dependent amount via client save",
+      "dispatchArchive": "src/App.jsx handleDeleteWarehouseDispatch archives; no compensating ledger",
+      "server": "functions/inventoryTransactions.js supports INBOUND/OUTBOUND/COUNT only"
+    },
+    "remainingImplementation": "Add server-side correction workflow using authoritative source links, compensation records and debt/payment/delivery transitions; connect client actions; test concurrent reversal/amendment and complete cross-module lifecycle",
+    "concurrencyReversal": "NOT RUN; existing inventory concurrency is not reversal coverage",
+    "concurrencyAmendment": "NOT RUN",
+    "crossModuleVerification": "NOT COMPLETE",
+    "performance": "UNMEASURED"
+  },
+  "regression": {
+    "testAll": "PASS",
+    "build": "PASS",
+    "lintAndNewFiles": "PASS",
+    "typecheck": "PASS, configured payroll scope",
+    "inventoryEmulator": "6 PASS, 2/5/10/25/50 concurrency and operation retry",
+    "inventoryRulesEmulator": "5 PASS",
+    "tenantRulesEmulator": "14 PASS",
+    "cursorEmulator": "PASS",
+    "backfillEmulator": "PASS: interruption/resume/retry/reconcile",
+    "backfillReconciliationUnits": "14 PASS",
+    "newArbiterAndInheritedLifecycle": "9 PASS",
+    "scopeCaveat": "These are the executed gates, not a claim that every repository test or real-device workload was executed"
+  },
+  "remainingBlockers": [
+    "Firebase staging project quota remains unresolved; no bypass attempted",
+    "Gap A integration and Gap C correction workflows still require implementation",
+    "Representative list/search/order/outbound/reversal/amendment p50/p95 and actual Firestore read counts not yet measured"
+  ],
+  "productionDeployment": false,
+  "productionMigration": false,
+  "phase5": false
+}

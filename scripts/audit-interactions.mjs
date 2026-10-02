@@ -24,7 +24,7 @@ const profileRender = process.env.HD_AUDIT_PROFILE_RENDER !== '0';
 const useNative = process.env.HD_AUDIT_NATIVE === '1';
 const useAndroid = process.env.HD_AUDIT_ANDROID === '1' || useNative;
 const selectedModules = process.env.HD_AUDIT_MODULES?.split(',').filter(Boolean);
-const profileModules = (process.env.HD_AUDIT_PROFILE_MODULES || 'pricing,finance').split(',');
+const profileModules = (process.env.HD_AUDIT_PROFILE_MODULES || 'payroll,pricing,finance').split(',');
 const profileActions = (process.env.HD_AUDIT_PROFILE_ACTIONS || 'open').split(',');
 await mkdir(output, { recursive: true });
 Object.assign(process.env, {
@@ -54,6 +54,19 @@ const fixture = {
     or_save_speed: { id: 'or_save_speed', companyId: 'comp_preview', customerId: 'c_preview_01', salesEmpId: 'emp_sales_01', empId: 'emp_sales_01', date, createdAt: `${date}T08:00:00+07:00`, totalQuantity: 2, totalAmount: 570000, items: [{ productId: 'prod_preview_01', description: 'Nước giặt HD', quantity: 2, quantityUnit: 'Can', orderUnit: 'Can', actualUnit: 'Can', billingUnit: 'Can', pricingUnit: 'Can', billingQuantity: 2, unitPrice: 285000, amount: 570000, lineTotal: 570000 }] },
   },
 };
+if (process.env.HD_AUDIT_DISPATCH_STRESS === '1') {
+  fixture.orderRequests = rows(4500, 'request_perf', i => ({
+    customerId: `c_perf_${i % 360}`, date, createdAt: `${date}T08:00:00+07:00`,
+    items: [{ productId: `p_perf_${i % 600}`, quantity: 5, quantityUnit: 'Kg',
+      actualUnit: 'Kg', billingUnit: 'Kg', billingQuantity: 5, unitPrice: 50000, amount: 250000 }],
+  }));
+  fixture.warehouseDispatches = rows(4300, 'dispatch_perf', i => ({
+    customerId: `c_perf_${i % 360}`, productId: `p_perf_${i % 600}`,
+    date, createdAt: `${date}T09:00:00+07:00`, quantity: 5, quantityUnit: 'Kg',
+    weightKg: 5, assignedDriverId: 'emp_driver_01',
+    sourceOrderRequestId: `request_perf_${i}`,
+  }));
+}
 if (actionsOnly || process.env.HD_AUDIT_INCLUDE_ACTIONS === '1') {
   fixture.customers.c_preview_01 = {
     id: 'c_preview_01', companyId: 'comp_preview', empId: 'emp_sales_01',
@@ -74,6 +87,7 @@ const routes = [
 const samples = [];
 const failures = [];
 const errors = [];
+const observations = [];
 const device = useAndroid ? (await _android.devices()).find(device => device.serial().startsWith('emulator-')) : null;
 if (useAndroid) assert.ok(device, 'An authorized Android emulator is required; never select a physical device implicitly');
 const adb = process.env.HD_MANAGER_ADB || 'D:/HD-DEV/android/sdk/platform-tools/adb.exe';
@@ -133,15 +147,22 @@ try {
     debugPort = execFileSync(adb, ['-s', device.serial(), 'forward', 'tcp:0', `localabstract:${socket}`], { encoding: 'utf8' }).trim();
   }
   browser = device ? await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`) : await chromium.launch({ executablePath: process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
-  const viewports = device ? [{ name: useNative ? 'android-apk-webview' : 'android-emulator' }] : [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop', width: 1366, height: 900 }];
+  const viewports = device ? [{ name: useNative ? 'android-apk-webview' : 'android-emulator' }]
+    : process.env.HD_AUDIT_CPU_PROFILES === '1'
+      ? [{ name: 'cpu-low-6x', width: 390, height: 844, cpuRate: 6 }, { name: 'cpu-mid-3x', width: 390, height: 844, cpuRate: 3 }, { name: 'cpu-high-1x', width: 1366, height: 900, cpuRate: 1 }]
+      : [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop', width: 1366, height: 900 }];
   for (const viewport of viewports) {
     const nativePage = useNative ? await readyNativePage(browser) : null;
     const context = nativePage?.context() || (device ? browser.contexts()[0] : await browser.newContext({ viewport }));
     const page = nativePage || await context.newPage();
     assert.ok(page, 'Native WebView target is required');
+    if (viewport.cpuRate) {
+      const cpuSession = await context.newCDPSession(page);
+      await cpuSession.send('Emulation.setCPUThrottlingRate', { rate: viewport.cpuRate });
+    }
     page.setDefaultTimeout(7000);
     page.on('pageerror', error => {
-      errors.push({ viewport: viewport.name, message: error.message });
+      errors.push({ viewport: viewport.name, message: error.message, stack: error.stack });
       console.log(`PAGE ERROR: ${error.message}`);
     });
     let confirmations = 0;
@@ -173,6 +194,19 @@ try {
       }
     });
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(baseUrl).origin ? route.continue() : route.abort());
+    const simulatedDispatchOperations = [];
+    if (process.env.HD_AUDIT_DISPATCH_SAVE === '1') await page.route('**/inventoryAtomicOperation', async route => {
+      const operation = route.request().postDataJSON();
+      assert.equal(operation.operationType, 'OUTBOUND');
+      assert.equal(operation.document.companyId, claims.companyId);
+      assert.ok(operation.clientMutationId);
+      assert.equal(operation.movements.length, 1);
+      assert.equal(operation.movements[0].quantity, 12.5 + simulatedDispatchOperations.length);
+      simulatedDispatchOperations.push(operation);
+      // Simulated confirmation latency, never a real inventory mutation.
+      await waitForDevice(120);
+      await route.fulfill({ json: { success: true, data: { operationId: `audit-${operation.documentId}`, duplicate: false } } });
+    });
     await page.addInitScript(({ token, fixture }) => {
       window.__initial_auth_token = token;
       if (!sessionStorage.getItem('perf-seeded')) {
@@ -204,9 +238,19 @@ try {
         if (window.__hdAuditEvents.length > 200) window.__hdAuditEvents.shift();
       })));
     });
+    const loadStarted = performance.now();
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-hd-shell="enterprise"]').waitFor({ timeout: 30000 });
     await page.waitForFunction(() => (window.hdPerformanceMonitor?.subscriptions().length || 0) >= 3);
+    if (process.env.HD_AUDIT_OBSERVE_EXTRA === '1') {
+      const readyMs = performance.now() - loadStarted;
+      observations.push({ viewport: viewport.name, kind: 'startup', readyMs, ...await page.evaluate(() => ({
+        scope: 'Preview shell plus three mock subscriptions; NOT production interactive readiness',
+        navigation: performance.getEntriesByType('navigation').map(entry => entry.toJSON()),
+        resources: performance.getEntriesByType('resource').map(entry => ({ name: entry.name.split('/').at(-1), duration: entry.duration, transferSize: entry.transferSize, encodedBodySize: entry.encodedBodySize })),
+        heapBytes: performance.memory?.usedJSHeapSize ?? null,
+      })) });
+    }
     const measure = async (module, action, perform, expected, iteration) => {
       const confirmationsBefore = confirmations;
       const profileSession = profileActions.includes(action) && (iteration === 1 || process.env.HD_AUDIT_PROFILE_EVERY_SAMPLE === '1') && profileModules.includes(module)
@@ -241,6 +285,8 @@ try {
           const observed = performance.now();
           requestAnimationFrame(() => requestAnimationFrame(() => {
             const result = monitor.finishInteraction('expected_ui_observed', id);
+            // A timed-out action may complete after cleanup or a new measurement.
+            if (!result) return;
             window.__auditResult = { ...result.detail, uiObservedTimeMs: observed, events: monitor.events(), subscriptions: monitor.subscriptions() };
           }));
         }
@@ -265,6 +311,7 @@ try {
         return result;
       } catch (error) {
         await page.evaluate(() => window.__auditCleanup?.());
+        await writeFile(path.join(output, `${viewport.name}-${action}-failure.txt`), await page.locator('body').innerText());
         throw error;
       } finally {
         if (profileSession) {
@@ -276,7 +323,7 @@ try {
     };
     const navigate = async (route, measured = false, iteration = 0) => {
       const [module, label, bottomLabel] = routes.find(row => row[0] === route) || [route, 'Thêm'];
-      const nav = page.locator(`[data-hd-navigation="${viewport.name !== 'desktop' ? 'bottom' : 'sidebar'}"]`);
+      const nav = page.locator('[data-hd-navigation="bottom"]');
       if (!await nav.isVisible() && await page.getByRole('button', { name: 'Quay lại', exact: true }).first().isVisible()) {
         await page.getByRole('button', { name: 'Quay lại', exact: true }).first().click();
         // Attendance has its own internal back stack before returning to the shell.
@@ -285,8 +332,7 @@ try {
         }
       }
       await nav.waitFor();
-      const directNames = { products: 'Sản phẩm', asset_management: 'Tài sản', billing: 'Gói dịch vụ', price_quotes: 'Báo giá', order_requests: 'Đơn đặt' };
-      let button = nav.getByRole('button', { name: viewport.name !== 'desktop' ? (bottomLabel || label) : (directNames[route] || label), exact: true });
+      let button = nav.getByRole('button', { name: bottomLabel || label, exact: true });
       if (!await button.isVisible().catch(() => false)) {
         await nav.getByRole('button', { name: 'Thêm', exact: true }).click();
         await page.locator('main[data-hd-module="more"]').waitFor();
@@ -308,6 +354,26 @@ try {
               inputs: [...main.querySelectorAll('input,select')].filter(node => node.getClientRects().length).map(node => ({ tag: node.tagName, type: node.type, label: node.getAttribute('aria-label') || node.placeholder })),
             }));
             await writeFile(path.join(output, `${viewport.name}-${module}-controls.json`), JSON.stringify(controls, null, 2));
+            if (process.env.HD_AUDIT_OBSERVE_EXTRA === '1') {
+              const scroll = await page.locator('main').evaluate(async main => {
+                const candidates = [main, ...main.querySelectorAll('*')].filter(node => /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight);
+                const scroller = candidates.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
+                if (!scroller) return { status: 'NO_SCROLLABLE_CONTENT', domNodes: main.querySelectorAll('*').length };
+                const saved = scroller.scrollTop;
+                const deltas = [];
+                let start, previous;
+                await new Promise(resolve => requestAnimationFrame(function frame(time) {
+                  start ??= time;
+                  if (previous !== undefined) deltas.push(time - previous);
+                  previous = time;
+                  scroller.scrollTop = Math.min(scroller.scrollHeight - scroller.clientHeight, (time - start) * 1.5);
+                  if (time - start < 1200) requestAnimationFrame(frame); else resolve();
+                }));
+                scroller.scrollTop = saved;
+                return { status: 'MEASURED', scope: 'Programmatic scroll RAF cadence, not compositor FPS or physical-device smoothness', frames: deltas.length, meanFrameMs: deltas.reduce((a, b) => a + b, 0) / deltas.length, maxFrameMs: Math.max(...deltas), framesOver34ms: deltas.filter(ms => ms > 34).length, domNodes: main.querySelectorAll('*').length, heapBytes: performance.memory?.usedJSHeapSize ?? null };
+              });
+              observations.push({ viewport: viewport.name, module, kind: 'scroll', ...scroll });
+            }
           }
         }
       } catch (error) {
@@ -315,6 +381,81 @@ try {
         console.log(`BLOCKED ${module}: ${error.message.slice(0, 180)}`);
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.locator('[data-hd-shell="enterprise"]').waitFor();
+      }
+    }
+    if (process.env.HD_AUDIT_DISPATCH_STRESS === '1') {
+      await navigate('warehouse_dispatch');
+      const main = page.locator('main[data-hd-module="warehouse_dispatch"]');
+      const search = main.getByRole('textbox', { name: 'Tìm tên khách hàng', exact: true });
+      for (let iteration = 1; iteration <= 5; iteration++) {
+        await search.fill('');
+        await measure('warehouse_dispatch', 'open_customer_picker', () => search.click(),
+          { selector: 'main[data-hd-module="warehouse_dispatch"] [data-search-zone] button:has(p)' }, iteration);
+        const value = `Khách hàng ${iteration}`;
+        await measure('warehouse_dispatch', 'input_customer', () => search.fill(value),
+          { selector: 'input[aria-label="Tìm tên khách hàng"]', mode: 'value', value }, iteration);
+        const quantity = main.getByPlaceholder('Số lượng', { exact: true });
+        await measure('warehouse_dispatch', 'input_quantity', () => quantity.fill(String(iteration + 100)),
+          { selector: 'input[placeholder="Số lượng"]', mode: 'value', value: String(iteration + 100) }, iteration);
+      }
+      if (process.env.HD_AUDIT_LEGACY_DISPATCH_SAVE === '1') {
+        for (let iteration = 1; iteration <= 3; iteration++) {
+          await search.fill('Khách hàng 1');
+          await measure('warehouse_dispatch', 'select_customer',
+            () => main.locator('[data-search-zone]').first().getByRole('button').filter({ hasText: /Khách Hàng 1/i }).first().click(),
+            { selector: '[data-search-zone] button:has(p)', mode: 'hidden' }, iteration);
+          const product = main.getByRole('textbox', { name: 'Tìm loại hàng', exact: true });
+          await measure('warehouse_dispatch', 'input_product', () => product.fill('Sản phẩm 0001'),
+            { selector: 'input[aria-label="Tìm loại hàng"]', mode: 'value', value: 'Sản phẩm 0001' }, iteration);
+          await measure('warehouse_dispatch', 'select_product',
+            () => main.locator('[data-search-zone]').nth(1).getByRole('button').filter({ hasText: /Sản phẩm 0001/i }).first().click(),
+            { selector: '[data-search-zone] button:has(p)', mode: 'hidden' }, iteration);
+          await main.getByPlaceholder('Số lượng', { exact: true }).fill(String(20 + iteration));
+          await measure('warehouse_dispatch', 'save_local_queue',
+            () => main.locator('form button[type="submit"]').click(),
+            { selector: 'input[aria-label="Tìm tên khách hàng"]', mode: 'value', value: '' }, iteration);
+        }
+      }
+      if (process.env.HD_AUDIT_DISPATCH_SAVE === '1') {
+        for (let iteration = 1; iteration <= 3; iteration++) {
+          await search.fill('Khách hàng 1');
+          await main.locator('[data-search-zone]').first().getByRole('button').filter({ hasText: 'Khách hàng 1' }).first().click();
+          await main.getByRole('button', { name: 'Nhập các lần cân kg', exact: true }).click();
+          const weight = page.getByRole('textbox', { name: 'Lần cân 1', exact: true });
+          const weightValue = `${11.5 + iteration}`.replace('.', ',');
+          await measure('warehouse_dispatch', 'input_weight', () => weight.fill(weightValue),
+            { selector: 'input[aria-label="Lần cân 1"]', mode: 'value', value: weightValue }, iteration);
+          await page.getByRole('button', { name: 'Cập nhật', exact: true }).click();
+          // A Kg-only fixture submits the measured weight, not a piece-count measure.
+          await main.getByPlaceholder('Số lượng', { exact: true }).fill('0');
+          const count = simulatedDispatchOperations.length;
+          await measure('warehouse_dispatch', 'save_dispatch_simulated_confirmation',
+            () => main.getByRole('button', { name: 'Lưu và thêm mới', exact: true }).dblclick(),
+            { selector: 'input[aria-label="Tìm tên khách hàng"]', mode: 'value', value: '' }, iteration);
+          assert.equal(simulatedDispatchOperations.length, count + 1, 'Double click must issue exactly one operation');
+          assert.equal(simulatedDispatchOperations.at(-1).document.customerId, 'c_perf_1');
+        }
+        observations.push({ viewport: viewport.name, module: 'warehouse_dispatch', kind: 'save-safety', operations: simulatedDispatchOperations.length,
+          confirmation: 'SIMULATED 120ms; NOT real Cloud Function acceptance' });
+      }
+      await page.screenshot({ path: path.join(output, `${viewport.name}-warehouse-input.png`) });
+      if (process.env.HD_AUDIT_CHECK_EXPORT_PAGING === '1') {
+        const listRows = main.locator('table').filter({ hasText: 'Người giao' }).locator('tbody tr');
+        const initialRows = await listRows.count();
+        await main.getByRole('button', { name: 'Tải thêm phiếu xuất', exact: true }).click();
+        const expandedRows = await listRows.count();
+        assert.ok(expandedRows > initialRows, 'Load more must reveal additional complete groups');
+        await main.getByRole('button', { name: 'Mở tìm kiếm phiếu xuất kho', exact: true }).click();
+        await main.getByRole('searchbox', { name: 'Tìm kiếm phiếu xuất kho trong ngày', exact: true }).fill('Khách hàng 359');
+        // Legacy fuzzy search can also match common words; traverse all matching groups normally.
+        const targetRow = listRows.filter({ hasText: /Khách hàng 359/i }).first();
+        for (let pageIndex = 0; pageIndex < 40 && !await targetRow.count(); pageIndex++) {
+          await main.getByRole('button', { name: 'Tải thêm phiếu xuất', exact: true }).click();
+        }
+        await targetRow.waitFor();
+        observations.push({ viewport: viewport.name, module: 'warehouse_dispatch', kind: 'render-pagination',
+          initialRows, expandedRows, fullDatasetSearch: 'PASS customer outside initial page',
+          readScope: 'Unchanged full dataset; presentation-only pagination' });
       }
     }
     if (!actionsOnly && !priceOnly && !selectedModules) try {
@@ -345,7 +486,7 @@ try {
       await navigate('order_requests');
       const module = page.locator('.premium-order-request-module');
       for (let iteration = 1; iteration <= 5; iteration++) {
-        const oldPrice = iteration === 1 ? 285000 : 290000 + iteration - 1;
+        const oldPrice = iteration === 1 ? (process.env.HD_AUDIT_DISPATCH_STRESS === '1' ? 50000 : 285000) : 290000 + iteration - 1;
         const value = 290000 + iteration;
         await measure('order_requests', 'open_edit_price', () => module.getByRole('button', { name: new Intl.NumberFormat('vi-VN').format(oldPrice), exact: true }).first().click(), { selector: '[role="dialog"]' }, iteration);
         const editor = page.getByRole('dialog', { name: 'Sửa đơn giá' });
@@ -356,7 +497,7 @@ try {
       }
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('[data-hd-shell="enterprise"]').waitFor();
-      await page.waitForFunction(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests.or_save_speed.items[0].unitPrice === 290005);
+      await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests).some(request => request.items?.[0]?.unitPrice === 290005));
     } catch (error) {
       failures.push({ viewport: viewport.name, module: 'order_requests', action: 'edit_save', error: error.message });
       await page.screenshot({ path: path.join(output, `${viewport.name}-request-error.png`) });
@@ -395,6 +536,7 @@ try {
   await new Promise(resolve => server.httpServer.close(resolve));
   const summary = summarizeInteractionSamples(samples);
   await writeFile(path.join(output, 'samples.json'), JSON.stringify(samples, null, 2));
+  await writeFile(path.join(output, 'observations.json'), JSON.stringify(observations, null, 2));
   await writeFile(path.join(output, 'summary.json'), JSON.stringify({ phase, fixtureCounts: Object.fromEntries(Object.entries(fixture).map(([key, value]) => [key, Object.keys(value).length])), runtime: `${useNative ? 'Installed Android debug APK/Capacitor WebView' : device ? 'Android emulator Chrome' : 'Desktop Chrome/mobile viewport'}, React production ${profileRender ? 'profiling' : 'runtime (no React render profiler)'}, isolated preview storage; NOT cloud/backend latency or physical device acceptance`, samples: samples.length, summary, failures, errors }, null, 2));
   console.log(JSON.stringify({ samples: samples.length, failures, errors }, null, 2));
   if (failures.length || errors.length) process.exitCode = 1;

@@ -13,7 +13,8 @@ import { getCompanyBankAccounts } from './features/settings/companyBankAccounts.
 import AttendanceRoleSelector from './features/attendance/AttendanceRoleSelector.jsx';
 import { getWorkRoleRecord, buildWorkRoleAttendancePatch, employeeForWorkRole, attendanceForWorkRole, getWorkRoleMonthEntries, calculateWorkRoleSalary } from './utils/attendanceWorkRoles.js';
 import payrollAutomationConfig from '../functions/payrollAutomationConfig.json';
-import SyncQueueStatus from './layout/SyncQueueStatus.jsx';
+import SyncQueueStatus, { SyncQueueContext } from './layout/SyncQueueStatus.jsx';
+import { buildDeliveryRequestIndex } from './utils/deliveryRequestIndex.js';
 import { createCommandFocusGuard, createCommandClickGuard } from './layout/commandFocus.js';
 import { canAutomaticallyRetryWrite, isRetryableWriteError, pendingWriteFailure } from './utils/pendingWriteRetry.js';
 import { isSamePendingWriteRevision } from './utils/pendingWriteRevision.js';
@@ -268,6 +269,7 @@ import {
 
 // --- FIREBASE CLOUD SETUP ---
 import { initializeApp } from 'firebase/app';
+import { getFirebaseEmulatorConfig } from './config/firebase-endpoints.js';
 import {
   getAuth,
   initializeAuth,
@@ -275,12 +277,14 @@ import {
   indexedDBLocalPersistence,
   browserLocalPersistence,
   signInWithCustomToken,
+  connectAuthEmulator,
   signOut,
   onAuthStateChanged
 } from 'firebase/auth';
 import {
   initializeFirestore,
   getFirestore,
+  connectFirestoreEmulator,
   collection,
   doc,
   getDoc as firebaseGetDoc,
@@ -617,7 +621,7 @@ if (isVpsMode) {
         projectId: firebaseConfig?.projectId || '',
         authDomain: firebaseConfig?.authDomain || '',
       });
-      initFirebaseObservability(app, {
+      if (!getFirebaseEmulatorConfig(firebaseConfig.projectId)) initFirebaseObservability(app, {
         appName: 'HD Manager',
         projectId: firebaseConfig?.projectId || '',
       });
@@ -647,6 +651,11 @@ if (isVpsMode) {
       } catch (firestoreInitError) {
         console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
         db = getFirestore(app);
+      }
+      const emulator = getFirebaseEmulatorConfig(firebaseConfig.projectId);
+      if (emulator) {
+        connectAuthEmulator(auth, `http://${emulator.host}:${emulator.authPort}`, { disableWarnings: true });
+        connectFirestoreEmulator(db, emulator.host, emulator.firestorePort);
       }
     }
   } catch (error) {
@@ -2840,6 +2849,9 @@ const isDateOnlyString = (value = '') => /^\d{4}-\d{2}-\d{2}$/.test(`${value || 
 const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const VIETNAM_DATE_FORMAT_OPTIONS = { timeZone: VIETNAM_TIME_ZONE };
 const VIETNAM_TIME_FORMAT_OPTIONS = { hour: '2-digit', minute: '2-digit', timeZone: VIETNAM_TIME_ZONE };
+const vietnamDateFormatter = new Intl.DateTimeFormat('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS);
+const vietnamTimeFormatter = new Intl.DateTimeFormat('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS);
+const vietnamNumericCollator = new Intl.Collator('vi', { numeric: true, sensitivity: 'base' });
 
 const toLocalDateTimeString = (date = new Date()) => {
   const safeDate = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
@@ -2870,18 +2882,18 @@ const formatTime = (dateObj) => {
     if (isDateOnlyString(dateObj)) return '--:--';
     const parsed = new Date(dateObj);
     if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS);
+      return vietnamTimeFormatter.format(parsed);
     }
     return dateObj.substring(11, 16) || '--:--';
   }
-  return dateObj.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS);
+  return Number.isNaN(dateObj.getTime()) ? 'Invalid Date' : vietnamTimeFormatter.format(dateObj);
 };
 
 const formatDateLabel = (value) => {
   if (!value) return '--';
   if (typeof value === 'string' && isDateOnlyString(value)) return formatCompactDateLabel(value);
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? `${value}` : parsed.toLocaleDateString('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS);
+  return Number.isNaN(parsed.getTime()) ? `${value}` : vietnamDateFormatter.format(parsed);
 };
 
 const formatCompactDateLabel = (value) => {
@@ -2945,13 +2957,13 @@ const formatDateTimeLabel = (value) => {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime())
     ? `${value}`
-    : `${parsed.toLocaleDateString('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS)} ${parsed.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS)}`;
+    : `${vietnamDateFormatter.format(parsed)} ${vietnamTimeFormatter.format(parsed)}`;
 };
 
 const formatAttendanceMoment = (value) => {
   const parsed = parseAttendanceTimestamp(value);
   if (!parsed) return '--';
-  return `${parsed.toLocaleTimeString('vi-VN', VIETNAM_TIME_FORMAT_OPTIONS)} • ${parsed.toLocaleDateString('vi-VN', VIETNAM_DATE_FORMAT_OPTIONS)}`;
+  return `${vietnamTimeFormatter.format(parsed)} • ${vietnamDateFormatter.format(parsed)}`;
 };
 
 const getAttendanceMethodDisplay = (record = {}, direction = 'checkIn') => {
@@ -22985,7 +22997,6 @@ export default function App() {
     return (
       <>
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
-        <SyncQueueStatus writes={pendingFirebaseWritesRef.current} onRetry={retryPendingFirebaseWrite} />
         <CustomerPortalView
           firebaseUser={firebaseUser}
           currentUser={currentUser}
@@ -23023,7 +23034,7 @@ export default function App() {
   return (
     <>
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
-      <SyncQueueStatus writes={pendingFirebaseWritesRef.current} onRetry={retryPendingFirebaseWrite} />
+      <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
       <MainAppView 
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
@@ -23084,6 +23095,7 @@ export default function App() {
         onToggleArchiveExpense={(id, status) => handleToggleArchive('expenses', id, status)}
         onToggleArchiveProduct={(id, status) => handleToggleArchive('products', id, status)}
       />
+      </SyncQueueContext.Provider>
     </>
   );
 }
@@ -33339,6 +33351,7 @@ function SettingsView({
 
   if (!safeActiveSettingsPanel) return (
     <div data-settings-page="menu" className="divide-y divide-gray-200 bg-white pb-20">
+          <SyncQueueStatus />
           {settingsPanels.map((panel) => {
             const PanelIcon = panel.icon;
             return (
@@ -48423,6 +48436,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     .filter(report => getDeliveryReportWeightStatus(report).isMismatch)
     .length, [dayReports]);
   const reportedDispatchCount = latestReportByDispatch.size;
+  const findDeliveryRequests = useMemo(() => buildDeliveryRequestIndex(orderRequests || [], customerLookup, normalizeLookupText), [orderRequests, customerLookup]);
   const resolveDispatchOrderRequestPrice = useCallback((dispatch = {}, product = null, customer = null, productLabel = '') => {
     const dispatchCustomerId = dispatch.customerId || customer?.id || '';
     const dispatchProductId = dispatch.productId || product?.id || '';
@@ -48505,7 +48519,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
     const dispatchUnitKey = normalizeLookupText(dispatch.quantityUnit || dispatch.unit || product?.unit || '');
     const candidates = [];
 
-    (orderRequests || []).filter(request => !request?.isArchived).forEach((request) => {
+    findDeliveryRequests(dispatchCustomerId, normalizedCustomerName).forEach((request) => {
       const requestDate = resolveEntityDateKey(request, dispatchDate || workingDate);
       const requestDateValue = parseDateInputValue(requestDate || '');
       const requestDateMs = requestDateValue ? requestDateValue.getTime() : 0;
@@ -48652,7 +48666,7 @@ function DeliveryReportView({ employee, customers = [], products = [], orderRequ
       requestDateMs: dispatchDateMs,
       itemIndex: 0
     } : null;
-  }, [customerLookup, orderRequests, productLookup, products, workingDate]);
+  }, [customerLookup, findDeliveryRequests, productLookup, products, workingDate]);
   const reportCustomerGroups = useMemo(() => {
     const grouped = new Map();
     const seenCollectedByCustomer = new Map();
@@ -56222,6 +56236,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     totalLines: compactEditableDispatchRows.length,
     totalWeight: todayDispatchRows.reduce((sum, item) => sum + getDispatchRowWeight(item), 0)
   }), [todayDispatchRows, compactEditableDispatchRows]);
+  const [dispatchDisplayPage, setDispatchDisplayPage] = useState({ scope: '', count: 20 });
+  const dispatchDisplayScope = `${workingDate}|${dispatchListSearch}`;
+  const dispatchDisplayLimit = dispatchDisplayPage.scope === dispatchDisplayScope ? dispatchDisplayPage.count : 20;
+  // Page complete presentation groups only; totals, search and exports still use all records.
+  const visibleDispatchGroups = groupedEditableDispatchRows.slice(0, dispatchDisplayLimit);
   const shouldShowDispatchShortage = canAccess && (canViewDispatchShortage || canCreate || canViewWarehouseDispatch || isOwnerAccount || isWarehouseScale);
   const dispatchShortageCustomerGroups = useMemo(() => {
     const groups = new Map();
@@ -58582,7 +58601,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                       Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.
                     </td>
                   </tr>
-                ) : groupedEditableDispatchRows.flatMap(group => group.rows.map((row, groupRowIndex) => {
+                ) : visibleDispatchGroups.flatMap(group => group.rows.map((row, groupRowIndex) => {
                   const isSelectedEditorRow = dispatchCellEditor?.displayRow?.id === row.id || dispatchCellEditor?.row?.id === row.id;
                   const shouldShowGroupCells = groupRowIndex === 0;
                   const groupRowSpan = group.rowSpan;
@@ -58661,6 +58680,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
               </tbody>
             </table>
           </div>
+          {visibleDispatchGroups.length < groupedEditableDispatchRows.length && (
+            <button type="button" onClick={() => setDispatchDisplayPage({ scope: dispatchDisplayScope, count: dispatchDisplayLimit + 20 })}
+              className="mt-3 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-emerald-700">
+              Tải thêm phiếu xuất
+            </button>
+          )}
           {canManageDispatchRows && (
             <p className="mt-3 text-[11px] text-slate-400">Bấm đúng ô cần sửa. Nút xóa nằm trong bảng sửa của ô đã chọn.</p>
           )}
@@ -59811,28 +59836,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     `${row.productShortName || row.productName || row.productGroupName || ''}`.trim()
   );
   const compareOrderRequestRowsByProduct = (a = {}, b = {}) => {
-    const groupCompare = `${a.productGroupName || ''}`.localeCompare(`${b.productGroupName || ''}`, 'vi', {
-      numeric: true,
-      sensitivity: 'base'
-    });
+    const groupCompare = vietnamNumericCollator.compare(`${a.productGroupName || ''}`, `${b.productGroupName || ''}`);
     if (groupCompare !== 0) return groupCompare;
 
-    const productCompare = getOrderRequestProductSortLabel(a).localeCompare(getOrderRequestProductSortLabel(b), 'vi', {
-      numeric: true,
-      sensitivity: 'base'
-    });
+    const productCompare = vietnamNumericCollator.compare(getOrderRequestProductSortLabel(a), getOrderRequestProductSortLabel(b));
     if (productCompare !== 0) return productCompare;
 
-    const customerCompare = `${a.customerName || ''}`.localeCompare(`${b.customerName || ''}`, 'vi', {
-      numeric: true,
-      sensitivity: 'base'
-    });
+    const customerCompare = vietnamNumericCollator.compare(`${a.customerName || ''}`, `${b.customerName || ''}`);
     if (customerCompare !== 0) return customerCompare;
 
-    const sizeCompare = `${getOrderRequestSizeCellLabel(a) || ''}`.localeCompare(`${getOrderRequestSizeCellLabel(b) || ''}`, 'vi', {
-      numeric: true,
-      sensitivity: 'base'
-    });
+    const sizeCompare = vietnamNumericCollator.compare(`${getOrderRequestSizeCellLabel(a) || ''}`, `${getOrderRequestSizeCellLabel(b) || ''}`);
     if (sizeCompare !== 0) return sizeCompare;
 
     return (parseLooseMoneyValue(a.unitPrice) || 0) - (parseLooseMoneyValue(b.unitPrice) || 0);
@@ -59841,10 +59854,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const timeCompare = (b.requestSortTime || 0) - (a.requestSortTime || 0);
     if (timeCompare !== 0) return timeCompare;
 
-    const customerCompare = `${a.customerName || ''}`.localeCompare(`${b.customerName || ''}`, 'vi', {
-      numeric: true,
-      sensitivity: 'base'
-    });
+    const customerCompare = vietnamNumericCollator.compare(`${a.customerName || ''}`, `${b.customerName || ''}`);
     if (customerCompare !== 0) return customerCompare;
 
     return compareOrderRequestRowsByProduct(a, b);
@@ -60457,6 +60467,18 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       customerGroups: customerGroups.sort((a, b) => a.sortIndex - b.sortIndex)
     };
   }), [editableRowsBySales]);
+  const [requestDisplayPage, setRequestDisplayPage] = useState({ scope: '', count: 20 });
+  const requestDisplayScope = `${requestFilterDate}|${requestFilterSalesEmpId}`;
+  const requestDisplayLimit = requestDisplayPage.scope === requestDisplayScope ? requestDisplayPage.count : 20;
+  const requestCustomerGroupCount = displayRowsBySales.reduce((count, group) => count + group.customerGroups.length, 0);
+  const visibleRequestSalesGroups = useMemo(() => {
+    let remaining = requestDisplayLimit;
+    return displayRowsBySales.flatMap(group => {
+      const customerGroups = group.customerGroups.slice(0, remaining);
+      remaining -= customerGroups.length;
+      return customerGroups.length ? [{ ...group, customerGroups }] : [];
+    });
+  }, [displayRowsBySales, requestDisplayLimit]);
   const isOrderRequestRowFullyDispatchedForShare = (row = {}) => {
     const rawStatus = normalizeLookupText(row.warehouseDispatchStatus || row.dispatchStatus || row.orderDispatchStatus || '');
     if (!rawStatus && !(row.isWarehouseDispatched || row.isFullyDispatched || row.hasBeenDispatched)) return false;
@@ -62917,7 +62939,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                     </div>
                   </td>
                 </tr>
-                {displayRowsBySales.map((salesGroup) => (
+                {visibleRequestSalesGroups.map((salesGroup) => (
                   <React.Fragment key={salesGroup.key}>
                     {isOwnerAccount && (
                       <tr className="bg-emerald-50">
@@ -63081,6 +63103,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           </div>
           {canManage && (
             <p className="mt-3 text-[11px] text-slate-400">Bấm đúng ô cần sửa. Nút xóa nằm trong bảng sửa của ô đã chọn.</p>
+          )}
+          {requestDisplayLimit < requestCustomerGroupCount && (
+            <button type="button" className="mt-3 w-full border-t border-gray-200 py-3 text-sm font-semibold text-indigo-700"
+              onClick={() => setRequestDisplayPage({ scope: requestDisplayScope, count: requestDisplayLimit + 20 })}>
+              Tải thêm đơn đặt
+            </button>
           )}
           {filteredRequests.length === 0 && (
             <div className="mt-4 rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">

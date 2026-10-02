@@ -8,6 +8,10 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "dev:emulator": "vite --mode emulator --host 127.0.0.1 --port 5214 --strictPort",
+    "firebase:local": "node scripts/start-local-firebase.mjs",
+    "test:export-restore": "node scripts/verify-export-restore.mjs",
+    "test:export-scope": "node --test tests/export-restore-scope.test.mjs",
     "build": "vite build",
     "test": "npm run test:all",
     "test:attendance-wifi": "node --test tests/attendance-wifi.test.mjs tests/attendance-auto-wifi.test.mjs",

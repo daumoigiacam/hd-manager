@@ -1,0 +1,31 @@
+{
+  "observedAt": "2026-10-02T08:03:13.595Z",
+  "phase": "4C",
+  "status": "BLOCKED",
+  "activeGate": "REAL_FIREBASE_STAGING",
+  "productionProjectId": "hd-manager-c5839",
+  "requestedStagingProjectId": "hd-manager-staging-4c",
+  "firebaseProjectListing": "SUCCESS",
+  "dedicatedStagingFound": false,
+  "projectCreation": "FAILED",
+  "providerErrorCode": 8,
+  "providerErrorType": "google.rpc.QuotaFailure",
+  "providerMessage": "The project cannot be created because you have exceeded your allotted project quota.",
+  "operation": "operations/create_project.global.5445501783116835132",
+  "ownerActionRequired": "Increase project creation quota or provide a dedicated Firebase staging project with access for the current CLI account.",
+  "nextStep": "Retry project creation after quota is increased, or verify ownership and isolation of the supplied staging project. Then provision Firebase services and verify login, test tenant and observability.",
+  "remainingGates": [
+    "Login, test tenant and observability",
+    "Complete cursor read models and server aggregates",
+    "Backfill and reconciliation",
+    "Reversal and amendment",
+    "Regression",
+    "READY",
+    "Phase 5 staged load: 100, 250, 500, 750, 1000 users"
+  ],
+  "productionDeployed": false,
+  "productionInventoryModified": false,
+  "androidReleaseModified": false,
+  "uiOptimized": false,
+  "loadTestStarted": false
+}

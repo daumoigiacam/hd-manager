@@ -1,10 +1,6 @@
 .hd-sync-queue {
-  position: fixed;
-  inset-inline: 12px;
-  bottom: calc(var(--hd-footer-height, 4rem) + 8px);
-  z-index: 55;
-  max-width: 30rem;
-  margin-inline: auto;
+  position: static;
+  width: 100%;
   border: 1px solid #e4c687;
   border-radius: 8px;
   background: #fff9ed;
@@ -19,8 +15,6 @@
 .hd-sync-queue__item > div { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .hd-sync-queue__item p { margin: 4px 0 0; }
 .hd-sync-queue__item button { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; }
-html.hd-keyboard-open .hd-sync-queue { display: none; }
-@media (min-width: 1024px) { .hd-sync-queue { inset-inline-start: auto; width: min(30rem, calc(100% - 24px)); bottom: 12px; } }
 
 :root {
   color-scheme: light;

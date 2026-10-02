@@ -15,3 +15,15 @@ test('timing summary excludes preparation renders, nested profilers and unrelate
   assert.equal(summary.render.average, 20);
   assert.equal(summary.maxSdkOperations, 1);
 });
+
+test('percentiles use nearest rank and retain the sample count', () => {
+  const samples = Array.from({ length: 100 }, (_, index) => ({
+    viewport: 'test', module: 'home', action: 'open', totalMs: index + 1,
+    startTimeMs: 0, endTimeMs: 101, events: [], subscriptions: [],
+  }));
+  const [summary] = summarizeInteractionSamples(samples.reverse());
+  assert.equal(summary.n, 100);
+  for (const rank of [50, 90, 95, 99]) assert.equal(summary[`p${rank}`], rank);
+  assert.equal(summary.max, 100);
+  assert.deepEqual(summarizeInteractionSamples([]), []);
+});

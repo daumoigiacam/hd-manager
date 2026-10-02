@@ -57,6 +57,10 @@ export async function signInAnonymously() {
   return { user: authState.currentUser };
 }
 
+export function connectAuthEmulator() {
+  throw new Error('Preview Auth cannot be connected to a real emulator. Use emulator mode.');
+}
+
 export async function signInWithCustomToken(_, token) {
   authState.currentUser = createPreviewUser(token);
   notify();

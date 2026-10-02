@@ -1,0 +1,95 @@
+{
+  "status": "MANUAL_COMPANY_VALUATION_POLICY_CONFIRMED_IMPLEMENTATION_PENDING",
+  "scope": "Return/refund and financial correction integration only; does not block independent cursor screen work",
+  "confirmed": [
+    {
+      "rule": "Discount, tax and delivery-fee return valuation is determined by explicit company confirmation, not an inferred proportional allocation",
+      "source": "Owner reply on 2026-10-02: theo công ty xác nhận",
+      "release": "Policy confirmed only. Per-return amount approval, payment/debt integration and regression are not implemented or released. No bank transfer authorized."
+    },
+    {
+      "rule": "Delivered or paid orders may be cancelled only after actual goods return and actual refund are confirmed",
+      "source": "Owner reply in this conversation",
+      "release": "NOT RELEASED; confirmation policy is not an implementation or permission to execute a bank transfer"
+    }
+  ],
+  "sourceEvidence": {
+    "files": [
+      "src/App.jsx",
+      "src/services/orderReturns.js",
+      "functions/orderReturnTransactions.js",
+      "tests/order-return-application.emulator.cjs"
+    ],
+    "behavior": "The real order screen calls the server transaction. Partial, repeated, full and damaged returns are recorded against authoritative outbound ledger evidence. Customer debt/payment is intentionally not changed until return valuation is approved."
+  },
+  "decisionsRequired": [
+    {
+      "id": "return_scope",
+      "state": "Delivered order with some or all goods returned",
+      "missing": "Whether this release supports partial returns or full-order returns only",
+      "choices": [
+        {"choice": "Partial and full", "consequence": "Track accepted quantity per source movement, cumulative returns and refund amount; prevent returning more than shipped across concurrent operations"},
+        {"choice": "Full only", "consequence": "Reject partial returns explicitly; permit one complete correction after full return confirmation"}
+      ],
+      "ownerAnswer": "Partial and full returns, multiple return transactions; cumulative returned quantity must not exceed delivered quantity."
+    },
+    {
+      "id": "shared_payment_refund",
+      "state": "Payment allocated across multiple orders or customer credit",
+      "missing": "Whether refund selects source payment amounts explicitly or reallocates all customer debt oldest-first",
+      "choices": [
+        {"choice": "Explicit source and amount", "consequence": "Preserve unaffected payment allocations; enforce cumulative refunded amount per payment and record immutable refund allocation evidence"},
+        {"choice": "Reallocate customer history", "consequence": "Other orders may change paid/unpaid status; requires versioned customer-wide reconciliation in the same correction workflow"}
+      ],
+      "ownerAnswer": "Reverse only the affected order allocation. Preserve other order allocations. Released allocation becomes UNALLOCATED_CUSTOMER_PAYMENT; total received changes only after actual refund."
+    },
+    {
+      "id": "returned_goods_condition",
+      "state": "Accepted return is damaged or not resalable",
+      "missing": "Destination and accounting treatment for goods not eligible for available stock",
+      "choices": [
+        {"choice": "Quarantine warehouse", "consequence": "Record returned goods separately; exclude quarantined quantity from sellable inventory"},
+        {"choice": "Approved loss", "consequence": "Do not restore sellable stock; record accepted return and authorized loss with audit evidence"}
+      ],
+      "ownerAnswer": "Record RETURN_DAMAGED separately with product, quantity, UOM, order, return identity, reason, timestamp, actor and tenant. Never increase sellable stock; do not invent additional accounting."
+    }
+  ],
+  "implementedWithoutFinancialGuessing": {
+    "workflow": "Order detail -> Return dialog -> authenticated Cloud Function -> one Firestore transaction -> cursor refresh",
+    "rules": [
+      "Actual returned-goods confirmation is required",
+      "Cumulative returned quantity cannot exceed delivered quantity",
+      "Every return creates an immutable transaction receipt",
+      "SELLABLE returns increase sellable stock through RETURN_INBOUND ledger entries",
+      "DAMAGED returns create RETURN_DAMAGED evidence and never increase sellable stock",
+      "Owner-only approval is enforced for the current release"
+    ],
+    "financialGuard": "creditAmount, paymentCorrection and refund inputs are rejected with business_rule_required / partial_return_valuation",
+    "evidence": "tests/order-return-application.emulator.cjs: 7/7 PASS including same-key concurrency 2/5/10"
+  },
+  "blockingRule": {
+    "id": "partial_return_valuation",
+    "status": "POLICY_CONFIRMED_APPLICATION_IMPLEMENTATION_REQUIRED",
+    "ownerAnswer": "Explicit company-confirmed amounts; no automatic proportional allocation of discount, tax or delivery fee",
+    "question": "Resolved at policy level. Each return still needs an authorized company-confirmed valuation, immutable evidence, allocation checks and consistent financial read models before money effects can be enabled.",
+    "blockedCapabilities": [
+      "order credit amount",
+      "payment allocation release amount",
+      "debt adjustment",
+      "refund requested/recorded/confirmed amounts",
+      "post-payment quantity or price amendment"
+    ]
+  },
+  "additionalRulesToConfirmBeforeRelease": [
+    "Implement the confirmed manual company valuation policy with an explicit per-return approval before writing financial effects",
+    "Whether price/customer changes are permitted after payment or require credit/refund and a replacement document",
+    "Who may approve returns/refunds beyond the currently owner-only inventory correction step"
+  ],
+  "notBlockedByTheseDecisions": [
+    "Cursor screen integration and server read models",
+    "Non-destructive Emulator verification",
+    "Inherited regression tests"
+  ],
+  "releaseState": "Cancel Order NOT RELEASED",
+  "productionMutation": false
+}

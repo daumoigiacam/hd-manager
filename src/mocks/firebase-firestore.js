@@ -82,14 +82,52 @@ function emitCollection(name) {
   const listeners = collectionListeners.get(name);
   if (!listeners) return;
 
-  const snapshot = createSnapshot(name);
   for (const listener of listeners) {
-    listener(snapshot);
+    listener();
   }
 }
 
-function createSnapshot(name) {
-  const entries = Object.values(store[name] || {});
+function queryValue(entry, field) {
+  if (field === '__name__') return entry.id;
+  return field.split('.').reduce((value, key) => value?.[key], entry);
+}
+
+function createSnapshot(ref) {
+  let entries = Object.values(store[ref.name] || {});
+  const constraints = ref.constraints || [];
+  for (const { field, operator, value } of constraints.filter(item => item.kind === 'where')) {
+    entries = entries.filter(entry => {
+      const actual = queryValue(entry, field);
+      switch (operator) {
+        case '==': return actual === value;
+        case '!=': return actual !== undefined && actual !== value;
+        case '<': return actual < value;
+        case '<=': return actual <= value;
+        case '>': return actual > value;
+        case '>=': return actual >= value;
+        case 'in': return value.includes(actual);
+        case 'array-contains': return Array.isArray(actual) && actual.includes(value);
+        default: throw new Error(`Unsupported preview query operator: ${operator}`);
+      }
+    });
+  }
+  const ordering = constraints.filter(item => item.kind === 'orderBy');
+  const compare = (left, right) => {
+    for (const { field, direction } of ordering) {
+      const a = queryValue(left, field);
+      const b = queryValue(right, field);
+      if (a !== b) return (a < b ? -1 : 1) * (direction === 'desc' ? -1 : 1);
+    }
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  };
+  entries = [...entries].sort(compare);
+  const cursor = constraints.find(item => item.kind === 'startAfter');
+  if (cursor) {
+    const boundary = { ...cursor.snapshot.data(), id: cursor.snapshot.id };
+    entries = entries.filter(entry => compare(entry, boundary) > 0);
+  }
+  const max = constraints.find(item => item.kind === 'limit');
+  if (max) entries = entries.slice(0, max.count);
   return {
     docs: entries.map((entry) => ({
       id: entry.id,
@@ -262,14 +300,15 @@ export function onSnapshot(ref, optionsOrNext, nextOrError) {
   }
 
   const listeners = collectionListeners.get(ref.name) || new Set();
-  listeners.add(onNext);
+  const notify = () => onNext(createSnapshot(ref));
+  listeners.add(notify);
   collectionListeners.set(ref.name, listeners);
-  queueMicrotask(() => onNext(createSnapshot(ref.name)));
+  queueMicrotask(notify);
 
   return () => {
     const current = collectionListeners.get(ref.name);
     if (!current) return;
-    current.delete(onNext);
+    current.delete(notify);
     if (current.size === 0) {
       collectionListeners.delete(ref.name);
     }
@@ -280,7 +319,15 @@ export async function getDocs(ref) {
   if (ref.kind !== 'collection') {
     throw new Error('Preview mock currently supports getDocs(collection) only.');
   }
-  return createSnapshot(ref.name);
+  return createSnapshot(ref);
+}
+
+export function documentId() {
+  return '__name__';
+}
+
+export function startAfter(snapshot) {
+  return { kind: 'startAfter', snapshot };
 }
 
 export function where(field, operator, value) {
@@ -353,4 +400,7 @@ export async function runTransaction(_, updateFunction) {
     touchedCollections.forEach((collectionName) => emitCollection(collectionName));
   }
   return result;
+}
+export function connectFirestoreEmulator() {
+  throw new Error('Preview Firestore cannot be connected to a real emulator. Use emulator mode.');
 }

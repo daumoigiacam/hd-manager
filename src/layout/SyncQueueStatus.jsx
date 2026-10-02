@@ -1,11 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { createContext, useContext, useRef, useState } from 'react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
-export default function SyncQueueStatus({ writes, onRetry }) {
+export const SyncQueueContext = createContext({ writes: [], onRetry: async () => {} });
+
+export default function SyncQueueStatus() {
+  const { writes, onRetry } = useContext(SyncQueueContext);
   const inFlight = useRef(new Set());
   const [busy, setBusy] = useState({});
   const [error, setError] = useState('');
-  if (!writes.length) return null;
   const stopped = writes.filter(write => ['blocked', 'paused'].includes(write.syncState));
   const retry = async write => {
     if (inFlight.current.has(write.key)) return;
@@ -22,8 +24,9 @@ export default function SyncQueueStatus({ writes, onRetry }) {
   return (
     <aside className="hd-sync-queue" aria-label="Trạng thái đồng bộ">
       <details>
-        <summary><AlertCircle size={16} /> <span>{writes.length} thao tác chưa được máy chủ xác nhận{stopped.length ? ` · ${stopped.length} cần xử lý` : ''}</span></summary>
+        <summary><AlertCircle size={16} /> <span>Trạng thái đồng bộ</span></summary>
         <div className="hd-sync-queue__content">
+          <p>{writes.length ? `${writes.length} thao tác đang chờ xác nhận${stopped.length ? ` · ${stopped.length} cần xử lý` : ''}` : 'Không có thao tác chờ đồng bộ.'}</p>
           {error && <p role="alert">{error}</p>}
           {writes.map(write => (
             <div className="hd-sync-queue__item" key={write.key}>

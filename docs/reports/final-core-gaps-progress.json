@@ -1,0 +1,54 @@
+{
+  "status": "PARTIAL",
+  "ready": false,
+  "inheritedUnchanged": ["Gap B", "cursor engine", "inventory transaction engine", "rules", "backfill", "reconciliation", "search", "read lifecycle"],
+  "gapA": {
+    "implemented": "Tenant list read model using existing cursor and read arbiter. Incremental next page and refresh; separate from business totals.",
+    "file": "src/services/tenantListReadModel.js",
+    "test": "tests/tenant-list-read-model.emulator.mjs",
+    "evidence": "test-results/core-gaps/list-model-emulator.json",
+    "datasets": [100, 1000, 5000],
+    "maxDocumentsPerPage": 50,
+    "missing": 0,
+    "duplicates": 0,
+    "foreignTenant": 0,
+    "listeners": 0,
+    "firstPageReads": 50,
+    "caveat": "Test enumerates all pages to verify completeness, but model never automatically loads all pages. App screens are NOT integrated yet; existing production full-load paths remain unchanged. Search/filter and aggregates are NOT implemented by this model.",
+    "beforeAfterLatency": "No comparable screen baseline; do not infer improvement from emulator page timings."
+  },
+  "gapC": {
+    "userDecision": "Allow cancellation of delivered/paid orders only after confirmation of actual goods return and actual refund.",
+    "implemented": "Composable inventory compensation step in a caller-owned Firestore transaction; existing transaction engine not modified.",
+    "file": "functions/inventoryReversal.js",
+    "test": "tests/inventory-reversal.emulator.cjs",
+    "tests": "5 PASS: 2/5/10 concurrent reversal, missing goods confirmation/foreign tenant rejection, rollback on caller failure",
+    "audit": "Deterministic reversal receipt per original operation; reason, employee, timestamp, goodsReturned and compensation ledger. Original ledger preserved. Orphan compensation rejected.",
+    "permissions": "Owner only; does not inherit create permission as correction permission",
+    "fixedDuringVerification": "Initial parallel transaction reads intermittently produced INVALID_ARGUMENT closed transaction at concurrency 5. Replaced initial reads with transaction.getAll; final matrix PASS.",
+    "notImplemented": ["Order state transition", "Payment/refund/debt transition", "Amendment", "Client action integration", "Cross-module E2E"],
+    "safety": "No endpoint exposes the partial step. Caller must atomically apply all business transitions; this is not a completed order cancellation feature. A confirmation records an already completed refund, it does not execute a bank transfer."
+  },
+  "regression": {
+    "testAll": "PASS",
+    "build": "PASS",
+    "lint": "PASS, including new files",
+    "typecheck": "PASS configured payroll scope",
+    "arbiterLifecycleBackfillReconciliationUnits": "23 PASS",
+    "newListReadModelEmulator": "PASS 100/1000/5000 records",
+    "newReversalEmulator": "5 PASS final revision",
+    "existingEmulatorSuites": "Inherited preceding turn evidence; not all rerun in this turn",
+    "finalGate": "NOT SATISFIED"
+  },
+  "remaining": [
+    "Integrate paged models into required screens without incomplete financial/payroll/dashboard totals",
+    "Implement server search/filter and aggregate read models",
+    "Complete order/payment/debt reversal and amendment atomically with confirmed return/refund",
+    "Cross-module normal/amend/reversal/retry/concurrency E2E",
+    "Full final regression gate and representative workload measurements",
+    "Real Firebase staging remains blocked by project quota"
+  ],
+  "productionDeploy": false,
+  "productionDataModified": false,
+  "phase5": false
+}
