@@ -581,7 +581,7 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
   }
   if (result.deviceSecret) {
     try {
-      if (biometricEnabled) {
+      if (biometricEnabled && Capacitor.getPlatform() !== 'android') {
         const verification = await authenticateBiometric('Xác nhận bật đăng nhập sinh trắc học');
         if (!verification.success) throw new Error(verification.message);
       }

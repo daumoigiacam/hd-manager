@@ -19,7 +19,7 @@ test('native credential lifecycle is opt-in, scoped, protected and cancellable',
   globalThis.__biometricTest = {
     async isAvailable() { return { isAvailable: available, strongBiometryIsAvailable: available, biometryType: 3 }; },
     async verifyIdentity() { prompts++; if (cancel) throw new Error('cancel'); },
-    async setData(data) { if (cancel) throw new Error('cancel'); secrets.set(data.key, data); },
+    async setData(data) { if (data.accessControl === 1) prompts++; if (cancel) throw new Error('cancel'); secrets.set(data.key, data); },
     async getSecureData({ key }) { prompts++; if (cancel) throw new Error('cancel'); const data = secrets.get(key); if (data?.accessControl !== 1) throw new Error('missing'); return { value: data.value }; },
     async getData({ key }) { const data = secrets.get(key); if (data?.accessControl === 1) throw new Error('protected'); return { value: data?.value }; },
     async deleteData({ key }) { secrets.delete(key); },
@@ -48,7 +48,9 @@ test('native credential lifecycle is opt-in, scoped, protected and cancellable',
     assert.equal(api.getBiometricAutoLoginProfile(), null);
     assert.equal(enabled, false);
     cancel = false;
+    const enrollmentPrompts = prompts;
     await api.identitySetBiometric({ idToken: 'token', enabled: true, identity });
+    assert.equal(prompts - enrollmentPrompts, 1, 'Android protected write authenticates once, without a redundant verify prompt');
     assert.equal(api.getBiometricAutoLoginProfile().accountScope, 'emp_a');
     assert.equal([...secrets.values()][0].accessControl, 1);
     assert.equal([...secrets.values()][0].value, 'opaque-secret');
