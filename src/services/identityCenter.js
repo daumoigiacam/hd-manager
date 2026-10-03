@@ -627,6 +627,14 @@ export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) 
 export const identityRequestRecovery = async ({ identifier, pin = '' }) => {
   const device = getIdentityDevice();
   const accountScope = resolveIdentityAccountScope(identifier);
+  if (isNativeRuntime() && !pin) {
+    const profile = getBiometricAutoLoginProfile({ manual: true });
+    if (!accountScope || profile?.accountScope !== accountScope) throw new Error('Tài khoản này chưa đăng ký sinh trắc trên thiết bị. Hãy dùng PIN hoặc liên hệ quản trị.');
+    const deviceSecret = await readTrustedDeviceSecret({ deviceId: device.deviceId, accountScope,
+      requireBiometric: true, throwOnError: true, reason: 'Xác thực để đặt lại mật khẩu HD Manager' });
+    if (!deviceSecret) throw new Error('Chưa xác thực sinh trắc thành công.');
+    return requestIdentityApi('/api/identity/request-recovery', { identifier, device, deviceSecret, biometricProof: true });
+  }
   let deviceSecret = '';
   let biometricProof = false;
   const availability = await getBiometricAvailability();

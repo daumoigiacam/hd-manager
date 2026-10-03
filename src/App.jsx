@@ -206,6 +206,8 @@ import {
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
 import { canManageCompanyWifi, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
+import { unlockWarmSession } from './services/warmSessionUnlock.js';
+import { NativeSessionPersistence, rememberedNativeUid, rememberNativeSession, forgetNativeSession } from './services/nativeSessionPersistence.js';
 import { createAutoWifiAttendanceController } from './utils/autoWifiAttendance.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
 import { getPreviousOrderSuggestions, previousOrderDraftFields } from './utils/previousOrderSuggestions.js';
@@ -445,6 +447,7 @@ import {
   identityOwnerResetPassword,
   identityLogin,
   identityBiometricLogin,
+  readTrustedDeviceSecret,
   identityRegisterCompany,
   identityLogout,
   identityRequestOwnerReset,
@@ -598,8 +601,8 @@ let firebaseAuthPersistencePromise = Promise.resolve('unavailable');
 const configureFirebaseAuthPersistence = async (firebaseAuth) => {
   if (!firebaseAuth) return 'unavailable';
   if (Capacitor.isNativePlatform()) {
-    await setPersistence(firebaseAuth, inMemoryPersistence);
-    return 'memory';
+    await setPersistence(firebaseAuth, rememberedNativeUid() ? NativeSessionPersistence : inMemoryPersistence);
+    return rememberedNativeUid() ? 'native-encrypted' : 'memory';
   }
   try {
     await setPersistence(firebaseAuth, indexedDBLocalPersistence);
@@ -654,7 +657,7 @@ if (isVpsMode) {
         // device during Auth construction so WebView IndexedDB startup does
         // not block registration of the initial auth-state listener.
         auth = initializeAuth(app, {
-          persistence: Capacitor.isNativePlatform() ? inMemoryPersistence : [indexedDBLocalPersistence, browserLocalPersistence]
+          persistence: Capacitor.isNativePlatform() ? (rememberedNativeUid() ? NativeSessionPersistence : inMemoryPersistence) : [indexedDBLocalPersistence, browserLocalPersistence]
         });
         firebaseAuthPersistencePromise = Promise.resolve('indexedDB-or-localStorage');
         recordStartupEvent('auth.persistence.configured', {
@@ -12215,6 +12218,7 @@ export default function App() {
   ));
   const biometricVerifiedIdentityRef = useRef('');
   const biometricPromptInFlightRef = useRef(false);
+  const warmResumeLeaseRef = useRef(null);
   const [biometricOfferIdentity, setBiometricOfferIdentity] = useState(null);
   const [currentDate, setCurrentDate] = useState(getTodayString());
   const [recoverableSyncNotice, setRecoverableSyncNotice] = useState(null);
@@ -12370,11 +12374,30 @@ export default function App() {
 
   useEffect(() => {
     if (biometricUnlockState !== 'pending') return undefined;
+    if (auth.currentUser && rememberedNativeUid() === auth.currentUser.uid) {
+      setBiometricUnlockState('unlocked');
+      return undefined;
+    }
     if (!shouldRequireBiometricUnlock(currentUser)) { setBiometricUnlockState('blocked'); return undefined; }
     let active = true;
     biometricPromptInFlightRef.current = true;
-    identityBiometricLogin({ appId, manual: true }).then(async result => {
-      if (result.success && active) await runFirebaseAuthMutation(() => signInWithCustomToken(auth, result.customToken));
+    const unlock = async () => {
+      const profile = getBiometricAutoLoginProfile({ manual: true });
+      const result = await unlockWarmSession({
+        lease: warmResumeLeaseRef.current, user: auth.currentUser, scope: biometricIdentityScope,
+        currentUser: () => active ? auth.currentUser : null,
+        authenticate: async () => {
+          if (profile?.accountScope !== biometricIdentityScope) return false;
+          return Boolean(await readTrustedDeviceSecret({ deviceId: getIdentityDevice().deviceId,
+            accountScope: biometricIdentityScope, requireBiometric: true, throwOnError: true,
+            reason: 'Mở khóa HD Manager' }));
+        },
+      });
+      return result.fallback && active ? identityBiometricLogin({ appId, manual: true }) : result;
+    };
+    unlock().then(async result => {
+      if (result.success && active && !result.warm) await runFirebaseAuthMutation(() => signInWithCustomToken(auth, result.customToken));
+      if (result.success && active) await rememberNativeSession(auth, setPersistence);
       biometricPromptInFlightRef.current = false;
       if (!active) return;
       if (result.success) biometricVerifiedIdentityRef.current = biometricIdentityScope;
@@ -12391,6 +12414,11 @@ export default function App() {
 
   useEffect(() => {
     if (isVpsStagingMode || !firebaseUser || !currentUser || !shouldRequireBiometricUnlock(currentUser)) return;
+    if (rememberedNativeUid() === firebaseUser.uid) {
+      biometricVerifiedIdentityRef.current = biometricIdentityScope;
+      setBiometricUnlockState('unlocked');
+      return;
+    }
     if (biometricVerifiedIdentityRef.current === biometricIdentityScope) return;
     setBiometricUnlockState('pending');
   }, [biometricIdentityScope, currentUser, firebaseUser]);
@@ -12401,7 +12429,10 @@ export default function App() {
     let listenerHandle = null;
     const listenerPromise = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       if (disposed || biometricPromptInFlightRef.current) return;
+      if (auth.currentUser && rememberedNativeUid() === auth.currentUser.uid) return;
       if (!isActive) {
+        warmResumeLeaseRef.current = biometricVerifiedIdentityRef.current === biometricIdentityScope
+          ? { user: auth.currentUser, scope: biometricIdentityScope, lockedAt: Date.now() } : null;
         biometricVerifiedIdentityRef.current = '';
         setBiometricUnlockState('blocked');
         return;
@@ -16124,6 +16155,7 @@ export default function App() {
       identitySetupPendingRef.current = Boolean(session.requiresSetup);
       const established = await establishIdentitySession(session, { activate: !session.requiresSetup });
       if (!established.success) return established;
+      if (!session.requiresSetup) await rememberNativeSession(auth, setPersistence);
       biometricVerifiedIdentityRef.current = getIdentityAccountScope(established.identity || session.identity || {});
       setBiometricUnlockState('unlocked');
       recordStartupEvent('auth.biometric_login.completed', {
@@ -16185,8 +16217,9 @@ export default function App() {
       recordStartupEvent('auth.identity_login.started');
       const apiStartedAt = Date.now();
       const session = await identityLogin({ identifier: normalizedIdentifier, password, appId });
-      biometricVerifiedIdentityRef.current = getIdentityAccountScope({ ...session.identity, identityKey: session.identityKey });
-      setBiometricUnlockState('unlocked');
+      const needsBiometric = isNativeRuntime() && Boolean(getBiometricAutoLoginProfile({ manual: true })) && !session.requiresSetup;
+      biometricVerifiedIdentityRef.current = needsBiometric ? '' : getIdentityAccountScope({ ...session.identity, identityKey: session.identityKey });
+      setBiometricUnlockState(needsBiometric ? 'blocked' : 'unlocked');
       if (isNativeRuntime() && !session.requiresSetup && !getBiometricAutoLoginProfile({ manual: true })) {
         setBiometricOfferIdentity({ ...session.identity, identityKey: session.identityKey });
       }
@@ -16747,6 +16780,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    forgetNativeSession();
     setBiometricOfferIdentity(null);
     suppressBiometricAutoLoginForSession();
     biometricVerifiedIdentityRef.current = '';
@@ -16778,6 +16812,7 @@ export default function App() {
   };
 
   const handleSwitchToCustomerLogin = async () => {
+    forgetNativeSession();
     suppressBiometricAutoLoginForSession();
     biometricVerifiedIdentityRef.current = '';
     setBiometricUnlockState('unlocked');
@@ -23496,7 +23531,7 @@ export default function App() {
     );
   }
 
-  if (biometricOfferIdentity) return <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyBiometricEnrollment identity={biometricOfferIdentity} getToken={() => auth.currentUser.getIdToken()} onDone={() => { biometricVerifiedIdentityRef.current = getIdentityAccountScope(biometricOfferIdentity); setBiometricUnlockState('unlocked'); setBiometricOfferIdentity(null); }} /></React.Suspense>;
+  if (biometricOfferIdentity) return <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyBiometricEnrollment identity={biometricOfferIdentity} getToken={() => auth.currentUser.getIdToken()} onCancel={handleLogout} onDone={async ({ enabled } = {}) => { if (enabled) await rememberNativeSession(auth, setPersistence); biometricVerifiedIdentityRef.current = getIdentityAccountScope(biometricOfferIdentity); setBiometricUnlockState('unlocked'); setBiometricOfferIdentity(null); }} /></React.Suspense>;
 
   // Firebase Auth is authoritative; cached session data may render the shell while
   // core collections revalidate in the background. Only block if Auth itself is loading.
@@ -27744,17 +27779,28 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   };
 
   const handleSaveDefaultAttendanceWifi = async () => {
-    if (!canManageCompanyWifi(currentEmployee) || !onUpdateCompanySettings || companyWifiSaveRef.current) return;
+    if (companyWifiSaveRef.current) return;
+    if (!canManageCompanyWifi(currentEmployee)) {
+      setSelfStatusMsg('Chỉ Chủ/Admin được đặt WiFi công ty.');
+      return;
+    }
+    if (typeof onUpdateCompanySettings !== 'function') {
+      setSelfStatusMsg('Chưa sẵn sàng lưu cài đặt công ty. Hãy mở lại phần chấm công.');
+      return;
+    }
 
     try {
       companyWifiSaveRef.current = true;
       setCompanyWifiSaving(true);
       setSelfStatusMsg('');
       if (!isAndroidNativeRuntime()) throw new Error('Chỉ có thể lấy WiFi hiện tại trên app Android.');
+      const permission = await withTimeout(WifiInfo.requestWifiPermissions(), 30000, 'Chưa nhận được quyền đọc WiFi. Hãy cấp quyền rồi thử lại.');
+      setWifiPermission(permission);
+      if (!permission.granted) throw new Error('Chưa cấp quyền đọc WiFi. Hãy cấp quyền vị trí chính xác và thiết bị ở gần trong cài đặt ứng dụng.');
       const detectedWifi = await withTimeout(getCurrentConnectedWifiForAttendance(), 8000, 'Chưa đọc được WiFi hiện tại.');
       const nextSsid = normalizeWifiName(detectedWifi.ssid);
       if (!detectedWifi.supported || !nextSsid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
-        throw new Error('Chưa đọc được SSID và BSSID hợp lệ. Hãy kiểm tra kết nối và quyền WiFi.');
+        throw new Error(detectedWifi.message || 'Chưa đọc được SSID và BSSID hợp lệ. Hãy kiểm tra kết nối và quyền WiFi.');
       }
       setSelfWifiLabel(nextSsid);
       setSelfWifiLookup({ loading: false, success: true, message: detectedWifi.message, wifi: detectedWifi });
@@ -28018,7 +28064,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                     <button
                       type="button"
                       onClick={handleSaveDefaultAttendanceWifi}
-                      disabled={companyWifiSaving || !normalizeWifiName(selfWifiLabel) || selfWifiLookup.loading}
+                      disabled={companyWifiSaving || !isAndroidNativeRuntime() || selfWifiLookup.loading}
                       className="shrink-0 rounded-full bg-blue-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"
                     >
                       Đặt mặc định

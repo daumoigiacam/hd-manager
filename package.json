@@ -84,7 +84,7 @@
     "test:firestore-tenant-rules": "firebase emulators:exec --only firestore \"node tests/firestore-tenant-isolation.test.mjs\"",
     "test:payroll-debt-rollover": "node tests/payroll-debt-carryover.test.mjs",
     "test:payroll-auto-lock": "node tests/payroll-auto-lock.test.cjs",
-    "test:identity": "node tests/identity-center.test.mjs && node --test tests/identity-passkeys.test.cjs tests/biometric-lifecycle.test.mjs tests/biometric-native-patch.test.mjs",
+    "test:identity": "node tests/identity-center.test.mjs && node --test tests/identity-passkeys.test.cjs tests/biometric-lifecycle.test.mjs tests/biometric-native-patch.test.mjs tests/warm-session-unlock.test.mjs tests/native-session-persistence.test.mjs",
     "test:passkey:browser": "node tests/visual/passkey-auth.integration.mjs",
     "test:hybrid-runtime": "node tests/hybrid-runtime-safety.test.mjs",
     "test:production-deploy-workflow": "node tests/production-deploy-workflow.test.mjs",

@@ -55,6 +55,7 @@ export const warmIdentityLoginService = () => Promise.resolve(false);
 
 export const identityLogin = () => blocked('Legacy Firebase login');
 export const identityBiometricLogin = async () => ({ success: false, unavailable: true });
+export const readTrustedDeviceSecret = async () => '';
 export const getQuickLoginAvailability = async () => ({ available: false, native: false });
 export const identityRegisterPasskey = () => blocked('Passkey registration');
 export const identityListPasskeys = () => blocked('Passkey list');

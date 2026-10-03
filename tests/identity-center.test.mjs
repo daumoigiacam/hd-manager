@@ -189,7 +189,7 @@ assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 assert.match(
   appSource,
-  /auth = initializeAuth\(app, \{[\s\S]*?persistence: Capacitor\.isNativePlatform\(\) \? inMemoryPersistence : \[indexedDBLocalPersistence, browserLocalPersistence\]/,
+  /auth = initializeAuth\(app, \{[\s\S]*?persistence: Capacitor\.isNativePlatform\(\) \? \(rememberedNativeUid\(\) \? NativeSessionPersistence : inMemoryPersistence\) : \[indexedDBLocalPersistence, browserLocalPersistence\]/,
   'Firebase Auth must configure supported persistence during construction'
 );
 assert.match(appSource, /firebaseAuthPersistencePromise = Promise\.resolve\('indexedDB-or-localStorage'\)/);

@@ -54,6 +54,15 @@ test('native credential lifecycle is opt-in, scoped, protected and cancellable',
     assert.equal(api.getBiometricAutoLoginProfile().accountScope, 'emp_a');
     assert.equal([...secrets.values()][0].accessControl, 1);
     assert.equal([...secrets.values()][0].value, 'opaque-secret');
+    const recoveryCalls = calls;
+    await assert.rejects(api.identityRequestRecovery({ identifier: '0999999999' }));
+    assert.equal(calls, recoveryCalls, 'unknown account cannot reuse this device enrollment');
+    cancel = true;
+    await assert.rejects(api.identityRequestRecovery({ identifier: identity.phone }));
+    assert.equal(calls, recoveryCalls, 'cancelled recovery does not fall back to unprotected storage');
+    cancel = false;
+    await api.identityRequestRecovery({ identifier: identity.phone });
+    assert.equal(calls, recoveryCalls + 1, 'recovery still requires server verification');
     const before = prompts;
     await Promise.all([api.identityBiometricLogin({}), api.identityBiometricLogin({})]);
     assert.equal(prompts - before, 1, 'concurrent effects share one OS prompt');
