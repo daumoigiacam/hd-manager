@@ -1,5 +1,14 @@
 const normalizeId = (value) => `${value || ''}`.trim();
 
+let activeRevenueIndex = null;
+
+// Only synchronous report calculations share this index; never across saves.
+export const withSalesRevenueIndex = (calculate) => {
+  const previous = activeRevenueIndex;
+  activeRevenueIndex = new WeakMap();
+  try { return calculate(); } finally { activeRevenueIndex = previous; }
+};
+
 const toFiniteAmount = (value) => {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
@@ -56,6 +65,32 @@ export const summarizeEmployeeSalesRevenueForMonth = ({
       .filter(customer => customer?.id)
       .map(customer => [normalizeId(customer.id), customer])
   );
+  if (activeRevenueIndex && Array.isArray(orders) && Array.isArray(customers)) {
+    let byCustomers = activeRevenueIndex.get(orders);
+    if (!byCustomers) { byCustomers = new WeakMap(); activeRevenueIndex.set(orders, byCustomers); }
+    let index = byCustomers.get(customers);
+    if (!index) {
+      index = new Map();
+      for (const order of orders) {
+        if (!order || order.isArchived) continue;
+        const month = getSalesOrderMonthKey(order);
+        const owner = getSalesOrderEmployeeId(order, customerById);
+        if (!month || !owner) continue;
+        if (!index.has(month)) index.set(month, new Map());
+        const owners = index.get(month);
+        if (!owners.has(owner)) owners.set(owner, { revenue: 0, orderCount: 0, customers: new Set(), orderIds: [] });
+        const row = owners.get(owner);
+        row.revenue += toFiniteAmount(order.amount);
+        row.orderCount += 1;
+        if (order.customerId) row.customers.add(normalizeId(order.customerId));
+        if (order.id) row.orderIds.push(normalizeId(order.id));
+      }
+      byCustomers.set(customers, index);
+    }
+    const row = index.get(safeMonthKey)?.get(safeEmployeeId);
+    return { monthKey: safeMonthKey, revenue: row?.revenue || 0, orderCount: row?.orderCount || 0,
+      customerCount: row?.customers.size || 0, orderIds: row ? [...row.orderIds] : [] };
+  }
   const matchedCustomerIds = new Set();
   const orderIds = [];
   let revenue = 0;

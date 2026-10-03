@@ -1,10 +1,13 @@
 import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { useCallback, useDeferredValue, useSyncExternalStore } from 'react';
 import { createOrderSearchState } from './services/orderSearchState.js';
+import { isCustomerDebtRepayment } from './utils/expenseClassification.js';
+import { withSalesRevenueIndex } from './utils/salesRevenuePeriod.js';
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
 import { startTransition } from 'react';
 import { createPortal } from 'react-dom';
+import { splitDispatchSharePages } from './utils/dispatchSharePages';
 import AccountGreeting from './layout/AccountGreeting.jsx';
 import './features/employees/employee-profile.css';
 import EmployeeBankQr from './features/employees/EmployeeBankQr.jsx';
@@ -190,11 +193,6 @@ import {
   removeCompanyDepartment,
   upsertCompanyDepartment,
 } from './utils/companyDepartments.js';
-import {
-  buildGlobalSearchSections,
-  readGlobalSearchHistory,
-  writeGlobalSearchHistory,
-} from './utils/globalSearch.js';
 import BusinessReportWorkspace from './features/business-report/BusinessReportWorkspace.jsx';
 import {
   AttachmentPanel, ChatSearchBar, ChatState, ChatTabs,
@@ -207,10 +205,10 @@ import {
 } from './features/messaging/messagingUiModel.js';
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
-import { isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
+import { canManageCompanyWifi, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
 import { createAutoWifiAttendanceController } from './utils/autoWifiAttendance.js';
 import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProductMemory.js';
-import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
+import { getPreviousOrderSuggestions, previousOrderDraftFields } from './utils/previousOrderSuggestions.js';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
   buildEvaluationSummary13,
@@ -408,8 +406,6 @@ import {
   buildCustomerProductPreferenceWrite,
   getOrderInputUnitOptions,
   normalizeCustomerProductPreference,
-  resolveRememberedInputUnit,
-  shouldOfferDefaultInputUnitUpdate,
 } from './services/smartCustomerOrdering.js';
 import {
   buildCustomerProductBillingSnapshot,
@@ -17120,7 +17116,7 @@ export default function App() {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     const wifiKeys = ['attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt'];
     if (settingsData?.attendanceWifiSsid !== undefined && Object.keys(settingsData).every(key => wifiKeys.includes(key))) {
-      if (!isAccountingPosition(employee?.position) && employee?.role !== 'super_admin') return { success: false, message: 'Chỉ chủ công ty hoặc kế toán được đặt WiFi chấm công.' };
+      if (!canManageCompanyWifi(employee)) return { success: false, message: 'Chỉ Chủ/Admin được đặt WiFi công ty.' };
       const wifiPatch = {
         attendanceWifiEnabled: settingsData.attendanceWifiEnabled !== false,
         attendanceWifiSsid: normalizeWifiName(settingsData.attendanceWifiSsid),
@@ -24114,7 +24110,7 @@ function MainAppView({
     || ['company', 'business'].includes(`${currentUser?.accountType || ''}`.toLowerCase())
     || ['company', 'business'].includes(`${currentUser?.role || ''}`.toLowerCase())
     || isOwnerAccount;
-  const isAccounting = isSuperAdmin || isAccountingPosition(position);
+  const isAccounting = isSuperAdmin || isAccountingPosition(employee?.position || '');
   const canUseCompanyHomeDashboard = isOwnerAccount || isAccounting;
   const isSales = isEmployeeSalesPosition(employee);
   const isDriver = isEmployeeDriverPosition(employee);
@@ -24365,14 +24361,6 @@ function MainAppView({
   const [selectedPayrollEmployeeId, setSelectedPayrollEmployeeId] = useState('');
   const [lastNotificationSeenAt, setLastNotificationSeenAt] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [shellSearchOpen, setShellSearchOpen] = useState(false);
-  const [shellSearchKeyword, setShellSearchKeyword] = useState('');
-  const [shellRecentTabs, setShellRecentTabs] = useState([]);
-  const [shellRecentQueries, setShellRecentQueries] = useState(() => readGlobalSearchHistory());
-  const shellSearchInputRef = useRef(null);
-  const shellSearchTriggerRef = useRef(null);
-  const shellSearchReturnFocusRef = useRef(null);
-  const shellSearchWasOpenRef = useRef(false);
   const systemNotificationReadyRef = useRef(false);
   const lastSystemNotificationShownAtRef = useRef(0);
 
@@ -25544,31 +25532,6 @@ function MainAppView({
     </HDIconButton>
   );
 
-  const openShellSearch = useCallback((event) => {
-    const eventTarget = event?.currentTarget;
-    const activeTarget = typeof document !== 'undefined' ? document.activeElement : null;
-    const candidate = typeof HTMLElement !== 'undefined' && eventTarget instanceof HTMLElement
-      ? eventTarget
-      : activeTarget;
-    shellSearchReturnFocusRef.current = typeof HTMLElement !== 'undefined'
-      && candidate instanceof HTMLElement
-      && candidate !== document.body
-      ? candidate
-      : shellSearchTriggerRef.current;
-    setShellSearchOpen(true);
-  }, []);
-
-  const renderGlobalSearchTrigger = () => (
-    <HDIconButton
-      ref={shellSearchTriggerRef}
-      label="Tìm kiếm toàn ứng dụng"
-      className="hd-header-global-search-button"
-      onClick={openShellSearch}
-      title="Tìm kiếm toàn ứng dụng"
-    >
-      <Search size={18} aria-hidden="true" />
-    </HDIconButton>
-  );
 
   const renderHeader = () => {
     if (activeTab === 'home' || activeTab === 'messages' || activeTab === 'executive_dashboard') return null;
@@ -25603,7 +25566,6 @@ function MainAppView({
               <h1 className="hd-header-title text-xl font-bold">Thêm</h1>
             </div>
             <div className="hd-header-actions flex items-center gap-2">
-              {renderGlobalSearchTrigger()}
               {renderNotificationBell()}
               {renderHeaderIdentityActions()}
             </div>
@@ -25750,7 +25712,6 @@ function MainAppView({
                 </button>
               )}</>}
             </div>
-            {activeTab !== 'debt' && renderGlobalSearchTrigger()}
             <button
               type="button"
               onClick={toggleHeaderFilter}
@@ -25777,7 +25738,7 @@ function MainAppView({
                activeTab === 'customers' ? 'Khách hàng' :
                activeTab === 'order_requests' ? 'Đơn đặt' :
                activeTab === 'warehouse_import' ? 'Nhập Xuất Tồn' :
-               activeTab === 'warehouse_dispatch' ? 'Phiếu xuất kho' :
+               activeTab === 'warehouse_dispatch' ? 'Xuất kho' :
                activeTab === 'delivery_reports' ? 'Giao hàng' :
                activeTab === 'orders' ? 'Đơn hàng' :
                activeTab === 'products' ? 'Kho SP' :
@@ -25799,7 +25760,6 @@ function MainAppView({
               {activeTab !== 'orders' && activeTab !== 'products' && activeTab !== 'customers' && (
                 activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()
               )}
-              {activeTab !== 'debt' && activeTab !== 'finance' && renderGlobalSearchTrigger()}
               <button
                 data-search-zone="true"
                 type="button"
@@ -25828,7 +25788,6 @@ function MainAppView({
           ) : activeTab === 'order_requests' ? (
             <div className="hd-header-actions flex items-center gap-2">
               {renderNotificationBell('bg-transparent text-white hover:bg-white/15')}
-              {renderGlobalSearchTrigger()}
               {renderHeaderIdentityActions()}
             </div>
           ) : !hideHeaderSearchFilter ? (
@@ -25839,13 +25798,12 @@ function MainAppView({
                   <button type="button" onClick={() => { setBankHeaderMenuOpen(false); window.dispatchEvent(new Event('hd-bank-customer-accounts')); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm font-bold hover:bg-gray-50"><Users size={18} />TK Khách hàng</button>
                 </div>}
               </div> : activeTab === 'employees' ? renderEmployeeSettingsButton() : renderNotificationBell()}
-              {activeTab === 'company_attendance' ? <button type="button" aria-label="Tìm nhân sự chấm công" onClick={() => window.dispatchEvent(new CustomEvent('hd-attendance-toolbar', { detail: 'search' }))} className="flex h-10 w-10 items-center justify-center"><Search size={20} /></button> : renderGlobalSearchTrigger()}
+              {activeTab === 'company_attendance' ? <button type="button" aria-label="Tìm nhân sự chấm công" onClick={() => window.dispatchEvent(new CustomEvent('hd-attendance-toolbar', { detail: 'search' }))} className="flex h-10 w-10 items-center justify-center"><Search size={20} /></button> : null}
               {activeTab === 'company_attendance' ? <button type="button" aria-label="Lọc chấm công theo bộ phận" onClick={() => window.dispatchEvent(new CustomEvent('hd-attendance-toolbar', { detail: 'filter' }))} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : activeTab === 'employees' ? <button type="button" aria-label="Lọc nhân sự theo bộ phận" aria-expanded={employeeFilterOpen} onClick={() => setEmployeeFilterOpen(value => !value)} className="flex h-10 w-10 items-center justify-center"><Filter size={20} /></button> : <Filter size={20} />}
               {renderHeaderIdentityActions()}
             </div>
           ) : (
             <div className="hd-header-actions flex items-center gap-2">
-              {renderGlobalSearchTrigger()}
               {renderNotificationBell()}
             </div>
           )}
@@ -25854,161 +25812,13 @@ function MainAppView({
     );
   };
 
-  const renderShellSearchDialog = () => shellSearchOpen && (
-    <div
-      className="hd-shell-search-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) setShellSearchOpen(false);
-      }}
-    >
-      <section
-        className="hd-shell-search-popover"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="hd-shell-search-title"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            setShellSearchOpen(false);
-            return;
-          }
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            const results = Array.from(event.currentTarget.querySelectorAll('[data-global-search-result]:not([disabled])'));
-            if (!results.length) return;
-            const activeIndex = results.indexOf(window.document.activeElement);
-            const direction = event.key === 'ArrowDown' ? 1 : -1;
-            const nextIndex = activeIndex < 0
-              ? (direction > 0 ? 0 : results.length - 1)
-              : (activeIndex + direction + results.length) % results.length;
-            event.preventDefault();
-            results[nextIndex]?.focus();
-            return;
-          }
-          if (event.key !== 'Tab') return;
-          const focusable = Array.from(event.currentTarget.querySelectorAll('button:not([disabled]), input:not([disabled])'));
-          if (!focusable.length) return;
-          const first = focusable[0];
-          const last = focusable[focusable.length - 1];
-          if (event.shiftKey && window.document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && window.document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }}
-      >
-        <div className="hd-shell-search-dialog-header">
-          <h2 id="hd-shell-search-title">Tìm kiếm toàn ứng dụng</h2>
-          <button type="button" onClick={() => setShellSearchOpen(false)} aria-label="Đóng tìm kiếm">
-            <X size={17} aria-hidden="true" />
-          </button>
-        </div>
-        <div className="hd-shell-search-input-wrap">
-          <Search size={15} aria-hidden="true" />
-          <input
-            data-hd-search-input="true"
-            ref={shellSearchInputRef}
-            type="search"
-            value={shellSearchKeyword}
-            onChange={(event) => setShellSearchKeyword(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                handleShellSearchEnter();
-              }
-            }}
-            placeholder="Tìm khách hàng, sản phẩm, đơn hàng, nhân sự..."
-            aria-label="Tìm kiếm khách hàng, sản phẩm, đơn hàng, nhà cung cấp, giao dịch, nhân sự hoặc chứng từ"
-            aria-busy={isShellSearchLoading}
-          />
-          {shellSearchKeyword && (
-            <button type="button" onClick={() => setShellSearchKeyword('')} aria-label="Xóa tìm kiếm">
-              <X size={14} />
-            </button>
-          )}
-        </div>
-        <p className="hd-shell-search-caption" aria-live="polite">
-          {isShellSearchLoading ? 'Đang tìm...' : shellSearchKeyword ? 'Kết quả tìm kiếm' : shellRecentQueries.length > 0 ? 'Tìm kiếm gần đây' : shellRecentTabs.length > 0 ? 'Gần đây' : 'Truy cập nhanh'}
-        </p>
-        <div className="hd-shell-search-results">
-          {!shellSearchKeyword.trim() && shellRecentQueries.map((query) => (
-            <button
-              key={`recent-query-${query}`}
-              data-global-search-result="true"
-              type="button"
-              onClick={() => setShellSearchKeyword(query)}
-              aria-label={`Tìm lại: ${query}`}
-            >
-              <Clock size={16} aria-hidden="true" />
-              <span>{query}</span>
-            </button>
-          ))}
-          {!isShellSearchLoading && shellSearchEntitySections.map((section) => (
-            <React.Fragment key={section.id}>
-              <p className="hd-shell-search-section-label">{section.label}</p>
-              {section.items.map((item) => {
-                const Icon = item.kind === 'customer' || item.kind === 'employee'
-                  ? Users
-                  : item.kind === 'product'
-                    ? Package
-                    : item.kind === 'order'
-                      ? ClipboardList
-                      : item.kind === 'supplier'
-                        ? Building
-                        : item.kind === 'document'
-                          ? FileText
-                          : ArrowRightLeft;
-                return (
-                  <button
-                    key={`${item.kind}-${item.id}`}
-                    data-global-search-result="true"
-                    className="hd-shell-search-entity"
-                    type="button"
-                    onClick={() => handleShellSearchEntitySelect(item)}
-                  >
-                    <Icon size={17} aria-hidden="true" />
-                    <span className="hd-shell-search-result-copy">
-                      <strong>{item.title}</strong>
-                      {item.detail && <small>{item.detail}</small>}
-                    </span>
-                    <ChevronRight size={15} aria-hidden="true" />
-                  </button>
-                );
-              })}
-            </React.Fragment>
-          ))}
-          {shellSearchResults.length > 0 && shellSearchKeyword && <p className="hd-shell-search-section-label">Chức năng</p>}
-          {shellSearchResults.map((item) => (
-            <button
-              key={item.id}
-              data-global-search-result="true"
-              type="button"
-              onClick={() => {
-                rememberShellSearchQuery(shellSearchKeyword);
-                setActiveTab(item.id);
-                rememberShellSearchTab(item.id);
-              }}
-            >
-              {React.cloneElement(item.icon, { size: 17 })}
-              <span>{item.label}</span>
-              {activeTab === item.id && <Check size={15} />}
-            </button>
-          ))}
-          {isShellSearchLoading && <p className="hd-shell-search-empty" role="status">Đang tìm trong dữ liệu được phép xem...</p>}
-          {!isShellSearchLoading && shellSearchResults.length === 0 && shellSearchEntitySections.length === 0 && (!shellSearchKeyword.trim() || shellRecentQueries.length === 0) && <p className="hd-shell-search-empty">{shellSearchKeyword.trim() ? 'Không tìm thấy dữ liệu hoặc chức năng phù hợp.' : 'Nhập từ khóa để tìm trong dữ liệu bạn được phép xem.'}</p>}
-        </div>
-      </section>
-    </div>
-  );
 
   const renderExecutiveDashboard = () => (
-<MemoizedExecutiveDashboardView isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} onOpenGlobalSearch={openShellSearch} />
+<MemoizedExecutiveDashboardView isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
   );
 
   const renderClassicDashboard = () => (
-    <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={expenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
+    <DashboardView employee={employee} company={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} financials={financials} performance={performance} customers={customers} orders={orders} payments={officialPayments} expenses={expenses} holidays={holidays} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} setActiveTab={setActiveTab} attendanceAlerts={attendanceAlerts} currentAttendanceAlert={currentAttendanceAlert} notificationUnreadCount={unreadNotificationCount} onOpenNotifications={handleOpenNotifications} onUpdateCompanySettings={onUpdateCompanySettings} tabPermissions={tabPermissions} />
   );
 
   const renderEmployeeHomeDashboard = () => (
@@ -26034,7 +25844,6 @@ function MainAppView({
       record={currentAttendanceAlert?.record}
       notificationUnreadCount={employeeHomeInboxUnreadCount}
       onOpenNotifications={handleOpenEmployeeHomeInbox}
-      onOpenGlobalSearch={openShellSearch}
       showDeliveryReportHome={!(isSales || (isAccounting && !isOwnerAccount))}
     />
   );
@@ -26059,7 +25868,7 @@ function MainAppView({
       case 'home': return keepExecutiveDashboardMounted ? null : renderHomeDashboard();
       case 'executive_dashboard': return keepExecutiveDashboardMounted ? null : renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
-      case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onOpenGlobalSearch={openShellSearch} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
+      case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
       case 'settings': return <SettingsView currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
@@ -26399,334 +26208,6 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
       .filter((id) => id === 'more' || Boolean(tabPermissions[id]))
       .map((id) => APP_NAV_ITEM_MAP[id])
     : footerNavItems;
-  const debouncedShellSearchKeyword = useDebouncedValue(shellSearchKeyword, 180);
-  const isShellSearchLoading = Boolean(shellSearchKeyword.trim())
-    && collapseLookupText(shellSearchKeyword) !== collapseLookupText(debouncedShellSearchKeyword);
-  const shellSearchResults = useMemo(() => {
-    const keyword = collapseLookupText(debouncedShellSearchKeyword);
-    const sourceItems = desktopSidebarItems.filter((item) => item.id !== 'more');
-    if (!keyword) {
-      const recentItems = shellRecentTabs
-        .map((id) => sourceItems.find((item) => item.id === id))
-        .filter(Boolean);
-      return (recentItems.length > 0 ? recentItems : sourceItems).slice(0, 6);
-    }
-    return sourceItems
-      .filter((item) => collapseLookupText(`${item.label} ${item.id}`).includes(keyword))
-      .slice(0, 8);
-  }, [debouncedShellSearchKeyword, desktopSidebarItems, shellRecentTabs]);
-  const shellCanViewAllCustomers = Boolean(
-    isOwnerAccount || isSuperAdmin || rolePermissionActions?.customers?.view_all_customers
-  );
-  const shellCanViewAssignedCustomers = Boolean(
-    shellCanViewAllCustomers
-    || rolePermissionActions?.customers?.view_customers
-    || rolePermissionActions?.customers?.view_assigned_customers
-  );
-  const shellSearchCustomers = useMemo(() => {
-    if (!shellSearchOpen || !tabPermissions.customers) return [];
-    const salesVisibleEmployeeIds = new Set();
-    if (employee?.id) {
-      salesVisibleEmployeeIds.add(employee.id);
-      getSalesDownlineEmployeeIds(employee.id, employees).forEach(id => salesVisibleEmployeeIds.add(id));
-    }
-    const isDeliveryScoped = isEmployeeDeliveryParticipant(employee) && !shellCanViewAllCustomers;
-    const todayKey = getTodayString();
-    const todayAssignedCustomerIds = new Set();
-    if (isDeliveryScoped && employee?.id) {
-      (warehouseDispatches || []).forEach((dispatch) => {
-        if (!dispatch || dispatch.isArchived || !getDeliveryAssignmentIds(dispatch).includes(employee.id)) return;
-        const dispatchDateKey = resolveEntityDateKey(dispatch, dispatch.date || dispatch.createdAt || dispatch.updatedAt || todayKey);
-        if (dispatchDateKey !== todayKey) return;
-        const customerId = `${dispatch.customerId || dispatch.customer?.id || ''}`.trim();
-        if (customerId) todayAssignedCustomerIds.add(customerId);
-      });
-    }
-
-    return (customers || []).filter((customer) => {
-      if (!customer || customer.isArchived) return false;
-      if (isDeliveryScoped) {
-        if (todayAssignedCustomerIds.size > 0) return todayAssignedCustomerIds.has(customer.id);
-        return (customer.allowedDriverIds || []).includes(employee?.id);
-      }
-      if (shellCanViewAllCustomers) return true;
-      if (!shellCanViewAssignedCustomers) return false;
-      if (isEmployeeSalesPosition(employee)) return salesVisibleEmployeeIds.has(customer.empId);
-      return customer.empId === employee?.id;
-    });
-  }, [shellSearchOpen, customers, employees, employee, shellCanViewAllCustomers, shellCanViewAssignedCustomers, tabPermissions.customers, warehouseDispatches]);
-  const shellCanViewEmployees = Boolean(isOwnerAccount || isSuperAdmin || canRoleAction('employees', 'view_employees'));
-  const shellSearchEmployees = useMemo(() => (
-    shellSearchOpen && tabPermissions.employees && shellCanViewEmployees
-      ? (employees || []).filter(item => item && !item.isArchived)
-      : []
-  ), [shellSearchOpen, employees, shellCanViewEmployees, tabPermissions.employees]);
-  const shellCanViewCashflow = Boolean(isOwnerAccount || canRoleAction('finance', 'view_all_cashflow'));
-  const shellCanApproveCashflow = Boolean(isOwnerAccount || canRoleAction('finance', 'approve_driver_cashflow'));
-  const shellSearchTransactions = useMemo(() => {
-    if (!shellSearchOpen || !tabPermissions.finance) return [];
-    const isVisibleTransaction = (item = {}) => (
-      shellCanViewCashflow
-      || shellCanApproveCashflow
-      || isPayosPaymentRecord(item)
-      || item.createdByRole === 'system'
-      || item.empId === employee?.id
-      || item.createdByEmpId === employee?.id
-    );
-    const visibleCustomersById = new Map(shellSearchCustomers.map(customer => [`${customer?.id || ''}`, customer]));
-    return [
-      ...(expenses || []).filter(item => item && !item.isArchived && isVisibleTransaction(item)).map(item => ({ ...item, transactionType: 'expense' })),
-      ...(payments || []).filter(item => item && !item.isArchived && isVisibleTransaction(item)).map(item => ({ ...item, transactionType: 'payment' })),
-    ]
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 2500)
-      .map(item => {
-        const customer = visibleCustomersById.get(`${item.customerId || ''}`);
-        const customerName = item.customerName || item.customerNameSnapshot || customer?.name || customer?.displayName || '';
-        const title = item.transactionType === 'expense'
-          ? item.category || item.note || 'Khoản chi'
-          : customerName || item.category || item.note || 'Khoản thu';
-        const timestamp = getEntityTimestamp(item);
-        const fallbackDate = timestamp ? new Date(timestamp).toISOString().slice(0, 10) : '';
-        const date = resolveEntityDateKey(item, fallbackDate) || fallbackDate;
-        return {
-          ...item,
-          id: `${item.transactionType}-${item.id || date}-${item.amount || ''}`,
-          title,
-          customerName,
-          note: item.note || '',
-          date,
-          formattedAmount: `${formatCurrency(item.amount || item.paidAmount || 0)} đ`,
-          sourceLabel: getPaymentSourceLabel(item),
-          method: getPaymentMethodLabel(item),
-        };
-      });
-  }, [shellSearchOpen, employee?.id, expenses, isOwnerAccount, payments, rolePermissionActions, rolePermissionKey, shellCanApproveCashflow, shellCanViewCashflow, shellSearchCustomers, tabPermissions.finance]);
-  const shellCanViewSuppliers = Boolean(
-    tabPermissions.warehouse_import
-    && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import'))
-  );
-  const shellSearchSuppliers = useMemo(() => {
-    if (!shellSearchOpen || !shellCanViewSuppliers) return [];
-    const unique = new Map();
-    (warehouseImports || [])
-      .filter(item => item && !item.isArchived)
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .forEach(item => {
-        const name = `${item.supplier || item.supplierName || ''}`.trim();
-        const key = collapseLookupText(name);
-        if (!key || unique.has(key)) return;
-        unique.set(key, {
-          id: item.supplierCustomerId || `supplier-${key}`,
-          key,
-          name,
-          code: item.supplierCode || '',
-          companyName: item.supplierCompanyName || '',
-          region: item.supplierRegion || '',
-        });
-      });
-    return Array.from(unique.values());
-  }, [shellSearchOpen, shellCanViewSuppliers, warehouseImports]);
-  const shellCanViewAssets = Boolean(
-    tabPermissions.asset_management
-    && (isOwnerAccount || isSuperAdmin || canRoleAction('asset_management', 'view_assets'))
-  );
-  const shellCanViewEmployeeDocuments = Boolean(
-    shellCanViewEmployees && canRoleAction('employees', 'manage_employee_documents')
-  );
-  const shellCanViewProducts = Boolean(
-    tabPermissions.products
-    && (isOwnerAccount || isSuperAdmin || canRoleAction('products', 'view_products'))
-  );
-  const shellSearchProducts = useMemo(() => !shellSearchOpen ? [] : (products || []).filter(product => (
-    shellCanViewProducts
-    && product
-    && (!product.isArchived || isOwnerAccount || isSuperAdmin || canRoleAction('products', 'view_archived_products'))
-  )), [shellSearchOpen, isOwnerAccount, isSuperAdmin, products, rolePermissionActions, rolePermissionKey, shellCanViewProducts]);
-  const shellSearchDocuments = useMemo(() => {
-    if (!shellSearchOpen) return [];
-    const documents = [];
-    if (shellCanViewAssets) {
-      (assets || []).filter(asset => asset && !asset.isArchived).forEach(asset => {
-        const assetName = asset.name || asset.vehicleName || asset.vehicleModel || asset.vehicleBrand || 'Tài sản';
-        const plateNumber = asset.plateNumber || asset.licensePlate || asset.plate || '';
-        const hasRegistration = Boolean(
-          asset.registrationNumber || asset.registrationImageUrl
-          || (Array.isArray(asset.registrationImageUrls) && asset.registrationImageUrls.length)
-        );
-        const hasInspection = Boolean(
-          asset.inspectionCertificateNo || asset.inspectionExpiry || asset.inspectionImageUrl
-          || (Array.isArray(asset.inspectionImageUrls) && asset.inspectionImageUrls.length)
-        );
-        if (hasRegistration) documents.push({
-          id: `asset-registration-${asset.id}`,
-          route: 'asset_management',
-          fileName: `Đăng ký xe · ${assetName}`,
-          assetName,
-          plateNumber,
-          typeLabel: 'Đăng ký xe',
-          documentType: asset.registrationNumber || '',
-          expiry: asset.registrationDate || '',
-        });
-        if (hasInspection) documents.push({
-          id: `asset-inspection-${asset.id}`,
-          route: 'asset_management',
-          fileName: `Đăng kiểm · ${assetName}`,
-          assetName,
-          plateNumber,
-          typeLabel: 'Đăng kiểm',
-          documentType: asset.inspectionCertificateNo || '',
-          expiry: asset.inspectionExpiry || '',
-        });
-      });
-    }
-    if (shellCanViewEmployeeDocuments) {
-      (employees || []).filter(item => item && !item.isArchived).forEach(emp => {
-        normalizeEmployeeDocuments(emp.employeeDocuments || emp.documents).forEach((document, index) => {
-          documents.push({
-            id: `employee-document-${emp.id}-${document.id || index}`,
-            route: 'employees',
-            fileName: document.fileName || document.name || 'Giấy tờ nhân sự',
-            employeeName: emp.name || emp.fullName || '',
-            typeLabel: document.typeLabel || '',
-            documentType: document.type || '',
-          });
-        });
-      });
-    }
-    return documents;
-  }, [shellSearchOpen, assets, employees, shellCanViewAssets, shellCanViewEmployeeDocuments]);
-  const shellSearchEntitySections = useMemo(() => !shellSearchOpen ? [] : buildGlobalSearchSections({
-    query: debouncedShellSearchKeyword,
-    customers: shellSearchCustomers,
-    visibleCustomers: shellSearchCustomers,
-    products: shellSearchProducts,
-    orders: (orders || []).filter(order => order && (!order.isArchived || isOwnerAccount || isSuperAdmin)),
-    employees: shellSearchEmployees,
-    transactions: shellSearchTransactions,
-    suppliers: shellSearchSuppliers,
-    documents: shellSearchDocuments,
-    permissions: {
-      customers: tabPermissions.customers,
-      products: shellCanViewProducts,
-      orders: tabPermissions.orders && (isOwnerAccount || isSuperAdmin || canRoleAction('orders', 'view_orders')),
-      employees: shellCanViewEmployees,
-      transactions: tabPermissions.finance,
-      suppliers: shellCanViewSuppliers,
-      documents: shellCanViewAssets || shellCanViewEmployeeDocuments,
-    },
-    customerVisibility: {
-      phone: shellCanViewAllCustomers || Boolean(rolePermissionActions?.customers?.view_customer_phone),
-      location: shellCanViewAllCustomers || Boolean(rolePermissionActions?.customers?.view_customer_location),
-    },
-    limitPerSection: 4,
-  }), [
-    shellSearchOpen,
-    isOwnerAccount,
-    isSuperAdmin,
-    orders,
-    products,
-    rolePermissionActions,
-    rolePermissionKey,
-    shellCanViewAllCustomers,
-    shellCanViewAssets,
-    shellCanViewEmployees,
-    shellCanViewEmployeeDocuments,
-    shellCanViewProducts,
-    shellCanViewSuppliers,
-    shellSearchCustomers,
-    shellSearchDocuments,
-    shellSearchEmployees,
-    shellSearchProducts,
-    shellSearchSuppliers,
-    shellSearchTransactions,
-    debouncedShellSearchKeyword,
-    tabPermissions.customers,
-    tabPermissions.finance,
-    tabPermissions.asset_management,
-    tabPermissions.employees,
-    tabPermissions.warehouse_import,
-    tabPermissions.orders,
-    tabPermissions.products,
-  ]);
-  const rememberShellSearchQuery = (query) => {
-    const value = `${query || ''}`.trim();
-    if (!value) return;
-    setShellRecentQueries(previous => writeGlobalSearchHistory([value, ...previous.filter(item => item !== value)]));
-  };
-  const rememberShellSearchTab = (tabId) => {
-    setShellRecentTabs(previous => [tabId, ...previous.filter(id => id !== tabId)].slice(0, 5));
-    setShellSearchOpen(false);
-    setShellSearchKeyword('');
-  };
-  const handleShellSearchEntitySelect = (item) => {
-    const query = item.kind === 'transaction' ? shellSearchKeyword : item.searchText || shellSearchKeyword;
-    rememberShellSearchQuery(shellSearchKeyword);
-    if (item.route === 'customers') {
-      setCustomerSearchKeyword(query);
-      setCustomerSearchOpen(true);
-      setCustomerFilterOpen(false);
-    } else if (item.route === 'products') {
-      setProductSearchKeyword(query);
-      setProductSearchOpen(true);
-      setProductFilterOpen(false);
-    } else if (item.route === 'orders') {
-      setOrderSearchKeyword(query);
-      setOrderSearchOpen(true);
-      setOrderFilterOpen(false);
-    } else if (item.route === 'finance') {
-      setFinanceSearchKeyword(query);
-      setFinanceSearchOpen(true);
-      setFinanceFilterOpen(false);
-      setFinanceSearchFocusDate(item.date || '');
-    }
-    setActiveTab(item.route);
-    rememberShellSearchTab(item.route);
-  };
-  const handleShellSearchEnter = () => {
-    if (isShellSearchLoading) return;
-    const firstEntity = shellSearchEntitySections.flatMap(section => section.items)[0];
-    if (firstEntity) {
-      handleShellSearchEntitySelect(firstEntity);
-      return;
-    }
-    if (shellSearchResults[0]) {
-      rememberShellSearchQuery(shellSearchKeyword);
-      setActiveTab(shellSearchResults[0].id);
-      rememberShellSearchTab(shellSearchResults[0].id);
-    }
-  };
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    if (shellSearchOpen) {
-      shellSearchWasOpenRef.current = true;
-      const focusTimer = window.setTimeout(() => shellSearchInputRef.current?.focus(), 60);
-      return () => window.clearTimeout(focusTimer);
-    }
-    if (!shellSearchWasOpenRef.current) return undefined;
-    shellSearchWasOpenRef.current = false;
-    const preferredTarget = shellSearchReturnFocusRef.current;
-    shellSearchReturnFocusRef.current = null;
-    const fallbackTarget = shellSearchTriggerRef.current;
-    const focusFrame = window.requestAnimationFrame(() => {
-      const target = preferredTarget?.isConnected ? preferredTarget : fallbackTarget?.isConnected ? fallbackTarget : null;
-      target?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(focusFrame);
-  }, [shellSearchOpen]);
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const handleShellSearchShortcut = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        openShellSearch();
-      } else if (event.key === 'Escape') {
-        setShellSearchOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleShellSearchShortcut);
-    return () => window.removeEventListener('keydown', handleShellSearchShortcut);
-  }, []);
   const directFooterTabIds = new Set(displayedFooterNavItems.filter(item => item.id !== 'more').map(item => item.id));
   const isMoreTabActive = !directFooterTabIds.has(activeTab)
     && (['more','profile','customers','products','pricing','price_quotes','employees','employee_reviews','payroll','settings','role_permissions','billing','finance','bank_payments','debt','warehouse_import','asset_management','executive_dashboard', ...(isSales ? [] : ['company_attendance'])].includes(activeTab)
@@ -26968,7 +26449,6 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         onUpdateCompanySettings={onUpdateCompanySettings}
       />
       {renderHeader()}
-      {renderShellSearchDialog()}
 
       <main ref={mainContentRef} data-hd-module={activeTab} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
         {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
@@ -27253,19 +26733,6 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
               title={isSidebarCollapsed ? 'Mở rộng' : 'Thu gọn'}
             >
               {isSidebarCollapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
-            </button>
-          </div>
-          <div className="hd-shell-search">
-            <button
-              type="button"
-              className="hd-shell-search-trigger"
-              onClick={openShellSearch}
-              aria-label="Tìm chức năng"
-              title="Tìm chức năng"
-            >
-              <Search size={17} />
-              {!isSidebarCollapsed && <span>Tìm chức năng</span>}
-              {!isSidebarCollapsed && <kbd>⌘K</kbd>}
             </button>
           </div>
           <div className="hd-sidebar-groups">
@@ -28244,18 +27711,20 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
   };
 
   const handleSaveDefaultAttendanceWifi = async () => {
-    if (!isAccounting || !onUpdateCompanySettings || companyWifiSaveRef.current) return;
-    const detectedWifi = selfWifiLookup?.wifi || {};
-    const nextSsid = normalizeWifiName(detectedWifi.ssid || selfWifiLabel);
-    if (!isAndroidNativeRuntime() || !selfWifiLookup.success || !nextSsid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
-      setSelfStatusMsg('Chỉ có thể đặt mặc định từ WiFi đang kết nối trên Android khi đọc được cả SSID và BSSID.');
-      return;
-    }
+    if (!canManageCompanyWifi(currentEmployee) || !onUpdateCompanySettings || companyWifiSaveRef.current) return;
 
     try {
       companyWifiSaveRef.current = true;
       setCompanyWifiSaving(true);
       setSelfStatusMsg('');
+      if (!isAndroidNativeRuntime()) throw new Error('Chỉ có thể lấy WiFi hiện tại trên app Android.');
+      const detectedWifi = await withTimeout(getCurrentConnectedWifiForAttendance(), 8000, 'Chưa đọc được WiFi hiện tại.');
+      const nextSsid = normalizeWifiName(detectedWifi.ssid);
+      if (!detectedWifi.supported || !nextSsid || !isUsableAttendanceBssid(detectedWifi.bssid)) {
+        throw new Error('Chưa đọc được SSID và BSSID hợp lệ. Hãy kiểm tra kết nối và quyền WiFi.');
+      }
+      setSelfWifiLabel(nextSsid);
+      setSelfWifiLookup({ loading: false, success: true, message: detectedWifi.message, wifi: detectedWifi });
       const result = await onUpdateCompanySettings({
         attendanceWifiEnabled: true,
         attendanceWifiSsid: nextSsid,
@@ -28420,7 +27889,7 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
       onOpenWifiSettings={() => isAndroidNativeRuntime() ? WifiInfo.openWifiAppSettings() : setSelfStatusMsg('Cài đặt quyền WiFi chỉ có trên Android.')}
       onSaveCompanyWifi={handleSaveDefaultAttendanceWifi} autoEnabled={autoWifiEnabled}
       companyWifiSaving={companyWifiSaving}
-      autoSaving={autoWifiSaving} onToggleAuto={toggleAutoWifi} canManage={canManageAttendance} canManageWifi={isAccounting}
+      autoSaving={autoWifiSaving} onToggleAuto={toggleAutoWifi} canManage={canManageAttendance} canManageWifi={canManageCompanyWifi(currentEmployee)}
       onManage={() => setAttendanceScreen('team')} selfMethod={selfMethod} onSelectMethod={setSelfMethod}
       onCheckIn={() => handleSelfAttendance('in')} onCheckOut={() => handleSelfAttendance('out')}
       onLeave={handleSelfLeave} submitting={isSelfSubmitting}
@@ -28525,11 +27994,11 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
                     <p className="mt-1 truncate text-sm font-bold text-gray-800">{getAttendanceWifiDisplay(attendanceWifiSettings)}</p>
                     <p className="mt-1 text-[11px] text-gray-500">Vào ca bằng WiFi chỉ hợp lệ khi WiFi hiện tại trùng WiFi mặc định này.</p>
                   </div>
-                  {isAccounting && (
+                  {canManageCompanyWifi(currentEmployee) && (
                     <button
                       type="button"
                       onClick={handleSaveDefaultAttendanceWifi}
-                      disabled={!normalizeWifiName(selfWifiLabel) || selfWifiLookup.loading}
+                      disabled={companyWifiSaving || !normalizeWifiName(selfWifiLabel) || selfWifiLookup.loading}
                       className="shrink-0 rounded-full bg-blue-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"
                     >
                       Đặt mặc định
@@ -41102,7 +40571,6 @@ function ExecutiveDashboardView({
   messages = [],
   notificationUnreadCount = 0,
   setActiveTab,
-  onOpenGlobalSearch = () => {}
 }) {
   const isMobileReport = true;
   const [activeExecutiveTab, setActiveExecutiveTab] = useState('overview');
@@ -41167,7 +40635,7 @@ function ExecutiveDashboardView({
   payrollLoaderRef.current = onLoadPayrollPeriodSnapshots;
   useEffect(() => {
     let active = true;
-    setLockedPayroll({});
+    setLockedPayroll(previous => Object.keys(previous).length ? {} : previous);
     setPayrollLoadError('');
     const periods = payrollPeriods.filter(period => getLockedPayrollPeriod([period], company?.id, period.monthKey));
     if (!periods.length) return () => { active = false; };
@@ -41183,7 +40651,7 @@ function ExecutiveDashboardView({
     dashboardCache,
     'payrollCosts',
     [employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded],
-    () => buildDashboardPayrollCostRows({ employees, attendance, financials, performance, customers, orders, payments, holidays, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded })
+    () => withSalesRevenueIndex(() => buildDashboardPayrollCostRows({ employees, attendance, financials, performance, customers, orders, payments, holidays, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded }))
   ), [dashboardCache, employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded]);
   const debtLedger = useMemo(() => getCachedDashboardValue(
     dashboardCache,
@@ -42204,15 +41672,6 @@ function ExecutiveDashboardView({
           </div>
           <button
             type="button"
-            onClick={onOpenGlobalSearch}
-            className="hd-header-global-search-button"
-            aria-label="Tìm kiếm toàn ứng dụng"
-            title="Tìm kiếm toàn ứng dụng"
-          >
-            <Search size={18} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab?.('messages')}
             className="hd-dashboard-inbox"
             aria-label="Mở hộp thư tin nhắn"
@@ -42350,15 +41809,45 @@ function ExecutiveDashboardView({
 const areExecutiveDashboardPropsEqual = (previousProps, nextProps) => {
   // Keep the dashboard mounted so returning Home is instant, but freeze its
   // expensive report tree while another module owns the screen.
-  if (!nextProps.isActive) return !previousProps.isActive;
-  if (!previousProps.isActive) return false;
-  const previousKeys = Object.keys(previousProps);
-  const nextKeys = Object.keys(nextProps);
+  if (!nextProps.isActive) return true;
+  // Visibility is owned by the parent. Only changed data/callbacks invalidate
+  // the retained report when returning to it.
+  const previousKeys = Object.keys(previousProps).filter(key => key !== 'isActive');
+  const nextKeys = Object.keys(nextProps).filter(key => key !== 'isActive');
   return previousKeys.length === nextKeys.length
     && nextKeys.every(key => Object.is(previousProps[key], nextProps[key]));
 };
 
-const MemoizedExecutiveDashboardView = React.memo(ExecutiveDashboardView, areExecutiveDashboardPropsEqual);
+const RetainedExecutiveDashboardView = React.memo(ExecutiveDashboardView, areExecutiveDashboardPropsEqual);
+
+function MemoizedExecutiveDashboardView(props) {
+  const [deferredProps, setDeferredProps] = useState(props);
+  useEffect(() => {
+    if (!props.isActive || props === deferredProps) return undefined;
+    let secondFrame;
+    let timer;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        timer = setTimeout(() => startTransition(() => setDeferredProps(props)), 0);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      clearTimeout(timer);
+    };
+  }, [props, deferredProps]);
+  // Navigation can reveal the retained report before recalculating new data.
+  // Never carry a deferred report across an identity or permission change.
+  const sameScope = props.company === deferredProps.company
+    && props.employee === deferredProps.employee;
+  const reportProps = sameScope ? deferredProps : props;
+  return (
+    <div aria-busy={props.isActive && reportProps !== props}>
+      <RetainedExecutiveDashboardView {...reportProps} isActive={props.isActive} />
+    </div>
+  );
+}
 
 function ExecutivePeriodSummaryCard({
   title,
@@ -42610,7 +42099,6 @@ function EmployeePersonalHomeView({
   record = null,
   notificationUnreadCount = 0,
   onOpenNotifications = () => {},
-  onOpenGlobalSearch = () => {},
   showDeliveryReportHome = true
 }) {
   const reviewSectionRef = useRef(null);
@@ -42876,15 +42364,6 @@ function EmployeePersonalHomeView({
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={onOpenGlobalSearch}
-              className="hd-header-global-search-button"
-              aria-label="Tìm kiếm toàn ứng dụng"
-              title="Tìm kiếm toàn ứng dụng"
-            >
-              <Search size={18} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
               onClick={onOpenNotifications}
               className="relative inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/25"
               aria-label="Thông báo"
@@ -43111,7 +42590,7 @@ function EmployeePersonalHomeView({
   );
 }
 
-function DashboardView({ employee, company, employees, attendance, date, onChangeDate, financials = [], performance = {}, customers = [], orders = [], payments = [], expenses = [], holidays = [], products = [], warehouseImports = [], warehouseDispatches = [], setActiveTab, attendanceAlerts = [], currentAttendanceAlert = null, notificationUnreadCount = 0, onOpenNotifications = () => {}, onOpenGlobalSearch = () => {}, onUpdateCompanySettings, tabPermissions = {} }) {
+function DashboardView({ employee, company, employees, attendance, date, onChangeDate, financials = [], performance = {}, customers = [], orders = [], payments = [], expenses = [], holidays = [], products = [], warehouseImports = [], warehouseDispatches = [], setActiveTab, attendanceAlerts = [], currentAttendanceAlert = null, notificationUnreadCount = 0, onOpenNotifications = () => {}, onUpdateCompanySettings, tabPermissions = {} }) {
   const [dashboardSearchKeyword, setDashboardSearchKeyword] = useState('');
   const [showDashboardSearchBox, setShowDashboardSearchBox] = useState(false);
   const [showDashboardFilterPanel, setShowDashboardFilterPanel] = useState(false);
@@ -43866,15 +43345,6 @@ function DashboardView({ employee, company, employees, attendance, date, onChang
               title="Tìm kiếm"
             >
               <Search size={20} />
-            </button>
-            <button
-              type="button"
-              onClick={onOpenGlobalSearch}
-              className="hd-header-global-search-button"
-              aria-label="Tìm kiếm toàn ứng dụng"
-              title="Tìm kiếm toàn ứng dụng"
-            >
-              <Search size={18} aria-hidden="true" />
             </button>
             {canOpenMessages && (
               <button
@@ -44933,7 +44403,9 @@ const buildOperatingCostSummaryForDate = ({
   const inventoryPurchaseExpense = datedExpenses
     .filter(expense => isInventoryPurchaseExpense(expense))
     .reduce((sum, expense) => sum + (expense.amount || 0), 0);
-  const directExpense = Math.max(0, cashExpense - inventoryPurchaseExpense);
+  const directExpense = Math.max(0, datedExpenses
+    .filter(expense => !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense))
+    .reduce((sum, expense) => sum + (expense.amount || 0), 0));
   const payrollExpense = calculatePositiveDailyPayrollExpenseFromSalary({
     employees,
     attendance,
@@ -45376,7 +44848,6 @@ function MessageCenterView({
   onAddMessage = null,
   onOpenNotification = () => {},
   onGoBack = () => {},
-  onOpenGlobalSearch = () => {},
   onUpdateCompanySettings = null,
   onProcessZaloInboxMessage = null,
   onSendAiZaloReply = null,
@@ -47883,7 +47354,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter,
   ]));
   const pendingTransactions = filteredTransactions.filter(item => getCashflowApprovalMeta(item).status === CASHFLOW_APPROVAL_STATUS.pending);
-  const totalExpense = officialTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
+  const totalExpense = officialTransactions.filter(item => item.transactionType === 'expense' && !isCustomerDebtRepayment(item)).reduce((sum, item) => sum + (item.amount || 0), 0);
+  const debtRepaymentTotal = officialTransactions.filter(item => item.transactionType === 'expense' && isCustomerDebtRepayment(item)).reduce((sum, item) => sum + (item.amount || 0), 0);
   const totalIncome = officialTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingIncome = pendingTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingExpense = pendingTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
@@ -48245,7 +47717,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         <div className="finance-summary-metrics grid grid-cols-3 divide-x divide-white/20 text-center">
           {[
             { label: 'Tổng thu', amount: totalIncome, tone: 'text-emerald-100' },
-            { label: 'Tổng chi', amount: totalExpense, tone: 'text-amber-100' },
+            { label: 'Tổng chi phí', amount: totalExpense, tone: 'text-amber-100' },
             { label: 'Lợi nhuận', amount: balance, tone: balance < 0 ? 'text-rose-100' : 'text-white' }
           ].map(({ label, amount, tone }) => (
             <div key={label} className="flex min-w-0 flex-col justify-center gap-1 px-1.5" title={`${label}: ${formatCurrency(amount)} đ`}>
@@ -48254,6 +47726,11 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
             </div>
           ))}
         </div>
+        {debtRepaymentTotal > 0 && (
+          <div className="mt-2 border-t border-white/15 px-2 pt-2 text-xs font-bold">
+            Chi trả nợ: {formatCurrency(debtRepaymentTotal)} đ
+          </div>
+        )}
         {(pendingIncome > 0 || pendingExpense > 0) && (
           <div className="mt-2 border-t border-white/15 px-2 pt-2 text-[11px] font-bold leading-tight text-amber-100">
             Chờ xác nhận: thu {formatCurrency(pendingIncome)} đ • chi {formatCurrency(pendingExpense)} đ. Các khoản này chưa trừ nợ và chưa vào chi phí chính thức.
@@ -55520,12 +54997,13 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
   );
 
   if (mode === 'edit') {
-    return (
+    return createPortal(
       <div
-        className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/55 px-4 py-6"
+        className="hd-weight-modal-layer fixed z-[150] flex justify-center bg-slate-950/55"
+        role="dialog" aria-modal="true" aria-label="Sửa các lần cân"
         onClick={onCancel}
       >
-        <div className="w-full max-w-sm rounded-[30px] bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="hd-weight-modal-panel w-full max-w-sm rounded-[30px] bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.24em] text-emerald-600">Số kg</p>
@@ -55560,13 +55038,13 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
             </button>
           </div>
         </div>
-      </div>
+      </div>, document.body
     );
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
-      <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl animate-in zoom-in-95" onClick={(event) => event.stopPropagation()}>
+  return createPortal(
+    <div className="hd-weight-modal-layer fixed z-[150] flex justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Nhập các lần cân" onClick={onCancel}>
+      <div className="hd-weight-modal-panel w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Số kg</p>
@@ -55586,7 +55064,7 @@ const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesMo
           <button type="button" onClick={handleSave} className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white">Cập nhật</button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 });
 
@@ -55635,7 +55113,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   });
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
   const [dispatchDriverSelectionTouched, setDispatchDriverSelectionTouched] = useState(false);
-  const [dispatchStatus, setDispatchStatus] = useState('');
+  const [dispatchActionError, setDispatchActionError] = useState('');
   const [dispatchError, setDispatchError] = useState('');
   const [isSavingDispatch, setIsSavingDispatch] = useState(false);
   const dispatchSaveLockRef = useRef(false);
@@ -55646,7 +55124,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const [dispatchPickerOpen, setDispatchPickerOpen] = useState('');
   const [dispatchProductSearchEdited, setDispatchProductSearchEdited] = useState(false);
   const [dispatchListSearch, setDispatchListSearch] = useState('');
-  const [isDispatchListSearchOpen, setIsDispatchListSearchOpen] = useState(false);
   const [showWeightEntriesModal, setShowWeightEntriesModal] = useState(false);
   const [weightEntriesEditorSeed, setWeightEntriesEditorSeed] = useState([]);
   const [dispatchListWeightEditor, setDispatchListWeightEditor] = useState(null);
@@ -55669,7 +55146,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const lastAutoAppliedVoiceTranscriptRef = useRef('');
   const dispatchCustomerSearchInputRef = useRef(null);
   const dispatchProductSearchInputRef = useRef(null);
-  const dispatchListSearchInputRef = useRef(null);
   const dispatchListWeightSaveLockRef = useRef(false);
   useAppScreenBack(() => {
     if (showWeightEntriesModal) {
@@ -55696,10 +55172,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       setDispatchPickerOpen('');
       return true;
     }
-    if (isDispatchListSearchOpen) {
-      setIsDispatchListSearchOpen(false);
-      return true;
-    }
     return false;
   });
   useDismissSearchOnOutsideClick(Boolean(dispatchPickerOpen), () => setDispatchPickerOpen(''));
@@ -55718,14 +55190,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     onQuickActionHandled();
   }, [canCreate, onQuickActionHandled, quickActionIntent?.id, quickActionIntent?.type]);
 
-  useEffect(() => {
-    if (!isDispatchListSearchOpen || typeof window === 'undefined') return undefined;
-    const focusTimer = window.setTimeout(() => {
-      dispatchListSearchInputRef.current?.focus?.({ preventScroll: true });
-      dispatchListSearchInputRef.current?.select?.();
-    }, 60);
-    return () => window.clearTimeout(focusTimer);
-  }, [isDispatchListSearchOpen]);
 
   const resolveRequestDateKey = (request = {}) => {
     const rawDate = `${request?.date || request?.requestDate || request?.requestDateKey || request?.orderRequestDate || request?.deliveryDate || ''}`.trim();
@@ -56645,23 +56109,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     ].forEach(pushLabel);
     return [...new Set(labels)];
   };
-  const filteredEditableDispatchRows = useMemo(() => {
-    const keyword = normalizeLookupText(dispatchListSearch || '');
-    if (!keyword) return compactEditableDispatchRows;
-    const collapsedKeyword = collapseLookupText(keyword);
-    const keywordCandidates = [keyword, collapsedKeyword, ...buildTranscriptSearchCandidates(keyword, 6)].filter(Boolean);
-    return compactEditableDispatchRows.filter((row) => {
-      const labels = buildDispatchRowSearchLabels(row);
-      return labels.some((label) => {
-        const normalizedLabel = normalizeLookupText(label);
-        const collapsedLabel = collapseLookupText(normalizedLabel);
-        return normalizedLabel.includes(keyword)
-          || keyword.includes(normalizedLabel)
-          || (collapsedKeyword && collapsedLabel.includes(collapsedKeyword))
-          || keywordCandidates.some(candidate => scoreLookupTextMatch(candidate, label) >= 0.52);
-        });
-      });
-  }, [dispatchListSearch, compactEditableDispatchRows, customerLookup, productLookup, employeeLookup]);
+  const hasDispatchListSearch = Boolean(dispatchListSearch.trim());
+  const dispatchSearchRows = useMemo(() => hasDispatchListSearch
+    ? compactEditableDispatchRows.map(row => ({ row, fields: buildDispatchRowSearchLabels(row) })) : [],
+  [hasDispatchListSearch, compactEditableDispatchRows, customerLookup, productLookup, employeeLookup]);
+  const filteredEditableDispatchRows = useMemo(() => hasDispatchListSearch
+    ? searchSharedRecords(dispatchSearchRows, dispatchListSearch, entry => entry.fields).map(entry => entry.row)
+    : compactEditableDispatchRows,
+  [hasDispatchListSearch, dispatchSearchRows, dispatchListSearch, compactEditableDispatchRows]);
   const groupedEditableDispatchRows = useMemo(() => buildWarehouseDispatchPresentationGroups({
     rows: filteredEditableDispatchRows,
     deliveryReports,
@@ -56842,11 +56297,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
 
   const previewDispatchRows = useMemo(() => buildDispatchPreviewRows(mergedDispatchRows), [mergedDispatchRows]);
 
-  const dispatchSummary = useMemo(() => ({
-    totalCustomers: new Set(todayDispatchRows.map(item => item.customerId).filter(Boolean)).size,
-    totalLines: compactEditableDispatchRows.length,
-    totalWeight: todayDispatchRows.reduce((sum, item) => sum + getDispatchRowWeight(item), 0)
-  }), [todayDispatchRows, compactEditableDispatchRows]);
   const [dispatchDisplayPage, setDispatchDisplayPage] = useState({ scope: '', offset: 0 });
   const dispatchDisplayScope = `${workingDate}|${dispatchListSearch}`;
   const dispatchDisplayOffset = dispatchDisplayPage.scope === dispatchDisplayScope ? dispatchDisplayPage.offset : 0;
@@ -56893,10 +56343,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       || a.customerName.localeCompare(b.customerName, 'vi')
     ));
   }, [dispatchShortageSummary.issueLines]);
-  const dispatchShortageTotalMissingLines = useMemo(
-    () => (dispatchShortageSummary.issueLines || []).reduce((sum, line) => sum + Math.max(1, line.requestCount || line.requestLines?.length || 0), 0),
-    [dispatchShortageSummary.issueLines]
-  );
   useEffect(() => {
     setShowAllDispatchShortageCustomers(false);
   }, [workingDate]);
@@ -56958,7 +56404,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         }, employee?.id || 'warehouse');
       }
       setSelectedShortageLine(null);
-      setDispatchStatus('Đã xóa đơn đặt sai khỏi bảng Đơn Thiếu.');
     } catch (error) {
       console.error('delete shortage order request failed', error);
       setDispatchError(`Xóa đơn đặt chưa thành công: ${getFriendlyFirebaseErrorMessage(error, 'Lỗi không xác định')}`);
@@ -57018,7 +56463,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         }, employee?.id || 'warehouse');
       }));
       setSelectedShortageLine(null);
-      setDispatchStatus(`Đã chốt thiếu cho ${selectedShortageLine.customerName}. Đơn này sẽ không còn báo thiếu.`);
     } catch (error) {
       console.error('close shortage order request failed', error);
       setDispatchError(`Chốt thiếu chưa thành công: ${getFriendlyFirebaseErrorMessage(error, 'Lỗi không xác định')}`);
@@ -57089,7 +56533,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => createEmptyDispatchDraft(prev.assignedDriverId || ''));
     setDispatchError('');
-    setDispatchStatus('');
     setVoiceStatus('');
     setIsVoiceListening(false);
     setIsVoiceProcessing(false);
@@ -57159,7 +56602,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     });
     setIsSavingDispatchListWeight(false);
     dispatchListWeightSaveLockRef.current = false;
-    setDispatchStatus('');
     setDispatchError('');
   });
 
@@ -57179,7 +56621,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         weightEntries: normalizedEntries,
         date: dispatchListWeightEditor.sourceDate || workingDate
       }, employee.id);
-      setDispatchStatus(`Đã cập nhật ${formatNumber(nextSourceWeight)} kg cho ${dispatchListWeightEditor.customerName}.`);
       setDispatchError('');
       setDispatchListWeightEditor(null);
     } catch (error) {
@@ -58003,8 +57444,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       assignedDriverId: prev.customerId === customerId ? prev.assignedDriverId : '',
       weightKg: orderDefaults.weightKg || ''
     }));
-    setDispatchStatus(`Đã thêm phiếu xuất cho ${customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} con` : ''} • ${formatNumber(weightKg)} kg.`);
-    setDispatchStatus('');
     setDispatchError('');
     setDispatchPickerOpen('');
   };
@@ -58127,7 +57566,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       billingSnapshotVersion: row.billingSnapshotVersion || 0,
       billingSnapshotSource: row.billingSnapshotSource || ''
     });
-    setDispatchStatus('');
     setDispatchError('');
   };
 
@@ -58225,7 +57663,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       date: row.date || workingDate
     }, employee.id);
 
-    setDispatchStatus(`Da cap nhat dong xuat kho cua ${customer.name}.`);
     setDispatchError('');
     resetInlineDispatchEdit();
     return true;
@@ -58236,7 +57673,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
     if (!window.confirm(`Xoa dong xuat kho cua ${customerName}?`)) return false;
     await onDeleteWarehouseDispatch(row.id);
-    setDispatchStatus(`Da xoa dong xuat kho cua ${customerName}.`);
     setDispatchError('');
     resetInlineDispatchEdit();
     return true;
@@ -58362,7 +57798,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         totalWeight: nextItems.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0)
       };
     });
-    setDispatchStatus(`Da xoa phieu xuat kho trong lich su cua ${customerName}.`);
     setDispatchError('');
   };
 
@@ -58372,11 +57807,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setDispatchPickerOpen('');
     setWorkingDate(group.dateKey);
     setDispatchError('');
-    setDispatchStatus(
-      canEdit
-        ? `Đang xem phiếu xuất kho ngày ${formatDateLabel(group.dateKey)}. Bấm vào từng dòng để chỉnh sửa khi cần.`
-        : `Đang xem phiếu xuất kho ngày ${formatDateLabel(group.dateKey)}.`
-    );
     window.setTimeout(() => {
       dispatchListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 80);
@@ -58441,7 +57871,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       return;
     }
 
-    const saveResult = await onAddWarehouseDispatch(employee.id, {
+    await onAddWarehouseDispatch(employee.id, {
       ...billingSnapshot,
       warehouseId: dispatchDraft.warehouseId || '',
       unitId: dispatchDraft.unitId || '',
@@ -58485,11 +57915,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow)
     });
 
-    const savedLabel = `Đã lưu phiếu xuất cho ${getCustomerDisplayName(customer) || customer.name} • ${product.name}${pieceCount > 0 ? ` • ${formatNumber(pieceCount)} ${quantityUnit}` : ''}${weightKg > 0 ? ` • ${formatNumber(weightKg)} kg` : ''}${assignedDriverName ? ` • Giao: ${assignedDriverName}` : ''}.`;
-    setDispatchStatus(saveResult?.queued
-      ? `${savedLabel} Đã lưu trên thiết bị, đang đồng bộ lên cloud.`
-      : `${savedLabel} Dữ liệu đã được gửi lên cloud.`
-    );
     setDispatchError('');
     setDispatchPickerOpen('');
     setDispatchDriverSelectionTouched(false);
@@ -58601,39 +58026,64 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   };
 
   const handleShareDispatchSheet = async (sourceRows = editableDispatchRows, targetDate = workingDate) => {
+    setDispatchActionError('');
     if (!canShare) {
-      setDispatchStatus('Bạn chưa được cấp quyền chia sẻ phiếu xuất kho.');
+      setDispatchActionError('Bạn chưa được cấp quyền chia sẻ phiếu xuất kho.');
       return;
     }
     if (!sourceRows.length) {
-      setDispatchStatus('Chưa có phiếu xuất kho để chia sẻ.');
+      setDispatchActionError('Chưa có phiếu xuất kho để chia sẻ.');
       return;
     }
     setIsDispatchExporting(true);
     try {
-      const canvas = await renderDispatchSheetCanvas(sourceRows, targetDate);
-      const blob = await canvasToBlob(canvas, 'image/png');
-      const result = await shareBlobFile({
-        filename: `${buildDispatchSheetFilename(targetDate)}.png`,
-        blob,
-        title: 'Phieu xuat kho',
-        text: 'Phieu xuat kho trong ngay san sang de chia se.',
-        dialogTitle: 'Chia se phieu xuat kho'
-      });
-      if (result.status === 'shared') setDispatchStatus('Da mo bang chia se phieu xuat kho.');
-      else if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
-      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
-      else setDispatchStatus('Thiet bi nay chua ho tro chia se truc tiep. Ban hay dung nut tai xuong.');
+      const pages = splitDispatchSharePages(sourceRows);
+      const blobs = [];
+      for (const rows of pages) {
+        const canvas = await renderDispatchSheetCanvas(rows, targetDate);
+        blobs.push(await canvasToBlob(canvas, 'image/png'));
+        canvas.width = canvas.height = 0;
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+      }
+      const filename = index => `${buildDispatchSheetFilename(targetDate)}-trang-${index + 1}.png`;
+      let result;
+      if (blobs.length === 1) {
+        result = await shareBlobFile({ filename: filename(0), blob: blobs[0], title: 'Xuất kho', dialogTitle: 'Chia sẻ xuất kho' });
+      } else if (Capacitor.getPlatform() !== 'web' && (await CapacitorShare.canShare().catch(() => ({ value: false }))).value) {
+        const files = [];
+        for (let index = 0; index < blobs.length; index += 1) {
+          files.push((await writeBlobToShareCache(filename(index), blobs[index])).uri);
+        }
+        await CapacitorShare.share({ title: 'Xuất kho', files, dialogTitle: 'Chia sẻ xuất kho' });
+        result = { status: 'shared' };
+      } else {
+        const files = blobs.map((blob, index) => new File([blob], filename(index), { type: 'image/png' }));
+        if (navigator.share && (!navigator.canShare || navigator.canShare({ files }))) {
+          await navigator.share({ title: 'Xuất kho', files });
+          result = { status: 'shared' };
+        } else {
+          for (let index = 0; index < blobs.length; index += 1) {
+            result = await saveBlobFile(filename(index), blobs[index]);
+            if (!['saved', 'downloaded'].includes(result.status)) throw new Error('Không thể lưu đủ các ảnh xuất kho.');
+            await new Promise(resolve => window.setTimeout(resolve, 180));
+          }
+        }
+      }
+      if (!['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status)) {
+        setDispatchActionError('Thiết bị chưa hỗ trợ chia sẻ trực tiếp. Hãy dùng nút tải xuống.');
+      }
     } catch (error) {
-      setDispatchStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ phiếu xuất kho.'));
+      if (isShareCancelled(error)) return;
+      setDispatchActionError(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ phiếu xuất kho.'));
     } finally {
       setIsDispatchExporting(false);
     }
   };
 
   const handleDownloadDispatchSheet = async (sourceRows = editableDispatchRows, targetDate = workingDate) => {
+    setDispatchActionError('');
     if (!sourceRows.length) {
-      setDispatchStatus('Chua co phieu xuat kho trong ngay de tai xuong.');
+      setDispatchActionError('Chưa có phiếu xuất kho trong ngày để tải xuống.');
       return;
     }
     setIsDispatchExporting(true);
@@ -58641,11 +58091,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       const canvas = await renderDispatchSheetCanvas(sourceRows, targetDate);
       const blob = await canvasToBlob(canvas, 'image/png');
       const result = await saveBlobFile(`${buildDispatchSheetFilename(targetDate)}.png`, blob);
-      if (result.status === 'saved') setDispatchStatus('Da luu anh phieu xuat kho vao may.');
-      else if (result.status === 'downloaded') setDispatchStatus('Da tai anh phieu xuat kho ve may.');
-      else setDispatchStatus('Khong the tai phieu xuat kho tren thiet bi nay.');
+      if (!['saved', 'downloaded', 'cancelled'].includes(result.status)) {
+        setDispatchActionError('Không thể tải phiếu xuất kho trên thiết bị này.');
+      }
     } catch (error) {
-      setDispatchStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tải phiếu xuất kho.'));
+      if (!isShareCancelled(error)) setDispatchActionError(getFriendlyFirebaseErrorMessage(error, 'Không thể tải phiếu xuất kho.'));
     } finally {
       setIsDispatchExporting(false);
     }
@@ -58658,8 +58108,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   }
 
   return (
-    <div className="premium-data-module premium-inventory-module premium-dispatch-module space-y-4 animate-in fade-in pb-16">
-      {dispatchStatus && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{dispatchStatus}</div>}
+    <div className="premium-data-module premium-inventory-module premium-dispatch-module animate-in fade-in pb-16">
+      {dispatchActionError && <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchActionError}</div>}
       {dispatchListWeightEditor && (
         <WarehouseWeightEntriesModal
           key={`dispatch_weight_${dispatchListWeightEditor.rowId}`}
@@ -58678,38 +58128,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
 
       {shouldShowDispatchShortage && (
         <div className={`order-1 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
-          <div className="flex min-w-0 items-center gap-2 rounded-2xl bg-white/80 px-3 py-2 shadow-sm">
-              <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${dispatchShortageSummary.issueLines.length > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                {dispatchShortageSummary.issueLines.length > 0 ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
-              </div>
-              <p className={`min-w-0 flex-1 truncate text-[14px] font-black uppercase tracking-normal ${dispatchShortageSummary.issueLines.length > 0 ? 'text-amber-800' : 'text-emerald-800'}`}>
-                Đơn Thiếu
-              </p>
-              <span className={`shrink-0 rounded-full px-2.5 py-1 text-[12px] font-black ${dispatchShortageSummary.issueLines.length > 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
-                SL: {dispatchShortageTotalMissingLines}
-              </span>
-              <label className="relative inline-flex shrink-0 items-center">
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[12px] font-black text-slate-700">
-                  {formatCompactDateLabel(workingDate)}
-                </span>
-                <input
-                  type="date"
-                  value={workingDate}
-                  onChange={(event) => {
-                    const nextDate = event.target.value || getTodayString();
-                    setWorkingDate(nextDate);
-                    setSelectedOrderRequestDate(nextDate);
-                    setSelectedShortageLine(null);
-                    setShowAllDispatchShortageCustomers(false);
-                  }}
-                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                  aria-label="Chọn ngày xuất kho cần đối chiếu"
-                />
-              </label>
-          </div>
-
           {dispatchShortageSummary.issueLines.length > 0 ? (
-            <div className="mt-3 space-y-2">
+            <div className="hd-dispatch-shortage-list relative space-y-2">
               {(showAllDispatchShortageCustomers ? dispatchShortageCustomerGroups : dispatchShortageCustomerGroups.slice(0, 3)).map(group => {
                 return (
                 <button
@@ -58751,9 +58171,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 <button
                   type="button"
                   onClick={() => setShowAllDispatchShortageCustomers(prev => !prev)}
-                  className="w-full rounded-2xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-black text-amber-700 transition hover:bg-amber-50 active:scale-[0.99]"
+                  className="hd-dispatch-shortage-toggle mx-auto flex items-center justify-center text-amber-700 hover:bg-amber-100"
+                  aria-expanded={showAllDispatchShortageCustomers}
+                  aria-label={showAllDispatchShortageCustomers ? 'Thu gọn danh sách thiếu' : `Xem thêm ${dispatchShortageCustomerGroups.length - 3} khách còn thiếu`}
+                  title={showAllDispatchShortageCustomers ? 'Thu gọn' : 'Xem thêm khách còn thiếu'}
                 >
-                  {showAllDispatchShortageCustomers ? 'Thu gọn danh sách' : `Xem thêm ${dispatchShortageCustomerGroups.length - 3} khách`}
+                  {showAllDispatchShortageCustomers ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
                 </button>
               )}
             </div>
@@ -59059,16 +58482,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
               </button>
             </div>
 
-            {canAssignDriver && (
-              <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-2">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+            <div className="hd-dispatch-driver-actions grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+              {canAssignDriver && (
                   <select
                     value={effectiveDispatchDriverId}
                     onChange={(e) => {
                       setDispatchDriverSelectionTouched(true);
                       setDispatchDraft(prev => ({ ...prev, assignedDriverId: e.target.value }));
                     }}
-                    className="min-w-0 rounded-xl border border-white bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-sky-300"
+                    className="h-12 w-full min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-sky-300"
                     aria-label="Chọn nhân sự giao hàng"
                   >
                     <option value="">Không chọn nhân sự</option>
@@ -59076,33 +58498,27 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                       <option key={driver.id} value={driver.id}>{driver.name}</option>
                     ))}
                   </select>
-                  <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-sky-700">Giao hàng</span>
-                </div>
-                {suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId && (
+              )}
+              <button type="button" onClick={resetDispatchVoiceDraft} disabled={isSavingDispatch}
+                className="h-12 whitespace-nowrap rounded-xl bg-gray-100 px-4 text-sm font-bold text-gray-700">
+                Làm mới
+              </button>
+            </div>
+                {canAssignDriver && suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId && (
                   <p className="mt-1 px-1 text-[11px] font-semibold text-sky-700">
                     Gợi ý theo khách: {suggestedDispatchDriver.name}
                   </p>
                 )}
-              </div>
-            )}
 
             {dispatchError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchError}</div>}
 
             <div className="flex gap-3">
               <button
-                type="button"
-                onClick={resetDispatchVoiceDraft}
-                disabled={isSavingDispatch}
-                className="flex-1 rounded-xl bg-gray-100 px-4 py-3 font-bold text-gray-700"
-              >
-                Làm mới
-              </button>
-              <button
                 type="submit"
                 disabled={isSavingDispatch}
                 className={`flex-1 rounded-xl py-3 font-bold text-white ${isSavingDispatch ? 'bg-emerald-300' : 'bg-emerald-500'}`}
               >
-                {isSavingDispatch ? 'Đang lưu...' : 'Lưu và thêm mới'}
+                {isSavingDispatch ? 'Đang lưu...' : 'Lưu lại'}
               </button>
             </div>
           </form>
@@ -59123,60 +58539,30 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       {todayDispatchRows.length > 0 ? (
         <div ref={dispatchListRef} className="order-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <div className="space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-600">DS xuất kho - Ngày</p>
-              <label className="relative inline-flex shrink-0 items-center rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700 shadow-sm">
-                {formatCompactDateLabel(workingDate)}
-                <input
-                  type="date"
-                  value={workingDate}
-                  onChange={(event) => setWorkingDate(event.target.value || getTodayString())}
-                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                  aria-label="Chọn ngày xuất kho"
-                />
-              </label>
-            </div>
             <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-              <p className="w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1">
-                Tổng {dispatchSummary.totalCustomers} khách • {dispatchSummary.totalLines} đơn
-              </p>
               <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0">
-              {(isDispatchListSearchOpen || dispatchListSearch) ? (
-                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm sm:min-w-[180px] sm:max-w-[58vw] sm:flex-none">
+                <label className="hd-dispatch-search-field flex min-w-0 flex-1 items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2">
                   <Search size={15} className="shrink-0 text-emerald-600" />
                   <input
                     data-hd-search-input="true"
-                    ref={dispatchListSearchInputRef}
                     type="search"
                     value={dispatchListSearch}
                     onChange={(event) => setDispatchListSearch(event.target.value)}
-                    className="min-w-0 flex-1 bg-transparent text-xs font-bold text-slate-900 outline-none placeholder:text-emerald-700/60"
-                    placeholder="Tìm phiếu..."
+                    className="min-w-0 flex-1 bg-transparent text-base text-slate-900 outline-none"
+                    placeholder="Tìm kiếm"
                     aria-label="Tìm kiếm phiếu xuất kho trong ngày"
                   />
-                  <button
+                  {dispatchListSearch && <button
                     type="button"
                     onClick={() => {
                       setDispatchListSearch('');
-                      setIsDispatchListSearchOpen(false);
                     }}
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 hover:bg-slate-100"
-                    aria-label="Đóng tìm kiếm phiếu xuất"
+                    aria-label="Xóa tìm kiếm phiếu xuất"
                   >
                     <X size={14} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setIsDispatchListSearchOpen(true)}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 shadow-sm hover:bg-emerald-100 sm:flex-none"
-                  aria-label="Mở tìm kiếm phiếu xuất kho"
-                >
-                  <Search size={14} />
-                  Tìm kiếm
-                </button>
-              )}
+                  </button>}
+                </label>
               {canShare && (
                 <button type="button" onClick={() => handleShareDispatchSheet()} disabled={isDispatchExporting} className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60">
                   <Send size={14} />
@@ -59657,6 +59043,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const standardOrderUnitOptions = ['Kg', 'Con', 'Thùng', 'Bao'];
   const createDraftItem = (seed = {}) => ({
     localItemId: seed.localItemId || `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    previousOrder: Boolean(seed.previousOrder),
     productId: seed.productId || '',
     productSearch: seed.productSearch || '',
     attributeLabel: seed.attributeLabel ?? seed.productAttribute ?? seed.attribute ?? '',
@@ -59727,7 +59114,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const quickProductSelectionLocksRef = useRef(new Set());
   const quickProductSelectionTimersRef = useRef(new Map());
   const quickProductSelectActionRef = useRef(null);
-  const smartPreferenceLoadTokensRef = useRef(new Map());
   const handleQuickProductCardSelect = useCallback((selectionKey, productId, variantConfig) => {
     quickProductSelectActionRef.current?.(productId, variantConfig, selectionKey);
   }, []);
@@ -59891,136 +59277,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     });
   };
 
-  const persistSmartOrderingPreferences = async (savedRequests = []) => {
-    if (typeof onGetCustomerProductPreference !== 'function' || typeof onSaveCustomerProductPreference !== 'function') return;
-    const uniquePreferences = new Map();
-    (Array.isArray(savedRequests) ? savedRequests : []).forEach((request) => {
-      (Array.isArray(request?.items) ? request.items : []).forEach((item) => {
-        const customerId = `${request?.customerId || ''}`.trim();
-        const productId = `${item?.productId || ''}`.trim();
-        const inputUnit = normalizeProductPricingUnit(item?.quantityUnit || '');
-        if (!customerId || !productId || !inputUnit) return;
-        uniquePreferences.set(`${customerId}::${productId}`, {
-          customerId,
-          productId,
-          inputUnit,
-          customerName: customerLookup.get(customerId)?.name || 'Khach hang',
-          productName: productLookup.get(productId)?.name || item?.description || 'san pham',
-        });
-      });
-    });
-
-    for (const preferenceInput of uniquePreferences.values()) {
-      try {
-        const existingPreference = await onGetCustomerProductPreference(preferenceInput);
-        let updateDefault = !existingPreference?.defaultInputUnit;
-        if (shouldOfferDefaultInputUnitUpdate({ preference: existingPreference, nextInputUnit: preferenceInput.inputUnit })) {
-          updateDefault = typeof window !== 'undefined' && window.confirm(
-            `${preferenceInput.customerName} thuong dat ${preferenceInput.productName} theo "${existingPreference.defaultInputUnit}". Ban co muon cap nhat "${preferenceInput.inputUnit}" lam don vi nhap mac dinh khong?`
-          );
-        }
-        await onSaveCustomerProductPreference({
-          ...preferenceInput,
-          existingPreference,
-          updateDefault,
-          updatedByEmpId: employee?.id || '',
-        });
-      } catch (error) {
-        console.warn('Khong luu duoc goi y don vi nhap; don hang van duoc giu nguyen.', error);
-      }
-    }
-  };
-  const persistAdditionalCustomerFixedProducts = async (savedRequests = []) => {
-    const canSyncFixedProducts = typeof onSyncCustomerFixedProductDefaults === 'function';
-    if (!canSyncFixedProducts && typeof onEditCustomer !== 'function') return { rememberedCount: 0, failedCustomerIds: [] };
-
-    const requestsByCustomer = new Map();
-    (Array.isArray(savedRequests) ? savedRequests : []).forEach((request) => {
-      const customerId = `${request?.customerId || ''}`.trim();
-      if (!customerId) return;
-      const customerRequests = requestsByCustomer.get(customerId) || [];
-      customerRequests.push(request);
-      requestsByCustomer.set(customerId, customerRequests);
-    });
-
-    let rememberedCount = 0;
-    const failedCustomerIds = [];
-    const validProductIds = activeProducts.map(product => product.id).filter(Boolean);
-
-    for (const [customerId, customerRequests] of requestsByCustomer.entries()) {
-      const customer = customerLookup.get(customerId);
-      const memoryRequests = mergeCustomerOrderMemoryHistory({
-        existingRequests: orderRequests,
-        savedRequests: customerRequests,
-        companyId: customer?.companyId || customer?.tenantId || '',
-        customerId,
-      });
-      if (canSyncFixedProducts) {
-        try {
-          const memoryUpdate = await onSyncCustomerFixedProductDefaults(customerId, memoryRequests);
-          if (memoryUpdate?.skippedBranchIds?.length > 0) {
-            console.warn('Khong ghi nho san pham cho chi nhanh khong con ton tai.', {
-              customerId,
-              branchIds: memoryUpdate.skippedBranchIds,
-            });
-          }
-          rememberedCount += memoryUpdate?.addedProductIds?.length || 0;
-        } catch (error) {
-          failedCustomerIds.push(customerId);
-          console.warn('Don da luu nhung chua dong bo duoc gia va don vi dat mac dinh cua khach.', error);
-        }
-        continue;
-      }
-
-      if (!customer) continue;
-      const canonicalCustomer = {
-        ...customer,
-        customerProductIds: normalizeCustomerProductIds(customer, activeProducts),
-        branches: normalizeCustomerBranches(customer, activeProducts),
-      };
-      const memoryUpdate = buildCustomerFixedProductMemoryPatch({
-        customer: canonicalCustomer,
-        requests: memoryRequests,
-        validProductIds,
-      });
-
-      if (memoryUpdate.skippedBranchIds.length > 0) {
-        console.warn('Khong ghi nho san pham cho chi nhanh khong con ton tai.', {
-          customerId,
-          branchIds: memoryUpdate.skippedBranchIds,
-        });
-      }
-      if (!memoryUpdate.patch) continue;
-
-      try {
-        await onEditCustomer(customerId, memoryUpdate.patch);
-        rememberedCount += memoryUpdate.addedProductIds.length;
-      } catch (error) {
-        failedCustomerIds.push(customerId);
-        console.warn('Don da luu nhung chua ghi nho duoc san pham co dinh cua khach.', error);
-      }
-    }
-
-    return { rememberedCount, failedCustomerIds };
-  };
-  const persistOrderRequestMemories = async (savedRequests = []) => {
-    const [, fixedProductResult] = await Promise.all([
-      persistSmartOrderingPreferences(savedRequests),
-      persistAdditionalCustomerFixedProducts(savedRequests),
-    ]);
-    return fixedProductResult;
-  };
-  const scheduleOrderRequestMemorySync = (savedRequests, mode = 'all') => {
-    window.setTimeout(() => {
-      Promise.resolve().then(() => {
-        if (mode === 'fixed-products') return persistAdditionalCustomerFixedProducts(savedRequests);
-        if (mode === 'preferences') return persistSmartOrderingPreferences(savedRequests);
-        return persistOrderRequestMemories(savedRequests);
-      }).catch(error => {
-        console.warn('Đơn đặt hàng đã lưu nhưng chưa cập nhật được gợi ý sản phẩm.', error);
-      });
-    }, 0);
-  };
   const handleDraftItemQuantityUnitChange = (localId, itemLocalId, nextUnit) => {
     const draft = requestDrafts.find(item => item.localId === localId);
     const item = draft?.items?.find(candidate => candidate.localItemId === itemLocalId);
@@ -60616,53 +59872,30 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     () => new Set((primaryDraft?.items || []).filter(item => item?.productId).map(getDraftItemVariantKey)),
     [primaryDraft?.items]
   );
-  const manualFixedProductOptions = useMemo(() => {
-    if (!primarySelectedCustomer) return [];
-    const branchProductIds = primaryDraft?.branchId
-      ? getCustomerBranchFixedProductIds(primarySelectedCustomer, primaryDraft.branchId, activeProducts)
-      : [];
-    const fixedProductIds = branchProductIds.length > 0
-      ? branchProductIds
-      : normalizeCustomerProductIds(primarySelectedCustomer, activeProducts);
-    return [...new Set(fixedProductIds)]
-      .map(productId => productLookup.get(productId))
-      .filter(Boolean);
-  }, [activeProducts, primaryDraft?.branchId, primarySelectedCustomer, productLookup]);
+  const previousOrderOptions = useMemo(() => getPreviousOrderSuggestions({
+    requests: orderRequests,
+    customer: primarySelectedCustomer,
+    branchId: primaryDraft?.branchId || '',
+    beforeDate: requestWorkingDate,
+    productLookup,
+  }), [orderRequests, primarySelectedCustomer, primaryDraft?.branchId, requestWorkingDate, productLookup]);
   const primaryProductConfigSource = useMemo(
     () => getCustomerBranchProductConfigSource(primarySelectedCustomer, primaryDraft?.branchId || '', activeProducts),
     [activeProducts, primaryDraft?.branchId, primarySelectedCustomer]
   );
-  const manualFixedProductVariantOptions = useMemo(() => manualFixedProductOptions.flatMap(product => {
-    const variants = getCustomerProductVariants(primaryProductConfigSource, product);
-    return variants.map((variant) => {
-      const configuration = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product, {
-        variant,
-        variantId: variant.id || '',
-        sizeLabel: variant.size || '',
-        attributeLabel: variant.attributeLabel || '',
-      });
-      return {
-        product,
-        variant,
-        key: buildOrderRequestVariantKey(product.id, variant),
-        selectionKey: buildOrderRequestVariantKey(product.id, {
-          attributeLabel: configuration.attributeLabel,
-          size: configuration.sizeLabel,
-          unit: configuration.billingUnit,
-          price: configuration.unitPrice,
-        }),
-      };
-    });
-  }), [manualFixedProductOptions, primaryProductConfigSource]);
-  const manualFixedProductVariantGroups = useMemo(
-    () => groupOrderRequestProductVariants(manualFixedProductVariantOptions),
-    [manualFixedProductVariantOptions]
-  );
+  const manualFixedProductVariantOptions = useMemo(() => previousOrderOptions.map(({ product, variant }) => ({
+    product,
+    variant,
+    key: buildOrderRequestVariantKey(product.id, variant),
+    selectionKey: buildOrderRequestVariantKey(product.id, variant),
+  })), [previousOrderOptions]);
   const manualFixedProductIdSet = useMemo(
-    () => new Set(manualFixedProductOptions.map(product => product.id).filter(Boolean)),
-    [manualFixedProductOptions],
+    () => new Set(previousOrderOptions.map(({ product }) => product.id)),
+    [previousOrderOptions],
   );
-  const manualCatalogProductVariantOptions = useMemo(() => activeProducts.flatMap(product => {
+  const manualExtraProductPickerKey = primaryDraft ? `manual-extra-products:${primaryDraft.localId}` : '';
+  const isManualExtraProductPickerOpen = Boolean(manualExtraProductPickerKey) && openDraftPicker === manualExtraProductPickerKey;
+  const manualCatalogProductVariantOptions = useMemo(() => !isManualExtraProductPickerOpen ? [] : activeProducts.flatMap(product => {
     const variants = getCustomerProductVariants(primaryProductConfigSource, product);
     return variants.map((variant) => {
       const configuration = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product, {
@@ -60686,9 +59919,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         }),
       };
     });
-  }), [activeProducts, primaryProductConfigSource]);
-  const manualExtraProductPickerKey = primaryDraft ? `manual-extra-products:${primaryDraft.localId}` : '';
-  const isManualExtraProductPickerOpen = Boolean(manualExtraProductPickerKey) && openDraftPicker === manualExtraProductPickerKey;
+  }), [isManualExtraProductPickerOpen, activeProducts, primaryProductConfigSource]);
   const quickProductSearchKeyword = normalizeLookupText(quickProductSearch || '');
   const manualProductSearchIndex = useMemo(
     () => createSearchRecordIndex(activeProducts, getProductSearchFields),
@@ -61065,9 +60296,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       paymentMethod: request.paymentMethod || 'Chuyển khoản'
     };
     try {
-      setRequestStatus('Đang cập nhật tiền cọc...');
+      setRequestStatus('');
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
-      setRequestStatus(`Đã cập nhật tiền cọc ${formatCurrency(nextDeposit)} đ.`);
     } catch (error) {
       setRequestStatus(`Cập nhật tiền cọc bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     }
@@ -61114,9 +60344,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     };
 
     try {
-      setRequestStatus(normalizedStatus === 'confirmed' ? 'Đang duyệt đơn khách gửi...' : 'Đang từ chối đơn khách gửi...');
+      setRequestStatus('');
       await onEditOrderRequest(request.id, approvalPatch, employee?.id || 'admin');
-      setRequestStatus(normalizedStatus === 'confirmed' ? 'Đã duyệt đơn khách gửi.' : 'Đã từ chối đơn khách gửi.');
     } catch (error) {
       setRequestStatus(`Cập nhật trạng thái duyệt bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
     }
@@ -61247,21 +60476,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ), 0)
     };
 
-    setRequestStatus(`Đang lưu thay đổi đơn đặt hàng của ${customer.name}...`);
+    setRequestStatus('');
     try {
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin', {
         backgroundSync: true,
-        onPersisted: () => {
-          if (orderCellEditor?.field === 'unitPrice') {
-            scheduleOrderRequestMemorySync([{
-              ...normalizedRequest,
-              items: [requestItems[row.itemIndex]],
-            }], 'fixed-products');
-          }
-        },
       });
       resetInlineEditing();
-      setRequestStatus(`Đã lưu thay đổi đơn đặt hàng của ${customer.name}. Firebase đang đồng bộ nền.`);
       return true;
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
@@ -61281,7 +60501,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     try {
       if (requestItems.length <= 1) {
         await onDeleteOrderRequest(request.id);
-        setRequestStatus(`Da xoa toan bo don hang cua ${customerName}.`);
+        setRequestStatus('');
         resetInlineEditing();
         return true;
       }
@@ -61307,8 +60527,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         ), 0)
       };
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin');
-      scheduleOrderRequestMemorySync([normalizedRequest], 'preferences');
-      setRequestStatus(`Da xoa mot dong hang cua ${customerName}.`);
+      setRequestStatus('');
       resetInlineEditing();
       return true;
     } catch (error) {
@@ -61514,59 +60733,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }));
   };
 
-  const loadRememberedInputUnitForDraftItem = async ({ localId, itemLocalId, customerId, productId, branchId = '' } = {}) => {
-    if (!localId || !itemLocalId || !customerId || !productId) return;
-    const localCustomer = customerLookup.get(customerId);
-    const localProduct = productLookup.get(productId);
-    if (!localCustomer || !localProduct) return;
-    const localConfigSource = getCustomerBranchProductConfigSource(localCustomer, branchId, activeProducts);
-    const localConfiguration = resolveCustomerProductBillingConfiguration(localConfigSource, localProduct);
-    const defaultInputUnit = resolveCustomerProductActualUnit(localConfiguration, localProduct);
-    const availableUnits = getOrderInputUnitOptions({
-      product: localProduct,
-      pricingUnit: localConfiguration.billingUnit,
-      catalogUnits: quantityUnitOptions,
-      fallback: defaultInputUnit || defaultQuantityUnit,
-    });
-    let preference = null;
-    if (typeof onGetCustomerProductPreference === 'function') {
-      try {
-        preference = await onGetCustomerProductPreference({ customerId, productId });
-      } catch (error) {
-        console.warn('Khong tai duoc goi y don vi dat; app su dung don vi mac dinh.', error);
-      }
-    }
-    const quantityUnit = resolveRememberedInputUnit({
-      preference,
-      availableUnits,
-      pricingUnit: defaultInputUnit,
-      product: localProduct,
-      fallback: defaultInputUnit || defaultQuantityUnit,
-    });
-    updateDraft(localId, (draft) => {
-      if (draft.customerId !== customerId || `${draft.branchId || ''}` !== `${branchId || ''}`) return {};
-      return {
-        items: (draft.items || []).map((item) => {
-          if (item.localItemId !== itemLocalId || item.productId !== productId || item.inputUnitTouched) return item;
-          return {
-            ...item,
-            quantityUnit,
-            actualUnit: quantityUnit,
-            pricingUnit: localConfiguration.billingUnit,
-            billingUnit: localConfiguration.billingUnit,
-            configurationId: localConfiguration.configurationId || '',
-            rememberedDefaultInputUnit: preference?.defaultInputUnit || '',
-            unitPrice: localConfiguration.unitPrice || item.unitPrice || '',
-          };
-        })
-      };
-    });
-  };
 
   const handleCustomerChange = (localId, customerId) => {
     const selectedCustomer = customerLookup.get(customerId);
     const branchRef = getDefaultOrderRequestBranchRef(selectedCustomer);
     const targetDraft = requestDrafts.find(draft => draft.localId === localId);
+    if (!isEditingRequest && targetDraft?.customerId !== customerId) {
+      updateDraft(localId, {
+        customerId,
+        customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
+        ...branchRef,
+        items: [createDraftItem()],
+      });
+      setOpenDraftPicker(null);
+      setRequestError('');
+      return;
+    }
     updateDraft(localId, (draft) => ({
       customerId,
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
@@ -61597,16 +60779,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         };
       })
     }));
-    (targetDraft?.items || []).forEach((item) => {
-      if (!selectedCustomer || !item.productId) return;
-      void loadRememberedInputUnitForDraftItem({
-        localId,
-        itemLocalId: item.localItemId,
-        customerId,
-        productId: item.productId,
-        branchId: branchRef.branchId,
-      });
-    });
     setRequestError('');
   };
 
@@ -61614,6 +60786,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const targetDraft = requestDrafts.find(draft => draft.localId === localId);
     const selectedCustomer = targetDraft?.customerId ? customerLookup.get(targetDraft.customerId) : null;
     const branch = getCustomerBranchById(selectedCustomer, branchId, activeProducts);
+    if (!isEditingRequest && (targetDraft?.branchId || '') !== (branch?.id || '')) {
+      updateDraft(localId, {
+        branchId: branch?.id || '',
+        branchName: branch ? getCustomerBranchDisplayName(branch) : '',
+        branchAddress: branch?.address || '',
+        items: [createDraftItem()],
+      });
+      setOpenDraftPicker(null);
+      setRequestError('');
+      return;
+    }
     const configSource = getCustomerBranchProductConfigSource(selectedCustomer, branch?.id || '', activeProducts);
     updateDraft(localId, (draft) => ({
       branchId: branch?.id || '',
@@ -61642,16 +60825,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         };
       })
     }));
-    (targetDraft?.items || []).forEach((item) => {
-      if (!selectedCustomer || !item.productId) return;
-      void loadRememberedInputUnitForDraftItem({
-        localId,
-        itemLocalId: item.localItemId,
-        customerId: selectedCustomer.id,
-        productId: item.productId,
-        branchId: branch?.id || '',
-      });
-    });
     setRequestError('');
   };
 
@@ -61679,6 +60852,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       return {
       productId,
       productSearch: selectedProduct?.name || '',
+      previousOrder: false,
       attributeLabel: configuredAttribute
         || (attributeOptions.includes(item.attributeLabel) ? item.attributeLabel : ''),
       weightKg: configuredSize,
@@ -61697,15 +60871,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       billingSnapshotSource: ''
     };
     });
-    if (selectedCustomer && selectedProduct) {
-      void loadRememberedInputUnitForDraftItem({
-        localId,
-        itemLocalId,
-        customerId: selectedCustomer.id,
-        productId: selectedProduct.id,
-        branchId: targetDraft?.branchId || '',
-      });
-    }
     setRequestError('');
   };
 
@@ -61745,7 +60910,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       billingUnit: pricingUnit,
       amount: '',
       billingSnapshotVersion: 0,
-      billingSnapshotSource: ''
+      billingSnapshotSource: '',
+      ...previousOrderDraftFields(variantConfig)
     });
   };
 
@@ -61757,15 +60923,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     // draft may resolve unit/attribute defaults before it is stored in the order.
     const normalizedQuickItem = buildQuickProductDraftItem(productId, {}, variantConfig);
     const targetVariantKey = getDraftItemVariantKey(normalizedQuickItem);
-    const currentItemsBeforeSelection = Array.isArray(primaryDraft.items) ? primaryDraft.items : [];
-    const existingIndexBeforeSelection = currentItemsBeforeSelection.findIndex((item) => getDraftItemVariantKey(item) === targetVariantKey);
-    const blankItemBeforeSelection = currentItemsBeforeSelection.find((item) => (
-      !item.productId
-      && String(item.weightKg || '').trim() === ''
-      && String(item.quantity || '').trim() === ''
-      && String(item.unitPrice || '').trim() === ''
-    ));
-    const selectedItemLocalId = blankItemBeforeSelection?.localItemId || normalizedQuickItem.localItemId;
 
     const selectionKey = interactionSelectionKey || targetVariantKey;
     if (!tryAcquireOrderRequestSelectionLock(quickProductSelectionLocksRef.current, selectionKey)) return;
@@ -61806,16 +60963,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
     setRequestError('');
-    const selectedCustomer = primaryDraft.customerId ? customerLookup.get(primaryDraft.customerId) : null;
-    if (existingIndexBeforeSelection < 0 && selectedCustomer) {
-      void loadRememberedInputUnitForDraftItem({
-        localId: primaryDraft.localId,
-        itemLocalId: selectedItemLocalId,
-        customerId: selectedCustomer.id,
-        productId,
-        branchId: primaryDraft.branchId || '',
-      });
-    }
 
     const previousTimer = quickProductSelectionTimersRef.current.get(selectionKey);
     if (previousTimer) window.clearTimeout(previousTimer);
@@ -62866,11 +62013,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       });
       const result = await shareOrderRequestSheetBlobs(blobs);
 
-      if (result.status === 'shared') setSheetStatus(result.count > 1 ? `Đã mở bảng chia sẻ ${result.count} ảnh. Bạn có thể gửi lên Zalo theo từng ảnh.` : 'Đã mở bảng chia sẻ. Bạn có thể gửi lên Zalo hoặc chia sẻ tiếp.');
-      else if (result.status === 'saved') setSheetStatus('Đã lưu bảng đơn đặt hàng vào máy.');
-      else if (result.status === 'downloaded') setSheetStatus('Đã tải bảng đơn đặt hàng về máy.');
-      else if (result.status === 'cancelled') setSheetStatus('Bạn đã đóng bảng chia sẻ.');
-      else setSheetStatus('Thiết bị này chưa hỗ trợ chia sẻ trực tiếp.');
+      setSheetStatus(['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status)
+        ? '' : 'Thiết bị này chưa hỗ trợ chia sẻ trực tiếp.');
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ bảng đơn đặt hàng.'));
     } finally {
@@ -62894,9 +62038,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         blobs.length > 1 ? `${baseFilename}-trang-${index + 1}.png` : `${baseFilename}.png`,
         blob
       )));
-      if (results.some(result => result.status === 'saved')) setSheetStatus(blobs.length > 1 ? `Đã lưu ${blobs.length} ảnh bảng đơn đặt hàng vào máy.` : 'Đã lưu bảng đơn đặt hàng vào máy.');
-      else if (results.some(result => result.status === 'downloaded')) setSheetStatus(blobs.length > 1 ? `Đã tải ${blobs.length} ảnh bảng đơn đặt hàng về máy.` : 'Đã tải bảng đơn đặt hàng về máy.');
-      else setSheetStatus('Không thể tải bảng đơn đặt hàng trên thiết bị này.');
+      setSheetStatus(results.some(result => ['saved', 'downloaded'].includes(result.status))
+        ? '' : 'Không thể tải bảng đơn đặt hàng trên thiết bị này.');
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tải bảng đơn đặt hàng.'));
     } finally {
@@ -62970,8 +62113,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           item.billingSnapshotVersion
           || ((item.billingUnit || item.pricingUnit) && savedUnitPrice > 0)
         );
-        // The + picker can add any active catalog product. A valid catalog/customer
-        // billing configuration is enough; the product is remembered only after save.
+        // Added catalog products still require a valid billing configuration.
         if (!configuredBilling.isValid && !hasSavedPricingSnapshot) {
           invalidItemIndexes.push(itemIndex + 1);
           return;
@@ -63109,9 +62251,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     requestSubmittingRef.current = true;
     setIsRequestSubmitting(true);
-    setRequestStatus(isEditingRequest
-      ? 'Dang cap nhat don dat hang...'
-      : `Dang luu ${normalizedRequests.length} don dat hang...`);
+    setRequestStatus('');
     setRequestError('');
 
     try {
@@ -63121,48 +62261,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           return;
         }
 
-        const originalRequest = orderRequests.find(request => request?.id === editingRequestId);
         await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin', {
           backgroundSync: true,
-          onPersisted: ({ request }) => scheduleOrderRequestMemorySync([{
-            ...(originalRequest || {}),
-            ...request,
-            id: editingRequestId,
-            createdAt: originalRequest?.createdAt
-              || originalRequest?.requestedAt
-              || originalRequest?.date
-              || normalizedRequests[0].date,
-            updatedAt: request.updatedAt || new Date().toISOString(),
-          }]),
         });
-
         setRequestStatus('');
         closeOrderRequestForm();
         return;
       }
 
-      const memorySyncBatch = {
-        expected: normalizedRequests.length,
-        settled: 0,
-        persisted: [],
-      };
       for (const requestPayload of normalizedRequests) {
         const savedRequestId = await onAddOrderRequest(employee?.id || 'admin', requestPayload, {
           backgroundSync: true,
-          onPersisted: ({ id, request }) => {
-            memorySyncBatch.persisted.push({
-              ...request,
-              id,
-              companyId: customerLookup.get(requestPayload.customerId)?.companyId || '',
-              createdAt: request.createdAt || new Date().toISOString(),
-            });
-          },
-          onSettled: () => {
-            memorySyncBatch.settled += 1;
-            if (memorySyncBatch.settled === memorySyncBatch.expected && memorySyncBatch.persisted.length > 0) {
-              scheduleOrderRequestMemorySync(memorySyncBatch.persisted);
-            }
-          },
         });
         if (!savedRequestId) throw new Error('Không thể tạo mã đơn đặt hàng. Vui lòng thử lại.');
       }
@@ -63230,23 +62339,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         </div>
       )}
 
-      <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm">
-        {canCreate && (
-          <button
-            type="button"
-            onClick={openOrderRequestForm}
-            className="inline-flex min-w-0 flex-[1.7] items-center justify-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-6 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-white shadow-[0_10px_22px_rgba(16,185,129,0.25)] ring-4 ring-emerald-100 transition hover:from-emerald-600 hover:to-teal-600 active:scale-[0.97]"
-          >
-            LÊN ĐƠN
-          </button>
-        )}
+      <div className="hd-request-toolbar">
         <label
-          className={`${canCreate ? 'w-[38%] max-w-[150px] shrink-0' : 'min-w-0 flex-1'} relative inline-flex cursor-pointer select-none items-center justify-center rounded-full border border-violet-100 bg-violet-50 px-2 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-violet-600 active:scale-[0.98]`}
+          className="hd-request-toolbar__date relative inline-flex items-center justify-center"
           onClick={(event) => {
             if (event.target?.tagName !== 'INPUT') openRequestDatePicker();
           }}
         >
-          <span className="truncate">Ngày {formatDateLabel(requestFilterDate)}</span>
+          <span>{formatDateLabel(requestFilterDate)}</span>
           <input
             ref={requestDateInputRef}
             type="date"
@@ -63256,27 +62356,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
             aria-label="Chọn ngày xem đơn đặt hàng"
           />
         </label>
+        {canCreate && (
+          <button type="button" onClick={openOrderRequestForm} className="hd-request-toolbar__create">
+            Lên đơn
+          </button>
+        )}
+        {canShareOrderRequestSheet && (
+          <button type="button" onClick={handleShareOrderRequestSheet} disabled={isSheetExporting}
+            aria-label={isSheetExporting ? 'Đang chuẩn bị chia sẻ' : 'Chia sẻ'}
+            className="hd-request-toolbar__share">
+            {isSheetExporting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            Chia sẻ
+          </button>
+        )}
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-black uppercase tracking-[0.12em] text-slate-900">TỔNG ĐƠN ĐẶT HÀNG</h3>
-            </div>
-            <div className="shrink-0 flex flex-col gap-2">
-              {canShareOrderRequestSheet && (
-              <button
-                type="button"
-                onClick={handleShareOrderRequestSheet}
-                disabled={isSheetExporting}
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <Send size={14} />
-                {isSheetExporting ? 'Đang chuẩn bị...' : 'Chia sẻ'}
-              </button>
-              )}
-            </div>
-          </div>
+      <div className="hd-request-list bg-white">
 
           {showRequestFilterPanel && (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -63554,22 +62649,26 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                           </button>
                         </div>
 
-                        {manualFixedProductVariantGroups.length > 0 ? (
+                        {manualFixedProductVariantOptions.length > 0 ? (
                           <div className="grid gap-2 sm:grid-cols-2">
-                            {manualFixedProductVariantGroups.map(({ product, variants }) => (
-                              <OrderRequestSelectableProductGroup
-                                key={`fixed-group:${product.id}`}
-                                product={product}
-                                variants={variants}
-                                selectedQuickVariantKeys={selectedQuickVariantKeys}
-                                pendingQuickProductSelectionKeys={pendingQuickProductSelectionKeys}
-                                onSelect={handleQuickProductCardSelect}
-                              />
+                            {manualFixedProductVariantOptions.map(({ product, variant, key, selectionKey }) => (
+                              <button
+                                key={key}
+                                type="button"
+                                data-order-product-attribute={selectionKey}
+                                aria-pressed={selectedQuickVariantKeys.has(selectionKey)}
+                                disabled={pendingQuickProductSelectionKeys.has(selectionKey)}
+                                title={[variant.size, variant.attributeLabel].filter(Boolean).join(' • ')}
+                                onClick={() => handleQuickProductCardSelect(selectionKey, product.id, variant)}
+                                className={`min-h-10 rounded-lg border px-3 py-2 text-left text-sm font-semibold ${selectedQuickVariantKeys.has(selectionKey) ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-emerald-100 bg-white text-slate-900'}`}
+                              >
+                                {product.name}
+                              </button>
                             ))}
                           </div>
                         ) : (
                           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-center text-xs font-semibold text-slate-500">
-                            Khách này chưa cấu hình SP khách lấy. Bấm + để thêm sản phẩm khác.
+                            Chưa có sản phẩm từ đơn trước.
                           </div>
                         )}
 
@@ -63876,7 +62975,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                                   attributeLabel: item.attributeLabel || '',
                                 })
                               : null;
-                            const hasFrozenItemConfiguration = Boolean(item.billingSnapshotVersion || item.billingSnapshotSource);
+                            const hasFrozenItemConfiguration = Boolean(item.previousOrder || item.billingSnapshotVersion || item.billingSnapshotSource);
                             const fixedAttributeLabel = `${hasFrozenItemConfiguration
                               ? (item.attributeLabel || '')
                               : (selectedConfiguration?.attributeLabel || item.attributeLabel || '')}`.trim();
@@ -64885,8 +63984,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   }, [zaloSendQueue]);
   const orderRecordsForDuplicateCheck = Array.isArray(allCompanyOrders) ? allCompanyOrders : orders;
   const importedWarehouseDispatchIds = useMemo(
-    () => collectUsedWarehouseDispatchIds(orderRecordsForDuplicateCheck),
-    [orderRecordsForDuplicateCheck]
+    () => showAddOrder ? collectUsedWarehouseDispatchIds(orderRecordsForDuplicateCheck) : new Set(),
+    [orderRecordsForDuplicateCheck, showAddOrder]
   );
   const todayWarehouseDispatches = useMemo(() => (warehouseDispatches || [])
     .filter(dispatch => !dispatch.isArchived && (dispatch.date || getTodayString()) === dispatchDate), [dispatchDate, warehouseDispatches]);
@@ -65042,6 +64141,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const filteredOrderMembership = useMemo(() => new Set(filteredOrderSnapshots), [filteredOrderSnapshots]);
   const orderedFilteredOrders = useMemo(() => sortOrdersByNewest(filteredOrderSnapshots), [filteredOrderSnapshots]);
   const tiedOrderRanks = useMemo(() => {
+    if (!hasTokenSearchQuery(deferredOrderSearchKeyword)) return undefined;
     let rank = 0;
     let tied = false;
     const ranks = new Map();
@@ -65051,7 +64151,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       ranks.set(order, rank);
     });
     return tied ? ranks : undefined;
-  }, [orderedFilteredOrders]);
+  }, [orderedFilteredOrders, deferredOrderSearchKeyword]);
   const preparedOrderSearch = usePreparedSearch(normalizedOrderSnapshots, getPreparedOrderSearchFields,
     deferredOrderSearchKeyword, orderedFilteredOrders, filteredOrderMembership, tiedOrderRanks);
   const displayOrders = hasTokenSearchQuery(deferredOrderSearchKeyword) ? preparedOrderSearch.results : orderedFilteredOrders;
@@ -65063,7 +64163,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     orderSalesEmpFilter,
     normalizeLookupText(deferredOrderSearchKeyword)
   ].join('|');
-  const orderPage = usePagedList(displayOrders, displayOrderRenderKey);
+  const orderPage = usePagedList(displayOrders, displayOrderRenderKey, 20);
   const hasOrderListFilters = Boolean(
     orderSearchKeyword.trim() || orderDateFilter || orderProductFilter || orderPaymentFilter || orderSalesEmpFilter || tab !== 'all'
   );

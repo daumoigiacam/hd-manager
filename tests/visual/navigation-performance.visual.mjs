@@ -37,7 +37,11 @@ const browser = await chromium.launch({ executablePath: browserPath, headless: t
 try {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
+  await page.route('**/*', route => route.request().url().startsWith(baseUrl) || route.request().url().startsWith('data:') ? route.continue() : route.abort());
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.HD_MANAGER_NAV_CPU || 1) });
   const errors = [];
+  if (process.env.HD_NAV_DIAG === '1') page.on('console', message => { if (message.text().includes('cache-miss-check')) console.log(message.text()); });
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(({ authToken, store }) => {
     window.__initial_auth_token = authToken;
@@ -45,6 +49,10 @@ try {
   }, { authToken: token, store: fixture });
   await page.goto(baseUrl, { waitUntil: 'commit' });
   await page.locator('[data-hd-shell="enterprise"]').waitFor();
+  assert.equal(await page.locator('.hd-header-global-search-button, .hd-shell-search-trigger').count(), 0);
+  await page.keyboard.press('Control+k');
+  await page.keyboard.press('Meta+k');
+  assert.equal(await page.locator('.hd-shell-search-overlay').count(), 0);
   await page.waitForFunction(() => {
     const title = document.querySelector('.business-report-kpi--revenue')?.getAttribute('title') || '';
     return Number(title.replace(/[^\d]/g, '')) >= 150000000;
@@ -117,17 +125,36 @@ try {
   }
   for (const [button, title] of [
     ['Đặt hàng', 'Đơn đặt'],
-    ['Xuất kho', 'Phiếu xuất kho'],
+    ['Xuất kho', 'Xuất kho'],
     ['Đơn hàng', 'Đơn hàng'],
   ]) {
     samples.push({ screen: button, ms: await profileNavigation(button, () => measure(button, '.hd-app-header .hd-header-title', title)) });
+    if (button === 'Đơn hàng') {
+      const pager = page.getByRole('navigation', { name: 'Phân trang đơn hàng', exact: true });
+      await pager.waitFor();
+      const range = pager.locator('[aria-live="polite"]');
+      assert.match(await range.innerText(), /^1–20 \/ /);
+      const total = (await range.innerText()).split('/')[1].trim();
+      await pager.getByRole('button', { name: 'Trang sau', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('nav[aria-label="Phân trang đơn hàng"] [aria-live]')?.textContent.startsWith('21–40'));
+      assert.equal((await range.innerText()).split('/')[1].trim(), total);
+      await pager.getByRole('button', { name: 'Trang trước', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('nav[aria-label="Phân trang đơn hàng"] [aria-live]')?.textContent.startsWith('1–20'));
+    }
     samples.push({ screen: 'Trang chủ', ms: await profileNavigation(`Trang chủ từ ${button}`, () => measure('Trang chủ', '.business-report-workspace')) });
   }
   assert.deepEqual(errors, [], 'navigation must not raise page errors');
+  for (let round = 0; round < 3; round += 1) {
+    await measure('Thêm', '.hd-more-menu, .hd-more-grid, .hd-more-screen');
+    await page.locator('main').getByRole('button', { name: 'Sổ nợ', exact: true }).click();
+    samples.push({ screen: 'Trang chủ từ Sổ nợ', ms: await profileNavigation('HomeDebt', () => measure('Trang chủ', '.business-report-workspace')) });
+  }
   if (maxMs > 0) {
     for (const sample of samples) assert(sample.ms < maxMs, `${sample.screen} took ${sample.ms} ms (limit ${maxMs} ms)`);
   }
   console.log(JSON.stringify(samples));
+  await page.waitForFunction(() => !document.querySelector('main [aria-busy="true"]'), null, { timeout: 15000 });
+  await page.screenshot({ path: 'test-results/navigation-home.png' });
   await context.close();
 } finally {
   await browser.close();

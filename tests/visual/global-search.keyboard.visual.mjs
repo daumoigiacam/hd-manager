@@ -17,6 +17,7 @@ const claims = {
   phone: '0909000001',
 };
 const previewToken = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
+const deadline = setTimeout(() => { console.error('Search QA timeout 120s'); process.exit(1); }, 120000);
 const browser = await chromium.launch({ headless: true, executablePath: browserPath });
 const viewportRuns = [
   { width: 320, height: 720 },
@@ -29,6 +30,8 @@ const results = [];
 try {
   for (const viewport of viewportRuns) {
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 600, hasTouch: viewport.width < 600 });
+    await context.route('**/*', route => new URL(route.request().url()).origin === new URL(baseUrl).origin ? route.continue() : route.abort());
+    context.setDefaultTimeout(10000);
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
@@ -38,81 +41,25 @@ try {
     await page.waitForSelector('[data-hd-shell="enterprise"]', { timeout: 20000 });
     await page.waitForTimeout(900);
 
-    // Home intentionally has no global-search icon; test from the customer module.
-    const more = page.getByRole('button', { name: 'Thêm', exact: true }).filter({ visible: true }).first();
-    await more.click();
+    assert.equal(await page.locator('.hd-header-global-search-button, .hd-shell-search-trigger').count(), 0);
+    await page.keyboard.press('Control+k');
+    await page.keyboard.press('Meta+k');
+    assert.equal(await page.locator('.hd-shell-search-overlay').count(), 0);
+    await page.getByRole('button', { name: 'Thêm', exact: true }).filter({ visible: true }).first().click();
     await page.locator('main').getByRole('button', { name: 'Khách hàng', exact: true }).click();
-    const trigger = page.locator('.hd-header-global-search-button:visible').first();
-    assert.ok(await trigger.count(), `global search trigger is visible at ${viewport.width}px`);
-    await trigger.click();
-    const dialog = page.locator('.hd-shell-search-popover');
-    const input = dialog.locator('.hd-shell-search-input-wrap input');
-    await input.waitFor({ state: 'visible' });
-    await page.waitForFunction(() => document.activeElement?.matches('.hd-shell-search-input-wrap input'));
-
-    const initialMetrics = await page.evaluate(() => {
-      const box = selector => {
-        const rect = document.querySelector(selector)?.getBoundingClientRect();
-        return rect ? { width: rect.width, height: rect.height } : null;
-      };
-      return {
-        viewportWidth: window.innerWidth,
-        documentWidth: document.documentElement.scrollWidth,
-        close: box('.hd-shell-search-dialog-header button'),
-        inputWrap: box('.hd-shell-search-input-wrap'),
-        results: [...document.querySelectorAll('.hd-shell-search-results button[data-global-search-result]')]
-          .map(button => button.getBoundingClientRect().height),
-        pointerOutline: `${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap')).outlineWidth} ${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap')).outlineStyle}`,
-        focusMode: document.querySelector('.hd-shell-search-input-wrap input')?.closest('.hd-enterprise-app-shell')?.dataset.hdInputFocusMode || '',
-        inputSearchMarker: document.querySelector('.hd-shell-search-input-wrap input')?.getAttribute('data-hd-search-input'),
-        inputFocusVisible: document.querySelector('.hd-shell-search-input-wrap input')?.matches(':focus-visible') || false,
-        inputOutline: `${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap input')).outlineWidth} ${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap input')).outlineStyle}`,
-        wrapOutline: `${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap')).outlineWidth} ${getComputedStyle(document.querySelector('.hd-shell-search-input-wrap')).outlineStyle}`,
-      };
-    });
-    assert.ok(initialMetrics.close.height >= 44, `close target >=44px at ${viewport.width}px`);
-    assert.ok(initialMetrics.inputWrap.height >= 48, `search field >=48px at ${viewport.width}px`);
-    assert.ok(initialMetrics.results.length >= 2, `quick access results exist at ${viewport.width}px`);
-    assert.ok(initialMetrics.results.every(height => height >= 44), `result targets >=44px at ${viewport.width}px`);
-    assert.equal(initialMetrics.documentWidth, initialMetrics.viewportWidth, `no horizontal overflow at ${viewport.width}px`);
-    assert.match(initialMetrics.pointerOutline, /none$/, `pointer focus does not add an extra frame at ${viewport.width}px: ${JSON.stringify(initialMetrics)}`);
-
-    if (viewport.width === 390) {
-      await mkdir(outputDir, { recursive: true });
-      await page.screenshot({ path: `${outputDir}/global-search-mobile-390.png` });
-    }
-
-    await input.press('Shift+Tab');
-    await page.keyboard.press('Tab');
-    const keyboardOutline = await page.locator('.hd-shell-search-input-wrap').evaluate(element => getComputedStyle(element).outlineWidth);
-    assert.equal(keyboardOutline, '2px', 'keyboard focus uses the shared visible focus indicator');
-
-    await input.press('ArrowDown');
-    const resultButtons = dialog.locator('[data-global-search-result]:not([disabled])');
-    const resultCount = await resultButtons.count();
-    assert.ok(resultCount >= 2);
-    const activeResult = async () => page.evaluate(() => document.activeElement?.getAttribute('data-global-search-result') === 'true');
-    assert.equal(await activeResult(), true, 'ArrowDown moves from input into results');
-    await page.keyboard.press('ArrowDown');
-    const secondResultFocused = await resultButtons.nth(1).evaluate(button => button === document.activeElement);
-    assert.equal(secondResultFocused, true, 'ArrowDown moves to the next result');
-    await page.keyboard.press('ArrowUp');
-    const firstResultFocused = await resultButtons.first().evaluate(button => button === document.activeElement);
-    assert.equal(firstResultFocused, true, 'ArrowUp returns to the prior result');
-    await page.keyboard.press('ArrowUp');
-    const wrappedToLast = await resultButtons.last().evaluate(button => button === document.activeElement);
-    assert.equal(wrappedToLast, true, 'ArrowUp wraps from the first to the last result');
-
-    await page.keyboard.press('Escape');
-    await dialog.waitFor({ state: 'detached' });
-    const focusReturned = await page.evaluate(() => document.activeElement?.matches('.hd-header-global-search-button'));
-    assert.equal(focusReturned, true, 'Escape returns focus to the opener');
+    await page.getByRole('button', { name: 'Tìm kiếm', exact: true }).filter({ visible: true }).first().click();
+    const input = page.getByPlaceholder('Tìm khách hàng, nhà cung cấp...');
+    await input.fill('Demo');
+    assert.equal(await input.inputValue(), 'Demo');
+    assert.equal(await page.locator('.hd-header-global-search-button, .hd-shell-search-popover').count(), 0);
+    await mkdir(outputDir, { recursive: true });
+    await page.screenshot({ path: `${outputDir}/module-search-${viewport.width}.png` });
     assert.deepEqual(pageErrors, [], `no uncaught page errors at ${viewport.width}px`);
-    results.push({ viewport, ...initialMetrics, keyboardOutline, focusReturned });
+    results.push({ viewport, globalSearchRemoved: true, moduleSearchWorks: true });
     await context.close();
   }
 } finally {
   await browser.close();
+  clearTimeout(deadline);
 }
-
-console.log(`PASS global search keyboard/mobile QA: ${JSON.stringify(results)}`);
+console.log(`PASS global search removal QA: ${JSON.stringify(results)}`);

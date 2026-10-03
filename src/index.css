@@ -1384,6 +1384,35 @@ html.hd-low-power-ui .hd-soft-red-outline {
   vertical-align: middle;
 }
 
+/* Weight entry follows the visual viewport, not the keyboard-covered layout. */
+.hd-weight-modal-layer {
+  top: var(--hd-modal-viewport-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--hd-modal-viewport-height, 100dvh);
+  align-items: flex-end;
+  padding: 8px 8px var(--hd-modal-safe-bottom, 0px);
+  box-sizing: border-box;
+  overscroll-behavior: contain;
+}
+.hd-weight-modal-panel {
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
+}
+.hd-dispatch-search-field input,
+.hd-dispatch-search-field input:focus {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+@media (min-width: 768px) {
+  .hd-weight-modal-layer { align-items: center; padding: 16px; }
+}
+
 .hd-dialog-surface {
   box-sizing: border-box;
   display: flex;
@@ -2522,6 +2551,30 @@ html.hd-low-power-ui .hd-soft-red-outline {
   min-inline-size: 0;
 }
 
+.premium-data-module.premium-dispatch-module,
+.hd-shell--staff .premium-data-module.premium-dispatch-module {
+  gap: 8px;
+}
+.premium-dispatch-module button.hd-dispatch-shortage-toggle {
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  background: #fffbeb;
+  width: 44px;
+  min-width: 44px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+}
+.hd-dispatch-shortage-list:has(.hd-dispatch-shortage-toggle) > button:nth-last-child(2) {
+  padding-bottom: 16px;
+}
+
 .premium-data-toolbar {
   position: sticky;
   inset-block-start: 0;
@@ -2676,7 +2729,7 @@ html.hd-low-power-ui .hd-soft-red-outline {
   background: transparent;
 }
 
-/* Use the same app navigation on phones, tablets and desktop. */
+/* Compact layout for phones and customer-facing screens. */
 @media (min-width: 600px) {
   .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell {
     display: flex !important;
@@ -2714,5 +2767,111 @@ html.hd-low-power-ui .hd-soft-red-outline {
   .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation > .desktop-sidebar-nav,
   .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell > nav.hd-app-navigation > .tablet-navigation-rail {
     display: none !important;
+  }
+}
+
+.hd-request-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 4px;
+}
+.hd-request-toolbar > :is(label, button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.hd-request-toolbar__date { flex: 1.25; background: #f8fafc; color: #334155; border: 1px solid #dbe3ec; }
+.hd-request-toolbar__create { flex: 1; background: #158466; color: white; }
+.hd-request-toolbar__share { flex: 1; background: #3e59e8; color: white; }
+.hd-request-toolbar button:disabled { opacity: 0.6; cursor: wait; }
+.hd-request-toolbar :is(button, label):focus-within { outline: 2px solid #2563eb; outline-offset: 2px; }
+.hd-request-toolbar + .hd-request-list { margin-top: 8px !important; }
+.hd-request-list > .mt-4:first-child { margin-top: 0; }
+
+/* Staff navigation changes layout only; module state and data stay shared. */
+@media (min-width: 768px) {
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff {
+    --hd-sidebar-width: 224px;
+    --hd-desktop-sidebar-width: var(--hd-sidebar-width);
+    --hd-footer-height: 0px;
+    display: grid !important;
+    grid-template-columns: var(--hd-sidebar-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    max-width: none !important;
+    border: 0;
+    box-shadow: none;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff.hd-navigation-collapsed {
+    --hd-sidebar-width: 84px;
+  }
+  .hd-app-shell.hd-shell--staff > header { grid-column: 2; grid-row: 1; min-width: 0; }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff > main {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    padding: 20px 24px 28px !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff > main:has(.business-report-workspace) {
+    padding: 0 0 24px !important;
+  }
+  .hd-app-shell.hd-shell--staff:not(:has(> header)) { grid-template-rows: minmax(0, 1fr); }
+  .hd-app-shell.hd-shell--staff:not(:has(> header)) > main { grid-row: 1; }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff > nav.hd-app-navigation {
+    position: relative !important;
+    inset: auto !important;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    width: auto !important;
+    min-height: 0;
+    padding: 16px 10px !important;
+    border-top: 0 !important;
+    border-right: 1px solid #e2e8f0;
+    background: #fff;
+    box-shadow: none !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff > nav.hd-app-navigation > :is(.mobile-footer-nav, .tablet-navigation-rail, .hd-contextual-fab-slot) {
+    display: none !important;
+  }
+  .mobile-app-shell.hd-enterprise-app-shell.hd-app-shell.hd-shell--staff > nav.hd-app-navigation > .desktop-sidebar-nav {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    height: 100%;
+    min-height: 0;
+    gap: 12px;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+  .hd-shell--staff .desktop-sidebar-nav::before { display: none !important; }
+  .hd-shell--staff .hd-sidebar-brand { display: flex; padding-inline: 0; }
+  .hd-shell--staff .hd-shell-search { display: block; }
+  .hd-shell--staff .hd-sidebar-groups { display: block; }
+  .hd-shell--staff .hd-sidebar-groups { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+  .hd-shell--staff .hd-sidebar-brand-text strong { font-size: 12px; letter-spacing: 0; }
+  .hd-shell--staff .hd-sidebar-brand-text small { display: none; }
+  .hd-shell--staff .hd-sidebar-navigation .hd-nav-button {
+    color: #475569;
+    width: 100% !important;
+    min-height: 44px;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
+    border-radius: 6px;
+    text-align: left;
+  }
+  .hd-shell--staff .hd-sidebar-navigation .hd-nav-button [data-nav-label="true"] {
+    font-size: 13px;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }

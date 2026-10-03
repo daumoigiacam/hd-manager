@@ -192,11 +192,27 @@ test('mo picker loai hang hien don khach da dat truoc va danh muc ben duoi', () 
   assert.match(warehouseModuleSource, /Tất cả loại hàng/);
 });
 
-test('thanh tim kiem danh sach xuat kho khong ep dong tong so tren mobile', () => {
+test('tim kiem xuat kho nhap truc tiep khong mo bang rieng', () => {
   assert.match(warehouseModuleSource, /flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center/);
-  assert.match(warehouseModuleSource, /w-full min-w-0 text-xs font-bold text-slate-500 sm:flex-1/);
+  assert.doesNotMatch(warehouseModuleSource, /DS xuất kho - Ngày|dispatchSummary\.totalCustomers/);
   assert.match(warehouseModuleSource, /flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0/);
-  assert.match(warehouseModuleSource, /min-w-0 flex-1 items-center gap-2 rounded-full/);
+  assert.match(warehouseModuleSource, /aria-label="Tìm kiếm phiếu xuất kho trong ngày"/);
+  assert.doesNotMatch(warehouseModuleSource, /isDispatchListSearchOpen|dispatchListSearchInputRef/);
+  assert.match(warehouseModuleSource, /searchSharedRecords\(dispatchSearchRows, dispatchListSearch/);
 });
 
 console.log('Warehouse dispatch weight input regression suite passed.');
+
+test('shortage expansion uses a compact accessible arrow without stacked spacing', () => {
+  assert.match(warehouseModuleSource, /aria-expanded=\{showAllDispatchShortageCustomers\}/);
+  assert.match(warehouseModuleSource, /showAllDispatchShortageCustomers \? <ChevronUp size=\{16\}/);
+  assert.doesNotMatch(warehouseModuleSource, /premium-dispatch-module space-y-4/);
+  assert.match(warehouseModuleSource, /setShowAllDispatchShortageCustomers\(prev => !prev\)/);
+});
+
+test('dispatch success banners are removed but failures remain visible', () => {
+  assert.doesNotMatch(warehouseModuleSource, /setDispatchStatus|\[dispatchStatus,/);
+  assert.match(warehouseModuleSource, /dispatchActionError && <div role="alert"/);
+  assert.match(warehouseModuleSource, /dispatchError &&/);
+  assert.match(warehouseModuleSource, /await onAddWarehouseDispatch\(employee.id,/);
+});

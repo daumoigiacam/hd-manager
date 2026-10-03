@@ -3,7 +3,7 @@
 .hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-content { padding: 0 0 calc(82px + var(--hd-safe-bottom, 0px)) !important; background: #f6f9ff; }
 .hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-navigation { display: none; }
 .attendance-workspace { min-height: 100%; color: #17233b; font-family: Inter, Roboto, Arial, sans-serif; background: #f6f9ff; padding-bottom: 28px; }
-.attendance-workspace :where(button) { cursor: pointer; }
+.attendance-workspace :where(button) { cursor: pointer; scroll-margin-block: 90px; }
 .attendance-workspace :where(button:disabled) { cursor: not-allowed; opacity: .55; }
 .attendance-header { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 9px; height: calc(70px + var(--hd-safe-top, 0px)); padding: var(--hd-safe-top, 0px) 17px 0; color: white; background: linear-gradient(115deg, #1647ac, #276cdd); box-shadow: 0 5px 15px #1e5dc226; }
 .attendance-workspace .attendance-header h1 { color: #fff !important; font-size: 19px; font-weight: 750; line-height: 1.15; margin: 0; }
@@ -148,3 +148,4 @@
 .attendance-nav button.is-active svg { fill: #e5f0ff; }
 .attendance-nav span { font-size: 11px; font-weight: 650; }
 @media (min-width: 700px) { .attendance-header { padding-left: max(20px, calc((100% - 690px) / 2)); padding-right: max(20px, calc((100% - 690px) / 2)); } .attendance-nav { position: sticky; margin: 12px auto 0; max-width: 690px; border-radius: 18px 18px 0 0; } .hd-app-shell[data-active-tab="company_attendance"]:has(.attendance-workspace) > .hd-app-content { padding-bottom: 0 !important; } }
+.attendance-company-wifi-ready { display: flex; align-items: center; gap: 6px; color: #16845a; }

@@ -10,10 +10,11 @@ const footer = readFileSync(new URL('../src/utils/footerNavigation.js', import.m
 const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
 assert.match(app, /activeTab === 'finance' \? 'T\u1ed5ng k\u1ebft ng\u00e0y'/);
-assert.match(app, /activeTab !== 'debt' && activeTab !== 'finance' && renderGlobalSearchTrigger\(\)/);
+assert.doesNotMatch(app, /renderGlobalSearchTrigger/);
+assert.match(app, /setFinanceSearchOpen\(prev => !prev\)/);
 assert.match(finance, /finance-summary-metrics grid grid-cols-3 divide-x divide-white\/20/);
 assert.match(styles, /\.mobile-app-shell \.finance-summary-metrics\s*\{\s*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
-assert.match(finance, /label: 'T\u1ed5ng thu'[\s\S]*?label: 'T\u1ed5ng chi'[\s\S]*?label: 'L\u1ee3i nhu\u1eadn'/);
+assert.match(finance, /label: 'T\u1ed5ng thu'[\s\S]*?label: 'T\u1ed5ng chi ph\u00ed'[\s\S]*?label: 'L\u1ee3i nhu\u1eadn'/);
 assert.doesNotMatch(finance, /Ch\u00eanh l\u1ec7ch thu chi trong ng\u00e0y/);
 assert.doesNotMatch(finance, /groupedCashflowJournal/);
 assert.match(finance, />Danh s\u00e1ch thu chi<\/h3>/);

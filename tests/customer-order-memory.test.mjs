@@ -307,19 +307,14 @@ test('preference key uses variant attributes rather than price or order UOM', ()
   );
 });
 
-test('order request UI exposes only configured customer products before the plus picker', () => {
-  assert.match(appSource, />SP khách lấy<\/label>/);
-  assert.match(appSource, /manualFixedProductVariantGroups\.map\(\(\{ product, variants \}\)/);
-  assert.match(appSource, /key=\{`fixed-group:\$\{product\.id\}`\}/);
-  assert.match(appSource, /manualFixedProductIdSet\.has\(product\.id\)/);
+test('order request UI exposes only previous order products before plus picker', () => {
+  assert.match(appSource, /getPreviousOrderSuggestions\(/);
+  assert.match(appSource, /manualFixedProductVariantOptions\.map/);
   assert.match(appSource, /aria-label="Thêm sản phẩm khác"/);
-  assert.doesNotMatch(appSource, /Sản phẩm đặt gần đây/);
-  assert.doesNotMatch(appSource, /Dùng thông tin đơn gần nhất/);
 });
 
-test('successful save records the new order ID before updating memory', () => {
+test('successful save requires an order ID without secondary memory writes', () => {
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /onPersisted: \(\{ id, request \}\) => \{/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
-  assert.match(appSource, /mergeCustomerOrderMemoryHistory\(/);
+  assert.match(appSource, /if \(!savedRequestId\) throw new Error/);
+  assert.doesNotMatch(appSource, /scheduleOrderRequestMemorySync|mergeCustomerOrderMemoryHistory\(/);
 });

@@ -5,6 +5,7 @@ import { createServer } from 'vite';
 import { seedData } from '../../src/mocks/seed-data.js';
 
 process.env.VITE_DATA_MODE = 'preview';
+const deadline = setTimeout(() => { console.error('WiFi QA timeout 180s'); process.exit(1); }, 180000);
 const output = 'test-results/attendance-wifi';
 await mkdir(output, { recursive: true });
 const server = await createServer({ cacheDir: `${output}/vite-cache`, optimizeDeps: { entries: ['index.html', 'tests/visual/fixtures/attendance-wifi.html'] }, server: { host: '127.0.0.1', port: 0 }, logLevel: 'warn' });
@@ -57,6 +58,11 @@ try {
 
     await page.goto(`${url}/tests/visual/fixtures/attendance-wifi.html`, { waitUntil: 'domcontentloaded' });
     await page.getByRole('switch').waitFor();
+    const companyWifi = page.locator('[data-company-wifi]');
+    await companyWifi.getByText('Đã cấu hình', { exact: true }).waitFor();
+    await companyWifi.getByRole('button', { name: 'Đặt WiFi hiện tại làm WiFi công ty', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.__wifiTest.saves), 1);
+    await page.getByRole('switch').evaluate(element => element.scrollIntoView({ block: 'center' }));
     await page.getByRole('switch').dblclick();
     assert.equal(await page.evaluate(() => window.__wifiTest.toggles), 1);
     assert.equal(await page.getByRole('switch').getAttribute('aria-checked'), 'false', 'pending setting is not reported as saved');
@@ -80,4 +86,5 @@ try {
 } finally {
   await browser.close();
   await server.close();
+  clearTimeout(deadline);
 }

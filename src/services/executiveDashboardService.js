@@ -1,4 +1,5 @@
 import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
+import { isCustomerDebtRepayment } from '../utils/expenseClassification.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Dashboard builds are synchronous. Cache only for that call, never across
@@ -276,17 +277,48 @@ const percentChange = (current, previous) => {
   return ((current - previous) / Math.abs(previous)) * 100;
 };
 
-const sumByDate = (entities, key, amountGetter) => toArray(entities)
+const getPeriodTotals = (entities, amountGetter) => {
+  if (!activeBuildCache || !Array.isArray(entities)) return null;
+  let getters = activeBuildCache.totals.get(entities);
+  if (!getters) { getters = new Map(); activeBuildCache.totals.set(entities, getters); }
+  if (getters.has(amountGetter)) return getters.get(amountGetter);
+  const totals = { date: new Map(), month: new Map(), year: new Map() };
+  for (const item of entities) {
+    const value = getDateValue(item);
+    const day = dateKey(value);
+    const month = monthKey(value);
+    const amount = amountGetter(item);
+    for (const [map, key] of [[totals.date, day], [totals.month, month], [totals.year, day.slice(0, 4)]]) {
+      map.set(key, (map.get(key) || 0) + amount);
+    }
+  }
+  getters.set(amountGetter, totals);
+  return totals;
+};
+
+const sumByDate = (entities, key, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.date.get(key) || 0;
+  return toArray(entities)
   .filter(item => dateKey(getDateValue(item)) === key)
   .reduce((sum, item) => sum + amountGetter(item), 0);
+};
 
-const sumByMonth = (entities, key, amountGetter) => toArray(entities)
+const sumByMonth = (entities, key, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.month.get(key) || 0;
+  return toArray(entities)
   .filter(item => monthKey(getDateValue(item)) === key)
   .reduce((sum, item) => sum + amountGetter(item), 0);
+};
 
-const sumByYear = (entities, year, amountGetter) => toArray(entities)
+const sumByYear = (entities, year, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.year.get(String(year)) || 0;
+  return toArray(entities)
   .filter(item => dateKey(getDateValue(item)).startsWith(`${year}-`))
   .reduce((sum, item) => sum + amountGetter(item), 0);
+};
 
 const sumByDateRange = (entities, startKey, endKey, amountGetter) => toArray(entities)
   .filter(item => {
@@ -2211,7 +2243,7 @@ export const DashboardService = {
     const operatingExpenses = source.expenses
       .filter(expense => {
         const day = dateKey(getDateValue(expense));
-        return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense);
+        return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense);
       })
       .map(expense => {
         const key = monthKey(getDateValue(expense));
@@ -2536,7 +2568,7 @@ export const DashboardService = {
 
 export const buildExecutiveDashboardSnapshot = (input = {}) => {
   const previous = activeBuildCache;
-  activeBuildCache = { dates: new Map(), billing: new WeakMap() };
+  activeBuildCache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap() };
   try {
     return DashboardService.build(input);
   } finally {

@@ -24,6 +24,14 @@ service cloud.firestore {
       return hasIdentitySession() && request.auth.token.accountType == 'employee';
     }
 
+    function canManageCompanyWifi() {
+      return isEmployeeIdentity() && request.auth.token.role in ['super_admin', 'admin', 'owner', 'company_owner', 'business_owner'];
+    }
+
+    function companyWifiKeys() {
+      return ['attendanceWifi', 'attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt', 'defaultAttendanceWifiSsid', 'defaultAttendanceWifiBssid'];
+    }
+
     function isCustomerIdentity() {
       return hasIdentitySession()
         && request.auth.token.accountType == 'customer'
@@ -863,6 +871,7 @@ service cloud.firestore {
 
       allow create: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
           (
@@ -885,6 +894,7 @@ service cloud.firestore {
 
       allow update: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
@@ -920,6 +930,7 @@ service cloud.firestore {
 
       allow delete: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'companies' || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && (
           (

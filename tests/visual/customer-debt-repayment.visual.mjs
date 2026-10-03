@@ -5,6 +5,7 @@ import { build, preview } from 'vite';
 import { chromium } from 'playwright-core';
 
 const out = 'test-results/customer-debt-repayment';
+const deadline = setTimeout(() => { console.error('Repayment test timeout: 180s'); process.exit(1); }, 180000);
 await mkdir(out, { recursive: true });
 Object.assign(process.env, { VITE_DATA_MODE: 'preview', VITE_ALLOW_PREVIEW_BUILD: 'true', VITE_HD_BUILD_ID: 'debt-repayment-test' });
 await build({ build: { outDir: `${out}/app` }, logLevel: 'error' });
@@ -57,10 +58,18 @@ try {
     await page.getByText('Khách Test Trả Nợ', { exact: true }).click();
     await page.getByText('700.000 đ', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
+    await page.locator('nav').getByRole('button', { name: 'Thêm', exact: true }).click();
+    await page.locator('main').getByRole('button', { name: 'Thu chi', exact: true }).click();
+    const metrics = page.locator('.finance-summary-metrics');
+    await metrics.getByText('Tổng chi phí', { exact: true }).waitFor();
+    assert.match(await metrics.innerText(), /Tổng chi phí\s+0 đ/);
+    await page.getByText('Chi trả nợ: 300.000 đ', { exact: true }).waitFor();
+    await page.screenshot({ path: `${out}/${width}-costs.png` });
     console.log(`${width}: expense persisted, payable 1,000,000 -> 700,000, zero receipts, reload PASS`);
     await context.close();
   }
 } finally {
   await browser.close();
   await new Promise(resolve => server.httpServer.close(resolve));
+  clearTimeout(deadline);
 }

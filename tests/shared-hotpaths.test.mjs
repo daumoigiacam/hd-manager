@@ -96,21 +96,6 @@ test('actual snapshot setter skips no-op replacement but applies price and confi
   assert.deepEqual(state, []);
 });
 
-test('closed search never traverses data; reopening preserves permission checks', () => {
-  for (const name of ['shellSearchCustomers', 'shellSearchEmployees', 'shellSearchTransactions', 'shellSearchSuppliers', 'shellSearchProducts', 'shellSearchDocuments', 'shellSearchEntitySections']) {
-    assert.deepEqual(appFunction(name, { shellSearchOpen: false }, { memoCallback: true })(), [], name);
-  }
-  const bindings = { shellSearchOpen: true, tabPermissions: { finance: true },
-    shellCanViewCashflow: false, shellCanApproveCashflow: false, employee: { id: 'me' },
-    shellSearchCustomers: [], expenses: [{ id: 'own', empId: 'me', amount: 10 }, { id: 'private', empId: 'other', amount: 20 }], payments: [],
-    isPayosPaymentRecord: () => false, getEntityTimestamp: () => 0,
-    resolveEntityDateKey: () => '2026-09-30', formatCurrency: String,
-    getPaymentSourceLabel: () => '', getPaymentMethodLabel: () => '',
-  };
-  const rows = appFunction('shellSearchTransactions', bindings, { memoCallback: true })();
-  assert.equal(rows.length, 1);
-  assert.match(rows[0].id, /own/);
-});
 
 test('shared money/quantity formatters retain existing edge-case output', () => {
   const bindings = { viNumberFormatter: new Intl.NumberFormat('vi-VN') };
@@ -152,8 +137,11 @@ test('hidden executive dashboard stays mounted but ignores background data churn
   const compare = appFunction('areExecutiveDashboardPropsEqual');
   const visible = { isActive: true, orders: [{ id: 'o1' }], company: { id: 'c1' } };
   const hidden = { ...visible, isActive: false };
-  assert.equal(compare(visible, hidden), false, 'the first hide transition may render once');
+  assert.equal(compare(visible, hidden), true, 'hiding must not render the report');
   assert.equal(compare(hidden, { ...hidden, orders: [{ id: 'o2' }] }), true, 'hidden data updates must not render the dashboard');
-  assert.equal(compare(hidden, visible), false, 'returning Home must render the latest props');
+  assert.equal(compare(hidden, visible), true, 'unchanged data does not rebuild on return');
+  assert.equal(compare(visible, { ...visible, orders: [{ id: 'o2' }] }), false, 'changed data must refresh on return');
+  assert.equal(compare(visible, { ...visible, company: { id: 'c2' } }), false, 'company changes must refresh');
+  assert.equal(compare(visible, { ...visible, onOpenGlobalSearch: () => {} }), false, 'callback changes must refresh');
   assert.equal(compare(visible, visible), true, 'stable visible props remain memoized');
 });

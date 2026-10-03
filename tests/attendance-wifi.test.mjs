@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
-import { canAttemptAutoWifiCheckIn, matchesAttendanceWifi } from '../src/utils/attendanceWifi.js';
+import { canManageCompanyWifi, canAttemptAutoWifiCheckIn, matchesAttendanceWifi } from '../src/utils/attendanceWifi.js';
+
+test('only owner/admin roles configure company WiFi', () => {
+  for (const role of ['super_admin', 'admin', 'owner', 'company_owner', 'business_owner']) assert.equal(canManageCompanyWifi({ role }), true);
+  for (const role of ['employee', 'accountant', 'accounting', 'manager', 'customer', undefined]) assert.equal(canManageCompanyWifi({ role }), false);
+});
 
 const require = createRequire(import.meta.url);
 const { evaluateAutoWifiCheckIn, getShiftWindow, matchesCompanyWifi } = require('../functions/attendanceWifi.js');

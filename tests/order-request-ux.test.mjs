@@ -59,29 +59,18 @@ test('existing variant is toggled instead of creating a duplicate line', () => {
   assert.match(appSource, /filter\(\(item\) => getDraftItemVariantKey\(item\) !== targetVariantKey\)/);
 });
 
-test('plus picker exposes the active catalog and remembers new customer products after save', () => {
-  assert.match(appSource, /const manualCatalogProductVariantOptions = useMemo\(\(\) => activeProducts\.flatMap/);
+test('plus picker loads catalog on demand without post-save preference writes', () => {
+  assert.match(appSource, /!isManualExtraProductPickerOpen \? \[\] : activeProducts\.flatMap/);
   assert.match(appSource, /const sourceVariants = manualCatalogProductVariantOptions\.filter/);
   assert.match(appSource, /const savedRequestId = await onAddOrderRequest/);
-  assert.match(appSource, /onPersisted: \(\{ id, request \}\) =>/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
-  assert.match(appSource, /onEditCustomer=\{onEditCustomer\}/);
-  assert.match(appSource, /if \(!configuredBilling\.isValid && !hasSavedPricingSnapshot\)/);
+  assert.doesNotMatch(appSource, /scheduleOrderRequestMemorySync|persistOrderRequestMemories/);
 });
 
-test('catalog product attributes become selectable order-request variants', () => {
-  const variantSource = appSource.slice(
-    appSource.indexOf('const getCustomerProductVariants'),
-    appSource.indexOf('const hasCustomerProductPrice'),
-  );
-
-  assert.match(variantSource, /if \(productAttributes\.length > 0 && !hasConfiguredVariants\)/);
-  assert.match(variantSource, /productAttributes\.forEach\(\(attribute, index\) =>/);
-  assert.match(variantSource, /attributeLabel: attribute/);
-  assert.match(appSource, /const manualFixedProductVariantOptions = useMemo\(\(\) => manualFixedProductOptions\.flatMap/);
-  assert.match(appSource, /const manualFixedProductVariantGroups = useMemo\(/);
-  assert.match(appSource, /manualFixedProductVariantGroups\.map\(\(\{ product, variants \}\)/);
-  assert.doesNotMatch(appSource, /manualFixedProductVariantOptions\.map/);
+test('quick suggestions use previous order variants without expanding catalog attributes', () => {
+  assert.match(appSource, /previousOrderOptions\.map/);
+  assert.match(appSource, /manualFixedProductVariantOptions\.map/);
+  assert.match(appSource, /previousOrderDraftFields\(variantConfig\)/);
+  assert.doesNotMatch(appSource, /manualFixedProductVariantGroups/);
 });
 
 test('catalog search groups one product and keeps its attributes as selectable chips', () => {
@@ -400,25 +389,12 @@ test('branch saved defaults remain isolated from the root customer configuration
   assert.equal(branchConfig.defaultOrderUnit, 'Bộ');
 });
 
-test('saved request synchronizes customer defaults atomically only after the request save succeeds', () => {
-  assert.match(appSource, /const handleSyncCustomerFixedProductDefaults = async/);
-  assert.match(appSource, /await runTransaction\(db, async \(transaction\) =>/);
-  assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{handleSyncCustomerFixedProductDefaults\}/);
-  assert.match(appSource, /onSyncCustomerFixedProductDefaults=\{onSyncCustomerFixedProductDefaults\}/);
-  assert.match(appSource, /await onSyncCustomerFixedProductDefaults\(customerId, memoryRequests\)/);
-  assert.match(appSource, /scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
-  assert.match(appSource, /orderUnit: quantityUnit,/);
-  assert.match(appSource, /billingUnit: billingSnapshot\.billingUnit,/);
-  const inlineSaveSection = appSource.slice(
-    appSource.indexOf('const saveInlineEditRow = async'),
-    appSource.indexOf('const deleteInlineEditRow = async'),
-  );
-  assert.match(
-    inlineSaveSection,
-    /await onEditOrderRequest\(request\.id, normalizedRequest, employee\?\.id \|\| 'admin', \{\s*backgroundSync: true,\s*onPersisted: \(\) => \{\s*if \(orderCellEditor\?\.field === 'unitPrice'\) \{\s*scheduleOrderRequestMemorySync\(/,
-    'inline order edits must update customer price memory only after the order write is confirmed or durably queued'
-  );
-  assert.match(inlineSaveSection, /Đã lưu thay đổi đơn đặt hàng của \$\{customer\.name\}\. Firebase đang đồng bộ nền\./);
+test('request saves do not overwrite customer defaults or emit success banners', () => {
+  const inlineSaveSection = appSource.slice(appSource.indexOf('const saveInlineEditRow = async'), appSource.indexOf('const deleteInlineEditRow = async'));
+  assert.match(inlineSaveSection, /await onEditOrderRequest/);
+  assert.match(inlineSaveSection, /backgroundSync: true/);
+  assert.doesNotMatch(inlineSaveSection, /onPersisted|scheduleOrderRequestMemorySync|Firebase đang đồng bộ nền/);
+  assert.match(inlineSaveSection, /getFriendlyFirebaseErrorMessage/);
 });
 
 test('inline order edit blocks rapid duplicate saves before React rerenders', () => {
@@ -428,15 +404,12 @@ test('inline order edit blocks rapid duplicate saves before React rerenders', ()
   assert.match(appSource, /savingOrderCellRef\.current = false;\s*setIsSavingOrderCell\(false\);/);
 });
 
-test('order request memory sync runs after local persistence is confirmed or durably queued', () => {
-  const submitSection = appSource.slice(
-    appSource.indexOf('const handleSubmitOrderRequests = async'),
-    appSource.indexOf('const orderCellEditorConfig = getOrderCellEditorConfig()'),
-  );
-  assert.match(submitSection, /await onEditOrderRequest\([\s\S]*?backgroundSync: true,[\s\S]*?onPersisted: \(\{ request \}\) => scheduleOrderRequestMemorySync\(/);
-  assert.match(submitSection, /const savedRequestId = await onAddOrderRequest[\s\S]*?backgroundSync: true,[\s\S]*?onPersisted: \(\{ id, request \}\) =>/);
-  assert.match(submitSection, /onSettled: \(\) => \{[\s\S]*?scheduleOrderRequestMemorySync\(memorySyncBatch\.persisted\)/);
-  assert.doesNotMatch(submitSection, /await persistOrderRequestMemories\(/);
+test('order save retains durable persistence without auxiliary memory writes', () => {
+  const submitSection = appSource.slice(appSource.indexOf('const handleSubmitOrderRequests = async'), appSource.indexOf('const orderCellEditorConfig = getOrderCellEditorConfig()'));
+  assert.match(submitSection, /await onEditOrderRequest[\s\S]*?backgroundSync: true/);
+  assert.match(submitSection, /await onAddOrderRequest[\s\S]*?backgroundSync: true/);
+  assert.doesNotMatch(submitSection, /onPersisted|onSettled|memorySyncBatch/);
+  assert.match(submitSection, /if \(!savedRequestId\) throw new Error/);
 });
 
 test('order submit keeps both state and ref duplicate guards', () => {

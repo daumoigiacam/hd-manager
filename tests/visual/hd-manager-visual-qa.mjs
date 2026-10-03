@@ -525,21 +525,7 @@ try {
 
 const interactionSession = await startPage({ width: 1366, height: 768 });
 try {
-  const searchTrigger = interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true });
-  await searchTrigger.click();
-  const moduleSearch = interactionSession.page.getByRole('searchbox', { name: /Tìm kiếm khách hàng, sản phẩm/ });
-  await moduleSearch.fill('Khách hàng');
-  const moduleSearchFocus = await inspectLayout(interactionSession.page, 'shell search');
-  const searchResult = interactionSession.page
-    .locator('.hd-shell-search-results')
-    .getByRole('button', { name: 'Khách hàng', exact: true });
-  const searchWorked = await searchResult.isVisible();
-  if (searchWorked) await searchResult.click();
-  const shellSearchPopover = interactionSession.page.locator('.hd-shell-search-popover');
-  if (await shellSearchPopover.isVisible().catch(() => false)) {
-    await interactionSession.page.getByRole('button', { name: 'Tìm chức năng', exact: true }).click();
-  }
-  interactionResults.push({ interaction: 'sidebar module search', passed: searchWorked && moduleSearchFocus.searchFocusChecked > 0 && moduleSearchFocus.searchFocusFailures.length === 0 });
+  interactionResults.push({ interaction: 'global search removed', passed: await interactionSession.page.locator('.hd-header-global-search-button, .hd-shell-search-trigger').count() === 0 });
 
   await navigateRoute(interactionSession.page, 'customers');
   const headerSearch = interactionSession.page.getByRole('button', { name: 'Tìm kiếm', exact: true });

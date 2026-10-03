@@ -71,4 +71,8 @@ export const compareOrdersByNewest = (left = {}, right = {}) => {
   return `${right.id || ''}`.localeCompare(`${left.id || ''}`);
 };
 
-export const sortOrdersByNewest = (orders = []) => [...orders].sort(compareOrdersByNewest);
+export const sortOrdersByNewest = (orders = []) => orders
+  .map(order => ({ order, timestamp: getOrderRecencyTimestamp(order) }))
+  .sort((left, right) => (right.timestamp - left.timestamp)
+    || `${right.order.id || ''}`.localeCompare(`${left.order.id || ''}`))
+  .map(entry => entry.order);
