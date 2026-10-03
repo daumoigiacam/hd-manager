@@ -1,4 +1,4 @@
-import React from 'react';
+import 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function CoreRowPager({ page, onChange }) {

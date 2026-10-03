@@ -4,7 +4,7 @@ import { createOrderSearchState } from './services/orderSearchState.js';
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
 import { startTransition } from 'react';
-import { createPortal, flushSync } from 'react-dom';
+import { createPortal } from 'react-dom';
 import AccountGreeting from './layout/AccountGreeting.jsx';
 import './features/employees/employee-profile.css';
 import EmployeeBankQr from './features/employees/EmployeeBankQr.jsx';
@@ -45,10 +45,10 @@ import {
   Edit3, LogOut, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star, 
   Package, Trash2, Wallet, Banknote, Target, CalendarDays, Filter, Building, Crown,
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
-  Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, MoreVertical, LayoutGrid, Download, Copy, Mic,
+  Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, LayoutGrid, Download, Copy,
   Sparkles, Send, Bot, Loader2, ImagePlus, Barcode, Camera, Gift,
-  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, KeyRound, Fingerprint,
-  Pin, RefreshCw, Sun, Moon, Monitor
+  MessageCircle, Headphones, Megaphone, BrainCircuit, ShieldAlert, Save, Car, Truck, Eye, EyeOff, Fingerprint,
+  RefreshCw
 } from 'lucide-react';
 import {
   createWarehouseWeightEntryRow,
@@ -197,13 +197,13 @@ import {
 } from './utils/globalSearch.js';
 import BusinessReportWorkspace from './features/business-report/BusinessReportWorkspace.jsx';
 import {
-  AttachmentPanel, ChatAvatar, ChatSearchBar, ChatState, ChatTabs,
+  AttachmentPanel, ChatSearchBar, ChatState, ChatTabs,
   ConversationItem, ConversationToolbar, MessageComposer, MessageList,
   OfflineBanner, SearchResultItem
 } from './features/messaging/MessagingUi.jsx';
 import {
   CHAT_LIST_TABS, CHAT_SEARCH_TABS, filterChatConversations,
-  getChatCategory, getChatSearchResult, normalizeChatSearch
+  getChatCategory, getChatSearchResult
 } from './features/messaging/messagingUiModel.js';
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
@@ -213,7 +213,6 @@ import { buildCustomerFixedProductMemoryPatch } from './utils/customerFixedProdu
 import { mergeCustomerOrderMemoryHistory } from './utils/customerOrderMemory.js';
 import {
   AUTOMATIC_EVALUATION_CRITERIA,
-  AUTOMATIC_EVALUATION_SCHEMA_VERSION,
   buildEvaluationSummary13,
   calculateEmployeeAutomaticEvaluation
 } from './utils/employeeEvaluationAutomation.js';
@@ -391,7 +390,7 @@ import {
   useModalScrollLock,
 } from './layout/index.js';
 import { HDButton, HDBadge, HDFilterBar, HDFilterSheet, HDIconButton, HDKpiCard, HDEmptyState, HDWidgetCustomizer } from './design-system/index.js';
-import { useHDTheme } from './design-system/ThemeProvider.jsx';
+import './design-system/ThemeProvider.jsx';
 import {
   PRODUCT_PRICING_UNIT_OPTIONS,
   getProductCatalogUnitSuggestions,

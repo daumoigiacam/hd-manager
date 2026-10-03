@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { loadPreviewStorage, key } from './helpers/preview-storage-harness.mjs';
@@ -122,14 +121,16 @@ test('cross-tab reload invalidates fragments and preserves foreign tenant record
 });
 
 test('inherited footer and production Firebase transport remain unchanged', async () => {
-  for (const [path,hash] of [
-    ['src/design-system/foundation.css','B4D3CA7C1E4A5A34F270CBD7AB2DF2BB2F88CBC180C52FA4916B987FBDB020FC']]) {
+  for (const path of ['src/design-system/foundation.css']) {
     const content = await readFile(path, 'utf8');
     const customerFabRule = /\.hd-shell--staff \.hd-module-fab\.hd-customer-module-fab \{\r?\n  bottom: calc\(max\(var\(--hd-footer-height, 0px\), var\(--hd-bottom-nav-height, 4rem\)\) \+ var\(--hd-space-3, 0\.75rem\)\);\r?\n\}\r?\n\r?\n/g;
     const customerPagerRule = /@media \(min-width: 600px\) \{\r?\n  \.hd-app-content\[data-hd-module="customers"\] \.hd-list-pagination \{\r?\n    padding-inline-end: 5rem;\r?\n    margin-bottom: 5rem;\r?\n  \}\r?\n\}\r?\n\r?\n/g;
     assert.equal([...content.matchAll(customerFabRule)].length, 1, 'Only the isolated customer FAB correction is allowed');
     assert.equal([...content.matchAll(customerPagerRule)].length, 1, 'Only the evidenced customer pager clearance is allowed');
-    assert.equal(createHash('sha256').update(content.replace(customerFabRule, '').replace(customerPagerRule, '')).digest('hex').toUpperCase(),hash);
+    // Windows checkout normalizes line endings; compare against the fixed release, not local bytes.
+    const baseline = execFileSync('git', ['show', `4db424a3e511bc2a24162245e7423478da9f89c8:${path}`], { encoding: 'utf8' });
+    const canonical = text => text.replace(customerFabRule, '').replace(customerPagerRule, '').replace(/\r\n/g, '\n');
+    assert.equal(canonical(content), canonical(baseline));
   }
   for (const path of ['src/config/firebase-runtime.js', 'src/config/firebase-rest-runtime.js']) {
     const baseline = execFileSync('git', ['show', `5f162f5:${path}`], { encoding: 'utf8' });

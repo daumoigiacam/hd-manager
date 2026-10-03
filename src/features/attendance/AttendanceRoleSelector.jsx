@@ -1,4 +1,4 @@
-import React from 'react';
+import 'react';
 
 export default function AttendanceRoleSelector({ positions = [], value, onChange, disabled = false }) {
   if (positions.length < 2) return null;

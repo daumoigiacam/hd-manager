@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 export const CARE_RULES = [

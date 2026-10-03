@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Plus, ChevronRight, CreditCard } from 'lucide-react';
 import { getCompanyBankAccounts, buildCompanyBankAccountUpdate } from './companyBankAccounts.js';
 
