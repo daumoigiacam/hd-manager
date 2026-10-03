@@ -1,3 +1,4 @@
+import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 
@@ -50,6 +51,7 @@ try {
   await page.route('**/*', route => new URL(route.request().url()).origin === new URL(baseUrl).origin ? route.continue() : route.abort());
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await installPreviewReader(page);
   await page.addInitScript(({ initialToken, initialStore }) => {
     window.__initial_auth_token = initialToken;
     if (!sessionStorage.getItem('hd-save-fixture-seeded')) {
@@ -91,17 +93,17 @@ try {
   const createElapsedMs = Date.now() - createStartedAt;
   assert.ok(createElapsedMs < 1000, `Order request create form took ${createElapsedMs}ms to close in preview mode`);
   await page.waitForFunction(() => {
-    const rows = JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview') || '{}').orderRequests || {};
+    const rows = window.__readPreviewStore().orderRequests || {};
     return rows.or_save_speed?.items?.[0]?.unitPrice === 290000
       && Object.values(rows).some(row => row.id !== 'or_save_speed' && row.customerId === 'c_preview_01' && row.items?.[0]?.quantity === 3);
   });
-  const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests);
+  const persisted = await page.evaluate(() => window.__readPreviewStore().orderRequests);
   const created = Object.values(persisted).filter(row => row.id !== 'or_save_speed' && row.customerId === 'c_preview_01' && row.items?.[0]?.quantity === 3);
   assert.equal(created.length, 1, 'Create must persist exactly one new request');
   assert.equal(persisted.or_save_speed.items[0].unitPrice, 290000);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator('[data-hd-shell="enterprise"]').waitFor();
-  const restored = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests);
+  const restored = await page.evaluate(() => window.__readPreviewStore().orderRequests);
   assert.deepEqual(restored.or_save_speed.items, persisted.or_save_speed.items, 'Edited price must survive reload');
   assert.deepEqual(restored[created[0].id].items, created[0].items, 'Created items must survive reload');
   assert.deepEqual(errors, []);

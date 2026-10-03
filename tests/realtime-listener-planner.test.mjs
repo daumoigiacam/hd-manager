@@ -65,3 +65,24 @@ test('zero listener budget moves requested data to read-only and evicts active l
   assert.deepEqual(plan.overflowNames, ['orders', 'customers']);
   assert.deepEqual(plan.evictedNames, ['payments']);
 });
+
+test('entry workspace may evict warm sources without dropping required or baseline sources', () => {
+  const plan = planForegroundRealtimeActivation({
+    requestedNames: ['companies', 'products', 'warehouseDispatches', 'customers'],
+    activeNames: ['orders', 'payments', 'products'],
+    recentNames: ['orders', 'payments'],
+    baselineNames: ['companies'],
+    availableNames: ['companies', 'products', 'warehouseDispatches', 'customers', 'orders', 'payments'],
+    limit: 12,
+    retainRecent: false,
+  });
+  assert.deepEqual(plan.liveNames, ['products', 'warehouseDispatches', 'customers']);
+  assert.deepEqual(plan.evictedNames, ['orders', 'payments']);
+  assert.deepEqual(plan.overflowNames, []);
+  const resumed = planForegroundRealtimeActivation({
+    requestedNames: ['orders'], activeNames: plan.liveNames,
+    recentNames: plan.recentNames, limit: 3,
+  });
+  assert.ok(resumed.liveNames.includes('orders'));
+  assert.equal(resumed.liveNames.length, 3);
+});

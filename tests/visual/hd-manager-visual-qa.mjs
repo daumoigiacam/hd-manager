@@ -1,3 +1,4 @@
+import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
@@ -153,6 +154,7 @@ const attachDiagnostics = (page) => {
 };
 
 const installPreviewSession = async (page, token = previewAuthToken, store = previewQaStore) => {
+  await installPreviewReader(page);
   await page.addInitScript(({ authToken, initialStore }) => {
     window.__initial_auth_token = authToken;
     window.localStorage.setItem('hd-manager-local-db-v2-clean-preview', JSON.stringify(initialStore));
@@ -781,8 +783,7 @@ const inspectEmployeeMessages = async (employeeId, name, phone, expectedText, fo
 
 const clonePreviewStore = (store) => JSON.parse(JSON.stringify(store));
 const readPreviewStore = async (page) => page.evaluate(() => {
-  const raw = window.localStorage.getItem('hd-manager-local-db-v2-clean-preview');
-  return raw ? JSON.parse(raw) : {};
+  return window.__readPreviewStore();
 });
 
 const clickConversationByText = async (page, customerName, messageText = '') => {
@@ -819,7 +820,7 @@ const sendEmployeeReply = async ({ employeeId, name, phone, store, customerName,
       await composer.fill(text);
       await composer.press('Enter');
       await session.page.waitForFunction(({ text, employeeId }) => {
-        const store = JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview') || '{}');
+        const store = window.__readPreviewStore();
         return Object.values(store.messages || {}).some(message => message.text === text && message.senderEmpId === employeeId);
       }, { text, employeeId }, { timeout: 5000 });
     }

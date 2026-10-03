@@ -125,7 +125,9 @@ const moduleStart = appSource.indexOf('function WarehouseDispatchView');
 assert.ok(modalStart >= 0 && moduleStart > modalStart, 'Không tìm thấy editor kg độc lập');
 const modalSource = appSource.slice(modalStart, moduleStart);
 const moduleEnd = appSource.indexOf('const OrderRequestSelectableProductCard', moduleStart);
-const warehouseModuleSource = appSource.slice(moduleStart, moduleEnd);
+const warehouseViewSource = appSource.slice(moduleStart, moduleEnd);
+const tableSource = await readFile(new URL('../src/features/warehouse/DispatchTableBody.jsx', import.meta.url), 'utf8');
+const warehouseModuleSource = `${warehouseViewSource}\n${tableSource}`;
 
 test('editor kg dùng state cục bộ và không cập nhật màn hình cha khi gõ', () => {
   assert.match(modalSource, /const \[entries, setEntries\] = useState/);
@@ -148,6 +150,9 @@ test('chỉ lưu dữ liệu sau thao tác xác nhận', () => {
 });
 
 test('danh sách phiếu xuất mở đúng editor theo từng ô', () => {
+  assert.match(warehouseViewSource, /<DispatchTableBody/);
+  assert.match(warehouseViewSource, /openDispatchCellEditor=\{openDispatchCellEditor\}/);
+  assert.match(warehouseViewSource, /openDispatchListWeightEditor=\{openDispatchListWeightEditor\}/);
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'assignedDriverId', event\)/);
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'customerId', event\)/);
   assert.match(warehouseModuleSource, /openDispatchCellEditor\(row, 'productId', event\)/);

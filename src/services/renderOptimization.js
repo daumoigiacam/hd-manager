@@ -30,14 +30,23 @@ const cancelIdleWork = (handle) => {
   getTimerScope().clearTimeout(handle.id);
 };
 
-export const useDebouncedValue = (value, delayMs = DEFAULT_DEBOUNCE_MS) => {
+export const useDebouncedValue = (value, delayMs = DEFAULT_DEBOUNCE_MS, { leading = false } = {}) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
+  const burstActive = useRef(false);
 
   useEffect(() => {
     const timerScope = getTimerScope();
-    const timerId = timerScope.setTimeout(() => setDebouncedValue(value), Math.max(0, Number(delayMs) || 0));
+    if (leading && !burstActive.current && !Object.is(value, debouncedValue)) {
+      burstActive.current = true;
+      setDebouncedValue(value);
+    }
+    if (!leading) burstActive.current = false;
+    const timerId = timerScope.setTimeout(() => {
+      burstActive.current = false;
+      setDebouncedValue(value);
+    }, Math.max(0, Number(delayMs) || 0));
     return () => timerScope.clearTimeout(timerId);
-  }, [value, delayMs]);
+  }, [value, delayMs, leading]);
 
   return debouncedValue;
 };

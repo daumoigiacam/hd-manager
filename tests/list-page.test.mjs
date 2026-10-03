@@ -21,7 +21,8 @@ test('large financial/customer lists paginate rendering, not business totals', (
     assert.match(source, new RegExp(`${name}\\.items\\.map\\(`));
     assert.match(source, new RegExp(`pagination=\\{${name}\\}`));
   }
-  assert.match(source, /dailyOrderRevenueSummary = useMemo\(\(\) => \{\s*const ordersForDate = activeOrders/);
+  assert.match(source, /const normalizedOrderSnapshots = useMemo\(\(\) => activeOrders/);
+  assert.match(source, /dailyOrderRevenueSummary = useMemo\(\(\) => \{\s*const ordersForDate = normalizedOrderSnapshots/);
   assert.match(source, /debtOverviewSummary = useMemo\(\(\) => debtOverviewCustomers.reduce/);
   assert.doesNotMatch(source, /false && activeOrders\.reverse/);
 });

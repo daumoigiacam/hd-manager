@@ -22,6 +22,7 @@ import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixed
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
+const requestTableSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'features', 'orders', 'OrderRequestTableRows.jsx'), 'utf8');
 
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
@@ -448,7 +449,9 @@ test('order submit keeps both state and ref duplicate guards', () => {
 test('existing order rows edit one selected cell and keep delete inside the editor dialog', () => {
   assert.match(appSource, /canEditOrderRequestSizePrice = false/);
   assert.match(appSource, /const HDSingleCellEditDialog = React\.memo/);
-  assert.match(appSource, /openOrderCellEditor\(row, 'unitPrice', event\)/);
+  assert.match(requestTableSource, /openOrderCellEditor\(row, 'unitPrice', event\)/);
+  assert.match(appSource, /openOrderCellEditor=\{openRequestTableCell\}/);
+  assert.match(appSource, /const openRequestTableCell = useCurrentCallback\(openOrderCellEditor\)/);
   assert.match(appSource, /title: 'Sửa đơn giá'/);
   assert.match(appSource, /\[field\]: field === 'unitPrice' \? parseInputCurrency\(nextValue\) : nextValue/);
   assert.match(appSource, /onDelete=\{deleteOrderCellEditorRow\}/);
@@ -495,18 +498,21 @@ test('customer and product columns use the same width', () => {
 });
 
 test('product column content is centered consistently', () => {
-  assert.match(appSource, /className="w-full rounded-xl px-1 py-1 text-center font-semibold text-slate-900 transition/);
-  assert.match(appSource, /className="flex flex-wrap items-center justify-center gap-1\.5"/);
+  assert.match(requestTableSource, /className="w-full rounded-xl px-1 py-1 text-center font-semibold text-slate-900 transition/);
+  assert.match(requestTableSource, /className="flex flex-wrap items-center justify-center gap-1\.5"/);
 });
 
 test('order search results are sorted by order recency after relevance filtering', () => {
   const displayOrdersSource = appSource.slice(
-    appSource.indexOf('const displayOrders = useMemo'),
+    appSource.indexOf('const orderedFilteredOrders = useMemo'),
     appSource.indexOf('const selectedRevenueDate ='),
   );
-  assert.match(appSource, /const deferredOrderSearchKeyword = useDeferredValue\(orderSearchKeyword\)/);
-  assert.match(displayOrdersSource, /searchOrderRecords\(source, deferredOrderSearchKeyword/);
-  assert.match(displayOrdersSource, /return sortOrdersByNewest\(rankedSource\);/);
+  assert.match(appSource, /const committedOrderSearch = useSyncExternalStore/);
+  assert.match(appSource, /const filteredOrderSnapshots = useMemo/);
+  assert.match(appSource, /usePreparedSearch\(normalizedOrderSnapshots, getPreparedOrderSearchFields/);
+  assert.match(displayOrdersSource, /sortOrdersByNewest\(filteredOrderSnapshots\)/);
+  assert.match(displayOrdersSource, /orderedFilteredOrders, filteredOrderMembership/);
+  assert.match(displayOrdersSource, /preparedOrderSearch\.results/);
 });
 
 test('order unit editor configures pricing and order units from one compact choice row', () => {
@@ -566,25 +572,24 @@ test('shared order sheet keeps every customer and all products together', () => 
   assert.deepEqual(pages[0].map((row) => row.customerId), ['a', 'a', 'a']);
   assert.deepEqual(pages[1].map((row) => row.customerId), ['b']);
 
-  assert.match(appSource, /const groupedShareableRequestSheetCustomerGroups = useMemo/);
+  assert.match(appSource, /const getOrderRequestShareData = useMemo/);
   assert.match(appSource, /groupOrderRequestShareRowsByCustomer\(shareableMergedRequestSheetRows/);
   assert.match(appSource, /groupedShareableRequestSheetCustomerGroups\.flatMap\(\(group\) => group\.rows\)/);
   assert.match(appSource, /buildOrderRequestSharePagesByCustomer\(/);
   assert.doesNotMatch(appSource, /groupedShareableRequestSheetProductGroups/);
 });
 
-test('share images are prepared in background and reused from persistent cache', () => {
+test('request share images are prepared on demand and reused from persistent cache', () => {
   assert.match(appSource, /const SHARE_IMAGE_CACHE_DB_NAME = 'hd-manager-share-image-cache'/);
   assert.match(appSource, /const readPersistentShareImageAsset = async/);
   assert.match(appSource, /const writePersistentShareImageAsset = async/);
   assert.match(appSource, /scope: 'sales_order_invoice'/);
   assert.match(appSource, /reason: 'order_created'/);
   assert.match(appSource, /reason: 'order_updated'/);
-  assert.match(appSource, /reason: 'order_request_created'/);
-  assert.match(appSource, /reason: 'order_request_updated'/);
-  assert.match(appSource, /window\.addEventListener\(ORDER_REQUEST_SHARE_WARMUP_EVENT, handleSavedOrderRequest\)/);
+  assert.doesNotMatch(appSource, /ORDER_REQUEST_SHARE_WARMUP_EVENT|notifyOrderRequestShareWarmup/);
   assert.match(appSource, /const prepareOrderRequestSheetBlobs = async/);
-  assert.match(appSource, /reason = 'order_request_loaded_or_changed'/);
+  assert.match(appSource, /const getOrderRequestSheetAssetKey = useCallback/);
+  assert.match(appSource, /const cacheKey = getOrderRequestSheetAssetKey\(\)/);
   assert.match(appSource, /prepareOrderRequestSheetBlobs\(\{ reason: 'share_click' \}\)/);
   assert.match(appSource, /prepareOrderRequestSheetBlobs\(\{ reason: 'download_click' \}\)/);
   assert.doesNotMatch(appSource, /const canvases = await renderOrderRequestSheetCanvases\(\);\s*const blobs = await Promise\.all\(canvases\.map\(\(canvas\) => canvasToBlob\(canvas, 'image\/png'\)\)\);\s*const result = await shareOrderRequestSheetBlobs/);

@@ -1,4 +1,5 @@
 import { seedData } from './seed-data.js';
+import { createPreviewJournal, readPreviewJournal } from './preview-journal.js';
 
 const STORAGE_KEY = 'hd-manager-local-db-v2-clean-preview';
 const BROADCAST_CHANNEL_NAME = `${STORAGE_KEY}-channel`;
@@ -46,30 +47,33 @@ function loadStore() {
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return initialStore;
-    }
-
-    const parsed = JSON.parse(raw);
-    return normalizeStore(parsed);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return readPreviewJournal(window.localStorage, STORAGE_KEY, normalizeStore(parsed));
   } catch (error) {
     console.warn('Failed to load local preview data, using seed data instead.', error);
     return initialStore;
   }
 }
 
-function persistStore() {
+function persistStore(refs) {
   if (typeof window === 'undefined') {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  if (!persistPatches) persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY);
+  persistPatches(refs.map(ref => ({ collection: ref.collectionName, id: ref.id,
+    value: store[ref.collectionName]?.[ref.id] ?? null })));
   if (broadcastChannel) {
     broadcastChannel.postMessage({ type: 'store-updated', at: Date.now() });
   }
 }
 
 let store = loadStore();
+let persistPatches = null;
+if (typeof window !== 'undefined') {
+  try { persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY); }
+  catch (error) { console.warn('Preview storage unavailable; writes will retry and must confirm persistence.', error); }
+}
 
 const collectionListeners = new Map();
 const broadcastChannel =
@@ -92,7 +96,7 @@ function queryValue(entry, field) {
   return field.split('.').reduce((value, key) => value?.[key], entry);
 }
 
-function createSnapshot(ref) {
+function createSnapshot(ref, previousEntries = [], captureEntries = () => {}) {
   let entries = Object.values(store[ref.name] || {});
   const constraints = ref.constraints || [];
   for (const { field, operator, value } of constraints.filter(item => item.kind === 'where')) {
@@ -128,12 +132,37 @@ function createSnapshot(ref) {
   }
   const max = constraints.find(item => item.kind === 'limit');
   if (max) entries = entries.slice(0, max.count);
-  return {
-    docs: entries.map((entry) => ({
+  captureEntries(entries);
+  const document = (entry) => ({
       id: entry.id,
       exists: () => true,
       data: () => clone(entry)
-    })),
+  });
+  let changes;
+  return {
+    query: ref,
+    docs: entries.map(document),
+    docChanges() {
+      if (changes) return changes;
+      changes = [];
+      const remaining = previousEntries.slice();
+      const finalIds = new Set(entries.map(entry => entry.id));
+      for (let index = remaining.length - 1; index >= 0; index--) {
+        if (finalIds.has(remaining[index].id)) continue;
+        changes.push({ type: 'removed', doc: document(remaining[index]), oldIndex: index, newIndex: -1 });
+        remaining.splice(index, 1);
+      }
+      // Indexes refer to the evolving result, as in Firestore QuerySnapshot.
+      entries.forEach((entry, newIndex) => {
+        const oldIndex = newIndex >= remaining.length ? -1 : remaining[newIndex]?.id === entry.id
+          ? newIndex : remaining.findIndex((candidate, index) => index >= newIndex && candidate.id === entry.id);
+        if (oldIndex === newIndex && remaining[oldIndex] === entry) return;
+        if (oldIndex >= 0) remaining.splice(oldIndex, 1);
+        remaining.splice(newIndex, 0, entry);
+        changes.push({ type: oldIndex < 0 ? 'added' : 'modified', doc: document(entry), oldIndex, newIndex });
+      });
+      return changes;
+    },
     empty: entries.length === 0,
     size: entries.length,
     metadata: {
@@ -216,7 +245,8 @@ function reloadStoreFromStorage() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    store = normalizeStore(parsed);
+    store = readPreviewJournal(window.localStorage, STORAGE_KEY, normalizeStore(parsed));
+    persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY);
     emitAllCollections();
   } catch (error) {
     console.warn('Failed to sync local preview data from storage.', error);
@@ -229,7 +259,7 @@ function bindSyncListeners() {
   }
 
   window.addEventListener('storage', (event) => {
-    if (event.key !== STORAGE_KEY) return;
+    if (event.key !== STORAGE_KEY && !event.key?.startsWith(`${STORAGE_KEY}:patch:`)) return;
     reloadStoreFromStorage();
   });
 
@@ -272,7 +302,7 @@ export function doc(_, ...segments) {
 
 export async function setDoc(docRef, data, options = {}) {
   applySetDoc(docRef, data, options);
-  persistStore();
+  persistStore([docRef]);
   emitCollection(docRef.collectionName);
 }
 
@@ -281,7 +311,7 @@ export async function deleteDoc(docRef) {
   const currentCollection = { ...(store[collectionName] || {}) };
   delete currentCollection[docRef.id];
   store[collectionName] = currentCollection;
-  persistStore();
+  persistStore([docRef]);
   emitCollection(collectionName);
 }
 
@@ -300,12 +330,20 @@ export function onSnapshot(ref, optionsOrNext, nextOrError) {
   }
 
   const listeners = collectionListeners.get(ref.name) || new Set();
-  const notify = () => onNext(createSnapshot(ref));
+  let previousEntries = [];
+  let active = true;
+  const notify = () => {
+    if (!active) return;
+    const snapshot = createSnapshot(ref, previousEntries, entries => { previousEntries = entries; });
+    onNext(snapshot);
+  };
   listeners.add(notify);
   collectionListeners.set(ref.name, listeners);
   queueMicrotask(notify);
 
   return () => {
+    active = false;
+    previousEntries = [];
     const current = collectionListeners.get(ref.name);
     if (!current) return;
     current.delete(notify);
@@ -371,6 +409,7 @@ export async function enableNetwork() {
 
 export async function runTransaction(_, updateFunction) {
   const touchedCollections = new Set();
+  const touchedDocuments = new Map();
   const transaction = {
     async get(docRef) {
       return createDocumentSnapshot(docRef);
@@ -378,11 +417,13 @@ export async function runTransaction(_, updateFunction) {
     set(docRef, data, options = {}) {
       applySetDoc(docRef, data, options);
       touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
       return transaction;
     },
     update(docRef, data) {
       applySetDoc(docRef, data, { merge: true });
       touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
       return transaction;
     },
     delete(docRef) {
@@ -390,13 +431,14 @@ export async function runTransaction(_, updateFunction) {
       delete currentCollection[docRef.id];
       store[docRef.collectionName] = currentCollection;
       touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
       return transaction;
     }
   };
 
   const result = await updateFunction(transaction);
   if (touchedCollections.size > 0) {
-    persistStore();
+    persistStore([...touchedDocuments.values()]);
     touchedCollections.forEach((collectionName) => emitCollection(collectionName));
   }
   return result;

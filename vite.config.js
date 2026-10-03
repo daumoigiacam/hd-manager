@@ -161,6 +161,9 @@ export default defineConfig(({ mode }) => {
           '**/backups/**',
           '**/node_modules/**',
           '**/.firebase/**',
+          '**/.gradle-home/**',
+          '**/.gradle/**',
+          '**/test-results/**',
           '**/tmp-*/**',
           '**/*.apk',
           '**/*.exe'

@@ -100,7 +100,7 @@ export async function runNativeKeyboardAcceptance({ page, navigate, adb, serial,
     assert.ok(customerNumber.actions.bottom <= customerNumber.visualHeight + customerNumber.visualTop + 2, 'Inline customer save must clear phone IME');
     await customer.getByRole('button', { name: 'Lưu khách hàng', exact: true }).click();
     await customer.waitFor({ state: 'hidden' });
-    await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).customers).filter(row => row.name === 'Native Keyboard Customer').length === 1);
+    await page.waitForFunction(() => Object.values(window.__readPreviewStore().customers).filter(row => row.name === 'Native Keyboard Customer').length === 1);
     await page.waitForFunction(() => !document.documentElement.classList.contains('hd-keyboard-open'));
     await capture('customer-saved');
     const cancelledCustomer = await openCustomer();
@@ -116,7 +116,7 @@ export async function runNativeKeyboardAcceptance({ page, navigate, adb, serial,
     const requests = page.locator('.premium-order-request-module');
     const numberFormat = new Intl.NumberFormat('vi-VN');
     for (let iteration = 1; iteration <= 3; iteration++) {
-      const previousPrice = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests.or_save_speed.items[0].unitPrice);
+      const previousPrice = await page.evaluate(() => window.__readPreviewStore().orderRequests.or_save_speed.items[0].unitPrice);
       const nextPrice = previousPrice + 1;
       await requests.getByRole('button', { name: numberFormat.format(previousPrice), exact: true }).first().click();
       const priceForm = page.getByRole('dialog', { name: 'Sửa đơn giá' });
@@ -130,7 +130,7 @@ export async function runNativeKeyboardAcceptance({ page, navigate, adb, serial,
       await priceForm.getByRole('button', { name: 'Lưu', exact: true }).click();
       await priceForm.waitFor({ state: 'hidden' });
       await requests.getByRole('button', { name: numberFormat.format(nextPrice), exact: true }).first().waitFor();
-      await page.waitForFunction(value => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests.or_save_speed.items[0].unitPrice === value, nextPrice);
+      await page.waitForFunction(value => window.__readPreviewStore().orderRequests.or_save_speed.items[0].unitPrice === value, nextPrice);
       await page.waitForFunction(() => !document.documentElement.classList.contains('hd-keyboard-open'));
       const afterSave = await capture(`price-saved-${iteration}`);
       assert.ok(Math.abs(afterSave.shell.height - initial.shell.height) <= 2, 'Shell must restore after saving with IME open');

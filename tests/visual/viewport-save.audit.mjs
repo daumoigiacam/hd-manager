@@ -1,3 +1,4 @@
+import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 
@@ -35,6 +36,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await installPreviewReader(page);
   await page.addInitScript(({ authToken, initialStore }) => {
     window.__initial_auth_token = authToken;
     localStorage.setItem('hd-manager-local-db-v2-clean-preview', JSON.stringify(initialStore));
@@ -173,7 +175,7 @@ try {
     assert.equal(saveTrace[0].status, 'queued', 'durable local save must not claim a server confirmation');
     assert.equal(saveTrace[0].remoteConfirmed, false);
     assert.equal(saveTrace[0].writeSource, 'durable-local-queue');
-    const persistedRequest = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).orderRequests.or_viewport_audit);
+    const persistedRequest = await page.evaluate(() => window.__readPreviewStore().orderRequests.or_viewport_audit);
     assert.equal(persistedRequest.items[0].unitPrice, 290000, 'edited price must survive a local reload');
     assert.equal(saveTrace[0].retryCount, 0, 'preview save must not retry');
     assert.ok(saveTrace[0].payloadBytes > 0, 'trace must report payload size without exposing its content');

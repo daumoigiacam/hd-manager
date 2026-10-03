@@ -1,5 +1,29 @@
 export default [
   {
+    files: ['src/features/orders/OrderSearchInput.jsx', 'src/features/orders/OrderRequestTableRows.jsx', 'src/features/orders/CoreRowPager.jsx', 'src/features/warehouse/DispatchTableBody.jsx'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
+    rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
+    files: ['src/services/firestoreRestPagination.js', 'src/services/recordCalculationCache.js', 'src/services/collationCompareCache.js',
+      'src/services/cooperativeTaskQueue.js', 'src/services/backupReadScheduler.js', 'src/services/searchEngine.js',
+      'src/mocks/preview-store-serializer.js', 'src/mocks/firebase-firestore.js', 'src/mocks/preview-journal.js',
+      'src/hooks/usePreparedSearch.js', 'src/hooks/useCooperativeProjection.js', 'src/services/cooperativeProjection.js',
+      'src/services/groupedRowPage.js', 'src/utils/firstRecordLookup.js',
+      'src/services/realtimeSnapshotItems.js', 'src/utils/incrementalProductStock.js',
+      'src/utils/collectionIdentity.js', 'src/services/renderOptimization.js',
+      'scripts/master-production-release-smoke.mjs', 'scripts/compare-master-performance.mjs',
+      'scripts/master-emulator-session-regression.mjs', 'scripts/master-session-regression.mjs',
+      'scripts/helpers/master-emulator-ui-crud.mjs', 'scripts/helpers/bounded-audit-process.mjs',
+      'tests/takeover-bounded-audit.test.mjs',
+      'tests/core-*.test.mjs', 'tests/delivery-request-index.test.mjs',
+      'tests/master-*.test.mjs', 'tests/phase1-hidden-report.test.mjs',
+      'tests/phase2a-preview-storage.test.mjs', 'tests/warehouse-dispatch-performance.test.mjs', 'tests/helpers/preview-storage-harness.mjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    rules: { 'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
     files: ['src/utils/shareCanvas*.js', 'scripts/audit-interactions.mjs', 'tests/save-integrity-regressions.test.mjs', 'tests/visual/share-canvas.encoding.mjs'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
     rules: { 'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }], 'no-unreachable': 'error', 'no-dupe-keys': 'error' }

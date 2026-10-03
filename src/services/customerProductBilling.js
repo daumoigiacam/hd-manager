@@ -8,13 +8,22 @@ import {
 } from './productPricingUnits.js';
 import { resolveUnitConversionFactor } from './smartCustomerOrdering.js';
 
-const normalizeText = (value = '') => `${value || ''}`
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/đ/g, 'd')
-  .replace(/[^a-z0-9]+/g, ' ')
-  .trim();
+const normalizedBillingTextCache = new Map();
+const normalizeText = (value = '') => {
+  const raw = `${value || ''}`;
+  if (normalizedBillingTextCache.has(raw)) return normalizedBillingTextCache.get(raw);
+  const normalized = raw.normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  if (raw.length <= 256) {
+    if (normalizedBillingTextCache.size >= 512) normalizedBillingTextCache.delete(normalizedBillingTextCache.keys().next().value);
+    normalizedBillingTextCache.set(raw, normalized);
+  }
+  return normalized;
+};
 
 const parsePositiveNumber = (value = 0) => {
   if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0;

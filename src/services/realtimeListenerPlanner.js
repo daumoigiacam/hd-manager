@@ -11,6 +11,7 @@ export const planForegroundRealtimeActivation = ({
   availableNames = [],
   baselineNames = [],
   limit = 0,
+  retainRecent = true,
 } = {}) => {
   const available = new Set(uniqueNames(availableNames));
   const baseline = new Set(uniqueNames(baselineNames));
@@ -28,7 +29,7 @@ export const planForegroundRealtimeActivation = ({
   ]).filter(isEligible);
   const liveNames = requested.slice(0, maxListeners);
 
-  for (const name of recency) {
+  for (const name of retainRecent ? recency : []) {
     if (liveNames.length >= maxListeners) break;
     if (!liveNames.includes(name)) liveNames.push(name);
   }

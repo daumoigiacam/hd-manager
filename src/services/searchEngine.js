@@ -32,15 +32,27 @@ const buildInitials = (value = '') => tokenizeSearchQuery(value).map(token => to
 const buildFieldIndex = (field = {}) => {
   const values = unique(asList(field?.value ?? field?.values ?? []));
   const normalizedValues = values.map(normalizeSearchText).filter(Boolean);
-  const tokenSet = new Set(normalizedValues.flatMap(tokenizeSearchQuery));
+  const tokenSet = new Set(normalizedValues.flatMap(value => value.split(' ')));
   return {
     key: field?.key || 'other',
     priority: Number(field?.priority) || 10,
     values,
     normalizedValues,
-    collapsedValues: normalizedValues.map(collapseSearchText).filter(Boolean),
+    collapsedValues: normalizedValues.map(value => value.replace(/\s+/g, '')).filter(Boolean),
     tokenSet,
+    tokens: [...tokenSet],
     digits: normalizeDigits(values.join(' ')),
+  };
+};
+
+const prepareSearchFields = (fields) => fields.map(buildFieldIndex).filter(field => field.normalizedValues.length > 0);
+
+const prepareSearchQuery = (query) => {
+  const normalizedQuery = normalizeSearchText(query);
+  return {
+    normalizedQuery,
+    collapsedQuery: normalizedQuery.replace(/\s+/g, ''),
+    tokens: normalizedQuery.split(' ').filter(Boolean),
   };
 };
 
@@ -63,7 +75,7 @@ const getBestTokenMatch = (token, fields) => {
       return;
     }
 
-    const hasPrefix = [...field.tokenSet].some(candidate => candidate.startsWith(token));
+    const hasPrefix = field.tokens.some(candidate => candidate.startsWith(token));
     if (hasPrefix) {
       const score = 45 + field.priority;
       if (!best || score > best.score) best = { field, kind: 'prefix', score };
@@ -73,16 +85,8 @@ const getBestTokenMatch = (token, fields) => {
   return best;
 };
 
-const buildSearchResult = (record, index, query, fields) => {
-  const normalizedQuery = normalizeSearchText(query);
-  const collapsedQuery = collapseSearchText(query);
-  const tokens = tokenizeSearchQuery(query);
-  const indexedFields = fields.map(buildFieldIndex).filter(field => field.normalizedValues.length > 0);
-
-  if (!hasSearchQuery(query)) {
-    return { record, index, score: 0, matchedFields: [], exact: false };
-  }
-
+const buildSearchResult = (record, index, query, indexedFields) => {
+  const { normalizedQuery, collapsedQuery, tokens } = query;
   const tokenMatches = tokens.map(token => getBestTokenMatch(token, indexedFields));
   if (tokenMatches.some(match => !match)) return null;
 
@@ -112,18 +116,273 @@ const buildSearchResult = (record, index, query, fields) => {
   return { record, index, score, matchedFields, exact: primaryExact || directExact };
 };
 
+const emptySearchResult = (record, index) => ({ record, index, score: 0, matchedFields: [], exact: false });
+const compareSearchResults = (left, right) => right.score - left.score || left.index - right.index;
+
+const addSearchPosting = (postings, token, index) => {
+  const indices = postings.get(token);
+  if (!indices) postings.set(token, [index]);
+  // Entries are visited in source order, so duplicate fields need no extra Set.
+  else if (indices[indices.length - 1] !== index) indices.push(index);
+};
+
+const lowerBoundSearchToken = (vocabulary, token) => {
+  let low = 0;
+  let high = vocabulary.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (vocabulary[middle] < token) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+};
+
+const getSearchTokenCandidates = (token, tokenPostings, vocabulary, digitPostings) => {
+  if (/^\d+$/.test(token)) return digitPostings.get(token.slice(0, 3)) || [];
+  const start = lowerBoundSearchToken(vocabulary, token);
+  // Normalized vocabulary is ASCII alphanumeric; '{' sorts after every suffix.
+  const end = lowerBoundSearchToken(vocabulary, `${token}{`);
+  if (start === end) return [];
+  if (end === start + 1) return tokenPostings.get(vocabulary[start]);
+  const candidates = new Set();
+  for (let position = start; position < end; position++) {
+    tokenPostings.get(vocabulary[position]).forEach(index => candidates.add(index));
+  }
+  return [...candidates].sort((left, right) => left - right);
+};
+
+const intersectSearchCandidates = (left, right) => {
+  const intersection = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex] < right[rightIndex]) leftIndex++;
+    else if (left[leftIndex] > right[rightIndex]) rightIndex++;
+    else {
+      intersection.push(left[leftIndex]);
+      leftIndex++;
+      rightIndex++;
+    }
+  }
+  return intersection;
+};
+
+import { createProjectionScheduler } from './cooperativeProjection.js';
+
+/**
+ * Explicit snapshot of membership, order and prepared fields. getFields runs
+ * once per present record at creation (including for empty-query searches).
+ * Rebuild after record/field edits or changes to getFields' external context.
+ * Results retain the original record references; records are not cloned/frozen.
+ * rank(query) returns ranked metadata; search(query) returns only records.
+ * Postings select candidates; the shared scorer still verifies every query token.
+ */
+const createSearchIndexBuilder = (getFields) => {
+  const entries = [];
+  const tokenPostings = new Map();
+  const digitPostings = new Map();
+  const append = (record, index = entries.length) => {
+    const entry = { record, index, fields: prepareSearchFields(getFields(record) || []) };
+    entries[index] = entry;
+    entry.fields.forEach((field) => {
+      field.tokens.forEach(token => addSearchPosting(tokenPostings, token, entry.index));
+      // Grams span values within a field, matching the scorer's digit joining.
+      // Only 10 + 100 + 1000 distinct gram keys can exist, with one posting per
+      // source position/key. Long numeric queries use their first trigram.
+      for (let length = 1; length <= 3; length++) {
+        for (let start = 0; start + length <= field.digits.length; start++) {
+          addSearchPosting(digitPostings, field.digits.slice(start, start + length), entry.index);
+        }
+      }
+    });
+  };
+  const finish = (vocabulary = [...tokenPostings.keys()].sort()) => {
+  const rank = (query = '') => {
+    const preparedQuery = prepareSearchQuery(query);
+    if (!preparedQuery.tokens.length) return entries.map(entry => emptySearchResult(entry.record, entry.index));
+    const postings = [];
+    for (const token of new Set(preparedQuery.tokens)) {
+      const candidates = getSearchTokenCandidates(token, tokenPostings, vocabulary, digitPostings);
+      if (!candidates.length) return [];
+      postings.push(candidates);
+    }
+    postings.sort((left, right) => left.length - right.length);
+    let candidates = postings[0];
+    for (let position = 1; position < postings.length && candidates.length; position++) {
+      candidates = intersectSearchCandidates(candidates, postings[position]);
+    }
+    return candidates
+      .map((index) => {
+        const entry = entries[index];
+        return buildSearchResult(entry.record, entry.index, preparedQuery, entry.fields);
+      })
+      .filter(Boolean)
+      .sort(compareSearchResults);
+  };
+    const searchAsync = async (query = '', { signal, yieldTask,
+      budgetMs = 4, maxOperations = 128, now = () => performance.now(), orderedRecords, membership, orderRanks } = {}) => {
+      if (!Number.isFinite(budgetMs) || budgetMs <= 0 || !Number.isInteger(maxOperations) || maxOperations <= 0) {
+        throw new RangeError('Search budgets must be positive finite values');
+      }
+      const preparedQuery = prepareSearchQuery(query);
+      function* work() {
+        let candidates = null;
+        for (const token of new Set(preparedQuery.tokens)) {
+          const found = new Set();
+          if (/^\d+$/.test(token)) {
+            for (const index of digitPostings.get(token.slice(0, 3)) || []) { found.add(index); yield; }
+          } else {
+            const end = lowerBoundSearchToken(vocabulary, `${token}{`);
+            for (let position = lowerBoundSearchToken(vocabulary, token); position < end; position++) {
+              for (const index of tokenPostings.get(vocabulary[position])) { found.add(index); yield; }
+            }
+          }
+          if (candidates) {
+            for (const index of candidates) { if (!found.has(index)) candidates.delete(index); yield; }
+          } else candidates = found;
+          if (!candidates.size) return [];
+        }
+        const results = [];
+        const positions = candidates || entries.keys();
+        for (const index of positions) {
+          const entry = entries[index];
+          if (entry && (!membership || membership.has(entry.record))) {
+            const result = preparedQuery.tokens.length
+              ? buildSearchResult(entry.record, entry.index, preparedQuery, entry.fields)
+              : emptySearchResult(entry.record, entry.index);
+            if (result) results.push(result);
+          }
+          yield;
+        }
+        if (orderedRecords && !orderRanks) {
+          const matches = new Set();
+          for (const result of results) { matches.add(result.record); yield; }
+          const ordered = [];
+          for (const record of orderedRecords) { if (matches.has(record)) ordered.push(record); yield; }
+          return ordered;
+        }
+        let from = results;
+        let to = new Array(from.length);
+        const compare = (a, b) => (orderRanks ? orderRanks.get(a.record) - orderRanks.get(b.record) : 0)
+          || compareSearchResults(a, b);
+        for (let width = 1; width < from.length; width *= 2) {
+          for (let offset = 0; offset < from.length; offset += width * 2) {
+            let left = offset;
+            const middle = Math.min(offset + width, from.length);
+            let right = middle;
+            const end = Math.min(offset + width * 2, from.length);
+            for (let position = offset; position < end; position++) {
+              to[position] = left < middle && (right >= end || compare(from[left], from[right]) <= 0)
+                ? from[left++] : from[right++];
+              yield;
+            }
+          }
+          [from, to] = [to, from];
+        }
+        const records = [];
+        for (const result of from) { records.push(result.record); yield; }
+        return records;
+      }
+      const iterator = work();
+      const scheduler = yieldTask ? { yieldTask, close() {} } : createProjectionScheduler();
+      try {
+      while (true) {
+        if (signal?.aborted) throw new DOMException('Search cancelled', 'AbortError');
+        const start = now();
+        for (let count = 0; count < maxOperations; count++) {
+          const next = iterator.next();
+          if (next.done) return next.value;
+          if (now() - start >= budgetMs) break;
+        }
+        await scheduler.yieldTask();
+      }
+      } finally { scheduler.close(); iterator.return?.(); }
+    };
+    return Object.freeze({ rank, search: (query = '') => rank(query).map(result => result.record), searchAsync });
+  };
+  return { append, finish, tokens: () => tokenPostings.keys() };
+};
+
+export const createSearchRecordIndex = (records = [], getFields = () => []) => {
+  const builder = createSearchIndexBuilder(getFields);
+  (Array.isArray(records) ? records : []).forEach(builder.append);
+  return builder.finish();
+};
+
+// Build outside render, yielding within both field preparation and vocabulary sort.
+export const createSearchRecordIndexAsync = async (records = [], getFields = () => [], {
+  signal, budgetMs = 4, maxRecordsPerTurn = 24,
+  now = () => performance.now(),
+  yieldTask,
+} = {}) => {
+  const scheduler = yieldTask ? { yieldTask, close() {} } : createProjectionScheduler();
+  yieldTask = scheduler.yieldTask;
+  try {
+  const check = () => { if (signal?.aborted) throw new DOMException('Search cancelled', 'AbortError'); };
+  const builder = createSearchIndexBuilder(getFields);
+  const source = Array.isArray(records) ? records : [];
+  let start = now();
+  let processed = 0;
+  for (let position = 0; position < source.length; position++) {
+    check();
+    if (position in source) builder.append(source[position], position);
+    if (++processed >= maxRecordsPerTurn || now() - start >= budgetMs) {
+      await yieldTask();
+      check();
+      start = now();
+      processed = 0;
+    }
+  }
+  const vocabulary = [];
+  for (const token of builder.tokens()) {
+    check();
+    vocabulary.push(token);
+    if (++processed >= 256 || now() - start >= budgetMs) {
+      await yieldTask();
+      check();
+      start = now();
+      processed = 0;
+    }
+  }
+  // Merge sort avoids one large final native sort on a 50k-record vocabulary.
+  let from = vocabulary;
+  let to = new Array(from.length);
+  for (let width = 1; width < from.length; width *= 2) {
+    for (let offset = 0; offset < from.length; offset += width * 2) {
+      let left = offset;
+      const middle = Math.min(offset + width, from.length);
+      let right = middle;
+      const end = Math.min(offset + width * 2, from.length);
+      for (let position = offset; position < end; position++) {
+        to[position] = left < middle && (right >= end || from[left] <= from[right]) ? from[left++] : from[right++];
+        if (++processed >= 256 || now() - start >= budgetMs) {
+          await yieldTask();
+          check();
+          start = now();
+          processed = 0;
+        }
+      }
+    }
+    [from, to] = [to, from];
+  }
+  check();
+  return builder.finish(from);
+  } finally { scheduler.close(); }
+};
+
 /**
  * Returns ranked records without modifying the records themselves. Ties retain
  * the original order so views stay stable while the user types.
  */
 export const rankSearchRecords = (records = [], query = '', getFields = () => []) => {
   const source = Array.isArray(records) ? records : [];
-  if (!hasSearchQuery(query)) return source.map((record, index) => ({ record, index, score: 0, matchedFields: [], exact: false }));
+  const preparedQuery = prepareSearchQuery(query);
+  if (!preparedQuery.tokens.length) return source.map(emptySearchResult);
 
   return source
-    .map((record, index) => buildSearchResult(record, index, query, getFields(record) || []))
+    .map((record, index) => buildSearchResult(record, index, preparedQuery, prepareSearchFields(getFields(record) || [])))
     .filter(Boolean)
-    .sort((left, right) => right.score - left.score || left.index - right.index);
+    .sort(compareSearchResults);
 };
 
 export const searchRecords = (records = [], query = '', getFields = () => []) => (

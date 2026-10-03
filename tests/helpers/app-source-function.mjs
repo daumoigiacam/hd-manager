@@ -25,7 +25,24 @@ export function appFunction(name, bindings = {}, { memoCallback = false, scope =
   let node = scope ? scopedDeclarations.get(`${scope}.${name}`) : declarations.get(name);
   if (memoCallback) node = node?.arguments?.[0];
   if (!node) throw new Error(`Missing source function: ${name}`);
-  return new Function(...Object.keys(bindings), `return (${source.slice(node.start, node.end)});`)(...Object.values(bindings));
+  const cacheNames = name === 'normalizeLookupText'
+    ? ['LOOKUP_NORMALIZATION_CACHE_LIMIT', 'LOOKUP_NORMALIZATION_MAX_LENGTH', 'lookupNormalizationCache']
+    : name === 'parseEntityTimestampValue'
+      ? ['ENTITY_TIMESTAMP_CACHE_LIMIT', 'ENTITY_TIMESTAMP_CACHE_MAX_LENGTH', 'entityTimestampStringCache'] : [];
+  const cacheBindings = {};
+  if (name === 'buildWarehouseDispatchShortageSummary' && !Object.hasOwn(bindings, 'warehouseShortageKeyCache')) {
+    cacheBindings.warehouseShortageKeyCache = new WeakMap();
+  }
+  for (const dependency of cacheNames) {
+    if (Object.hasOwn(bindings, dependency)) continue;
+    const initializer = declarations.get(dependency);
+    if (initializer?.type === 'NumericLiteral') cacheBindings[dependency] = initializer.value;
+    else if (initializer?.type === 'NewExpression' && initializer.callee.name === 'Map' && initializer.arguments.length === 0) {
+      cacheBindings[dependency] = new Map();
+    } else throw new Error(`Unexpected primitive cache binding: ${dependency}`);
+  }
+  const environment = { ...cacheBindings, ...bindings };
+  return new Function(...Object.keys(environment), `return (${source.slice(node.start, node.end)});`)(...Object.values(environment));
 }
 
 export function appObject(name) {

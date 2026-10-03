@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Timestamp, GeoPoint } from 'firebase/firestore';
-import { retainCollectionIdentity } from '../src/utils/collectionIdentity.js';
+import { retainCollectionIdentity, retainCollectionRecordIdentity } from '../src/utils/collectionIdentity.js';
 import { appFunction } from './helpers/app-source-function.mjs';
 import { createSaveQueueHarness } from './helpers/save-queue-harness.mjs';
 import { DashboardService, buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
@@ -80,7 +80,7 @@ test('actual snapshot setter skips no-op replacement but applies price and confi
   let loaded = 0;
   const setter = updater => { state = updater(state); };
   const apply = appFunction('setCollectionSafely', {
-    retainCollectionIdentity, runNonBlockingStateUpdate: callback => callback(),
+    retainCollectionRecordIdentity, runNonBlockingStateUpdate: callback => callback(),
     hasCollectionValue: value => value?.length > 0,
     getPreviousStableCollectionValue: () => state, rememberStableCollectionValue() {},
     markCollectionLoaded() { loaded++; },

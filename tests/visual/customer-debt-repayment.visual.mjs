@@ -1,3 +1,4 @@
+import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { build, preview } from 'vite';
@@ -16,7 +17,8 @@ try {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => route.request().url().startsWith('http://127.0.0.1:') || route.request().url().startsWith('data:') ? route.continue() : route.abort());
-    await page.addInitScript(() => {
+    await installPreviewReader(page);
+  await page.addInitScript(() => {
       window.__initial_auth_token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify({ uid: 'emp_admin', identityId: 'emp_admin', appUserId: 'emp_admin', companyId: 'comp_preview', accountType: 'employee', role: 'super_admin', name: 'Demo' }))}`;
       if (!sessionStorage.getItem('repayment-seed')) {
         localStorage.setItem('hd-manager-local-db-v2-clean-preview', JSON.stringify({
@@ -43,9 +45,9 @@ try {
     await page.screenshot({ path: `${out}/${width}-form.png` });
     await dialog.getByRole('button', { name: 'Xác nhận chi trả nợ', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
-    await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).expenses || {}).some(item => item.sourceType === 'customer_debt_repayment' && item.amount === 300000));
+    await page.waitForFunction(() => Object.values(window.__readPreviewStore().expenses || {}).some(item => item.sourceType === 'customer_debt_repayment' && item.amount === 300000));
     await page.getByText('700.000 đ', { exact: true }).waitFor();
-    const receipts = await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).payments || {}));
+    const receipts = await page.evaluate(() => Object.values(window.__readPreviewStore().payments || {}));
     assert.equal(receipts.filter(item => item.customerId === 'payable_test').length, 0);
     await page.screenshot({ path: `${out}/${width}-saved.png` });
     await page.reload();

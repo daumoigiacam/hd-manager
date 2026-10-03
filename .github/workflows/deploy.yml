@@ -16,8 +16,8 @@ on:
         default: false
 
 concurrency:
-  group: production
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('validation-{0}', github.event.pull_request.number) || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -59,7 +61,7 @@ jobs:
         run: node --check functions/index.js
 
       - name: Lint
-        run: npm run lint
+        run: npm run lint && npx eslint src/services/backupReadScheduler.js src/services/collationCompareCache.js src/services/customerProductBilling.js src/services/productPricingUnits.js tests/warehouse-dispatch-performance.test.mjs scripts/master-emulator-session-regression.mjs scripts/master-session-regression.mjs scripts/helpers/master-emulator-ui-crud.mjs
 
       - name: Typecheck
         run: npm run typecheck
@@ -75,6 +77,11 @@ jobs:
 
       - name: Verify password recovery transaction
         run: npm run test:identity:firestore
+
+      - name: Verify paginated REST snapshot and tenant isolation
+        env:
+          MASTER_REST_EMULATOR: '1'
+        run: node --test tests/master-rest-emulator.test.mjs
 
       - name: Performance architecture audit
         run: npm run test:performance
@@ -115,7 +122,7 @@ jobs:
           retention-days: 14
 
       - name: Create deployment package
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         run: |
           set -euo pipefail
           cd dist
@@ -125,7 +132,7 @@ jobs:
           ls -lh hd-manager-dist.zip
 
       - name: Calculate build SHA
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         id: build-sha
         run: |
           set -euo pipefail
@@ -134,7 +141,7 @@ jobs:
           echo "Build index SHA: ${INDEX_SHA}"
 
       - name: Prepare VPS deployment package path
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -148,7 +155,7 @@ jobs:
             test ! -e /tmp/hd-manager-dist.zip
 
       - name: Upload frontend to VPS
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -159,7 +166,7 @@ jobs:
           overwrite: true
 
       - name: Deploy frontend to VPS
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/ssh-action@v1.2.2
         env:
           EXPECTED_INDEX_SHA: ${{ steps.build-sha.outputs.index_sha }}
@@ -180,7 +187,7 @@ jobs:
             EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
 
       - name: Verify production serves this release
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         run: |
           set -euo pipefail
 
@@ -216,3 +223,16 @@ jobs:
             --header "Cache-Control: no-cache" \
             "https://hd-manager-c5839.web.app/" >/dev/null
           echo "Firebase project hosting endpoint is reachable"
+
+      - name: Verify production entry-point assets
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        run: node scripts/master-production-release-smoke.mjs --production --expected-commit "${GITHUB_SHA}" --local-dist dist
+
+      - name: Upload production static verification evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        uses: actions/upload-artifact@v5
+        with:
+          name: hd-manager-static-smoke-${{ github.sha }}
+          path: test-results/master-production-release-smoke/*.json
+          if-no-files-found: warn
+          retention-days: 14

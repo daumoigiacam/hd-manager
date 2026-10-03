@@ -30,3 +30,34 @@ export function retainCollectionIdentity(previous, next, depth = 0) {
   }
   return equal ? previous : result;
 }
+
+// Match only unambiguous stored-record IDs; keep the incoming array's order.
+// Other inputs retain the existing positional/conservative behavior.
+export function retainCollectionRecordIdentity(previous, next) {
+  if (!Array.isArray(previous) || !Array.isArray(next)) return retainCollectionIdentity(previous, next);
+  const lookup = rows => {
+    const byId = new Map();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row || typeof row !== 'object' || !isPlainRecord(row) || !Object.hasOwn(row, 'id')) return null;
+      const id = row.id;
+      if (!((typeof id === 'string' && id.trim() !== '') || (typeof id === 'number' && Number.isFinite(id)))) return null;
+      if (byId.has(id)) return null;
+      byId.set(id, row);
+    }
+    return byId;
+  };
+  const previousById = lookup(previous);
+  if (!previousById || !lookup(next)) return retainCollectionIdentity(previous, next);
+  let result = next;
+  let unchanged = previous.length === next.length;
+  next.forEach((row, index) => {
+    const retained = previousById.has(row.id) ? retainCollectionIdentity(previousById.get(row.id), row) : row;
+    if (!Object.is(retained, previous[index])) unchanged = false;
+    if (!Object.is(retained, row)) {
+      if (result === next) result = next.slice();
+      result[index] = retained;
+    }
+  });
+  return unchanged ? previous : result;
+}

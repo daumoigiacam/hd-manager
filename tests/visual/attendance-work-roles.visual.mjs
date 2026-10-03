@@ -1,3 +1,4 @@
+import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
@@ -33,7 +34,8 @@ try {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
-    await page.addInitScript(({ fixture, claims }) => {
+    await installPreviewReader(page);
+  await page.addInitScript(({ fixture, claims }) => {
       window.__initial_auth_token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
       const key = 'hd-manager-local-db-v2-clean-preview';
       if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...fixture, __replaceSeed: true }));
@@ -56,7 +58,7 @@ try {
     await page.screenshot({ path: `${output}/${viewport.width}-edit.png`, animations: 'disabled' });
     await form.getByRole('button', { name: 'Lưu chỉnh sửa', exact: true }).click();
     await form.waitFor({ state: 'hidden' });
-    const saved = await page.evaluate(key => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).attendance[key], `${today}_${empId}`);
+    const saved = await page.evaluate(key => window.__readPreviewStore().attendance[key], `${today}_${empId}`);
     assert.equal(saved.checkIn, `${today}T07:30:00+07:00`, 'driver save preserves production time');
     assert.equal(new Date(saved.workRoles['Tài xế'].checkIn).getHours(), 6);
     assert.equal(new Date(saved.workRoles['Tài xế'].checkOut).getHours(), 16);
@@ -91,6 +93,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await installPreviewReader(page);
   await page.addInitScript(({ fixture, claims }) => {
     window.__initial_auth_token = `hd-preview-auth-v1:${encodeURIComponent(JSON.stringify(claims))}`;
     const key = 'hd-manager-local-db-v2-clean-preview';
@@ -105,8 +108,8 @@ try {
   await workspace.getByRole('button', { name: 'Chấm công vào qua GPS', exact: true }).click();
   await workspace.getByRole('button', { name: 'Chấm công ra', exact: true }).waitFor();
   await workspace.getByRole('button', { name: 'Chấm công ra', exact: true }).click();
-  await page.waitForFunction(key => Boolean(JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).attendance[key]?.workRoles?.['Tài xế']?.checkOut), `${today}_${empId}`);
-  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem('hd-manager-local-db-v2-clean-preview')).attendance[key], `${today}_${empId}`);
+  await page.waitForFunction(key => Boolean(window.__readPreviewStore().attendance[key]?.workRoles?.['Tài xế']?.checkOut), `${today}_${empId}`);
+  const saved = await page.evaluate(key => window.__readPreviewStore().attendance[key], `${today}_${empId}`);
   assert.equal(saved.checkIn, fixture.attendance[`${today}_${empId}`].checkIn);
   assert.equal(saved.checkOut, fixture.attendance[`${today}_${empId}`].checkOut);
   assert.equal(saved.workRoles['Tài xế'].checkInMethodMeta.type, 'gps');

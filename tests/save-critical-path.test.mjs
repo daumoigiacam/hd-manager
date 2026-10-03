@@ -219,7 +219,7 @@ test('order edit accepts durable group immediately, prepares share only after co
 });
 
 test('share warmup has no artificial delay and records failures', () => {
-  const warmup = source.slice(source.indexOf('const scheduleOrderShareWarmup ='), source.indexOf('const ORDER_REQUEST_SHARE_WARMUP_EVENT'));
+  const warmup = source.slice(source.indexOf('const scheduleOrderShareWarmup ='), source.indexOf('const normalizeWarehouseMeasureUnit ='));
   assert.doesNotMatch(warmup, /setTimeout|requestIdleCallback/);
   assert.match(warmup, /warmup_failed/);
 });

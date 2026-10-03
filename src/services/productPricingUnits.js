@@ -10,13 +10,22 @@ const PRODUCT_UNIT_ALIASES = {
   kgs: 'Kg',
 };
 
-const normalizeText = (value = '') => `${value || ''}`
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/đ/g, 'd')
-  .replace(/[^a-z0-9]+/g, ' ')
-  .trim();
+const normalizedUnitTextCache = new Map();
+const normalizeText = (value = '') => {
+  const raw = `${value || ''}`;
+  if (normalizedUnitTextCache.has(raw)) return normalizedUnitTextCache.get(raw);
+  const normalized = raw.normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  if (raw.length <= 256) {
+    if (normalizedUnitTextCache.size >= 512) normalizedUnitTextCache.delete(normalizedUnitTextCache.keys().next().value);
+    normalizedUnitTextCache.set(raw, normalized);
+  }
+  return normalized;
+};
 
 const parseMoney = (value = 0) => {
   if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0;

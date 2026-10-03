@@ -1985,6 +1985,21 @@ button.hd-dashboard-top-list__row:hover { border-color: var(--hd-primary-200); b
   z-index: 51;
 }
 
+.hd-module-fab.hd-product-module-fab {
+  bottom: calc(max(var(--hd-footer-height, 0px), var(--hd-bottom-nav-height, 4rem)) + var(--hd-space-3, 0.75rem));
+}
+
+.hd-shell--staff .hd-module-fab.hd-customer-module-fab {
+  bottom: calc(max(var(--hd-footer-height, 0px), var(--hd-bottom-nav-height, 4rem)) + var(--hd-space-3, 0.75rem));
+}
+
+@media (min-width: 600px) {
+  .hd-app-content[data-hd-module="customers"] .hd-list-pagination {
+    padding-inline-end: 5rem;
+    margin-bottom: 5rem;
+  }
+}
+
 /* Only an open modal may cover the shell navigation, never a normal page. */
 .hd-shell--staff > main:has([role="dialog"][aria-modal="true"]) {
   z-index: 50;
