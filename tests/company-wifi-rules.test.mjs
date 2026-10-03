@@ -21,4 +21,10 @@ try {
     await assertFails(setDoc(doc(db, path + '-other'), patch));
   }
   console.log('PASS company WiFi owner/admin, employee denial, tenant isolation');
+  const employeeDb = env.authenticatedContext('ordinary', { companyId: 'co', identityId: 'ordinary', appUserId: 'e', accountType: 'employee', role: 'employee' }).firestore();
+  await env.withSecurityRulesDisabled(async context => setDoc(doc(context.firestore(), 'artifacts/test/public/data/employees/e'), { companyId: 'co', position: 'Kinh doanh' }));
+  await assertFails(setDoc(doc(employeeDb, 'artifacts/test/public/data/attendance/2026-10-04_e'), { companyId: 'co', checkIn: 'fake' }));
+  await assertFails(updateDoc(doc(employeeDb, 'artifacts/test/public/data/employees/e'), { position: 'Kế toán & nhân sự' }));
+  await assertFails(updateDoc(doc(employeeDb, 'artifacts/test/public/data/employees/e'), { attendanceGpsRequired: false }));
+  console.log('PASS direct attendance and self-permission escalation denied');
 } finally { await env.cleanup(); clearTimeout(deadline); }

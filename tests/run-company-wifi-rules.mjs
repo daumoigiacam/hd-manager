@@ -28,5 +28,6 @@ try {
   if (!ready) throw new Error(logs || 'Emulator did not start');
   process.env.FIRESTORE_EMULATOR_HOST = `127.0.0.1:${port}`;
   await import('./company-wifi-rules.test.mjs');
+  await import('./attendance-manual-firestore.integration.mjs');
 } catch (error) { console.error(logs); throw error; }
 finally { child.kill(); await closed; clearTimeout(deadline); }

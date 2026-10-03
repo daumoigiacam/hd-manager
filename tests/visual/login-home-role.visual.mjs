@@ -23,7 +23,12 @@ try {
       new MutationObserver(() => { if (document.querySelector('.business-report-kpi--revenue')) window.__wrongHomeSeen = true; }).observe(document, { subtree: true, childList: true });
     }, { position });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.getByRole('button', { name: 'Mở hồ sơ cá nhân', exact: true }).waitFor({ timeout: 20000 });
+    try {
+      await page.getByRole('button', { name: 'Mở hồ sơ cá nhân', exact: true }).waitFor({ timeout: 20000 });
+    } catch (error) {
+      console.error({ position, errors, text: (await page.locator('body').innerText()).slice(0, 2500) });
+      throw error;
+    }
     assert.equal(await page.evaluate(() => window.__wrongHomeSeen), false, position || 'profile not loaded');
     assert.match(await page.locator('.hd-staff-greeting-surface').innerText(), /Own Employee/);
     assert.deepEqual(errors, []);

@@ -67,6 +67,7 @@ const evaluateAutoWifiCheckIn = ({ claims = {}, company = {}, employee = {}, net
     || claims.companyId !== company.id || employee.companyId !== company.id
     || claims.appUserId !== employee.id) return { eligible: false, reason: 'tenant_or_identity' };
   if (employee.isArchived || employee.attendanceAutoWifiEnabled !== true) return { eligible: false, reason: 'disabled' };
+  if (company.attendanceBiometricRequired || employee.attendanceBiometricRequired) return { eligible: false, reason: 'biometric_required' };
   if (!matchesCompanyWifi(network, company)) return { eligible: false, reason: 'wifi_mismatch' };
   const shift = getShiftWindow(employee, now);
   if (record.companyId && record.companyId !== company.id) return { eligible: false, reason: 'tenant_or_identity' };

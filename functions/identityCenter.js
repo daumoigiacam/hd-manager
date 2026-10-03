@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { createPasskeyService } = require('./identityPasskeys');
 const { asIso } = require('./identityTime');
+const { recordManualAttendance } = require('./attendanceManual');
 
 const IDENTITY_ACCOUNT_COLLECTION = 'identity_accounts';
 const IDENTITY_AUDIT_COLLECTION = 'identity_audit_logs';
@@ -90,10 +91,11 @@ const isBiometricDeviceCredentialValid = ({
   biometricProof
   && identity.status === 'active'
   && !identity.lockedAt
-  && identity.setup?.biometricEnabled
   && deviceRecord.trusted
   && deviceRecord.biometricEnabled
   && !deviceRecord.revokedAt
+  && Number(deviceRecord.credentialVersion || 0) === Number(identity.credentialVersion || 0)
+  && (!deviceRecord.expiresAtIso || Date.parse(deviceRecord.expiresAtIso) > Date.now())
   && deviceSecret
   && deviceRecord.deviceSecretHash
   && timingSafeTextEqual(deviceRecord.deviceSecretHash, hashOpaqueSecret(deviceSecret))
@@ -429,7 +431,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       identity: { ...buildPublicIdentity(identity), identityKey: identityId },
       device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
       requiresSetup: Boolean(identity.requiresPasswordChange || !identity.setup?.pinSet || !identity.setup?.trustedDevice),
-      setup: identity.setup || {}
+      setup: { ...(identity.setup || {}), biometricEnabled: Boolean(currentDevice.biometricEnabled && !currentDevice.revokedAt) }
     };
   };
 
@@ -655,7 +657,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (rate.blocked) {
       return { success: false, statusCode: 429, message: `Đăng nhập sinh trắc học bị tạm khóa. Vui lòng thử lại sau ${Math.ceil(rate.waitMs / 60000)} phút.` };
     }
-    const generic = { success: false, statusCode: 401, message: 'Không thể xác minh Face ID hoặc vân tay trên thiết bị này.' };
+    const generic = { success: false, statusCode: 401, message: 'Không thể xác minh sinh trắc học trên thiết bị này.' };
     const identity = await findIdentity(identifier);
     if (!identity) {
       await recordLoginAttempt(rate.ref, false);
@@ -678,17 +680,29 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { success: true, ...session };
   };
 
-  const completeSetup = async ({ authorization, device, password, username, pin, biometricEnabled, trustDevice = false }) => {
+  const completeSetup = async ({ authorization, device, password, username, pin, biometricEnabled, trustDevice = false, deviceSecret: enrollmentSecret = '' }) => {
+    if (password && biometricEnabled) throw Object.assign(new Error('Hoàn tất đổi mật khẩu trước khi bật sinh trắc học.'), { statusCode: 400 });
     const { identityId, identity } = await getVerifiedIdentity(authorization);
     const cleanDevice = sanitizeDevice(device);
     const updates = { updatedAt: new Date(), updatedAtIso: new Date().toISOString() };
     const nextSetup = { ...(identity.setup || {}) };
+    if (biometricEnabled === true) {
+      const enrolled = await getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId).get();
+      const saved = enrolled.data() || {};
+      if (trustDevice || !saved.trusted || saved.revokedAt || !enrollmentSecret
+        || Number(saved.credentialVersion || 0) !== Number(identity.credentialVersion || 0)
+        || !timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(enrollmentSecret))) {
+        throw Object.assign(new Error('Thiết bị chưa có credential bảo mật hợp lệ.'), { statusCode: 403 });
+      }
+    }
     if (password !== undefined && `${password}`.length) {
       const error = validatePassword(password);
       if (error) throw Object.assign(new Error(error), { statusCode: 400 });
       updates.passwordHash = await hashPassword(password);
       updates.requiresPasswordChange = false;
       nextSetup.passwordChanged = true;
+      updates.credentialVersion = Number(identity.credentialVersion || 0) + 1;
+      nextSetup.biometricEnabled = false;
     }
     let normalizedUsername = normalizeUsername(identity.username || '');
     const requestedUsername = normalizeUsername(username || '');
@@ -720,6 +734,8 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
         trustedAt: new Date(),
         trustedAtIso: new Date().toISOString(),
         deviceSecretHash: hashOpaqueSecret(deviceSecret),
+        credentialVersion: updates.credentialVersion ?? Number(identity.credentialVersion || 0),
+        expiresAtIso: new Date(Date.now() + 90 * 86400000).toISOString(),
         revokedAt: null,
         updatedAt: new Date(),
         updatedAtIso: new Date().toISOString()
@@ -730,12 +746,14 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       nextSetup.biometricEnabled = biometricEnabled;
       await getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId).set({
         biometricEnabled: Boolean(biometricEnabled),
+        ...(biometricEnabled === false && !trustDevice ? { deviceSecretHash: '', trusted: false } : {}),
         updatedAt: new Date(),
         updatedAtIso: new Date().toISOString()
       }, { merge: true });
     }
     updates.setup = nextSetup;
     await getIdentityRef(identityId).set(updates, { merge: true });
+    if (updates.passwordHash) await admin.auth().revokeRefreshTokens(`identity_${safeIdPart(identityId)}`);
     const auditActions = [];
     if (password !== undefined && `${password}`.length) auditActions.push('password_changed');
     if (normalizedUsername !== `${identity.username || ''}`) auditActions.push('username_changed');
@@ -769,7 +787,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     // A protected Keychain/Keystore read is accepted as the biometric proof. When
     // biometric is unavailable, the device secret alone is not sufficient: PIN is
     // verified server-side before a recovery token is issued.
-    const biometricConfirmed = Boolean(biometricProof && identity.setup?.biometricEnabled && saved.biometricEnabled);
+    if (Number(saved.credentialVersion || 0) !== Number(identity.credentialVersion || 0)
+      || (saved.expiresAtIso && Date.parse(saved.expiresAtIso) <= Date.now())) {
+      throw Object.assign(new Error('Thiết bị đã hết hạn xác thực. Vui lòng dùng mật khẩu.'), { statusCode: 403 });
+    }
+    const biometricConfirmed = Boolean(biometricProof && saved.biometricEnabled);
     if (!biometricConfirmed && (!identity.pinHash || !(await verifyPassword(pin, identity.pinHash)))) {
       return { success: false, statusCode: 401, message: 'Nhập PIN 6 số để xác minh thiết bị tin cậy.' };
     }
@@ -1453,6 +1475,17 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       },
     }),
     login,
+    attendance: async ({ authorization, device, deviceSecret, action, workRole, method }) => {
+      const { identityId, identity } = await getVerifiedIdentity(authorization);
+      return recordManualAttendance({ db, appId: getAppId(),
+        collectionPath: (appId, collection) => `artifacts/${appId}/public/data/${collection}`,
+        identity: { ...identity, id: identityId }, device: sanitizeDevice(device), deviceSecret, action, workRole, method,
+        verifyDevice: (saved, secret) => Boolean(saved.trusted && !saved.revokedAt && secret && saved.deviceSecretHash
+          && Number(saved.credentialVersion || 0) === Number(identity.credentialVersion || 0)
+          && (!saved.expiresAtIso || Date.parse(saved.expiresAtIso) > Date.now())
+          && timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(secret))),
+      });
+    },
     biometricLogin,
     completeSetup,
     requestRecovery,

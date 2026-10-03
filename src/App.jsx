@@ -285,6 +285,7 @@ import {
   setPersistence,
   indexedDBLocalPersistence,
   browserLocalPersistence,
+  inMemoryPersistence,
   signInWithCustomToken,
   connectAuthEmulator,
   signOut,
@@ -430,10 +431,8 @@ import {
   resolveCustomerPortalOrderSelection,
 } from './utils/customerPortalOrderDetail.js';
 import {
-  authenticateBiometric,
   findIdentitySessionOwner,
   getBiometricAutoLoginProfile,
-  getBiometricAvailability,
   getQuickLoginAvailability,
   identityRegisterPasskey,
   identityListPasskeys,
@@ -455,6 +454,7 @@ import {
   identityListAudit,
   identityListDevices,
   identitySetBiometric,
+  identityRecordAttendance,
   identityVerifyPin,
   shouldInvalidateIdentitySession,
   shouldRequireBiometricUnlock,
@@ -492,6 +492,7 @@ import {
 const LazyIdentitySecurityCenter = React.lazy(
   () => import('./features/identity/IdentitySecurityCenter.jsx'),
 );
+const LazyBiometricEnrollment = React.lazy(() => import('./features/identity/BiometricEnrollment.jsx'));
 
 const legacyIdentitySecurityApi = {
   getQuickLoginAvailability,
@@ -596,6 +597,10 @@ let firebaseAuthPersistencePromise = Promise.resolve('unavailable');
 
 const configureFirebaseAuthPersistence = async (firebaseAuth) => {
   if (!firebaseAuth) return 'unavailable';
+  if (Capacitor.isNativePlatform()) {
+    await setPersistence(firebaseAuth, inMemoryPersistence);
+    return 'memory';
+  }
   try {
     await setPersistence(firebaseAuth, indexedDBLocalPersistence);
     recordStartupEvent('auth.persistence.ready', { mode: 'indexedDB' });
@@ -649,7 +654,7 @@ if (isVpsMode) {
         // device during Auth construction so WebView IndexedDB startup does
         // not block registration of the initial auth-state listener.
         auth = initializeAuth(app, {
-          persistence: [indexedDBLocalPersistence, browserLocalPersistence]
+          persistence: Capacitor.isNativePlatform() ? inMemoryPersistence : [indexedDBLocalPersistence, browserLocalPersistence]
         });
         firebaseAuthPersistencePromise = Promise.resolve('indexedDB-or-localStorage');
         recordStartupEvent('auth.persistence.configured', {
@@ -12186,7 +12191,7 @@ export default function App() {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
   const persistedSession = useMemo(() => (
-    isVpsStagingMode
+    isVpsStagingMode || isNativeRuntime()
       ? { currentUser: null, currentCompany: null, activeTab: 'home' }
       : loadAppSession()
   ), []);
@@ -12210,6 +12215,7 @@ export default function App() {
   ));
   const biometricVerifiedIdentityRef = useRef('');
   const biometricPromptInFlightRef = useRef(false);
+  const [biometricOfferIdentity, setBiometricOfferIdentity] = useState(null);
   const [currentDate, setCurrentDate] = useState(getTodayString());
   const [recoverableSyncNotice, setRecoverableSyncNotice] = useState(null);
 
@@ -12363,14 +12369,19 @@ export default function App() {
   const biometricIdentityScope = getIdentityAccountScope(currentUser || {});
 
   useEffect(() => {
-    if (biometricUnlockState !== 'pending' || !shouldRequireBiometricUnlock(currentUser)) return undefined;
+    if (biometricUnlockState !== 'pending') return undefined;
+    if (!shouldRequireBiometricUnlock(currentUser)) { setBiometricUnlockState('blocked'); return undefined; }
     let active = true;
     biometricPromptInFlightRef.current = true;
-    authenticateBiometric('Xác thực để mở HD Manager').then(result => {
+    identityBiometricLogin({ appId, manual: true }).then(async result => {
+      if (result.success && active) await runFirebaseAuthMutation(() => signInWithCustomToken(auth, result.customToken));
       biometricPromptInFlightRef.current = false;
       if (!active) return;
       if (result.success) biometricVerifiedIdentityRef.current = biometricIdentityScope;
       setBiometricUnlockState(result.success ? 'unlocked' : 'blocked');
+    }).catch(() => {
+      biometricPromptInFlightRef.current = false;
+      if (active) setBiometricUnlockState('blocked');
     });
     return () => {
       active = false;
@@ -16131,7 +16142,7 @@ export default function App() {
       }, 'error');
       return {
         success: false,
-        message: error?.message || 'Không thể đăng nhập bằng Face ID hoặc vân tay. Vui lòng dùng mật khẩu.',
+        message: error?.message || 'Không thể đăng nhập bằng sinh trắc học. Vui lòng dùng mật khẩu.',
       };
     }
   };
@@ -16174,6 +16185,11 @@ export default function App() {
       recordStartupEvent('auth.identity_login.started');
       const apiStartedAt = Date.now();
       const session = await identityLogin({ identifier: normalizedIdentifier, password, appId });
+      biometricVerifiedIdentityRef.current = getIdentityAccountScope({ ...session.identity, identityKey: session.identityKey });
+      setBiometricUnlockState('unlocked');
+      if (isNativeRuntime() && !session.requiresSetup && !getBiometricAutoLoginProfile({ manual: true })) {
+        setBiometricOfferIdentity({ ...session.identity, identityKey: session.identityKey });
+      }
       recordStartupEvent('auth.identity_login.api_completed', {
         durationMs: Date.now() - apiStartedAt,
       });
@@ -16236,6 +16252,9 @@ export default function App() {
       setActiveTab(nextTab);
       saveAppSession({ currentUser: identity, currentCompany: company || currentCompany || { id: identity.companyId, name: '' }, activeTab: nextTab });
       identitySetupPendingRef.current = false;
+      biometricVerifiedIdentityRef.current = getIdentityAccountScope(identity);
+      setBiometricUnlockState('unlocked');
+      if (isNativeRuntime() && !getBiometricAutoLoginProfile({ manual: true })) setBiometricOfferIdentity(identity);
       return { success: true };
     } catch (error) {
       return { success: false, message: error?.message || 'Không thể hoàn tất bảo mật tài khoản.' };
@@ -16728,6 +16747,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    setBiometricOfferIdentity(null);
     suppressBiometricAutoLoginForSession();
     biometricVerifiedIdentityRef.current = '';
     setBiometricUnlockState('unlocked');
@@ -16805,6 +16825,9 @@ export default function App() {
 
   const handleCheckIn = async (empId, method, workRole = '') => {
     if (!isVpsStagingMode && (!firebaseUser || !myCompanyId || !empId)) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
+    if (!isVpsStagingMode && empId === currentUser?.id && !method?.proxyAttendance && method !== 'Kế toán chấm hộ') {
+      return identityRecordAttendance({ idToken: await auth.currentUser.getIdToken(), identity: currentUser, action: 'in', workRole, method: normalizeAttendanceMethod(method, 'Chấm công').meta });
+    }
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
     const roleEmployee = employeeForWorkRole(employee, workRole || employee?.position);
@@ -16840,6 +16863,9 @@ export default function App() {
 
   const handleCheckOut = async (empId, method, workRole = '') => {
     if (!isVpsStagingMode && (!firebaseUser || !myCompanyId || !empId)) throw new Error('Phiên chấm công không hợp lệ. Vui lòng đăng nhập lại.');
+    if (!isVpsStagingMode && empId === currentUser?.id && !method?.proxyAttendance && method !== 'Kế toán chấm hộ') {
+      return identityRecordAttendance({ idToken: await auth.currentUser.getIdToken(), identity: currentUser, action: 'out', workRole, method: normalizeAttendanceMethod(method, 'Chấm công').meta });
+    }
     const now = new Date();
     const employee = employees.find(emp => emp.id === empId);
     const roleEmployee = employeeForWorkRole(employee, workRole || employee?.position);
@@ -16873,6 +16899,11 @@ export default function App() {
   };
   
   const handleLeave = async (empId, workRole = '') => {
+    if (!isVpsStagingMode && (!firebaseUser || !myCompanyId || !empId)) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
+    if (!isVpsStagingMode && empId === currentUser?.id) {
+      if (!auth?.currentUser) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
+      return identityRecordAttendance({ idToken: await auth.currentUser.getIdToken(), identity: currentUser, action: 'leave', workRole });
+    }
     if (isVpsStagingMode) {
       if (workRole && workRole !== employees.find(emp => emp.id === empId)?.position) throw new Error('Chấm công kiêm nhiệm chưa được hỗ trợ trên bản VPS staging.');
       const record = await getHdConnectStagingApi().recordAttendance({
@@ -23405,7 +23436,7 @@ export default function App() {
           <h1 className="text-lg font-extrabold text-slate-800">Mở HD Manager</h1>
           <p className="mt-2 text-sm leading-relaxed text-slate-500">
             {isCheckingBiometric
-              ? 'Đang chờ Face ID hoặc vân tay trên thiết bị.'
+              ? 'Đang chờ xác thực sinh trắc học trên thiết bị.'
               : 'Chưa xác thực được sinh trắc học. Bạn có thể thử lại hoặc dùng mật khẩu.'}
           </p>
           {!isCheckingBiometric && (
@@ -23464,6 +23495,8 @@ export default function App() {
       </>
     );
   }
+
+  if (biometricOfferIdentity) return <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyBiometricEnrollment identity={biometricOfferIdentity} getToken={() => auth.currentUser.getIdToken()} onDone={() => { biometricVerifiedIdentityRef.current = getIdentityAccountScope(biometricOfferIdentity); setBiometricUnlockState('unlocked'); setBiometricOfferIdentity(null); }} /></React.Suspense>;
 
   // Firebase Auth is authoritative; cached session data may render the shell while
   // core collections revalidate in the background. Only block if Auth itself is loading.
@@ -27764,36 +27797,23 @@ function AttendanceView({ currentEmployee, isCompanyAccount = false, isAccountin
           : 'Không lấy được vị trí GPS trong 25 giây. Bật vị trí chính xác rồi thử lại.'
       );
       if (selfMethod === 'wifi') assertAttendanceWifiMatchesDefault(methodPayload, currentCompany);
-      const submittedAt = new Date();
+      let attendanceResult;
       if (type === 'out') {
-        await withTimeout(
+        attendanceResult = await withTimeout(
           onCheckOut(currentEmployee.id, methodPayload, selfWorkRole),
           20000,
           'Không lưu được chấm công ra ca trong 20 giây. Kiểm tra mạng rồi thử lại.'
         );
       } else {
-        await withTimeout(
+        attendanceResult = await withTimeout(
           onCheckIn(currentEmployee.id, methodPayload, selfWorkRole),
           20000,
           'Không lưu được chấm công vào ca trong 20 giây. Kiểm tra mạng rồi thử lại.'
         );
       }
-      setOptimisticSelfRecord({
+      if (attendanceResult?.record) setOptimisticSelfRecord({
         key: currentRecordKey,
-        record: type === 'out'
-          ? {
-            ...(currentRecord || {}),
-            checkOut: submittedAt.toISOString(),
-            checkOutMethod: methodPayload.label,
-            checkOutMethodMeta: methodPayload
-          }
-          : {
-            ...(currentRecord || {}),
-            checkIn: submittedAt.toISOString(),
-            checkInMethod: methodPayload.label,
-            checkInMethodMeta: methodPayload,
-            status: calculateCheckInStatus(selfWorkEmployee, submittedAt, currentAttendanceDate)
-          }
+        record: attendanceResult.record
       });
       setSelfStatusMsg(type === 'in' ? 'Đã chấm vào ca thành công.' : 'Đã chấm ra ca thành công.');
       if (selfMethod === 'wifi') {
@@ -76292,7 +76312,7 @@ function EmployeeView({
     }
     const confirmed = window.confirm(
       `Đặt lại đăng nhập của "${emp.name || 'nhân sự này'}" về mật khẩu mặc định 12345678?\n\n`
-      + 'Toàn bộ phiên đăng nhập, PIN, Face ID/vân tay và thiết bị tin cậy cũ sẽ bị thu hồi. Nhân sự phải đổi mật khẩu và tạo PIN mới ở lần đăng nhập tiếp theo.'
+      + 'Toàn bộ phiên đăng nhập, PIN, sinh trắc học và thiết bị tin cậy cũ sẽ bị thu hồi. Nhân sự phải đổi mật khẩu và tạo PIN mới ở lần đăng nhập tiếp theo.'
     );
     if (!confirmed) return;
 
@@ -84323,8 +84343,6 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [pin, setPin] = useState('');
   const [pinConfirm, setPinConfirm] = useState('');
-  const [biometric, setBiometric] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState(null);
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -84335,14 +84353,6 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
   // login identifier shown and accepted by the app.
   const compatibilityIdentityAlias = context?.identity?.username
     || normalizeEmployeeLoginPhone(context?.identity?.phone || '');
-
-  useEffect(() => {
-    let active = true;
-    getBiometricAvailability().then(result => {
-      if (active) setBiometricAvailable(result);
-    });
-    return () => { active = false; };
-  }, []);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -84358,7 +84368,7 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
         password: mustChangePassword ? password : undefined,
         username: compatibilityIdentityAlias || undefined,
         pin: mustSetPin ? pin : undefined,
-        biometricEnabled: Boolean(biometric && biometricAvailable?.available),
+        biometricEnabled: false,
         trustDevice: true,
       });
       if (!result?.success) throw new Error(result?.message || 'Không thể hoàn tất bảo mật tài khoản.');
@@ -84385,7 +84395,6 @@ function IdentitySetupWizard({ context = {}, onComplete }) {
           <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => { setPin(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="PIN 6 số" autoComplete="new-password" /></div>
           <div className="hd-login-3d-field"><input type="password" inputMode="numeric" maxLength={6} value={pinConfirm} onChange={(event) => { setPinConfirm(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }} className="hd-login-3d-field__control w-full border-0 bg-transparent rounded-2xl p-4 outline-none text-sm font-medium tracking-[0.45em]" placeholder="Xác nhận PIN 6 số" autoComplete="new-password" /></div>
         </>}
-        {biometricAvailable?.available && <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-xs text-emerald-800"><input type="checkbox" checked={biometric} onChange={(event) => setBiometric(event.target.checked)} className="h-4 w-4 accent-emerald-600" /><span><strong>Bật Face ID / Vân tay</strong><br />Xác thực sinh trắc học khi mở app và khôi phục mật khẩu.</span></label>}
         {error && <p className="rounded-xl bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-600" role="alert">{error}</p>}
         <button type="submit" disabled={isSaving} className="w-full rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition active:scale-[0.98] disabled:bg-emerald-300">{isSaving ? 'Đang hoàn tất...' : 'Hoàn tất và vào trang chủ'}</button>
       </form>
@@ -84766,11 +84775,14 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
   const [isRegistering, setIsRegistering] = useState(false);
   const [identitySetupContext, setIdentitySetupContext] = useState(null);
   const biometricAutoLoginStartedRef = useRef(false);
+  const biometricAutoLoginPromiseRef = useRef(null);
+  const biometricLoginCallbackRef = useRef(onBiometricLogin);
+  biometricLoginCallbackRef.current = onBiometricLogin;
   const quickLoginBusyRef = useRef(false);
   const [quickLoginAvailable, setQuickLoginAvailable] = useState(false);
   useEffect(() => {
     let active = true;
-    if (!vpsStagingMode) getQuickLoginAvailability().then(result => { if (active) setQuickLoginAvailable(result.available); });
+    if (!vpsStagingMode) getQuickLoginAvailability().then(result => { if (active) setQuickLoginAvailable(result.available && (!result.native || Boolean(getBiometricAutoLoginProfile({ manual: true })))); });
     return () => { active = false; };
   }, [vpsStagingMode]);
   const handleQuickLogin = async () => {
@@ -84778,13 +84790,13 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
     quickLoginBusyRef.current = true;
     setIsLoggingIn(true);
     setLoginError('');
-    setLoginMessage('Đang xác thực Face ID / vân tay...');
+    setLoginMessage('Đang xác thực sinh trắc học...');
     try {
       const result = await onBiometricLogin({ manual: true });
       if (result?.success && result?.requiresSetup) {
         setIdentitySetupContext(result);
       } else if (!result?.success) {
-        setLoginError(result?.message || (result?.unavailable ? 'Hãy đăng nhập bằng mật khẩu rồi bật Face ID / vân tay trong Bảo mật tài khoản trước.' : 'Xác thực chưa hoàn tất. Bạn có thể thử lại hoặc dùng mật khẩu.'));
+        setLoginError(result?.message || (result?.unavailable ? 'Hãy đăng nhập bằng mật khẩu rồi bật sinh trắc học trong Bảo mật tài khoản trước.' : 'Xác thực chưa hoàn tất. Bạn có thể thử lại hoặc dùng mật khẩu.'));
       }
     } catch (error) { setLoginError(error?.message || 'Không thể xác thực. Vui lòng dùng mật khẩu.'); }
     finally {
@@ -84803,16 +84815,19 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
   }, []);
 
   useEffect(() => {
-    if (vpsStagingMode || biometricAutoLoginStartedRef.current || typeof onBiometricLogin !== 'function') return undefined;
-    if (!getBiometricAutoLoginProfile()) return undefined;
-    biometricAutoLoginStartedRef.current = true;
+    if (vpsStagingMode || typeof biometricLoginCallbackRef.current !== 'function') return undefined;
+    if (!biometricAutoLoginStartedRef.current) {
+      if (!getBiometricAutoLoginProfile()) return undefined;
+      biometricAutoLoginStartedRef.current = true;
+      biometricAutoLoginPromiseRef.current = biometricLoginCallbackRef.current();
+    }
     let active = true;
     const runBiometricLogin = async () => {
       setIsLoggingIn(true);
       setLoginError('');
-      setLoginMessage('Đang xác thực Face ID / vân tay...');
+      setLoginMessage('Đang xác thực sinh trắc học...');
       try {
-        const result = await onBiometricLogin();
+        const result = await biometricAutoLoginPromiseRef.current;
         if (!active) return;
         if (result?.success && result?.requiresSetup) {
           setIdentitySetupContext(result);
@@ -84830,7 +84845,7 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
     };
     void runBiometricLogin();
     return () => { active = false; };
-  }, [onBiometricLogin, vpsStagingMode]);
+  }, [vpsStagingMode]);
 
   const hasRegistrationPasswordConfirmation = regPasswordConfirm.length > 0;
   const registrationPasswordsMatch = hasRegistrationPasswordConfirmation && regPassword === regPasswordConfirm;
@@ -85037,7 +85052,7 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
               {showForgotPassword && (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3.5">
                   <div className="mb-1 text-xs font-extrabold text-emerald-800">Khôi phục mật khẩu</div>
-                  <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Request a password reset from the HD CONNECT identity service. The frontend never receives or stores a reset token.' : 'App ưu tiên Face ID/vân tay trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
+                  <p className="mb-2 text-[11px] leading-relaxed text-gray-500">{vpsStagingMode ? 'Request a password reset from the HD CONNECT identity service. The frontend never receives or stores a reset token.' : 'App ưu tiên sinh trắc học trên thiết bị tin cậy. Nếu sinh trắc học không khả dụng, hãy nhập PIN 6 số.'}</p>
                   <div className="space-y-2.5">
                     <input type={vpsStagingMode ? 'email' : 'tel'} value={forgotPhone} onChange={(e) => { setForgotPhone(e.target.value); setForgotError(''); }} className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder={vpsStagingMode ? 'Email' : 'Số điện thoại'} autoComplete={vpsStagingMode ? 'email' : 'tel'} />
                     {!vpsStagingMode && !recoveryToken && (
@@ -85076,7 +85091,7 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
                 </button>
               )}
             </form>
-            {!showForgotPassword && !vpsStagingMode && quickLoginAvailable && <button type="button" onClick={handleQuickLogin} disabled={isLoggingIn} className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white px-4 py-3 font-semibold text-emerald-700 disabled:opacity-50"><Fingerprint size={22} />Face ID / Vân tay</button>}
+            {!showForgotPassword && !vpsStagingMode && quickLoginAvailable && <button type="button" onClick={handleQuickLogin} disabled={isLoggingIn} className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white px-4 py-3 font-semibold text-emerald-700 disabled:opacity-50"><Fingerprint size={22} />Đăng nhập bằng sinh trắc học</button>}
             {!showForgotPassword && !vpsStagingMode && <p className="mt-5 text-center text-xs text-gray-500">Bạn chưa có tài khoản? <button type="button" onClick={() => { setIsLogin(false); setLoginError(''); setForgotError(''); setForgotMessage(''); }} className="font-extrabold text-emerald-700 hover:text-emerald-800">Tạo tài khoản mới</button></p>}
           </div>
         ) : (

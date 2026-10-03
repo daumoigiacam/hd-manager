@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
 import PasskeySettings from './PasskeySettings.jsx';
 import SecurityDialog from './SecurityDialog.jsx';
+import { getBiometricAutoLoginProfile, getIdentityAccountScope } from '../../services/identityCenter.js';
 
 export default function IdentitySecurityCenter({
   standalone = false,
@@ -52,6 +53,7 @@ export default function IdentitySecurityCenter({
   }, [identityApi, vpsMode]);
   const device = useMemo(() => getIdentityDevice(), [getIdentityDevice]);
   const identityReady = Boolean(identityUser?.phone || identityUser?.id);
+  const accountScope = getIdentityAccountScope(identityUser);
   const tokenGetter = useRef(onGetIdentityToken);
   tokenGetter.current = onGetIdentityToken;
   const refreshInFlight = useRef(false);
@@ -77,14 +79,15 @@ export default function IdentitySecurityCenter({
         setSecurityStatus('Thiết bị đã được tải. Nhật ký bảo mật VPS yêu cầu quyền audit.read.');
       }
       const currentDevice = (deviceResult.value?.devices || []).find(item => item.deviceId === device.deviceId);
-      setBiometricEnabled(vpsMode ? false : Boolean(currentDevice?.biometricEnabled));
+      const localProfile = getBiometricAutoLoginProfile({ manual: true });
+      setBiometricEnabled(!vpsMode && Boolean(currentDevice?.biometricEnabled && localProfile?.accountScope === accountScope));
     } catch (error) {
       setSecurityStatus(error?.message || 'Không thể tải thông tin bảo mật.');
     } finally {
       refreshInFlight.current = false;
       setIsLoading(false);
     }
-  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, vpsMode]);
+  }, [device.deviceId, identityListAudit, identityListDevices, identityReady, accountScope, vpsMode]);
 
   useEffect(() => {
     if (expanded) refreshSecurityData();
@@ -128,6 +131,10 @@ export default function IdentitySecurityCenter({
           pin: activeEditor === 'pin' ? newPin : undefined,
         });
         if (result?.setup) setBiometricEnabled(Boolean(result.setup.biometricEnabled));
+        if (activeEditor === 'password') {
+          await onLogout?.();
+          return;
+        }
       }
       setSecurityStatus(activeEditor === 'password' ? 'Đã đổi mật khẩu.' : 'Đã đổi PIN.');
       setActiveEditor('');
@@ -154,13 +161,27 @@ export default function IdentitySecurityCenter({
       if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
       const result = await identitySetBiometric({ idToken, enabled: !biometricEnabled, identity: identityUser });
       setBiometricEnabled(Boolean(result?.setup?.biometricEnabled));
-      setSecurityStatus(!biometricEnabled ? 'Đã bật Face ID / vân tay trên thiết bị này.' : 'Đã tắt yêu cầu Face ID / vân tay trên thiết bị này.');
+      setSecurityStatus(!biometricEnabled ? 'Đã bật sinh trắc học trên thiết bị này.' : 'Đã tắt sinh trắc học trên thiết bị này.');
       await refreshSecurityData();
     } catch (error) {
-      setSecurityStatus(error?.message || 'Không thể cập nhật Face ID / vân tay.');
+      setBiometricEnabled(Boolean(getBiometricAutoLoginProfile({ manual: true })));
+      setSecurityStatus(error?.message || 'Không thể cập nhật sinh trắc học.');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const registerCurrentDevice = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    try {
+      const idToken = await tokenGetter.current?.();
+      if (!idToken) throw new Error('Vui lòng đăng nhập lại bằng mật khẩu.');
+      await identityCompleteSetup({ idToken, trustDevice: true, biometricEnabled: false });
+      await refreshSecurityData();
+    } catch (error) {
+      setSecurityStatus(error.message || 'Không thể đăng ký thiết bị.');
+    } finally { setIsLoading(false); }
   };
 
   const revokeDevice = async (deviceId, all = false) => {
@@ -334,15 +355,17 @@ export default function IdentitySecurityCenter({
                 <button type="button" onClick={() => { setSecurityStatus(''); setActiveEditor('password'); }} className="px-3 py-3 text-left text-sm font-semibold text-slate-700">Đổi mật khẩu</button>
                 {vpsMode && <button type="button" onClick={() => { resetEmailChangeState(); setActiveEditor(activeEditor === 'email-start' ? '' : 'email-start'); }} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Đổi email</button>}
                 <button type="button" disabled={vpsMode || isLoading} onClick={() => setActiveEditor(activeEditor === 'pin' ? '' : 'pin')} className="px-3 py-3 text-left text-sm font-semibold disabled:opacity-50">Đổi mã PIN</button>
-                {['Face ID', 'Vân tay'].map(label => <div key={label} className="flex items-center justify-between gap-3 px-3 py-3 text-sm">
-                  <span>{label}</span>
-                  <button type="button" aria-label={`Kích hoạt ${label}`} disabled={vpsMode || isLoading || !quickLogin.available} onClick={() => quickLogin.native ? toggleBiometric() : setActiveEditor('biometric')} className="rounded-lg border border-gray-200 px-3 py-2 font-semibold disabled:opacity-50">{quickLogin.native && biometricEnabled ? 'Tắt' : 'Kích hoạt'}</button>
-                </div>)}
+                <div className="flex items-center justify-between gap-3 px-3 py-3 text-sm">
+                  <span>Đăng nhập bằng sinh trắc học<small className="mt-1 block text-gray-500">{quickLogin.label || 'Sử dụng vân tay hoặc nhận diện khuôn mặt của thiết bị.'}</small></span>
+                  {quickLogin.native ? <input type="checkbox" role="switch" aria-label="Đăng nhập bằng sinh trắc học" checked={biometricEnabled} disabled={vpsMode || isLoading || (!biometricEnabled && !quickLogin.available)} onChange={toggleBiometric} className="h-5 w-5 shrink-0 accent-emerald-600" /> : <button type="button" disabled={vpsMode || isLoading || !quickLogin.available} onClick={() => setActiveEditor('biometric')} className="rounded-lg border px-3 py-2">Passkey</button>}
+                </div>
+                <div className="px-3 py-3 text-sm"><strong>Thiết bị hiện tại</strong><p>{device.name}</p><p>{devices.some(item => item.deviceId === device.deviceId && item.trusted && !item.revokedAt) ? 'Thiết bị tin cậy' : 'Chưa đăng ký thiết bị tin cậy'}</p><button type="button" disabled={isLoading} onClick={() => revokeDevice(device.deviceId)} className="mt-2 text-red-700">Đăng xuất và quên thiết bị này</button></div>
+                {!vpsMode && !devices.some(item => item.deviceId === device.deviceId && item.trusted && !item.revokedAt) && <button type="button" disabled={isLoading} onClick={registerCurrentDevice} className="px-3 py-3 text-left text-sm font-semibold">Đăng ký thiết bị tin cậy</button>}
                 {!quickLogin.available && <p className="px-3 py-2 text-xs text-gray-500">Thiết bị hoặc trình duyệt chưa hỗ trợ xác thực sinh trắc học.</p>}
                 <button type="button" onClick={() => setActiveEditor(activeEditor === 'devices' ? '' : 'devices')} className="px-3 py-3 text-left text-sm font-semibold">Thiết bị tin cậy</button>
                 <button type="button" disabled={vpsMode || isLoading} onClick={() => setActiveEditor(activeEditor === 'delete' ? '' : 'delete')} className="px-3 py-3 text-left text-sm font-semibold text-red-600 disabled:opacity-50">Xóa tài khoản</button>
               </div>
-              {activeEditor === 'biometric' && !vpsMode && !quickLogin.native && quickLogin.available && <SecurityDialog title="Kích hoạt Face ID / Vân tay" onClose={() => setActiveEditor('')}><PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} /></SecurityDialog>}
+              {activeEditor === 'biometric' && !vpsMode && !quickLogin.native && quickLogin.available && <SecurityDialog title="Đăng nhập bằng Passkey" onClose={() => setActiveEditor('')}><PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} /></SecurityDialog>}
               {(activeEditor === 'password' || activeEditor === 'pin') && (
                 <SecurityDialog title={activeEditor === 'password' ? 'Đổi mật khẩu' : 'Đổi mã PIN'} busy={isLoading} onClose={() => {
                   setActiveEditor(''); setCurrentPassword(''); setCurrentPin(''); setNewPassword(''); setNewPasswordConfirm(''); setNewPin(''); setNewPinConfirm(''); setSecurityStatus('');

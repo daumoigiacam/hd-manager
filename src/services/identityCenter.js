@@ -20,6 +20,7 @@ const DEFAULT_IDENTITY_API_BASE_URL = 'https://us-central1-hd-manager-c5839.clou
 const IDENTITY_FUNCTION_NAMES = {
   '/api/identity/login': 'identityLogin',
   '/api/identity/biometric-login': 'identityBiometricLogin',
+  '/api/identity/attendance': 'identityAttendance',
   '/api/identity/passkey': 'identityPasskey',
   '/api/identity/register-company': 'identityRegisterCompany',
   '/api/identity/complete-setup': 'identityCompleteSetup',
@@ -42,6 +43,7 @@ const IDENTITY_FUNCTION_NAMES = {
 
 let identityLoginWarmupPromise = null;
 let identityLoginWarmupStartedAt = 0;
+let biometricLoginInFlight = null;
 
 const getRuntimePlatform = () => {
   try {
@@ -181,6 +183,7 @@ const readBiometricLoginProfile = () => {
   if (typeof window === 'undefined' || !isNativeRuntime()) return null;
   const profile = readJson(BIOMETRIC_LOGIN_PROFILE_KEY);
   if (!profile?.enabled || !profile?.accountScope || !profile?.identifier) return null;
+  if (profile.deviceId !== readJson(DEVICE_KEY)?.deviceId) return null;
   return profile;
 };
 
@@ -196,6 +199,7 @@ const rememberBiometricLoginProfile = ({ identity = {}, identifier = '', enabled
     accountScope,
     identifier: normalizedIdentifier,
     enabled: true,
+    deviceId: getIdentityDevice().deviceId,
     updatedAt: new Date().toISOString(),
   });
 };
@@ -300,10 +304,11 @@ export const getBiometricAvailability = async () => {
     const result = await NativeBiometric.isAvailable({ useFallback: false });
     return {
       supported: true,
-      available: Boolean(result.isAvailable),
+      available: Boolean(result.isAvailable && result.strongBiometryIsAvailable),
       biometryType: result.biometryType,
       strong: Boolean(result.strongBiometryIsAvailable),
       deviceIsSecure: Boolean(result.deviceIsSecure),
+      label: ({ 1: 'Vân tay', 2: 'Nhận diện khuôn mặt', 3: 'Vân tay', 4: 'Nhận diện khuôn mặt', 5: 'Mống mắt', 6: 'Vân tay / nhận diện khuôn mặt' })[result.biometryType] || 'Sinh trắc học',
     };
   } catch (error) {
     return { supported: true, available: false, reason: `${error?.message || error || 'unavailable'}` };
@@ -312,7 +317,7 @@ export const getBiometricAvailability = async () => {
 
 export const authenticateBiometric = async (reason = 'Xác thực để tiếp tục') => {
   const availability = await getBiometricAvailability();
-  if (!availability.available) return { success: false, message: 'Thiết bị chưa sẵn sàng Face ID hoặc vân tay.' };
+  if (!availability.available) return { success: false, unavailable: true, message: 'Thiết bị chưa thiết lập sinh trắc học đủ bảo mật. Vui lòng dùng mật khẩu.' };
   try {
     await NativeBiometric.verifyIdentity({
       reason,
@@ -320,10 +325,11 @@ export const authenticateBiometric = async (reason = 'Xác thực để tiếp t
       subtitle: 'Xác thực sinh trắc học',
       description: reason,
       maxAttempts: 3,
+      useFallback: false,
     });
     return { success: true };
-  } catch {
-    return { success: false, message: 'Xác thực sinh trắc học không thành công.' };
+  } catch (error) {
+    return { success: false, cancelled: [11, 15, 16, 17].includes(Number(error?.code)), message: 'Xác thực sinh trắc học không thành công. Bạn có thể thử lại hoặc dùng mật khẩu.' };
   }
 };
 
@@ -350,6 +356,7 @@ export const readTrustedDeviceSecret = async ({
   requireBiometric = false,
   accountScope = '',
   reason = 'Xác thực để tiếp tục',
+  throwOnError = false,
 }) => {
   if (!deviceId) return '';
   if (isNativeRuntime()) {
@@ -359,13 +366,14 @@ export const readTrustedDeviceSecret = async ({
             key: getNativeSecretKey(deviceId, accountScope),
             reason,
             title: 'HD Manager',
-            subtitle: 'Face ID / Vân tay',
+            subtitle: 'Xác thực sinh trắc học',
             description: reason,
             negativeButtonText: 'Dùng mật khẩu',
           })
         : await NativeBiometric.getData({ key: getNativeSecretKey(deviceId, accountScope) });
       return `${result?.value || ''}`;
-    } catch {
+    } catch (error) {
+      if (throwOnError) throw error;
       return '';
     }
   }
@@ -442,16 +450,22 @@ export const identityLogin = async ({ identifier, password, appId }) => {
     device: getIdentityDevice(),
   });
   rememberIdentitySessionAccount(result);
-  rememberBiometricLoginProfile({
-    identity: { ...(result.identity || {}), identityKey: result.identityKey || result.identity?.identityKey || '' },
-    identifier,
-    enabled: Boolean(result.setup?.biometricEnabled),
-  });
+  // A server account flag cannot enroll this installation. Only a successful
+  // protected credential write may create the local auto-login profile.
+  const profile = readBiometricLoginProfile();
+  if (profile && profile.accountScope !== getIdentityAccountScope({ ...result.identity, identityKey: result.identityKey })) {
+    rememberBiometricLoginProfile({ enabled: false });
+  }
   clearBiometricAutoLoginSuppression();
   return result;
 };
 
-export const identityBiometricLogin = async ({ appId, manual = false }) => {
+export const identityBiometricLogin = (options) => {
+  if (!biometricLoginInFlight) biometricLoginInFlight = runBiometricLogin(options).finally(() => { biometricLoginInFlight = null; });
+  return biometricLoginInFlight;
+};
+
+const runBiometricLogin = async ({ appId, manual = false }) => {
   if (!isNativeRuntime()) return identityPasskeyLogin();
   const profile = getBiometricAutoLoginProfile({ manual });
   if (!profile) return { success: false, unavailable: true };
@@ -459,12 +473,18 @@ export const identityBiometricLogin = async ({ appId, manual = false }) => {
   if (!availability.available) return { success: false, unavailable: true };
 
   const device = getIdentityDevice();
-  const deviceSecret = await readTrustedDeviceSecret({
+  let deviceSecret;
+  try { deviceSecret = await readTrustedDeviceSecret({
     deviceId: device.deviceId,
     requireBiometric: true,
     accountScope: profile.accountScope,
     reason: 'Xác thực để tự động đăng nhập HD Manager',
-  });
+    throwOnError: true,
+  }); } catch (error) {
+    const cancelled = [11, 15, 16, 17].includes(Number(error?.code));
+    if (Number(error?.code) === 21) rememberBiometricLoginProfile({ enabled: false });
+    return { success: false, cancelled, message: cancelled ? 'Đã hủy xác thực. Bạn có thể dùng mật khẩu.' : 'Không thể mở credential. Hãy thử lại hoặc đăng nhập bằng mật khẩu.' };
+  }
   if (!deviceSecret) return { success: false, cancelled: true };
 
   try {
@@ -541,25 +561,49 @@ export const identityRegisterCompany = async ({ companyName, phone, password, ap
 };
 
 export const identityCompleteSetup = async ({ idToken, password, username, pin, biometricEnabled, trustDevice }) => {
+  if (password && biometricEnabled) throw new Error('Hãy hoàn tất đổi mật khẩu trước khi bật lại sinh trắc học.');
+  if (biometricEnabled && !(await getBiometricAvailability()).available) {
+    throw new Error('Thiết bị chưa thiết lập sinh trắc học đủ bảo mật. Vui lòng dùng mật khẩu.');
+  }
   const device = getIdentityDevice();
   const result = await requestIdentityApi('/api/identity/complete-setup', {
     device,
     password,
     ...(username !== undefined ? { username } : {}),
     pin,
-    biometricEnabled,
-    trustDevice,
+    biometricEnabled: biometricEnabled === undefined ? undefined : false,
+    trustDevice: Boolean(trustDevice || biometricEnabled),
   }, { idToken });
   const accountScope = rememberIdentitySessionAccount(result);
+  if (password) {
+    rememberBiometricLoginProfile({ enabled: false });
+    await removeTrustedDeviceSecret(device.deviceId, accountScope);
+  }
   if (result.deviceSecret) {
+    try {
+      if (biometricEnabled) {
+        const verification = await authenticateBiometric('Xác nhận bật đăng nhập sinh trắc học');
+        if (!verification.success) throw new Error(verification.message);
+      }
     await storeTrustedDeviceSecret({
       deviceId: device.deviceId,
       secret: result.deviceSecret,
       biometricEnabled,
       accountScope,
     });
+      if (biometricEnabled) {
+        const confirmed = await requestIdentityApi('/api/identity/complete-setup', {
+          device, biometricEnabled: true, deviceSecret: result.deviceSecret,
+        }, { idToken });
+        Object.assign(result, confirmed);
+      }
+    } catch (error) {
+      await removeTrustedDeviceSecret(device.deviceId, accountScope);
+      rememberBiometricLoginProfile({ enabled: false });
+      throw error;
+    }
   }
-  rememberBiometricLoginProfile({
+  if (biometricEnabled !== undefined) rememberBiometricLoginProfile({
     identity: { ...(result.identity || {}), identityKey: result.identityKey || result.identity?.identityKey || '' },
     enabled: Boolean(biometricEnabled && result.setup?.biometricEnabled),
   });
@@ -569,43 +613,15 @@ export const identityCompleteSetup = async ({ idToken, password, username, pin, 
 
 export const identitySetBiometric = async ({ idToken, enabled, identity = {} }) => {
   if (!isNativeRuntime()) throw new Error('Trên website, hãy đăng ký Passkey trong phần bảo mật tài khoản.');
-  if (enabled && !(await getBiometricAvailability()).available) throw new Error('Hãy bật Face ID hoặc vân tay trong cài đặt thiết bị trước.');
-  if (enabled) {
-    const verification = await authenticateBiometric('Xác nhận kích hoạt đăng nhập sinh trắc học');
-    if (!verification.success) throw new Error(verification.message);
-  }
+  if (enabled) return identityCompleteSetup({ idToken, biometricEnabled: true, trustDevice: true });
   const device = getIdentityDevice();
   const accountScope = rememberIdentityAccountScope(identity);
-  let secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: false, accountScope });
-  // Existing installations stored one legacy secret per physical device. Read
-  // it only as a compatibility fallback, then migrate it into this account's
-  // isolated slot after the server confirms the device relationship.
-  if (!secret && accountScope) {
-    secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: false });
-  }
-  if (!secret && isNativeRuntime()) {
-    secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: true, accountScope });
-  }
-  if (!secret && isNativeRuntime() && accountScope) {
-    secret = await readTrustedDeviceSecret({ deviceId: device.deviceId, requireBiometric: true });
-  }
-  if (!secret) return identityCompleteSetup({ idToken, biometricEnabled: Boolean(enabled), trustDevice: true });
-  const result = await requestIdentityApi('/api/identity/complete-setup', {
-    device,
-    biometricEnabled: Boolean(enabled),
+  rememberBiometricLoginProfile({ enabled: false });
+  await removeTrustedDeviceSecret(device.deviceId, accountScope);
+  await removeTrustedDeviceSecret(device.deviceId);
+  return requestIdentityApi('/api/identity/complete-setup', {
+    device, biometricEnabled: false,
   }, { idToken });
-  const confirmedAccountScope = rememberIdentitySessionAccount(result) || accountScope;
-  await storeTrustedDeviceSecret({
-    deviceId: device.deviceId,
-    secret,
-    biometricEnabled: Boolean(enabled),
-    accountScope: confirmedAccountScope,
-  });
-  rememberBiometricLoginProfile({
-    identity: { ...(result.identity || identity || {}), identityKey: result.identityKey || identity?.identityKey || '' },
-    enabled: Boolean(enabled && result.setup?.biometricEnabled),
-  });
-  return result;
 };
 
 export const identityRequestRecovery = async ({ identifier, pin = '' }) => {
@@ -656,6 +672,16 @@ export const identityApproveOwnerReset = ({ idToken, requestId, appId }) => requ
 );
 
 export const identityVerifyPin = ({ idToken, pin }) => requestIdentityApi('/api/identity/verify-pin', { pin }, { idToken });
+export const identityRecordAttendance = async ({ idToken, identity, action, workRole, method }) => {
+  const device = getIdentityDevice();
+  const accountScope = getIdentityAccountScope(identity);
+  const profile = getBiometricAutoLoginProfile({ manual: true });
+  const deviceSecret = await readTrustedDeviceSecret({ deviceId: device.deviceId, accountScope,
+    requireBiometric: profile?.accountScope === accountScope, reason: 'Xác nhận chấm công',
+  });
+  if (!deviceSecret) throw new Error('Chưa xác thực được thiết bị chấm công. Hãy đăng nhập bằng mật khẩu và đăng ký thiết bị tin cậy.');
+  return requestIdentityApi('/api/identity/attendance', { device, deviceSecret, action, workRole, method }, { idToken });
+};
 export const identityListDevices = ({ idToken }) => requestIdentityApi('/api/identity/devices', {}, { idToken });
 export const identityRevokeDevices = async ({ idToken, deviceId = '', all = false, identity = {} }) => {
   const result = await requestIdentityApi('/api/identity/revoke-devices', { deviceId, all }, { idToken });

@@ -189,7 +189,7 @@ assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 assert.match(
   appSource,
-  /auth = initializeAuth\(app, \{[\s\S]*?persistence: \[indexedDBLocalPersistence, browserLocalPersistence\]/,
+  /auth = initializeAuth\(app, \{[\s\S]*?persistence: Capacitor\.isNativePlatform\(\) \? inMemoryPersistence : \[indexedDBLocalPersistence, browserLocalPersistence\]/,
   'Firebase Auth must configure supported persistence during construction'
 );
 assert.match(appSource, /firebaseAuthPersistencePromise = Promise\.resolve\('indexedDB-or-localStorage'\)/);
@@ -345,7 +345,7 @@ assert.match(loginViewSource, /biometricAutoLoginStartedRef/);
 assert.match(loginViewSource, /void runBiometricLogin\(\)/);
 assert.match(appSource, /onBiometricLogin=\{handleIdentityBiometricLogin\}/);
 assert.match(appSource, /shouldRequireBiometricUnlock\(persistedSession\.currentUser\)/);
-assert.match(appSource, /authenticateBiometric\('Xác thực để mở HD Manager'\)/);
+assert.match(appSource, /identityBiometricLogin\(\{ appId, manual: true \}\)/);
 assert.match(appSource, /CapacitorApp\.addListener\('appStateChange'/);
 assert.match(appSource, /biometricVerifiedIdentityRef\.current = getIdentityAccountScope\(established\.identity/);
 assert.match(appSource, /setBiometricUnlockState\('unlocked'\)/);

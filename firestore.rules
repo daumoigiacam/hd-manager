@@ -29,7 +29,11 @@ service cloud.firestore {
     }
 
     function companyWifiKeys() {
-      return ['attendanceWifi', 'attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt', 'defaultAttendanceWifiSsid', 'defaultAttendanceWifiBssid'];
+      return ['attendanceWifi', 'attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt', 'defaultAttendanceWifiSsid', 'defaultAttendanceWifiBssid', 'attendanceBiometricRequired'];
+    }
+
+    function employeeAttendanceSecurityKeys() {
+      return ['role', 'position', 'primaryPosition', 'secondaryPositions', 'additionalPositions', 'departments', 'roleSalaryComponents', 'departmentSalaryComponents', 'salaryByDepartment', 'shiftStart', 'shiftEnd', 'graceMinutes', 'attendanceLocation', 'fixedAttendanceLocation', 'attendanceGpsLocation', 'attendanceLocationEnabled', 'fixedAttendanceLocationEnabled', 'attendanceGpsRequired', 'attendanceLocationRadiusMeters', 'attendanceGpsRadiusMeters', 'attendanceBiometricRequired'];
     }
 
     function isCustomerIdentity() {
@@ -871,6 +875,8 @@ service cloud.firestore {
 
       allow create: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'attendance' || isPayrollManager(appId))
+        && (collectionId != 'employees' || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (
@@ -894,6 +900,8 @@ service cloud.firestore {
 
       allow update: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'attendance' || isPayrollManager(appId))
+        && (collectionId != 'employees' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(employeeAttendanceSecurityKeys()) || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
@@ -930,6 +938,8 @@ service cloud.firestore {
 
       allow delete: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'attendance' || isPayrollManager(appId))
+        && (collectionId != 'employees' || isPayrollManager(appId))
         && (collectionId != 'companies' || canManageCompanyWifi())
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && (

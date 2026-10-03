@@ -983,6 +983,12 @@ exports.identityBiometricLogin = functions.https.onRequest(runIdentityRequest((r
   biometricProof: Boolean(req.body?.biometricProof)
 })));
 
+exports.identityAttendance = functions.https.onRequest(runIdentityRequest(req => identityCenter.attendance({
+  authorization: req.headers.authorization, device: req.body?.device,
+  deviceSecret: req.body?.deviceSecret, action: req.body?.action,
+  workRole: req.body?.workRole, method: req.body?.method,
+})));
+
 exports.identityPasskey = functions.https.onRequest(runIdentityRequest((req) => identityCenter.passkey({
   operation: req.body?.operation,
   body: req.body || {},
@@ -1007,6 +1013,7 @@ exports.identityCompleteSetup = functions.https.onRequest(runIdentityRequest((re
   username: req.body?.username,
   pin: req.body?.pin,
   biometricEnabled: req.body?.biometricEnabled,
+  deviceSecret: req.body?.deviceSecret,
   trustDevice: req.body?.trustDevice
 })));
 

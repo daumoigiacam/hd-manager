@@ -29,6 +29,7 @@ const createPreviewUser = (token) => {
 
 export const indexedDBLocalPersistence = { type: 'LOCAL_INDEXED_DB' };
 export const browserLocalPersistence = { type: 'LOCAL_BROWSER' };
+export const inMemoryPersistence = { type: 'NONE' };
 
 function notify() {
   for (const listener of listeners) {
