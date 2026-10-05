@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import {
   WAREHOUSE_WEIGHT_ENTRY_ROW_SIZE,
   ensureWarehouseWeightEntryRows,
@@ -120,10 +121,10 @@ test('danh muc chi mo khi co quyen duyet danh muc hoac tao phieu ngoai don', () 
 });
 
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const modalStart = appSource.indexOf('const WarehouseWeightEntriesModal = React.memo');
 const moduleStart = appSource.indexOf('function WarehouseDispatchView');
-assert.ok(modalStart >= 0 && moduleStart > modalStart, 'Không tìm thấy editor kg độc lập');
-const modalSource = appSource.slice(modalStart, moduleStart);
+assert.ok(moduleStart >= 0);
+assert.match(appSource, /import WarehouseWeightEntriesModal from/);
+const modalSource = await readFile(new URL('../src/features/warehouse/WarehouseWeightEntriesModal.jsx', import.meta.url), 'utf8');
 const moduleEnd = appSource.indexOf('const OrderRequestSelectableProductCard', moduleStart);
 const warehouseViewSource = appSource.slice(moduleStart, moduleEnd);
 const tableSource = await readFile(new URL('../src/features/warehouse/DispatchTableBody.jsx', import.meta.url), 'utf8');
@@ -164,7 +165,7 @@ test('danh sách phiếu xuất mở đúng editor theo từng ô', () => {
 test('ô người giao thuộc đúng từng dòng phiếu xuất của khách hàng', () => {
   assert.doesNotMatch(warehouseModuleSource, /<td rowSpan=\{driverCellRowSpan\}[^>]*bg-sky-50/);
   assert.match(warehouseModuleSource, /aria-label=\{`Sửa người giao phiếu xuất của \$\{group\.customerName \|\| row\.customerName \|\| 'khách hàng'\}`\}/);
-  assert.match(warehouseModuleSource, /<span className="mt-1 block font-medium text-slate-900">\{rowDriverName\}<\/span>/);
+  assert.match(warehouseModuleSource, /<span className="hd-dispatch-table__driver-name">\{rowDriverName\}<\/span>/);
 });
 
 test('sửa ô kg giữ từng lần cân và tự cộng lại tổng', () => {
@@ -204,15 +205,20 @@ test('tim kiem xuat kho nhap truc tiep khong mo bang rieng', () => {
 console.log('Warehouse dispatch weight input regression suite passed.');
 
 test('shortage expansion uses a compact accessible arrow without stacked spacing', () => {
-  assert.match(warehouseModuleSource, /aria-expanded=\{showAllDispatchShortageCustomers\}/);
-  assert.match(warehouseModuleSource, /showAllDispatchShortageCustomers \? <ChevronUp size=\{16\}/);
+  const listSource = readFileSync(new URL('../src/features/warehouse/DispatchShortageList.jsx', import.meta.url), 'utf8');
+  assert.match(listSource, /aria-expanded=\{expanded\}/);
+  assert.match(listSource, /expanded \? <ChevronUp size=\{16\}/);
   assert.doesNotMatch(warehouseModuleSource, /premium-dispatch-module space-y-4/);
-  assert.match(warehouseModuleSource, /setShowAllDispatchShortageCustomers\(prev => !prev\)/);
+  assert.match(warehouseModuleSource, /setShowAllDispatchShortageCustomers\(previous => !previous\)/);
 });
 
 test('dispatch success banners are removed but failures remain visible', () => {
   assert.doesNotMatch(warehouseModuleSource, /setDispatchStatus|\[dispatchStatus,/);
   assert.match(warehouseModuleSource, /dispatchActionError && <div role="alert"/);
-  assert.match(warehouseModuleSource, /dispatchError &&/);
-  assert.match(warehouseModuleSource, /await onAddWarehouseDispatch\(employee.id,/);
+  assert.match(warehouseModuleSource, /error=\{dispatchError\}/);
+  const actionsSource = readFileSync(new URL('../src/features/warehouse/DispatchFormActions.jsx', import.meta.url), 'utf8');
+  assert.match(actionsSource, /error && <div role="alert"/);
+  const submitSource = readFileSync(new URL('../src/features/warehouse/submitDispatchForm.js', import.meta.url), 'utf8');
+  assert.match(warehouseModuleSource, /submitDispatchForm\(event,/);
+  assert.match(submitSource, /await onAddWarehouseDispatch\(employee.id,/);
 });

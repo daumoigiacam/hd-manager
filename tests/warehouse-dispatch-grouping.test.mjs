@@ -150,9 +150,9 @@ test('the dispatch table uses grouped cells with rowSpan for driver and customer
   assert.match(appSource, /deliveryReports=\{deliveryReports\}/);
   assert.match(appSource, /<DispatchTableBody visibleDispatchGroups=\{visibleDispatchGroups\}/);
   const tableSource = await readFile(new URL('../src/features/warehouse/DispatchTableBody.jsx', import.meta.url), 'utf8');
-  assert.match(tableSource, /<td rowSpan=\{groupRowSpan\} className="border border-slate-700 bg-sky-50\/60/);
-  assert.match(tableSource, /<td rowSpan=\{groupRowSpan\} className="border border-slate-700 px-1\.5 py-2 align-middle/);
-  const driverCellStart = tableSource.indexOf('<td rowSpan={groupRowSpan} className="border border-slate-700 bg-sky-50/60');
+  assert.match(tableSource, /<td rowSpan=\{groupRowSpan\} className="hd-dispatch-table__cell hd-dispatch-table__cell--driver"/);
+  assert.match(tableSource, /<td rowSpan=\{groupRowSpan\} className="hd-dispatch-table__cell"/);
+  const driverCellStart = tableSource.indexOf('<td rowSpan={groupRowSpan} className="hd-dispatch-table__cell hd-dispatch-table__cell--driver"');
   const driverCell = tableSource.slice(driverCellStart, tableSource.indexOf('</td>', driverCellStart));
   assert.doesNotMatch(driverCell, />Giao hàng</, 'Do not repeat the delivery label in every driver cell');
   assert.match(driverCell, /rowDriverName/);

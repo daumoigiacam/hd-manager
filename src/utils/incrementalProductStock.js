@@ -136,7 +136,7 @@ export function createIncrementalProductStockIndex({
 
     const collect = (records, field) => records.forEach(record => {
       if (!isPrimitive(record.date) || !isPrimitive(record.isArchived)) reusableInputs = false;
-      const eligible = !record.isArchived && (!untilDate || `${record.date || ''}` <= untilDate);
+      const eligible = !record.isArchived && !record.__pendingFirebaseSync && (!untilDate || `${record.date || ''}` <= untilDate);
       let captured;
       // Excluded malformed records must stay ignored, just as in the pure path.
       try { captured = (immutableRecords === true && recordCaptures.get(record)) || captureStockFields(record); } catch (error) {

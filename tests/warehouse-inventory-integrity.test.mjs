@@ -9,6 +9,41 @@ import {
   resolveWarehouseStockCountStatus,
   selectLatestWarehouseStockCountMeasures
 } from '../src/utils/warehouseInventory.js';
+import { buildProductStockBalanceIndex } from '../src/utils/productMeasures.js';
+import { buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
+import { buildPricingEngineSnapshot } from '../src/services/pricingEngineService.js';
+
+const stockProduct = { id: 'duck', stockUnit: 'Con', openingStock: 20 };
+const stockImports = [{ id: 'purchase', productId: 'duck', quantity: 10, unit: 'Con' }];
+const stockDispatch = { id: 'dispatch', productId: 'duck', groupName: 'Vịt', date: '2026-10-05', quantity: 4, unit: 'Con', __pendingFirebaseSync: true };
+const pendingStock = buildProductStockBalanceIndex([stockProduct], stockImports, [stockDispatch]).get(stockProduct);
+assert.deepEqual(pendingStock, { incoming: 10, outgoing: 0, remaining: 30 },
+  'Phiếu đang chờ ACK không được làm giảm tồn hoặc ảnh hưởng báo cáo');
+const acknowledgedStock = buildProductStockBalanceIndex([stockProduct], stockImports,
+  [{ ...stockDispatch, __pendingFirebaseSync: false }]).get(stockProduct);
+assert.deepEqual(acknowledgedStock, { incoming: 10, outgoing: 4, remaining: 26 },
+  'Sau ACK, phiếu xuất được tính đúng một lần');
+const pricingInput = {
+  date: new Date('2026-10-05T12:00:00'),
+  warehouseImports: [{ id: 'purchase', groupName: 'Vịt', date: '2026-10-05', quantity: 20, totalKg: 20, unitPrice: 100 }],
+};
+const pendingPricing = buildPricingEngineSnapshot({ ...pricingInput, warehouseDispatches: [stockDispatch] });
+const baselinePricing = buildPricingEngineSnapshot({ ...pricingInput, warehouseDispatches: [] });
+assert.deepEqual(pendingPricing.inventoryRows, baselinePricing.inventoryRows,
+  'Bảng tồn của engine giá không được trừ phiếu pending');
+const confirmedPricing = buildPricingEngineSnapshot({ ...pricingInput,
+  warehouseDispatches: [{ ...stockDispatch, __pendingFirebaseSync: false }] });
+assert.equal(confirmedPricing.inventoryRows[0].dispatchQuantity, 4,
+  'Engine giá chỉ ghi nhận phiếu đã xác nhận');
+const dashboardInput = { now: '2026-10-05T12:00:00', warehouseImports: pricingInput.warehouseImports };
+const baseDashboard = buildExecutiveDashboardSnapshot(dashboardInput);
+const pendingDashboard = buildExecutiveDashboardSnapshot({ ...dashboardInput, warehouseDispatches: [stockDispatch] });
+const confirmedDashboard = buildExecutiveDashboardSnapshot({ ...dashboardInput,
+  warehouseDispatches: [{ ...stockDispatch, __pendingFirebaseSync: false }] });
+assert.deepEqual(pendingDashboard.profitability, baseDashboard.profitability,
+  'Dashboard profitability must exclude unconfirmed dispatches');
+assert.notDeepEqual(confirmedDashboard.profitability, baseDashboard.profitability,
+  'Dashboard profitability must include a confirmed dispatch');
 
 const checklistRows = buildWarehouseStockChecklistRows([{
   key: 'vit',

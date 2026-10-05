@@ -14,7 +14,9 @@ const DELIVERY_STATUS_LABELS = {
   pending: 'Chưa giao',
 };
 
+/** @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchDeliveryReport[]} deliveryReports */
 const getLatestReportsByDispatchId = (deliveryReports = []) => {
+  /** @type {Map<string, import('../features/warehouse/warehouseDispatchContracts.js').DispatchDeliveryReport>} */
   const reportsByDispatchId = new Map();
 
   deliveryReports
@@ -34,6 +36,7 @@ const getLatestReportsByDispatchId = (deliveryReports = []) => {
   return reportsByDispatchId;
 };
 
+/** @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationRow} dispatch */
 export const getWarehouseDispatchPresentationGroupId = (dispatch = {}) => {
   const candidates = [
     dispatch.shipmentId,
@@ -57,6 +60,10 @@ export const getWarehouseDispatchPresentationGroupId = (dispatch = {}) => {
   return groupId ? `shipment:${groupId}` : dispatchId ? `dispatch:${dispatchId}` : '';
 };
 
+/**
+ * @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationRow} dispatch
+ * @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchDeliveryReport | null} deliveryReport
+ */
 export const resolveWarehouseDispatchDeliveryStatus = (dispatch = {}, deliveryReport = null) => {
   const reportStatus = normalizeText(
     deliveryReport?.deliveryStatus
@@ -97,6 +104,7 @@ export const resolveWarehouseDispatchDeliveryStatus = (dispatch = {}, deliveryRe
   return { key: status, label: toText(dispatch.deliveryStatus || dispatch.trackingStatus || dispatch.fulfillmentStatus || dispatch.status) };
 };
 
+/** @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationRow} row */
 const getDriver = (row = {}) => {
   const id = toText(row.assignedDriverId || row.driverId || row.deliveryDriverId || row.driverEmployeeId);
   const name = toText(row.assignedDriverName || row.assignedDriverNameSnapshot || row.driverNameSnapshot || row.driverName);
@@ -108,6 +116,7 @@ const getDriver = (row = {}) => {
   };
 };
 
+/** @param {import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationRow} row */
 const getCustomer = (row = {}) => {
   const id = toText(row.customerId || row.customerID);
   const name = toText(row.customerName || row.customerNameSnapshot) || 'Khách hàng';
@@ -118,8 +127,13 @@ const getCustomer = (row = {}) => {
   };
 };
 
+/**
+ * @template {import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationRow} Row
+ * @param {{ rows?: Row[], deliveryReports?: import('../features/warehouse/warehouseDispatchContracts.js').DispatchDeliveryReport[] }} input
+ */
 export const buildWarehouseDispatchPresentationGroups = ({ rows = [], deliveryReports = [] } = {}) => {
   const reportsByDispatchId = getLatestReportsByDispatchId(deliveryReports);
+  /** @type {Map<string, import('../features/warehouse/warehouseDispatchContracts.js').DispatchPresentationGroup<Row>>} */
   const groups = new Map();
 
   rows.forEach((row, index) => {

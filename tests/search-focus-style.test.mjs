@@ -6,6 +6,7 @@ const app = read('src/App.jsx');
 const foundation = read('src/design-system/foundation.css');
 const components = read('src/design-system/components.jsx');
 const appShell = read('src/layout/AppShell.jsx');
+const dispatchPicker = read('src/features/warehouse/DispatchSearchPicker.jsx');
 const searchFocusStyles = foundation.split('/* Search controls keep their resting surface without adding a second focus frame. */')[1] || '';
 const searchInputFocusRule = searchFocusStyles.match(/:where\([\s\S]*?\):is\(:focus, :focus-visible\)\s*\{([^}]*)\}/)?.[1] || '';
 const searchContainerFocusRule = searchFocusStyles.match(/:where\(label, div\):has\(> input\[data-hd-search-input="true"\]\):focus-within,[\s\S]*?\{([^}]*)\}/)?.[1] || '';
@@ -17,7 +18,10 @@ const searchInputs = inputTags.filter((tag) => (
 ));
 const unmarkedSearchInputs = searchInputs.filter((tag) => !/data-hd-search-input="true"/.test(tag));
 
-assert(searchInputs.length >= 30, `Expected the complete app search inventory, found only ${searchInputs.length} controls.`);
+// Two dispatch inputs now share one extracted picker implementation.
+assert(searchInputs.length >= 28, `Expected the parent search inventory, found only ${searchInputs.length} controls.`);
+assert.match(dispatchPicker, /<input\s+data-hd-search-input="true"[\s\S]*?role="combobox"/);
+assert.match(app, /<DispatchSearchPicker/);
 assert.deepEqual(unmarkedSearchInputs, [], 'Every searchable input must opt into the shared no-extra-focus-frame behavior.');
 assert.match(components, /HDSearchInput[\s\S]*data-hd-search-input="true"/, 'The shared search primitive must mark future search inputs automatically.');
 

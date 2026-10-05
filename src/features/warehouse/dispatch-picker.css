@@ -1,0 +1,14 @@
+.hd-dispatch-picker { position: relative; min-width: 0; }
+.hd-dispatch-picker-field { display: flex; align-items: center; min-height: var(--hd-touch-target); border: 1px solid var(--hd-color-border); border-radius: var(--hd-radius-control); background: var(--hd-color-surface); padding-left: var(--hd-space-3); gap: var(--hd-space-2); }
+.hd-dispatch-picker-field > svg { color: var(--hd-success); flex-shrink: 0; }
+.hd-dispatch-picker-field input { width: 100%; min-width: 0; border: 0; background: transparent; box-shadow: none; outline: none; color: var(--hd-color-ink); font-size: var(--hd-type-body); min-height: var(--hd-touch-target); padding: 0; }
+.hd-dispatch-picker-field:focus-within { outline: 2px solid var(--hd-color-focus); outline-offset: 1px; }
+.hd-dispatch-picker-field > button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; min-height: var(--hd-touch-target); width: var(--hd-touch-target); border: 0; background: transparent; color: var(--hd-color-ink-soft); }
+.hd-dispatch-picker-list { position: absolute; top: calc(100% + var(--hd-space-1)); inset-inline: 0; z-index: var(--hd-layer-popover, 30); max-height: 14rem; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--hd-color-border); border-radius: var(--hd-radius-control); background: var(--hd-color-surface); padding: var(--hd-space-2); }
+.hd-dispatch-picker-list > button { display: block; width: 100%; min-height: var(--hd-touch-target); padding: var(--hd-space-2) var(--hd-space-3); border: 1px solid transparent; border-radius: var(--hd-radius-control); text-align: left; background: transparent; color: var(--hd-color-ink); overflow-wrap: anywhere; }
+.hd-dispatch-picker-list > button:hover, .hd-dispatch-picker-list > button[aria-selected="true"] { background: var(--hd-color-success-surface); }
+.hd-dispatch-picker button:focus-visible { outline: 2px solid var(--hd-color-focus); }
+.hd-dispatch-picker-list span { display: block; font-size: var(--hd-type-body); font-weight: var(--hd-font-weight-semibold); }
+.hd-dispatch-picker-list small, .hd-dispatch-picker-list p { display: block; margin: var(--hd-space-1) 0; font-size: var(--hd-type-caption); color: var(--hd-color-ink-soft); }
+.hd-dispatch-picker-list .hd-dispatch-picker-group { font-weight: var(--hd-font-weight-bold); padding: var(--hd-space-2); }
+.hd-dispatch-picker-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--hd-space-3); }

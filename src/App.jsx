@@ -5,6 +5,32 @@ import { isCustomerDebtRepayment } from './utils/expenseClassification.js';
 import { withSalesRevenueIndex } from './utils/salesRevenuePeriod.js';
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
+import WarehouseWeightEntriesModal from './features/warehouse/WarehouseWeightEntriesModal.jsx';
+import DispatchFormActions from './features/warehouse/DispatchFormActions.jsx';
+import DispatchQuantityFields from './features/warehouse/DispatchQuantityFields.jsx';
+import DispatchHistoryDialog from './features/warehouse/DispatchHistoryDialog.jsx';
+import DispatchHistoryCalendar from './features/warehouse/DispatchHistoryCalendar.jsx';
+import DispatchShortageList from './features/warehouse/DispatchShortageList.jsx';
+import { matchDispatchOrder } from './features/warehouse/matchDispatchOrder.js';
+import { buildDispatchOrderDefaults } from './features/warehouse/buildDispatchOrderDefaults.js';
+import { coordinateDispatchBilling } from './features/warehouse/coordinateDispatchBilling.js';
+import { submitDispatchForm } from './features/warehouse/submitDispatchForm.js';
+import { buildDispatchEditPayload } from './features/warehouse/dispatchEditPayload.js';
+import { buildDispatchEditorDraft, canEditDispatchField, getDispatchEditorConfig } from './features/warehouse/dispatchEditorModel.js';
+import { runDispatchEditorCommand } from './features/warehouse/runDispatchEditorCommand.js';
+import { shareDispatchSheet } from './features/warehouse/shareDispatchSheet.js';
+import { formatDispatchNumberInput } from './features/warehouse/dispatchNumberInput.js';
+import { renderDispatchSheetCanvas as renderTypedDispatchSheetCanvas } from './features/warehouse/renderDispatchSheetCanvas.js';
+import { buildDispatchShortageGroups } from './features/warehouse/dispatchShortageGroups.js';
+import { resolveDispatchHistorySelection } from './features/warehouse/dispatchHistorySelection.js';
+import { deleteDispatchHistoryRow } from './features/warehouse/dispatchHistoryActions.js';
+import { deleteShortageOrderRequestRow, closeSelectedDispatchShortage } from './features/warehouse/dispatchShortageActions.js';
+import DispatchSearchPicker from './features/warehouse/DispatchSearchPicker.jsx';
+import { buildDispatchHistoryRows, buildDispatchShortageTableRows } from './features/warehouse/dispatchDialogModels.js';
+import DispatchShortageDialog from './features/warehouse/DispatchShortageDialog.jsx';
+import { createEmptyDispatchDraft } from './features/warehouse/warehouseDispatchFormModel.js';
+import { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch } from './features/warehouse/warehouseDispatchUseCases.js';
+import { createWarehouseDispatchReadDecoder } from './features/warehouse/warehouseDispatchReadRepository.js';
 import { startTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { splitDispatchSharePages } from './utils/dispatchSharePages';
@@ -37,6 +63,7 @@ import { retainCollectionRecordIdentity } from './utils/collectionIdentity.js';
 import { createCustomerLedgerMapBuilder } from './utils/customerLedgerIndex.js';
 import { canSaveLocallyFirst, coalescePendingWrite } from './utils/localFirstSave.js';
 import { ATOMIC_SAVE_COLLECTION, validateAtomicWrites, mergeAtomicWrites, expandPendingWrites, commitAtomicWrites } from './utils/atomicSave.js';
+import { commitIdempotentWarehouseDispatchCreate } from './features/warehouse/warehouseDispatchCreateRepository.js';
 import { createDeliverySavePlan } from './utils/deliverySavePlan.js';
 import { createRecordedShareCanvas } from './utils/shareCanvas.js';
 import { createPreloadableModule } from './utils/preloadableModule.js';
@@ -54,11 +81,8 @@ import {
   RefreshCw
 } from 'lucide-react';
 import {
-  createWarehouseWeightEntryRow,
   ensureWarehouseWeightEntryRows,
-  getWarehouseWeightEntryTotal,
-  normalizeWarehouseWeightEntries,
-  updateWarehouseWeightEntryRows
+  normalizeWarehouseWeightEntries
 } from './utils/warehouseWeightEntries.js';
 import {
   buildWarehouseStockChecklistRows,
@@ -12954,6 +12978,14 @@ export default function App() {
             transaction: callback => runTransaction(db, callback),
             reference: write => doc(db, 'artifacts', appId, 'public', 'data', write.collectionName, write.documentId),
           })
+          : pendingWrite.collectionName === 'warehouseDispatches' && pendingWrite.options?.dispatchCreate === true
+            ? commitIdempotentWarehouseDispatchCreate({
+              runTransaction: callback => runTransaction(db, callback),
+              reference: () => documentRef,
+              payload: pendingWrite.payload,
+              companyId,
+              documentId: pendingWrite.documentId,
+            })
           : runResilientFirestoreWrite({
           preferRest: firestoreSdkFailedRef.current,
           sdkWrite: () => setDoc(documentRef, pendingWrite.payload || {}, pendingWrite.options || {}),
@@ -12975,6 +13007,14 @@ export default function App() {
         // A UI deadline must not unlock an unresolved write and allow an older
         // SDK/REST commit to overwrite a newer revision.
         const commitResult = await commitPendingWrite;
+        if (pendingWrite.collectionName === 'warehouseDispatches'
+          && pendingWrite.options?.dispatchCreate === true
+          && activeTenantScopeRef.current === companyId
+          && pendingFirebaseWritesRef.current.some(item => isSamePendingWriteRevision(item, pendingWrite))) {
+          applyLocalCollectionWrite('warehouseDispatches', pendingWrite.documentId,
+            commitResult?.payload || pendingWrite.payload || {});
+          recentLocalWritesRef.current.delete(`warehouseDispatches:${pendingWrite.documentId}`);
+        }
         if (activeTenantScopeRef.current === companyId && pendingFirebaseWritesRef.current.some(item => isSamePendingWriteRevision(item, pendingWrite))) {
           for (const write of commitResult?.existingDocuments || []) applyLocalCollectionWrite(write.collectionName, write.documentId, write.payload);
         }
@@ -14341,8 +14381,14 @@ export default function App() {
       }
     };
 
+    const decodeWarehouseDispatchItems = createWarehouseDispatchReadDecoder({
+      companyId: tenantCompanyId,
+      customerId: customerSession ? sessionCustomerId : undefined
+    });
     const applyCollectionItems = (colName, setFn, items = [], isObject = false, parser = null, options = {}) => {
-      const rawItems = Array.isArray(items) ? items : [];
+      const rawItems = colName === 'warehouseDispatches'
+        ? decodeWarehouseDispatchItems(items)
+        : (Array.isArray(items) ? items : []);
       clearConfirmedLocalMutations(colName, rawItems, options);
       const safeItems = filterRecentlyDeletedItems(colName, rawItems);
       const isEmptyPayload = safeItems.length === 0;
@@ -14433,6 +14479,7 @@ export default function App() {
           `Firebase read timeout: ${colName}`
         );
         if (!isCurrent()) return;
+        if (colName === 'warehouseDispatches') decodeWarehouseDispatchItems(items);
         const confirmedAt = Date.now();
         lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
         lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
@@ -14623,6 +14670,7 @@ export default function App() {
         const applySnapshot = (snapshot, sourceIndex) => {
             if (cancelled) return;
             const snapshotItems = snapshotItemCollectors[sourceIndex](snapshot, collectionRefs[sourceIndex]);
+            if (colName === 'warehouseDispatches') decodeWarehouseDispatchItems(snapshotItems);
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
             const hasPendingWrites = Boolean(snapshot?.metadata?.hasPendingWrites);
             const snapshotAt = Date.now();
@@ -14728,7 +14776,17 @@ export default function App() {
         const firestoreUnsubscribes = collectionRefs.map((collectionRef, sourceIndex) => onSnapshot(
           collectionRef,
           { includeMetadataChanges: true },
-          (snapshot) => applySnapshot(snapshot, sourceIndex),
+          (snapshot) => {
+            if (colName !== 'warehouseDispatches') {
+              applySnapshot(snapshot, sourceIndex);
+              return;
+            }
+            try {
+              applySnapshot(snapshot, sourceIndex);
+            } catch (error) {
+              handleListenerError(error);
+            }
+          },
           handleListenerError
         ));
         const unsubscribe = () => firestoreUnsubscribes.forEach((firestoreUnsubscribe) => firestoreUnsubscribe?.());
@@ -15622,7 +15680,7 @@ export default function App() {
       ].join('|');
       nextFingerprints.set(customerId, `${nextFingerprints.get(customerId)};r:${requestSignature}`);
     });
-    (warehouseDispatches || []).forEach(dispatch => {
+    (warehouseDispatches || []).filter(dispatch => !dispatch?.__pendingFirebaseSync).forEach(dispatch => {
       const customerId = dispatch?.customerId || dispatch?.customer_id;
       if (!customerId || !nextFingerprints.has(customerId)) return;
       const dispatchSignature = [
@@ -15800,7 +15858,7 @@ export default function App() {
   }, [firebaseUser, myCompanyId]);
   useEffect(() => {
     if (!firebaseUser || !myCompanyId) return;
-    warehouseDispatches.forEach(dispatch => {
+    warehouseDispatches.filter(dispatch => !dispatch?.__pendingFirebaseSync).forEach(dispatch => {
       if (dispatch?.id && !dispatch.companyId && !warehouseDispatchCompanyMigrationRef.current.has(dispatch.id)) {
         compatibilityMaintenanceRef.current?.enqueue(`dispatch:${dispatch.id}`, { kind: 'dispatch', id: dispatch.id });
       }
@@ -21274,84 +21332,20 @@ export default function App() {
       return { id: normalized.id, queued: false };
     }
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên tạo phiếu xuất không hợp lệ. Vui lòng đăng nhập lại.');
-    const nowMs = Date.now();
-    const createdAtIso = new Date(nowMs).toISOString();
-    const clientMutationId = `${dispatchData.clientMutationId || ''}`.trim();
-    const customer = customers.find(c => c.id === dispatchData.customerId);
-    const product = products.find(p => p.id === dispatchData.productId);
-    const quantity = parseLooseQuantityValue(dispatchData.quantity ?? dispatchData.pieceCount ?? dispatchData.quantityCount);
-    const weightKg = parseLooseQuantityValue(dispatchData.weightKg ?? dispatchData.totalKg);
-    const quantityUnit = normalizeLeadingLabel(dispatchData.quantityUnit || dispatchData.unit || (quantity > 0 ? 'Con' : ''));
-    const normalizedDate = dispatchData.date || getTodayString();
-    const buildDispatchDuplicateKey = (item = {}) => [
-      item.companyId || myCompanyId || '',
-      item.date || normalizedDate,
-      item.customerId || normalizeLookupText(item.customerNameSnapshot || item.customerName || ''),
-      item.branchId || item.customerBranchId || normalizeLookupText(item.branchName || item.customerBranchName || ''),
-      item.productId || normalizeLookupText(item.productNameSnapshot || item.productName || ''),
-      normalizeLookupText(item.assignedDriverId || item.driverId || item.assignedDriverNameSnapshot || item.driverNameSnapshot || ''),
-      normalizeLookupText(item.quantityUnit || item.unit || ''),
-      parseLooseQuantityValue(item.quantity ?? item.pieceCount ?? item.quantityCount),
-      parseLooseQuantityValue(item.weightKg ?? item.totalKg),
-      normalizeLookupText(item.sourceOrderRequestId || ''),
-      normalizeLookupText(item.sourceOrderRequestRowKey || '')
-    ].join('__');
-    const duplicateKey = buildDispatchDuplicateKey({
-      ...dispatchData,
-      companyId: myCompanyId,
-      date: normalizedDate,
-      quantity,
-      pieceCount: parseLooseQuantityValue(dispatchData.pieceCount ?? quantity),
-      quantityCount: parseLooseQuantityValue(dispatchData.quantityCount ?? quantity),
-      weightKg,
-      quantityUnit
+    return createWarehouseDispatch(empId, dispatchData, {
+      myCompanyId, customers, products, rawWarehouseDispatches, parseLooseQuantityValue, normalizeLeadingLabel, normalizeLookupText, getTodayString, getEntityTimestamp, pendingFirebaseWritesRef, enqueuePendingFirebaseWrite, setRawWarehouseDispatches, rememberRecentLocalWrite, requireSharedWriteConfirmation
     });
-    const duplicateCandidate = (rawWarehouseDispatches || []).find((item) => {
-      if (!item || item.isArchived) return false;
-      if ((item.companyId || myCompanyId) !== myCompanyId) return false;
-      if (clientMutationId && item.clientMutationId === clientMutationId) return true;
-      if (buildDispatchDuplicateKey(item) !== duplicateKey) return false;
-      const itemTimestamp = getEntityTimestamp(item);
-      return itemTimestamp ? Math.abs(nowMs - itemTimestamp) <= 20000 : false;
-    });
-    if (duplicateCandidate?.id) {
-      return { id: duplicateCandidate.id, queued: false, duplicate: true };
+  };
+
+  const saveWarehouseDispatchPatch = async (collectionName, documentId, payload, options) => {
+    const sanitized = sanitizeFirestoreWritePayload(payload);
+    if (collectionName !== 'warehouseDispatches' || !canSaveLocallyFirst(collectionName, sanitized, options)) {
+      throw new Error('Phiếu xuất có dữ liệu không hợp lệ để lưu an toàn.');
     }
-    const id = dispatchData.id || `wd_${nowMs}_${Math.random().toString(36).slice(2, 6)}`;
-    const normalizedPayload = {
-      ...dispatchData,
-      id,
-      clientMutationId,
-      empId,
-      createdByEmpId: empId,
-      customerNameSnapshot: dispatchData.customerNameSnapshot || customer?.name || '',
-      productNameSnapshot: dispatchData.productNameSnapshot || product?.name || '',
-      weightKg,
-      quantity,
-      pieceCount: parseLooseQuantityValue(dispatchData.pieceCount ?? quantity),
-      quantityCount: parseLooseQuantityValue(dispatchData.quantityCount ?? quantity),
-      quantityUnit,
-      date: normalizedDate,
-      companyId: myCompanyId,
-      isArchived: false,
-      createdAt: createdAtIso,
-      updatedAt: createdAtIso
-    };
-    setRawWarehouseDispatches(prev => [
-      ...prev.filter(item => item.id !== id),
-      normalizedPayload
-    ]);
-    rememberRecentLocalWrite('warehouseDispatches', id, normalizedPayload);
-    try {
-      const saveResult = enqueuePendingFirebaseWrite({ collectionName: 'warehouseDispatches', documentId: id, payload: normalizedPayload, durable: true });
-      void flushPendingFirebaseWriteNow('warehouseDispatches', id).catch(error => {
-        console.warn('Phiếu xuất đang chờ đồng bộ:', error);
-      });
-      return { id, queued: Boolean(saveResult?.queued) };
-    } catch (error) {
-      setRawWarehouseDispatches(prev => prev.filter(item => item.id !== id));
-      throw error;
+    if (!myCompanyId || activeTenantScopeRef.current !== myCompanyId) {
+      throw new Error('Phiên công ty đã thay đổi. Vui lòng mở lại phiếu xuất.');
     }
+    return saveDataDocument(collectionName, documentId, sanitized, options);
   };
 
   const handleEditWarehouseDispatch = async (dispatchId, updatedData = {}, empId = '') => {
@@ -21359,56 +21353,9 @@ export default function App() {
       throw new Error('VPS stock ledger entries are immutable; use an approved adjustment or reversal contract.');
     }
     if (!firebaseUser || !myCompanyId || !dispatchId) throw new Error('Phiên làm việc hoặc phiếu xuất không hợp lệ.');
-    const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
-    const mergedData = { ...(previousDispatch || {}), ...(updatedData || {}) };
-    const customer = customers.find(c => c.id === mergedData.customerId);
-    const product = products.find(p => p.id === mergedData.productId);
-    const quantity = parseLooseQuantityValue(mergedData.quantity ?? mergedData.pieceCount ?? mergedData.quantityCount);
-    const weightKg = parseLooseQuantityValue(mergedData.weightKg ?? mergedData.totalKg);
-    const quantityUnit = normalizeLeadingLabel(mergedData.quantityUnit || mergedData.unit || (quantity > 0 ? 'Con' : ''));
-    const hasWeightPatch = Object.prototype.hasOwnProperty.call(updatedData || {}, 'weightKg')
-      || Object.prototype.hasOwnProperty.call(updatedData || {}, 'totalKg');
-    const billingUnit = normalizeProductPricingUnit(mergedData.billingUnit || mergedData.pricingUnit || '');
-    const unitPrice = parseLooseMoneyValue(mergedData.unitPrice ?? mergedData.price);
-    const weightBillingPatch = hasWeightPatch
-      ? {
-          actualWeightKg: weightKg,
-          ...(isSameBillingUnit(billingUnit, 'Kg') ? {
-            billingQuantity: weightKg,
-            pricingQuantity: weightKg,
-            amount: Math.round(weightKg * unitPrice),
-            pricingAmount: Math.round(weightKg * unitPrice),
-            lineTotal: Math.round(weightKg * unitPrice)
-          } : {})
-        }
-      : {};
-    const normalizedPayload = {
-      ...updatedData,
-      ...weightBillingPatch,
-      customerNameSnapshot: updatedData.customerNameSnapshot || mergedData.customerNameSnapshot || customer?.name || '',
-      productNameSnapshot: updatedData.productNameSnapshot || mergedData.productNameSnapshot || product?.name || '',
-      weightKg,
-      quantity,
-      pieceCount: parseLooseQuantityValue(mergedData.pieceCount ?? quantity),
-      quantityCount: parseLooseQuantityValue(mergedData.quantityCount ?? quantity),
-      quantityUnit,
-      date: mergedData.date || getTodayString(),
-      companyId: mergedData.companyId || myCompanyId,
-      updatedAt: new Date().toISOString(),
-      updatedByEmpId: empId || ''
-    };
-    setRawWarehouseDispatches(prev => prev.map(item => (
-      item.id === dispatchId ? { ...item, ...normalizedPayload } : item
-    )));
-    rememberRecentLocalWrite('warehouseDispatches', dispatchId, normalizedPayload);
-    try {
-      await saveDataDocument('warehouseDispatches', dispatchId, normalizedPayload, { merge: true });
-    } catch (error) {
-      if (previousDispatch) {
-        setRawWarehouseDispatches(prev => prev.map(item => (item.id === dispatchId ? previousDispatch : item)));
-      }
-      throw error;
-    }
+    return updateWarehouseDispatch(dispatchId, updatedData, empId, {
+      rawWarehouseDispatches, customers, products, parseLooseQuantityValue, normalizeLeadingLabel, normalizeProductPricingUnit, parseLooseMoneyValue, isSameBillingUnit, getTodayString, myCompanyId, saveDataDocument: saveWarehouseDispatchPatch, requireSharedWriteConfirmation
+    });
   };
 
   const handleDeleteWarehouseDispatch = async (dispatchId) => {
@@ -21416,24 +21363,9 @@ export default function App() {
       throw new Error('VPS stock ledger entries cannot be archived or deleted without an approved reversal contract.');
     }
     if (!firebaseUser || !myCompanyId || !dispatchId) throw new Error('Phiên làm việc hoặc phiếu xuất không hợp lệ.');
-    const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
-    const archivedPayload = {
-      isArchived: true,
-      archivedAt: new Date().toISOString(),
-      archivedByEmpId: currentUser?.id || ''
-    };
-    setRawWarehouseDispatches(prev => prev.map(item => (
-      item.id === dispatchId ? { ...item, ...archivedPayload } : item
-    )));
-    rememberRecentLocalWrite('warehouseDispatches', dispatchId, archivedPayload);
-    try {
-      await saveDataDocument('warehouseDispatches', dispatchId, archivedPayload, { merge: true });
-    } catch (error) {
-      if (previousDispatch) {
-        setRawWarehouseDispatches(prev => prev.map(item => (item.id === dispatchId ? previousDispatch : item)));
-      }
-      throw error;
-    }
+    return deleteWarehouseDispatch(dispatchId, {
+      currentUser, saveDataDocument: saveWarehouseDispatchPatch, requireSharedWriteConfirmation
+    });
   };
 
   const handleAddDeliveryReport = async (empId, reportData = {}, writePlan = null) => {
@@ -51942,7 +51874,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
   }, [isAfterWarehouseStockReset, warehouseImports]);
   const warehouseExportCalendarMap = useMemo(() => {
     const grouped = new Map();
-    (warehouseDispatches || []).filter(item => !item?.isArchived && isAfterWarehouseStockReset(item)).forEach((item) => {
+    (warehouseDispatches || []).filter(item => !item?.isArchived && !item?.__pendingFirebaseSync && isAfterWarehouseStockReset(item)).forEach((item) => {
       const dateKey = resolveWarehouseRecordDateKey(item);
       if (!dateKey) return;
       const product = productLookup.get(item.productId);
@@ -52026,7 +51958,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
     };
 
     (warehouseDispatches || [])
-      .filter(item => !item?.isArchived && resolveWarehouseRecordDateKey(item) === workingDate && isAfterWarehouseStockReset(item))
+      .filter(item => !item?.isArchived && !item?.__pendingFirebaseSync && resolveWarehouseRecordDateKey(item) === workingDate && isAfterWarehouseStockReset(item))
       .forEach((item) => {
         const product = productLookup.get(item.productId);
         const row = ensureRow(getWarehouseStockGroupLabel(item, product));
@@ -52050,7 +51982,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
 
   const preparedWarehouseStockMovements = useMemo(() => {
     const prepare = records => (records || [])
-      .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
+      .filter(item => !item?.isArchived && !item?.__pendingFirebaseSync && isAfterWarehouseStockReset(item))
       .map(item => ({ item, dateKey: resolveWarehouseRecordDateKey(item), measures: null }));
     return { imports: prepare(warehouseImports), dispatches: prepare(warehouseDispatches) };
   }, [isAfterWarehouseStockReset, warehouseImports, warehouseDispatches, productLookup]);
@@ -52556,7 +52488,7 @@ function WarehouseImportView({ isVpsMode = false, vpsWarehouses = [], vpsUnits =
         .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
         .filter(item => resolveWarehouseRecordDateKey(item) === dateKey);
       const dayDispatchesForDate = (warehouseDispatches || [])
-        .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
+        .filter(item => !item?.isArchived && !item?.__pendingFirebaseSync && isAfterWarehouseStockReset(item))
         .filter(item => resolveWarehouseRecordDateKey(item) === dateKey);
       const dayStockCountsForDate = (warehouseStockCounts || [])
         .filter(item => !item?.isArchived && isAfterWarehouseStockReset(item))
@@ -54954,185 +54886,6 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
   );
 });
 
-const WarehouseWeightEntriesModal = React.memo(function WarehouseWeightEntriesModal({
-  mode = 'create',
-  initialEntries = [],
-  customerName = '',
-  productName = '',
-  previousWeightKg = 0,
-  appendEmptyRowWhenFull = false,
-  isSaving = false,
-  onCancel,
-  onSave
-}) {
-  const [entries, setEntries] = useState(() => ensureWarehouseWeightEntryRows(
-    initialEntries,
-    appendEmptyRowWhenFull
-  ));
-  const inputRefs = useRef([]);
-  const composingInputsRef = useRef(new Set());
-  const focusTaskRef = useRef(null);
-  const totalWeight = useMemo(() => getWarehouseWeightEntryTotal(entries), [entries]);
-  const weightDifference = totalWeight - (previousWeightKg || 0);
-
-  useEffect(() => () => {
-    if (typeof window === 'undefined' || focusTaskRef.current === null) return;
-    const task = focusTaskRef.current;
-    if (task.type === 'frame') window.cancelAnimationFrame?.(task.id);
-    if (task.type === 'timer') window.clearTimeout?.(task.id);
-    focusTaskRef.current = null;
-  }, []);
-
-  const focusInput = useCallback((index) => {
-    if (typeof window === 'undefined' || index < 0) return;
-    const pendingTask = focusTaskRef.current;
-    if (pendingTask?.type === 'frame') window.cancelAnimationFrame?.(pendingTask.id);
-    if (pendingTask?.type === 'timer') window.clearTimeout?.(pendingTask.id);
-    const applyFocus = () => {
-      const input = inputRefs.current[index];
-      input?.focus?.({ preventScroll: true });
-      input?.select?.();
-      focusTaskRef.current = null;
-    };
-    if (typeof window.requestAnimationFrame === 'function') {
-      focusTaskRef.current = { type: 'frame', id: window.requestAnimationFrame(applyFocus) };
-      return;
-    }
-    focusTaskRef.current = { type: 'timer', id: window.setTimeout(applyFocus, 0) };
-  }, []);
-
-  const handleEntryChange = useCallback((index, value) => {
-    setEntries(previousEntries => updateWarehouseWeightEntryRows(
-      previousEntries,
-      index,
-      value,
-      appendEmptyRowWhenFull
-    ));
-  }, [appendEmptyRowWhenFull]);
-
-  const handleEntryKeyDown = useCallback((event, index) => {
-    const isComposing = event.isComposing
-      || event.nativeEvent?.isComposing
-      || composingInputsRef.current.has(index);
-    if (event.key !== 'Enter' || isComposing) return;
-    event.preventDefault();
-    const nextIndex = index + 1;
-    setEntries(previousEntries => {
-      const normalizedRows = ensureWarehouseWeightEntryRows(previousEntries);
-      if (nextIndex < normalizedRows.length) return previousEntries;
-      if (!appendEmptyRowWhenFull) return previousEntries;
-      return [...normalizedRows, ...createWarehouseWeightEntryRow()];
-    });
-    if (nextIndex < entries.length || appendEmptyRowWhenFull) focusInput(nextIndex);
-  }, [appendEmptyRowWhenFull, entries.length, focusInput]);
-
-  const handleSave = useCallback(() => {
-    const normalizedEntries = normalizeWarehouseWeightEntries(entries);
-    onSave?.({
-      entries: normalizedEntries,
-      totalWeight: normalizedEntries.reduce((sum, value) => sum + value, 0)
-    });
-  }, [entries, onSave]);
-
-  const inputs = (
-    <div className={`${mode === 'edit' ? 'mt-5' : ''} grid grid-cols-5 gap-2`}>
-      {entries.map((entry, index) => (
-        <input
-          key={`warehouse_weight_entry_${index}`}
-          ref={(element) => { inputRefs.current[index] = element; }}
-          type="text"
-          inputMode="decimal"
-          pattern="[0-9]*[.,]?[0-9]*"
-          enterKeyHint={(index + 1) < entries.length || appendEmptyRowWhenFull ? 'next' : 'done'}
-          value={entry}
-          onChange={(event) => handleEntryChange(index, event.target.value)}
-          onKeyDown={(event) => handleEntryKeyDown(event, index)}
-          onCompositionStart={() => composingInputsRef.current.add(index)}
-          onCompositionEnd={() => composingInputsRef.current.delete(index)}
-          onFocus={mode === 'create' ? (event) => event.target.select() : undefined}
-          className={mode === 'edit'
-            ? 'h-14 min-w-0 rounded-2xl border-2 border-emerald-100 bg-white px-1 text-center text-lg font-semibold text-slate-950 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100'
-            : 'weight-entry-input h-12 min-w-0 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-2 text-center text-lg font-medium tabular-nums tracking-tight text-slate-950 antialiased outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500'}
-          placeholder=""
-          autoFocus={index === 0}
-          autoComplete="off"
-          aria-label={`Lần cân ${index + 1}`}
-        />
-      ))}
-    </div>
-  );
-
-  if (mode === 'edit') {
-    return createPortal(
-      <div
-        className="hd-weight-modal-layer fixed z-[150] flex justify-center bg-slate-950/55"
-        role="dialog" aria-modal="true" aria-label="Sửa các lần cân"
-        onClick={onCancel}
-      >
-        <div className="hd-weight-modal-panel w-full max-w-sm rounded-[30px] bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.24em] text-emerald-600">Số kg</p>
-              <h3 className="mt-1 text-2xl font-black text-slate-950">Sửa các lần cân</h3>
-              <p className="mt-1 text-sm font-bold text-slate-500">{customerName} • {productName}</p>
-            </div>
-            <button type="button" onClick={onCancel} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="Đóng nhập kg">
-              <X size={20} />
-            </button>
-          </div>
-          {inputs}
-          <div className="mt-5 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-600">
-            <div className="flex items-center justify-between gap-2">
-              <span>Trước đó</span>
-              <span className="font-black text-slate-900">{formatNumber(previousWeightKg)} kg</span>
-            </div>
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <span>Chênh lệch</span>
-              <span className={`font-black ${weightDifference < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                {weightDifference > 0 ? '+' : ''}{formatNumber(weightDifference)} kg
-              </span>
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 text-base">
-              <span>Tổng sau sửa</span>
-              <span className="text-xl font-black text-emerald-700">{formatNumber(totalWeight)} kg</span>
-            </div>
-          </div>
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <button type="button" onClick={onCancel} disabled={isSaving} className="rounded-2xl bg-slate-100 px-4 py-3 text-base font-black text-slate-700 hover:bg-slate-200 disabled:opacity-60">Hủy</button>
-            <button type="button" onClick={handleSave} disabled={isSaving} className="rounded-2xl bg-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-200 hover:bg-emerald-600 disabled:opacity-60">
-              {isSaving ? 'Đang lưu...' : 'Cập nhật'}
-            </button>
-          </div>
-        </div>
-      </div>, document.body
-    );
-  }
-
-  return createPortal(
-    <div className="hd-weight-modal-layer fixed z-[150] flex justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Nhập các lần cân" onClick={onCancel}>
-      <div className="hd-weight-modal-panel w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Số kg</p>
-            <h3 className="mt-1 text-lg font-black text-slate-900">Nhập các lần cân</h3>
-            <p className="mt-1 text-xs font-semibold text-slate-500">Ví dụ: 30, 40, 50 kg. App sẽ tự cộng tổng.</p>
-          </div>
-          <button type="button" onClick={onCancel} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500" aria-label="Đóng nhập kg">
-            <X size={18} />
-          </button>
-        </div>
-        {inputs}
-        <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
-          Tổng: <span className="text-lg font-black text-emerald-700">{formatNumber(totalWeight)} kg</span>
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <button type="button" onClick={onCancel} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700">Hủy</button>
-          <button type="button" onClick={handleSave} className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white">Cập nhật</button>
-        </div>
-      </div>
-    </div>, document.body
-  );
-});
 
 function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isOwner = isOwnerPosition(employee?.position);
@@ -55155,38 +54908,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const canDelete = isViewingPastDispatchDate ? canDeleteHistoryDispatch : canDeleteCurrentDispatch;
   const canManageDispatchRows = canEdit || canDelete;
   const dispatchListRef = useRef(null);
-  const createEmptyDispatchDraft = (assignedDriverId = '') => ({
-    warehouseId: '',
-    unitId: '',
-    customerId: '',
-    customerSearch: '',
-    productId: '',
-    productSearch: '',
-    pieceCount: '',
-    quantityUnit: '',
-    weightKg: '',
-    weightEntries: [],
-    assignedDriverId,
-    note: '',
-    transcript: '',
-    configurationId: '',
-    billingUnit: '',
-    billingQuantity: 0,
-    unitPrice: 0,
-    amount: 0,
-    billingSnapshotVersion: 0,
-    billingSnapshotSource: '',
-  });
   const [dispatchDraft, setDispatchDraft] = useState(() => createEmptyDispatchDraft());
   const [dispatchDriverSelectionTouched, setDispatchDriverSelectionTouched] = useState(false);
   const [dispatchActionError, setDispatchActionError] = useState('');
   const [dispatchError, setDispatchError] = useState('');
   const [isSavingDispatch, setIsSavingDispatch] = useState(false);
   const dispatchSaveLockRef = useRef(false);
+  const dispatchCreateMutationRef = useRef(null);
   const [isDispatchExporting, setIsDispatchExporting] = useState(false);
-  const [isVoiceListening, setIsVoiceListening] = useState(false);
-  const [isVoiceProcessing, setIsVoiceProcessing] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState('');
   const [dispatchPickerOpen, setDispatchPickerOpen] = useState('');
   const [dispatchProductSearchEdited, setDispatchProductSearchEdited] = useState(false);
   const [dispatchListSearch, setDispatchListSearch] = useState('');
@@ -55200,16 +54929,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const [selectedShortageLine, setSelectedShortageLine] = useState(null);
   const [isClosingShortageLine, setIsClosingShortageLine] = useState(false);
   const [deletingShortageRequestKey, setDeletingShortageRequestKey] = useState('');
+  const shortageActionLockRef = useRef(false);
   const [showAllDispatchShortageCustomers, setShowAllDispatchShortageCustomers] = useState(false);
-  const [selectedHistoryDispatchGroup, setSelectedHistoryDispatchGroup] = useState(null);
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState(/** @type {string | null} */ (null));
+  const [historyDeletingId, setHistoryDeletingId] = useState('');
+  const historyDeleteLockRef = useRef(false);
+  const dispatchCellCommandLockRef = useRef(false);
+  const dispatchShareLockRef = useRef(false);
   const [selectedHistoryMonth, setSelectedHistoryMonth] = useState(() => buildMonthKeyFromDate(getTodayString()));
-  const recognitionRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const voiceChunksRef = useRef([]);
-  const dispatchTranscriptInputRef = useRef(null);
-  const voiceTranscriptAutoApplyTimerRef = useRef(null);
-  const lastAutoAppliedVoiceTranscriptRef = useRef('');
   const dispatchCustomerSearchInputRef = useRef(null);
   const dispatchProductSearchInputRef = useRef(null);
   const dispatchListWeightSaveLockRef = useRef(false);
@@ -55230,8 +54957,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       setSelectedShortageLine(null);
       return true;
     }
-    if (selectedHistoryDispatchGroup) {
-      setSelectedHistoryDispatchGroup(null);
+    if (selectedHistoryDate) {
+      setSelectedHistoryDate(null);
       return true;
     }
     if (dispatchPickerOpen) {
@@ -55402,7 +55129,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       || '';
     return { branchId, branchName, branchAddress };
   };
-  const warehouseVoiceOrderRows = useMemo(() => todayOrderRequests.flatMap((request) => {
+  const dispatchOrderRows = useMemo(() => todayOrderRequests.flatMap((request) => {
     const requestCustomer = customerLookup.get(request.customerId) || request.customer || null;
     const customerName = getCustomerDisplayName(requestCustomer) || requestCustomer?.name || request.customerName || request.customerNameSnapshot || '';
     const requestDate = resolveRequestDateKey(request);
@@ -55458,7 +55185,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   }), [todayOrderRequests, customerLookup, productLookup, products]);
   const hasDispatchOrderRequestForCustomer = (customerId = '') => {
     const normalizedCustomerId = `${customerId || ''}`.trim();
-    return Boolean(normalizedCustomerId && warehouseVoiceOrderRows.some(
+    return Boolean(normalizedCustomerId && dispatchOrderRows.some(
       row => `${row.customerId || ''}`.trim() === normalizedCustomerId
     ));
   };
@@ -55466,27 +55193,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     canManualSearchDispatchProduct
     && hasDispatchOrderRequestForCustomer(customerId)
   );
-  const warehouseVoiceOrderCustomers = useMemo(() => {
-    const grouped = new Map();
-    warehouseVoiceOrderRows.forEach((row) => {
-      const key = row.customerId || normalizeLookupText(row.customerName || '');
-      if (!key) return;
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          id: row.customerId || '',
-          name: row.customerName || '',
-          plainName: getCustomerPlainName({ name: row.customerName }),
-          displayName: row.customerName || '',
-          phone: row.customerPhone || '',
-          address: row.customerAddress || '',
-          group: row.customerGroup || '',
-          orderRows: []
-        });
-      }
-      grouped.get(key).orderRows.push(row);
-    });
-    return Array.from(grouped.values());
-  }, [warehouseVoiceOrderRows]);
   const buildDispatchOrderRowFromShortageLine = (shortageLine = {}, shortageRequestLine = null) => {
     const requestLine = shortageRequestLine || (Array.isArray(shortageLine.requestLines) ? shortageLine.requestLines[0] : null) || {};
     const productId = shortageLine.productId || requestLine.productId || '';
@@ -55540,247 +55246,31 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         || (a.productShortName || a.productName || '').localeCompare(b.productShortName || b.productName || '', 'vi')
       ));
   };
-  const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '', dispatchLike = {}) => {
-    if (!customerId || !productId) return null;
-    const candidateRows = [];
-    (dispatchShortageSummary?.issueLines || [])
-      .filter(line => (
-        line.customerId === customerId
-        && line.productId === productId
-        && Array.isArray(line.requestLines)
-        && line.requestLines.length > 0
-      ))
-      .forEach((line) => {
-        line.requestLines.forEach((requestLine) => {
-          const matchedOpenRow = warehouseVoiceOrderRows.find(row => (
-            row.customerId === customerId
-            && row.productId === productId
-            && (
-              (requestLine.requestId && row.requestId === requestLine.requestId)
-              || (requestLine.rowKey && (row.rowKey === requestLine.rowKey || row.item?.rowKey === requestLine.rowKey))
-            )
-          ));
-          candidateRows.push(matchedOpenRow || buildDispatchOrderRowFromShortageLine(line, requestLine));
-        });
-      });
-    warehouseVoiceOrderRows
-      .filter(row => row.customerId === customerId && row.productId === productId)
-      .forEach(row => candidateRows.push(row));
-
-    const uniqueRows = Array.from(candidateRows.reduce((rowMap, row) => {
-      const key = row?.rowKey || `${row?.requestId || ''}_${row?.productId || ''}_${row?.item?.requestTimestamp || row?.item?.createdAt || row?.item?.updatedAt || rowMap.size}`;
-      if (row && !rowMap.has(key)) rowMap.set(key, row);
-      return rowMap;
-    }, new Map()).values());
-    if (!uniqueRows.length) return null;
-
-    const dispatchQuantity = getDispatchRowQuantity(dispatchLike);
-    const dispatchWeight = getDispatchRowWeight(dispatchLike);
-    const dispatchSizeKey = normalizeLookupText(dispatchLike.size || dispatchLike.sizeLabel || dispatchLike.productSize || '');
-    const dispatchUnitKey = normalizeLookupText(dispatchLike.quantityUnit || dispatchLike.unit || '');
-    const sourceRowKey = `${dispatchLike.sourceOrderRequestRowKey || dispatchLike.orderRequestRowKey || dispatchLike.requestRowKey || ''}`.trim();
-    const sourceRequestId = `${dispatchLike.sourceOrderRequestId || dispatchLike.orderRequestId || dispatchLike.requestId || ''}`.trim();
-    const sourceDate = `${dispatchLike.sourceOrderRequestDate || dispatchLike.orderRequestDate || dispatchLike.requestDate || dispatchLike.requestDateKey || ''}`.trim();
-
-    return uniqueRows
-      .map((row, index) => {
-        const item = row.item || row;
-        const rowQuantity = getOrderLineQuantityValue(item) || getOrderLineQuantityValue(row);
-        const rowWeight = getOrderLineWeightKgValue(item) || getOrderLineWeightKgValue(row);
-        const rowSizeKey = normalizeLookupText(row.sizeLabel || getOrderLineSizeLabel(item));
-        const rowUnitKey = normalizeLookupText(row.quantityUnit || item?.quantityUnit || item?.unit || row.productUnit || '');
-        const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || ''}`.trim();
-        const legacyProductRowKey = `${row.requestId || 'request'}_${row.productId || productId}`;
-        const rowTimestamp = item?.requestTimestamp || item?.timestamp || getEntityTimestamp(item) || 0;
-        return {
-          row,
-          score: (
-            (sourceRowKey && (row.rowKey === sourceRowKey || itemRowKey === sourceRowKey || legacyProductRowKey === sourceRowKey) ? 10000 : 0)
-            + (sourceRequestId && row.requestId === sourceRequestId ? 6000 : 0)
-            + (sourceDate && row.requestDate === sourceDate ? 1200 : 0)
-            + (dispatchQuantity > 0 && areLooseQuantityValuesClose(dispatchQuantity, rowQuantity, 0.001) ? 500 : 0)
-            + (dispatchWeight > 0 && areLooseQuantityValuesClose(dispatchWeight, rowWeight) ? 450 : 0)
-            + (dispatchSizeKey && rowSizeKey && dispatchSizeKey === rowSizeKey ? 120 : 0)
-            + (dispatchUnitKey && rowUnitKey && dispatchUnitKey === rowUnitKey ? 80 : 0)
-            + (getOrderLineUnitPriceValue(item) > 0 || getOrderLineUnitPriceValue(row) > 0 ? 20 : 0)
-          ),
-          rowTimestamp,
-          index
-        };
-      })
-      .sort((a, b) => (
-        b.score - a.score
-        || b.rowTimestamp - a.rowTimestamp
-        || a.index - b.index
-      ))[0]?.row || null;
-  };
-  const buildDispatchBillingSnapshot = ({
-    customer = null,
-    product = null,
-    matchedOrderRow = null,
-    existingRecord = null,
-    actualQuantity = 0,
-    actualUnit = '',
-    actualWeightKg = 0,
-    branchId = '',
-  } = {}) => {
-    const configSource = getCustomerBranchProductConfigSource(customer, branchId, products);
-    const currentConfiguration = resolveCustomerProductBillingConfiguration(configSource, product, {
-      configurationId: matchedOrderRow?.item?.configurationId
-        || matchedOrderRow?.configurationId
-        || existingRecord?.configurationId
-        || '',
-      sizeLabel: matchedOrderRow?.sizeLabel || matchedOrderRow?.item?.sizeLabel || existingRecord?.sizeLabel || '',
-      attributeLabel: matchedOrderRow?.attributeLabel || matchedOrderRow?.item?.attributeLabel || existingRecord?.attributeLabel || '',
-    });
-    const existingSnapshot = resolveTransactionBillingSnapshot({
-      record: existingRecord,
-      configuration: currentConfiguration,
-      product,
-    });
-    const orderSource = matchedOrderRow
-      ? { ...matchedOrderRow, ...(matchedOrderRow.item || {}) }
-      : null;
-    const orderSnapshot = resolveTransactionBillingSnapshot({
-      record: orderSource,
-      configuration: currentConfiguration,
-      product,
-    });
-    const frozenSource = existingSnapshot.hasFrozenPricing
-      ? existingSnapshot
-      : (orderSnapshot.hasFrozenPricing ? orderSnapshot : null);
-    const billingConfiguration = frozenSource
-      ? {
-          ...currentConfiguration,
-          configurationId: frozenSource.configurationId || currentConfiguration.configurationId,
-          billingUnit: frozenSource.billingUnit,
-          pricingUnit: frozenSource.billingUnit,
-          unitPrice: frozenSource.unitPrice,
-          source: existingSnapshot.hasFrozenPricing ? 'warehouse_snapshot' : 'order_request_snapshot',
-      }
-      : currentConfiguration;
-    const configuredActualUnit = resolveCustomerProductActualUnit(billingConfiguration, product);
-    const orderActualUnit = orderSnapshot.actualUnit;
-    const expectedActualUnit = existingSnapshot.hasFrozenPricing
-      ? existingSnapshot.actualUnit
-      : (orderSnapshot.hasFrozenPricing
-        ? (isSameBillingUnit(orderSnapshot.billingUnit, 'Kg')
-            && isSameBillingUnit(orderActualUnit, 'Kg')
-            && configuredActualUnit
-            && !isSameBillingUnit(configuredActualUnit, 'Kg')
-          ? configuredActualUnit
-          : orderActualUnit)
-        : configuredActualUnit);
-    const snapshot = buildCustomerProductBillingSnapshot({
-      configuration: billingConfiguration,
-      product,
-      productId: product?.id || '',
-      productName: product?.name || '',
-      sizeLabel: matchedOrderRow?.sizeLabel || matchedOrderRow?.item?.sizeLabel || existingRecord?.sizeLabel || '',
-      attributeLabel: matchedOrderRow?.attributeLabel || matchedOrderRow?.item?.attributeLabel || existingRecord?.attributeLabel || '',
-      actualQuantity,
-      actualUnit,
-      actualWeightKg,
-    });
-    if (!isWarehouseDispatchActualUnitCompatible({
-      expectedActualUnit,
-      actualUnit,
-      billingUnit: snapshot.billingUnit,
-      actualWeightKg: snapshot.actualWeightKg,
-    })) {
-      return {
-        ...snapshot,
-        billingSnapshotValid: false,
-        billingSnapshotError: 'ACTUAL_UNIT_NOT_ALLOWED',
-      };
-    }
-    return snapshot;
-  };
+  const findMatchingOrderRequestRowForDispatch = (customerId = '', productId = '', dispatchLike = {}) => matchDispatchOrder(customerId, productId, dispatchLike, {
+    dispatchShortageSummary, dispatchOrderRows, buildDispatchOrderRowFromShortageLine, getDispatchRowQuantity, getDispatchRowWeight, normalizeLookupText, getOrderLineQuantityValue, getOrderLineWeightKgValue, getOrderLineSizeLabel, getOrderLineUnitPriceValue, getEntityTimestamp, areLooseQuantityValuesClose
+  });
+  const buildDispatchBillingSnapshot = (input = {}) => coordinateDispatchBilling(input, {
+    products, getCustomerBranchProductConfigSource, resolveCustomerProductBillingConfiguration, resolveTransactionBillingSnapshot, resolveCustomerProductActualUnit, isSameBillingUnit, buildCustomerProductBillingSnapshot, isWarehouseDispatchActualUnitCompatible
+  });
   const getPreferredOrderRowForDispatchCustomer = (customerId = '') => {
     if (!customerId) return null;
     const missingRows = getMissingDispatchOrderRowsForCustomer(customerId);
     if (missingRows.length > 0) return missingRows[0];
-    return warehouseVoiceOrderRows.find(row => row.customerId === customerId && row.productId) || null;
+    return dispatchOrderRows.find(row => row.customerId === customerId && row.productId) || null;
   };
-  const buildDispatchDefaultsFromOrderRow = (orderRow = null) => {
-    if (!orderRow) return {
-      productId: '',
-      productSearch: '',
-      pieceCount: '',
-      quantityUnit: '',
-      weightKg: '',
-      configurationId: '',
-      billingUnit: '',
-      billingQuantity: 0,
-      unitPrice: 0,
-      amount: 0,
-      billingSnapshotVersion: 0,
-      billingSnapshotSource: '',
-    };
-    const product = (orderRow.productId && productLookup.get(orderRow.productId)) || orderRow.product || null;
-    const productName = product?.name || orderRow.productName || orderRow.item?.productName || orderRow.item?.description || '';
-    const customer = customerLookup.get(orderRow.customerId || orderRow.item?.customerId || '') || null;
-    const configSource = getCustomerBranchProductConfigSource(
-      customer,
-      orderRow.branchId || orderRow.customerBranchId || '',
-      products
-    );
-    const configuration = resolveCustomerProductBillingConfiguration(configSource, product, {
-      configurationId: orderRow.item?.configurationId || orderRow.configurationId || '',
-      sizeLabel: orderRow.sizeLabel || orderRow.item?.sizeLabel || '',
-      attributeLabel: orderRow.attributeLabel || orderRow.item?.attributeLabel || '',
-    });
-    const sourceRecord = { ...orderRow, ...(orderRow.item || {}) };
-    const sourceSnapshot = resolveTransactionBillingSnapshot({
-      record: sourceRecord,
-      configuration,
-      product,
-    });
-    const pricingUnit = sourceSnapshot.billingUnit || configuration.billingUnit;
-    const configuredActualUnit = resolveCustomerProductActualUnit(configuration, product);
-    const quantityUnit = normalizeDispatchQuantityUnit(
-      sourceSnapshot.actualUnit
-      && (!isSameBillingUnit(pricingUnit, 'Kg') || !isSameBillingUnit(sourceSnapshot.actualUnit, 'Kg'))
-        ? sourceSnapshot.actualUnit
-        : (configuredActualUnit || sourceSnapshot.actualUnit || product?.unit || pricingUnit)
-    );
-    const orderQuantity = parseLooseQuantityValue(
-      sourceSnapshot.actualQuantity > 0
-        ? sourceSnapshot.actualQuantity
-        : (orderRow.item?.quantity
-          ?? orderRow.item?.quantityValue
-          ?? orderRow.item?.quantityCount
-          ?? orderRow.quantity
-          ?? orderRow.quantityCount)
-    );
-    const explicitWeight = parseLooseQuantityValue(
-      sourceSnapshot.actualWeightKg > 0
-        ? sourceSnapshot.actualWeightKg
-        : (sourceSnapshot.billingQuantity > 0
-          ? sourceSnapshot.billingQuantity
-          : (orderRow.item?.weightKg
-            ?? orderRow.item?.kg
-            ?? orderRow.item?.weight
-            ?? orderRow.weightKg))
-    );
-    const defaultWeight = isSameBillingUnit(pricingUnit, 'Kg')
-      ? explicitWeight
-      : 0;
-    return {
-      productId: product?.id || orderRow.productId || '',
-      productSearch: productName,
-      pieceCount: orderQuantity > 0 ? formatVoiceNumberValue(orderQuantity) : '',
-      quantityUnit,
-      weightKg: defaultWeight > 0 ? formatVoiceNumberValue(defaultWeight) : '',
-      configurationId: sourceSnapshot.configurationId || configuration.configurationId || '',
-      billingUnit: pricingUnit,
-      billingQuantity: sourceSnapshot.billingQuantity || 0,
-      unitPrice: sourceSnapshot.unitPrice || configuration.unitPrice || 0,
-      amount: sourceSnapshot.amount || 0,
-      billingSnapshotVersion: sourceSnapshot.hasFrozenPricing ? 1 : 0,
-      billingSnapshotSource: sourceSnapshot.hasFrozenPricing ? 'order_request_snapshot' : configuration.source,
-    };
-  };
+  const buildDispatchDefaultsFromOrderRow = (orderRow = null) => buildDispatchOrderDefaults(orderRow, {
+    productLookup,
+    customerLookup,
+    products,
+    getCustomerBranchProductConfigSource,
+    resolveCustomerProductBillingConfiguration,
+    resolveTransactionBillingSnapshot,
+    resolveCustomerProductActualUnit,
+    normalizeDispatchQuantityUnit,
+    isSameBillingUnit,
+    parseLooseQuantityValue,
+    formatDispatchNumberInput,
+  });
   const buildWarehouseDispatchSourceType = (baseType = 'manual', matchedOrderRow = null) => {
     const normalizedBase = `${baseType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
     return matchedOrderRow ? normalizedBase : `${normalizedBase}_without_order_request`;
@@ -55801,14 +55291,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchCustomerOrderRows = useMemo(() => {
     if (!selectedDispatchCustomer?.id) return [];
     const missingRows = getMissingDispatchOrderRowsForCustomer(selectedDispatchCustomer.id);
-    const allOrderRows = warehouseVoiceOrderRows.filter(row => row.customerId === selectedDispatchCustomer.id && row.productId);
+    const allOrderRows = dispatchOrderRows.filter(row => row.customerId === selectedDispatchCustomer.id && row.productId);
     const grouped = new Map();
     [...missingRows, ...allOrderRows].forEach((row) => {
       const key = row.productId || normalizeLookupText(row.productName || '');
       if (key && !grouped.has(key)) grouped.set(key, row);
     });
     return Array.from(grouped.values());
-  }, [selectedDispatchCustomer?.id, dispatchShortageSummary?.issueLines, productLookup, warehouseVoiceOrderRows]);
+  }, [selectedDispatchCustomer?.id, dispatchShortageSummary?.issueLines, productLookup, dispatchOrderRows]);
   const dispatchCustomerOrderedProducts = useMemo(() => {
     if (!dispatchCustomerOrderRows.length) return [];
     return Array.from(new Map(dispatchCustomerOrderRows
@@ -55971,7 +55461,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     if (!inlineEditingCustomer) return [];
     const fixedProductIds = getCustomerFixedProductIds(inlineEditingCustomer, products);
     const fixedProducts = fixedProductIds.map(productId => productLookup.get(productId)).filter(Boolean);
-    const customerOrderRows = warehouseVoiceOrderRows
+    const customerOrderRows = dispatchOrderRows
       .filter(row => row.customerId === inlineEditingCustomer.id && row.productId);
     const orderedProducts = customerOrderRows
       .map(row => productLookup.get(row.productId) || row.product)
@@ -55990,7 +55480,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     inlineEditingCustomer,
     productLookup,
     products,
-    warehouseVoiceOrderRows,
+    dispatchOrderRows,
   ]);
 
   const todayDispatchRows = useMemo(
@@ -56248,7 +55738,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       });
   }, [warehouseDispatches, customerLookup, productLookup]);
 
-  const historyCalendarWeekdays = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
   const historyMonthOptions = useMemo(() => {
     const monthKeySet = new Set([buildMonthKeyFromDate(workingDate), buildMonthKeyFromDate(selectedHistoryMonth)]);
     historyDispatchGroups.forEach((group) => monthKeySet.add(buildMonthKeyFromDate(group.dateKey)));
@@ -56284,25 +55773,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     acc.totalCustomers += group.totalCustomers || 0;
     return acc;
   }, { totalDays: 0, totalLines: 0, totalWeight: 0, totalCustomers: 0 }), [selectedHistoryMonthGroups]);
+  const selectedHistoryDispatchGroup = resolveDispatchHistorySelection(historyDispatchGroupMap, selectedHistoryDate);
   const selectedHistoryDispatchRows = useMemo(() => {
     if (!selectedHistoryDispatchGroup?.items?.length) return [];
-    return [...selectedHistoryDispatchGroup.items]
-      .sort((a, b) => (getEntityTimestamp(a) || 0) - (getEntityTimestamp(b) || 0))
-      .map((item) => {
-        const customer = customerLookup.get(item.customerId);
-        const product = productLookup.get(item.productId);
-        return {
-          id: item.id,
-          customerName: item.customerNameSnapshot || customer?.name || 'Khach hang',
-          productName: item.productNameSnapshot || product?.name || 'Hang hoa',
-          productShortName: getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase(),
-          pieceCount: getDispatchRowQuantity(item),
-          quantityUnit: getDispatchRowQuantityUnit(item),
-          weightKg: parseFloat(item.weightKg) || 0,
-          note: item.note || '',
-          createdAt: getEntityTimestamp(item) || 0
-        };
-      });
+    return buildDispatchHistoryRows(selectedHistoryDispatchGroup.items, {
+      customers: customerLookup, products: productLookup, timestamp: getEntityTimestamp,
+      productShortName: getProductShortName, quantity: getDispatchRowQuantity, unit: getDispatchRowQuantityUnit
+    });
   }, [customerLookup, productLookup, selectedHistoryDispatchGroup]);
 
   useEffect(() => {
@@ -56312,56 +55789,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setSelectedHistoryMonth(buildMonthKeyFromDate(historyDispatchGroups[0]?.dateKey || getTodayString()));
   }, [historyDispatchGroups, selectedHistoryMonthKey]);
 
-  const mergedDispatchRows = useMemo(() => {
-    const grouped = new Map();
-    todayDispatchRows.forEach((item, index) => {
-      const customer = customerLookup.get(item.customerId);
-      const product = productLookup.get(item.productId);
-      const customerName = item.customerNameSnapshot || customer?.name || 'Khách hàng';
-      const productName = item.productNameSnapshot || product?.name || 'Hàng hóa';
-      const productShortName = getProductShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase();
-      const groupKey = `${item.customerId || customerName}__${item.productId || productName}`;
-      if (!grouped.has(groupKey)) {
-        grouped.set(groupKey, {
-          id: `${groupKey}_${index}`,
-          sortIndex: index,
-          customerName,
-          productName,
-          productShortName,
-          pieceCount: getDispatchRowQuantity(item),
-          quantityUnit: getDispatchRowQuantityUnit(item),
-          weightKg: getDispatchRowWeight(item)
-        });
-        return;
-      }
-      const current = grouped.get(groupKey);
-      current.weightKg += getDispatchRowWeight(item);
-      current.pieceCount += getDispatchRowQuantity(item);
-    });
 
-    return Array.from(grouped.values())
-      .sort((a, b) => a.sortIndex - b.sortIndex)
-      .map(({ sortIndex, ...row }) => row);
-  }, [todayDispatchRows, customerLookup, productLookup]);
 
-  const buildDispatchPreviewRows = (sourceRows = []) => {
-    const rows = sourceRows || [];
-    const minRows = Math.max(6, rows.length);
-    return [
-      ...rows,
-      ...Array.from({ length: Math.max(0, minRows - rows.length) }, (_, index) => ({
-        id: `dispatch_blank_${index}`,
-        customerName: '',
-        productName: '',
-        productShortName: '',
-        pieceCount: '',
-        quantityUnit: '',
-        weightKg: ''
-      }))
-    ];
-  };
-
-  const previewDispatchRows = useMemo(() => buildDispatchPreviewRows(mergedDispatchRows), [mergedDispatchRows]);
 
   const [dispatchDisplayPage, setDispatchDisplayPage] = useState({ scope: '', offset: 0 });
   const dispatchDisplayScope = `${workingDate}|${dispatchListSearch}`;
@@ -56369,245 +55798,38 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const dispatchRowPage = useMemo(() => getGroupedRowPage(groupedEditableDispatchRows, dispatchDisplayOffset), [groupedEditableDispatchRows, dispatchDisplayOffset]);
   const visibleDispatchGroups = dispatchRowPage.items;
   const shouldShowDispatchShortage = canAccess && (canViewDispatchShortage || canCreate || canViewWarehouseDispatch || isOwnerAccount || isWarehouseScale);
-  const dispatchShortageCustomerGroups = useMemo(() => {
-    const groups = new Map();
-    (dispatchShortageSummary.issueLines || []).forEach((line) => {
-      const customerKey = line.customerId || normalizeLookupText(line.customerName || '');
-      if (!customerKey) return;
-      if (!groups.has(customerKey)) {
-        groups.set(customerKey, {
-          key: customerKey,
-          customerId: line.customerId || '',
-          customerName: line.customerName || 'Khách hàng',
-          issueLines: [],
-          requestLines: [],
-          productLabels: [],
-          requestDateLabels: [],
-          totalMissingLines: 0,
-          totalDispatchedKg: 0,
-          latestMissingTimestamp: 0
-        });
-      }
-      const group = groups.get(customerKey);
-      const requestDates = Array.from(new Set((Array.isArray(line.requestLines) ? line.requestLines : [])
-        .map(requestLine => requestLine.requestDate)
-        .filter(Boolean)));
-      const productLabel = line.productShortName || getCompactProductName(null, line.productName || 'Hàng hóa');
-      group.issueLines.push(line);
-      group.requestLines.push(...(Array.isArray(line.requestLines) ? line.requestLines : []));
-      if (productLabel && !group.productLabels.includes(productLabel)) group.productLabels.push(productLabel);
-      requestDates.forEach(requestDate => {
-        const dateLabel = formatCompactDateLabel(requestDate);
-        if (dateLabel && !group.requestDateLabels.includes(dateLabel)) group.requestDateLabels.push(dateLabel);
-      });
-      group.totalMissingLines += Math.max(1, line.requestCount || line.requestLines?.length || 0);
-      group.totalDispatchedKg += line.dispatchedKg || 0;
-      group.latestMissingTimestamp = Math.max(group.latestMissingTimestamp || 0, line.latestMissingTimestamp || 0);
-    });
-    return Array.from(groups.values()).sort((a, b) => (
-      (b.latestMissingTimestamp || 0) - (a.latestMissingTimestamp || 0)
-      || a.customerName.localeCompare(b.customerName, 'vi')
-    ));
-  }, [dispatchShortageSummary.issueLines]);
+  const dispatchShortageCustomerGroups = useMemo(() => buildDispatchShortageGroups(dispatchShortageSummary.issueLines || [], {
+    normalizeLookupText, getCompactProductName, formatCompactDateLabel
+  }), [dispatchShortageSummary.issueLines]);
   useEffect(() => {
     setShowAllDispatchShortageCustomers(false);
   }, [workingDate]);
   const selectedShortageTableRows = useMemo(() => {
     const requestLines = Array.isArray(selectedShortageLine?.requestLines) ? selectedShortageLine.requestLines : [];
-    return requestLines.map((line, index) => ({
-      id: `${line.requestId || 'shortage'}_${line.productId || index}_${index}`,
-      requestId: line.requestId || '',
-      rowKey: line.rowKey || '',
-      itemIndex: Number.isInteger(line.itemIndex) ? line.itemIndex : index,
-      requestDateLabel: formatCompactDateLabel(line.requestDate || ''),
-      productLabel: line.productShortName || getCompactProductName(null, line.productName || selectedShortageLine?.productName || 'Hàng hóa'),
-      quantityLabel: `${formatNumber(line.quantity || 0)} ${line.quantityUnit || ''}`.trim(),
-      sizeLabel: line.attributeLabel || line.sizeLabel || '',
-      rawLine: line
-    }));
+    return buildDispatchShortageTableRows(requestLines, selectedShortageLine?.productName || '', {
+      formatDate: formatCompactDateLabel, formatNumber, compactName: name => getCompactProductName(null, name)
+    });
   }, [selectedShortageLine]);
 
-  const handleDeleteShortageOrderRequestRow = async (row) => {
-    if (!row?.requestId || !canDeleteOrderRequest || typeof onDeleteOrderRequest !== 'function') return;
-    const confirmMessage = [
-      `Xóa đơn đặt đang báo thiếu của ${selectedShortageLine?.customerName || 'khách hàng'}?`,
-      `${row.productLabel || 'Hàng hóa'}${row.quantityLabel ? ` - ${row.quantityLabel}` : ''}${row.requestDateLabel ? ` - ${row.requestDateLabel}` : ''}`,
-      'Dữ liệu sẽ được lưu trữ an toàn để tránh mất dấu vết.'
-    ].join('\n');
-    if (!window.confirm(confirmMessage)) return;
+  const getDispatchShortageActionContext = () => ({
+    lock: shortageActionLockRef, selectedShortageLine, canDeleteOrderRequest, orderRequests,
+    employee, workingDate, confirm: message => window.confirm(message), normalizeLookupText,
+    getTransactionBillingPresentation, getFriendlyFirebaseErrorMessage, onDeleteOrderRequest, onEditOrderRequest,
+    setDeletingShortageRequestKey, setIsClosingShortageLine, setDispatchError,
+    setSelectedShortageLine: () => setSelectedShortageLine(current => current === selectedShortageLine ? null : current)
+  });
+  const handleDeleteShortageOrderRequestRow = async (row) => deleteShortageOrderRequestRow(row, getDispatchShortageActionContext());
 
-    setDeletingShortageRequestKey(row.id);
-    setDispatchError('');
-    try {
-      const request = (orderRequests || []).find(item => item.id === row.requestId);
-      const requestItems = Array.isArray(request?.items) ? request.items : [];
-      if (!request || requestItems.length <= 1) {
-        await onDeleteOrderRequest(row.requestId);
-      } else {
-        const nextItems = requestItems.filter((item, index) => {
-          const productName = item.description || item.productName || item.productNameSnapshot || '';
-          const itemRowKey = item.rowKey
-            || item.id
-            || item.lineId
-            || item.itemId
-            || `${request.id || 'request'}_${item.productId || normalizeLookupText(productName) || index}_${index}`;
-          if (row.rowKey) return itemRowKey !== row.rowKey;
-          return index !== row.itemIndex;
-        });
-        if (nextItems.length === requestItems.length) {
-          throw new Error('Chưa xác định được dòng cần xóa trong đơn đặt.');
-        }
-        const nextTotalAmount = nextItems.reduce(
-          (sum, item) => sum + getTransactionBillingPresentation(item).amount,
-          0
-        );
-        await onEditOrderRequest(row.requestId, {
-          ...request,
-          items: nextItems,
-          totalAmount: nextTotalAmount,
-          updatedAt: new Date().toISOString(),
-          updatedByEmpId: employee?.id || 'warehouse'
-        }, employee?.id || 'warehouse');
-      }
-      setSelectedShortageLine(null);
-    } catch (error) {
-      console.error('delete shortage order request failed', error);
-      setDispatchError(`Xóa đơn đặt chưa thành công: ${getFriendlyFirebaseErrorMessage(error, 'Lỗi không xác định')}`);
-    } finally {
-      setDeletingShortageRequestKey('');
-    }
-  };
+  const handleCloseSelectedShortage = async () => closeSelectedDispatchShortage(getDispatchShortageActionContext());
 
-  const handleCloseSelectedShortage = async () => {
-    if (!selectedShortageLine || typeof onEditOrderRequest !== 'function') return;
-    const linesByRequest = new Map();
-    const requestLines = Array.isArray(selectedShortageLine.requestLines) ? selectedShortageLine.requestLines : [];
-    requestLines.forEach((line, index) => {
-      const requestId = line.requestId || '';
-      if (!requestId) return;
-      const rowKey = line.rowKey || `${requestId}_${line.productId || normalizeLookupText(line.productName || '') || index}`;
-      if (!linesByRequest.has(requestId)) linesByRequest.set(requestId, new Map());
-      linesByRequest.get(requestId).set(rowKey, { ...line, rowKey });
-    });
-
-    if (!linesByRequest.size) {
-      setDispatchError('Chưa có dòng đơn đặt để chốt thiếu.');
-      return;
-    }
-
-    setIsClosingShortageLine(true);
-    setDispatchError('');
-    try {
-      const closedAt = new Date().toISOString();
-      await Promise.all(Array.from(linesByRequest.entries()).map(async ([requestId, lineMap]) => {
-        const request = (orderRequests || []).find(item => item.id === requestId);
-        if (!request) return;
-        const existingClosedShortItems = request.closedShortItems && typeof request.closedShortItems === 'object' && !Array.isArray(request.closedShortItems)
-          ? request.closedShortItems
-          : {};
-        const nextClosedShortItems = { ...existingClosedShortItems };
-        Array.from(lineMap.values()).forEach((line) => {
-          nextClosedShortItems[line.rowKey] = {
-            rowKey: line.rowKey,
-            productId: line.productId || '',
-            productName: line.productName || '',
-            productShortName: line.productShortName || '',
-            quantity: line.quantity || 0,
-            quantityUnit: line.quantityUnit || '',
-            sizeLabel: line.sizeLabel || '',
-            attributeLabel: line.attributeLabel || '',
-            requestDate: line.requestDate || '',
-            dispatchDate: workingDate,
-            closedAt,
-            closedByEmpId: employee?.id || '',
-            reason: 'closed_short_by_warehouse'
-          };
-        });
-        await onEditOrderRequest(requestId, {
-          ...request,
-          closedShortItems: nextClosedShortItems
-        }, employee?.id || 'warehouse');
-      }));
-      setSelectedShortageLine(null);
-    } catch (error) {
-      console.error('close shortage order request failed', error);
-      setDispatchError(`Chốt thiếu chưa thành công: ${getFriendlyFirebaseErrorMessage(error, 'Lỗi không xác định')}`);
-    } finally {
-      setIsClosingShortageLine(false);
-    }
-  };
-
-  const getRecognitionConstructor = () => {
-    if (typeof window === 'undefined') return null;
-    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
-  };
-
-  const getSupportedVoiceRecorderMimeType = () => {
-    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
-    return [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/mp4',
-      'audio/mp4;codecs=mp4a.40.2'
-    ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
-  };
-
-  const cleanupRecordedVoiceResources = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
-    }
-    mediaRecorderRef.current = null;
-    voiceChunksRef.current = [];
-  };
-
-  const stopVoiceCapture = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-    if (mediaRecorderRef.current) {
-      if (mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      } else {
-        cleanupRecordedVoiceResources();
-      }
-    }
-    setIsVoiceListening(false);
-  };
-
-  const resetDispatchVoiceDraft = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.onresult = null;
-      recognitionRef.current.onerror = null;
-      recognitionRef.current.onend = null;
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.ondataavailable = null;
-      mediaRecorderRef.current.onerror = null;
-      mediaRecorderRef.current.onstop = null;
-      if (mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      }
-    }
-    cleanupRecordedVoiceResources();
+  const resetDispatchDraft = () => {
     setDispatchPickerOpen('');
     setShowWeightEntriesModal(false);
     setWeightEntriesEditorSeed([]);
     setDispatchDriverSelectionTouched(false);
     setDispatchDraft(prev => createEmptyDispatchDraft(prev.assignedDriverId || ''));
     setDispatchError('');
-    setVoiceStatus('');
-    setIsVoiceListening(false);
-    setIsVoiceProcessing(false);
   };
-
-  useEffect(() => () => {
-    stopVoiceCapture();
-    cleanupRecordedVoiceResources();
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -56638,7 +55860,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setDispatchDraft(prev => ({
       ...prev,
       weightEntries: normalizedEntries,
-      weightKg: formatVoiceNumberValue(totalWeight)
+      weightKg: formatDispatchNumberInput(totalWeight)
     }));
     setShowWeightEntriesModal(false);
   };
@@ -56664,7 +55886,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       sourceBaseWeightKg,
       sourceWeightEntries,
       sourceDate: sourceRow.date || workingDate,
-      initialEntries: ensureWarehouseWeightEntryRows(editableWeightEntries.map(entry => formatVoiceNumberValue(entry)))
+      initialEntries: ensureWarehouseWeightEntryRows(editableWeightEntries.map(entry => formatDispatchNumberInput(entry)))
     });
     setIsSavingDispatchListWeight(false);
     dispatchListWeightSaveLockRef.current = false;
@@ -56683,7 +55905,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setIsSavingDispatchListWeight(true);
     try {
       await onEditWarehouseDispatch(dispatchListWeightEditor.rowId, {
-        weightKg: formatVoiceNumberValue(nextSourceWeight),
+        weightKg: formatDispatchNumberInput(nextSourceWeight),
         weightEntries: normalizedEntries,
         date: dispatchListWeightEditor.sourceDate || workingDate
       }, employee.id);
@@ -56697,800 +55919,6 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     }
   };
 
-  const normalizeWarehouseVoiceText = (value = '') => normalizeLookupText(value)
-    .replace(/\b(?:vit|bit|bich)\s+(?:khong|hong|ko|k)\s+(?:moc|mat|mot|mok|mog)\b/g, 'vit khong moc')
-    .replace(/\b(?:bit|bich|vit)\s+(?:mat|mot|mok|mog|moc)\b/g, 'vit moc')
-    .replace(/\b(?:long|longg)\s+(?:ga|ga)\b/g, 'long ga')
-    .replace(/\bbit\b/g, 'vit')
-    .replace(/\bbich\b/g, 'vit')
-    .replace(/\bmat\b/g, 'moc')
-    .replace(/\bmot\b/g, 'moc')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const buildWarehouseVoiceSearchCandidates = (value = '', maxWordsPerCandidate = 5) => {
-    const normalized = normalizeWarehouseVoiceText(Array.isArray(value) ? value.join(' ') : value);
-    if (!normalized) return [];
-    const rawCandidates = buildTranscriptSearchCandidates(normalized, maxWordsPerCandidate);
-    return [...new Set([normalized, collapseLookupText(normalized), ...rawCandidates.map(normalizeWarehouseVoiceText)])].filter(Boolean);
-  };
-
-  const isVoicePayloadKeywordTrusted = (keyword = '', transcript = '') => {
-    const normalizedKeyword = normalizeWarehouseVoiceText(keyword);
-    if (!normalizedKeyword) return false;
-    const normalizedTranscript = normalizeWarehouseVoiceText(transcript);
-    if (!normalizedTranscript) return true;
-    return normalizedTranscript.includes(normalizedKeyword)
-      || collapseLookupText(normalizedTranscript).includes(collapseLookupText(normalizedKeyword));
-  };
-
-  const findTranscriptEntity = (
-    transcript,
-    collection,
-    getLabel = (item) => item?.name || '',
-    getAliases = () => []
-  ) => {
-    const normalizedTranscript = normalizeWarehouseVoiceText(transcript);
-    if (!normalizedTranscript) return null;
-    const transcriptCandidates = buildWarehouseVoiceSearchCandidates(transcript);
-    const sorted = [...collection].sort((a, b) => normalizeWarehouseVoiceText(getLabel(b)).length - normalizeWarehouseVoiceText(getLabel(a)).length);
-    const contained = sorted.find((item) => {
-      const labels = [getLabel(item), ...(getAliases(item) || [])]
-        .map((value) => normalizeWarehouseVoiceText(value))
-        .filter(Boolean);
-      return labels.some((label) => normalizedTranscript.includes(label) || collapseLookupText(normalizedTranscript).includes(collapseLookupText(label)));
-    });
-    return contained || findBestEntityMatch([transcript, ...transcriptCandidates], collection, getLabel, getAliases);
-  };
-
-  const extractSpokenWeight = (transcript = '') => {
-    const matches = [...`${transcript}`.matchAll(/(\d+(?:[.,]\d+)?)/g)];
-    if (!matches.length) return '';
-    return matches[matches.length - 1][1].replace(',', '.');
-  };
-
-  const parseVoiceNumber = (value) => {
-    const parsed = parseFloat(`${value ?? ''}`.replace(',', '.'));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  };
-
-  const formatVoiceNumberValue = (value) => {
-    const parsed = parseVoiceNumber(value);
-    if (!parsed) return '';
-    return Number.isInteger(parsed) ? `${parsed}` : `${Number(parsed.toFixed(2))}`;
-  };
-
-  const extractSpokenWeightValues = (transcript = '') => {
-    const raw = `${transcript || ''}`;
-    const directMatches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:kg|kgs|kilogram|kilograms|kilo|ki\s*lo|ký|kí|cân|ky|ki)\b/gi)]
-      .map(match => parseVoiceNumber(match[1]))
-      .filter(value => value > 0);
-    const normalizedRaw = normalizeLookupText(raw);
-    const sequenceMatches = [...normalizedRaw.matchAll(/((?:\d+(?:[.,]\d+)?\s*(?:va|voi|cong|\+|,|;|-)?\s*){1,6})\s*(?:kg|kgs|kilogram|kilograms|kilo|ki\s*lo|ky|ki)\b/gi)]
-      .flatMap(match => [...`${match[1] || ''}`.matchAll(/\d+(?:[.,]\d+)?/g)].map(numberMatch => parseVoiceNumber(numberMatch[0])))
-      .filter(value => value > 0);
-    return sequenceMatches.length > directMatches.length ? sequenceMatches : directMatches;
-  };
-
-  const resolveVoiceWeightValue = (payload = {}, transcript = '') => {
-    const normalizedTranscript = normalizeLookupText(transcript || '');
-    const transcriptHasWeightUnit = /\b(?:kg|kgs|kilogram|kilograms|kilo|ky|ki)\b/.test(normalizedTranscript) || /\bcân\b/i.test(`${transcript || ''}`);
-    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
-    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
-    const explicitValues = payload.weight_values_kg || payload.weightValuesKg || payload.weights_kg || payload.weightsKg;
-    if (Array.isArray(explicitValues)) {
-      const total = explicitValues.reduce((sum, value) => sum + parseVoiceNumber(value), 0);
-      if (total > 0 && transcriptHasWeightUnit) return formatVoiceNumberValue(total);
-    }
-
-    const weightsFromTranscript = extractSpokenWeightValues(transcript);
-    if (weightsFromTranscript.length > 1) {
-      return formatVoiceNumberValue(weightsFromTranscript.reduce((sum, value) => sum + value, 0));
-    }
-
-    const explicitWeight = payload.total_weight_kg ?? payload.totalWeightKg ?? payload.weight_kg ?? payload.weightKg ?? '';
-    const explicitWeightValue = parseVoiceNumber(explicitWeight);
-    if (explicitWeightValue > 0) {
-      if (!transcriptHasWeightUnit && explicitCount > 0 && explicitWeightValue === explicitCount && !isKgQuantityUnit(explicitUnit)) return '';
-      if (!transcriptHasWeightUnit) return '';
-      return formatVoiceNumberValue(explicitWeightValue);
-    }
-
-    if (weightsFromTranscript.length > 0) {
-      return formatVoiceNumberValue(weightsFromTranscript[0]);
-    }
-
-    return transcriptHasWeightUnit ? extractSpokenWeight(transcript) : '';
-  };
-
-  const resolveVoiceWeightEntries = (payload = {}, transcript = '') => {
-    const explicitValues = payload.weight_values_kg || payload.weightValuesKg || payload.weights_kg || payload.weightsKg;
-    const payloadValues = Array.isArray(explicitValues)
-      ? explicitValues.map(value => parseVoiceNumber(value)).filter(value => value > 0)
-      : [];
-    const transcriptValues = extractSpokenWeightValues(transcript);
-    return (transcriptValues.length ? transcriptValues : payloadValues)
-      .map(value => formatVoiceNumberValue(value))
-      .filter(Boolean);
-  };
-
-  const extractSpokenPieceCount = (transcript = '', payload = {}) => {
-    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
-    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
-    if (explicitCount > 0 && (!explicitUnit || !isKgQuantityUnit(explicitUnit))) {
-      return formatVoiceNumberValue(explicitCount);
-    }
-
-    const raw = `${transcript || ''}`;
-    const matches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cái|cai|bọc|boc|thùng|thung|can|túi|tui)\b/gi)];
-    const firstCount = matches.map(match => parseVoiceNumber(match[1])).find(value => value > 0);
-    if (firstCount) return formatVoiceNumberValue(firstCount);
-
-    const normalizedMatches = [...normalizeWarehouseVoiceText(raw).matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cai|bo|boc|bao|thung|can|tui)\b/gi)];
-    const normalizedCount = normalizedMatches.map(match => parseVoiceNumber(match[1])).find(value => value > 0);
-    return normalizedCount ? formatVoiceNumberValue(normalizedCount) : '';
-  };
-
-  const findVoiceEntityMatch = (candidates, primaryCollection, fallbackCollection, getLabel, getAliases) => {
-    const primaryMatch = findBestEntityMatch(candidates, primaryCollection, getLabel, getAliases)
-      || findTranscriptEntity(candidates.join(' '), primaryCollection, getLabel, getAliases);
-    if (primaryMatch) return primaryMatch;
-
-    const fallbackItems = (fallbackCollection || []).filter(item => !item?.isArchived);
-    return findBestEntityMatch(candidates, fallbackItems, getLabel, getAliases)
-      || findTranscriptEntity(candidates.join(' '), fallbackItems, getLabel, getAliases);
-  };
-
-  const buildVoicePayloadSearchText = (payload = {}, transcript = '') => [
-    transcript,
-    payload?.customer_name,
-    payload?.customerName,
-    payload?.customer_id,
-    payload?.customerId,
-    payload?.product_name,
-    payload?.productName,
-    payload?.product_id,
-    payload?.productId,
-    payload?.order_line_key,
-    payload?.orderLineKey,
-    payload?.raw_text,
-    payload?.rawText
-  ].filter(Boolean).join(' ');
-
-  const findStrictVoiceEntityMatch = (
-    searchText = '',
-    collection = [],
-    getLabel = (item) => item?.name || '',
-    getAliases = () => [],
-    minScore = 0.62
-  ) => {
-    const isGenericVoiceLabel = (label = '') => {
-      const normalizedLabel = normalizeWarehouseVoiceText(label);
-      return ['a', 'c', 'anh', 'chi', 'co', 'chu', 'bac', 'ong', 'ba', 'em', 'khach', 'khach hang'].includes(normalizedLabel);
-    };
-    const normalizedText = normalizeWarehouseVoiceText(searchText);
-    if (!normalizedText || !Array.isArray(collection) || !collection.length) return null;
-    const collapsedText = collapseLookupText(normalizedText);
-    const candidates = buildWarehouseVoiceSearchCandidates(searchText, 6)
-      .filter((candidate) => {
-        const normalizedCandidate = normalizeWarehouseVoiceText(candidate);
-        return normalizedCandidate.length >= 2 && !isGenericVoiceLabel(normalizedCandidate);
-      });
-    const sorted = [...collection].sort((a, b) => normalizeWarehouseVoiceText(getLabel(b)).length - normalizeWarehouseVoiceText(getLabel(a)).length);
-
-    const contained = sorted.find((item) => {
-      const labels = [getLabel(item), ...(getAliases(item) || [])]
-        .map((value) => normalizeWarehouseVoiceText(value))
-        .filter((label) => label.length >= 2 && !isGenericVoiceLabel(label));
-      return labels.some((label) => normalizedText.includes(label) || collapsedText.includes(collapseLookupText(label)));
-    });
-    if (contained) return contained;
-
-    let bestMatch = null;
-    let bestScore = 0;
-    sorted.forEach((item) => {
-      const labels = [getLabel(item), ...(getAliases(item) || [])]
-        .map((value) => `${value || ''}`.trim())
-        .filter((label) => label && !isGenericVoiceLabel(label));
-      labels.forEach((label) => {
-        candidates.forEach((candidate) => {
-          const score = scoreLookupTextMatch(candidate, label);
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = item;
-          }
-        });
-      });
-    });
-
-    return bestScore >= minScore ? bestMatch : null;
-  };
-
-  const getOrderRowsForVoiceCustomer = (customer = null) => {
-    if (!customer) return [];
-    const customerId = customer.id || '';
-    const normalizedName = normalizeWarehouseVoiceText(customer.displayName || customer.name || '');
-    const normalizedPlainName = normalizeWarehouseVoiceText(getCustomerPlainName(customer));
-    const missingRows = customerId ? getMissingDispatchOrderRowsForCustomer(customerId) : [];
-    const allRows = warehouseVoiceOrderRows.filter((row) => {
-      if (customerId && row.customerId === customerId) return true;
-      const rowName = normalizeWarehouseVoiceText(row.customerName || '');
-      const rowPlainName = normalizeWarehouseVoiceText(getCustomerPlainName({ name: row.customerName || '' }));
-      return Boolean(normalizedName && rowName === normalizedName)
-        || Boolean(normalizedPlainName && rowPlainName === normalizedPlainName);
-    });
-    const grouped = new Map();
-    [...missingRows, ...allRows].forEach((row) => {
-      const key = row.rowKey || `${row.requestId || ''}_${row.productId || normalizeLookupText(row.productName || '')}`;
-      if (key && !grouped.has(key)) grouped.set(key, row);
-    });
-    return Array.from(grouped.values());
-  };
-
-  const resolveVoiceCustomerFromOrders = (searchText = '') => {
-    const orderCustomer = findStrictVoiceEntityMatch(
-      searchText,
-      warehouseVoiceOrderCustomers,
-      (item) => item?.displayName || item?.name || '',
-      (item) => [
-        item?.displayName,
-        item?.name,
-        item?.plainName,
-        getCustomerPlainName(item)
-      ],
-      0.58
-    );
-    if (!orderCustomer) return null;
-    return (orderCustomer.id && customerLookup.get(orderCustomer.id)) || {
-      ...orderCustomer,
-      name: orderCustomer.displayName || orderCustomer.name
-    };
-  };
-
-  const resolveVoiceProductFromOrderRows = (searchText = '', orderRows = []) => findStrictVoiceEntityMatch(
-    searchText,
-    orderRows,
-    (row) => row?.productName || '',
-    (row) => [
-      row?.productShortName,
-      row?.productBarcode,
-      row?.item?.description,
-      row?.item?.productName,
-      row?.item?.productNameSnapshot
-    ],
-    0.52
-  );
-
-  const extractSpokenQuantityUnit = (transcript = '') => {
-    const normalized = normalizeWarehouseVoiceText(transcript || '');
-    const matched = normalized.match(/\d+(?:[.,]\d+)?\s*(con|cai|bo|boc|bao|thung|can|tui|kg|ky|ki|kilo)\b/i);
-    return matched?.[1] ? normalizeDispatchQuantityUnit(matched[1]) : '';
-  };
-
-  const resolveVoiceQuantityUnit = (payload = {}, orderRow = null, product = null, transcript = '', customer = null) => {
-    const branchId = orderRow?.branchId || orderRow?.customerBranchId || '';
-    const configSource = getCustomerBranchProductConfigSource(customer, branchId, products);
-    const configuration = resolveCustomerProductBillingConfiguration(configSource, product, {
-      configurationId: orderRow?.configurationId || orderRow?.item?.configurationId || '',
-      sizeLabel: orderRow?.sizeLabel || orderRow?.item?.sizeLabel || '',
-      attributeLabel: orderRow?.attributeLabel || orderRow?.item?.attributeLabel || '',
-    });
-    const orderSnapshot = resolveTransactionBillingSnapshot({
-      record: orderRow ? { ...orderRow, ...(orderRow.item || {}) } : null,
-      configuration,
-      product,
-    });
-    const configuredActualUnit = resolveCustomerProductActualUnit(configuration, product);
-    const frozenActualUnit = orderSnapshot.hasFrozenPricing ? orderSnapshot.actualUnit : '';
-    return normalizeDispatchQuantityUnit(
-      frozenActualUnit
-      || configuredActualUnit
-      || orderRow?.actualUnit
-      || orderRow?.item?.actualUnit
-      || orderRow?.item?.quantityUnit
-      || orderRow?.productUnit
-      || product?.unit
-      || payload.quantity_unit
-      || payload.quantityUnit
-      || payload.unit
-      || extractSpokenQuantityUnit(transcript)
-      || 'Con'
-    );
-  };
-
-  const extractSpokenNonWeightNumbers = (transcript = '') => {
-    const raw = `${transcript || ''}`;
-    const matches = [...raw.matchAll(/(\d+(?:[.,]\d+)?)\s*([^\d\s,.;:+-]*)/gi)];
-    return matches
-      .filter((match) => !isKgQuantityUnit(normalizeLookupText(match[2] || '')))
-      .map((match) => parseVoiceNumber(match[1]))
-      .filter((value) => value > 0);
-  };
-
-  const resolveVoicePieceCountValue = (payload = {}, transcript = '', orderRow = null, quantityUnit = 'Con') => {
-    const directCount = extractSpokenPieceCount(transcript, payload);
-    if (directCount) return directCount;
-
-    const explicitUnit = normalizeLookupText(payload.quantity_unit || payload.quantityUnit || payload.unit || '');
-    const explicitCount = parseVoiceNumber(payload.piece_count ?? payload.pieceCount ?? payload.quantity_count ?? payload.quantityCount ?? payload.quantity);
-    if (explicitCount > 0 && (!explicitUnit || !isKgQuantityUnit(explicitUnit))) {
-      return formatVoiceNumberValue(explicitCount);
-    }
-
-    if (!isKgQuantityUnit(quantityUnit)) {
-      const nonWeightNumbers = extractSpokenNonWeightNumbers(transcript);
-      if (nonWeightNumbers.length) return formatVoiceNumberValue(nonWeightNumbers[0]);
-      const orderQuantity = parseLooseQuantityValue(orderRow?.item?.quantity ?? orderRow?.item?.quantityCount);
-      if (orderQuantity > 0) return formatVoiceNumberValue(orderQuantity);
-    }
-
-    return '';
-  };
-
-  const getWarehouseVoiceCustomerLabels = (source = {}) => {
-    const customer = source?.customer || source;
-    return [...new Set([
-      customer?.displayName,
-      customer?.name,
-      customer?.plainName,
-      source?.customerName,
-      getCustomerPlainName(customer),
-      getCustomerDisplayName(customer),
-      ...buildCustomerNameAliases(customer)
-    ].map(value => `${value || ''}`.trim()).filter(Boolean))];
-  };
-
-  const getWarehouseVoiceProductLabels = (source = {}) => {
-    const product = source?.product || source;
-    return [...new Set([
-      source?.productName,
-      source?.productShortName,
-      product?.name,
-      getProductShortName(product),
-      buildLookupInitials(source?.productName || product?.name),
-      source?.item?.description,
-      source?.item?.productName,
-      source?.item?.productNameSnapshot
-    ].map(value => `${value || ''}`.trim()).filter(Boolean))];
-  };
-
-  const scoreWarehouseVoiceLabels = (candidates = [], labels = []) => {
-    const getVoiceLabelTokens = (value = '') => tokenizeLookupText(normalizeWarehouseVoiceText(value))
-      .filter(token => token && !/^\d+(?:[.,]\d+)?$/.test(token))
-      .filter(token => !['a', 'c', 'anh', 'chi', 'co', 'chu', 'bac', 'ong', 'ba', 'em', 'khach', 'hang'].includes(token));
-    const scoreOrderedVoiceTokens = (candidate = '', label = '') => {
-      const candidateTokens = getVoiceLabelTokens(candidate);
-      const labelTokens = getVoiceLabelTokens(label);
-      if (!candidateTokens.length || !labelTokens.length) return 0;
-
-      let matched = 0;
-      let cursor = 0;
-      let consecutive = 0;
-      let bestConsecutive = 0;
-      labelTokens.forEach((labelToken) => {
-        let foundIndex = -1;
-        for (let index = cursor; index < candidateTokens.length; index += 1) {
-          const candidateToken = candidateTokens[index];
-          const tokenScore = scoreLookupTextMatch(candidateToken, labelToken);
-          if (candidateToken === labelToken || tokenScore >= 0.78) {
-            foundIndex = index;
-            break;
-          }
-        }
-        if (foundIndex >= 0) {
-          matched += 1;
-          consecutive = foundIndex === cursor ? consecutive + 1 : 1;
-          bestConsecutive = Math.max(bestConsecutive, consecutive);
-          cursor = foundIndex + 1;
-        }
-      });
-
-      if (!matched) return 0;
-      const coverage = matched / Math.max(labelTokens.length, 1);
-      const density = matched / Math.max(candidateTokens.length, 1);
-      const consecutiveBonus = bestConsecutive >= Math.min(2, labelTokens.length) ? 0.12 : 0;
-      const singleTokenPenalty = labelTokens.length >= 2 && matched === 1 ? 0.18 : 0;
-      return Math.max(0, Math.min(1, (coverage * 0.78) + (density * 0.16) + consecutiveBonus - singleTokenPenalty));
-    };
-    let bestScore = 0;
-    candidates
-      .map(value => normalizeWarehouseVoiceText(value || ''))
-      .filter(Boolean)
-      .forEach((candidate) => {
-        labels.forEach((label) => {
-          const normalizedLabel = normalizeWarehouseVoiceText(label);
-          const score = Math.max(
-            scoreLookupTextMatch(candidate, normalizedLabel),
-            scoreOrderedVoiceTokens(candidate, normalizedLabel)
-          );
-          if (score > bestScore) bestScore = score;
-        });
-      });
-    return bestScore;
-  };
-
-  const extractWarehouseVoiceSegments = (payload = {}, transcript = '') => {
-    const normalizedTranscript = normalizeWarehouseVoiceText(transcript || '');
-    const countMatch = [...normalizedTranscript.matchAll(/(\d+(?:[.,]\d+)?)\s*(con|cai|bo|boc|bao|thung|can|tui)\b/gi)]
-      .find(match => parseVoiceNumber(match[1]) > 0);
-    const kgPattern = /\d+(?:[.,]\d+)?\s*(?:kg|kgs|kilogram|kilograms|kilo|ky|ki)\b/gi;
-    let customerSegment = normalizedTranscript;
-    let productSegment = normalizedTranscript;
-
-    if (countMatch) {
-      const startIndex = countMatch.index || 0;
-      const endIndex = startIndex + `${countMatch[0] || ''}`.length;
-      customerSegment = normalizedTranscript.slice(0, startIndex).trim();
-      productSegment = normalizedTranscript.slice(endIndex).replace(kgPattern, ' ').replace(/\b(?:va|voi|cong|them)\b/g, ' ').replace(/\s+/g, ' ').trim();
-    } else {
-      const firstKgMatch = [...normalizedTranscript.matchAll(kgPattern)][0];
-      if (firstKgMatch) {
-        const beforeKg = normalizedTranscript.slice(0, firstKgMatch.index || 0).trim();
-        customerSegment = beforeKg;
-        productSegment = beforeKg;
-      }
-    }
-
-    return {
-      normalizedTranscript,
-      customerSegment,
-      productSegment,
-      customerCandidates: [
-        payload?.customer_name,
-        payload?.customerName,
-        customerSegment,
-        normalizedTranscript
-      ].filter(Boolean),
-      productCandidates: [
-        payload?.product_name,
-        payload?.productName,
-        productSegment,
-        normalizedTranscript
-      ].filter(Boolean)
-    };
-  };
-
-  const findBestWarehouseVoiceOrderRow = (payload = {}, transcript = '') => {
-    if (!warehouseVoiceOrderRows.length) return null;
-    const explicitRowKey = `${payload?.order_line_key || payload?.orderLineKey || payload?.rowKey || ''}`.trim();
-    const explicitCustomerId = `${payload?.customer_id || payload?.customerId || ''}`.trim();
-    const explicitProductId = `${payload?.product_id || payload?.productId || ''}`.trim();
-    const segments = extractWarehouseVoiceSegments(payload, transcript);
-    const explicitRow = explicitRowKey
-      ? warehouseVoiceOrderRows.find(row => row.rowKey === explicitRowKey || `${row.requestId || ''}_${row.productId || ''}` === explicitRowKey)
-      : null;
-    const shortageKeySet = new Set((dispatchShortageSummary?.issueLines || []).map(line => line.key).filter(Boolean));
-
-    const scoredRows = warehouseVoiceOrderRows.map((row) => {
-      const customerScore = scoreWarehouseVoiceLabels(segments.customerCandidates, getWarehouseVoiceCustomerLabels(row));
-      const productScore = scoreWarehouseVoiceLabels(segments.productCandidates, getWarehouseVoiceProductLabels(row));
-      const shortageKey = [
-        row.customerId || normalizeLookupText(row.customerName || ''),
-        row.productId || normalizeLookupText(row.productName || '')
-      ].join('__');
-      const shortageBoost = shortageKeySet.has(shortageKey) ? 0.08 : 0;
-      const explicitScore = (
-        (explicitRow && explicitRow.rowKey === row.rowKey)
-        || (explicitCustomerId && explicitProductId && row.customerId === explicitCustomerId && row.productId === explicitProductId)
-      ) ? 0.18 : 0;
-      const score = (customerScore * 0.58) + (productScore * 0.42) + explicitScore + shortageBoost;
-      return { row, customerScore, productScore, score };
-    }).sort((a, b) => b.score - a.score);
-
-    const best = scoredRows[0];
-    const runnerUp = scoredRows[1];
-    if (!best) return null;
-
-    const customerLooksSafe = best.customerScore >= 0.58;
-    const productLooksSafe = best.productScore >= 0.54;
-    const gapLooksSafe = !runnerUp || (best.score - runnerUp.score) >= 0.035 || best.score >= 0.9;
-    if (customerLooksSafe && productLooksSafe && gapLooksSafe) return best.row;
-
-    const sameCustomerRows = scoredRows.filter(rowScore => {
-      const sameCustomer = best.row.customerId
-        ? rowScore.row.customerId === best.row.customerId
-        : normalizeWarehouseVoiceText(rowScore.row.customerName) === normalizeWarehouseVoiceText(best.row.customerName);
-      return sameCustomer && rowScore.customerScore >= 0.58;
-    });
-    if (customerLooksSafe && sameCustomerRows.length === 1 && best.productScore >= 0.28) {
-      return best.row;
-    }
-
-    if (explicitRow && best.row.rowKey === explicitRow.rowKey && best.customerScore >= 0.5 && best.productScore >= 0.45) {
-      return explicitRow;
-    }
-
-    return null;
-  };
-
-  const applyVoiceExtraction = (payload = {}, options = {}) => {
-    const shouldReplaceDraft = Boolean(options.replaceDraft);
-    const transcript = `${payload?.transcript || ''}`.trim();
-    const customerKeyword = `${payload?.customer_name || payload?.customerName || ''}`.trim() || transcript;
-    const productKeyword = `${payload?.product_name || payload?.productName || ''}`.trim() || transcript;
-    const combinedText = buildVoicePayloadSearchText(payload, transcript);
-    const customerSearchText = [customerKeyword, combinedText].filter(Boolean).join(' ');
-    const productSearchText = [productKeyword, combinedText].filter(Boolean).join(' ');
-    const customerCandidates = [customerKeyword, transcript].filter(Boolean);
-    const productCandidates = [transcript, productKeyword].filter(Boolean);
-    const bestOrderRowMatch = findBestWarehouseVoiceOrderRow(payload, transcript);
-    const bestOrderCustomer = bestOrderRowMatch
-      ? ((bestOrderRowMatch.customerId ? customerLookup.get(bestOrderRowMatch.customerId) : null) || {
-        id: bestOrderRowMatch.customerId || '',
-        name: bestOrderRowMatch.customerName || '',
-        displayName: bestOrderRowMatch.customerName || '',
-        plainName: getCustomerPlainName({ name: bestOrderRowMatch.customerName || '' })
-      })
-      : null;
-    const orderCustomerMatch = bestOrderCustomer || resolveVoiceCustomerFromOrders(customerSearchText);
-    const customerMatch = orderCustomerMatch || findVoiceEntityMatch(
-      customerCandidates,
-      requestCustomerOptions,
-      customers,
-      (item) => item?.name || '',
-      (item) => [getCustomerPlainName(item), getCustomerDisplayName(item), ...(buildCustomerNameAliases(item) || [])]
-    );
-    const customerOrderRows = getOrderRowsForVoiceCustomer(customerMatch);
-    const customerAllowedProductIds = new Set(customerOrderRows.map(row => row.productId).filter(Boolean));
-    if (customerMatch) {
-      getCustomerFixedProductIds(customerMatch, products).forEach(productId => customerAllowedProductIds.add(productId));
-      customerOrderRows.forEach((row) => {
-        getCustomerBranchFixedProductIds(customerMatch, row.branchId || row.customerBranchId || '', products)
-          .forEach(productId => customerAllowedProductIds.add(productId));
-      });
-    }
-    const customerVoiceProductOptions = products.filter(product => customerAllowedProductIds.has(product.id));
-    let matchedOrderRow = bestOrderRowMatch || (customerOrderRows.length
-      ? resolveVoiceProductFromOrderRows(productSearchText, customerOrderRows)
-      : null);
-    if (!matchedOrderRow && customerOrderRows.length === 1) {
-      matchedOrderRow = customerOrderRows[0];
-    }
-
-    const fallbackProductMatch = findVoiceEntityMatch(
-      productCandidates,
-      customerVoiceProductOptions.length ? customerVoiceProductOptions : requestProductOptions,
-      [],
-      (item) => item?.name || '',
-      (item) => [getProductShortName(item), buildLookupInitials(item?.name), item?.barcode, item?.attributes, item?.productAttributes]
-    );
-    const productMatch = (matchedOrderRow?.productId && productLookup.get(matchedOrderRow.productId))
-      || matchedOrderRow?.product
-      || fallbackProductMatch;
-
-    if (!matchedOrderRow && customerOrderRows.length && productMatch) {
-      matchedOrderRow = customerOrderRows.find((row) => row.productId && row.productId === productMatch.id)
-        || customerOrderRows.find((row) => normalizeWarehouseVoiceText(row.productName) === normalizeWarehouseVoiceText(productMatch.name))
-        || null;
-    }
-    const quantityUnit = resolveVoiceQuantityUnit(payload, matchedOrderRow, productMatch, transcript, customerMatch);
-    const weightValue = resolveVoiceWeightValue(payload, transcript);
-    const weightEntries = resolveVoiceWeightEntries(payload, transcript);
-    const pieceCountValue = resolveVoicePieceCountValue(payload, transcript, matchedOrderRow, quantityUnit);
-    const orderDefaults = buildDispatchDefaultsFromOrderRow(matchedOrderRow);
-    const productLabel = productMatch?.name || matchedOrderRow?.productName || '';
-
-    setDispatchDraft(prev => {
-      const baseDraft = shouldReplaceDraft ? createEmptyDispatchDraft(prev.assignedDriverId || '') : prev;
-      return {
-        ...baseDraft,
-        transcript: transcript || baseDraft.transcript,
-        customerId: customerMatch?.id || baseDraft.customerId,
-        customerSearch: customerMatch ? getCustomerDisplayName(customerMatch) : baseDraft.customerSearch,
-        productId: productMatch?.id || matchedOrderRow?.productId || baseDraft.productId,
-        productSearch: productLabel || baseDraft.productSearch,
-        pieceCount: pieceCountValue || baseDraft.pieceCount,
-        quantityUnit: (matchedOrderRow || productMatch || pieceCountValue) ? quantityUnit : baseDraft.quantityUnit,
-        weightKg: weightValue || (isKgQuantityUnit(quantityUnit) ? orderDefaults.weightKg : '') || baseDraft.weightKg,
-        weightEntries: weightEntries.length > 0 ? weightEntries : baseDraft.weightEntries
-      };
-    });
-
-    if (customerMatch && productLabel && (weightValue || pieceCountValue)) {
-      setVoiceStatus(`Da nhan: ${getCustomerDisplayName(customerMatch) || customerMatch.name} - ${productLabel}${pieceCountValue ? ` - ${pieceCountValue} ${quantityUnit}` : ''}${weightValue ? ` - ${weightValue} kg` : ''}`);
-      setDispatchError('');
-      return;
-    }
-
-    if (transcript) {
-      const missingFields = [
-        !customerMatch ? 'khach hang' : '',
-        !productLabel ? 'loai hang' : '',
-        !weightValue && !pieceCountValue ? 'so luong hoac so kg' : ''
-      ].filter(Boolean);
-      setVoiceStatus(
-        missingFields.length
-          ? `AI da nhan giong noi nhung con thieu ${missingFields.join(', ')}. Ban kiem tra lai hoac nhap tay.`
-          : 'Da nhan noi dung giong noi. Ban vui long kiem tra lai truoc khi luu.'
-      );
-      return;
-    }
-
-    setVoiceStatus('AI chua doc duoc noi dung giong noi. Ban hay kiem tra lai khach hang, loai hang hoac so kg roi nhap tay.');
-  };
-
-  const applyVoiceTranscript = (transcript = '') => {
-    applyVoiceExtraction({ transcript }, { replaceDraft: true });
-  };
-
-  const focusDispatchTranscriptInput = () => {
-    window.setTimeout(() => {
-      dispatchTranscriptInputRef.current?.focus();
-    }, 0);
-  };
-
-  const handleApplyVoiceTranscript = () => {
-    const transcript = `${dispatchDraft.transcript || ''}`.trim();
-    if (!transcript) {
-      setVoiceStatus('Bạn hãy nhập hoặc dán nội dung đọc cân vào ô mô tả trước.');
-      setVoiceStatus('Bạn hãy nhập hoặc dán nội dung đọc cân vào ô mô tả trước.');
-      focusDispatchTranscriptInput();
-      return;
-    }
-    lastAutoAppliedVoiceTranscriptRef.current = transcript;
-    applyVoiceTranscript(transcript);
-  };
-
-  useEffect(() => {
-    const transcript = `${dispatchDraft.transcript || ''}`.trim();
-    if (!transcript) {
-      lastAutoAppliedVoiceTranscriptRef.current = '';
-      return undefined;
-    }
-    if (transcript === lastAutoAppliedVoiceTranscriptRef.current) return undefined;
-    if (voiceTranscriptAutoApplyTimerRef.current) {
-      window.clearTimeout(voiceTranscriptAutoApplyTimerRef.current);
-    }
-    voiceTranscriptAutoApplyTimerRef.current = window.setTimeout(() => {
-      const latestTranscript = `${dispatchDraft.transcript || ''}`.trim();
-      if (!latestTranscript || latestTranscript === lastAutoAppliedVoiceTranscriptRef.current) return;
-      lastAutoAppliedVoiceTranscriptRef.current = latestTranscript;
-      applyVoiceTranscript(latestTranscript);
-    }, 650);
-    return () => {
-      if (voiceTranscriptAutoApplyTimerRef.current) {
-        window.clearTimeout(voiceTranscriptAutoApplyTimerRef.current);
-      }
-    };
-  }, [dispatchDraft.transcript]);
-
-  const transcribeRecordedVoice = async (audioBlob) => {
-    const typedTranscript = `${dispatchDraft.transcript || ''}`.trim();
-    setIsVoiceProcessing(false);
-    if (typedTranscript) {
-      applyVoiceTranscript(typedTranscript);
-      setVoiceStatus('App đã bỏ Gemini trong phiếu xuất kho. Nội dung đọc cân đã được tự tách từ ô mô tả.');
-      return;
-    }
-    setVoiceStatus('Thiết bị này chưa hỗ trợ nhận giọng nói trực tiếp. Hãy dùng micro trên bàn phím để đọc vào ô nội dung, app sẽ tự điền sau khi có chữ.');
-    focusDispatchTranscriptInput();
-    return;
-    setIsVoiceProcessing(true);
-    setVoiceStatus('Dang gui ghi am cho AI doc phieu xuat kho...');
-    try {
-      const prioritizedVoiceCustomers = Array.from(new Map([
-        ...warehouseVoiceOrderCustomers,
-        ...requestCustomerOptions,
-        ...(customers || []).filter(item => !item?.isArchived)
-      ].map(item => [item?.id || item?.name, item])).values()).filter(Boolean);
-      const prioritizedVoiceProducts = Array.from(new Map([
-        ...warehouseVoiceOrderRows.map(row => ({
-          id: row.productId || row.productName,
-          name: row.productName,
-          shortName: row.productShortName,
-          category: row.productCategory,
-          unit: row.productUnit
-        })),
-        ...requestProductOptions,
-        ...(products || []).filter(item => !item?.isArchived)
-      ].map(item => [item?.id || item?.name, item])).values()).filter(Boolean);
-      const shortageKeySet = new Set((dispatchShortageSummary?.issueLines || []).map(line => line.key).filter(Boolean));
-      const prioritizedVoiceOrderRows = [...warehouseVoiceOrderRows].sort((a, b) => {
-        const getRowShortageScore = (row) => {
-          const key = [
-            row.customerId || normalizeLookupText(row.customerName || ''),
-            row.productId || normalizeLookupText(row.productName || '')
-          ].join('__');
-          return shortageKeySet.has(key) ? 0 : 1;
-        };
-        return getRowShortageScore(a) - getRowShortageScore(b);
-      });
-      const parsed = await requestWarehouseDispatchDraftDisabled(audioBlob, {
-        customers: prioritizedVoiceCustomers.map((item) => item?.name || ''),
-        products: prioritizedVoiceProducts.map((item) => [item?.name, item?.shortName].filter(Boolean).join(' / ')),
-        orderLines: prioritizedVoiceOrderRows.map((row) => [
-          `ROW_KEY=${row.rowKey || ''}`,
-          `CUSTOMER_ID=${row.customerId || ''}`,
-          `PRODUCT_ID=${row.productId || ''}`,
-          row.customerName || '',
-          [row.productName, row.productShortName ? `(${row.productShortName})` : ''].filter(Boolean).join(' '),
-          row.item?.size ? `size ${row.item.size}` : '',
-          row.item?.quantity ? `${formatNumber(parseLooseQuantityValue(row.item.quantity))} ${row.item.quantityUnit || row.productUnit || ''}`.trim() : ''
-        ].filter(Boolean).join(' - '))
-      });
-      applyVoiceExtraction(parsed, { replaceDraft: true });
-    } catch (error) {
-      const typedTranscript = `${dispatchDraft.transcript || ''}`.trim();
-      if (typedTranscript) {
-        applyVoiceTranscript(typedTranscript);
-        setVoiceStatus('AI đọc ghi âm đang lỗi hoặc hết credit. App đã tự tách thông tin từ nội dung bạn nhập trong ô mô tả.');
-      } else if (error?.code === 'gemini_billing_or_quota_error' || isGeminiBillingOrQuotaError(error?.message || error?.originalMessage || '')) {
-      setVoiceStatus('AI đọc ghi âm trên iPhone đang hết credit Gemini. Hãy nạp credit trong AI Studio, hoặc nhập/dán nội dung đọc cân vào ô nội dung. Khi rời ô, app sẽ tự tách tên khách, hàng, số lượng và kg.');
-      } else if (error?.message === 'permission_denied') {
-      setVoiceStatus('Không thể gọi AI đọc ghi âm lúc này. Bạn hãy nhập/dán nội dung đọc cân vào ô nội dung, app sẽ tự tách thông tin khi rời ô.');
-      } else {
-      setVoiceStatus('Không thể đọc ghi âm. Bạn hãy thử lại, hoặc nhập/dán nội dung đọc cân vào ô nội dung, app sẽ tự tách thông tin khi rời ô.');
-      }
-    } finally {
-      setIsVoiceProcessing(false);
-    }
-  };
-
-  const startRecordedVoiceCapture = async () => {
-    cleanupRecordedVoiceResources();
-    setIsVoiceListening(false);
-    setIsVoiceProcessing(false);
-    setDispatchError('');
-    setVoiceStatus('iPhone/WebView này chưa hỗ trợ nhận giọng nói trực tiếp giống Android nếu không dùng Gemini. App đã bỏ Gemini: hãy bấm vào ô nội dung và dùng micro trên bàn phím iPhone để đọc. Khi rời ô, app sẽ tự tách thông tin.');
-    focusDispatchTranscriptInput();
-  };
-
-  const handleStartVoice = async () => {
-    if (isVoiceProcessing) return;
-    setVoiceStatus('Đang xin quyền micro...');
-    const microphoneAccess = await ensureMicrophoneAccess();
-    if (!microphoneAccess.granted) {
-      setVoiceStatus(microphoneAccess.message || 'Ung dung chua duoc cap quyen micro.');
-      return;
-    }
-    const Recognition = getRecognitionConstructor();
-    if (!Recognition) {
-      await startRecordedVoiceCapture();
-      return;
-    }
-
-    stopVoiceCapture();
-    setVoiceStatus('Dang nghe giong noi...');
-    setDispatchError('');
-
-    const recognition = new Recognition();
-    recognition.lang = 'vi-VN';
-    recognition.interimResults = false;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 1;
-    recognitionRef.current = recognition;
-    setIsVoiceListening(true);
-
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results || []).map((result) => result?.[0]?.transcript || '').join(' ').trim();
-      if (transcript) applyVoiceTranscript(transcript);
-    };
-
-    recognition.onerror = async (event) => {
-      setIsVoiceListening(false);
-      recognitionRef.current = null;
-      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network'].includes(event?.error)) {
-        await startRecordedVoiceCapture();
-        return;
-      }
-      setVoiceStatus(event?.error === 'not-allowed'
-        ? 'Ban chua cap quyen micro cho trinh duyet hoac app.'
-        : 'Khong the nhan giong noi. Ban hay thu lai hoac nhap tay.');
-    };
-
-    recognition.onend = () => {
-      setIsVoiceListening(false);
-      recognitionRef.current = null;
-    };
-
-    try {
-      recognition.start();
-    } catch (error) {
-      recognitionRef.current = null;
-      setIsVoiceListening(false);
-      await startRecordedVoiceCapture();
-    }
-  };
 
   const handleDispatchCustomerChange = (customerId) => {
     const selectedCustomer = customerLookup.get(customerId);
@@ -57613,25 +56041,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
 
   const startInlineDispatchEdit = (row) => {
     if (!row || (!canEdit && !canDelete)) return;
-    setInlineEditingDispatchDraft({
-      customerId: row.customerId || '',
-      customerSearch: row.customerName || '',
-      productId: row.productId || '',
-      productSearch: row.productName || '',
-      pieceCount: row.pieceCount ?? '',
-      quantityUnit: row.quantityUnit || 'Con',
-      weightKg: row.weightKg ?? '',
-      weightEntries: Array.isArray(row.weightEntries) ? row.weightEntries : [],
-      assignedDriverId: row.assignedDriverId || row.driverId || '',
-      note: row.note || '',
-      configurationId: row.configurationId || '',
-      billingUnit: row.billingUnit || row.pricingUnit || '',
-      billingQuantity: row.billingQuantity ?? row.pricingQuantity ?? 0,
-      unitPrice: row.unitPrice ?? row.price ?? 0,
-      amount: row.amount ?? row.pricingAmount ?? 0,
-      billingSnapshotVersion: row.billingSnapshotVersion || 0,
-      billingSnapshotSource: row.billingSnapshotSource || ''
-    });
+    setInlineEditingDispatchDraft(buildDispatchEditorDraft(row));
     setDispatchError('');
   };
 
@@ -57691,43 +56101,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       return false;
     }
 
-    await onEditWarehouseDispatch(row.id, {
-      ...billingSnapshot,
-      customerId: customer.id,
-      customerNameSnapshot: getCustomerDisplayName(customer) || customer.name,
-      branchId: branchRef.branchId,
-      branchName: branchRef.branchName,
-      branchAddress: branchRef.branchAddress,
-      customerBranchId: branchRef.branchId,
-      customerBranchName: branchRef.branchName,
-      customerBranchAddress: branchRef.branchAddress,
-      productId: product.id,
-      productNameSnapshot: product.name,
-      weightKg,
-      weightEntries: normalizeWarehouseWeightEntries(inlineEditingDispatchDraft.weightEntries || []),
-      pieceCount,
-      quantity: billingSnapshot.actualQuantity,
-      quantityCount: billingSnapshot.actualQuantity,
-      quantityUnit: billingSnapshot.actualUnit,
-      assignedDriverId: nextDriverId,
-      assignedDriverNameSnapshot: nextDriverName,
-      driverId: nextDriverId,
-      driverNameSnapshot: nextDriverName,
-      note: capitalizeFirst(inlineEditingDispatchDraft.note || '').trim(),
-      transcript: row.transcript || '',
-      sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow),
-      sourceOrderRequestDate: matchedOrderRow?.requestDate || row.sourceOrderRequestDate || selectedOrderRequestDateKey,
-      sourceOrderRequestId: matchedOrderRow?.requestId || '',
-      sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
-      price: billingSnapshot.unitPrice,
-      sourceOrderRequestUnitPrice: billingSnapshot.unitPrice,
-      orderRequestUnitPrice: billingSnapshot.unitPrice,
-      requestUnitPrice: billingSnapshot.unitPrice,
-      isOutsideOrderRequest,
-      createdWithoutOrderRequest: isOutsideOrderRequest,
-      sourceOrderRequestMissing: isOutsideOrderRequest,
-      date: row.date || workingDate
-    }, employee.id);
+    await onEditWarehouseDispatch(row.id, buildDispatchEditPayload({
+      billingSnapshot, customer, product, branchRef, weightKg, pieceCount, inlineEditingDispatchDraft,
+      nextDriverId, nextDriverName, row, baseSourceType, matchedOrderRow, selectedOrderRequestDateKey,
+      workingDate, isOutsideOrderRequest, getCustomerDisplayName, normalizeWarehouseWeightEntries,
+      capitalizeFirst, buildWarehouseDispatchSourceType
+    }), employee.id);
 
     setDispatchError('');
     resetInlineDispatchEdit();
@@ -57744,11 +56123,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     return true;
   };
 
-  const canEditDispatchCellField = useCallback((field) => {
-    if (!canEdit) return false;
-    if (field === 'assignedDriverId') return canAssignDriver;
-    return ['customerId', 'productId', 'pieceCount', 'weightKg'].includes(field);
-  }, [canEdit, canAssignDriver]);
+  const canEditDispatchCellField = useCallback(
+    field => canEditDispatchField(field, canEdit, canAssignDriver), [canEdit, canAssignDriver]
+  );
 
   const openDispatchCellEditor = useCurrentCallback((displayRow, field, event) => {
     event?.stopPropagation?.();
@@ -57787,385 +56164,53 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     setDispatchError('');
   };
 
-  const saveDispatchCellEditor = async () => {
-    if (!dispatchCellEditor?.row || !canEditDispatchCellField(dispatchCellEditor.field) || isSavingDispatchCell) return;
-    setIsSavingDispatchCell(true);
-    try {
-      await saveInlineDispatchRow(dispatchCellEditor.row);
-    } catch (error) {
-      setDispatchError(getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật phiếu xuất kho. Vui lòng thử lại.'));
-    } finally {
-      setIsSavingDispatchCell(false);
-    }
-  };
+  const saveDispatchCellEditor = () => runDispatchEditorCommand({
+    allowed: Boolean(dispatchCellEditor?.row && canEditDispatchCellField(dispatchCellEditor.field)),
+    lock: dispatchCellCommandLockRef, setBusy: setIsSavingDispatchCell,
+    execute: () => saveInlineDispatchRow(dispatchCellEditor.row), setError: setDispatchError,
+    errorMessage: error => getFriendlyFirebaseErrorMessage(error, 'Không thể cập nhật phiếu xuất kho. Vui lòng thử lại.')
+  });
 
-  const deleteDispatchCellEditorRow = async () => {
-    if (!dispatchCellEditor?.row || !canDelete || isSavingDispatchCell) return;
-    setIsSavingDispatchCell(true);
-    try {
-      await deleteInlineDispatchRow(dispatchCellEditor.row);
-    } catch (error) {
-      setDispatchError(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa phiếu xuất kho. Vui lòng thử lại.'));
-    } finally {
-      setIsSavingDispatchCell(false);
-    }
-  };
+  const deleteDispatchCellEditorRow = () => runDispatchEditorCommand({
+    allowed: Boolean(dispatchCellEditor?.row && canDelete),
+    lock: dispatchCellCommandLockRef, setBusy: setIsSavingDispatchCell,
+    execute: () => deleteInlineDispatchRow(dispatchCellEditor.row), setError: setDispatchError,
+    errorMessage: error => getFriendlyFirebaseErrorMessage(error, 'Không thể xóa phiếu xuất kho. Vui lòng thử lại.')
+  });
 
-  const getDispatchCellEditorConfig = () => {
-    if (!dispatchCellEditor?.field) return null;
-    const fieldConfigs = {
-      assignedDriverId: {
-        label: 'Người giao',
-        title: 'Sửa người giao',
-        type: 'select',
-        value: inlineEditingDispatchDraft.assignedDriverId,
-        options: [{ value: '', label: 'Chưa giao' }, ...driverOptions.map(driver => ({ value: driver.id, label: driver.name }))]
-      },
-      customerId: {
-        label: 'Khách hàng',
-        title: 'Sửa khách hàng',
-        type: 'select',
-        value: inlineEditingDispatchDraft.customerId,
-        options: [{ value: '', label: '-- Chọn khách hàng --' }, ...requestCustomerOptions.map(customer => ({ value: customer.id, label: customer.name }))]
-      },
-      productId: {
-        label: 'Loại hàng',
-        title: 'Sửa loại hàng',
-        type: 'select',
-        value: inlineEditingDispatchDraft.productId,
-        options: [{ value: '', label: '-- Chọn loại hàng --' }, ...inlineDispatchProductOptions.map(product => ({ value: product.id, label: product.name }))]
-      },
-      pieceCount: {
-        label: 'Số lượng',
-        title: 'Sửa số lượng',
-        type: 'number',
-        value: inlineEditingDispatchDraft.pieceCount,
-        suffix: inlineEditingDispatchDraft.quantityUnit || 'đơn vị',
-        placeholder: 'Nhập số lượng'
-      },
-    };
-    return fieldConfigs[dispatchCellEditor.field] || null;
-  };
+  const getDispatchCellEditorConfig = () => getDispatchEditorConfig(dispatchCellEditor?.field, inlineEditingDispatchDraft, {
+    drivers: driverOptions, customers: requestCustomerOptions, products: inlineDispatchProductOptions
+  });
 
   const deleteHistoryDispatchRow = async (row) => {
-    if (!row?.id || !canDeleteHistoryDispatch) return;
-    const customerName = row.customerName || row.customerNameSnapshot || 'khach hang nay';
-    if (!window.confirm(`Xoa phieu xuat kho trong lich su cua ${customerName}?`)) return;
-    await onDeleteWarehouseDispatch(row.id);
-    setSelectedHistoryDispatchGroup((currentGroup) => {
-      if (!currentGroup?.items?.length) return currentGroup;
-      const nextItems = currentGroup.items.filter(item => item.id !== row.id);
-      if (!nextItems.length) return null;
-      return {
-        ...currentGroup,
-        items: nextItems,
-        totalLines: nextItems.length,
-        totalCustomers: new Set(nextItems.map(item => item.customerId || item.customerNameSnapshot).filter(Boolean)).size,
-        totalWeight: nextItems.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0)
-      };
+    return deleteDispatchHistoryRow(row, {
+      allowed: canDeleteHistoryDispatch, lock: historyDeleteLockRef,
+      confirm: message => window.confirm(message), remove: onDeleteWarehouseDispatch,
+      setPending: setHistoryDeletingId, setError: setDispatchError,
+      errorMessage: error => getFriendlyFirebaseErrorMessage(error, 'Không thể xóa lịch sử xuất kho.'),
+      onRemoved: () => {}
     });
-    setDispatchError('');
   };
 
-  const openHistoryDispatchGroup = (group) => {
-    if (!group?.dateKey) return;
-    resetInlineDispatchEdit();
-    setDispatchPickerOpen('');
-    setWorkingDate(group.dateKey);
-    setDispatchError('');
-    window.setTimeout(() => {
-      dispatchListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 80);
-  };
 
-  const handleSubmitDispatch = async (e) => {
-    e.preventDefault();
-    if (!canCreate || !employee?.id) return;
-    const customer = customerLookup.get(dispatchDraft.customerId);
-    const product = productLookup.get(dispatchDraft.productId);
-    const weightKg = parseFloat(`${dispatchDraft.weightKg || ''}`.replace(',', '.')) || 0;
-    const pieceCount = parseFloat(`${dispatchDraft.pieceCount || ''}`.replace(',', '.')) || 0;
-    const quantityUnit = normalizeDispatchQuantityUnit(dispatchDraft.quantityUnit || 'Con');
-
-    if (!customer || !product || (weightKg <= 0 && pieceCount <= 0)) {
-      setDispatchError('Vui long chon dung khach hang, loai hang va nhap so kg hop le.');
-      return;
-    }
-
-    if (dispatchSaveLockRef.current) return;
-    dispatchSaveLockRef.current = true;
-    setIsSavingDispatch(true);
-    try {
-    const dispatchLikeForOrderMatch = {
-      ...dispatchDraft,
-      customerId: customer.id,
-      productId: product.id,
-      weightKg,
-      pieceCount,
-      quantity: pieceCount,
-      quantityCount: pieceCount,
-      quantityUnit
-    };
-    const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
-    const isOutsideOrderRequest = !matchedOrderRow;
-    const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
-    const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
-    const billingSnapshot = buildDispatchBillingSnapshot({
-      customer,
-      product,
-      matchedOrderRow,
-      actualQuantity: pieceCount,
-      actualUnit: quantityUnit,
-      actualWeightKg: weightKg,
-      branchId: branchRef.branchId,
-    });
-    const assignedDriverId = effectiveDispatchDriverId;
-    const assignedDriver = assignedDriverId ? employeeLookup.get(assignedDriverId) : null;
-    const assignedDriverName = assignedDriver?.name || '';
-    const canSaveOutsideMatchedOrder = Boolean(
-      canCreateDispatchWithoutOrderRequest
-      || canUseManualDispatchProductOverride(customer.id)
-    );
-    if (isOutsideOrderRequest && !canSaveOutsideMatchedOrder) {
-      setDispatchError('Loại hàng này không có trong đơn đặt. Tài khoản cần quyền chọn loại hàng hoặc quyền tạo phiếu ngoài đơn để lưu.');
-      return;
-    }
-    if (!billingSnapshot.billingSnapshotValid) {
-      setDispatchError(billingSnapshot.billingSnapshotError === 'MISSING_BILLING_QUANTITY'
-        ? `Vui lòng nhập số kg thực tế để tính tiền ${product.name}.`
-        : `Đơn vị hoặc đơn giá của ${product.name} chưa đúng cấu hình sản phẩm cố định.`);
-      return;
-    }
-
-    await onAddWarehouseDispatch(employee.id, {
-      ...billingSnapshot,
-      warehouseId: dispatchDraft.warehouseId || '',
-      unitId: dispatchDraft.unitId || '',
-      unitLabel: vpsUnits.find(unit => unit.id === dispatchDraft.unitId)?.symbol
-        || vpsUnits.find(unit => unit.id === dispatchDraft.unitId)?.name
-        || '',
-      clientMutationId: `wd_${employee.id}_${workingDate}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      date: workingDate,
-      customerId: customer.id,
-      customerNameSnapshot: getCustomerDisplayName(customer) || customer.name,
-      branchId: branchRef.branchId,
-      branchName: branchRef.branchName,
-      branchAddress: branchRef.branchAddress,
-      customerBranchId: branchRef.branchId,
-      customerBranchName: branchRef.branchName,
-      customerBranchAddress: branchRef.branchAddress,
-      productId: product.id,
-      productNameSnapshot: product.name,
-      weightKg,
-      pieceCount,
-      quantity: billingSnapshot.actualQuantity,
-      quantityCount: billingSnapshot.actualQuantity,
-      quantityUnit: billingSnapshot.actualUnit,
-      assignedDriverId,
-      assignedDriverNameSnapshot: assignedDriverName,
-      driverId: assignedDriverId,
-      driverNameSnapshot: assignedDriverName,
-      weightEntries: normalizeWarehouseWeightEntries(dispatchDraft.weightEntries || []),
-      note: capitalizeFirst(dispatchDraft.note || '').trim(),
-      transcript: dispatchDraft.transcript || '',
-      sourceOrderRequestDate: matchedOrderRow?.requestDate || selectedOrderRequestDateKey,
-      sourceOrderRequestId: matchedOrderRow?.requestId || '',
-      sourceOrderRequestRowKey: matchedOrderRow?.rowKey || '',
-      price: billingSnapshot.unitPrice,
-      sourceOrderRequestUnitPrice: billingSnapshot.unitPrice,
-      orderRequestUnitPrice: billingSnapshot.unitPrice,
-      requestUnitPrice: billingSnapshot.unitPrice,
-      isOutsideOrderRequest,
-      createdWithoutOrderRequest: isOutsideOrderRequest,
-      sourceOrderRequestMissing: isOutsideOrderRequest,
-      sourceType: buildWarehouseDispatchSourceType(baseSourceType, matchedOrderRow)
-    });
-
-    setDispatchError('');
-    setDispatchPickerOpen('');
-    setDispatchDriverSelectionTouched(false);
-    setDispatchDraft(createEmptyDispatchDraft(assignedDriverId));
-    } catch (error) {
-      setDispatchError(getFriendlyFirebaseErrorMessage(
-        error,
-        'Không thể lưu phiếu xuất kho. Vui lòng kiểm tra mạng rồi thử lại.'
-      ));
-    } finally {
-      dispatchSaveLockRef.current = false;
-      setIsSavingDispatch(false);
-    }
-  };
+  const handleSubmitDispatch = (event) => submitDispatchForm(event, {
+    canCreate, employee, customerLookup, productLookup, employeeLookup, dispatchDraft, normalizeDispatchQuantityUnit, setDispatchError, dispatchSaveLockRef, setIsSavingDispatch, findMatchingOrderRequestRowForDispatch, getDispatchOrderBranchRef, buildDispatchBillingSnapshot, effectiveDispatchDriverId, canCreateDispatchWithoutOrderRequest, canUseManualDispatchProductOverride, workingDate, selectedOrderRequestDateKey, normalizeWarehouseWeightEntries, capitalizeFirst, dispatchCreateMutationRef, vpsUnits, getCustomerDisplayName, buildWarehouseDispatchSourceType, onAddWarehouseDispatch, setDispatchPickerOpen, setDispatchDriverSelectionTouched, setDispatchDraft, createEmptyDispatchDraft, getFriendlyFirebaseErrorMessage
+  });
 
   const buildDispatchSheetFilename = (targetDate = workingDate) => `phieu-xuat-kho-${targetDate}`;
 
-  const renderDispatchSheetCanvas = async (sourceRows = editableDispatchRows, targetDate = workingDate) => {
-    if (!sourceRows.length) throw new Error('Chưa có dữ liệu xuất kho để chia sẻ.');
-    const rows = buildDispatchPreviewRows(sourceRows);
-    const canvasWidth = 1080;
-    const pagePadding = 36;
-    const tableX = pagePadding;
-    const tableY = 122;
-    const tableWidth = canvasWidth - pagePadding * 2;
-    const headerHeight = 58;
-    const rowHeight = 54;
-    const tableHeight = headerHeight + (rows.length * rowHeight);
-    const canvasHeight = tableY + tableHeight + 40;
-    const columnWidths = [
-      Math.round(tableWidth * 0.32),
-      Math.round(tableWidth * 0.30),
-      Math.round(tableWidth * 0.18),
-      tableWidth - Math.round(tableWidth * 0.32) - Math.round(tableWidth * 0.30) - Math.round(tableWidth * 0.18)
-    ];
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Khong the dung phieu xuat kho de chia se.');
+  const renderDispatchSheetCanvas = (sourceRows = editableDispatchRows, targetDate = workingDate) => renderTypedDispatchSheetCanvas(sourceRows, targetDate, {
+    companyName: currentCompany?.name, formatDateLabel, formatNumber,
+    compactProductName: name => getCompactProductName(null, name)
+  });
 
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    ctx.fillStyle = '#0f172a';
-    ctx.textAlign = 'center';
-    ctx.font = '900 32px Arial';
-    ctx.fillText('PHIEU XUAT KHO', canvasWidth / 2, 58);
-    ctx.font = '600 18px Arial';
-    ctx.fillStyle = '#475569';
-    ctx.fillText(`${currentCompany?.name || 'Công ty'} • ${formatDateLabel(targetDate)}`, canvasWidth / 2, 90);
+  const handleShareDispatchSheet = (sourceRows = editableDispatchRows, targetDate = workingDate) => shareDispatchSheet(sourceRows, targetDate, {
+    lock: dispatchShareLockRef, canShare, setDispatchActionError, setIsDispatchExporting,
+    splitDispatchSharePages, renderDispatchSheetCanvas, canvasToBlob, buildDispatchSheetFilename,
+    shareBlobFile, Capacitor, CapacitorShare, writeBlobToShareCache, saveBlobFile,
+    isShareCancelled, getFriendlyFirebaseErrorMessage
+  });
 
-    ctx.strokeStyle = '#111827';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(tableX, tableY, tableWidth, tableHeight);
-
-    let runningX = tableX;
-    columnWidths.forEach((columnWidth, index) => {
-      if (index > 0) {
-        ctx.beginPath();
-        ctx.moveTo(runningX, tableY);
-        ctx.lineTo(runningX, tableY + tableHeight);
-        ctx.stroke();
-      }
-      runningX += columnWidth;
-    });
-
-    ctx.beginPath();
-    ctx.moveTo(tableX, tableY + headerHeight);
-    ctx.lineTo(tableX + tableWidth, tableY + headerHeight);
-    ctx.stroke();
-
-    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
-      const y = tableY + headerHeight + rowIndex * rowHeight;
-      ctx.beginPath();
-      ctx.moveTo(tableX, y);
-      ctx.lineTo(tableX + tableWidth, y);
-      ctx.strokeStyle = '#94a3b8';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
-
-    const columnTitles = ['Tên KH', 'Loại hàng', 'Số lượng', 'Số kg'];
-    ctx.fillStyle = '#0f172a';
-    ctx.font = '600 24px Arial';
-    let titleX = tableX;
-    columnTitles.forEach((title, index) => {
-      const width = columnWidths[index];
-      ctx.fillText(title, titleX + width / 2, tableY + 38);
-      titleX += width;
-    });
-
-    rows.forEach((row, rowIndex) => {
-      const rowTop = tableY + headerHeight + rowIndex * rowHeight;
-      const centerY = rowTop + 34;
-      const quantityLabel = row.pieceCount > 0 ? `${formatNumber(row.pieceCount)} ${row.quantityUnit || 'Con'}` : '';
-      const weightLabel = row.weightKg ? formatNumber(row.weightKg) : '';
-      const values = [row.customerName || '', row.productShortName || getCompactProductName(null, row.productName || ''), quantityLabel, weightLabel];
-      let valueX = tableX;
-      values.forEach((value, index) => {
-        const width = columnWidths[index];
-        ctx.fillStyle = '#0f172a';
-        ctx.font = value ? '400 22px Arial' : '400 22px Arial';
-        ctx.fillText(value, valueX + width / 2, centerY);
-        valueX += width;
-      });
-    });
-
-    return canvas;
-  };
-
-  const handleShareDispatchSheet = async (sourceRows = editableDispatchRows, targetDate = workingDate) => {
-    setDispatchActionError('');
-    if (!canShare) {
-      setDispatchActionError('Bạn chưa được cấp quyền chia sẻ phiếu xuất kho.');
-      return;
-    }
-    if (!sourceRows.length) {
-      setDispatchActionError('Chưa có phiếu xuất kho để chia sẻ.');
-      return;
-    }
-    setIsDispatchExporting(true);
-    try {
-      const pages = splitDispatchSharePages(sourceRows);
-      const blobs = [];
-      for (const rows of pages) {
-        const canvas = await renderDispatchSheetCanvas(rows, targetDate);
-        blobs.push(await canvasToBlob(canvas, 'image/png'));
-        canvas.width = canvas.height = 0;
-        await new Promise(resolve => window.setTimeout(resolve, 0));
-      }
-      const filename = index => `${buildDispatchSheetFilename(targetDate)}-trang-${index + 1}.png`;
-      let result;
-      if (blobs.length === 1) {
-        result = await shareBlobFile({ filename: filename(0), blob: blobs[0], title: 'Xuất kho', dialogTitle: 'Chia sẻ xuất kho' });
-      } else if (Capacitor.getPlatform() !== 'web' && (await CapacitorShare.canShare().catch(() => ({ value: false }))).value) {
-        const files = [];
-        for (let index = 0; index < blobs.length; index += 1) {
-          files.push((await writeBlobToShareCache(filename(index), blobs[index])).uri);
-        }
-        await CapacitorShare.share({ title: 'Xuất kho', files, dialogTitle: 'Chia sẻ xuất kho' });
-        result = { status: 'shared' };
-      } else {
-        const files = blobs.map((blob, index) => new File([blob], filename(index), { type: 'image/png' }));
-        if (navigator.share && (!navigator.canShare || navigator.canShare({ files }))) {
-          await navigator.share({ title: 'Xuất kho', files });
-          result = { status: 'shared' };
-        } else {
-          for (let index = 0; index < blobs.length; index += 1) {
-            result = await saveBlobFile(filename(index), blobs[index]);
-            if (!['saved', 'downloaded'].includes(result.status)) throw new Error('Không thể lưu đủ các ảnh xuất kho.');
-            await new Promise(resolve => window.setTimeout(resolve, 180));
-          }
-        }
-      }
-      if (!['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status)) {
-        setDispatchActionError('Thiết bị chưa hỗ trợ chia sẻ trực tiếp. Hãy dùng nút tải xuống.');
-      }
-    } catch (error) {
-      if (isShareCancelled(error)) return;
-      setDispatchActionError(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ phiếu xuất kho.'));
-    } finally {
-      setIsDispatchExporting(false);
-    }
-  };
-
-  const handleDownloadDispatchSheet = async (sourceRows = editableDispatchRows, targetDate = workingDate) => {
-    setDispatchActionError('');
-    if (!sourceRows.length) {
-      setDispatchActionError('Chưa có phiếu xuất kho trong ngày để tải xuống.');
-      return;
-    }
-    setIsDispatchExporting(true);
-    try {
-      const canvas = await renderDispatchSheetCanvas(sourceRows, targetDate);
-      const blob = await canvasToBlob(canvas, 'image/png');
-      const result = await saveBlobFile(`${buildDispatchSheetFilename(targetDate)}.png`, blob);
-      if (!['saved', 'downloaded', 'cancelled'].includes(result.status)) {
-        setDispatchActionError('Không thể tải phiếu xuất kho trên thiết bị này.');
-      }
-    } catch (error) {
-      if (!isShareCancelled(error)) setDispatchActionError(getFriendlyFirebaseErrorMessage(error, 'Không thể tải phiếu xuất kho.'));
-    } finally {
-      setIsDispatchExporting(false);
-    }
-  };
 
   const dispatchCellEditorConfig = getDispatchCellEditorConfig();
 
@@ -58178,6 +56223,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       {dispatchActionError && <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchActionError}</div>}
       {dispatchListWeightEditor && (
         <WarehouseWeightEntriesModal
+          formatNumber={formatNumber}
           key={`dispatch_weight_${dispatchListWeightEditor.rowId}`}
           mode="edit"
           initialEntries={dispatchListWeightEditor.initialEntries}
@@ -58193,140 +56239,24 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       )}
 
       {shouldShowDispatchShortage && (
-        <div className={`order-1 rounded-[28px] border p-3 shadow-sm ${dispatchShortageSummary.issueLines.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
-          {dispatchShortageSummary.issueLines.length > 0 ? (
-            <div className="hd-dispatch-shortage-list relative space-y-2">
-              {(showAllDispatchShortageCustomers ? dispatchShortageCustomerGroups : dispatchShortageCustomerGroups.slice(0, 3)).map(group => {
-                return (
-                <button
-                  key={group.key}
-                  type="button"
-                  onClick={() => setSelectedShortageLine(group)}
-                  className="w-full rounded-2xl border border-amber-200 bg-white px-3 py-2 text-left transition hover:border-amber-300 hover:bg-amber-50 active:scale-[0.99]"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-black text-slate-900">{group.customerName}</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-black text-amber-700">
-                        <span>Còn thiếu:</span>
-                        {group.productLabels.map(label => (
-                          <span key={`${group.key}_${label}`} className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-800">{label}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {group.requestDateLabels.slice(0, 2).map(dateLabel => (
-                        <span key={`${group.key}_${dateLabel}`} className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">
-                          {dateLabel}
-                        </span>
-                      ))}
-                      {group.requestDateLabels.length > 2 && (
-                        <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">
-                          +{group.requestDateLabels.length - 2}
-                        </span>
-                      )}
-                      <span className="rounded-full bg-red-50 px-2.5 py-1 text-[10px] font-black text-red-600">
-                        {group.totalMissingLines}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-                );
-              })}
-              {dispatchShortageCustomerGroups.length > 3 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllDispatchShortageCustomers(prev => !prev)}
-                  className="hd-dispatch-shortage-toggle mx-auto flex items-center justify-center text-amber-700 hover:bg-amber-100"
-                  aria-expanded={showAllDispatchShortageCustomers}
-                  aria-label={showAllDispatchShortageCustomers ? 'Thu gọn danh sách thiếu' : `Xem thêm ${dispatchShortageCustomerGroups.length - 3} khách còn thiếu`}
-                  title={showAllDispatchShortageCustomers ? 'Thu gọn' : 'Xem thêm khách còn thiếu'}
-                >
-                  {showAllDispatchShortageCustomers ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
-                </button>
-              )}
-            </div>
-          ) : dispatchShortageSummary.totalRequiredLines > 0 ? (
-            <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-emerald-700">
-              Tốt rồi: các đơn đặt ngày {formatCompactDateLabel(workingDate)} đều đã có phiếu xuất kho tương ứng.
-            </div>
-          ) : (
-            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs font-bold text-slate-500">
-              Chưa có đơn đặt nào cần xuất trong ngày {formatCompactDateLabel(workingDate)}.
-            </div>
-          )}
-        </div>
+        <DispatchShortageList groups={dispatchShortageCustomerGroups} expanded={showAllDispatchShortageCustomers}
+          onToggle={() => setShowAllDispatchShortageCustomers(previous => !previous)}
+          onSelect={setSelectedShortageLine} requiredLines={dispatchShortageSummary.totalRequiredLines}
+          dateLabel={formatCompactDateLabel(workingDate)} />
       )}
 
       {selectedShortageLine && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="max-h-[86vh] w-full max-w-md overflow-y-auto rounded-3xl border-2 border-red-300 bg-orange-50 p-5 shadow-2xl animate-in zoom-in-95">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-amber-700">Đơn còn thiếu</p>
-                <h3 className="mt-1 text-lg font-black text-slate-900">{selectedShortageLine.customerName}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedShortageLine(null)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
-                aria-label="Đóng chi tiết đơn đặt"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="overflow-hidden rounded-2xl border border-red-200 bg-white shadow-sm">
-              <div className={`grid ${canDeleteOrderRequest ? 'grid-cols-[1fr_0.62fr_0.58fr_42px]' : 'grid-cols-[1fr_0.7fr_0.65fr]'} bg-orange-100 text-center text-[11px] font-black uppercase tracking-[0.08em] text-amber-900`}>
-                <div className="border-r border-red-200 px-2 py-3">Loại</div>
-                <div className="border-r border-red-200 px-2 py-3">SL</div>
-                <div className={`px-2 py-3 ${canDeleteOrderRequest ? 'border-r border-red-200' : ''}`}>Ngày</div>
-                {canDeleteOrderRequest && <div className="px-1 py-3">Xóa</div>}
-              </div>
-              {selectedShortageTableRows.length > 0 ? selectedShortageTableRows.map((row) => (
-                <div key={row.id} className={`grid ${canDeleteOrderRequest ? 'grid-cols-[1fr_0.62fr_0.58fr_42px]' : 'grid-cols-[1fr_0.7fr_0.65fr]'} items-stretch text-center text-sm font-bold text-slate-900`}>
-                  <div className="min-w-0 border-r border-t border-red-100 px-2 py-2 text-left">
-                    <p className="break-words">{row.productLabel}</p>
-                    {row.sizeLabel && <p className="mt-0.5 text-[10px] font-bold text-slate-500">Size: {row.sizeLabel}</p>}
-                  </div>
-                  <div className="flex items-center justify-center border-r border-t border-red-100 px-2 py-2 text-emerald-700">{row.quantityLabel || '-'}</div>
-                  <div className={`flex items-center justify-center border-t border-red-100 px-2 py-2 text-[12px] text-slate-700 ${canDeleteOrderRequest ? 'border-r' : ''}`}>{row.requestDateLabel || '-'}</div>
-                  {canDeleteOrderRequest && (
-                    <div className="flex items-center justify-center border-t border-red-100 px-1 py-1">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteShortageOrderRequestRow(row)}
-                        disabled={deletingShortageRequestKey === row.id}
-                        className="flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        aria-label="Xóa đơn đặt sai"
-                        title="Xóa đơn đặt sai khỏi Đơn Thiếu"
-                      >
-                        {deletingShortageRequestKey === row.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )) : (
-                <div className="px-3 py-4 text-center text-sm font-bold text-slate-500">Chưa có dữ liệu đơn đặt.</div>
-              )}
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-amber-200 bg-white/80 p-3">
-              <p className="text-xs font-semibold leading-relaxed text-amber-800">
-                Dùng khi kho đã giao phần có thể giao và doanh nghiệp không cần giao bù phần còn thiếu.
-              </p>
-              <button
-                type="button"
-                onClick={handleCloseSelectedShortage}
-                disabled={isClosingShortageLine}
-                className="mt-3 flex w-full items-center justify-center rounded-2xl bg-amber-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-amber-200 transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isClosingShortageLine ? 'Đang chốt thiếu...' : 'Chốt thiếu, không giao bù'}
-              </button>
-            </div>
-
-          </div>
-        </div>
+        <DispatchShortageDialog
+          customerName={selectedShortageLine.customerName}
+          rows={selectedShortageTableRows}
+          canDelete={canDeleteOrderRequest}
+          deletingKey={deletingShortageRequestKey}
+          closing={isClosingShortageLine}
+          error={dispatchError}
+          onClose={() => setSelectedShortageLine(null)}
+          onDelete={handleDeleteShortageOrderRequestRow}
+          onCloseShortage={handleCloseSelectedShortage}
+        />
       )}
 
       {canCreate && (
@@ -58374,225 +56304,87 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 )}
               </div>
             )}
-            <div className="grid grid-cols-2 gap-3">
-              <div data-search-zone="true" className="relative">
-                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
-                <input
-                  data-hd-search-input="true"
-                  ref={dispatchCustomerSearchInputRef}
-                  type="text"
-                  value={dispatchDraft.customerSearch || ''}
-                  onFocus={(event) => {
-                    setDispatchPickerOpen('customer');
-                    window.setTimeout(() => event.target.select(), 0);
-                  }}
-                  onClick={() => setDispatchPickerOpen('customer')}
-                  onChange={(e) => {
-                    setDispatchDriverSelectionTouched(false);
-                    setDispatchDraft(prev => ({
-                      ...prev,
-                      customerId: '',
-                      assignedDriverId: '',
-                      customerSearch: capitalizeFirstPreservingSpacing(e.target.value)
-                    }));
-                  }}
-                  className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-10 pr-9 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Tên KH"
-                  aria-label="Tìm tên khách hàng"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDispatchPickerOpen(prev => prev === 'customer' ? '' : 'customer');
-                    window.setTimeout(() => dispatchCustomerSearchInputRef.current?.focus(), 0);
-                  }}
-                  className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full p-1 text-gray-400"
-                  aria-label="Mở danh sách khách hàng"
-                >
-                  {dispatchPickerOpen === 'customer' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                </button>
-                {dispatchPickerOpen === 'customer' && (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
-                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
-                      {filteredDispatchCustomers.map(customer => (
-                        <button
-                          key={customer.id}
-                          type="button"
-                          onClick={() => handleDispatchCustomerChange(customer.id)}
-                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.customerId === customer.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
-                        >
-                          <p className="text-sm font-semibold text-slate-900">{getCustomerDisplayName(customer) || customer.name}</p>
-                          <p className="text-[11px] text-slate-500 mt-1">{customer.phone || 'Chua co so dien thoai'}{customer.address ? ` • ${customer.address}` : ''}</p>
-                        </button>
-                      ))}
-                      {dispatchCustomerSearchKeyword && filteredDispatchCustomers.length === 0 && (
-                        <p className="px-3 py-2 text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div data-search-zone="true" className="relative">
-                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-emerald-600" />
-                <input
-                  data-hd-search-input="true"
-                  ref={dispatchProductSearchInputRef}
-                  type="text"
-                  value={dispatchDraft.productSearch || ''}
-                  onFocus={(event) => {
-                    setDispatchPickerOpen('product');
-                    window.setTimeout(() => event.target.select(), 0);
-                  }}
-                  onClick={() => setDispatchPickerOpen('product')}
-                  onChange={(e) => {
-                    setDispatchProductSearchEdited(true);
-                    setDispatchDraft(prev => ({
-                      ...prev,
-                      productId: '',
-                      productSearch: capitalizeFirstPreservingSpacing(e.target.value)
-                    }));
-                  }}
-                  className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-10 pr-9 text-sm font-semibold text-slate-900 outline-none placeholder:text-gray-400 focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Loại Hàng"
-                  aria-label="Tìm loại hàng"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDispatchPickerOpen(prev => prev === 'product' ? '' : 'product');
-                    window.setTimeout(() => dispatchProductSearchInputRef.current?.focus(), 0);
-                  }}
-                  className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full p-1 text-gray-400"
-                  aria-label="Mở danh sách loại hàng"
-                >
-                  {dispatchPickerOpen === 'product' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                </button>
-                {dispatchPickerOpen === 'product' && (
-                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 rounded-2xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
-                    <div className="max-h-56 overflow-y-auto p-2 space-y-1">
-                      {isDispatchCatalogFallbackActive && (
-                        <p className="px-3 py-2 text-[11px] font-semibold text-emerald-700">
-                          Khách chưa có đơn đặt - chọn loại hàng trong danh mục sản phẩm.
-                        </p>
-                      )}
-                      {filteredOrderedDispatchProducts.length > 0 && (
-                        <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
-                          Khách đã đặt
-                        </p>
-                      )}
-                      {filteredOrderedDispatchProducts.map(product => (
-                        <button
-                          key={product.id}
-                          type="button"
-                          onClick={() => handleDispatchProductChange(product.id)}
-                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.productId === product.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
-                        >
-                          <p className="text-sm font-semibold text-slate-900">{product.name}</p>
-                          <p className="text-[11px] text-slate-500 mt-1">{product.category || 'Chua co nhom'}{product.unit ? ` • ${product.unit}` : ''}</p>
-                        </button>
-                      ))}
-                      {filteredOtherDispatchProducts.length > 0 && (
-                        <>
-                          {filteredOrderedDispatchProducts.length > 0 && <div className="my-1 border-t border-slate-100" />}
-                          <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                            Tất cả loại hàng
-                          </p>
-                        </>
-                      )}
-                      {filteredOtherDispatchProducts.map(product => (
-                        <button
-                          key={product.id}
-                          type="button"
-                          onClick={() => handleDispatchProductChange(product.id)}
-                          className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${dispatchDraft.productId === product.id ? 'bg-emerald-50 border border-emerald-100' : 'hover:bg-slate-50 border border-transparent'}`}
-                        >
-                          <p className="text-sm font-semibold text-slate-900">{product.name}</p>
-                          <p className="text-[11px] text-slate-500 mt-1">{product.category || 'Chua co nhom'}{product.unit ? ` • ${product.unit}` : ''}</p>
-                        </button>
-                      ))}
-                      {dispatchProductSearchKeyword && filteredDispatchProducts.length === 0 && (
-                        <p className="px-3 py-2 text-xs text-slate-500">Không tìm thấy loại hàng phù hợp.</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={dispatchDraft.pieceCount}
-                onChange={(e) => setDispatchDraft(prev => ({ ...prev, pieceCount: e.target.value }))}
-                className="w-full border border-gray-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="Số lượng"
+            <div className="hd-dispatch-picker-pair">
+              <DispatchSearchPicker
+                value={dispatchDraft.customerSearch || ''}
+                selectedId={dispatchDraft.customerId}
+                open={dispatchPickerOpen === 'customer'}
+                inputRef={dispatchCustomerSearchInputRef}
+                label="Tìm tên khách hàng" placeholder="Tên KH"
+                toggleLabel="Mở danh sách khách hàng"
+                emptyText="Không tìm thấy khách hàng phù hợp."
+                showEmpty={Boolean(dispatchCustomerSearchKeyword && filteredDispatchCustomers.length === 0)}
+                groups={[{ options: filteredDispatchCustomers.map(customer => ({
+                  id: customer.id, label: getCustomerDisplayName(customer) || customer.name,
+                  detail: `${customer.phone || 'Chua co so dien thoai'}${customer.address ? ` • ${customer.address}` : ''}`
+                })) }]}
+                onOpenChange={open => setDispatchPickerOpen(open ? 'customer' : '')}
+                onChange={value => {
+                  setDispatchDriverSelectionTouched(false);
+                  setDispatchDraft(prev => ({ ...prev, customerId: '', assignedDriverId: '',
+                    customerSearch: capitalizeFirstPreservingSpacing(value) }));
+                }}
+                onSelect={handleDispatchCustomerChange}
               />
-              <div
-                className="flex w-full min-w-0 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700"
-                aria-label={`Đơn vị số lượng thực tế ${dispatchDraft.quantityUnit || 'chưa cấu hình'}`}
-              >
-                {dispatchDraft.quantityUnit || '--'}
-              </div>
-              <button
-                type="button"
-                onClick={openWeightEntriesEditor}
-                className="w-full rounded-xl border border-gray-200 bg-white p-3 text-left text-sm font-semibold text-slate-900 outline-none transition hover:border-emerald-200 hover:bg-emerald-50 focus:ring-2 focus:ring-emerald-500"
-                aria-label="Nhập các lần cân kg"
-              >
-                <span className={dispatchDraft.weightKg ? 'text-slate-900' : 'text-gray-400'}>
-                  {dispatchDraft.weightKg ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.weightKg))} kg` : 'Số kg'}
-                </span>
-              </button>
+              <DispatchSearchPicker
+                value={dispatchDraft.productSearch || ''}
+                selectedId={dispatchDraft.productId}
+                open={dispatchPickerOpen === 'product'}
+                inputRef={dispatchProductSearchInputRef}
+                label="Tìm loại hàng" placeholder="Loại Hàng"
+                toggleLabel="Mở danh sách loại hàng"
+                emptyText="Không tìm thấy loại hàng phù hợp."
+                showEmpty={Boolean(dispatchProductSearchKeyword && filteredDispatchProducts.length === 0)}
+                note={isDispatchCatalogFallbackActive ? 'Khách chưa có đơn đặt - chọn loại hàng trong danh mục sản phẩm.' : ''}
+                groups={[
+                  { title: 'Khách đã đặt', options: filteredOrderedDispatchProducts.map(product => ({
+                    id: product.id, label: product.name,
+                    detail: `${product.category || 'Chua co nhom'}${product.unit ? ` • ${product.unit}` : ''}`
+                  })) },
+                  { title: 'Tất cả loại hàng', options: filteredOtherDispatchProducts.map(product => ({
+                    id: product.id, label: product.name,
+                    detail: `${product.category || 'Chua co nhom'}${product.unit ? ` • ${product.unit}` : ''}`
+                  })) }
+                ]}
+                onOpenChange={open => setDispatchPickerOpen(open ? 'product' : '')}
+                onChange={value => {
+                  setDispatchProductSearchEdited(true);
+                  setDispatchDraft(prev => ({ ...prev, productId: '',
+                    productSearch: capitalizeFirstPreservingSpacing(value) }));
+                }}
+                onSelect={handleDispatchProductChange}
+              />
             </div>
 
-            <div className="hd-dispatch-driver-actions grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-              {canAssignDriver && (
-                  <select
-                    value={effectiveDispatchDriverId}
-                    onChange={(e) => {
-                      setDispatchDriverSelectionTouched(true);
-                      setDispatchDraft(prev => ({ ...prev, assignedDriverId: e.target.value }));
-                    }}
-                    className="h-12 w-full min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-sky-300"
-                    aria-label="Chọn nhân sự giao hàng"
-                  >
-                    <option value="">Không chọn nhân sự</option>
-                    {driverOptions.map(driver => (
-                      <option key={driver.id} value={driver.id}>{driver.name}</option>
-                    ))}
-                  </select>
-              )}
-              <button type="button" onClick={resetDispatchVoiceDraft} disabled={isSavingDispatch}
-                className="h-12 whitespace-nowrap rounded-xl bg-gray-100 px-4 text-sm font-bold text-gray-700">
-                Làm mới
-              </button>
-            </div>
-                {canAssignDriver && suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId && (
-                  <p className="mt-1 px-1 text-[11px] font-semibold text-sky-700">
-                    Gợi ý theo khách: {suggestedDispatchDriver.name}
-                  </p>
-                )}
+            <DispatchQuantityFields
+              quantity={dispatchDraft.pieceCount}
+              unit={dispatchDraft.quantityUnit}
+              weightLabel={dispatchDraft.weightKg ? `${formatNumber(parseLooseQuantityValue(dispatchDraft.weightKg))} kg` : ''}
+              onQuantityChange={value => setDispatchDraft(prev => ({ ...prev, pieceCount: value }))}
+              onOpenWeight={openWeightEntriesEditor}
+            />
 
-            {dispatchError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchError}</div>}
-
-            <div className="flex gap-3">
-              <button
-                type="submit"
-                disabled={isSavingDispatch}
-                className={`flex-1 rounded-xl py-3 font-bold text-white ${isSavingDispatch ? 'bg-emerald-300' : 'bg-emerald-500'}`}
-              >
-                {isSavingDispatch ? 'Đang lưu...' : 'Lưu lại'}
-              </button>
-            </div>
+            <DispatchFormActions
+              canAssignDriver={canAssignDriver}
+              driverId={effectiveDispatchDriverId}
+              drivers={driverOptions}
+              onDriverChange={id => {
+                setDispatchDriverSelectionTouched(true);
+                setDispatchDraft(prev => ({ ...prev, assignedDriverId: id }));
+              }}
+              onReset={resetDispatchDraft}
+              saving={isSavingDispatch}
+              suggestion={canAssignDriver && suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId
+                ? suggestedDispatchDriver.name : ''}
+              error={dispatchError}
+            />
           </form>
         </div>
       )}
 
       {showWeightEntriesModal && (
         <WarehouseWeightEntriesModal
+          formatNumber={formatNumber}
           key="new_dispatch_weight_entries"
           mode="create"
           initialEntries={weightEntriesEditorSeed}
@@ -58699,188 +56491,30 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       )}
 
       {historyDispatchGroups.length > 0 && (
-        <div className="order-5 overflow-hidden rounded-[28px] border border-emerald-100 bg-white shadow-sm">
-          <div className="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 px-4 py-4 text-white">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="min-w-0 text-[11px] font-black uppercase tracking-[0.18em] text-white/90">Lịch sử xuất kho</p>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                <label className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-bold text-white backdrop-blur">
-                  <CalendarDays size={14} className="shrink-0" />
-                  <select
-                    value={selectedHistoryMonthNumber}
-                    onChange={(event) => setSelectedHistoryMonth(`${selectedHistoryYear}-${String(event.target.value || '01').padStart(2, '0')}`)}
-                    className="bg-transparent outline-none"
-                  >
-                    {Array.from({ length: 12 }, (_, index) => {
-                      const monthValue = String(index + 1).padStart(2, '0');
-                      return (
-                        <option key={monthValue} value={monthValue} className="text-slate-900">
-                          Tháng {monthValue}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </label>
-
-                <label className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-2 text-xs font-bold text-white backdrop-blur">
-                  <Archive size={14} className="shrink-0" />
-                  <select
-                    value={selectedHistoryYear}
-                    onChange={(event) => setSelectedHistoryMonth(`${event.target.value || getTodayString().slice(0, 4)}-${selectedHistoryMonthNumber}`)}
-                    className="bg-transparent outline-none"
-                  >
-                    {historyYearOptions.map((yearOption) => (
-                      <option key={yearOption} value={yearOption} className="text-slate-900">
-                        Năm {yearOption}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
-                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Ngày có phiếu</p>
-                <p className="mt-1 text-lg font-black leading-none">{selectedHistoryMonthSummary.totalDays}</p>
-              </div>
-              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
-                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Tổng đơn</p>
-                <p className="mt-1 text-lg font-black leading-none">{selectedHistoryMonthSummary.totalLines}</p>
-              </div>
-              <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2 text-center backdrop-blur">
-                <p className="text-[10px] font-black uppercase tracking-wide text-white/75">Tổng kg</p>
-                <p className="mt-1 text-lg font-black leading-none">{formatNumber(selectedHistoryMonthSummary.totalWeight)}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-4">
-            <div className="mb-2 grid grid-cols-7 gap-1.5">
-              {historyCalendarWeekdays.map((weekday) => (
-                <div key={weekday} className="px-1 py-1.5 text-center text-[10px] font-black uppercase tracking-wide text-slate-400">
-                  {weekday}
-                </div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-7 gap-1.5">
-              {historyCalendarCells.map((cell) => {
-                const hasDispatchGroup = Boolean(cell.group);
-                return (
-                  <button
-                    key={cell.dateKey}
-                    type="button"
-                    onClick={() => hasDispatchGroup && setSelectedHistoryDispatchGroup(cell.group)}
-                    disabled={!hasDispatchGroup}
-                    title={hasDispatchGroup ? `${cell.group.totalLines} don xuat kho` : ''}
-                    className={`relative flex min-h-[64px] flex-col items-center justify-center rounded-2xl border p-1.5 text-center transition sm:min-h-[76px] ${
-                      !cell.isCurrentMonth
-                        ? 'border-transparent bg-slate-50/50 text-slate-300'
-                        : hasDispatchGroup
-                          ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white shadow-sm hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md'
-                          : 'border-slate-100 bg-white text-slate-400'
-                    } ${cell.isWorkingDate ? 'ring-2 ring-sky-200' : ''}`}
-                  >
-                    <span className={`absolute left-2 top-1.5 text-[11px] font-black ${hasDispatchGroup ? 'text-slate-900' : cell.isCurrentMonth ? 'text-slate-500' : 'text-slate-300'}`}>
-                      {cell.dayNumber}
-                    </span>
-
-                    {hasDispatchGroup ? (
-                      <div className="mt-3 inline-flex h-9 min-w-9 items-center justify-center rounded-full bg-emerald-500 px-2 text-base font-black leading-none text-white shadow-sm">
-                        {cell.group.totalLines}
-                        <span className="hidden">
-                          {cell.group.totalLines} đơn
-                        </span>
-                      </div>
-                    ) : null}
-
-                    {cell.isWorkingDate && <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-sky-500 shadow-[0_0_0_3px_rgba(14,165,233,0.15)]" />}
-
-                    {cell.isWorkingDate && false && (
-                      <p className="mt-auto pt-2 text-[10px] font-black uppercase tracking-wide text-sky-600">Hôm nay</p>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        <DispatchHistoryCalendar month={selectedHistoryMonthNumber} year={selectedHistoryYear}
+          years={historyYearOptions} summary={selectedHistoryMonthSummary} cells={historyCalendarCells}
+          onMonthChange={setSelectedHistoryMonth} onSelect={setSelectedHistoryDate}
+          formatNumber={formatNumber} />
       )}
 
       {selectedHistoryDispatchGroup && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 px-3 py-5 pb-[calc(96px+env(safe-area-inset-bottom))] sm:p-4">
-          <div className="max-h-[calc(100dvh-150px)] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl sm:max-h-[88vh]">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-600">Chi tiết phiếu xuất</p>
-                <h3 className="mt-1 text-xl font-black text-slate-900">{formatDateLabel(selectedHistoryDispatchGroup.dateKey)}</h3>
-                <p className="mt-1 text-xs font-bold text-slate-500">
-                  {selectedHistoryDispatchGroup.totalCustomers} khách • {selectedHistoryDispatchGroup.items.length} dòng xuất • {formatNumber(selectedHistoryDispatchGroup.totalWeight)} kg
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedHistoryDispatchGroup(null)}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
-                aria-label="Đóng chi tiết phiếu xuất"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {canShare && (
-              <button
-                type="button"
-                onClick={() => handleShareDispatchSheet(selectedHistoryDispatchRows, selectedHistoryDispatchGroup.dateKey)}
-                disabled={isDispatchExporting}
-                className="mb-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60"
-              >
-                <Send size={16} />
-                {isDispatchExporting ? 'Đang chuẩn bị...' : 'Chia sẻ phiếu này'}
-              </button>
-            )}
-
-            <div className="overflow-hidden rounded-2xl border-2 border-slate-800 bg-white">
-              <table className="w-full table-fixed border-collapse text-center text-[12px] text-slate-900">
-                <thead>
-                  <tr className="bg-slate-50">
-                    <th className="w-[34%] border border-slate-800 px-2 py-2 font-black">Tên KH</th>
-                    <th className="w-[30%] border border-slate-800 px-2 py-2 font-black">Loại</th>
-                    <th className="w-[18%] border border-slate-800 px-2 py-2 font-black">SL</th>
-                    <th className="w-[18%] border border-slate-800 px-2 py-2 font-black">Kg</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedHistoryDispatchRows.map((row, index) => (
-                    <tr key={`${row.id || `${row.customerName}-${row.productName}-${index}`}`}>
-                      <td className="border border-slate-700 px-2 py-2 font-semibold break-words">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <span className="min-w-0 break-words">{row.customerName || '-'}</span>
-                          {canDeleteHistoryDispatch && (
-                            <button
-                              type="button"
-                              onClick={() => deleteHistoryDispatchRow(row)}
-                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-red-500 hover:bg-red-100"
-                              aria-label="Xóa lịch sử xuất kho"
-                              title="Xóa lịch sử"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="border border-slate-700 px-2 py-2 font-semibold break-words">{row.productShortName || getCompactProductName(null, row.productName || '') || '-'}</td>
-                      <td className="border border-slate-700 px-2 py-2 font-bold text-emerald-700">
-                        {row.pieceCount ? `${formatNumber(row.pieceCount)} ${row.quantityUnit || ''}`.trim() : '-'}
-                      </td>
-                      <td className="border border-slate-700 px-2 py-2 font-bold">{row.weightKg ? formatNumber(row.weightKg) : '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <DispatchHistoryDialog
+          dateLabel={formatDateLabel(selectedHistoryDispatchGroup.dateKey)}
+          customerCount={selectedHistoryDispatchGroup.totalCustomers}
+          lineCount={selectedHistoryDispatchGroup.items.length}
+          weight={selectedHistoryDispatchGroup.totalWeight}
+          rows={selectedHistoryDispatchRows}
+          canShare={canShare}
+          canDelete={canDeleteHistoryDispatch}
+          exporting={isDispatchExporting}
+          deletingId={historyDeletingId}
+          error={dispatchError}
+          onClose={() => setSelectedHistoryDate(null)}
+          onShare={() => handleShareDispatchSheet(selectedHistoryDispatchRows, selectedHistoryDispatchGroup.dateKey)}
+          onDelete={deleteHistoryDispatchRow}
+          formatNumber={formatNumber}
+          compactProductName={name => getCompactProductName(null, name)}
+        />
       )}
     </div>
   );

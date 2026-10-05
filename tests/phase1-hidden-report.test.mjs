@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import { parse } from '@babel/parser';
 import { test } from 'node:test';
 import { selectLatestWarehouseStockCountMeasures } from '../src/utils/warehouseInventory.js';
+import './warehouse-dispatch-command.test.mjs';
+import './warehouse-dispatch-edit-ack.test.mjs';
 
 const baseline = execFileSync('git', ['show', '5f162f5:src/App.jsx'], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
 const current = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -56,8 +58,15 @@ function context(tab, unit = 'kg', hidden = false) {
 }
 const evaluate = (body, values) => JSON.parse(JSON.stringify(vm.runInNewContext(`(${body})()`, values)));
 
-test('active report formula remains source-identical apart from line endings', () => {
-  assert.equal(after.replace(/    \/\/ The monthly table[^\n]*\n    if \(warehouseInventoryTab !== 'report'\) return \[\];\n/, ''), before);
+test('active report formula retains baseline except explicit pending-ACK exclusion', () => {
+  assert.equal(after.split(' && !item?.__pendingFirebaseSync').length - 1, 1);
+  assert.equal(after.replace(' && !item?.__pendingFirebaseSync', '').replace(/    \/\/ The monthly table[^\n]*\n    if \(warehouseInventoryTab !== 'report'\) return \[\];\n/, ''), before);
+});
+test('pending dispatch does not enter monthly totals before ACK', () => {
+  const values = context('report');
+  const expected = evaluate(after, values);
+  values.warehouseDispatches.push({ ...values.warehouseDispatches[0], id: 'pending', __pendingFirebaseSync: true });
+  assert.deepEqual(evaluate(after, values), expected);
 });
 test('hidden import/export/stock views do not read monthly data', () => {
   for (const tab of ['import', 'export', 'stock']) {
@@ -112,7 +121,8 @@ test('master refactor preserves inherited business mutation handlers exactly', (
     'handleAddOrder', 'handleEditOrder', 'handleDeleteOrder',
     'handleAddOrderRequest', 'handleEditOrderRequest', 'handleDeleteOrderRequest',
     'handleAddWarehouseImport', 'handleEditWarehouseImport', 'handleDeleteWarehouseImport',
-    'handleAddWarehouseDispatch', 'handleEditWarehouseDispatch', 'handleDeleteWarehouseDispatch',
+    // Dispatch now has command identity/ACK semantics, covered by the imported
+    // command and edit-ACK behavioral suites, not the old source-equality lock.
     'handleRestoreCompanyBackup',
   ]) {
     assert.ok(oldHandlers.has(name), name);

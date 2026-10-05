@@ -442,8 +442,12 @@ assert.match(appSource, /getCustomerBranchProductConfigSource\(customer, branchI
 assert.match(appSource, /quantity: item\.actualQuantity > 0/, 'draft quantity preserves the customer ordered count');
 assert.match(appSource, /quantity: snapshot\.actualQuantity/, 'editing a warehouse draft keeps quantity separate from billing quantity');
 assert.match(appSource, /'billingQuantity', e\.target\.value/, 'editing the visible quantity recalculates the billing quantity');
-assert.match(appSource, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
+const dispatchBilling = await readFile(new URL('../src/features/warehouse/coordinateDispatchBilling.js', import.meta.url), 'utf8');
+assert.match(appSource, /coordinateDispatchBilling\(input,/, 'actual view uses checked billing coordination');
+assert.match(dispatchBilling, /isWarehouseDispatchActualUnitCompatible\(\{/, 'warehouse save validates physical and billing units with the shared compatibility rule');
 assert.match(appSource, /summarizeOrderBillingItems\(order\.items \|\| \[\]\)/, 'order list uses frozen billing units instead of a hard-coded Kg summary');
-assert.match(appSource, /const hasWeightPatch = [\s\S]*actualWeightKg: weightKg,[\s\S]*billingQuantity: weightKg/, 'editing dispatch Kg synchronizes the frozen billing snapshot');
+const dispatchUseCases = await readFile(new URL('../src/features/warehouse/warehouseDispatchUseCases.js', import.meta.url), 'utf8');
+assert.match(appSource, /return updateWarehouseDispatch\(dispatchId, updatedData, empId,/, 'the app invokes the dispatch update use case');
+assert.match(dispatchUseCases, /const hasWeightPatch = [\s\S]*actualWeightKg: weightKg,[\s\S]*billingQuantity: weightKg/, 'editing dispatch Kg synchronizes the frozen billing snapshot');
 
 console.log(`Warehouse dispatch bulk order billing tests: PASS, including 500-order stress (${stressDurationMs.toFixed(2)} ms)`);

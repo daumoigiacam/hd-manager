@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parse } from '@babel/parser';
+import { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch } from '../../src/features/warehouse/warehouseDispatchUseCases.js';
 
 const source = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
 const tree = parse(source, { sourceType: 'module', plugins: ['jsx'] });
@@ -41,7 +42,7 @@ export function appFunction(name, bindings = {}, { memoCallback = false, scope =
       cacheBindings[dependency] = new Map();
     } else throw new Error(`Unexpected primitive cache binding: ${dependency}`);
   }
-  const environment = { ...cacheBindings, ...bindings };
+  const environment = { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch, ...cacheBindings, ...bindings };
   return new Function(...Object.keys(environment), `return (${source.slice(node.start, node.end)});`)(...Object.values(environment));
 }
 

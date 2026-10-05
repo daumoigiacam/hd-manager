@@ -585,7 +585,11 @@ test('actual App warehouse local writes and dispatch edit/archive/rollback prese
     const bindings = { isVpsStagingMode: false, firebaseUser: {}, myCompanyId: 'tenant-a',
       rawWarehouseDispatches: dispatches, customers: [], products, setRawWarehouseDispatches: setDispatches,
       normalizeProductPricingUnit, isSameBillingUnit, getTodayString: () => '2026-10-03', currentUser: { id: 'employee' },
-      rememberRecentLocalWrite() {}, saveDataDocument: async () => { if (failure) throw failure; } };
+      requireSharedWriteConfirmation: async result => result,
+      rememberRecentLocalWrite() {}, saveWarehouseDispatchPatch: async (collection, id, payload, options) => {
+        if (failure) throw failure;
+        write(collection, id, payload, options);
+      } };
     for (const name of ['capitalizeFirst', 'normalizeLeadingLabel', 'parseLooseQuantityValue', 'parseLooseMoneyValue']) {
       bindings[name] = appFunction(name, bindings);
     }

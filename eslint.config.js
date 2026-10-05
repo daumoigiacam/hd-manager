@@ -5,7 +5,7 @@ export default [
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
   },
   {
-    files: ['src/features/orders/OrderSearchInput.jsx', 'src/features/orders/OrderRequestTableRows.jsx', 'src/features/orders/CoreRowPager.jsx', 'src/features/warehouse/DispatchTableBody.jsx'],
+    files: ['src/features/orders/OrderSearchInput.jsx', 'src/features/orders/OrderRequestTableRows.jsx', 'src/features/orders/CoreRowPager.jsx', 'src/features/warehouse/*.{jsx,js}'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
   },

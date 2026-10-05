@@ -157,6 +157,7 @@
   --hd-elevation-surface: var(--hd-shadow-sm);
   --hd-elevation-floating: var(--hd-shadow-md);
   --hd-elevation-dialog: var(--hd-shadow-lg);
+  --hd-layer-input-dialog: 150;
 
   --hd-motion-fast: 150ms;
   --hd-motion-standard: 200ms;

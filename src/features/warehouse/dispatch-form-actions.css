@@ -1,0 +1,52 @@
+.hd-dispatch-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--hd-space-2);
+}
+.hd-dispatch-form-actions select {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: 1px solid var(--hd-color-border);
+  background: var(--hd-color-surface);
+  color: var(--hd-color-ink);
+}
+.hd-dispatch-form-actions button {
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  background: var(--hd-color-surface-muted);
+  color: var(--hd-color-ink);
+}
+.hd-dispatch-form-actions select,
+.hd-dispatch-form-actions button,
+.hd-dispatch-form-save {
+  min-height: var(--hd-touch-target);
+  padding: var(--hd-space-2) var(--hd-space-3);
+  border-radius: var(--hd-radius-control);
+  font-size: var(--hd-type-body);
+  font-weight: var(--hd-font-weight-bold);
+  line-height: var(--hd-line-body);
+}
+.hd-dispatch-form-save {
+  width: 100%;
+  border: 1px solid transparent;
+  background: var(--hd-success);
+  color: var(--hd-color-on-primary);
+}
+.hd-dispatch-form-save:disabled,
+.hd-dispatch-form-actions button:disabled { opacity: 0.6; cursor: default; }
+.hd-dispatch-form-actions :focus-visible,
+.hd-dispatch-form-save:focus-visible { outline: 2px solid var(--hd-color-focus); outline-offset: 2px; }
+.hd-dispatch-form-suggestion {
+  margin: var(--hd-space-1);
+  color: var(--hd-color-ink-soft);
+  font-size: var(--hd-type-caption);
+}
+.hd-dispatch-form-error {
+  padding: var(--hd-space-3) var(--hd-space-4);
+  border: 1px solid var(--hd-color-border);
+  border-radius: var(--hd-radius-control);
+  background: var(--hd-color-danger-surface);
+  color: var(--hd-danger);
+  font-size: var(--hd-type-body);
+}

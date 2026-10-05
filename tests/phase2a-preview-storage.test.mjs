@@ -129,7 +129,9 @@ test('inherited footer and production Firebase transport remain unchanged', asyn
     assert.equal([...content.matchAll(customerPagerRule)].length, 1, 'Only the evidenced customer pager clearance is allowed');
     // Windows checkout normalizes line endings; compare against the fixed release, not local bytes.
     const baseline = execFileSync('git', ['show', `4db424a3e511bc2a24162245e7423478da9f89c8:${path}`], { encoding: 'utf8' });
-    const canonical = text => text.replace(customerFabRule, '').replace(customerPagerRule, '').replace(/\r\n/g, '\n');
+    const inputDialogToken = /^  --hd-layer-input-dialog: 150;\r?\n/gm;
+    assert.equal([...content.matchAll(inputDialogToken)].length, 1, 'Dispatch dialog uses one shared layer token');
+    const canonical = text => text.replace(inputDialogToken, '').replace(customerFabRule, '').replace(customerPagerRule, '').replace(/\r\n/g, '\n');
     assert.equal(canonical(content), canonical(baseline));
   }
   for (const path of ['src/config/firebase-runtime.js', 'src/config/firebase-rest-runtime.js']) {

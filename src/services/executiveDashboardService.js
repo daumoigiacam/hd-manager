@@ -382,7 +382,8 @@ const normalizeInput = (input = {}) => ({
   employees: toCollectionArray(input.employees).filter(item => !isArchived(item)),
   attendance: toCollectionArray(input.attendance).filter(item => !isArchived(item)),
   warehouseImports: toCollectionArray(input.warehouseImports).filter(item => !isArchived(item)),
-  warehouseDispatches: toCollectionArray(input.warehouseDispatches).filter(item => !isArchived(item)),
+  warehouseDispatches: toCollectionArray(input.warehouseDispatches)
+    .filter(item => !isArchived(item) && item.__pendingFirebaseSync !== true),
   warehouseStockCounts: toCollectionArray(input.warehouseStockCounts).filter(item => !isArchived(item)),
   assets: toCollectionArray(input.assets).filter(item => !isArchived(item)),
   assetCostLogs: toCollectionArray(input.assetCostLogs).filter(item => !isArchived(item)),

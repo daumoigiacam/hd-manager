@@ -20,7 +20,7 @@ export const purchaseAmount = (record = {}, unit = 'Kg') => (
 
 export const productStockBalance = (product, imports = [], dispatches = [], untilDate = '') => {
   const unit = product.stockUnit || product.inventoryUnit || product.unit;
-  const total = records => records.filter(record => !record.isArchived && (!untilDate || `${record.date || ''}` <= untilDate))
+  const total = records => records.filter(record => !record.isArchived && !record.__pendingFirebaseSync && (!untilDate || `${record.date || ''}` <= untilDate))
     .reduce((sum, record) => sum + (record.items || [record]).reduce((value, item) => (
       value + (item.productId === product.id ? measureQuantity(item, unit) : 0)
     ), 0), 0);
@@ -55,7 +55,7 @@ export const buildProductStockBalanceIndex = (products = [], imports = [], dispa
   });
 
   const accumulate = (records, field) => records.forEach(record => {
-    if (record.isArchived || !(!untilDate || `${record.date || ''}` <= untilDate)) return;
+    if (record.isArchived || record.__pendingFirebaseSync || !(!untilDate || `${record.date || ''}` <= untilDate)) return;
     const recordTotals = new Map();
     (record.items || [record]).forEach(item => {
       if (Number.isNaN(item.productId)) return;

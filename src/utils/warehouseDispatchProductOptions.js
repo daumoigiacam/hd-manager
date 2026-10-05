@@ -1,4 +1,6 @@
+/** @template {{ id?: string, isArchived?: boolean }} Product @param {Product[]} products @returns {Product[]} */
 const dedupeActiveProducts = (products = []) => {
+  /** @type {Map<string, Product>} */
   const productMap = new Map();
 
   (Array.isArray(products) ? products : []).forEach((product) => {
@@ -10,6 +12,10 @@ const dedupeActiveProducts = (products = []) => {
   return Array.from(productMap.values());
 };
 
+/**
+ * @template {{ id?: string, isArchived?: boolean }} Product
+ * @param {{ orderedProducts?: Product[], fixedProducts?: Product[], catalogProducts?: Product[], canBrowseCatalog?: boolean, canCreateWithoutOrderRequest?: boolean }} input
+ */
 export const buildWarehouseDispatchProductOptions = ({
   orderedProducts = [],
   fixedProducts = [],

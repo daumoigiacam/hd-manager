@@ -5,11 +5,13 @@ export const createWarehouseWeightEntryRow = () => Array.from(
   () => ''
 );
 
+/** @param {string | number | null | undefined} value */
 export const parseWarehouseWeightEntryNumber = (value = '') => {
   const parsed = Number.parseFloat(`${value ?? ''}`.replace(',', '.'));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
+/** @param {ReadonlyArray<string | number | null | undefined>} entries */
 export const normalizeWarehouseWeightEntries = (entries = []) => entries
   .flatMap(entry => {
     const matches = [...`${entry ?? ''}`.matchAll(/\d+(?:[.,]\d+)?/g)].map(match => match[0]);
@@ -18,9 +20,11 @@ export const normalizeWarehouseWeightEntries = (entries = []) => entries
   .map(entry => parseWarehouseWeightEntryNumber(entry))
   .filter(value => value > 0);
 
+/** @param {ReadonlyArray<string | number | null | undefined>} entries */
 export const getWarehouseWeightEntryTotal = (entries = []) => normalizeWarehouseWeightEntries(entries)
   .reduce((sum, value) => sum + value, 0);
 
+/** @param {ReadonlyArray<string | number | null | undefined>} entries @param {boolean} appendEmptyRowWhenFull */
 export const ensureWarehouseWeightEntryRows = (entries = [], appendEmptyRowWhenFull = false) => {
   const cleanedEntries = (Array.isArray(entries) ? entries : []).map(entry => `${entry ?? ''}`);
   const baseEntries = cleanedEntries.length > 0 ? cleanedEntries : [''];
@@ -36,6 +40,7 @@ export const ensureWarehouseWeightEntryRows = (entries = [], appendEmptyRowWhenF
   return paddedEntries;
 };
 
+/** @param {string | number | null | undefined} value */
 export const sanitizeWarehouseWeightEntryValue = (value = '') => {
   const rawValue = `${value ?? ''}`.replace(/[^\d.,]/g, '');
   const separatorMatch = rawValue.match(/[.,]/);
@@ -47,6 +52,7 @@ export const sanitizeWarehouseWeightEntryValue = (value = '') => {
   return `${integerPart}${separator}${decimalPart}`;
 };
 
+/** @param {string | number | null | undefined} previousValue @param {string | number | null | undefined} incomingValue */
 export const resolveWarehouseWeightEntryChange = (previousValue = '', incomingValue = '') => {
   const previousSanitized = sanitizeWarehouseWeightEntryValue(previousValue);
   const incomingRaw = `${incomingValue ?? ''}`.replace(/[^\d.,]/g, '');
@@ -56,6 +62,7 @@ export const resolveWarehouseWeightEntryChange = (previousValue = '', incomingVa
   return sanitizeWarehouseWeightEntryValue(incomingValue);
 };
 
+/** @param {string[]} entries @param {number} index @param {string} incomingValue @param {boolean} appendEmptyRowWhenFull */
 export const updateWarehouseWeightEntryRows = (
   entries = [],
   index = 0,

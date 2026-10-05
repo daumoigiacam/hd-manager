@@ -468,6 +468,7 @@ const buildInventoryRows = ({ inputRows = [], warehouseDispatches = [], warehous
     row.inputQuantity += toNumber(item.quantity, 0);
   });
   warehouseDispatches.forEach((item) => {
+    if (item.__pendingFirebaseSync === true) return;
     const row = ensure(item.groupName || item.productName || item.productType || item.type);
     row.dispatchKg += toNumber(item.weightKg ?? item.totalKg ?? item.kg, 0);
     row.dispatchQuantity += toNumber(item.quantity ?? item.count ?? item.numberOfBirds, 0);
