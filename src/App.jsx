@@ -208,8 +208,10 @@ import {
 } from './utils/orderRequestShareGrouping.js';
 import {
   buildOrderRequestShareFiles,
+  prepareOrderRequestNativeFiles,
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
+import { getOrderRequestAttributeOptions } from './utils/orderRequestAttributes.js';
 import { getContextualFabActionIds, getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { getAppBackTab } from './utils/appBackNavigation.js';
 import {
@@ -57579,6 +57581,10 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     beforeDate: requestWorkingDate,
     productLookup,
   }), [orderRequests, primarySelectedCustomer, primaryDraft?.branchId, requestWorkingDate, productLookup]);
+  const primaryCustomerBranches = useMemo(
+    () => primarySelectedCustomer ? normalizeCustomerBranches(primarySelectedCustomer, activeProducts) : [],
+    [primarySelectedCustomer, activeProducts]
+  );
   const primaryProductConfigSource = useMemo(
     () => getCustomerBranchProductConfigSource(primarySelectedCustomer, primaryDraft?.branchId || '', activeProducts),
     [activeProducts, primaryDraft?.branchId, primarySelectedCustomer]
@@ -59626,15 +59632,11 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const baseFilename = buildOrderRequestSheetFilename();
     if (Capacitor.getPlatform() !== 'web') {
       try {
-        const files = await Promise.all(blobs.map((blob, index) => (
-          writeBlobToShareCache(`${baseFilename}-trang-${index + 1}.png`, blob)
-        )));
-        const uris = files.map(file => file.uri).filter(Boolean);
+        const uris = await prepareOrderRequestNativeFiles(blobs, baseFilename, writeBlobToShareCache);
         const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
         if (capability?.value && uris.length) {
           await CapacitorShare.share({
             title: 'Bảng đơn đặt hàng',
-            text: `Bảng đơn đặt hàng được tách thành ${uris.length} ảnh để dễ xem.`,
             dialogTitle: 'Chia sẻ bảng đơn đặt hàng',
             files: uris
           });
@@ -59646,6 +59648,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         if (isShareCancelled(error)) {
           return { status: 'cancelled' };
         }
+        throw error;
       }
     }
 
@@ -59653,27 +59656,15 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       try {
         const files = buildOrderRequestShareFiles(blobs, baseFilename);
         if (files.length === blobs.length && (!navigator.canShare || navigator.canShare({ files }))) {
-          try {
-            await navigator.share({
-              title: 'Bảng đơn đặt hàng',
-              text: `Bảng đơn đặt hàng được tách thành ${files.length} ảnh để dễ xem.`,
-              files
-            });
-          } catch (error) {
-            if (isShareCancelled(error)) throw error;
-            // Some browser share targets reject text together with multiple
-            // files. Retry the same complete file set without optional text.
-            await navigator.share({
-              title: 'Bảng đơn đặt hàng',
-              files
-            });
-          }
+          await navigator.share({ title: 'Bảng đơn đặt hàng', files });
           return { status: 'shared', count: files.length };
         }
       } catch (error) {
         if (isShareCancelled(error)) {
           return { status: 'cancelled' };
         }
+        // A recipient may already have accepted some pages. Never resend the batch automatically.
+        throw error;
       }
     }
 
@@ -59689,7 +59680,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     return { status: completed.length === blobs.length ? completed[0]?.status : 'unsupported', count: completed.length };
   };
 
+  const orderRequestShareBusyRef = useRef(false);
   const handleShareOrderRequestSheet = async () => {
+    if (orderRequestShareBusyRef.current) return;
     if (!canShareOrderRequestSheet) {
       setSheetStatus('Bạn chưa được cấp quyền chia sẻ bảng đơn đặt hàng.');
       return;
@@ -59702,6 +59695,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
 
     const shareAssetStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    orderRequestShareBusyRef.current = true;
     setIsSheetExporting(true);
     try {
       const blobs = await prepareOrderRequestSheetBlobs({ reason: 'share_click' });
@@ -59718,6 +59712,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ bảng đơn đặt hàng.'));
     } finally {
+      orderRequestShareBusyRef.current = false;
       setIsSheetExporting(false);
     }
   };
@@ -60327,6 +60322,22 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
                     {primarySelectedCustomer ? (
                       <div className="space-y-3">
+                        {primaryCustomerBranches.length > 0 && (
+                          <label className="block text-xs font-semibold text-slate-600">
+                            Chi nhánh đặt hàng
+                            <select
+                              aria-label="Chi nhánh đặt hàng"
+                              value={primaryDraft.branchId || ''}
+                              onChange={event => handleBranchChange(primaryDraft.localId, event.target.value)}
+                              className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-slate-900"
+                            >
+                              <option value="">Khách hàng chính</option>
+                              {primaryCustomerBranches.map(branch => (
+                                <option key={branch.id} value={branch.id}>{branch.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                         <div className="flex items-center justify-between gap-3">
                           <div>
                             <label className="block text-[11px] font-bold uppercase text-gray-500">SP khách lấy</label>
@@ -60678,7 +60689,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                             const hasFrozenItemConfiguration = Boolean(item.previousOrder || item.billingSnapshotVersion || item.billingSnapshotSource);
                             const fixedAttributeLabel = `${hasFrozenItemConfiguration
                               ? (item.attributeLabel || '')
-                              : (selectedConfiguration?.attributeLabel || item.attributeLabel || '')}`.trim();
+                              : (item.attributeLabel || selectedConfiguration?.attributeLabel || '')}`.trim();
                             const fixedSizeLabel = `${hasFrozenItemConfiguration
                               ? (item.sizeLabel || item.weightKg || '')
                               : (selectedConfiguration?.sizeLabel || item.sizeLabel || item.weightKg || '')}`.trim();
@@ -60686,11 +60697,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
                             const attributePickerKey = `attribute:${draft.localId}:${item.localItemId}`;
                             const isAttributePickerOpen = openDraftPicker === attributePickerKey;
                             const attributeVariantOptions = selectedProduct
-                              ? getCustomerProductVariants(productConfigSource, selectedProduct)
-                                .filter(variant => `${variant.attributeLabel || ''}`.trim())
-                                .filter((variant, index, source) => source.findIndex(candidate => (
-                                  normalizeLookupText(candidate.attributeLabel) === normalizeLookupText(variant.attributeLabel)
-                                )) === index)
+                              ? getOrderRequestAttributeOptions(
+                                getProductAttributes(selectedProduct),
+                                getCustomerProductVariants(productConfigSource, selectedProduct),
+                                resolveCustomerProductBillingConfiguration(productConfigSource, selectedProduct),
+                                fixedSizeLabel
+                              )
                               : [];
                             const hasAttributeSelection = attributeVariantOptions.length > 0;
                             const itemUnitOptions = getDraftItemUnitOptions(draft, item);

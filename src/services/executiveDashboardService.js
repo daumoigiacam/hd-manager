@@ -1286,11 +1286,17 @@ export const BusinessAnalysisService = {
       });
       const orderDay = dateKey(getDateValue(order));
       if (salesEmployeeIds.has(employeeKey) && orderDay && orderDay <= finance.todayKey) {
-        salesEmployeeOrders.push({ date: orderDay, id: employeeKey, name: salesOwner.name, revenue, orders: 1 });
+        salesEmployeeOrders.push({ date: orderDay, id: employeeKey, name: salesOwner.name, revenue, orders: 1,
+          orderId: order.id || '', orderCode: order.code || order.orderCode || order.id || '',
+          customerName, salesEmployeeName: salesOwner.name });
       }
 
       if (orderDay && orderDay <= finance.todayKey) {
         customerPerformanceRows.push({
+          orderId: order.id || '',
+          orderCode: order.code || order.orderCode || order.id || '',
+          customerName,
+          salesEmployeeName: salesOwner.name,
           date: orderDay,
           id: String(order.customerId || order.customer?.id || normalizeText(customerName)),
           name: customerName,

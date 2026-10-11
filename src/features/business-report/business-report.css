@@ -167,6 +167,15 @@
 .business-report-sales-periods button[data-active="true"] { border-color: #2563eb; background: #2563eb; color: #fff; }
 .business-report-sales-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 60px; padding: 8px 0; border-bottom: 1px solid #eef2f7; }
 .business-report-sales-row:last-child { border-bottom: 0; }
+.business-report-sales-row { width: 100%; border-top: 0; border-left: 0; border-right: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.business-report-revenue-detail h2 { font-size: var(--hd-type-title, 20px); overflow-wrap: anywhere; }
+.business-report-revenue-orders { list-style: none; padding: 0; margin: 0; }
+.business-report-revenue-orders li { padding-block: var(--hd-space-3, 12px); border-bottom: 1px solid var(--hd-color-border); overflow-wrap: anywhere; }
+.business-report-revenue-orders li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--hd-space-2, 8px); }
+.business-report-revenue-orders p { margin-block: var(--hd-space-1, 4px); }
+.business-report-detail-pager { display: flex; align-items: center; justify-content: center; gap: var(--hd-space-3, 12px); padding-block: var(--hd-space-3, 12px); }
+.business-report-detail-pager button { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--hd-color-border); border-radius: var(--hd-radius-sm, 4px); background: var(--hd-color-surface); }
+.business-report-detail-pager button:disabled { opacity: 0.4; }
 .business-report-sales-row:first-child .business-report-rank { color: #7c5512; background: #ffdc7a; }
 .business-report-sales-row__value { flex: 0 0 auto; max-width: 88px; overflow: hidden; color: #1c55b0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .business-report-alerts, .business-report-insights { display: grid; }

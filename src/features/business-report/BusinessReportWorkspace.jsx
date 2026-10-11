@@ -11,9 +11,10 @@ import {
 import { buildProductDailyReportSeries } from '../../services/executiveDashboardService.js';
 import './business-report.css';
 import AccountGreeting from '../../layout/AccountGreeting.jsx';
+import RevenueDetail from './RevenueDetail.jsx';
 
 const SEGMENT_COLORS = ['#2f7af4', '#18b979', '#f5ad34', '#9963e8', '#f06278', '#5bb7dd'];
-const routeTitles = { report: 'Báo cáo chi tiết', products: 'Sản phẩm', product: 'Chi tiết sản phẩm' };
+const routeTitles = { report: 'Báo cáo chi tiết', products: 'Sản phẩm', product: 'Chi tiết sản phẩm', employee: 'Doanh thu nhân viên', customer: 'Doanh thu khách hàng' };
 const iconByMetric = { revenue: BarChart3, profit: TrendingUp, expense: Wallet, receivables: CircleDollarSign };
 
 function EmptyState({ title = 'Chưa có dữ liệu trong khoảng thời gian này', detail = 'Điều chỉnh thời gian để xem thêm.' }) {
@@ -139,14 +140,15 @@ function CustomerRows({ rows = [], onSelect, valueField = 'revenue', limit = 4 }
   </button>)}</div>;
 }
 
-function SalesEmployeeRows({ rows = [] }) {
+function SalesEmployeeRows({ rows = [], onSelect }) {
   if (!rows.length) return <EmptyState title="Chưa có doanh số nhân viên" detail="Kỳ này chưa có đơn hàng gắn với nhân viên kinh doanh." />;
-  return <div className="business-report-ranked-list">{rows.map((row, index) => <div className="business-report-sales-row" key={row.id}>
+  return <div className="business-report-ranked-list">{rows.map((row, index) => <button type="button" className="business-report-sales-row" key={row.id} onClick={() => onSelect(row)}>
     <span className="business-report-rank">{index + 1}</span>
     <span className="business-report-customer-avatar">{String(row.name || '?').trim().slice(0, 1)}</span>
     <span className="business-report-customer-row__text"><strong>{row.name}</strong><small>{row.orders} đơn hàng</small></span>
     <strong className="business-report-sales-row__value">{formatCompactVnd(row.revenue)}</strong>
-  </div>)}</div>;
+    <ChevronRight size={15} aria-hidden="true" />
+  </button>)}</div>;
 }
 
 function AlertsSection({ alerts = [], onNavigate }) {
@@ -187,6 +189,7 @@ export default function BusinessReportWorkspace({ snapshot, employee, accountNam
   const [reportTab, setReportTab] = useState('revenue');
   const [showAllInsights, setShowAllInsights] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState(null);
+  const [revenueSelection, setRevenueSelection] = useState(null);
   const finance = snapshot?.finance || {};
   const business = snapshot?.business || {};
   const report = useMemo(() => getReportPeriod(finance, period, customRange), [finance, period, customRange]);
@@ -211,6 +214,7 @@ export default function BusinessReportWorkspace({ snapshot, employee, accountNam
   const navigate = (next) => { setRoute(next); setShowAllInsights(false); };
   const openReportSection = (section) => { setReportTab(section); navigate('report'); };
   const selectProduct = (row) => { setSelectedProduct(row); navigate('product'); };
+  const selectRevenue = (kind, row) => { setRevenueSelection({ kind, id: row.id, name: row.name }); navigate(kind); };
   const goBack = () => navigate(route === 'product' ? 'products' : 'home');
   const debtNavigate = () => setActiveTab?.('debt');
   const selectedProfit = productProfit.find((row) => row.id === selectedProduct?.id || row.name === selectedProduct?.name);
@@ -232,12 +236,13 @@ export default function BusinessReportWorkspace({ snapshot, employee, accountNam
         <KpiGrid report={report} period={period} finance={finance} onNavigate={openReportSection} />
         <RevenueProfitChart key={`${period}-${report.startDate}-${report.endDate}`} report={report} finance={finance} />
         <DonutBreakdown title="Cơ cấu doanh thu" rows={revenueGroups} caption={report.label} />
-        <Section title="Top nhân viên kinh doanh" className="business-report-panel" action={<span className="business-report-scope">{report.label}</span>}><SalesEmployeeRows rows={reportSalesEmployees} /></Section>
-        <Section title="Khách hàng nổi bật" className="business-report-panel" action={<span className="business-report-scope">{report.label}</span>}><CustomerRows rows={periodCustomerRows} onSelect={() => setActiveTab?.('customers')} /></Section>
+        <Section title="Top nhân viên kinh doanh" className="business-report-panel" action={<span className="business-report-scope">{report.label}</span>}><SalesEmployeeRows rows={reportSalesEmployees} onSelect={row => selectRevenue('employee', row)} /></Section>
+        <Section title="Khách hàng nổi bật" className="business-report-panel" action={<span className="business-report-scope">{report.label}</span>}><CustomerRows rows={periodCustomerRows} onSelect={row => selectRevenue('customer', row)} /></Section>
         <Section title="Top sản phẩm" className="business-report-panel" action={<button type="button" className="business-report-text-action" onClick={() => navigate('products')}>Xem tất cả <ArrowRight size={15} /></button>}><ProductRows rows={productRevenue} products={products} onSelect={selectProduct} limit={3} /></Section>
         <AlertsSection alerts={guidance.alerts} onNavigate={setActiveTab} />
         <InsightSection recommendations={guidance.recommendations} onNavigate={setActiveTab} onOpenAll={() => setShowAllInsights(true)} />
       </>}
+      {(route === 'employee' || route === 'customer') && revenueSelection && <RevenueDetail key={`${route}-${revenueSelection.id}-${report.startDate}-${report.endDate}`} business={business} selection={revenueSelection} report={report} />}
       {route === 'report' && <>
         <div className="business-report-view-tabs" role="tablist" aria-label="Loại báo cáo">{[['revenue', 'Doanh thu'], ['costs', 'Chi phí'], ['profit', 'Lợi nhuận'], ['debt', 'Công nợ']].map(([id, label]) => <button key={id} type="button" role="tab" data-active={reportTab === id} aria-selected={reportTab === id} onClick={() => setReportTab(id)}>{label}</button>)}</div>
         {reportTab === 'revenue' && <><div className="business-report-mini-grid"><div><span>Doanh thu {report.label.toLowerCase()}</span><strong>{formatVnd(report.revenue)}</strong></div><div><span>So với kỳ trước</span><strong>{getChangePercent(report.revenue, report.previous?.revenue) === null ? 'Chưa đủ dữ liệu' : formatPercent(getChangePercent(report.revenue, report.previous?.revenue))}</strong></div></div><RevenueProfitChart report={report} finance={finance} /><DonutBreakdown title={`Cơ cấu doanh thu • ${report.label}`} rows={revenueGroups} center={report.revenue} caption="Doanh thu kỳ" /><Section title="Doanh thu theo sản phẩm" className="business-report-panel" action={<span className="business-report-scope">{report.label} • {periodProductRows.length} mặt hàng</span>}><ProductRows rows={periodProductRows} products={products} onSelect={selectProduct} limit={30} /></Section></>}

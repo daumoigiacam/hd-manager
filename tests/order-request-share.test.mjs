@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   buildOrderRequestShareFiles,
+  prepareOrderRequestNativeFiles,
   hasCompleteOrderRequestShareBlobSet
 } from '../src/utils/orderRequestShare.js';
 
@@ -35,7 +36,23 @@ assert.deepEqual(
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
 assert.match(appSource, /hasCompleteOrderRequestShareBlobSet\(persistedBlobs, expectedBlobCount\)/);
 assert.match(appSource, /buildOrderRequestShareFiles\(blobs, baseFilename\)/);
-assert.match(appSource, /Retry the same complete file set without optional text/);
+assert.doesNotMatch(appSource, /Retry the same complete file set without optional text/);
 assert.match(appSource, /for \(let index = 0; index < blobs\.length; index \+= 1\)/);
 
 console.log('Order request multi-image share tests: PASS (4/4 files preserved).');
+
+let active = 0;
+const names = [];
+const write = async name => {
+  assert.equal(active++, 0, 'native base64 writes must be sequential');
+  await Promise.resolve();
+  active--;
+  names.push(name);
+  return { uri: `file:///${name}` };
+};
+assert.equal((await prepareOrderRequestNativeFiles(blobs, 'orders', write)).length, 4);
+await prepareOrderRequestNativeFiles(blobs, 'orders', write);
+assert.equal(new Set(names).size, 8, 'later shares must not overwrite files still being consumed');
+await assert.rejects(prepareOrderRequestNativeFiles(blobs, 'orders', async () => ({ uri: '' })));
+await assert.rejects(prepareOrderRequestNativeFiles(blobs, 'orders', async () => ({ uri: 'same' })));
+await assert.rejects(prepareOrderRequestNativeFiles([new Blob([])], 'orders', write));

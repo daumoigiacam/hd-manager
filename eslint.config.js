@@ -1,5 +1,10 @@
 export default [
   {
+    files: ['src/features/business-report/*.{jsx,js}'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
+    rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
     files: ['src/features/identity/*.jsx'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }

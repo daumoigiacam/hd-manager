@@ -1,6 +1,7 @@
 import { installPreviewReader } from '../helpers/preview-browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
+import { mkdir } from 'node:fs/promises';
 
 const baseUrl = process.env.HD_MANAGER_ORDER_REQUEST_URL || 'http://127.0.0.1:5211/';
 const browserPath = process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
@@ -19,13 +20,21 @@ const store = {
     c_preview_01: {
       id: 'c_preview_01', companyId: 'comp_preview', name: 'Cửa hàng Lan Anh',
       empId: 'emp_sales_01', customerProductIds: ['prod_preview_01'],
-      priceOverrides: { prod_preview_01: { price: 285000, unit: 'Can' } },
+      priceOverrides: { prod_preview_01: {
+        price: 285000, unit: 'Can',
+        variants: [{ id: 'floral', attributeLabel: 'Hương hoa', price: 285000, unit: 'Can' }],
+      } },
+      branches: [
+        { id: 'branch-a', name: 'Chi nhánh A', address: 'Địa chỉ A' },
+        { id: 'branch-b', name: 'Chi nhánh B', address: 'Địa chỉ B' },
+      ],
     },
   },
   products: {
     prod_preview_01: {
       id: 'prod_preview_01', companyId: 'comp_preview', name: 'Nước giặt HD',
       unit: 'Can', price: 285000, isArchived: false,
+      attributes: ['Hương hoa', 'Không mùi'],
     },
   },
   orderRequests: {
@@ -82,10 +91,16 @@ try {
   const createDialog = page.getByRole('dialog');
   await createDialog.getByPlaceholder('Chọn hoặc tìm khách hàng').fill('Cửa hàng Lan Anh');
   await createDialog.getByRole('option', { name: /Cửa hàng Lan Anh/ }).click();
+  await createDialog.getByLabel('Chi nhánh đặt hàng', { exact: true }).selectOption('branch-b');
   await createDialog.getByRole('button', { name: 'Tiếp tục' }).click();
   await createDialog.getByRole('button', { name: '-- Chọn sp --' }).click();
   await createDialog.getByRole('button', { name: /Nước giặt HD/ }).last().click();
+  await createDialog.getByRole('button', { name: 'Chọn thuộc tính sản phẩm', exact: true }).click();
+  await createDialog.getByRole('button', { name: 'Không mùi', exact: true }).click();
   await createDialog.getByPlaceholder('Số lượng').fill('3');
+  await mkdir('test-results/order-request-options', { recursive: true });
+  await page.screenshot({ path: 'test-results/order-request-options/mobile.png' });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
 
   const createStartedAt = Date.now();
   await createDialog.getByRole('button', { name: 'Lưu đơn', exact: true }).click();
@@ -100,6 +115,9 @@ try {
   const persisted = await page.evaluate(() => window.__readPreviewStore().orderRequests);
   const created = Object.values(persisted).filter(row => row.id !== 'or_save_speed' && row.customerId === 'c_preview_01' && row.items?.[0]?.quantity === 3);
   assert.equal(created.length, 1, 'Create must persist exactly one new request');
+  assert.equal(created[0].branchId, 'branch-b');
+  assert.equal(created[0].items[0].attributeLabel, 'Không mùi');
+  assert.equal(created[0].items[0].unitPrice, 285000);
   assert.equal(persisted.or_save_speed.items[0].unitPrice, 290000);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator('[data-hd-shell="enterprise"]').waitFor();
