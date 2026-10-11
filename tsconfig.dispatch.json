@@ -12,6 +12,7 @@
     "skipLibCheck": true
   },
   "include": [
+    "src/features/warehouse/dispatchListSearchFields.js",
     "src/features/warehouse/buildDispatchOrderDefaults.js",
     "src/features/warehouse/matchDispatchOrder.js",
     "src/features/warehouse/coordinateDispatchBilling.js",

@@ -42,6 +42,7 @@ const buildFieldIndex = (field = {}) => {
     tokenSet,
     tokens: [...tokenSet],
     digits: normalizeDigits(values.join(' ')),
+    numericMatch: field?.numericMatch === 'tokens' ? 'tokens' : 'substring',
   };
 };
 
@@ -62,7 +63,13 @@ const getBestTokenMatch = (token, fields) => {
   fields.forEach((field) => {
     if (!token) return;
     if (/^\d+$/.test(token)) {
-      if (field.digits.includes(token)) {
+      if (field.numericMatch === 'tokens') {
+        const exact = field.tokenSet.has(token);
+        if (exact || field.tokens.some(candidate => candidate.startsWith(token))) {
+          const score = (exact ? 100 : 20) + field.priority;
+          if (!best || score > best.score) best = { field, kind: exact ? 'exact' : 'prefix', score };
+        }
+      } else if (field.digits.includes(token)) {
         const score = 55 + field.priority;
         if (!best || score > best.score) best = { field, kind: 'digits', score };
       }
@@ -186,7 +193,17 @@ const createSearchIndexBuilder = (getFields) => {
     entries[index] = entry;
     entry.fields.forEach((field) => {
       field.tokens.forEach(token => addSearchPosting(tokenPostings, token, entry.index));
-      // Grams span values within a field, matching the scorer's digit joining.
+      // Token-mode numbers only match prefixes, not inner year/code digits.
+      // Phone/default fields retain substring grams spanning field values.
+      if (field.numericMatch === 'tokens') {
+        field.tokens.forEach(token => {
+          const digits = token.match(/^\d+/)?.[0] || '';
+          for (let length = 1; length <= Math.min(3, digits.length); length++) {
+            addSearchPosting(digitPostings, digits.slice(0, length), entry.index);
+          }
+        });
+        return;
+      }
       // Only 10 + 100 + 1000 distinct gram keys can exist, with one posting per
       // source position/key. Long numeric queries use their first trigram.
       for (let length = 1; length <= 3; length++) {

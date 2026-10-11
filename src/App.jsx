@@ -365,6 +365,7 @@ import OrderSearchInput from './features/orders/OrderSearchInput.jsx';
 import OrderRequestTableRows from './features/orders/OrderRequestTableRows.jsx';
 import { useCurrentCallback } from './hooks/useCurrentCallback.js';
 import DispatchTableBody from './features/warehouse/DispatchTableBody.jsx';
+import { buildDispatchListSearchFields } from './features/warehouse/dispatchListSearchFields.js';
 import { ListPagination } from './design-system/ListPagination.jsx';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
 import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
@@ -55586,95 +55587,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       isMergedDispatchRow: row.sourceRows.length > 1
     }));
   }, [editableDispatchRows]);
-  const buildDispatchRowSearchLabels = (row = {}) => {
-    const labels = [];
-    const pushLabel = (value) => {
-      if (value === null || value === undefined) return;
-      const text = `${value}`.trim();
-      if (text) labels.push(text);
-    };
-    const sourceRows = Array.isArray(row.sourceRows) && row.sourceRows.length > 0 ? row.sourceRows : [row];
-    sourceRows.forEach((source = {}) => {
-      const customer = customerLookup.get(source.customerId || row.customerId);
-      const product = productLookup.get(source.productId || row.productId);
-      const driverId = getDispatchDriverId(source) || getDispatchDriverId(row);
-      const driver = driverId ? employeeLookup.get(driverId) : null;
-      [
-        source.id,
-        source.code,
-        source.dispatchCode,
-        source.invoiceCode,
-        source.orderCode,
-        source.customerId,
-        source.customerName,
-        source.customerNameSnapshot,
-        customer?.name,
-        customer?.phone,
-        customer?.address,
-        customer?.location,
-        source.branchName,
-        source.customerBranchName,
-        source.productId,
-        source.productName,
-        source.productNameSnapshot,
-        source.productShortName,
-        product?.name,
-        product?.shortName,
-        product?.code,
-        getCompactProductName(null, source.productName || source.productNameSnapshot || product?.name || ''),
-        driverId,
-        getDispatchDriverName(source),
-        driver?.name,
-        driver?.phone,
-        source.assignedDriverName,
-        source.assignedDriverNameSnapshot,
-        source.driverNameSnapshot,
-        getDispatchRowQuantity(source),
-        getDispatchRowQuantityUnit(source),
-        `${formatNumber(getDispatchRowQuantity(source))} ${getDispatchRowQuantityUnit(source) || ''}`,
-        getDispatchRowWeight(source),
-        `${formatNumber(getDispatchRowWeight(source))} kg`,
-        source.weightKg,
-        source.totalKg,
-        source.kg,
-        source.actualWeightKg,
-        Array.isArray(source.weightEntries) ? source.weightEntries.join(' ') : '',
-        source.date,
-        source.createdAt,
-        source.updatedAt,
-        source.note,
-        source.transcript
-      ].forEach(pushLabel);
-      Object.values(source).forEach((value) => {
-        if (typeof value === 'string' || typeof value === 'number') pushLabel(value);
-      });
-    });
-    [
-      row.customerName,
-      row.productName,
-      row.productShortName,
-      getCompactProductName(null, row.productName || ''),
-      row.assignedDriverName,
-      row.assignedDriverNameSnapshot,
-      row.driverNameSnapshot,
-      row.note,
-      getDispatchRowQuantity(row),
-      getDispatchRowQuantityUnit(row),
-      `${formatNumber(getDispatchRowQuantity(row))} ${getDispatchRowQuantityUnit(row) || ''}`,
-      getDispatchRowWeight(row),
-      `${formatNumber(getDispatchRowWeight(row))} kg`,
-      row.date
-    ].forEach(pushLabel);
-    return [...new Set(labels)];
-  };
-  const hasDispatchListSearch = Boolean(dispatchListSearch.trim());
-  const dispatchSearchRows = useMemo(() => hasDispatchListSearch
-    ? compactEditableDispatchRows.map(row => ({ row, fields: buildDispatchRowSearchLabels(row) })) : [],
-  [hasDispatchListSearch, compactEditableDispatchRows, customerLookup, productLookup, employeeLookup]);
-  const filteredEditableDispatchRows = useMemo(() => hasDispatchListSearch
-    ? searchSharedRecords(dispatchSearchRows, dispatchListSearch, entry => entry.fields).map(entry => entry.row)
-    : compactEditableDispatchRows,
-  [hasDispatchListSearch, dispatchSearchRows, dispatchListSearch, compactEditableDispatchRows]);
+  const getDispatchListSearchFields = useCallback(row => buildDispatchListSearchFields(row, {
+    customers: customerLookup, products: productLookup, employees: employeeLookup,
+    customerName: getCustomerDisplayName, driverId: getDispatchDriverId, driverName: getDispatchDriverName,
+    quantity: getDispatchRowQuantity, unit: getDispatchRowQuantityUnit, weight: getDispatchRowWeight,
+    compactProductName: name => getCompactProductName(null, name), formatNumber, formatDate: formatCompactDateLabel
+  }), [customerLookup, productLookup, employeeLookup]);
+  const preparedDispatchSearch = usePreparedSearch(compactEditableDispatchRows, getDispatchListSearchFields, dispatchListSearch);
+  const hasDispatchListSearch = hasTokenSearchQuery(dispatchListSearch);
+  const filteredEditableDispatchRows = hasDispatchListSearch ? preparedDispatchSearch.results : compactEditableDispatchRows;
   const groupedEditableDispatchRows = useMemo(() => buildWarehouseDispatchPresentationGroups({
     rows: filteredEditableDispatchRows,
     deliveryReports,
@@ -55797,7 +55718,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const [dispatchDisplayPage, setDispatchDisplayPage] = useState({ scope: '', offset: 0 });
   const dispatchDisplayScope = `${workingDate}|${dispatchListSearch}`;
   const dispatchDisplayOffset = dispatchDisplayPage.scope === dispatchDisplayScope ? dispatchDisplayPage.offset : 0;
-  const dispatchRowPage = useMemo(() => getGroupedRowPage(groupedEditableDispatchRows, dispatchDisplayOffset), [groupedEditableDispatchRows, dispatchDisplayOffset]);
+  const dispatchRowPage = useMemo(() => getGroupedRowPage(groupedEditableDispatchRows, dispatchDisplayOffset, 20), [groupedEditableDispatchRows, dispatchDisplayOffset]);
   const visibleDispatchGroups = dispatchRowPage.items;
   const shouldShowDispatchShortage = canAccess && (canViewDispatchShortage || canCreate || canViewWarehouseDispatch || isOwnerAccount || isWarehouseScale);
   const dispatchShortageCustomerGroups = useMemo(() => buildDispatchShortageGroups(dispatchShortageSummary.issueLines || [], {
@@ -56406,11 +56327,15 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                   <input
                     data-hd-search-input="true"
                     type="search"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     value={dispatchListSearch}
                     onChange={(event) => setDispatchListSearch(event.target.value)}
                     className="min-w-0 flex-1 bg-transparent text-base text-slate-900 outline-none"
                     placeholder="Tìm kiếm"
                     aria-label="Tìm kiếm phiếu xuất kho trong ngày"
+                    aria-controls="warehouse-dispatch-results"
                   />
                   {dispatchListSearch && <button
                     type="button"
@@ -56434,7 +56359,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           </div>
 
           <div className="mt-4 overflow-hidden rounded-2xl border-2 border-slate-800">
-            <table className="w-full table-fixed border-collapse text-center text-[12px] text-slate-900">
+            <table id="warehouse-dispatch-results" aria-busy={preparedDispatchSearch.pending} className="w-full table-fixed border-collapse text-center text-[12px] text-slate-900">
               <colgroup>
                 <col className="w-[18%]" />
                 <col className="w-[26%]" />
@@ -56452,6 +56377,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 </tr>
               </thead>
               <DispatchTableBody visibleDispatchGroups={visibleDispatchGroups} empty={filteredEditableDispatchRows.length === 0}
+                searchState={preparedDispatchSearch.pending ? 'searching' : preparedDispatchSearch.error ? 'error' : 'ready'}
                 selectedDisplayRowId={dispatchCellEditor?.displayRow?.id} selectedSourceRowId={dispatchCellEditor?.row?.id}
                 canDelete={canDelete} canEditDispatchCellField={canEditDispatchCellField}
                 openDispatchCellEditor={openDispatchCellEditor} openDispatchListWeightEditor={openDispatchListWeightEditor}

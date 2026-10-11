@@ -199,7 +199,7 @@ test('tim kiem xuat kho nhap truc tiep khong mo bang rieng', () => {
   assert.match(warehouseModuleSource, /flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0/);
   assert.match(warehouseModuleSource, /aria-label="Tìm kiếm phiếu xuất kho trong ngày"/);
   assert.doesNotMatch(warehouseModuleSource, /isDispatchListSearchOpen|dispatchListSearchInputRef/);
-  assert.match(warehouseModuleSource, /searchSharedRecords\(dispatchSearchRows, dispatchListSearch/);
+  assert.match(warehouseModuleSource, /usePreparedSearch\(compactEditableDispatchRows, getDispatchListSearchFields, dispatchListSearch\)/);
 });
 
 console.log('Warehouse dispatch weight input regression suite passed.');

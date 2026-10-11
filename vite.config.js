@@ -122,6 +122,11 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: runtimeAliases
     },
+    // This workspace also contains installers, backups and other websites.
+    // Scan only HD Manager's entry, while still discovering its imported deps.
+    optimizeDeps: {
+      entries: ['index.html']
+    },
     build: {
       chunkSizeWarningLimit: 3200,
       cssCodeSplit: true,

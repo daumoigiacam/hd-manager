@@ -10,3 +10,9 @@ test('generated Gradle and audit outputs cannot trigger development hot reload',
   assert.ok(configuration.server.watch.ignored.includes('**/android/**'));
   assert.equal(configuration.server.watch.ignored.some(pattern => pattern.includes('/src/')), false);
 });
+
+test('dependency discovery is restricted to the HD Manager app entry', () => {
+  const configuration = configure({ mode: 'development' });
+  assert.deepEqual(configuration.optimizeDeps.entries, ['index.html']);
+  assert.notEqual(configuration.optimizeDeps.noDiscovery, true);
+});

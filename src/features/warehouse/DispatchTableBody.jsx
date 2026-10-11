@@ -23,6 +23,7 @@ import './dispatch-table.css';
  * @typedef {Object} DispatchTableBodyProps
  * @property {DispatchTableGroup[]} visibleDispatchGroups
  * @property {boolean} empty
+ * @property {'searching'|'error'|'ready'=} searchState
  * @property {string|null} selectedDisplayRowId
  * @property {string|null} selectedSourceRowId
  * @property {boolean} canDelete
@@ -34,13 +35,15 @@ import './dispatch-table.css';
  * @property {(id: string|null, name: string) => string} getCompactProductName
  * @property {(value: number) => string} formatNumber
  */
-export default React.memo(/** @param {DispatchTableBodyProps} props */ function DispatchTableBody({ visibleDispatchGroups, empty, selectedDisplayRowId, selectedSourceRowId, canDelete, canEditDispatchCellField, openDispatchCellEditor, openDispatchListWeightEditor, getDispatchRowQuantity, getDispatchRowQuantityUnit, getCompactProductName, formatNumber }) {
+export default React.memo(/** @param {DispatchTableBodyProps} props */ function DispatchTableBody({ visibleDispatchGroups, empty, searchState = 'ready', selectedDisplayRowId, selectedSourceRowId, canDelete, canEditDispatchCellField, openDispatchCellEditor, openDispatchListWeightEditor, getDispatchRowQuantity, getDispatchRowQuantityUnit, getCompactProductName, formatNumber }) {
   return (
               <tbody>
                 {empty ? (
                   <tr>
-                    <td colSpan={5} className="hd-dispatch-table__empty">
-                      Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.
+                    <td colSpan={5} className="hd-dispatch-table__empty" role={searchState === 'error' ? 'alert' : 'status'}>
+                      {searchState === 'searching' ? 'Đang tìm...' : searchState === 'error'
+                        ? 'Không thể tìm phiếu. Hãy xóa tìm kiếm và nhập lại.'
+                        : 'Không thấy phiếu phù hợp. Hãy thử tên khách, tên hàng hoặc tên viết tắt sản phẩm.'}
                     </td>
                   </tr>
                 ) : visibleDispatchGroups.flatMap(group => group.rows.map((row, groupRowIndex) => {
