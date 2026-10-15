@@ -127,6 +127,13 @@ test('master refactor preserves inherited business mutation handlers exactly', (
   ]) {
     assert.ok(oldHandlers.has(name), name);
     let expected = oldHandlers.get(name);
+    let actual = newHandlers.get(name);
+    // Asset-linked expenses add tenant validation; all other persistence stays locked.
+    if (name === 'handleAddExpense' || name === 'handleEditExpense') {
+      const guard = "    if (expenseData.assetId && !assets.some(asset => asset.id === expenseData.assetId && asset.companyId === myCompanyId && !asset.isArchived)) throw new Error('Không tìm thấy xe/tài sản của công ty.');\n";
+      assert.equal(actual.split(guard).length, 2, `${name}: asset ownership guard`);
+      actual = actual.replace(guard, '');
+    }
     // Sharing is now explicitly on demand; keep every persistence statement locked.
     if (name === 'handleAddOrderRequest' || name === 'handleEditOrderRequest') {
       const warmup = /      notifyOrderRequestShareWarmup\(\{\n        requestId(?:: id)?,\n        reason: 'order_request_(?:created|updated)'\n      \}\);\n/g;
@@ -134,7 +141,7 @@ test('master refactor preserves inherited business mutation handlers exactly', (
       expected = expected.replace(warmup, '');
       assert.doesNotMatch(newHandlers.get(name), /notifyOrderRequestShareWarmup/);
     }
-    assert.equal(newHandlers.get(name), expected, name);
+    assert.equal(actual, expected, name);
   }
 });
 test('product floating action reserves footer space outside staff-only shells', () => {

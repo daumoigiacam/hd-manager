@@ -1,4 +1,8 @@
 import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
+import { projectAssetExpenses } from './features/assets/assetExpenseProjection.js';
+import ExpenseCategoryPicker from './features/assets/ExpenseCategoryPicker.jsx';
+import DebtBalanceShareButton from './features/customers/DebtBalanceShareButton.jsx';
+import { changeExpenseCategory, isFuelExpenseCategory } from './features/assets/expenseCategory.js';
 import { useCallback, useDeferredValue, useSyncExternalStore } from 'react';
 import { createOrderSearchState } from './services/orderSearchState.js';
 import { isCustomerDebtRepayment } from './utils/expenseClassification.js';
@@ -1105,7 +1109,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   employee_reviews: ['employees', 'employeeReviews', 'attendance', 'customerComplaints', 'performance'],
   company_attendance: ['employees', 'attendance', 'holidays'],
   payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'customerComplaints', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
-  asset_management: ['assets', 'assetCostLogs', 'employees'],
+  asset_management: ['assets', 'assetCostLogs', 'expenses', 'employees'],
   pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios'],
   price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
   products: ['products', 'orders', 'warehouseImports', 'warehouseDispatches'],
@@ -18453,6 +18457,7 @@ export default function App() {
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
     const id = expenseData.clientMutationId || `exp_${crypto.randomUUID()}`;
     const amount = parseLooseMoneyValue(expenseData.amount);
+    if (expenseData.assetId && !assets.some(asset => asset.id === expenseData.assetId && asset.companyId === myCompanyId && !asset.isArchived)) throw new Error('Không tìm thấy xe/tài sản của công ty.');
     if (!/^[A-Za-z0-9_-]+$/.test(id) || amount <= 0) throw new Error('Khoản chi phải có mã hợp lệ và số tiền lớn hơn 0.');
     if (expenseData.sourceType === 'customer_debt_repayment') {
       if (!hasCompanyRolePermissionAction({ company: currentCompany, employee: appCurrentEmployee, currentUser }, 'finance', 'create_expense')) {
@@ -18504,6 +18509,7 @@ export default function App() {
       throw new Error('Không tìm thấy khoản chi của công ty này.');
     }
     const patch = { ...expenseData, updatedAt: new Date().toISOString(), updatedByEmpId: currentUser?.id || '' };
+    if (expenseData.assetId && !assets.some(asset => asset.id === expenseData.assetId && asset.companyId === myCompanyId && !asset.isArchived)) throw new Error('Không tìm thấy xe/tài sản của công ty.');
     if (expenseData.amount !== undefined) {
       patch.amount = parseLooseMoneyValue(expenseData.amount);
       if (patch.amount <= 0) throw new Error('Số tiền chi phải lớn hơn 0.');
@@ -23555,6 +23561,7 @@ export default function App() {
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
+        assetExpenses={rawExpenses}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
         customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} allCompanyOrders={rawOrders.filter(order => order.companyId === myCompanyId)} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
@@ -24097,6 +24104,7 @@ function MainAppView({
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, allCompanyOrders = [], orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
+  assetExpenses = [],
   onChangeDate,
   autoWifiCheckInStatus = '', onAutoWifiStatus, onAutoWifiAttendanceRecorded,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onSaveDeliveryCommand, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
@@ -26004,7 +26012,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         }
         return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} quickActionIntent={activeTab === 'warehouse_import' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} quickActionIntent={activeTab === 'warehouse_dispatch' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
+case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} assetExpenses={assetExpenses} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={reconciledLedgerMap} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={onAddOrder} onEditOrder={onEditOrder} onUpdateOrderInvoiceTemplate={onUpdateOrderInvoiceTemplate} onApproveOrderZaloSend={onApproveOrderZaloSend} onUpdateOrderZaloMessage={onUpdateOrderZaloMessage} onSyncPayosPaymentStatus={onSyncPayosPaymentStatus} onEnsureOrderPayosPayment={onEnsureOrderPayosPayment} onToggleArchiveOrder={onToggleArchiveOrder} onDeleteOrder={onDeleteOrder} onAddPayment={onAddPayment} onAddCustomer={onAddCustomer} onAddExpense={(data) => onAddExpense(employee?.id || 'admin', data)} onResolveDeliveryReportIssue={onResolveDeliveryReportIssue} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
@@ -35190,7 +35198,8 @@ function AssetManagementView({
   employee,
   employees = [],
   assets = [],
-  assetCostLogs = [],
+  assetCostLogs: storedAssetCostLogs = [],
+  assetExpenses = [],
   onAddAsset,
   onEditAsset,
   onDeleteAsset,
@@ -35212,6 +35221,7 @@ function AssetManagementView({
   canViewDriverAssetScore = true
 }) {
   const [activeSection, setActiveSection] = useState('assets');
+  const assetCostLogs = useMemo(() => projectAssetExpenses(storedAssetCostLogs, assetExpenses, employee?.companyId, isCashflowOfficial), [storedAssetCostLogs, assetExpenses, employee?.companyId]);
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [editingAsset, setEditingAsset] = useState(null);
   const [assetForm, setAssetForm] = useState(getAssetFormDefaults());
@@ -35272,6 +35282,7 @@ function AssetManagementView({
     setShowAssetForm(false);
   };
   const openCostForm = (log = null) => {
+    if (log?.financeProjection) return;
     setEditingCostLog(log);
     setCostForm(getAssetCostFormDefaults(log || {}));
     setShowCostForm(true);
@@ -46992,8 +47003,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     const dynamic = [...new Set(expenses.map(expense => normalizeExpenseCategoryLabel(expense.category)).filter(Boolean))];
     return [...new Set([...base, ...dynamic])];
   }, [expenses]);
-  const normalizedExpenseCategory = normalizeExpenseCategoryLabel(newExpense.category);
-  const isNewExpenseCategory = Boolean(normalizedExpenseCategory) && !expenseCategories.includes(normalizedExpenseCategory);
 
   const employeeNameMap = useMemo(
     () => Object.fromEntries(employees.map(emp => [emp.id, emp.name])),
@@ -47391,6 +47400,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     try {
     await onAddExpense({
       clientMutationId: expenseMutationIdRef.current,
+      assetId: isFuelExpenseCategory(selectedCategory) ? newExpense.assetId || '' : '',
       category: selectedCategory,
       amount: parseInputCurrency(newExpense.amount),
       note: normalizeLeadingLabel(isDriverFinanceMode ? selectedCategory : newExpense.note),
@@ -47562,6 +47572,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       date: transaction.date || getTodayString(),
       category: isExpense ? normalizeExpenseCategoryLabel(transaction.category || transaction.note || 'Chi phí khác') : '',
       note: isExpense ? normalizeLeadingLabel(transaction.note || transaction.category || '') : capitalizeFirst(transaction.note || ''),
+      assetId: transaction.assetId || transaction.vehicleId || transaction.deliveryExpenseAssetId || '',
       customerId: isExpense ? '' : (transaction.customerId || ''),
       method: transaction.method || 'Tiền mặt',
       sourceType: transaction.sourceType || 'driver_cash'
@@ -47596,6 +47607,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         amount,
         category,
         note: normalizeLeadingLabel(cashflowEditForm.note || category),
+        assetId: isFuelExpenseCategory(category) ? cashflowEditForm.assetId || '' : '',
         date: cashflowEditForm.date || getTodayString()
       });
     } else {
@@ -47885,21 +47897,17 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
               </button>
             </div>
             <form onSubmit={handleSaveCashflowEdit} className="space-y-3">
+              {editingCashflowTransaction.transactionType === 'expense' && isFuelExpenseCategory(cashflowEditForm.category) && (
+                <label className="block text-sm font-medium">Xe / tài sản
+                  <select aria-label="Xe / tài sản" value={cashflowEditForm.assetId || ''} disabled={!canEditCashflowTransaction(editingCashflowTransaction)} onChange={event => setCashflowEditForm(previous => ({ ...previous, assetId: event.target.value }))} className="mt-1 w-full rounded-xl border bg-white p-3 text-sm">
+                    <option value="">Không gắn tài sản</option>
+                    {assets.filter(asset => !asset.isArchived).map(asset => <option key={asset.id} value={asset.id}>{getAssetDisplayLabel(asset)}</option>)}
+                  </select>
+                </label>
+              )}
               {editingCashflowTransaction.transactionType === 'expense' ? (
                 <>
-                  <input
-                    required
-                    type="text"
-                    list="expense-edit-category-list"
-                    value={cashflowEditForm.category}
-                    disabled={!canEditCashflowTransaction(editingCashflowTransaction)}
-                    onChange={event => setCashflowEditForm(prev => ({ ...prev, category: capitalizeFirstPreservingSpacing(event.target.value) }))}
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-50"
-                    placeholder="Loại chi"
-                  />
-                  <datalist id="expense-edit-category-list">
-                    {expenseCategories.map(category => <option key={category} value={category} />)}
-                  </datalist>
+                  <ExpenseCategoryPicker value={cashflowEditForm.category} options={expenseCategories} disabled={!canEditCashflowTransaction(editingCashflowTransaction)} onChange={category => setCashflowEditForm(previous => changeExpenseCategory(previous, capitalizeFirstPreservingSpacing(category)))} />
                   <input
                     type="text"
                     value={cashflowEditForm.note}
@@ -47991,30 +47999,19 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
           <div className="bg-white rounded-2xl p-5 w-full max-w-sm animate-in zoom-in-95">
             <h3 className="font-bold text-lg mb-4">Tạo khoản chi</h3>
             <form onSubmit={handleExpenseSubmit} className="space-y-3">
-              <div>
-                <input
-                  required
-                  type="text"
-                  list="expense-category-list"
-                  value={newExpense.category}
-                  onChange={e=>setNewExpense(previous => ({...previous, category: capitalizeFirstPreservingSpacing(e.target.value)}))}
-                  placeholder={isDriverFinanceMode ? 'Chi mua hàng gì' : 'Nhập hoặc chọn loại chi phí'}
-                  className="w-full border p-2.5 rounded-xl text-sm outline-none bg-white"
-                />
-                <datalist id="expense-category-list">
-                  {expenseCategories.map(category => <option key={category} value={category} />)}
-                </datalist>
-                {!isDriverFinanceMode && (
-                  <p className={`text-[11px] mt-2 ${isNewExpenseCategory ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
-                    {isNewExpenseCategory ? `Loại chi phí "${normalizedExpenseCategory}" chưa có sẵn. Hệ thống sẽ tự tạo khi bạn lưu khoản chi.` : 'Có thể chọn loại chi sẵn có hoặc nhập loại mới ngay tại ô này.'}
-                  </p>
-                )}
-              </div>
+              <ExpenseCategoryPicker value={newExpense.category} options={expenseCategories} onChange={category => setNewExpense(previous => changeExpenseCategory(previous, capitalizeFirstPreservingSpacing(category)))} />
               <input required type="tel" value={formatInputCurrency(newExpense.amount)} onChange={e=>setNewExpense(previous => ({...previous, amount: parseInputCurrency(e.target.value)}))} placeholder="Số tiền" className="w-full border p-2.5 rounded-xl text-sm" />
               {!isDriverFinanceMode && (
                 <input type="text" value={newExpense.note} onChange={e=>setNewExpense(previous => ({...previous, note: capitalizeFirstPreservingSpacing(e.target.value)}))} placeholder="Nội dung chi" className="w-full border p-2.5 rounded-xl text-sm" />
               )}
               <input type="date" value={newExpense.date} onChange={e=>setNewExpense(previous => ({...previous, date: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm bg-white" />
+              {isFuelExpenseCategory(newExpense.category) && <label className="block text-sm font-medium">
+                Xe / tài sản
+                <select aria-label="Xe / tài sản" value={newExpense.assetId || ''} onChange={event => setNewExpense(previous => ({ ...previous, assetId: event.target.value }))} className="mt-1 w-full border p-2.5 rounded-xl text-sm bg-white">
+                  <option value="">Không gắn tài sản</option>
+                  {assets.filter(asset => !asset.isArchived).map(asset => <option key={asset.id} value={asset.id}>{getAssetDisplayLabel(asset)}</option>)}
+                </select>
+              </label>}
               {expenseSaveError && <p role="alert" className="text-sm text-red-600">{expenseSaveError}</p>}
               <div className="flex gap-2 pt-2">
                 <button type="button" disabled={expenseSaving} onClick={()=>setShowExpenseModal(false)} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
@@ -77997,15 +77994,18 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
             </div>
           )}
 
+          <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-stretch gap-2" data-debt-actions="true">
           {(ledger.creditBalance > 0 ? canRecordRepayment : canRecordCustomerPayment) ? (
-            <button onClick={() => openPaymentModal()} className="w-full mt-4 py-4 rounded-xl font-bold text-white shadow-lg flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-700">
-              <Wallet size={20}/> {ledger.creditBalance > 0 ? 'Ghi nhận khoản chi trả nợ' : 'Ghi nhận khoản thu'}
+            <button type="button" onClick={() => openPaymentModal()} className="min-h-12 min-w-0 px-3 py-2 rounded-lg text-sm font-bold text-white flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-700">
+              <Wallet size={18} className="shrink-0"/> <span>{ledger.creditBalance > 0 ? 'Ghi nhận khoản chi trả nợ' : 'Ghi nhận khoản thu'}</span>
             </button>
           ) : (
-            <div className="mt-4 bg-blue-50 border border-blue-100 text-blue-700 rounded-xl p-3 text-sm leading-relaxed">
+            <div className="min-w-0 bg-blue-50 border border-blue-100 text-blue-700 rounded-lg p-3 text-sm leading-relaxed">
               {ledger.creditBalance > 0 ? 'Tài khoản này chưa được cấp quyền ghi nhận khoản chi. Hãy báo kế toán hoặc chủ doanh nghiệp xác nhận.' : 'Tài khoản này chưa được cấp quyền ghi nhận thu nợ. Nếu đã nhận tiền, hãy báo kế toán hoặc chủ doanh nghiệp xác nhận trên hệ thống.'}
             </div>
           )}
+          <DebtBalanceShareButton key={selectedCustomer.id} customer={selectedCustomer} shareText={shareTextContent} />
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">

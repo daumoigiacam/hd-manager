@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   AlertCircle, ArrowDownRight, ArrowLeft, ArrowRight, ArrowUpRight, BarChart3,
   Bell, CalendarDays, ChevronDown, ChevronRight, CircleDollarSign, Filter,
@@ -12,6 +12,7 @@ import { buildProductDailyReportSeries } from '../../services/executiveDashboard
 import './business-report.css';
 import AccountGreeting from '../../layout/AccountGreeting.jsx';
 import RevenueDetail from './RevenueDetail.jsx';
+import { getOperatingExpenseItems } from './reportViewModel.js';
 
 const SEGMENT_COLORS = ['#2f7af4', '#18b979', '#f5ad34', '#9963e8', '#f06278', '#5bb7dd'];
 const routeTitles = { report: 'Báo cáo chi tiết', products: 'Sản phẩm', product: 'Chi tiết sản phẩm', employee: 'Doanh thu nhân viên', customer: 'Doanh thu khách hàng' };
@@ -279,18 +280,34 @@ function ProfitReport({ report, finance, products, productRows, customerRows, on
 }
 
 function CostReport({ report, finance, costGroups, expenseItems, salaryEmployees, onOpenFinance, onOpenExpense }) {
+  const [showOperating, setShowOperating] = useState(false);
+  const operatingId = useId();
   const costRatio = report.revenue > 0 ? report.expense / report.revenue * 100 : 0;
   const payrollTotal = salaryEmployees.reduce((total, row) => total + Number(row.value || 0), 0);
   const costOfGoods = costGroups.find((row) => row.category === 'Giá vốn')?.value || 0;
   const operatingCosts = Math.max(0, report.expense - payrollTotal - costOfGoods);
   return <><div className="business-report-cost-hero"><span>Tổng chi {report.label.toLowerCase()}</span><strong>{formatVnd(report.expense)}</strong><Change value={getChangePercent(report.expense, report.previous?.expense)} inverse /></div>
-    <div className="business-report-mini-grid"><div><span>Chi phí lương</span><strong>{formatVnd(payrollTotal)}</strong></div><div><span>Giá vốn đã dùng</span><strong>{formatVnd(costOfGoods)}</strong></div><div><span>Chi phí vận hành khác</span><strong>{formatVnd(operatingCosts)}</strong></div><div><span>Chi phí / doanh thu</span><strong>{formatPercent(costRatio)}</strong></div></div>
+    <div className="business-report-mini-grid"><div><span>Chi phí lương</span><strong>{formatVnd(payrollTotal)}</strong></div><div><span>Giá vốn đã dùng</span><strong>{formatVnd(costOfGoods)}</strong></div><button type="button" className="business-report-operating-toggle" aria-expanded={showOperating} aria-controls={operatingId} onClick={() => setShowOperating(value => !value)}><span>Chi phí vận hành khác <ChevronDown size={16} aria-hidden="true" /></span><strong>{formatVnd(operatingCosts)}</strong></button><div><span>Chi phí / doanh thu</span><strong>{formatPercent(costRatio)}</strong></div></div>
+    {showOperating && <OperatingExpenseDetails key={`${report.startDate}-${report.endDate}`} id={operatingId} rows={finance.expenseDetailRows || []} report={report} total={operatingCosts} onOpenExpense={onOpenExpense} />}
     <Section title="Chi phí theo thời gian" className="business-report-panel"><Chart rows={report.chartRows} fields={['expense']} type="bars" title={`Chi phí theo thời gian • ${report.label}`} /></Section>
     <DonutBreakdown title={`Cơ cấu chi phí • ${report.label}`} rows={costGroups} center={report.expense} caption="Tổng chi kỳ" />
     <Section title={`Các khoản chi lớn • ${report.label}`} className="business-report-panel"><CostRows rows={expenseItems} total={report.expense} onOpenExpense={onOpenExpense} /></Section>
     <Section title={`Chi phí lương • ${formatVnd(payrollTotal)}`} className="business-report-panel" action={<span className="business-report-scope">{report.label}</span>}><SalaryEmployeeRows rows={salaryEmployees} total={payrollTotal} onOpenFinance={onOpenFinance} /></Section>
     <button type="button" className="business-report-primary-action" onClick={onOpenFinance}>Mở thu chi <ArrowRight size={17} /></button>
   </>;
+}
+
+function OperatingExpenseDetails({ id, rows, report, total, onOpenExpense }) {
+  const [limit, setLimit] = useState(20);
+  const items = useMemo(() => getOperatingExpenseItems(rows, report), [rows, report]);
+  const detailTotal = items.reduce((sum, item) => sum + item.value, 0);
+  return <section id={id} className="business-report-operating-details">
+    <div className="business-report-section__heading"><h2>Chi phí vận hành khác</h2><span className="business-report-scope">{report.label}</span></div>
+    <p className="business-report-scope">Không gồm lương và giá vốn • {items.length} loại chi • {formatVnd(detailTotal)}</p>
+    {Math.abs(detailTotal - total) > 1 && <p role="status">Chi tiết đang lệch {formatVnd(Math.abs(detailTotal - total))} so với tổng báo cáo. Cần đối chiếu dữ liệu.</p>}
+    <CostRows rows={items.slice(0, limit)} total={total} onOpenExpense={onOpenExpense} />
+    {items.length > limit && <button type="button" className="business-report-link-row" onClick={() => setLimit(value => value + 20)}>Xem thêm ({items.length - limit}) <ChevronDown size={16} /></button>}
+  </section>;
 }
 
 function CostRows({ rows, total, onOpenExpense }) {

@@ -43,6 +43,8 @@ const profileRender = process.env.HD_AUDIT_PROFILE_RENDER !== '0';
 const useNative = process.env.HD_AUDIT_NATIVE === '1';
 const useAndroid = process.env.HD_AUDIT_ANDROID === '1' || useNative;
 const selectedModules = process.env.HD_AUDIT_MODULES?.split(',').filter(Boolean);
+const navigationIterations = Number(process.env.HD_AUDIT_NAV_ITERATIONS || 5);
+assert.ok(Number.isInteger(navigationIterations) && navigationIterations >= 1 && navigationIterations <= 100);
 const profileModules = (process.env.HD_AUDIT_PROFILE_MODULES || 'payroll,pricing,finance').split(',');
 const profileActions = (process.env.HD_AUDIT_PROFILE_ACTIONS || 'open').split(',');
 if (criticalOnly) {
@@ -78,7 +80,7 @@ Object.assign(process.env, {
   VITE_PERFORMANCE_LOG_LIMIT: '10000', VITE_HD_BUILD_ID: `interaction-${phase}`,
 });
 if (process.env.HD_AUDIT_REUSE_BUILD !== '1') {
-  await build({ build: { outDir: buildOutput }, logLevel: 'warn' });
+  await build({ build: { outDir: buildOutput, ...(process.env.HD_AUDIT_SOURCE_MAPS === '1' ? { sourcemap: true } : {}) }, logLevel: 'warn' });
 }
 const server = await preview({ build: { outDir: buildOutput }, preview: { host: '127.0.0.1', port: 0 } });
 const baseUrl = useNative ? 'https://localhost/?perfMonitor=1' : `http://127.0.0.1:${server.httpServer.address().port}/?perfMonitor=1`;
@@ -249,7 +251,14 @@ const samples = [];
 const failures = [];
 const errors = [];
 const observations = [];
-const device = useAndroid ? (await _android.devices()).find(device => device.serial().startsWith('emulator-')) : null;
+const requestedSerial = process.env.HD_MANAGER_ANDROID_SERIAL;
+if (requestedSerial) {
+  assert.match(requestedSerial, /^[a-zA-Z0-9_-]+$/, 'Invalid Android serial');
+  assert.ok(requestedSerial.startsWith('emulator-') || process.env.HD_AUDIT_ALLOW_PHYSICAL === '1', 'Physical devices require explicit opt-in');
+}
+const device = useAndroid ? (await _android.devices()).find(device => requestedSerial
+  ? device.serial() === requestedSerial
+  : device.serial().startsWith('emulator-')) : null;
 if (useAndroid) assert.ok(device, 'An authorized Android emulator is required; never select a physical device implicitly');
 const adb = process.env.HD_MANAGER_ADB || 'D:/HD-DEV/android/sdk/platform-tools/adb.exe';
 const port = String(server.httpServer.address().port);
@@ -615,7 +624,7 @@ try {
     };
     const navigate = async (route, measured = false, iteration = 0) => {
       const [module, label, bottomLabel] = routes.find(row => row[0] === route) || [route, 'Thêm'];
-      const nav = page.locator('[data-hd-navigation="bottom"]');
+      const nav = page.locator('[data-hd-navigation="bottom"]:visible, [data-hd-navigation="sidebar"]:visible').first();
       if (!await nav.isVisible() && await page.getByRole('button', { name: 'Quay lại', exact: true }).first().isVisible()) {
         await page.getByRole('button', { name: 'Quay lại', exact: true }).first().click();
         // Attendance has its own internal back stack before returning to the shell.
@@ -649,7 +658,7 @@ try {
     };
     for (const [module] of actionsOnly || priceOnly ? [] : routes.filter(([key]) => (!selectedModules || selectedModules.includes(key)) && (!criticalOnly || key === 'delivery_reports'))) {
       try {
-        for (let iteration = 1; iteration <= 5; iteration++) {
+        for (let iteration = 1; iteration <= navigationIterations; iteration++) {
           await navigate(module === 'home' ? 'more' : 'home');
           await captureLifecycle(module, iteration, 'away');
           await navigate(module, true, iteration);

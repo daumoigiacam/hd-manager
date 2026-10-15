@@ -21,7 +21,7 @@ export async function buildAcceptanceApk({ buildOutput, output, fixture, token }
   }
   // Generated fixture is included only in a separate, debug-only APK. No cloud
   // Firebase configuration, credential or business data enters this package.
-  const init = `localStorage.removeItem('hd-manager-session-v2');window.__initial_auth_token=${JSON.stringify(token)};if(!sessionStorage.getItem('perf-seeded')){localStorage.setItem('hd-manager-local-db-v2-clean-preview',${JSON.stringify(JSON.stringify(fixture))});sessionStorage.setItem('perf-seeded','1');}`;
+  const init = `${token === null ? 'localStorage.clear();sessionStorage.clear();' : ''}localStorage.removeItem('hd-manager-session-v2');window.__initial_auth_token=${JSON.stringify(token)};if(!sessionStorage.getItem('perf-seeded')){localStorage.setItem('hd-manager-local-db-v2-clean-preview',${JSON.stringify(JSON.stringify(fixture))});sessionStorage.setItem('perf-seeded','1');}`;
   await writeFile(path.join(assets, 'public', 'acceptance-init.js'), init);
   const indexPath = path.join(assets, 'public', 'index.html');
   const index = await readFile(indexPath, 'utf8');

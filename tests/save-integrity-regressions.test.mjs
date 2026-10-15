@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appFunction } from './helpers/app-source-function.mjs';
+import { isFuelExpenseCategory } from '../src/features/assets/expenseCategory.js';
 import { createSaveQueueHarness } from './helpers/save-queue-harness.mjs';
 import { commitAtomicWrites, ATOMIC_SAVE_COLLECTION, expandPendingWrites } from '../src/utils/atomicSave.js';
 import { canAutomaticallyRetryWrite, pendingWriteFailure, isRetryableWriteError } from '../src/utils/pendingWriteRetry.js';
@@ -395,6 +396,7 @@ test('expenses use stable command IDs and common durable save for create/edit/ar
   const bindings = {
     isVpsStagingMode: false, firebaseUser: { uid: 'u' }, myCompanyId: 'a', currentUser: { id: 'e' },
     rawExpenses: [{ id: 'existing', companyId: 'a' }, { id: 'foreign', companyId: 'b' }],
+    assets: [{ id: 'own', companyId: 'a' }, { id: 'foreign', companyId: 'b' }, { id: 'archived', companyId: 'a', isArchived: true }],
     parseLooseMoneyValue: Number, normalizeExpenseCategoryLabel: value => value,
     normalizeLeadingLabel: value => value, CASHFLOW_APPROVAL_STATUS: { pending: 'pending', approved: 'approved', rejected: 'rejected' },
     saveDataDocument: async (_, id, payload) => { saved.set(id, payload); return { queued: true }; },
@@ -408,6 +410,11 @@ test('expenses use stable command IDs and common durable save for create/edit/ar
   await assert.rejects(appFunction('handleAddExpense', { ...bindings, firebaseUser: null })('e', draft));
   const edit = appFunction('handleEditExpense', bindings);
   assert.equal((await edit('existing', { amount: 63 })).queued, true);
+  for (const assetId of ['foreign', 'archived', 'missing']) {
+    await assert.rejects(add('e', { ...draft, assetId }), /xe\/tài sản/);
+    await assert.rejects(edit('existing', { assetId }), /xe\/tài sản/);
+  }
+  assert.equal((await edit('existing', { assetId: 'own' })).queued, true);
   await assert.rejects(edit('foreign', { amount: 60 }));
   await assert.rejects(edit('existing', { amount: -1 }));
   const archive = appFunction('handleDeleteExpense', bindings);
@@ -420,7 +427,7 @@ test('finance expense form awaits durable acceptance, rejects double tap and ret
   const changes = [];
   let finish, calls = 0;
   const bindings = {
-    canCreateExpense: true, expenseSubmitInFlightRef: lock, expenseMutationIdRef: command,
+    canCreateExpense: true, expenseSubmitInFlightRef: lock, expenseMutationIdRef: command, isFuelExpenseCategory,
     newExpense: { amount: 60, category: 'Test', note: 'Draft', date: '2026-09-30' },
     normalizeExpenseCategoryLabel: value => value, parseInputCurrency: Number, normalizeLeadingLabel: value => value,
     isDriverFinanceMode: false, cashflowNeedsApproval: false, reportedCashflowRole: 'company',

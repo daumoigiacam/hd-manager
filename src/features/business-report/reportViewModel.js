@@ -47,10 +47,24 @@ export function getNonPayrollExpenseItems(rows = [], report = {}) {
 }
 
 export function getExpenseSourceRows(rows = [], report = {}, selected = {}) {
-  return rows.filter(row => !isPayrollExpenseRow(row) && row.name === selected.name && row.date
+  return rows.filter(row => !isPayrollExpenseRow(row) && row.name === selected.name && (!selected.operatingOnly || (row.category !== 'Giá vốn' && row.category === selected.category)) && row.date
     && (!report.startDate || row.date >= report.startDate)
     && (!report.endDate || row.date <= report.endDate))
     .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export function getOperatingExpenseItems(rows = [], report = {}) {
+  const grouped = new Map();
+  for (const row of rows) {
+    if (isPayrollExpenseRow(row) || row.category === 'Giá vốn' || !row.date
+      || (report.startDate && row.date < report.startDate) || (report.endDate && row.date > report.endDate)) continue;
+    const key = JSON.stringify([row.category || '', row.name || '']);
+    const item = grouped.get(key) || { name: row.name, category: row.category || '', value: 0, count: 0, operatingOnly: true };
+    item.value += number(row.value);
+    item.count += 1;
+    grouped.set(key, item);
+  }
+  return [...grouped.values()].sort((a, b) => b.value - a.value);
 }
 
 export function getPeriodGuidance(snapshot, report, customers, costs) {
