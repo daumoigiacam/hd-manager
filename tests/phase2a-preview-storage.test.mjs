@@ -131,7 +131,9 @@ test('inherited footer and production Firebase transport remain unchanged', asyn
     const baseline = execFileSync('git', ['show', `4db424a3e511bc2a24162245e7423478da9f89c8:${path}`], { encoding: 'utf8' });
     const inputDialogToken = /^  --hd-layer-input-dialog: 150;\r?\n/gm;
     assert.equal([...content.matchAll(inputDialogToken)].length, 1, 'Dispatch dialog uses one shared layer token');
-    const canonical = text => text.replace(inputDialogToken, '').replace(customerFabRule, '').replace(customerPagerRule, '').replace(/\r\n/g, '\n');
+    const customerFocusRule = /\/\* Keep editable text stable before and during focus; override compact-field\r?\n   rules so mobile browsers do not magnify the customer form on input focus\. \*\/\r?\n@media \(max-width: 1023px\), \(pointer: coarse\) \{\r?\n  \.hd-shell--staff \.hd-customer-create-view \.hd-customer-create-view__form :is\(input, select, textarea\) \{\r?\n    font-size: max\(16px, var\(--hd-type-body\)\) !important;\r?\n    transition-property: color, background-color, border-color, box-shadow;\r?\n  \}\r?\n\}\r?\n\r?\n/g;
+    assert.equal([...content.matchAll(customerFocusRule)].length, 1, 'Customer input focus correction remains isolated');
+    const canonical = text => text.replace(inputDialogToken, '').replace(customerFabRule, '').replace(customerPagerRule, '').replace(customerFocusRule, '').replace(/\r\n/g, '\n');
     assert.equal(canonical(content), canonical(baseline));
   }
   for (const path of ['src/config/firebase-runtime.js', 'src/config/firebase-rest-runtime.js']) {

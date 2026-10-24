@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import {
   REPORT_PERIODS, formatCompactVnd, formatPercent, formatShortDate, formatVnd,
-  aggregateReportRows, getChangePercent, getExpenseSourceRows, getNonPayrollExpenseItems, getPayrollPeriodSummary, getPeriodGuidance, getProductImage, getReportPeriod, getRevenueGroups, getTopSalesEmployees,
+  aggregateReportRows, getCashExpenseFinance, getChangePercent, getExpenseSourceRows, getNonPayrollExpenseItems, getPayrollPeriodSummary, getPeriodGuidance, getProductImage, getReportPeriod, getRevenueGroups, getTopSalesEmployees,
 } from './reportViewModel.js';
 import { buildProductDailyReportSeries } from '../../services/executiveDashboardService.js';
 import './business-report.css';
@@ -191,7 +191,7 @@ export default function BusinessReportWorkspace({ snapshot, employee, accountNam
   const [showAllInsights, setShowAllInsights] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState(null);
   const [revenueSelection, setRevenueSelection] = useState(null);
-  const finance = snapshot?.finance || {};
+  const finance = useMemo(() => getCashExpenseFinance(snapshot?.finance), [snapshot?.finance]);
   const business = snapshot?.business || {};
   const report = useMemo(() => getReportPeriod(finance, period, customRange), [finance, period, customRange]);
   const reportSalesEmployees = useMemo(() => getTopSalesEmployees(business, finance, period, customRange), [business, finance, period, customRange]);
@@ -284,10 +284,10 @@ function CostReport({ report, finance, costGroups, expenseItems, salaryEmployees
   const operatingId = useId();
   const costRatio = report.revenue > 0 ? report.expense / report.revenue * 100 : 0;
   const payrollTotal = salaryEmployees.reduce((total, row) => total + Number(row.value || 0), 0);
-  const costOfGoods = costGroups.find((row) => row.category === 'Giá vốn')?.value || 0;
+  const costOfGoods = costGroups.find((row) => row.category === (finance.expenseBasis === 'cash-vouchers' ? 'Chi mua hàng' : 'Giá vốn'))?.value || 0;
   const operatingCosts = Math.max(0, report.expense - payrollTotal - costOfGoods);
   return <><div className="business-report-cost-hero"><span>Tổng chi {report.label.toLowerCase()}</span><strong>{formatVnd(report.expense)}</strong><Change value={getChangePercent(report.expense, report.previous?.expense)} inverse /></div>
-    <div className="business-report-mini-grid"><div><span>Chi phí lương</span><strong>{formatVnd(payrollTotal)}</strong></div><div><span>Giá vốn đã dùng</span><strong>{formatVnd(costOfGoods)}</strong></div><button type="button" className="business-report-operating-toggle" aria-expanded={showOperating} aria-controls={operatingId} onClick={() => setShowOperating(value => !value)}><span>Chi phí vận hành khác <ChevronDown size={16} aria-hidden="true" /></span><strong>{formatVnd(operatingCosts)}</strong></button><div><span>Chi phí / doanh thu</span><strong>{formatPercent(costRatio)}</strong></div></div>
+    <div className="business-report-mini-grid"><div><span>{finance.expenseBasis === 'cash-vouchers' ? 'Chi lương' : 'Chi phí lương'}</span><strong>{formatVnd(payrollTotal)}</strong></div><div><span>{finance.expenseBasis === 'cash-vouchers' ? 'Chi mua hàng' : 'Giá vốn đã dùng'}</span><strong>{formatVnd(costOfGoods)}</strong></div><button type="button" className="business-report-operating-toggle" aria-expanded={showOperating} aria-controls={operatingId} onClick={() => setShowOperating(value => !value)}><span>Chi phí vận hành khác <ChevronDown size={16} aria-hidden="true" /></span><strong>{formatVnd(operatingCosts)}</strong></button><div><span>Chi phí / doanh thu</span><strong>{formatPercent(costRatio)}</strong></div></div>
     {showOperating && <OperatingExpenseDetails key={`${report.startDate}-${report.endDate}`} id={operatingId} rows={finance.expenseDetailRows || []} report={report} total={operatingCosts} onOpenExpense={onOpenExpense} />}
     <Section title="Chi phí theo thời gian" className="business-report-panel"><Chart rows={report.chartRows} fields={['expense']} type="bars" title={`Chi phí theo thời gian • ${report.label}`} /></Section>
     <DonutBreakdown title={`Cơ cấu chi phí • ${report.label}`} rows={costGroups} center={report.expense} caption="Tổng chi kỳ" />

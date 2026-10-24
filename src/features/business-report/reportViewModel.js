@@ -26,6 +26,48 @@ export const REPORT_PERIODS = [
 
 const sumRows = (rows, field) => rows.reduce((sum, row) => sum + number(row?.[field]), 0);
 
+// Use purchase/operating vouchers plus payroll earned in the selected period.
+// Salary payments settle payroll and must not add a second expense.
+export function getCashExpenseFinance(finance = {}) {
+  if (!Array.isArray(finance.cashExpenseRows)) return finance;
+  const payrollRows = finance.payrollAccrualRows || [];
+  const rows = finance.cashExpenseRows.filter(row => row.date && row.category !== 'Lương').map(row => ({
+    ...row, category: row.category === 'Giá vốn' ? 'Chi mua hàng' : row.category,
+  }));
+  rows.push(...payrollRows.map(row => ({ ...row, category: 'Lương', sourceType: 'payroll' })));
+  const days = new Map();
+  const months = new Map();
+  for (const row of rows) {
+    days.set(row.date, (days.get(row.date) || 0) + number(row.value));
+    const month = row.date.slice(0, 7);
+    months.set(month, (months.get(month) || 0) + number(row.value));
+  }
+  const project = row => {
+    const expense = (row.date ? days.get(row.date) : months.get(row.month)) || 0;
+    return { ...row, expense, profit: number(row.revenue) - expense };
+  };
+  const daily = new Map((finance.series30Days || []).map(row => [row.date, row]));
+  const monthly = new Map((finance.series12Months || []).map(row => [row.month, row]));
+  // Keep full-period charts reconciled when a confirmed voucher is dated later
+  // in the current period. Do not synthesize revenue for those dates.
+  for (const date of days.keys()) {
+    if (date > finance.todayKey && date.startsWith(finance.currentMonthKey) && !daily.has(date)) daily.set(date, { date });
+  }
+  for (const month of months.keys()) {
+    if (month > finance.currentMonthKey && month.startsWith(String(finance.todayKey).slice(0, 4)) && !monthly.has(month)) monthly.set(month, { month });
+  }
+  return {
+    ...finance, expenseBasis: 'cash-vouchers',
+    reportExpenseRows: rows,
+    expenseDetailRows: rows,
+    expenseCategoryRows: rows.map(row => ({ ...row, name: row.category })),
+    salaryEmployeeRows: payrollRows,
+    series7Days: (finance.series7Days || []).map(project),
+    series30Days: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)).map(project),
+    series12Months: [...monthly.values()].sort((a, b) => a.month.localeCompare(b.month)).map(project),
+  };
+}
+
 export function getPayrollPeriodSummary(finance = {}, report = {}) {
   const employees = aggregateReportRows(finance.salaryEmployeeRows || [], report, {
     groupBy: 'employeeId', valueFields: ['value'], limit: Infinity,
@@ -39,6 +81,7 @@ export function getPayrollPeriodSummary(finance = {}, report = {}) {
 }
 
 const isPayrollExpenseRow = row => row.sourceType === 'payroll' || row.category === 'Lương';
+const isPurchaseExpenseRow = row => ['Giá vốn', 'Chi mua hàng'].includes(row.category);
 
 export function getNonPayrollExpenseItems(rows = [], report = {}) {
   return aggregateReportRows(rows.filter(row => !isPayrollExpenseRow(row)), report, {
@@ -47,7 +90,7 @@ export function getNonPayrollExpenseItems(rows = [], report = {}) {
 }
 
 export function getExpenseSourceRows(rows = [], report = {}, selected = {}) {
-  return rows.filter(row => !isPayrollExpenseRow(row) && row.name === selected.name && (!selected.operatingOnly || (row.category !== 'Giá vốn' && row.category === selected.category)) && row.date
+  return rows.filter(row => !isPayrollExpenseRow(row) && row.name === selected.name && (!selected.operatingOnly || (!isPurchaseExpenseRow(row) && row.category === selected.category)) && row.date
     && (!report.startDate || row.date >= report.startDate)
     && (!report.endDate || row.date <= report.endDate))
     .sort((a, b) => b.date.localeCompare(a.date));
@@ -56,7 +99,7 @@ export function getExpenseSourceRows(rows = [], report = {}, selected = {}) {
 export function getOperatingExpenseItems(rows = [], report = {}) {
   const grouped = new Map();
   for (const row of rows) {
-    if (isPayrollExpenseRow(row) || row.category === 'Giá vốn' || !row.date
+    if (isPayrollExpenseRow(row) || isPurchaseExpenseRow(row) || !row.date
       || (report.startDate && row.date < report.startDate) || (report.endDate && row.date > report.endDate)) continue;
     const key = JSON.stringify([row.category || '', row.name || '']);
     const item = grouped.get(key) || { name: row.name, category: row.category || '', value: 0, count: 0, operatingOnly: true };
@@ -102,6 +145,27 @@ export function getReportPeriod(finance = {}, period = 'today', customRange = nu
     custom: { label: `${formatShortDate(customRange?.start)}–${formatShortDate(customRange?.end)}`, startDate: customRange?.start, endDate: customRange?.end, revenue: sumRows(rangeRows, 'revenue'), profit: sumRows(rangeRows, 'profit'), expense: sumRows(rangeRows, 'expense'), rows: rangeRows },
   };
   const selected = map[period] || map.today;
+  if (finance.expenseBasis === 'cash-vouchers') {
+    const lastDay = (yearValue, monthValue) => {
+      const date = new Date(Number(yearValue), Number(monthValue), 0);
+      return `${yearValue}-${String(monthValue).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    };
+    // Match the full calendar period selected in Thu chi, not only month-to-date.
+    if (period === 'month') selected.endDate = lastDay(year, month.slice(5, 7));
+    if (period === 'quarter') selected.endDate = lastDay(year, (quarter + 1) * 3);
+    if (period === 'year') selected.endDate = `${year}-12-31`;
+    const sumExpense = (start, end) => finance.reportExpenseRows.reduce((sum, row) =>
+      row.date && row.date >= start && row.date <= end ? sum + number(row.value) : sum, 0);
+    selected.expense = sumExpense(selected.startDate, selected.endDate);
+    selected.profit = number(selected.revenue) - selected.expense;
+    if (selected.previous) {
+      const previousMonth = finance.previousMonthKey || '';
+      const start = period === 'today' ? finance.yesterdayKey : `${previousMonth}-01`;
+      const end = period === 'today' ? finance.yesterdayKey : lastDay(previousMonth.slice(0, 4), previousMonth.slice(5, 7));
+      const expense = sumExpense(start, end);
+      selected.previous = { ...selected.previous, expense, profit: number(selected.previous.revenue) - expense };
+    }
+  }
   const chartRows = period === 'today' ? (Array.isArray(finance.series7Days) ? finance.series7Days : []) : selected.rows;
   return {
     ...selected,

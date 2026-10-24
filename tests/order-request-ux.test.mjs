@@ -19,6 +19,7 @@ import {
 } from '../src/utils/orderRequestShareGrouping.js';
 import { getFixedFooterNavIds } from '../src/utils/footerNavigation.js';
 import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixedProductMemory.js';
+import { resolveCustomerProductConfiguration } from '../src/services/customerProductBilling.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
@@ -66,11 +67,13 @@ test('plus picker loads catalog on demand without post-save preference writes', 
   assert.doesNotMatch(appSource, /scheduleOrderRequestMemorySync|persistOrderRequestMemories/);
 });
 
-test('quick suggestions use previous order variants without expanding catalog attributes', () => {
-  assert.match(appSource, /previousOrderOptions\.map/);
+test('configured products expose catalog attributes while other previous order suggestions stay frozen', () => {
+  assert.match(appSource, /previousOrderOptions\.filter/);
+  assert.match(appSource, /expandOrderRequestAttributes\(getProductAttributes\(product\)/);
   assert.match(appSource, /manualFixedProductVariantOptions\.map/);
   assert.match(appSource, /previousOrderDraftFields\(variantConfig\)/);
-  assert.doesNotMatch(appSource, /manualFixedProductVariantGroups/);
+  assert.match(appSource, /manualFixedProductGroups\.map/);
+  assert.match(appSource, /selectedItems=\{selectedQuickItems\}/);
 });
 
 test('catalog search groups one product and keeps its attributes as selectable chips', () => {
@@ -389,10 +392,12 @@ test('branch saved defaults remain isolated from the root customer configuration
   assert.equal(branchConfig.defaultOrderUnit, 'Bộ');
 });
 
-test('request saves do not overwrite customer defaults or emit success banners', () => {
+test('request saves only update defaults after explicit price opt-in and confirmed order write', () => {
   const inlineSaveSection = appSource.slice(appSource.indexOf('const saveInlineEditRow = async'), appSource.indexOf('const deleteInlineEditRow = async'));
   assert.match(inlineSaveSection, /await onEditOrderRequest/);
-  assert.match(inlineSaveSection, /backgroundSync: true/);
+  assert.match(inlineSaveSection, /backgroundSync: !rememberOrderPrice/);
+  assert.match(inlineSaveSection, /if \(rememberOrderPrice && orderCellEditor\?\.field === 'unitPrice'\)/);
+  assert.ok(inlineSaveSection.indexOf('await onEditOrderRequest') < inlineSaveSection.indexOf('await onSyncCustomerFixedProductDefaults'));
   assert.doesNotMatch(inlineSaveSection, /onPersisted|scheduleOrderRequestMemorySync|Firebase đang đồng bộ nền/);
   assert.match(inlineSaveSection, /getFriendlyFirebaseErrorMessage/);
 });
@@ -624,6 +629,41 @@ test('orders remain reachable from More when the fixed footer belongs to another
   assert.match(moreMenuSource, /id: 'orders'[^\n]*label: 'Đơn hàng'/);
   assert.match(moreMenuSource, /show: tabPermissions\.orders/);
   assert.match(moreMenuSource, /onClick=\{\(\) => setActiveTab\?\.\(item\.id\)\}/);
+});
+
+test('remembered attribute prices stay independent, preserve siblings and are idempotent', () => {
+  let customer = { id: 'c', customerProductIds: ['p'], priceOverrides: { p: { price: 104000, pricingUnit: 'Con', defaultOrderUnit: 'Con' } } };
+  const remember = (attributeLabel, unitPrice, billingUnit = 'Con') => {
+    const request = { id: 'r', customerId: 'c', date: '2026-10-24', items: [{ productId: 'p', configurationId: 'shared', attributeLabel, unitPrice, billingUnit, quantityUnit: 'Con' }] };
+    const result = buildCustomerFixedProductMemoryPatch({ customer, requests: [request], validProductIds: ['p'] });
+    if (result.patch) customer = { ...customer, ...result.patch };
+    return result;
+  };
+  remember('To', 125000);
+  remember('Trung', 115000);
+  remember('To', 120000);
+  assert.equal(customer.priceOverrides.p.variants.find(v => v.attributeLabel === 'To').price, 120000);
+  assert.equal(customer.priceOverrides.p.variants.find(v => v.attributeLabel === 'Trung').price, 115000);
+  for (const [attributeLabel, expected] of [['To', 120000], ['Trung', 115000]]) {
+    const configuration = resolveCustomerProductConfiguration({ customerConfig: customer.priceOverrides.p, product: { id: 'p', unit: 'Kg' }, attributeLabel });
+    assert.equal(configuration.unitPrice, expected);
+    assert.equal(configuration.billingUnit, 'Con');
+  }
+  assert.equal(remember('To', 120000).patch, null);
+  remember('To', 60000, 'Kg');
+  assert.equal(customer.priceOverrides.p.variants.filter(v => v.attributeLabel === 'To').length, 2);
+  assert.equal(customer.priceOverrides.p.variants.find(v => v.attributeLabel === 'To' && v.billingUnit === 'Con').price, 120000);
+  assert.equal(new Set(customer.priceOverrides.p.variants.map(v => v.id)).size, customer.priceOverrides.p.variants.length);
+});
+
+test('price default transaction reads the source order and refuses changed lines or deleted branches', () => {
+  const source = appSource.slice(appSource.indexOf('const handleSyncCustomerFixedProductDefaults ='), appSource.indexOf('const handleDeleteCustomer ='));
+  assert.match(source, /await transaction\.get\(doc\(db, 'artifacts', appId, 'public', 'data', 'orderRequests', requestId\)\)/);
+  assert.match(source, /confirmed\.companyId !== myCompanyId/);
+  assert.match(source, /confirmed\.customerId !== normalizedCustomerId/);
+  assert.match(source, /expected\[key\]/);
+  assert.match(source, /memoryUpdate\.skippedBranchIds\.length/);
+  assert.match(source, /items: \[item\]/);
 });
 
 for (const { name, run } of tests) {

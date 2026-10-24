@@ -70,6 +70,7 @@ const getVariantIndex = (variants = [], item = {}) => {
     return variants.findIndex((variant = {}) => (
       cleanId(variant.sizeLabel || variant.size) === sizeLabel
       && cleanId(variant.attributeLabel || variant.productAttribute || variant.attribute) === attributeLabel
+      && (!getItemBillingUnit(item) || !getItemBillingUnit(variant) || getItemBillingUnit(item) === getItemBillingUnit(variant))
     ));
   }
 
@@ -180,11 +181,18 @@ const getConfigurationIdentity = (config = {}) => ({
   attribute: cleanId(config.attributeLabel || config.productAttribute || config.attribute),
 });
 
+const getNewVariantId = (variants, item) => {
+  const proposed = buildVariantId(item, variants.length);
+  if (!variants.some(variant => cleanId(variant.id || variant.configurationId) === proposed)) return proposed;
+  return `${proposed}:${encodeURIComponent(JSON.stringify([getItemAttributeLabel(item), getItemSizeLabel(item), getItemBillingUnit(item)]))}`;
+};
+
 const hasDifferentVariantIdentity = (current = {}, item = {}) => {
   const currentIdentity = getConfigurationIdentity(current);
   const itemIdentity = getConfigurationIdentity(item);
   if (!currentIdentity.size && !currentIdentity.attribute) return false;
   if (!itemIdentity.size && !itemIdentity.attribute) return false;
+  if (getItemBillingUnit(current) && getItemBillingUnit(item) && getItemBillingUnit(current) !== getItemBillingUnit(item)) return true;
   return currentIdentity.size !== itemIdentity.size || currentIdentity.attribute !== itemIdentity.attribute;
 };
 
@@ -218,7 +226,7 @@ const updateProductConfiguration = (currentConfig = {}, item = {}) => {
     delete previousVariant.defaultConfigurationId;
     const nextVariant = {
       ...updateConfiguration({}, item),
-      id: buildVariantId(item, 1),
+      id: getNewVariantId([previousVariant], item),
     };
     return rememberUsageMetadata(
       rememberVariantConfiguration({
@@ -232,7 +240,7 @@ const updateProductConfiguration = (currentConfig = {}, item = {}) => {
   if (variantIndex < 0) {
     const nextVariant = {
       ...updateConfiguration({}, item),
-      id: buildVariantId(item, variants.length),
+      id: getNewVariantId(variants, item),
     };
     return rememberUsageMetadata(
       rememberVariantConfiguration({

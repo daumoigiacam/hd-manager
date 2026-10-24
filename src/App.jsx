@@ -215,7 +215,7 @@ import {
   prepareOrderRequestNativeFiles,
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
-import { getOrderRequestAttributeOptions } from './utils/orderRequestAttributes.js';
+import { getOrderRequestAttributeOptions, expandOrderRequestAttributes } from './utils/orderRequestAttributes.js';
 import { getContextualFabActionIds, getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { getAppBackTab } from './utils/appBackNavigation.js';
 import {
@@ -19627,7 +19627,7 @@ export default function App() {
     }
   };
 
-  const handleSyncCustomerFixedProductDefaults = async (customerId, savedRequests = []) => {
+  const handleSyncCustomerFixedProductDefaults = async (customerId, savedRequests = [], priceSelection = null) => {
     const normalizedCustomerId = `${customerId || ''}`.trim();
     if (!normalizedCustomerId) {
       return {
@@ -19642,13 +19642,14 @@ export default function App() {
       .filter((product) => product?.companyId === myCompanyId && !product?.isArchived)
       .map((product) => product.id)
       .filter(Boolean);
-    const buildMemoryPatch = (customer) => buildCustomerFixedProductMemoryPatch({
+    const buildMemoryPatch = (customer, requests = savedRequests) => buildCustomerFixedProductMemoryPatch({
       customer,
-      requests: savedRequests,
+      requests,
       validProductIds,
     });
 
     if (isVpsStagingMode) {
+      if (priceSelection) throw new Error('Lưu giá thuộc tính chỉ hỗ trợ Firebase hiện tại.');
       const currentCustomer = rawCustomers.find((customer) => customer.id === normalizedCustomerId);
       if (!currentCustomer) throw new Error('Không tìm thấy khách hàng để đồng bộ sản phẩm cố định.');
 
@@ -19680,7 +19681,28 @@ export default function App() {
         throw new Error('Bạn không có quyền cập nhật cấu hình khách hàng này.');
       }
 
-      const memoryUpdate = buildMemoryPatch(customer);
+      let confirmedRequests = savedRequests;
+      if (priceSelection) {
+        const requestId = savedRequests[0]?.id;
+        if (!requestId || !Number.isInteger(priceSelection.itemIndex)) throw new Error('Dòng đơn không hợp lệ.');
+        const requestSnapshot = await transaction.get(doc(db, 'artifacts', appId, 'public', 'data', 'orderRequests', requestId));
+        const confirmed = requestSnapshot.exists() ? requestSnapshot.data() : null;
+        if (!confirmed || confirmed.companyId !== myCompanyId || confirmed.customerId !== normalizedCustomerId || confirmed.isArchived
+          || ['cancelled', 'canceled', 'rejected'].includes(confirmed.status)) {
+          throw new Error('Đơn đặt không còn hợp lệ để lưu giá.');
+        }
+        const item = (confirmed.items || [confirmed.primaryItem])[priceSelection.itemIndex];
+        const expected = savedRequests[0]?.items?.[priceSelection.itemIndex];
+        if ((confirmed.branchId || confirmed.customerBranchId || '') !== (savedRequests[0]?.branchId || savedRequests[0]?.customerBranchId || '')
+          || !item || !expected || ['productId', 'attributeLabel', 'sizeLabel', 'weightKg', 'billingUnit', 'pricingUnit', 'unitPrice']
+          .some(key => `${item[key] ?? ''}` !== `${expected[key] ?? ''}`)) {
+          throw new Error('Dòng đơn vừa thay đổi. Mở lại đơn giá trước khi lưu cho lần sau.');
+        }
+        if (!(Number(item.unitPrice) > 0)) throw new Error('Giá mặc định phải lớn hơn 0.');
+        confirmedRequests = [{ ...confirmed, id: requestId, items: [item] }];
+      }
+      const memoryUpdate = buildMemoryPatch(customer, confirmedRequests);
+      if (priceSelection && memoryUpdate.skippedBranchIds.length) throw new Error('Chi nhánh không còn tồn tại. Chưa lưu giá mặc định.');
       if (!memoryUpdate.patch) {
         return { memoryUpdate, savedCustomer: customer };
       }
@@ -40555,6 +40577,15 @@ const getCachedDashboardValue = (cache, key, dependencies, calculate) => {
   return value;
 };
 
+const resolveCashflowDateKey = (item = {}) => getDateKeyFromAnyValue(
+  (isPayosPaymentRecord(item) ? getPaymentDateSource(item) : '')
+    || item.cashflowDate || item.paymentDate || item.paidDate
+    || item.transactionDate || item.transactionDateTime || item.bankTransactionDate
+    || item.paidAt || item.transactionAt || item.transactedAt || item.transactionTime
+    || item.bankTransactionTime || item.paymentTime || item.completedTime || item.completedAt
+    || item.date || item.approvedAt || item.createdAt || item.updatedAt || getEntityTimestamp(item)
+);
+
 function ExecutiveDashboardView({
   payrollPeriods = [], onLoadPayrollPeriodSnapshots, employeeReviews = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false,
   employee,
@@ -40680,6 +40711,9 @@ function ExecutiveDashboardView({
     financials, payrollCosts, debtLedger, advanceRequests, products, warehouseImports,
     warehouseDispatches, warehouseStockCounts, assets, assetCostLogs, deliveryReports, dashboardDayKey
   ], () => buildExecutiveDashboardSnapshot({
+    cashExpenseRecords: expenses.filter(isCashflowOfficial).map(expense => ({
+      ...expense, date: resolveCashflowDateKey(expense),
+    })),
     employee,
     company,
     employees,
@@ -47217,29 +47251,6 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
     return map;
   }, [customerLedgerMap]);
 
-  const resolveCashflowDateKey = (item = {}) => getDateKeyFromAnyValue(
-    (isPayosPaymentRecord(item) ? getPaymentDateSource(item) : '')
-      || item.cashflowDate
-      || item.paymentDate
-      || item.paidDate
-      || item.transactionDate
-      || item.transactionDateTime
-      || item.bankTransactionDate
-      || item.paidAt
-      || item.transactionAt
-      || item.transactedAt
-      || item.transactionTime
-      || item.bankTransactionTime
-      || item.paymentTime
-      || item.completedTime
-      || item.completedAt
-      || item.date
-      || item.approvedAt
-      || item.createdAt
-      || item.updatedAt
-      || getEntityTimestamp(item)
-  );
-
   const isCashflowRecordInPeriod = (item = {}) => {
     const dateKey = resolveCashflowDateKey(item);
     return Boolean(dateKey) && dateKey >= periodRange.startDate && dateKey <= periodRange.endDate;
@@ -47295,15 +47306,13 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   }, [canApproveCashflow, canViewAllTransactions, employee?.id, expenses, payments, paymentStatusMap, periodRange]);
 
   const hasExpenseDetailFilter = expenseCategoryFilter !== 'all' || expenseAssetFilter !== 'all' || Boolean(expenseKeywordFilter.trim());
-  const filteredTransactions = useMemo(() => {
+  const matchingTransactions = useMemo(() => {
     const keyword = normalizeLookupText(searchKeyword);
     const expenseKeyword = normalizeLookupText(expenseKeywordFilter);
     const selectedExpenseCategoryKey = normalizeLookupText(expenseCategoryFilter);
     const selectedExpenseAssetKey = normalizeLookupText(expenseAssetFilter);
 
     return periodTransactions.filter(transaction => {
-      if (transactionTypeFilter === 'pending' && getCashflowApprovalMeta(transaction).status !== CASHFLOW_APPROVAL_STATUS.pending) return false;
-      if (!['all', 'pending'].includes(transactionTypeFilter) && transaction.transactionType !== transactionTypeFilter) return false;
       if (hasExpenseDetailFilter) {
         if (transaction.transactionType !== 'expense') return false;
         const transactionCategoryKey = normalizeLookupText(normalizeExpenseCategoryLabel(transaction.category || transaction.note || ''));
@@ -47356,9 +47365,16 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
 
       return haystack.includes(keyword);
     });
-  }, [periodTransactions, transactionTypeFilter, searchKeyword, expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter, hasExpenseDetailFilter, employeeNameMap, customerNameMap, orderByIdMap, orderByCodeMap, assetByIdMap, deliveryReportByIdMap]);
+  }, [periodTransactions, searchKeyword, expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter, hasExpenseDetailFilter, employeeNameMap, customerNameMap, orderByIdMap, orderByCodeMap, assetByIdMap, deliveryReportByIdMap]);
 
-  const officialTransactions = filteredTransactions.filter(item => isCashflowOfficial(item));
+  const filteredTransactions = useMemo(() => matchingTransactions.filter(transaction => (
+    transactionTypeFilter === 'all'
+    || (transactionTypeFilter === 'pending'
+      ? getCashflowApprovalMeta(transaction).status === CASHFLOW_APPROVAL_STATUS.pending
+      : transaction.transactionType === transactionTypeFilter)
+  )), [matchingTransactions, transactionTypeFilter]);
+
+  const officialTransactions = matchingTransactions.filter(item => isCashflowOfficial(item));
   const transactionPage = usePagedList(filteredTransactions, JSON.stringify([
     filterDate, periodType, transactionTypeFilter, searchKeyword,
     expenseCategoryFilter, expenseAssetFilter, expenseKeywordFilter,
@@ -47369,7 +47385,14 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const totalIncome = officialTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingIncome = pendingTransactions.filter(item => item.transactionType === 'payment').reduce((sum, item) => sum + (item.amount || 0), 0);
   const pendingExpense = pendingTransactions.filter(item => item.transactionType === 'expense').reduce((sum, item) => sum + (item.amount || 0), 0);
-  const balance = totalIncome - totalExpense;
+  const selectSummaryType = (type) => {
+    setTransactionTypeFilter(current => current === type ? 'all' : type);
+    if (type === 'payment') {
+      setExpenseCategoryFilter('all');
+      setExpenseAssetFilter('all');
+      setExpenseKeywordFilter('');
+    }
+  };
   const summaryAmountSize = (amount) => {
     const length = `${formatCurrency(amount)} đ`.length;
     return length >= 15 ? 'text-[9px]' : length >= 12 ? 'text-[10px]' : length >= 10 ? 'text-[11px]' : 'text-xs';
@@ -47727,16 +47750,15 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
       )}
 
       <div className="rounded-xl bg-gradient-to-r from-emerald-800 to-teal-700 px-2 py-3 text-white shadow-sm">
-        <div className="finance-summary-metrics grid grid-cols-3 divide-x divide-white/20 text-center">
+        <div className="finance-summary-metrics grid grid-cols-2 divide-x divide-white/20 text-center">
           {[
-            { label: 'Tổng thu', amount: totalIncome, tone: 'text-emerald-100' },
-            { label: 'Tổng chi phí', amount: totalExpense, tone: 'text-amber-100' },
-            { label: 'Lợi nhuận', amount: balance, tone: balance < 0 ? 'text-rose-100' : 'text-white' }
-          ].map(({ label, amount, tone }) => (
-            <div key={label} className="flex min-w-0 flex-col justify-center gap-1 px-1.5" title={`${label}: ${formatCurrency(amount)} đ`}>
+            { type: 'payment', label: 'Tổng thu', amount: totalIncome, tone: 'text-emerald-100' },
+            { type: 'expense', label: 'Tổng chi phí', amount: totalExpense, tone: 'text-amber-100' }
+          ].map(({ type, label, amount, tone }) => (
+            <button type="button" key={label} onClick={() => selectSummaryType(type)} aria-pressed={transactionTypeFilter === type} aria-controls="finance-transaction-list" className={`flex min-h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-1.5 py-2 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white ${transactionTypeFilter === type ? 'bg-white/20 ring-1 ring-inset ring-white/60' : ''}`} title={`${label}: ${formatCurrency(amount)} đ`}>
               <span className={`text-[10px] font-bold leading-tight ${tone}`}>{label}</span>
               <strong className={`${summaryAmountSize(amount)} whitespace-nowrap font-black leading-tight text-white`}>{formatCurrency(amount)} đ</strong>
-            </div>
+            </button>
           ))}
         </div>
         {debtRepaymentTotal > 0 && (
@@ -47751,9 +47773,9 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
         )}
       </div>
 
-      <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+      <div id="finance-transaction-list" className="rounded-2xl border border-gray-100 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-          <h3 className="font-bold text-gray-800">Danh sách thu chi</h3>
+          <h3 className="font-bold text-gray-800" aria-live="polite">{transactionTypeFilter === 'payment' ? 'Danh sách thu' : transactionTypeFilter === 'expense' ? 'Danh sách chi phí' : 'Danh sách thu chi'}</h3>
           {(canCreateExpense || canCreateIncome) && (
             <div className="relative hidden md:block">
               <button
@@ -54715,6 +54737,8 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
   value = '',
   options = [],
   secondaryField = null,
+  children = null,
+  saveHint = '',
   suffix = '',
   placeholder = '',
   canSave = true,
@@ -54845,8 +54869,9 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
           {hasInlineSecondaryField && secondaryField?.helpText && (
             <p className="mt-2 text-xs font-medium text-slate-400">{secondaryField.helpText}</p>
           )}
+          {children}
           <p className="mt-2 text-xs font-medium text-slate-400">
-            {canSave ? 'Chỉ ô này được cập nhật khi bấm Lưu.' : 'Bạn chỉ có quyền xóa dòng này.'}
+            {canSave ? (saveHint || 'Chỉ ô này được cập nhật khi bấm Lưu.') : 'Bạn chỉ có quyền xóa dòng này.'}
           </p>
         </div>
 
@@ -56595,7 +56620,9 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
   variants = [],
   selectedQuickVariantKeys = new Set(),
   pendingQuickProductSelectionKeys = new Set(),
-  onSelect
+  onSelect,
+  selectedItems,
+  onQuantityChange
 }) {
   if (!product || variants.length === 0) return null;
   return (
@@ -56618,6 +56645,7 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
             displayAttributeLabel || variant.attributeLabel || '',
           ].filter(Boolean).join(' • ') || variant.unit || optionProduct?.unit || 'Mặc định';
           return (
+            <div key={key} className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               key={key}
               type="button"
@@ -56640,6 +56668,22 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
               {isSelected && <Check size={13} strokeWidth={3} aria-hidden="true" />}
               {isPending && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
             </button>
+            {isSelected && selectedItems?.get(selectionKey) && (
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input
+                  aria-label={'Số lượng ' + product.name + ' - ' + variantLabel}
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
+                  value={selectedItems.get(selectionKey).quantity}
+                  onChange={event => onQuantityChange?.(selectedItems.get(selectionKey).localItemId, event.target.value)}
+                  className="h-9 w-20 rounded-lg border border-slate-200 px-2 text-sm text-slate-900"
+                />
+                {selectedItems.get(selectionKey).quantityUnit}
+              </label>
+            )}
+            </div>
           );
         })}
       </div>
@@ -56710,6 +56754,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const [orderCellEditor, setOrderCellEditor] = useState(null);
   const [orderUnitEditor, setOrderUnitEditor] = useState(null);
   const [isSavingOrderCell, setIsSavingOrderCell] = useState(false);
+  const [rememberOrderPrice, setRememberOrderPrice] = useState(false);
   const savingOrderCellRef = useRef(false);
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
@@ -57512,15 +57557,40 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     () => getCustomerBranchProductConfigSource(primarySelectedCustomer, primaryDraft?.branchId || '', activeProducts),
     [activeProducts, primaryDraft?.branchId, primarySelectedCustomer]
   );
-  const manualFixedProductVariantOptions = useMemo(() => previousOrderOptions.map(({ product, variant }) => ({
-    product,
-    variant,
-    key: buildOrderRequestVariantKey(product.id, variant),
-    selectionKey: buildOrderRequestVariantKey(product.id, variant),
-  })), [previousOrderOptions]);
+  const manualFixedProductVariantOptions = useMemo(() => {
+    const fixed = getOrderRequestFixedProducts(primarySelectedCustomer, primaryDraft?.branchId || '');
+    const configuredIds = new Set(fixed.map(product => product.id));
+    const options = previousOrderOptions.filter(({ product }) => !configuredIds.has(product.id));
+    fixed.forEach(product => {
+      const base = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product);
+      const variants = expandOrderRequestAttributes(getProductAttributes(product), getCustomerProductVariants(primaryProductConfigSource, product), base);
+      variants.forEach(variant => options.push({ product, variant }));
+    });
+    return options.map(({ product, variant }) => {
+      const configuration = resolveCustomerProductBillingConfiguration(primaryProductConfigSource, product, {
+        variant, variantId: variant.id || '', sizeLabel: variant.size || variant.sizeLabel || '', attributeLabel: variant.attributeLabel || '',
+      });
+      const selectionKey = buildOrderRequestVariantKey(product.id, variant.previousOrder ? variant : {
+        attributeLabel: configuration.attributeLabel, size: configuration.sizeLabel,
+        unit: configuration.billingUnit, price: configuration.unitPrice,
+      });
+      return { product, variant, key: selectionKey, selectionKey };
+    });
+  }, [previousOrderOptions, primarySelectedCustomer, primaryDraft?.branchId, primaryProductConfigSource, activeProducts, productLookup]);
+  const manualFixedProductGroups = useMemo(() => {
+    const groups = new Map();
+    manualFixedProductVariantOptions.forEach(option => {
+      if (!groups.has(option.product.id)) groups.set(option.product.id, { product: option.product, variants: [] });
+      const group = groups.get(option.product.id);
+      if (!group.variants.some(existing => existing.selectionKey === option.selectionKey)) group.variants.push(option);
+    });
+    return [...groups.values()];
+  }, [manualFixedProductVariantOptions]);
+  const selectedQuickItems = useMemo(() => new Map((primaryDraft?.items || [])
+    .filter(item => item.productId).map(item => [getDraftItemVariantKey(item), item])), [primaryDraft?.items]);
   const manualFixedProductIdSet = useMemo(
-    () => new Set(previousOrderOptions.map(({ product }) => product.id)),
-    [previousOrderOptions],
+    () => new Set(manualFixedProductVariantOptions.map(({ product }) => product.id)),
+    [manualFixedProductVariantOptions],
   );
   const manualExtraProductPickerKey = primaryDraft ? `manual-extra-products:${primaryDraft.localId}` : '';
   const isManualExtraProductPickerOpen = Boolean(manualExtraProductPickerKey) && openDraftPicker === manualExtraProductPickerKey;
@@ -58108,9 +58178,18 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     setRequestStatus('');
     try {
       await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin', {
-        backgroundSync: true,
+        backgroundSync: !rememberOrderPrice,
       });
+      if (rememberOrderPrice && orderCellEditor?.field === 'unitPrice') {
+        try {
+          await onSyncCustomerFixedProductDefaults(customer.id, [{ ...request, ...normalizedRequest }], { itemIndex: row.itemIndex });
+        } catch (error) {
+          setRequestStatus(`Đơn đã lưu, nhưng chưa lưu được giá cho lần sau: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
+          return false;
+        }
+      }
       resetInlineEditing();
+      if (rememberOrderPrice) setRequestStatus('Đã lưu đơn và giá cho lần sau.');
       return true;
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
@@ -58176,6 +58255,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     event?.stopPropagation?.();
     if (!row || (!canEditOrderCellField(field) && !canDelete)) return;
     startInlineEditRow(row);
+    setRememberOrderPrice(false);
     setOrderCellEditor({ row, field });
   };
 
@@ -60094,7 +60174,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           open
           eyebrow="Đơn đặt hàng"
           title={orderCellEditorConfig.title}
-          context={`${orderCellEditor.row.customerName || 'Khách hàng'} • ${getOrderRequestRowProductLabel(orderCellEditor.row) || 'Sản phẩm'}`}
+          context={[orderCellEditor.row.customerName || 'Khách hàng', getOrderRequestRowProductLabel(orderCellEditor.row) || 'Sản phẩm', inlineEditingDraft.attributeLabel, inlineEditingDraft.sizeLabel, inlineEditingDraft.billingUnit || inlineEditingDraft.pricingUnit].filter(Boolean).join(' • ')}
           fieldLabel={orderCellEditorConfig.label}
           fieldType={orderCellEditorConfig.type}
           value={orderCellEditorConfig.value}
@@ -60109,7 +60189,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           onCancel={closeOrderCellEditor}
           onSave={saveOrderCellEditor}
           onDelete={deleteOrderCellEditorRow}
-        />
+          saveHint={rememberOrderPrice ? 'Cập nhật đơn giá và giá mặc định đúng thuộc tính của khách hàng này.' : ''}
+        >
+          {orderCellEditor.field === 'unitPrice' && canEditOrderCellField('unitPrice') && typeof onSyncCustomerFixedProductDefaults === 'function' && (
+            <label className="mt-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <input type="checkbox" checked={rememberOrderPrice} disabled={isSavingOrderCell}
+                onChange={event => setRememberOrderPrice(event.target.checked)} />
+              Lưu giá cho lần sau
+            </label>
+          )}
+        </HDSingleCellEditDialog>
       )}
 
       {showForm && (
@@ -60285,19 +60374,17 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
                         {manualFixedProductVariantOptions.length > 0 ? (
                           <div className="grid gap-2 sm:grid-cols-2">
-                            {manualFixedProductVariantOptions.map(({ product, variant, key, selectionKey }) => (
-                              <button
-                                key={key}
-                                type="button"
-                                data-order-product-attribute={selectionKey}
-                                aria-pressed={selectedQuickVariantKeys.has(selectionKey)}
-                                disabled={pendingQuickProductSelectionKeys.has(selectionKey)}
-                                title={[variant.size, variant.attributeLabel].filter(Boolean).join(' • ')}
-                                onClick={() => handleQuickProductCardSelect(selectionKey, product.id, variant)}
-                                className={`min-h-10 rounded-lg border px-3 py-2 text-left text-sm font-semibold ${selectedQuickVariantKeys.has(selectionKey) ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-emerald-100 bg-white text-slate-900'}`}
-                              >
-                                {product.name}
-                              </button>
+                            {manualFixedProductGroups.map(({ product, variants }) => (
+                              <OrderRequestSelectableProductGroup
+                                key={product.id}
+                                product={product}
+                                variants={variants}
+                                selectedQuickVariantKeys={selectedQuickVariantKeys}
+                                pendingQuickProductSelectionKeys={pendingQuickProductSelectionKeys}
+                                selectedItems={selectedQuickItems}
+                                onQuantityChange={(itemId, quantity) => updateDraftItem(primaryDraft.localId, itemId, { quantity })}
+                                onSelect={handleQuickProductCardSelect}
+                              />
                             ))}
                           </div>
                         ) : (

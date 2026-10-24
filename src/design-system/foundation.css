@@ -2669,6 +2669,15 @@ html.hd-keyboard-open .hd-app-content:has(.hd-child-view) { --hd-child-nav-heigh
   opacity: 1;
 }
 
+/* Keep editable text stable before and during focus; override compact-field
+   rules so mobile browsers do not magnify the customer form on input focus. */
+@media (max-width: 1023px), (pointer: coarse) {
+  .hd-shell--staff .hd-customer-create-view .hd-customer-create-view__form :is(input, select, textarea) {
+    font-size: max(16px, var(--hd-type-body)) !important;
+    transition-property: color, background-color, border-color, box-shadow;
+  }
+}
+
 .hd-customer-create-view__form input:focus,
 .hd-customer-create-view__form select:focus,
 .hd-customer-create-view__form textarea:focus,

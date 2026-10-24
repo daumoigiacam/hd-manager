@@ -372,6 +372,7 @@ const normalizeInput = (input = {}) => ({
   orderRequests: toCollectionArray(input.orderRequests).filter(item => !isArchived(item) && !isCancelled(item)),
   payments: toCollectionArray(input.payments).filter(item => !isArchived(item)),
   expenses: toCollectionArray(input.expenses).filter(item => !isArchived(item)),
+  cashExpenseRecords: input.cashExpenseRecords,
   financials: toCollectionArray(input.financials).filter(item => !isArchived(item)),
   payrollCosts: toCollectionArray(input.payrollCosts).filter(item => !isArchived(item)),
   debtLedger: toCollectionArray(input.debtLedger),
@@ -2442,6 +2443,18 @@ export const DashboardService = {
       .sort((a, b) => b.value - a.value);
     finance = {
       ...finance,
+      cashExpenseRows: Array.isArray(source.cashExpenseRecords) ? source.cashExpenseRecords
+        .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense))
+        .map(expense => ({
+          date: expense.date, value: Number(expense.amount) || 0,
+          category: classifyExpense(expense),
+          name: expense.name || expense.title || expense.category || 'Chi phí khác',
+          detail: expense.note || expense.description || '',
+          sourceType: 'expense', sourceId: expense.id,
+          originalAmount: Number(expense.amount) || 0,
+          employeeId: recordEmployeeIdOf(expense),
+          recipient: expense.recipient || expense.payee || expense.employeeName || '',
+        })) : undefined,
       cashExpenseToday: finance.expenseToday,
       cashExpenseYesterday: finance.expenseYesterday,
       cashExpenseWeek: finance.expenseWeek,
@@ -2519,6 +2532,7 @@ export const DashboardService = {
       expenseByDepartment,
       expenseCategoryRows,
       expenseDetailRows,
+      payrollAccrualRows: payrollEmployeeRows,
       salaryEmployeeRows
     };
     const profitabilityBase = ProfitabilityService.build(source, finance);
