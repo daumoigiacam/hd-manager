@@ -2660,9 +2660,7 @@ const syncCustomerSupportMessageRouting = async ({ appId, customerId, customer }
   return { updated: updates.length };
 };
 
-exports.syncCustomerMessageAssignment = onDocumentWritten(
-  'artifacts/{appId}/public/data/customers/{customerId}',
-  async (event) => {
+const handleCustomerMessageAssignmentWrite = async (event) => {
     const customerSnapshot = event.data?.after;
     if (!customerSnapshot?.exists) return null;
     const customer = customerSnapshot.data() || {};
@@ -2680,7 +2678,15 @@ exports.syncCustomerMessageAssignment = onDocumentWritten(
       updated: result.updated,
     });
     return null;
-  }
+};
+
+exports.syncCustomerMessageAssignment = onDocumentWritten(
+  'artifacts/{appId}/public/data/customers/{customerId}', handleCustomerMessageAssignmentWrite
+);
+// Production retains a legacy HTTPS endpoint under the original name. A
+// separate trigger name allows a scoped deployment without replacing that API.
+exports.syncCustomerAssignmentOnWrite = onDocumentWritten(
+  'artifacts/{appId}/public/data/customers/{customerId}', handleCustomerMessageAssignmentWrite
 );
 
 const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, description, reference = '', paymentLinkId = '', payosOrderCode = '', rawPayload = {}, sourceType = 'payos_sync', provider = 'payos', providerLabel = 'PayOS', trace = null }) => {

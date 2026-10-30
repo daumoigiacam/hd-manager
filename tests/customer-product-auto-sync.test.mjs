@@ -102,8 +102,8 @@ test('customer trigger skips config-only writes but retains assignment and creat
 
 test('actual written-event handler avoids routing queries for product-default changes', async () => {
   const source = readFileSync(new URL('../functions/index.js', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('exports.syncCustomerMessageAssignment = onDocumentWritten('));
-  const handlerText = block.slice(block.indexOf('async (event) => {'), block.indexOf('\n);'));
+  const block = source.slice(source.indexOf('const handleCustomerMessageAssignmentWrite = '));
+  const handlerText = block.slice(block.indexOf('async (event) => {'), block.indexOf('\n};') + 2);
   let calls = 0;
   const handler = new Function('hasCustomerMessageRoutingChanged', 'normalizeAppId', 'syncCustomerSupportMessageRouting', 'console', `return (${handlerText})`)(
     hasCustomerMessageRoutingChanged, id => id, async () => { calls++; return { updated: 1 }; }, { log() {} },
