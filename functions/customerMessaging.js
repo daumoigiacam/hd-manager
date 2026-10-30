@@ -33,6 +33,12 @@ const buildCustomerMessageRouting = (customer = {}, customerId = '') => {
   };
 };
 
+// Product defaults do not affect support-message assignment. Avoid querying
+// every support message whenever Size/price/order unit changes on a customer.
+const hasCustomerMessageRoutingChanged = (before, after, customerId = '') => !before
+  || normalizeText(before.companyId) !== normalizeText(after?.companyId)
+  || JSON.stringify(buildCustomerMessageRouting(before, customerId)) !== JSON.stringify(buildCustomerMessageRouting(after, customerId));
+
 const hasMatchingCustomerMessageRouting = (message = {}, routing = {}) => {
   const assignedEmployeeId = normalizeText(routing.assignedEmployeeId);
   const hasMatchingAssignment = assignedEmployeeId
@@ -60,5 +66,6 @@ module.exports = {
   buildCustomerSupportConversationId,
   getCustomerMessagingEmployeeId,
   hasMatchingCustomerMessageRouting,
+  hasCustomerMessageRoutingChanged,
   normalizeText,
 };

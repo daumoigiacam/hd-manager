@@ -392,12 +392,12 @@ test('branch saved defaults remain isolated from the root customer configuration
   assert.equal(branchConfig.defaultOrderUnit, 'Bộ');
 });
 
-test('request saves only update defaults after explicit price opt-in and confirmed order write', () => {
+test('request saves use one confirmed command with captured concurrency baselines', () => {
   const inlineSaveSection = appSource.slice(appSource.indexOf('const saveInlineEditRow = async'), appSource.indexOf('const deleteInlineEditRow = async'));
   assert.match(inlineSaveSection, /await onEditOrderRequest/);
-  assert.match(inlineSaveSection, /backgroundSync: !rememberOrderPrice/);
-  assert.match(inlineSaveSection, /if \(rememberOrderPrice && orderCellEditor\?\.field === 'unitPrice'\)/);
-  assert.ok(inlineSaveSection.indexOf('await onEditOrderRequest') < inlineSaveSection.indexOf('await onSyncCustomerFixedProductDefaults'));
+  assert.match(inlineSaveSection, /expectedOrder: orderEditBaseRef\.current\?\.request/);
+  assert.match(inlineSaveSection, /expectedCustomerConfig: orderEditBaseRef\.current\?\.customerConfig/);
+  assert.doesNotMatch(inlineSaveSection, /onSyncCustomerFixedProductDefaults|rememberOrderPrice/);
   assert.doesNotMatch(inlineSaveSection, /onPersisted|scheduleOrderRequestMemorySync|Firebase đang đồng bộ nền/);
   assert.match(inlineSaveSection, /getFriendlyFirebaseErrorMessage/);
 });
@@ -411,8 +411,8 @@ test('inline order edit blocks rapid duplicate saves before React rerenders', ()
 
 test('order save retains durable persistence without auxiliary memory writes', () => {
   const submitSection = appSource.slice(appSource.indexOf('const handleSubmitOrderRequests = async'), appSource.indexOf('const orderCellEditorConfig = getOrderCellEditorConfig()'));
-  assert.match(submitSection, /await onEditOrderRequest[\s\S]*?backgroundSync: true/);
-  assert.match(submitSection, /await onAddOrderRequest[\s\S]*?backgroundSync: true/);
+  assert.match(submitSection, /await onEditOrderRequest[\s\S]*?expectedOrder:/);
+  assert.match(submitSection, /await onAddOrderRequest[\s\S]*?expectedCustomerConfig:/);
   assert.doesNotMatch(submitSection, /onPersisted|onSettled|memorySyncBatch/);
   assert.match(submitSection, /if \(!savedRequestId\) throw new Error/);
 });

@@ -80,7 +80,11 @@ Object.assign(process.env, {
   VITE_PERFORMANCE_LOG_LIMIT: '10000', VITE_HD_BUILD_ID: `interaction-${phase}`,
 });
 if (process.env.HD_AUDIT_REUSE_BUILD !== '1') {
-  await build({ build: { outDir: buildOutput, ...(process.env.HD_AUDIT_SOURCE_MAPS === '1' ? { sourcemap: true } : {}) }, logLevel: 'warn' });
+  const baselineApp = process.env.HD_AUDIT_CUSTOMER_CONFIG_BASELINE === '1'
+    ? execFileSync('git', ['show', '134bf6f2:src/App.jsx'], { encoding: 'utf8', maxBuffer: 12 * 1024 * 1024 }) : null;
+  await build({ plugins: baselineApp ? [{ name: 'customer-config-baseline', enforce: 'pre',
+    load: id => id.replaceAll('\\', '/').endsWith('/src/App.jsx') ? baselineApp : null }] : [],
+    build: { outDir: buildOutput, ...(process.env.HD_AUDIT_SOURCE_MAPS === '1' ? { sourcemap: true } : {}) }, logLevel: 'warn' });
 }
 const server = await preview({ build: { outDir: buildOutput }, preview: { host: '127.0.0.1', port: 0 } });
 const baseUrl = useNative ? 'https://localhost/?perfMonitor=1' : `http://127.0.0.1:${server.httpServer.address().port}/?perfMonitor=1`;
@@ -121,6 +125,9 @@ if (actionsOnly || process.env.HD_AUDIT_INCLUDE_ACTIONS === '1') {
     id: 'c_preview_01', companyId: 'comp_preview', empId: 'emp_sales_01',
     name: 'Cửa hàng Lan Anh', phone: '0911222333', isArchived: false,
     customerProductIds: ['prod_preview_01', 'p_perf_0'],
+    ...(process.env.HD_AUDIT_CUSTOMER_CONFIG_FIELDS === '1' ? { priceOverrides: {
+      prod_preview_01: { price: 285000, billingUnit: 'Can', pricingUnit: 'Can', defaultOrderUnit: 'Can', orderUnits: ['Can', 'Chai'] },
+    } } : {}),
   };
 }
 const deliveryFixtures = [];
@@ -307,6 +314,11 @@ try {
     if (useNative) {
       const apk = await buildAcceptanceApk({ buildOutput, output, fixture, token });
       execFileSync(adb, ['-s', device.serial(), 'install', '-r', apk], { stdio: 'inherit' });
+      // Paired runs must not inherit the preview journal from the preceding APK.
+      // This package is isolated from the installed production application.
+      if (process.env.HD_AUDIT_CUSTOMER_CONFIG_ACTIONS === '1') {
+        execFileSync(adb, ['-s', device.serial(), 'shell', 'pm', 'clear', ACCEPTANCE_PACKAGE], { stdio: 'inherit' });
+      }
       execFileSync(adb, ['-s', device.serial(), 'shell', 'am', 'force-stop', ACCEPTANCE_PACKAGE]);
       execFileSync(adb, ['-s', device.serial(), 'shell', 'am', 'start', '-W', '-n', `${ACCEPTANCE_PACKAGE}/com.hdmanager.app.MainActivity`], { stdio: 'inherit' });
       socket = await nativeDebugSocket(device.serial());
@@ -316,7 +328,7 @@ try {
     }
     debugPort = execFileSync(adb, ['-s', device.serial(), 'forward', 'tcp:0', `localabstract:${socket}`], { encoding: 'utf8' }).trim();
   }
-  browser = device ? await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`) : await chromium.launch({ executablePath: process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  browser = device ? await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, { noDefaults: useNative }) : await chromium.launch({ executablePath: process.env.HD_MANAGER_VISUAL_QA_BROWSER_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   deadlineCleanup = async () => { await browser?.close(); await new Promise(resolve => server.httpServer.close(resolve)); };
   let viewports = device ? [{ name: useNative ? 'android-apk-webview' : 'android-emulator' }]
     : process.env.HD_AUDIT_CPU_PROFILES === '1'
@@ -900,7 +912,7 @@ try {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('[data-hd-shell="enterprise"]').waitFor();
     }
-    if (!actionsOnly && (!selectedModules || priceOnly)) try {
+    if (!actionsOnly && (!selectedModules || priceOnly || process.env.HD_AUDIT_CUSTOMER_CONFIG_ACTIONS === '1')) try {
       await navigate('order_requests');
       const module = page.locator('.premium-order-request-module');
       for (let iteration = 1; iteration <= 5; iteration++) {
@@ -913,6 +925,32 @@ try {
         await measure('order_requests', 'save_price', () => editor.getByRole('button', { name: 'Lưu', exact: true }).click(), { selector: '[data-audit-price]', mode: 'hidden' }, iteration);
         await module.getByRole('button', { name: new Intl.NumberFormat('vi-VN').format(value), exact: true }).first().waitFor();
       }
+      if (process.env.HD_AUDIT_CUSTOMER_CONFIG_FIELDS === '1') {
+        const row = module.locator('tbody tr').filter({ has: page.getByRole('button', { name: 'Nước giặt HD', exact: true }) });
+        for (let iteration = 1; iteration <= 5; iteration++) {
+          await row.locator('button[title="Bấm để sửa ô size"]').click();
+          const editor = page.getByRole('dialog', { name: 'Sửa size', exact: true });
+          const input = editor.getByRole('textbox').first();
+          await input.evaluate(node => node.dataset.auditSize = 'true');
+          const value = `Size ${iteration}`;
+          await measure('order_requests', 'input_size_v1', () => input.fill(value), { selector: '[data-audit-size]', mode: 'value', value }, iteration);
+          await editor.getByRole('button', { name: 'Lưu', exact: true }).click();
+          await editor.waitFor({ state: 'hidden' });
+          await row.locator('button[title="Bấm để sửa ô số lượng"]').click();
+          const quantity = page.getByRole('dialog', { name: 'Sửa số lượng', exact: true });
+          const select = quantity.getByRole('combobox');
+          await select.evaluate(node => node.dataset.auditOrderUnit = 'true');
+          const options = await select.locator('option').evaluateAll(nodes => nodes.map(node => node.value).filter(Boolean));
+          const previous = await select.inputValue();
+          const next = options.find(value => value !== previous);
+          assert.ok(next, 'Order-unit acceptance requires at least two catalog units');
+          await measure('order_requests', 'change_order_unit_v1', () => select.selectOption(next), { selector: '[data-audit-order-unit]', mode: 'value', value: next }, iteration);
+          // Unit input performance is independent of a price-unit conversion. Cancel
+          // leaves the Can-priced fixture intact; Con/Kg saves are emulator-tested.
+          await quantity.getByRole('button', { name: 'Hủy', exact: true }).click();
+          await quantity.waitFor({ state: 'hidden' });
+        }
+      }
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('[data-hd-shell="enterprise"]').waitFor();
       await page.waitForFunction(() => Object.values(window.__readPreviewStore().orderRequests).some(request => request.items?.[0]?.unitPrice === 290005));
@@ -921,7 +959,7 @@ try {
       await page.screenshot({ path: path.join(output, `${viewport.name}-request-error.png`) });
     }
     if (actionsOnly || process.env.HD_AUDIT_INCLUDE_ACTIONS === '1') {
-      const clickCommand = useNative ? async locator => {
+      const clickCommand = useNative && process.env.HD_AUDIT_DOM_COMMANDS !== '1' ? async locator => {
         await locator.scrollIntoViewIfNeeded();
         assert.ok(await locator.isEnabled(), 'Native commands must be enabled');
         const point = await locator.evaluate(element => {

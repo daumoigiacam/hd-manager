@@ -85,6 +85,7 @@ const {
 } = require('./sepayReconciliation');
 const {
   buildCustomerMessageRouting,
+  hasCustomerMessageRoutingChanged,
   hasMatchingCustomerMessageRouting
 } = require('./customerMessaging');
 
@@ -2665,6 +2666,8 @@ exports.syncCustomerMessageAssignment = onDocumentWritten(
     const customerSnapshot = event.data?.after;
     if (!customerSnapshot?.exists) return null;
     const customer = customerSnapshot.data() || {};
+    const previousCustomer = event.data?.before?.exists ? event.data.before.data() : null;
+    if (!hasCustomerMessageRoutingChanged(previousCustomer, customer, event.params.customerId)) return null;
     const appId = normalizeAppId(event.params.appId);
     const result = await syncCustomerSupportMessageRouting({
       appId,

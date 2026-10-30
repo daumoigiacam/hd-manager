@@ -116,10 +116,12 @@ test('master refactor preserves inherited business mutation handlers exactly', (
   for (const name of [
     'saveDataDocument', 'handleAddPayment', 'handleEditPayment', 'handleDeletePayment',
     'handleAddExpense', 'handleEditExpense', 'handleDeleteExpense',
-    'handleAddCustomer', 'handleEditCustomer', 'handleDeleteCustomer',
+    'handleAddCustomer', 'handleDeleteCustomer',
     'handleAddProduct', 'handleEditProduct', 'handleDeleteProduct',
     'handleAddOrder', 'handleEditOrder', 'handleDeleteOrder',
-    'handleAddOrderRequest', 'handleEditOrderRequest', 'handleDeleteOrderRequest',
+    // Customer configuration and order-request saves now share a transaction;
+    // their atomicity/concurrency contract is exercised against the Emulator.
+    'handleDeleteOrderRequest',
     'handleAddWarehouseImport', 'handleEditWarehouseImport', 'handleDeleteWarehouseImport',
     // Dispatch now has command identity/ACK semantics, covered by the imported
     // command and edit-ACK behavioral suites, not the old source-equality lock.

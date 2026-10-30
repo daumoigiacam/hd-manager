@@ -75,6 +75,9 @@ jobs:
       - name: Verify Firestore tenant isolation
         run: npm run test:firestore-tenant-rules
 
+      - name: Verify customer product atomic sync and permissions
+        run: npx firebase-tools emulators:exec --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
+
       - name: Verify password recovery transaction
         run: npm run test:identity:firestore
 

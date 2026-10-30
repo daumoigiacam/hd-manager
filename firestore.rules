@@ -32,6 +32,40 @@ service cloud.firestore {
       return ['attendanceWifi', 'attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt', 'defaultAttendanceWifiSsid', 'defaultAttendanceWifiBssid', 'attendanceBiometricRequired'];
     }
 
+    function customerProductKeys() {
+      return ['priceOverrides', 'customPrices', 'customerProductIds', 'branches', 'customerBranches',
+        'productConfigVersion', 'productConfigUpdatedBy'];
+    }
+
+    function customerConfigActionEnabled(appId, customer) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let company = get(dispatchCompanyPath(appId)).data;
+      let roleKey = dispatchRoleKey(employee);
+      let individual = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
+      let permissions = individual
+        ? company.get('employeeRolePermissions', {}).get(request.auth.token.appUserId, {})
+        : company.get('rolePermissions', {}).get(roleKey, {});
+      let actions = individual
+        ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {}).get('customers', {})
+        : company.get('rolePermissionActions', {}).get(roleKey, {}).get('customers', {});
+      return employee.companyId == request.auth.token.companyId
+        && employee.get('isArchived', false) != true
+        && permissions.get('customers', roleKey in ['accounting', 'sales']) == true
+        && actions.get('fixed_products', true) == true
+        && actions.get('fixed_product_size_attribute', true) == true
+        && actions.get('customer_price_overrides', true) == true
+        && (actions.get('view_all_customers', true) == true
+          || ((actions.get('view_customers', true) == true || actions.get('view_assigned_customers', true) == true)
+            && customer.get('empId', '') == request.auth.token.appUserId));
+    }
+
+    function canManageCustomerProductConfig(appId, customer) {
+      return isEmployeeIdentity() && (
+        request.auth.token.role in ['super_admin', 'admin', 'owner', 'company_owner', 'business_owner']
+        || (exists(dispatchEmployeePath(appId)) && customerConfigActionEnabled(appId, customer))
+      );
+    }
+
     function companyPermissionKeys() {
       return ['rolePermissions', 'rolePermissionActions', 'employeeRolePermissions', 'employeeRolePermissionActions'];
     }
@@ -1012,6 +1046,9 @@ service cloud.firestore {
 
       allow update: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId != 'customers'
+          || !request.resource.data.diff(resource.data).affectedKeys().hasAny(customerProductKeys())
+          || canManageCustomerProductConfig(appId, resource.data))
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'employees' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(employeeAttendanceSecurityKeys()) || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyWifiKeys()) || canManageCompanyWifi())

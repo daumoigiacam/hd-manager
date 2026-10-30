@@ -216,6 +216,7 @@ import {
   hasCompleteOrderRequestShareBlobSet
 } from './utils/orderRequestShare.js';
 import { getOrderRequestAttributeOptions, expandOrderRequestAttributes } from './utils/orderRequestAttributes.js';
+import { commitOrderRequestWithDefaults, configScopeFingerprint, orderRevision, payloadFingerprint, syncError } from './utils/customerProductAutoSync.js';
 import { getContextualFabActionIds, getFixedFooterNavIds } from './utils/footerNavigation.js';
 import { getAppBackTab } from './utils/appBackNavigation.js';
 import {
@@ -12979,7 +12980,13 @@ export default function App() {
           error.code = 'firestore/actor-changed';
           throw error;
         }
-        const commitPendingWrite = pendingWrite.collectionName === ATOMIC_SAVE_COLLECTION
+        const commitPendingWrite = pendingWrite.collectionName === 'orderRequests' && pendingWrite.options?.customerProductSync
+          ? commitOrderRequestWithDefaults({ command: pendingWrite.options.customerProductSync, companyId,
+            isOnline: typeof navigator === 'undefined' || navigator.onLine !== false,
+            transaction: callback => runTransaction(db, callback),
+            reference: (collection, id) => doc(db, 'artifacts', appId, 'public', 'data', collection, id),
+          })
+          : pendingWrite.collectionName === ATOMIC_SAVE_COLLECTION
           ? commitAtomicWrites({
             writes: pendingWrite.payload.writes, companyId,
             transaction: callback => runTransaction(db, callback),
@@ -13023,7 +13030,10 @@ export default function App() {
           recentLocalWritesRef.current.delete(`warehouseDispatches:${pendingWrite.documentId}`);
         }
         if (activeTenantScopeRef.current === companyId && pendingFirebaseWritesRef.current.some(item => isSamePendingWriteRevision(item, pendingWrite))) {
-          for (const write of commitResult?.existingDocuments || []) applyLocalCollectionWrite(write.collectionName, write.documentId, write.payload);
+          for (const write of commitResult?.existingDocuments || []) {
+            if (pendingWrite.options?.customerProductSync) recentLocalWritesRef.current.delete(`${write.collectionName}:${write.documentId}`);
+            applyLocalCollectionWrite(write.collectionName, write.documentId, write.payload);
+          }
         }
         const nextWrites = pendingFirebaseWritesRef.current.filter(item => !isSamePendingWriteRevision(item, pendingWrite));
         if (activeTenantScopeRef.current === companyId) {
@@ -13040,7 +13050,7 @@ export default function App() {
           const scopedWrites = loadPendingFirebaseWrites(companyId).filter(item => !isSamePendingWriteRevision(item, pendingWrite));
           savePendingFirebaseWrites(scopedWrites, companyId);
         }
-        return { confirmed: true, id: pendingWrite.documentId };
+        return { ...commitResult, confirmed: true, id: pendingWrite.documentId };
       } catch (error) {
         if (error?.code === 'firestore/tenant-scope-changed') throw error;
         const now = new Date().toISOString();
@@ -19617,6 +19627,30 @@ export default function App() {
       phone: nextPhone,
       updatedAt: now
     };
+    delete payload.__customerConfigBase;
+    if (['priceOverrides', 'customPrices', 'customerProductIds', 'branches', 'customerBranches'].some(key => Object.hasOwn(updatedData, key))) {
+      // A configuration save must not replay unrelated, stale profile fields.
+      if (!Object.hasOwn(updatedData, 'name')) delete payload.name;
+      if (!Object.hasOwn(updatedData, 'phone')) delete payload.phone;
+      if (!['name', 'customerHonorific', 'honorific'].some(key => Object.hasOwn(updatedData, key))) delete payload.customerHonorific;
+      const expected = updatedData.__customerConfigBase || configScopeFingerprint(currentCustomer);
+      const reference = doc(db, 'artifacts', appId, 'public', 'data', 'customers', customerId);
+      const saved = await runTransaction(db, async tx => {
+        const snapshot = await tx.get(reference);
+        const live = snapshot.exists() ? snapshot.data() : null;
+        if (!live || live.companyId !== myCompanyId || live.isArchived) throw syncError('Khách hàng không còn hợp lệ.');
+        if (configScopeFingerprint(live) !== expected) throw syncError('Cấu hình vừa được người khác sửa. Bản nhập vẫn giữ nguyên; hãy tải lại cấu hình trước khi lưu.');
+        const patch = { ...sanitizeFirestoreWritePayload(payload), productConfigVersion: (Number(live.productConfigVersion) || 0) + 1,
+          productConfigUpdatedBy: currentUser.id };
+        tx.update(reference, patch);
+        return { ...live, ...patch, id: customerId };
+      });
+      if (activeTenantScopeRef.current === myCompanyId) {
+        upsertLocalListRecord(setRawCustomers, saved);
+        rememberRecentLocalWrite('customers', customerId, saved);
+      }
+      return saved;
+    }
     try {
       return await saveDataDocument('customers', customerId, payload, { merge: true });
     } catch (error) {
@@ -20204,6 +20238,39 @@ export default function App() {
     return preference;
   };
 
+  const saveOrderRequestWithDefaults = async (requestId, payload, previous, customer, saveOptions = {}) => {
+    if (!customer || customer.companyId !== myCompanyId) throw syncError('Khách hàng không thuộc công ty hiện tại.');
+    const safePayload = sanitizeFirestoreWritePayload(payload);
+    delete safePayload.__pendingFirebaseSync;
+    const fingerprint = await payloadFingerprint(safePayload);
+    if (activeTenantScopeRef.current !== myCompanyId) throw syncError('Phiên công ty đã thay đổi.');
+    const command = { requestId, payload: safePayload, companyId: myCompanyId,
+      mutationId: previous ? await payloadFingerprint({ ...safePayload, __expectedOrderRevision: orderRevision(saveOptions.expectedOrder || previous) }) : safePayload.clientMutationId || fingerprint,
+      fingerprint, now: new Date().toISOString(), actorId: currentUser.id,
+      expectedOrderRevision: orderRevision(saveOptions.expectedOrder || previous),
+      expectedCustomerConfig: saveOptions.expectedCustomerConfig || configScopeFingerprint(customer),
+      syncDefaults: true,
+    };
+    const pending = pendingFirebaseWritesRef.current.find(row => row.key === `orderRequests:${requestId}`);
+    const blockedCommand = pending?.options?.customerProductSync;
+    const reviewedConflict = pending?.syncState === 'blocked'
+      && (blockedCommand?.expectedOrderRevision !== command.expectedOrderRevision
+        || blockedCommand?.expectedCustomerConfig !== command.expectedCustomerConfig);
+    if (pending && !reviewedConflict && blockedCommand?.fingerprint !== fingerprint) throw syncError('Đơn đang có bản nháp chờ đồng bộ. Hãy xử lý lệnh đó trước khi lưu thay đổi khác.');
+    if (!pending || reviewedConflict) {
+      enqueuePendingFirebaseWrite({ collectionName: 'orderRequests', documentId: requestId,
+        payload: safePayload, options: { customerProductSync: command }, durable: true });
+      const optimisticOrder = { ...safePayload, __pendingFirebaseSync: true };
+      rememberRecentLocalWrite('orderRequests', requestId, optimisticOrder, 90000);
+      applyLocalCollectionWrite('orderRequests', requestId, optimisticOrder);
+    }
+    const result = await withTimeout(flushPendingFirebaseWriteNow('orderRequests', requestId, 12000, myCompanyId),
+      12000, 'Đơn đang chờ đồng bộ. Bản nháp đã được giữ trên máy; không cần tạo lại đơn.');
+    if (result.skipped?.length) setRealtimeStatus({ state: 'online', collection: 'orderRequests', lastAt: command.now,
+      error: 'Đơn đã lưu. Cấu hình có nhiều biến thể chưa phân biệt được nên được giữ nguyên.' });
+    return { id: requestId, skipped: result.skipped || [] };
+  };
+
   const handleAddOrderRequest = async (empId, requestData = {}, saveOptions = {}) => {
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
     const customer = customers.find(c => c.id === requestData.customerId);
@@ -20225,7 +20292,9 @@ export default function App() {
       ...requestData,
       date: requestData.date || getTodayString()
     });
-    const id = `or_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = requestData.clientMutationId
+      ? `or_${myCompanyId}_${encodeURIComponent(requestData.clientMutationId)}`
+      : `or_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     if (duplicateSignature && orderRequestCreateInFlightRef.current.has(duplicateSignature)) {
       throw new Error('Đơn đặt hàng này đang được lưu. App đã chặn thao tác bấm lưu lặp lại.');
@@ -20336,6 +20405,16 @@ export default function App() {
       console.error('Không thể lưu đơn đặt hàng lên Firebase:', error);
     };
 
+    if (!isCustomerCreatedRequest) {
+      try {
+        const saved = await saveOrderRequestWithDefaults(id, newRequestDocument, null, customer, saveOptions);
+        saveOptions.onDefaultsSynced?.(saved.skipped);
+        return saved.id;
+      } finally {
+        if (duplicateSignature) orderRequestCreateInFlightRef.current.delete(duplicateSignature);
+      }
+    }
+
     if (saveOptions?.backgroundSync) {
       let acceptedWrite;
       try {
@@ -20432,6 +20511,9 @@ export default function App() {
       updatedAt,
       updatedByEmpId: empId || ''
     };
+    if (empId !== 'customer_portal' && updatedData.createdByRole !== 'customer') {
+      return saveOrderRequestWithDefaults(requestId, { ...existingRequest, ...orderRequestWrite }, existingRequest, customer, saveOptions);
+    }
     if (saveOptions?.backgroundSync) {
       orderRequestOptimisticEditRevisionsRef.current.set(requestId, updatedAt);
     }
@@ -56734,6 +56816,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   });
   const createDraft = (seed = {}) => ({
     localId: seed.localId || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    customerConfigBase: seed.customerConfigBase || '',
     customerId: seed.customerId || '',
     customerSearch: seed.customerSearch || '',
     branchId: seed.branchId || seed.customerBranchId || '',
@@ -56745,16 +56828,21 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       ? seed.items.map(item => createDraftItem(item))
       : [createDraftItem()]
   });
-  const [showForm, setShowForm] = useState(false);
-  const [requestDrafts, setRequestDrafts] = useState([createDraft()]);
+  const requestDraftStorageKey = `hd-order-request-draft-v1:${employee?.companyId || ''}:${employee?.id || ''}`;
+  const [restoredRequestDraft] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem(requestDraftStorageKey) || 'null'); }
+    catch { return null; }
+  });
+  const [showForm, setShowForm] = useState(Boolean(restoredRequestDraft?.drafts?.length));
+  const [requestDrafts, setRequestDrafts] = useState(() => restoredRequestDraft?.drafts?.length ? restoredRequestDraft.drafts.map(createDraft) : [createDraft()]);
   useModalScrollLock(showForm);
-  const [editingRequestId, setEditingRequestId] = useState(null);
+  const [editingRequestId, setEditingRequestId] = useState(restoredRequestDraft?.editingRequestId || null);
   const [inlineEditingRowKey, setInlineEditingRowKey] = useState('');
   const [inlineEditingDraft, setInlineEditingDraft] = useState({ customerId: '', productId: '', attributeLabel: '', sizeLabel: '', quantity: '', quantityUnit: '', pricingUnit: '', unitPrice: '' });
   const [orderCellEditor, setOrderCellEditor] = useState(null);
   const [orderUnitEditor, setOrderUnitEditor] = useState(null);
   const [isSavingOrderCell, setIsSavingOrderCell] = useState(false);
-  const [rememberOrderPrice, setRememberOrderPrice] = useState(false);
+  const orderEditBaseRef = useRef(restoredRequestDraft?.editBase || null);
   const savingOrderCellRef = useRef(false);
   const [requestStatus, setRequestStatus] = useState('');
   const [requestError, setRequestError] = useState('');
@@ -56770,6 +56858,34 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   const setShowRequestFilterPanel = setShowFilterPanel || setInternalShowRequestFilterPanel;
   const [orderEntryMode, setOrderEntryMode] = useState('manual');
   const [orderFormStage, setOrderFormStage] = useState('manual_setup');
+  const requestDraftCacheRef = useRef(null);
+  const requestDraftScopeRef = useRef(requestDraftStorageKey);
+  useEffect(() => {
+    if (requestDraftScopeRef.current === requestDraftStorageKey) return;
+    requestDraftScopeRef.current = requestDraftStorageKey;
+    orderEditBaseRef.current = null;
+    setShowForm(false);
+    setEditingRequestId(null);
+    setRequestDrafts([createDraft()]);
+  }, [requestDraftStorageKey]);
+  requestDraftCacheRef.current = { drafts: requestDrafts, editingRequestId, editBase: orderEditBaseRef.current, showForm };
+  useEffect(() => {
+    const persist = () => {
+      if (!requestDraftCacheRef.current?.showForm) return;
+      try { window.localStorage.setItem(requestDraftStorageKey, JSON.stringify(requestDraftCacheRef.current)); }
+      catch { /* The durable save queue reports storage errors when saving. */ }
+    };
+    const timer = window.setTimeout(persist, 250);
+    window.addEventListener('pagehide', persist);
+    document.addEventListener('visibilitychange', persist);
+    return () => { window.clearTimeout(timer); window.removeEventListener('pagehide', persist); document.removeEventListener('visibilitychange', persist); };
+  }, [requestDraftStorageKey, requestDrafts, editingRequestId, showForm]);
+  useEffect(() => () => {
+    if (requestDraftCacheRef.current?.showForm) {
+      try { window.localStorage.setItem(requestDraftStorageKey, JSON.stringify(requestDraftCacheRef.current)); }
+      catch { /* The durable save queue reports storage errors when saving. */ }
+    }
+  }, [requestDraftStorageKey]);
   const [orderVoiceStatus, setOrderVoiceStatus] = useState('');
   const [isOrderVoiceListening, setIsOrderVoiceListening] = useState(false);
   const [isOrderVoiceProcessing, setIsOrderVoiceProcessing] = useState(false);
@@ -56912,7 +57028,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
   const resolveDraftItemQuantityUnit = (configSource = null, product = null, requestedUnit = '') => {
     const configuration = resolveCustomerProductBillingConfiguration(configSource, product);
-    const defaultInputUnit = resolveCustomerProductActualUnit(configuration, product);
+    const defaultInputUnit = configuration.defaultOrderUnit || resolveCustomerProductActualUnit(configuration, product);
     const unitOptions = getOrderInputUnitOptions({
       product,
       pricingUnit: configuration.billingUnit,
@@ -58052,6 +58168,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const startInlineEditRow = (row) => {
     if (!row || (!canEdit && !canDelete)) return;
+    const sourceRequest = orderRequests.find(request => request.id === row.requestId);
+    orderEditBaseRef.current = { request: sourceRequest, customerConfig: configScopeFingerprint(customerLookup.get(row.customerId) || {}) };
     setInlineEditingRowKey(row.rowKey);
     setInlineEditingDraft({
       customerId: row.customerId || '',
@@ -58177,19 +58295,12 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     setRequestStatus('');
     try {
-      await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin', {
-        backgroundSync: !rememberOrderPrice,
+      const saved = await onEditOrderRequest(request.id, normalizedRequest, employee?.id || 'admin', {
+        expectedOrder: orderEditBaseRef.current?.request,
+        expectedCustomerConfig: orderEditBaseRef.current?.customerConfig,
       });
-      if (rememberOrderPrice && orderCellEditor?.field === 'unitPrice') {
-        try {
-          await onSyncCustomerFixedProductDefaults(customer.id, [{ ...request, ...normalizedRequest }], { itemIndex: row.itemIndex });
-        } catch (error) {
-          setRequestStatus(`Đơn đã lưu, nhưng chưa lưu được giá cho lần sau: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
-          return false;
-        }
-      }
       resetInlineEditing();
-      if (rememberOrderPrice) setRequestStatus('Đã lưu đơn và giá cho lần sau.');
+      setRequestStatus(saved?.skipped?.length ? 'Đơn đã lưu. Các dòng có biến thể chưa rõ giữ nguyên cấu hình khách hàng.' : 'Đã lưu đơn và đồng bộ cấu hình sản phẩm.');
       return true;
     } catch (error) {
       setRequestStatus(`Cập nhật đơn đặt hàng bị lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
@@ -58255,7 +58366,6 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     event?.stopPropagation?.();
     if (!row || (!canEditOrderCellField(field) && !canDelete)) return;
     startInlineEditRow(row);
-    setRememberOrderPrice(false);
     setOrderCellEditor({ row, field });
   };
 
@@ -58270,6 +58380,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
     if (field === 'customerId') {
       const selectedCustomer = customerLookup.get(nextValue);
+      if (orderEditBaseRef.current) orderEditBaseRef.current.customerConfig = configScopeFingerprint(selectedCustomer || {});
       const selectedProduct = productLookup.get(inlineEditingDraft.productId);
       const configSource = getCustomerBranchProductConfigSource(selectedCustomer, row.branchId || '', activeProducts);
       const customSize = selectedCustomer && selectedProduct ? getCustomerProductSize(configSource, selectedProduct) : '';
@@ -58445,11 +58556,13 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const handleCustomerChange = (localId, customerId) => {
     const selectedCustomer = customerLookup.get(customerId);
+    if (isEditingRequest && orderEditBaseRef.current) orderEditBaseRef.current.customerConfig = configScopeFingerprint(selectedCustomer || {});
     const branchRef = getDefaultOrderRequestBranchRef(selectedCustomer);
     const targetDraft = requestDrafts.find(draft => draft.localId === localId);
     if (!isEditingRequest && targetDraft?.customerId !== customerId) {
       updateDraft(localId, {
         customerId,
+        customerConfigBase: selectedCustomer ? configScopeFingerprint(selectedCustomer) : '',
         customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
         ...branchRef,
         items: [createDraftItem()],
@@ -58460,6 +58573,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     }
     updateDraft(localId, (draft) => ({
       customerId,
+      customerConfigBase: selectedCustomer ? configScopeFingerprint(selectedCustomer) : '',
       customerSearch: selectedCustomer ? getCustomerDisplayName(selectedCustomer) : '',
       branchId: branchRef.branchId,
       branchName: branchRef.branchName,
@@ -58598,7 +58712,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     const configuredAttribute = `${configuration.attributeLabel || getCustomerProductAttribute(configSource, selectedProduct) || ''}`.trim();
     const configuredSize = `${configuration.sizeLabel || getCustomerProductSize(configSource, selectedProduct) || ''}`.trim();
     const pricingUnit = configuration.billingUnit;
-    const quantityUnit = resolveCustomerProductActualUnit(configuration, selectedProduct);
+    const quantityUnit = configuration.defaultOrderUnit || resolveCustomerProductActualUnit(configuration, selectedProduct);
     const configuredPrice = configuration.unitPrice;
     return createDraftItem({
       ...existingItem,
@@ -59136,6 +59250,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const openOrderRequestEditForm = (request) => {
     if (!request || !canEdit) return;
+    orderEditBaseRef.current = { request, customerConfig: configScopeFingerprint(customerLookup.get(request.customerId) || {}) };
     clearQuickProductSelectionLocks();
     stopOrderVoiceCapture();
     cleanupOrderVoiceResources();
@@ -59154,6 +59269,8 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   };
 
   const closeOrderRequestForm = () => {
+    window.localStorage.removeItem(requestDraftStorageKey);
+    requestDraftCacheRef.current = null;
     clearQuickProductSelectionLocks();
     stopOrderVoiceCapture();
     cleanupOrderVoiceResources();
@@ -59896,6 +60013,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         : (customer.empId || employee?.id || '');
 
       normalizedRequests.push({
+        clientMutationId: draft.localId,
         customerId: customer.id,
         branchId: branchRef.branchId,
         branchName: branchRef.branchName,
@@ -59959,23 +60077,28 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           return;
         }
 
-        await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin', {
-          backgroundSync: true,
+        const saved = await onEditOrderRequest(editingRequestId, normalizedRequests[0], employee?.id || 'admin', {
+          expectedOrder: orderEditBaseRef.current?.request,
+          expectedCustomerConfig: orderEditBaseRef.current?.customerConfig,
         });
         setRequestStatus('');
         closeOrderRequestForm();
+        if (saved?.skipped?.length) setRequestStatus('Đơn đã lưu. Các dòng có nhiều biến thể chưa rõ giữ nguyên cấu hình khách hàng.');
         return;
       }
 
+      const skippedDefaults = [];
       for (const requestPayload of normalizedRequests) {
         const savedRequestId = await onAddOrderRequest(employee?.id || 'admin', requestPayload, {
-          backgroundSync: true,
+          expectedCustomerConfig: requestDrafts.find(draft => draft.localId === requestPayload.clientMutationId)?.customerConfigBase,
+          onDefaultsSynced: skipped => skippedDefaults.push(...skipped),
         });
         if (!savedRequestId) throw new Error('Không thể tạo mã đơn đặt hàng. Vui lòng thử lại.');
       }
 
       setRequestStatus('');
       closeOrderRequestForm();
+      if (skippedDefaults.length) setRequestStatus('Đơn đã lưu. Các dòng có nhiều biến thể chưa rõ giữ nguyên cấu hình khách hàng.');
     } catch (error) {
       const message = getFriendlyFirebaseErrorMessage(error, 'Không thể lưu đơn đặt hàng. Vui lòng thử lại.');
       setRequestError(message);
@@ -60189,16 +60312,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           onCancel={closeOrderCellEditor}
           onSave={saveOrderCellEditor}
           onDelete={deleteOrderCellEditorRow}
-          saveHint={rememberOrderPrice ? 'Cập nhật đơn giá và giá mặc định đúng thuộc tính của khách hàng này.' : ''}
-        >
-          {orderCellEditor.field === 'unitPrice' && canEditOrderCellField('unitPrice') && typeof onSyncCustomerFixedProductDefaults === 'function' && (
-            <label className="mt-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
-              <input type="checkbox" checked={rememberOrderPrice} disabled={isSavingOrderCell}
-                onChange={event => setRememberOrderPrice(event.target.checked)} />
-              Lưu giá cho lần sau
-            </label>
-          )}
-        </HDSingleCellEditDialog>
+        />
       )}
 
       {showForm && (
@@ -66800,6 +66914,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const [allowedDriverIdsDraft, setAllowedDriverIdsDraft] = useState([]);
   const [isSavingDriverAccess, setIsSavingDriverAccess] = useState(false);
   const [customerPriceDrafts, setCustomerPriceDrafts] = useState({});
+  const customerPriceBaseRef = useRef('');
   const [customerPriceSearch, setCustomerPriceSearch] = useState('');
   const [customerPriceStatus, setCustomerPriceStatus] = useState('');
   const [isSavingCustomerPrices, setIsSavingCustomerPrices] = useState(false);
@@ -67703,8 +67818,11 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     const normalizedBranches = normalizeCustomerBranches(sourceCustomer || {}, activeProductsForPricing);
     setAllowedDriverIdsDraft(sourceAllowedDriverIds);
     setDriverDebtAccessEnabledDraft(sourceCustomer?.driverDebtAccessEnabled ?? (sourceAllowedDriverIds.length > 0));
-    setCustomerPriceDrafts(normalizeCustomerPriceOverrides(sourceCustomer || {}));
-    setCustomerProductIdsDraft(normalizedProductIds);
+    if (!isSameCustomerRefresh || !customerPriceDirty) {
+      setCustomerPriceDrafts(normalizeCustomerPriceOverrides(sourceCustomer || {}));
+      setCustomerProductIdsDraft(normalizedProductIds);
+      customerPriceBaseRef.current = configScopeFingerprint(sourceCustomer);
+    }
     setCustomerBranchesDraft(normalizedBranches);
     setCustomerBranchStatus('');
     setIsCustomerFixedProductsOpen(normalizedProductIds.length === 0);
@@ -67721,7 +67839,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     setIsSavingCustomerLoan(false);
     setSavingCustomerLoanReturnId('');
     setSavingCustomerLoanEditId('');
-    setCustomerPriceDirty(false);
+    if (!isSameCustomerRefresh || !customerPriceDirty) setCustomerPriceDirty(false);
     const sourceDebtLimitConfig = getCustomerDebtLimitConfig(sourceCustomer || {});
     if (!shouldPreserveProfileEditor) {
       setCustomerEditForm({
@@ -68862,6 +68980,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         ...current,
         [field]: nextValue
       };
+      if (field === 'orderUnits') {
+        updated.defaultOrderUnit = normalizeProductPricingUnit(nextValue.split(/[;,/&+|]/).map(value => value.trim()).find(Boolean) || '');
+        updated.orderUnit = updated.defaultOrderUnit;
+      }
       const cleanPrice = parseLooseMoneyValue(updated.price);
       const cleanSize = `${updated.size || ''}`.trim();
       const cleanAttributeLabel = `${updated.attributeLabel || ''}`.trim();
@@ -69095,7 +69217,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     setIsSavingCustomerPrices(true);
     if (!silent) setCustomerPriceStatus('');
     try {
-      await onEditCustomer(selectedCustomer.id, { priceOverrides, customerProductIds: customerProductIdsDraft });
+      const savedCustomer = await onEditCustomer(selectedCustomer.id, { priceOverrides, customerProductIds: customerProductIdsDraft,
+        __customerConfigBase: customerPriceBaseRef.current });
+      customerPriceBaseRef.current = configScopeFingerprint(savedCustomer || { ...selectedCustomer, priceOverrides, customerProductIds: customerProductIdsDraft });
       setCustomerPriceDirty(false);
       setCustomerPriceDrafts(priceOverrides);
       setCustomerPriceStatus(silent ? 'Đã lưu cấu hình sản phẩm cố định.' : 'Đã lưu cấu hình sản phẩm cố định cho khách hàng này.');
