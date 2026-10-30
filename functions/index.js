@@ -2683,11 +2683,6 @@ const handleCustomerMessageAssignmentWrite = async (event) => {
 exports.syncCustomerMessageAssignment = onDocumentWritten(
   'artifacts/{appId}/public/data/customers/{customerId}', handleCustomerMessageAssignmentWrite
 );
-// Production retains a legacy HTTPS endpoint under the original name. A
-// separate trigger name allows a scoped deployment without replacing that API.
-exports.syncCustomerAssignmentOnWrite = onDocumentWritten(
-  'artifacts/{appId}/public/data/customers/{customerId}', handleCustomerMessageAssignmentWrite
-);
 
 const applyPayosPaymentToOrder = async ({ appId, orderDoc, paidAmount, description, reference = '', paymentLinkId = '', payosOrderCode = '', rawPayload = {}, sourceType = 'payos_sync', provider = 'payos', providerLabel = 'PayOS', trace = null }) => {
   markPaymentTrace(trace, 'payment_apply_start');
