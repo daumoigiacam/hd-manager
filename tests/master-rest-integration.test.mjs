@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { getEventListeners } from 'node:events';
-import { setImmediate as nextTurn } from 'node:timers/promises';
+import { setImmediate as nextTurn, setTimeout as timerTurn } from 'node:timers/promises';
 import test from 'node:test';
 import { parseExpression } from '@babel/parser';
 import { appObject } from './helpers/app-source-function.mjs';
@@ -73,9 +73,14 @@ const pageResponse = (documents, body) => {
   return response(page.length ? page.map(document => ({ document, readTime })) : [{ readTime, done: false }]);
 };
 const waitUntil = async predicate => {
-  for (let turn = 0; turn < 40; turn += 1) {
+  // REST decoding yields through real zero-delay timers. A fixed number of
+  // setImmediate turns can all run before a timer is due on Linux/Node22.
+  // This watchdog only waits for async progress; h.clock still owns the exact
+  // 9s/120s business deadlines and every abort/publication assertion below.
+  const deadline = performance.now() + 5000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
-    await nextTurn();
+    await timerTurn(0);
   }
   assert.fail('Extracted App operation did not reach the expected state');
 };
