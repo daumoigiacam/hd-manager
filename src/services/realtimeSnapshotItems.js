@@ -63,8 +63,10 @@ const getChangedIds = (snapshot, previousIds, finalIds) => {
 export const createRealtimeSnapshotItemsCollector = (normalizeData = data => data) => {
   if (typeof normalizeData !== 'function') throw new TypeError('normalizeData must be a function.');
   let previous = null;
+  let mappingAsync = false;
   const reset = () => { previous = null; };
   const collect = (snapshot, sourceToken = snapshot?.query) => {
+    if (mappingAsync) throw new Error('Concurrent snapshot mapping is not supported.');
     try {
       // The SDK docs getter creates wrappers; access it only once per snapshot.
       const docs = snapshot?.docs;
@@ -98,5 +100,138 @@ export const createRealtimeSnapshotItemsCollector = (normalizeData = data => dat
   };
   collect.collect = collect;
   collect.reset = reset;
+  // Only one async mapping may run for a source. Its caller serializes events
+  // and aborts on unsubscribe/tenant changes. Never publish a partial snapshot.
+  collect.collectAsync = async (snapshot, sourceToken = snapshot?.query, {
+    isCurrent = () => true,
+    yieldWork = () => new Promise(resolve => setTimeout(resolve, 0)),
+    now = () => performance.now(), budgetMs = 4, batchSize = 64,
+  } = {}) => {
+    if (mappingAsync) throw new Error('Concurrent snapshot mapping is not supported.');
+    if (!(budgetMs > 0) || !Number.isFinite(budgetMs) || !Number.isSafeInteger(batchSize) || batchSize < 1) {
+      throw new TypeError('Invalid snapshot work budget.');
+    }
+    mappingAsync = true;
+    const check = () => { if (!isCurrent()) throw Object.assign(new Error('Snapshot source changed.'), { name: 'AbortError' }); };
+    try {
+      check();
+      const docs = snapshot?.docs;
+      if (!Array.isArray(docs)) {
+        reset();
+        const items = snapshot?.exists?.() ? [{ id: snapshot.id, data: normalizeData(snapshot.data()) }] : [];
+        check();return items;
+      }
+      const ids = getUniqueIds(docs);
+      const changed = ids && previous && sourceToken === previous.sourceToken
+        ? getChangedIds(snapshot, previous.ids, ids) : null;
+      const items = new Array(docs.length);
+      const byId = new Map();
+      let deadline = now() + budgetMs;
+      for (let index = 0; index < docs.length; index++) {
+        check();
+        const doc = docs[index];
+        const data = changed && !changed.has(doc.id) ? previous.byId.get(doc.id) : normalizeData(doc.data());
+        items[index] = { id: doc.id, data };
+        byId.set(doc.id, data);
+        if (index + 1 < docs.length && ((index + 1) % batchSize === 0 || now() >= deadline)) {
+          await yieldWork();check();deadline = now() + budgetMs;
+        }
+      }
+      check();
+      previous = ids ? { ids, sourceToken, byId } : null;
+      return items;
+    } catch (error) { reset();throw error; }
+    finally { mappingAsync = false; }
+  };
   return collect;
 };
+
+/** Bound backpressure to one active + one latest pending SDK snapshot. Dropping
+ * an intermediate event invalidates delta reuse, even with identical IDs/order.
+ * Metadata/ACK processing runs only after complete mapping and scope validation.
+ */
+export function createRealtimeSnapshotPipeline({ collect, publish, onError = () => {},
+  isCurrent = () => true, yieldWork = () => new Promise(resolve => setTimeout(resolve, 0)),
+  now, budgetMs = 4, batchSize = 64 }) {
+  let pending = null, running = false, disposed = false;
+  const valid = () => !disposed && isCurrent();
+  async function drain() {
+    if (running) return;
+    running = true;
+    try {
+      while (pending && valid()) {
+        const event = pending;pending = null;
+        if (event.reset) collect.reset();
+        try {
+          // Yield before the first data() clone so a navigation/input event
+          // already in progress can finish before bulk hydration begins.
+          await yieldWork();
+          if (!valid()) break;
+          const items = await collect.collectAsync(event.snapshot, event.sourceToken,
+            { isCurrent: valid, yieldWork, now, budgetMs, batchSize });
+          if (valid()) await publish(event.snapshot, items);
+        } catch (error) {
+          collect.reset();
+          if (pending) pending.reset = true;
+          if (valid()) {
+            try { await onError(error); } catch { /* Do not leak an event callback rejection. */ }
+          }
+        }
+      }
+    } finally { running = false;if (!valid()) pending = null; }
+  }
+  return {
+    enqueue(snapshot, sourceToken) {
+      if (!valid()) return;
+      const reset = Boolean(pending);
+      pending = { snapshot, sourceToken, reset };
+      void drain();
+    },
+    dispose() { disposed = true;pending = null;collect.reset(); },
+    get pendingCount() { return pending ? 1 : 0; },
+  };
+}
+
+/** Normalized snapshot objects are immutable within one tenant/read lifetime.
+ * Reusing unchanged record wrappers avoids deep-comparing/cloning all fields on
+ * every metadata ACK. Parser/source/id changes always materialize a new record.
+ * Weak keys do not retain removed snapshots, and no cache crosses tenants.
+ */
+export function createSnapshotRecordMaterializer() {
+  const records = new WeakMap();
+  return (id, data, parser = null) => {
+    const cacheable = data !== null && typeof data === 'object';
+    const cached = cacheable ? records.get(data) : null;
+    if (cached && cached.id === id && cached.parser === parser) return cached.record;
+    const record = { id, ...(parser ? parser(data) : data) };
+    if (cacheable) records.set(data, { id, parser, record });
+    return record;
+  };
+}
+
+// Prepare complete immutable records outside React's state updater. Returning
+// a partial array/object would expose incomplete totals, so only return at end.
+export async function materializeSnapshotRecords(items, materialize, {
+  isObject = false, isCurrent = () => true,
+  yieldWork = () => new Promise(resolve => setTimeout(resolve, 0)),
+  now = () => performance.now(), budgetMs = 4, batchSize = 64,
+} = {}) {
+  if (!Array.isArray(items) || typeof materialize !== 'function' || !(budgetMs > 0)
+    || !Number.isFinite(budgetMs) || !Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new TypeError('Invalid record materialization budget.');
+  }
+  const check = () => { if (!isCurrent()) throw Object.assign(new Error('Record materialization superseded.'), {name:'AbortError'}); };
+  check();
+  await yieldWork();check();
+  const result = isObject ? {} : [];
+  let deadline = now() + budgetMs, count = 0;
+  for (const {id,data} of items) {
+    check();const record = materialize(id,data);
+    if (isObject) Object.defineProperty(result,id,{value:record,writable:true,enumerable:true,configurable:true});
+    else result.push(record);
+    if (++count >= batchSize || now() >= deadline) {
+      await yieldWork();check();count = 0;deadline = now() + budgetMs;
+    }
+  }
+  check();return result;
+}

@@ -110,7 +110,7 @@ test('pricing snapshots and an earlier save receipt cannot overwrite a newer uns
   let complete;
   const pricingSaveInFlightRef = { current: false };
   const save = appFunction('handleSavePricingRules', {
-    canEditRules: true, pricingSaveInFlightRef, pricingDraftRevisionRef,
+    pricingActivityReady: true, canEditRules: true, pricingSaveInFlightRef, pricingDraftRevisionRef,
     onSavePricingRules: () => new Promise(resolve => { complete = resolve; }),
     parsedRules: { price: 63, marginByProduct: {} }, buildSeedProductMargins: () => ({}),
     setIsSavingPricing() {}, setStatusText() {}, getFriendlyFirebaseErrorMessage: error => error.message,

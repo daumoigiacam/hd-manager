@@ -14,13 +14,22 @@ const toNumber = (value, fallback = 0) => {
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-const normalizeText = (value = '') =>
-  String(value)
+const normalizedTextCache = new Map();
+const normalizeText = (value = '') => {
+  const cacheable = typeof value === 'string' && value.length <= 256;
+  if (cacheable && normalizedTextCache.has(value)) return normalizedTextCache.get(value);
+  const result = String(value)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+  if (cacheable) {
+    if (normalizedTextCache.size >= 2048) normalizedTextCache.delete(normalizedTextCache.keys().next().value);
+    normalizedTextCache.set(value, result);
+  }
+  return result;
+};
 
 const getDateValue = (value) => {
   if (!value) return null;

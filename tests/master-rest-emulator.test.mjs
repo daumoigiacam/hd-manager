@@ -11,7 +11,7 @@ import test from 'node:test';
 import { createMockUserToken } from '@firebase/util';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, writeBatch, setDoc } from 'firebase/firestore';
-import { collectTenantRestQuery } from '../src/services/firestoreRestPagination.js';
+import { collectTenantRestQuery, consumeTenantRestQuery } from '../src/services/firestoreRestPagination.js';
 import { appObject } from './helpers/app-source-function.mjs';
 
 const enabled = process.env.MASTER_REST_EMULATOR === '1';
@@ -184,6 +184,24 @@ test('real isolated demo REST runQuery: precision, Rules, cursors and snapshot c
       && decodeFields(historicalRow.document.fields).amount === 1
       && pinnedResponse.filter(row => row.readTime).every(row => comparableTime(row.readTime) === comparableTime(pinned)));
     t.diagnostic(JSON.stringify({ fixedTimeHonored, pinError: pinError?.message || null }));
+
+    await t.test('bounded page consumer honors the same real REST snapshot contract', async () => {
+      const pages = [];
+      const runConsumer = () => consumeTenantRestQuery({ queryBody,
+        context: { parent, companyId, accountType: 'employee' },
+        runQuery: body => run(body), decodeFields, pageSize: 100,
+      }, page => { pages.push(page); });
+      if (fixedTimeHonored) {
+        const result = await runConsumer();
+        assert.deepEqual(pages.flat(), expected);
+        assert.deepEqual(result.items, []);
+        assert.equal(result.exhausted, true);
+      } else {
+        await assert.rejects(runConsumer(), /readTime|precision|Emulator runQuery/i);
+        t.diagnostic('Partial pages are temporary only; this emulator cannot establish a completed historical backup.');
+      }
+      assert.ok(pages.every(page => page.length <= 100));
+    });
 
     await t.test('collector either completes at a honored fixed snapshot or rejects unsupported consistency', async () => {
       if (fixedTimeHonored) {

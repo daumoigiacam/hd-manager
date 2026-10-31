@@ -19,14 +19,17 @@ export async function buildAcceptanceApk({ buildOutput, output, fixture, token }
       await writeFile(path.join(assets, file), JSON.stringify(config));
     } else await cp(source, path.join(assets, file));
   }
-  // Generated fixture is included only in a separate, debug-only APK. No cloud
-  // Firebase configuration, credential or business data enters this package.
-  const init = `${token === null ? 'localStorage.clear();sessionStorage.clear();' : ''}localStorage.removeItem('hd-manager-session-v2');window.__initial_auth_token=${JSON.stringify(token)};if(!sessionStorage.getItem('perf-seeded')){localStorage.setItem('hd-manager-local-db-v2-clean-preview',${JSON.stringify(JSON.stringify(fixture))});sessionStorage.setItem('perf-seeded','1');}`;
-  await writeFile(path.join(assets, 'public', 'acceptance-init.js'), init);
-  const indexPath = path.join(assets, 'public', 'index.html');
-  const index = await readFile(indexPath, 'utf8');
-  assert.ok(index.includes('<head>'));
-  await writeFile(indexPath, index.replace('<head>', '<head><script src="/acceptance-init.js"></script>'));
+  // Synthetic preview data is opt-in. A cloud diagnostic build must leave
+  // Auth/session storage untouched, including on subsequent app launches.
+  // Never embed real credentials in either kind of acceptance package.
+  if (fixture !== undefined) {
+    const init = `${token === null ? 'localStorage.clear();sessionStorage.clear();' : ''}localStorage.removeItem('hd-manager-session-v2');window.__initial_auth_token=${JSON.stringify(token)};if(!sessionStorage.getItem('perf-seeded')){localStorage.setItem('hd-manager-local-db-v2-clean-preview',${JSON.stringify(JSON.stringify(fixture))});sessionStorage.setItem('perf-seeded','1');}`;
+    await writeFile(path.join(assets, 'public', 'acceptance-init.js'), init);
+    const indexPath = path.join(assets, 'public', 'index.html');
+    const index = await readFile(indexPath, 'utf8');
+    assert.ok(index.includes('<head>'));
+    await writeFile(indexPath, index.replace('<head>', '<head><script src="/acceptance-init.js"></script>'));
+  }
   const javaHome = globalThis.process.env.JAVA_HOME || 'C:/Program Files/Android/Android Studio/jbr';
   const args = ['-Dfile.encoding=UTF-8', '-Dsun.jnu.encoding=UTF-8', '-classpath', 'gradle/wrapper/gradle-wrapper.jar',
     'org.gradle.wrapper.GradleWrapperMain', '--offline', '--no-daemon', 'assembleDebug',

@@ -38,6 +38,7 @@ export default defineConfig(({ mode }) => {
   // unsupported VPS resources can never make the whole application unavailable.
   const isVpsStagingBuild = vpsDataMode === 'vps-staging';
   const useCloudData = !usePreviewData && !isVpsStagingBuild;
+  const readWorkerEnabled = useCloudData && env.VITE_FIRESTORE_READ_WORKER === 'true';
   if (isVpsStagingBuild && !`${env.VITE_API_BASE_URL || ''}`.trim()) {
     throw new Error('VITE_API_BASE_URL is required when VITE_DATA_MODE=vps-staging.');
   }
@@ -71,6 +72,12 @@ export default defineConfig(({ mode }) => {
   ));
   const runtimeAliases = {
     ...firebaseAliases,
+    '@hd/firestore-read-worker': fileURLToPath(new URL(
+      readWorkerEnabled ? './src/services/firestoreReadWorkerFactory.js' : './src/mocks/firestoreReadWorkerFactory.js', import.meta.url,
+    )),
+    '@hd/firestore-worker-values': fileURLToPath(new URL(
+      readWorkerEnabled ? './src/services/firestoreWorkerValues.js' : './src/mocks/firestoreWorkerValues.js', import.meta.url,
+    )),
     ...(profileInteractions ? {
       'react-dom/client': fileURLToPath(new URL('./node_modules/react-dom/profiling.js', import.meta.url)),
     } : {}),
@@ -89,6 +96,10 @@ export default defineConfig(({ mode }) => {
     )),
     '@hd/firebase-rest-runtime': fileURLToPath(new URL(
       isVpsStagingBuild ? './src/mocks/firebase-rest-runtime-vps.js' : './src/config/firebase-rest-runtime.js',
+      import.meta.url,
+    )),
+    '@hd/firebase-backup-values': fileURLToPath(new URL(
+      useCloudData ? './src/services/firebaseBackupValues.js' : './src/mocks/firebase-backup-values.js',
       import.meta.url,
     )),
   };
@@ -122,12 +133,16 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: runtimeAliases
     },
+    worker: { format: 'iife', rollupOptions: { output: { inlineDynamicImports: true } } },
     // This workspace also contains installers, backups and other websites.
     // Scan only HD Manager's entry, while still discovering its imported deps.
     optimizeDeps: {
       entries: ['index.html']
     },
     build: {
+      // The Android 10 acceptance device ships WebView 74. Lower optional
+      // chaining/nullish coalescing too, before that runtime parses any module.
+      target: ['chrome74', 'es2019'],
       chunkSizeWarningLimit: 3200,
       cssCodeSplit: true,
       minify: 'esbuild',

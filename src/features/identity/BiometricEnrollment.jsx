@@ -32,7 +32,9 @@ export default function BiometricEnrollment({ identity, getToken, onDone, onCanc
       <Fingerprint size={28} className="text-emerald-600" />
       <h1 className="mt-3 text-lg font-semibold">Bật đăng nhập bằng sinh trắc học trên thiết bị này?</h1>
       <p className="mt-2 text-sm text-gray-600">{availability?.available ? availability.label : 'Thiết bị cần thiết lập sinh trắc học đủ bảo mật trong Cài đặt điện thoại.'}</p>
+      <p className="mt-2 text-sm text-gray-600">Bạn đã xác thực bằng mật khẩu. Có thể bật sinh trắc học sau trên thiết bị này.</p>
       {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+      <button type="button" disabled={busy} onClick={() => onDone({ enabled: false })} className="mt-4 w-full rounded-lg border border-emerald-600 px-3 py-3 text-emerald-700 disabled:opacity-50">Tiếp tục bằng mật khẩu</button>
       <div className="mt-4 flex gap-2">
         <button type="button" disabled={busy} onClick={onCancel} className="flex-1 rounded-lg border px-3 py-3">Đăng xuất</button>
         <button type="button" disabled={busy || !availability?.available} onClick={enable} className="flex-1 rounded-lg bg-emerald-600 px-3 py-3 text-white disabled:opacity-50">{busy ? 'Đang xác thực...' : 'Bật ngay'}</button>

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWarehouseDispatchReadDecoder } from '../src/features/warehouse/warehouseDispatchReadRepository.js';
 import { appFunction } from './helpers/app-source-function.mjs';
+import {createSnapshotRecordMaterializer,materializeSnapshotRecords} from '../src/services/realtimeSnapshotItems.js';
 
 const record = (id = 'dispatch-a', patch = {}) => ({
   id, data: { id, companyId: 'company-a', customerId: 'customer-a',
@@ -56,9 +57,11 @@ test('unchanged immutable snapshots reuse validation and replacement snapshots a
   assert.equal(decode([record('dispatch-a', { quantity: 7 })])[0].data.quantity, 7);
 });
 
-test('actual collection publication validates the full batch before touching overlays or state', () => {
+test('actual collection publication validates the full batch before touching overlays or state', async () => {
   const events = [];
   const apply = appFunction('applyCollectionItems', {
+    cancelled:false,readWorker:null,materializationRevisions:new Map(),snapshotRecordMaterializers:new Map(),
+    createSnapshotRecordMaterializer,materializeSnapshotRecords,
     decodeWarehouseDispatchItems: createWarehouseDispatchReadDecoder({ companyId: 'company-a' }),
     clearConfirmedLocalMutations: () => events.push('clear-overlay'),
     filterRecentlyDeletedItems: (_name, items) => items,
@@ -68,20 +71,21 @@ test('actual collection publication validates the full batch before touching ove
     setCollectionSafely: (_name, setter, value) => setter(value),
   });
   const publish = rows => events.push(rows);
-  assert.throws(() => apply('warehouseDispatches', publish, [
+  await assert.rejects(apply('warehouseDispatches', publish, [
     record(), record('invalid', { weightKg: {} }),
   ]), /weightKg/);
   assert.deepEqual(events, []);
-  apply('warehouseDispatches', publish, [record()]);
+  await apply('warehouseDispatches', publish, [record()]);
   assert.equal(events[0], 'clear-overlay');
   assert.equal(events[1][0].quantity, '5');
 });
 
-test('actual realtime callback rejects malformed data before ACK bookkeeping or publication', () => {
+test('actual realtime callback rejects malformed data before ACK bookkeeping or publication', async () => {
   const effects = [];
   const snapshot = { metadata: { fromCache: false, hasPendingWrites: false } };
   const apply = appFunction('applySnapshot', {
     cancelled: false,
+    listenerActive:true,
     colName: 'warehouseDispatches',
     snapshotItemCollectors: [() => [record('bad', { weightKg: {} })]],
     collectionRefs: [{}],
@@ -92,6 +96,6 @@ test('actual realtime callback rejects malformed data before ACK bookkeeping or 
     markCollectionServerConfirmed: () => effects.push('confirmed'),
     applyCollectionItems: () => effects.push('published'),
   });
-  assert.throws(() => apply(snapshot, 0), /weightKg/);
+  await assert.rejects(apply(snapshot, 0), /weightKg/);
   assert.deepEqual(effects, []);
 });

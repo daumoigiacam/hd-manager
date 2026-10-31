@@ -1,5 +1,6 @@
 import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
 import { isCustomerDebtRepayment } from '../utils/expenseClassification.js';
+import { sortProjection } from './cooperativeProjection.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Dashboard builds are synchronous. Cache only for that call, never across
@@ -432,14 +433,27 @@ const topRows = (map, valueKey = 'value', limit = 10) => [...map.entries()]
 const buildDispatchSignature = (dispatch = {}) => `${dispatch.customerId || normalizeText(dispatch.customerName || dispatch.name)}|${dispatch.productId || normalizeText(dispatch.productName || dispatch.product || dispatch.itemName)}`;
 const buildRequestSignature = (request = {}) => `${request.customerId || normalizeText(request.customerName || request.name)}|${request.productId || normalizeText(request.productName || request.product || request.itemName)}`;
 
-const isRequestDelivered = (request = {}, dispatches = []) => {
-  const signature = buildRequestSignature(request);
-  const requestTime = parseDate(getDateValue(request))?.getTime() || 0;
-  return dispatches.some(dispatch => {
-    if (buildDispatchSignature(dispatch) !== signature) return false;
-    const dispatchTime = parseDate(getDateValue(dispatch))?.getTime() || 0;
-    return !requestTime || !dispatchTime || dispatchTime >= requestTime;
+export const createRequestDeliveryLookup = (dispatches = []) => {
+  const cached = activeBuildCache?.deliveries?.get(dispatches);
+  if (cached) return cached;
+  const bySignature = new Map();
+  dispatches.forEach(dispatch => {
+    const signature = buildDispatchSignature(dispatch);
+    const time = parseDate(getDateValue(dispatch))?.getTime() || 0;
+    const previous = bySignature.get(signature);
+    bySignature.set(signature, {
+      unknownTime: !time || Boolean(previous?.unknownTime),
+      latestTime: Math.max(previous?.latestTime ?? -Infinity, time),
+    });
   });
+  const lookup = (request = {}) => {
+    const entry = bySignature.get(buildRequestSignature(request));
+    if (!entry) return false;
+    const requestTime = parseDate(getDateValue(request))?.getTime() || 0;
+    return !requestTime || entry.unknownTime || entry.latestTime >= requestTime;
+  };
+  activeBuildCache?.deliveries?.set(dispatches, lookup);
+  return lookup;
 };
 
 const inventoryValueOfImports = (imports = []) => imports.reduce((sum, item) => {
@@ -725,9 +739,15 @@ const importValueOf = (item = {}) => {
 };
 
 const PROFIT_EVENT_ORDER = { import: 0, dispatch: 1, sale: 1, revenue: 2 };
+const canonicalDay = /^\d{4}-\d{2}-\d{2}$/;
 
 const sortProfitEvents = (a, b) => {
-  const dayCompare = a.dateKey.localeCompare(b.dateKey);
+  // Internally generated ISO days sort exactly by code units. Avoid locale
+  // collation on every event pair; retain the previous fallback for other keys.
+  const dayCompare = a.dateKey === b.dateKey ? 0
+    : canonicalDay.test(a.dateKey) && canonicalDay.test(b.dateKey)
+      ? a.dateKey < b.dateKey ? -1 : 1
+      : a.dateKey.localeCompare(b.dateKey);
   if (dayCompare !== 0) return dayCompare;
   if (a.type === b.type) return 0;
   return (PROFIT_EVENT_ORDER[a.type] ?? 9) - (PROFIT_EVENT_ORDER[b.type] ?? 9);
@@ -834,11 +854,9 @@ const aggregateProfitRowsByGroup = (rows = []) => {
     .sort((a, b) => b.profit - a.profit);
 };
 
-export const ProfitabilityService = {
-  build(source, finance) {
-    const todayKey = finance.todayKey || dateKey(source.now);
+const prepareProfitabilityEvents = (source, todayKey, requestedDays) => {
     const productsById = new Map(source.products.map(product => [product.id, product]));
-    const dispatchSummaryMap = new Map();
+    const dispatchSummaries = new Map();
     const dispatchUsageKeysByDate = new Set();
     const events = [];
 
@@ -861,7 +879,9 @@ export const ProfitabilityService = {
         kg,
         fallbackCostPerUnit: itemCost(dispatch)
       });
-      if (eventDateKey !== todayKey) return;
+      if (!requestedDays.has(eventDateKey)) return;
+      if (!dispatchSummaries.has(eventDateKey)) dispatchSummaries.set(eventDateKey, new Map());
+      const dispatchSummaryMap = dispatchSummaries.get(eventDateKey);
       const summary = dispatchSummaryMap.get(key) || {
         key,
         name: productNameOf(dispatch, productsById),
@@ -930,6 +950,10 @@ export const ProfitabilityService = {
       });
     });
 
+    return { events: events.sort(sortProfitEvents), dispatchSummaries };
+};
+
+const buildPreparedProfitability = ({ events, dispatchSummaries }, todayKey) => {
     const stateMap = new Map();
     const ensureState = (event) => {
       if (!stateMap.has(event.key)) {
@@ -956,7 +980,8 @@ export const ProfitabilityService = {
       return state;
     };
 
-    events.sort(sortProfitEvents).forEach(event => {
+    events.forEach(event => {
+      if (event.dateKey > todayKey) return;
       const state = ensureState(event);
       if (event.type === 'import') {
         state.carryQty += event.quantity;
@@ -989,7 +1014,7 @@ export const ProfitabilityService = {
       }
     });
 
-    dispatchSummaryMap.forEach(summary => {
+    dispatchSummaries.get(todayKey)?.forEach(summary => {
       const state = ensureState(summary);
       mergeQuantityByUnit(state.dispatchQuantitiesByUnit, summary.dispatchQuantitiesByUnit);
     });
@@ -1022,21 +1047,43 @@ export const ProfitabilityService = {
       topProduct: productRows.find(row => row.profit > 0) || productRows[0] || null,
       topGroup: groupRows.find(row => row.profit > 0) || groupRows[0] || null
     };
+};
+
+// One immutable preparation per dashboard build; never cache across saves or
+// tenants. Daily diagnostics reuse the same ordered events and today's result.
+const createProfitabilitySnapshotReader = (source, days) => {
+  const requestedDays = new Set(days);
+  const latestDay = [...requestedDays].sort().at(-1);
+  const prepared = prepareProfitabilityEvents(source, latestDay, requestedDays);
+  const snapshots = new Map();
+  return day => {
+    if (!requestedDays.has(day)) throw new Error('Profitability day was not prepared.');
+    if (!snapshots.has(day)) snapshots.set(day, buildPreparedProfitability(prepared, day));
+    return snapshots.get(day);
+  };
+};
+
+export const ProfitabilityService = {
+  build(source, finance) {
+    const todayKey = finance.todayKey || dateKey(source.now);
+    return createProfitabilitySnapshotReader(source, [todayKey])(todayKey);
   }
 };
 
-const buildInventorySoldCostByDate = (source = {}, endDateKey = '') => {
+function* buildInventorySoldCostSteps(source = {}, endDateKey = '') {
+  let operations=0;
   const productsById = new Map(source.products.map(product => [product.id, product]));
   const dispatchUsageKeysByDate = new Set();
   const events = [];
 
-  source.warehouseDispatches.forEach(dispatch => {
+  for (const dispatch of source.warehouseDispatches) {
+    if(++operations%16===0)yield;
     const eventDateKey = dateKey(getDateValue(dispatch));
-    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) return;
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
     const quantity = dispatchQuantityOf(dispatch);
     const kg = dispatchKgOf(dispatch);
     const primaryQuantity = quantity > 0 ? quantity : kg;
-    if (primaryQuantity <= 0) return;
+    if (primaryQuantity <= 0) continue;
     const key = inventoryCostKeyOf(dispatch, productsById);
     dispatchUsageKeysByDate.add(`${eventDateKey}__${key}`);
     events.push({
@@ -1046,16 +1093,17 @@ const buildInventorySoldCostByDate = (source = {}, endDateKey = '') => {
       quantity: primaryQuantity,
       fallbackCostPerUnit: itemCost(dispatch)
     });
-  });
+  }
 
-  source.warehouseImports.forEach(item => {
+  for (const item of source.warehouseImports) {
+    if(++operations%16===0)yield;
     const eventDateKey = dateKey(getDateValue(item));
-    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) return;
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
     const quantity = importQuantityOf(item);
     const kg = importKgOf(item);
     const value = importValueOf(item);
     const primaryQuantity = quantity > 0 ? quantity : kg;
-    if (primaryQuantity <= 0 && value <= 0) return;
+    if (primaryQuantity <= 0 && value <= 0) continue;
     events.push({
       type: 'import',
       dateKey: eventDateKey,
@@ -1063,17 +1111,19 @@ const buildInventorySoldCostByDate = (source = {}, endDateKey = '') => {
       quantity: primaryQuantity,
       value
     });
-  });
+  }
 
-  source.orders.forEach(order => {
+  for (const order of source.orders) {
+    if(++operations%16===0)yield;
     const eventDateKey = dateKey(getDateValue(order));
-    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) return;
-    getItems(order).forEach(item => {
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
+    for (const item of getItems(order)) {
+      if(++operations%16===0)yield;
       const quantity = itemQuantity(item);
       const revenue = itemLineTotal(item);
-      if (quantity <= 0 && revenue <= 0) return;
+      if (quantity <= 0 && revenue <= 0) continue;
       const key = inventoryCostKeyOf(item, productsById);
-      if (dispatchUsageKeysByDate.has(`${eventDateKey}__${key}`)) return;
+      if (dispatchUsageKeysByDate.has(`${eventDateKey}__${key}`)) continue;
       events.push({
         type: 'sale',
         dateKey: eventDateKey,
@@ -1081,18 +1131,20 @@ const buildInventorySoldCostByDate = (source = {}, endDateKey = '') => {
         quantity,
         fallbackCostPerUnit: itemCost(item)
       });
-    });
-  });
+    }
+  }
 
   const stateMap = new Map();
   const costByDate = new Map();
-  events.sort(sortProfitEvents).forEach(event => {
+  const sortedEvents = yield* sortProjection(events,sortProfitEvents);
+  for (const event of sortedEvents) {
+    if(++operations%16===0)yield;
     const state = stateMap.get(event.key) || { carryQty: 0, carryValue: 0 };
     if (event.type === 'import') {
       state.carryQty += event.quantity || 0;
       state.carryValue += event.value || 0;
       stateMap.set(event.key, state);
-      return;
+      continue;
     }
 
     const quantity = event.quantity || 0;
@@ -1104,10 +1156,10 @@ const buildInventorySoldCostByDate = (source = {}, endDateKey = '') => {
     state.carryValue = Math.max(0, state.carryValue - saleCost);
     stateMap.set(event.key, state);
     costByDate.set(event.dateKey, (costByDate.get(event.dateKey) || 0) + saleCost);
-  });
+  }
 
   return costByDate;
-};
+}
 
 const sumInventorySoldCostByMonth = (costByDate = new Map(), targetMonthKey = '') => (
   [...costByDate.entries()]
@@ -1115,8 +1167,8 @@ const sumInventorySoldCostByMonth = (costByDate = new Map(), targetMonthKey = ''
     .reduce((sum, [, value]) => sum + toNumber(value), 0)
 );
 
-export const BusinessAnalysisService = {
-  build(source, finance, profitability = {}) {
+function* buildBusinessAnalysisSteps(source, finance, profitability = {}) {
+    let operations=0;
     const customersById = new Map();
     source.customers.forEach(customer => {
       if (customer.id) customersById.set(customer.id, customer);
@@ -1252,7 +1304,8 @@ export const BusinessAnalysisService = {
       }
     });
 
-    source.orders.forEach(order => {
+    for (const order of source.orders) {
+      if(++operations%16===0)yield;
       const customerName = customerNameOf(order, customersById);
       const salesOwner = salesOwnerOfOrder(order);
       const employeeKey = salesOwner.id || normalizeText(salesOwner.name);
@@ -1338,7 +1391,8 @@ export const BusinessAnalysisService = {
         });
       }
 
-      getItems(order).forEach(item => {
+      for (const item of getItems(order)) {
+        if(++operations%16===0)yield;
         const productName = productNameOf(item, productsById);
         const itemRevenue = itemLineTotal(item);
         const itemQty = itemQuantity(item);
@@ -1386,8 +1440,8 @@ export const BusinessAnalysisService = {
             profit: currentDay.profit + itemProfit
           });
         }
-      });
-    });
+      }
+    }
 
     // The profile debt is a fallback for legacy/old-debt records. When an
     // order has an outstanding balance, use that order total instead of
@@ -1446,6 +1500,12 @@ export const BusinessAnalysisService = {
       profitPerDay: finance.profitMonth / daysPassed,
       profitMarginPct: finance.revenueMonth > 0 ? (finance.profitMonth / finance.revenueMonth) * 100 : 0
     };
+}
+
+export const BusinessAnalysisService = {
+  build(source,finance,profitability={}) {
+    const iterator=buildBusinessAnalysisSteps(source,finance,profitability);
+    for(;;){const step=iterator.next();if(step.done)return step.value}
   }
 };
 
@@ -1510,7 +1570,8 @@ export const AlertService = {
       });
       if (overLimit.length > 0) add({ id: 'debtLimit', severity: 'high', title: 'Khách vượt hạn mức nợ', message: `${overLimit.length} khách đã vượt hạn mức công nợ.`, targetTab: 'customers' });
     }
-    const undeliveredOrders = source.orderRequests.filter(request => !isRequestDelivered(request, source.warehouseDispatches)).length;
+    const isRequestDelivered = createRequestDeliveryLookup(source.warehouseDispatches);
+    const undeliveredOrders = source.orderRequests.filter(request => !isRequestDelivered(request)).length;
     if (undeliveredOrders > 0) {
       add({ id: 'undelivered', severity: 'medium', title: 'Đơn hàng chưa giao', message: `${undeliveredOrders} đơn đặt chưa có phiếu xuất tương ứng.`, targetTab: 'warehouse_dispatch' });
     }
@@ -1839,14 +1900,14 @@ const itemPriceOf = (item = {}) => {
   return quantity > 0 && total > 0 ? total / quantity : 0;
 };
 
-const buildProfitabilityDiagnostics = (source = {}, finance = {}) => {
+const buildProfitabilityDiagnostics = (source = {}, finance = {}, readSnapshot = day => ProfitabilityService.build(source, { ...finance, todayKey: day })) => {
   const todayKey = finance.todayKey || dateKey(source.now || new Date());
   const todayDate = parseDate(todayKey) || source.now || new Date();
   const dayKeys = [2, 1, 0].map(offset => dateKey(addDays(todayDate, -offset))).filter(Boolean);
   const byGroup = new Map();
 
   dayKeys.forEach(day => {
-    const snapshot = ProfitabilityService.build(source, { ...finance, todayKey: day });
+    const snapshot = readSnapshot(day);
     snapshot.groupRows.forEach(row => {
       if (!row?.name || toNumber(row.costQuantity) <= 0 || toNumber(row.revenue) <= 0) return;
       const key = normalizeText(row.name);
@@ -2228,11 +2289,12 @@ const makeKpi = ({ id, title, value, kind = 'money', current = value, previousDa
   return { id, title, label: title, value, kind, vsYesterday, vsPreviousMonth, dayDeltaPct: vsYesterday, monthDeltaPct: vsPreviousMonth, tone, isPositive: positive };
 };
 
-export const DashboardService = {
-  build(input = {}) {
+function* buildDashboardSnapshotSteps(input = {}) {
     const source = normalizeInput(input);
     let finance = FinancialService.build(source);
-    const inventorySoldCostByDate = buildInventorySoldCostByDate(source, finance.todayKey);
+    yield;
+    const inventorySoldCostByDate = yield* buildInventorySoldCostSteps(source, finance.todayKey);
+    yield;
     const inventoryPurchaseExpenses = source.expenses.filter(isInventoryPurchaseExpense);
     const payrollCostByDate = new Map();
     source.payrollCosts.forEach(row => {
@@ -2535,14 +2597,25 @@ export const DashboardService = {
       payrollAccrualRows: payrollEmployeeRows,
       salaryEmployeeRows
     };
-    const profitabilityBase = ProfitabilityService.build(source, finance);
-    const profitabilityDiagnostics = buildProfitabilityDiagnostics(source, finance);
+    const profitabilityDate = parseDate(finance.todayKey) || source.now || new Date();
+    yield;
+    const readProfitabilitySnapshot = createProfitabilitySnapshotReader(source,
+      [finance.todayKey, ...[2, 1, 0].map(offset => dateKey(addDays(profitabilityDate, -offset))).filter(Boolean)]);
+    yield;
+    const profitabilityBase = readProfitabilitySnapshot(finance.todayKey);
+    yield;
+    const profitabilityDiagnostics = buildProfitabilityDiagnostics(source, finance, readProfitabilitySnapshot);
+    yield;
     const profitability = { ...profitabilityBase, ...profitabilityDiagnostics };
     const costs = CostAnalysisService.build(source, finance);
-    const business = BusinessAnalysisService.build(source, finance, profitability);
+    yield;
+    const business = yield* buildBusinessAnalysisSteps(source, finance, profitability);
+    yield;
     const operations = buildOperations(source, finance);
+    yield;
 
-    const undeliveredRequests = source.orderRequests.filter(request => !isRequestDelivered(request, source.warehouseDispatches));
+    const isRequestDelivered = createRequestDeliveryLookup(source.warehouseDispatches);
+    const undeliveredRequests = source.orderRequests.filter(request => !isRequestDelivered(request));
     const shell = {
       generatedAt: new Date().toISOString(),
       period: {
@@ -2565,6 +2638,7 @@ export const DashboardService = {
     };
 
     const alerts = AlertService.build(source, shell);
+    yield;
     const kpis = [
       makeKpi({ id: 'revenueToday', title: 'Doanh thu hôm nay', value: finance.revenueToday, current: finance.revenueToday, previousDay: finance.revenueYesterday, currentMonth: finance.revenueMonth, previousMonth: finance.revenuePreviousMonth }),
       makeKpi({ id: 'revenueMonth', title: 'Doanh thu tháng', value: finance.revenueMonth, current: finance.revenueToday, previousDay: finance.revenueYesterday, currentMonth: finance.revenueMonth, previousMonth: finance.revenuePreviousMonth }),
@@ -2582,14 +2656,31 @@ export const DashboardService = {
 
     const completed = { ...shell, kpis, alerts };
     const insights = InsightService.build(source, completed, alerts);
+    yield;
     const recommendations = RecommendationService.build(source, completed, alerts);
     return { ...completed, insights, recommendations };
+}
+
+export const DashboardService = {
+  build(input = {}) {
+    const iterator=buildDashboardSnapshotSteps(input);
+    for(;;){const step=iterator.next();if(step.done)return step.value}
   }
+};
+
+export const createExecutiveDashboardSnapshotIterator = input => {
+  const cache={dates:new Map(),billing:new WeakMap(),totals:new WeakMap(),deliveries:new WeakMap()};
+  const iterator=buildDashboardSnapshotSteps(input);
+  const scoped=method=>value=>{
+    const previous=activeBuildCache;activeBuildCache=cache;
+    try{return iterator[method](value)}finally{activeBuildCache=previous}
+  };
+  return {next:scoped('next'),return:scoped('return')};
 };
 
 export const buildExecutiveDashboardSnapshot = (input = {}) => {
   const previous = activeBuildCache;
-  activeBuildCache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap() };
+  activeBuildCache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap(), deliveries: new WeakMap() };
   try {
     return DashboardService.build(input);
   } finally {

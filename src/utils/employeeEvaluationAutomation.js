@@ -74,6 +74,7 @@ const toDate = value => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+let employeeEvaluationDateTimeFormatter = null;
 const getDateTimeParts = value => {
   const raw = text(value);
   const localMatch = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T ](\d{1,2}):(\d{2})/);
@@ -89,7 +90,7 @@ const getDateTimeParts = value => {
   }
   const parsed = toDate(value);
   if (!parsed) return null;
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  if (!employeeEvaluationDateTimeFormatter) employeeEvaluationDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Ho_Chi_Minh',
     calendar: 'gregory',
     year: 'numeric',
@@ -99,7 +100,8 @@ const getDateTimeParts = value => {
     minute: '2-digit',
     hour12: false,
     hourCycle: 'h23'
-  }).formatToParts(parsed);
+  });
+  const parts = employeeEvaluationDateTimeFormatter.formatToParts(parsed);
   const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
   return {
     year: Number(values.year),

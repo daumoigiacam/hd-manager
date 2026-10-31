@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getListPage } from '../utils/listPage.js';
 
-export const usePagedList = (items, resetKey = '', pageSize = 50) => {
+export const getDefaultListPageSize = (scope = globalThis) => (
+  scope.document?.documentElement?.classList?.contains('hd-low-power-ui')
+    || scope.matchMedia?.('(max-width: 600px)')?.matches ? 20 : 50
+);
+
+export const usePagedList = (items, resetKey = '', pageSize) => {
+  // Bound mounted card DOM on phones; totals/search still use the full list.
+  // Resolve once per mounted list to avoid page shifts during keyboard resize.
+  const [defaultPageSize] = useState(getDefaultListPageSize);
   const [selection, setSelection] = useState({ key: resetKey, page: 0 });
-  const info = getListPage(items.length, selection.key === resetKey ? selection.page : 0, pageSize);
+  const info = getListPage(items.length, selection.key === resetKey ? selection.page : 0, pageSize ?? defaultPageSize);
   const visibleItems = useMemo(() => items.slice(info.start, info.end), [items, info.start, info.end]);
   const setPage = useCallback(page => setSelection({ key: resetKey, page }), [resetKey]);
   return { ...info, items: visibleItems, setPage };
@@ -91,14 +99,16 @@ export const useThrottledCallback = (callback, waitMs = DEFAULT_THROTTLE_MS) => 
   }, [waitMs]);
 };
 
-export const useChunkedList = (items, initialCount = 80, stepCount = 80, resetKey = '') => {
+export const useChunkedList = (items, initialCount = 80, stepCount = 80, resetKey = '', enabled = true) => {
   const safeItems = Array.isArray(items) ? items : [];
   const total = safeItems.length;
   const initial = Math.max(1, Number(initialCount) || 80);
   const step = Math.max(1, Number(stepCount) || initial);
-  const [visibleCount, setVisibleCount] = useState(Math.min(total, initial));
+  const [visibleCount, setVisibleCount] = useState(enabled ? Math.min(total, initial) : 0);
 
   useEffect(() => {
+    // Closed dialogs must not enqueue background state updates on their parent.
+    if (!enabled) return undefined;
     let cancelled = false;
     let idleHandle = null;
 
@@ -121,7 +131,7 @@ export const useChunkedList = (items, initialCount = 80, stepCount = 80, resetKe
       cancelled = true;
       cancelIdleWork(idleHandle);
     };
-  }, [total, initial, step, resetKey]);
+  }, [total, initial, step, resetKey, enabled]);
 
-  return useMemo(() => safeItems.slice(0, visibleCount), [safeItems, visibleCount]);
+  return useMemo(() => enabled ? safeItems.slice(0, visibleCount) : [], [safeItems, visibleCount, enabled]);
 };

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Timestamp, GeoPoint } from 'firebase/firestore';
 import { retainCollectionIdentity, retainCollectionRecordIdentity } from '../src/utils/collectionIdentity.js';
+import {retainCollectionRecordIdentityAsync} from '../src/utils/cooperativeCollectionIdentity.js';
 import { appFunction } from './helpers/app-source-function.mjs';
 import { createSaveQueueHarness } from './helpers/save-queue-harness.mjs';
 import { DashboardService, buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
@@ -75,24 +76,26 @@ test('durable save writes queue once, verifies storage and preserves the latest 
   assert.equal(JSON.parse(harness.stored.get('pending:fixture'))[0].payload.price, 72);
 });
 
-test('actual snapshot setter skips no-op replacement but applies price and confirmation changes', () => {
+test('actual snapshot setter skips no-op replacement but applies price and confirmation changes', async () => {
   let state = [{ id: 'o', price: 60, __pendingFirebaseSync: true }];
   let loaded = 0;
-  const setter = updater => { state = updater(state); };
+  const committed={current:{orders:state}};
+  const setter = updater => { state = updater(state);committed.current.orders=state; };
   const apply = appFunction('setCollectionSafely', {
-    retainCollectionRecordIdentity, runNonBlockingStateUpdate: callback => callback(),
+    readWorker:null,cancelled:false,readWorkerCommittedStateRef:committed,
+    retainCollectionRecordIdentityAsync,mergePendingArrayItems:(_name,value)=>value, runNonBlockingStateUpdate: callback => callback(),
     hasCollectionValue: value => value?.length > 0,
     getPreviousStableCollectionValue: () => state, rememberStableCollectionValue() {},
     markCollectionLoaded() { loaded++; },
   });
   const initial = state;
-  apply('orders', setter, structuredClone(state));
+  await apply('orders', setter, structuredClone(state));
   assert.equal(state, initial);
-  apply('orders', setter, [{ id: 'o', price: 63 }]);
+  await apply('orders', setter, [{ id: 'o', price: 63 }]);
   assert.equal(state[0].price, 63);
   assert.equal(Object.hasOwn(state[0], '__pendingFirebaseSync'), false);
   assert.equal(loaded, 2);
-  apply('orders', setter, []);
+  await apply('orders', setter, []);
   assert.deepEqual(state, []);
 });
 

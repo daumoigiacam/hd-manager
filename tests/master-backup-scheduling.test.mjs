@@ -173,7 +173,9 @@ function appHarness({ revision = 'current', preview = true, company = undefined,
     getAutoBackupStateForCompany: () => null,
     setAutoBackupStateForCompany: (...args) => { stateWrites.push(args); },
     saveAutomaticBackupFile: async payload => { fileWrites.push(payload); return { status: 'saved', path: '/mock/company.json' }; },
-    Capacitor: { getPlatform: () => 'web' },
+    Capacitor: { getPlatform: () => 'android' },
+    canAutomaticallyBackUpCompany: true,
+    automaticBackupAccessRef: { current: { allowed: true, companyId: 'tenant-a', uid: 'authorized-user' } },
   });
   const fixture = data || fixtures(bindings.BACKUP_DATA_COLLECTIONS, { legacy: preview });
   const read = async (kind, target) => {

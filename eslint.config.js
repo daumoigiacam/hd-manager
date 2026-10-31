@@ -1,6 +1,6 @@
 export default [
   {
-    files: ['src/features/business-report/*.{jsx,js}', 'src/features/customers/DebtBalanceShareButton.jsx'],
+    files: ['src/features/business-report/*.{jsx,js}', 'src/features/customers/DebtBalanceShareButton.jsx', 'src/hooks/CompletedProjectionGate.jsx', 'src/features/pricing/PricingSectionShell.jsx'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
   },
@@ -19,9 +19,11 @@ export default [
       'src/services/cooperativeTaskQueue.js', 'src/services/backupReadScheduler.js', 'src/services/searchEngine.js',
       'src/mocks/preview-store-serializer.js', 'src/mocks/firebase-firestore.js', 'src/mocks/preview-journal.js',
       'src/hooks/usePreparedSearch.js', 'src/hooks/useCooperativeProjection.js', 'src/services/cooperativeProjection.js',
-      'src/services/groupedRowPage.js', 'src/utils/firstRecordLookup.js',
+      'src/services/groupedRowPage.js', 'src/utils/firstRecordLookup.js', 'src/utils/customerLedgerIndex.js',
       'src/services/realtimeSnapshotItems.js', 'src/utils/incrementalProductStock.js',
-      'src/utils/collectionIdentity.js', 'src/services/renderOptimization.js',
+      'src/services/firestoreReadWorker*.js', 'src/services/firestoreWorkerValues.js', 'src/services/firestoreNativeWireValues.js',
+      'src/services/readWorker*.js', 'src/services/workerAuthSession.js',
+      'src/utils/collectionIdentity.js', 'src/utils/cooperativeCollectionIdentity.js', 'src/services/renderOptimization.js',
       'scripts/master-production-release-smoke.mjs', 'scripts/compare-master-performance.mjs',
       'scripts/master-emulator-session-regression.mjs', 'scripts/master-session-regression.mjs',
       'scripts/helpers/master-emulator-ui-crud.mjs', 'scripts/helpers/bounded-audit-process.mjs',

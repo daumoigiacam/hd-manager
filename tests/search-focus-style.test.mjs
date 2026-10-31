@@ -18,8 +18,11 @@ const searchInputs = inputTags.filter((tag) => (
 ));
 const unmarkedSearchInputs = searchInputs.filter((tag) => !/data-hd-search-input="true"/.test(tag));
 
-// Two dispatch inputs now share one extracted picker implementation.
-assert(searchInputs.length >= 28, `Expected the parent search inventory, found only ${searchInputs.length} controls.`);
+// Two dispatch inputs share one extracted picker. The permanently hidden
+// quote-recipient search was removed with its unused preview/ledger work.
+assert(searchInputs.length >= 27, `Expected the parent search inventory, found only ${searchInputs.length} controls.`);
+assert.doesNotMatch(app, /placeholder="Tìm khách trong danh sách nhận"/);
+assert.match(app, /placeholder="2\. Tìm và tick nhiều khách hàng"/);
 assert.match(dispatchPicker, /<input\s+data-hd-search-input="true"[\s\S]*?role="combobox"/);
 assert.match(app, /<DispatchSearchPicker/);
 assert.deepEqual(unmarkedSearchInputs, [], 'Every searchable input must opt into the shared no-extra-focus-frame behavior.');

@@ -192,7 +192,8 @@ function appHarness({ idle = false } = {}) {
       queues.push(queue);
       return queue;
     },
-    firebaseUser: { uid: 'user-a' }, myCompanyId: 'tenant-a', activeTab: 'orders',
+    firebaseUser: { uid: 'user-a' }, myCompanyId: 'tenant-a', activeTab: 'orders', isCoreDataLoaded: true,
+    canAutomaticallyBackUpCompany: true,
     activeTenantScopeRef: { current: 'tenant-a' }, currentCompany: { enabled: true, name: 'Company A' },
     getCustomerLoyaltySettings: company => ({ enabled: company.enabled, earnAmountPerPoint: company.earnAmountPerPoint || 2000 }),
     serverConfirmedCollectionState: { tenantId: 'tenant-a', collections: Object.fromEntries(
@@ -223,7 +224,7 @@ function appHarness({ idle = false } = {}) {
     bindings.loyaltyMissingCollectionNames = appRuntime.declaration('loyaltyMissingCollectionNames', bindings);
     bindings.loyaltyMissingCollectionKey = appRuntime.declaration('loyaltyMissingCollectionKey', bindings);
     bindings.loyaltyMaintenanceDataReady = appRuntime.declaration('loyaltyMaintenanceDataReady', bindings);
-    for (const property of ['tab', 'ready', 'enabled', 'missingCollections']) {
+    for (const property of ['tab', 'ready', 'enabled', 'coreReady', 'missingCollections']) {
       bindings.loyaltyActivityRef.current[property] = appRuntime.assignment(`loyaltyActivityRef.current.${property}`, bindings);
     }
     bindings.loyaltySyncCallbackRef.current = appRuntime.assignment('loyaltySyncCallbackRef.current', bindings);
@@ -751,6 +752,20 @@ test('App defers/coalesces fingerprint scans, keeps latest render callbacks, and
   cleanup();
 });
 
+test('App point-result callback changes do not schedule another full-history fingerprint scan', () => {
+  const h = appHarness();
+  const dependencies = () => appRuntime.dependencies('enqueue(LOYALTY_ELIGIBILITY_SCAN_KEY)', h.bindings);
+  const initial = dependencies();
+  h.render({ customerPoints: [{ id: 'customer_points_c1', available_points: 25 }], syncCustomerLoyaltyPoints: () => {} });
+  assert.ok(dependencies().every((value, index) => Object.is(value, initial[index])), 'point-result updates do not change actual React effect dependencies');
+  for (const key of ['currentCompany', 'customers', 'firebaseUser', 'myCompanyId', 'orders', 'payments', 'orderRequests', 'warehouseDispatches', 'activeTab']) {
+    const before = dependencies();
+    const value = h.bindings[key];
+    h.render({ [key]: Array.isArray(value) ? [...value] : typeof value === 'object' ? { ...value } : `${value}-changed` });
+    assert.ok(dependencies().some((value, index) => !Object.is(value, before[index])), `real fingerprint source ${key} still invalidates the scan`);
+  }
+});
+
 test('App readiness, warehouse entry, editable focus and recent input defer rather than discard loyalty work', async () => {
   const h = appHarness();
   h.bindings.serverConfirmedCollectionState.collections.customer_points = false;
@@ -966,13 +981,17 @@ test('App backup failures clear in-flight flags; completed/manual states skip sc
     assert.equal(h.timers.pending.size, 0);
   }
   h.states.delete(key);
+  h.render({ canAutomaticallyBackUpCompany: false });
+  assert.equal(h.startBackup(), undefined);
+  assert.equal(h.timers.pending.size, 0, 'staff without backup permission never schedules a company export');
+  h.render({ canAutomaticallyBackUpCompany: true });
   h.render({ activeTab: 'warehouse_dispatch' });
   assert.equal(h.startBackup(), undefined);
   h.render({ activeTab: 'orders', firebaseUser: null });
   assert.equal(h.startBackup(), undefined);
 });
 
-test('App web automatic backup returns manual_required without triggering a file download', async () => {
+test('App web automatic backup requires manual export without reading or serializing company data', async () => {
   const h = appHarness();
   let reads = 0;
   const bindings = { ...h.bindings,
@@ -990,9 +1009,10 @@ test('App web automatic backup returns manual_required without triggering a file
   assert.equal(result.status, 'manual_required');
   assert.equal(result.success, false);
   assert.equal(result.filename, 'auto-company.json');
+  assert.equal(Object.hasOwn(result, 'recordCount'), false, 'no record count is fabricated without a scan');
   assert.equal(h.states.get('tenant-a:2026-10-03').status, 'manual_required');
   await run();
-  assert.equal(reads, 1, 'terminal daily state skips duplicate reads');
+  assert.equal(reads, 0, 'neither the initial admission nor the terminal daily state reads business data');
 });
 
 test('App automatic backup rejects late tenant acknowledgements before saving or recording their result', async () => {
@@ -1005,6 +1025,8 @@ test('App automatic backup rejects late tenant acknowledgements before saving or
     let reads = 0;
     let saves = 0;
     const bindings = { ...h.bindings,
+      Capacitor: { getPlatform: () => 'android' },
+      isPreviewDataMode: true,
       handleCreateCompanyBackup: options => {
         assert.deepEqual(options, { background: true });
         reads++;
@@ -1070,7 +1092,7 @@ test('App home/customers missing-source reads unblock loyalty without visiting a
 test('App missing-source effect gates admission by session, settings, warehouse and actual missing names', () => {
   for (const patch of [
     { firebaseUser: null }, { myCompanyId: '' }, { currentCompany: { enabled: false } },
-    { activeTab: 'warehouse_dispatch' },
+    { activeTab: 'warehouse_dispatch' }, { isCoreDataLoaded: false },
   ]) {
     const h = appHarness();
     missingSources(h, ['customer_points']);
@@ -1090,6 +1112,24 @@ test('App missing-source effect gates admission by session, settings, warehouse 
   const cleanup = h.startSources();
   assert.equal(h.queues[0].size, 6);
   cleanup();
+});
+
+test('App defers missing-history scans until identity core is ready, then retains and loads every required source', async () => {
+  const h = appHarness();
+  missingSources(h, ['orderRequests', 'customer_points']);
+  h.render({ activeTab: 'home', isCoreDataLoaded: false });
+  const reads = [];
+  h.bindings.forceRefreshCollectionRef.current = async name => { reads.push(name); };
+  const sources = mountSourceEffect(h);
+  await h.timers.advance(10000);
+  assert.deepEqual(reads, []);
+  assert.equal(h.queues.length, 0, 'no background network admission during identity bootstrap');
+  h.render({ isCoreDataLoaded: true });
+  sources.update();
+  await h.timers.advance(3400);
+  assert.deepEqual(reads, ['orderRequests', 'customer_points']);
+  assert.equal(h.bindings.loyaltyActivityRef.current.ready, false, 'read acknowledgements never fake server-confirmed completeness');
+  sources.dispose();
 });
 
 test('App forceRefresh acknowledgements are not server confirmation and preserve server-only read options', async () => {

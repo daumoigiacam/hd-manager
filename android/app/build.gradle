@@ -6,6 +6,12 @@ def releaseKeyAlias = project.findProperty('HD_RELEASE_KEY_ALIAS') ?: System.get
 def releaseKeyPassword = project.findProperty('HD_RELEASE_KEY_PASSWORD') ?: System.getenv('HD_RELEASE_KEY_PASSWORD')
 def hasReleaseSigning = releaseStoreFilePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 def acceptanceAssets = project.findProperty('HD_ACCEPTANCE_ASSETS')
+def parallelRelease = project.findProperty('HD_PARALLEL_RELEASE') == 'true'
+def parallelAssets = project.findProperty('HD_PARALLEL_ASSETS')
+def parallelManifest = project.findProperty('HD_PARALLEL_MANIFEST')
+if (parallelRelease && (acceptanceAssets || !parallelAssets || !parallelManifest)) {
+    throw new GradleException('Parallel release requires its production assets/manifest and cannot use acceptance assets.')
+}
 gradle.taskGraph.whenReady { graph ->
     def releaseTaskRequested = graph.allTasks.any { task ->
         task.name.toLowerCase().contains('release')
@@ -28,10 +34,11 @@ android {
     defaultConfig {
         applicationId "com.hdmanager.app"
         if (acceptanceAssets) applicationIdSuffix ".acceptance"
+        if (parallelRelease) applicationIdSuffix ".next"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 26103001
-        versionName "1.0.10"
+        versionCode 26110101
+        versionName "1.0.11"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -61,6 +68,10 @@ android {
     if (acceptanceAssets) {
         sourceSets.main.assets.srcDirs = [file(acceptanceAssets)]
     }
+    if (parallelRelease) {
+        sourceSets.main.assets.srcDirs = [file(parallelAssets)]
+        sourceSets.main.manifest.srcFile file(parallelManifest)
+    }
 }
 
 repositories {
@@ -85,7 +96,7 @@ apply from: 'capacitor.build.gradle'
 
 try {
     def servicesJSON = file('google-services.json')
-    if (!acceptanceAssets && servicesJSON.text) {
+    if (!acceptanceAssets && !parallelRelease && servicesJSON.text) {
         apply plugin: 'com.google.gms.google-services'
         apply plugin: 'com.google.firebase.crashlytics'
         apply plugin: 'com.google.firebase.firebase-perf'

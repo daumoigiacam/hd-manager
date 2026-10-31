@@ -60,7 +60,8 @@ test('realtime keeps only baseline data at startup and scopes business listeners
     appSource,
     /const baselineRealtimeCollectionNames = customerSession\s*\? \['notifications', 'messages'\]\s*:\s*BASELINE_REALTIME_COLLECTION_NAMES/
   );
-  assert.match(appSource, /baselineRealtimeCollectionNames\.forEach/);
+  assert.match(appSource, /startBaselineSubscriptions\(\{\s*bindings: baselineRealtimeCollectionNames\.map[\s\S]*?coreNames: CORE_DATA_COLLECTION_NAMES/);
+  assert.match(appSource, /if \(!canStartBusinessSubscriptions\(currentUser\?\.accountType, isCoreDataLoaded\)\) return undefined/);
   assert.match(appSource, /return activateForegroundRealtimeRef\.current\(collectionNames\)/);
   assert.match(appSource, /if \(!force && hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, colName\)\)/);
   assert.doesNotMatch(appSource, /const refreshAllCollections = async/);

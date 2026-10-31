@@ -22,6 +22,33 @@ Cach nay giup:
 
 Neu muon chuyen ca backend/database ve VPS, can lam rieng mot giai doan migration co kiem thu doi soat du lieu.
 
+## Xác minh nén ở đúng virtual host HTTPS
+
+Template có `gzip_types`, nhưng file đang chạy trên VPS có thể khác template.
+Ngày 31/10/2026, phản hồi HTTPS thực tế nén HTML nhưng không nén JS/CSS,
+kể cả khi gửi `Accept-Encoding: gzip, br`. Không coi build/deploy thành công
+là bằng chứng Nginx đã áp dụng template.
+
+Sau khi đọc `nginx -T`, đối chiếu đúng `server_name app.hdconnect.net` ở cổng
+443. Trong server đó cần có cấu hình gzip của
+`nginx/hd-manager.conf.template`, bao gồm `application/javascript` và `text/css`.
+Giữ nguyên SSL, proxy API, root và security headers của cấu hình đang chạy.
+Không chạy lại setup script chỉ để sửa gzip vì script đó còn thay symlink,
+virtual host và firewall. Sao lưu file vhost thực tế trước khi sửa; chạy
+`sudo nginx -t` thành công rồi mới `sudo systemctl reload nginx`.
+
+Kiểm tra phản hồi thật sau reload:
+
+```powershell
+node scripts/verify-static-compression.mjs --production
+```
+
+Gate kiểm tra các JS/CSS được index tham chiếu, lỗi nếu tệp lớn trả về dạng
+không nén. Thiếu Content-Length không được tính là tệp nhỏ. Kiểm tra này chỉ
+đọc tệp công khai, không đăng nhập hoặc tạo tải nghiệp vụ. Nó không chứng minh
+đăng nhập/Firestore nhanh hoặc mọi thao tác đạt 100 ms; APK đóng gói local cũng
+không hưởng lợi từ nén HTTP của máy chủ frontend.
+
 ## Can chuan bi
 
 1. Domain tro ve IP VPS `180.93.0.87`, vi PWA/iPhone, GPS, camera, thong bao can HTTPS.

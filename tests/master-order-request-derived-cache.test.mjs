@@ -149,6 +149,13 @@ function requestHarness(revision) {
           if (dependency === 'useMemo') return (factory, deps) => memo(key, factory, deps);
           if (dependency === 'useCallback') return (callback, deps) => memo(key, () => callback, deps);
           if (dependency === 'useRef') return initial => memo(key, () => ({ current: initial }), []);
+          // This harness compares completed pure calculations and cache identity,
+          // not React scheduling/latency. Cancellation/yielding and real async
+          // mounting are covered separately by projection and preview checks.
+          if (dependency === 'useCooperativeProjection') return factory => memo(key,()=>{
+            const iterator=factory();
+            for(;;){const step=iterator.next();if(step.done)return {value:step.value,pending:false,error:null};}
+          },[factory]);
           if (scoped && dependency === 'createRecordCalculationCache') return calculate => (
             createRecordCalculationCache((...args) => {
               calls.set(name, (calls.get(name) || 0) + 1);
@@ -185,7 +192,7 @@ const fixture = (overrides = {}) => ({
   customers: [], products: [], orderRequests: [], employees: [],
   isSales: false, canViewAllRequests: true, salesVisibleEmployeeIdSet: new Set(['e1']),
   isOwnerAccount: false, canEdit: false, warehouseDispatches: [],
-  requestWorkingDate: today, requestFilterDate: '', requestFilterSalesEmpId: 'all', ...overrides,
+  requestWorkingDate: today, requestFilterDate: '', requestFilterSalesEmpId: 'all', requestProjectionAttempt:0, ...overrides,
 });
 const item = (productId, quantity = 2, extra = {}) => ({
   productId, description: `Product ${productId}`, quantity, quantityUnit: 'Con',

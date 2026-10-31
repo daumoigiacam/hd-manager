@@ -1,5 +1,7 @@
 const RELEASE_RELOAD_GUARD_KEY = 'hd-manager-release-reload-v1';
 const INSTALLED_RELEASE_KEY = 'hd-manager-installed-build';
+const LAST_AUTO_RELOAD_KEY = 'hd-manager-release-reload-at-v1';
+const AUTO_RELOAD_COOLDOWN_MS = 5 * 60 * 1000;
 
 export const normalizeReleaseId = (value = '') => `${value || ''}`.trim();
 
@@ -73,7 +75,14 @@ export const installReleaseFreshnessMonitor = ({
           return remoteReleaseId;
         }
 
-        windowRef.sessionStorage?.setItem(RELEASE_RELOAD_GUARD_KEY, remoteReleaseId);
+        // A stale/alternating manifest must not keep restarting the application.
+        // Refuse automatic navigation if a durable guard cannot be stored.
+        if (!windowRef.sessionStorage) return remoteReleaseId;
+        const now = Date.now();
+        const lastReload = Number(windowRef.sessionStorage.getItem(LAST_AUTO_RELOAD_KEY) || 0);
+        if (lastReload > 0 && now - lastReload < AUTO_RELOAD_COOLDOWN_MS) return remoteReleaseId;
+        windowRef.sessionStorage.setItem(LAST_AUTO_RELOAD_KEY, `${now}`);
+        windowRef.sessionStorage.setItem(RELEASE_RELOAD_GUARD_KEY, remoteReleaseId);
         const nextUrl = new URL(windowRef.location.href);
         nextUrl.searchParams.set('release', remoteReleaseId);
         windowRef.location.replace(nextUrl.toString());

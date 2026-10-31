@@ -40,12 +40,14 @@ test('new filter/data/customer scope does not return stale or foreign results', 
   assert.deepEqual(next.search('Khách'), []);
   assert.deepEqual(next.counts(), { builds: 1, fieldReads: 1 });
 });
-test('normalized snapshot memo keeps null filtering and original mapping semantics', () => {
+test('cooperative normalized snapshots keep null filtering and original mapping semantics', () => {
   let calls = 0;
-  const snapshots = appFunction('normalizedOrderSnapshots', {
-    activeOrders: orders, orderViewModels: { 'order-0': { ...orders[0], amount: 42 } },
+  const iterator = appFunction('buildOrderViewProjectionSteps', {
+    buildOrderViewModel: row => row.id === 'order-0' ? { ...row, amount: 42 } : row,
     normalizeOrderPaymentSnapshot: row => { calls++; return row.id === 'order-1' ? null : row; },
-  }, { memoCallback: true })();
+  })(orders, {});
+  let step;do{step=iterator.next()}while(!step.done);
+  const snapshots=step.value.snapshots;
   assert.equal(calls, 1800);
   assert.equal(snapshots.length, 1799);
   assert.equal(snapshots[0].amount, 42);

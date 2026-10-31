@@ -970,19 +970,27 @@ const runIdentityRequest = (operation) => async (req, res) => {
   }
 };
 
-exports.identityLogin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.login({
+const identityLoginRequest = runIdentityRequest((req) => identityCenter.login({
   identifier: req.body?.identifier,
   password: req.body?.password,
   device: req.body?.device,
   appId: req.body?.appId
-})));
+}));
+exports.identityLogin = functions.https.onRequest(identityLoginRequest);
+exports.identityLoginRegional = functions.https.onRequest({
+  region: 'asia-southeast1', memory: '256MiB', concurrency: 4, minInstances: 0,
+}, identityLoginRequest);
 
-exports.identityBiometricLogin = functions.https.onRequest(runIdentityRequest((req) => identityCenter.biometricLogin({
+const identityBiometricLoginRequest = runIdentityRequest((req) => identityCenter.biometricLogin({
   identifier: req.body?.identifier,
   device: req.body?.device,
   deviceSecret: req.body?.deviceSecret,
   biometricProof: Boolean(req.body?.biometricProof)
-})));
+}));
+exports.identityBiometricLogin = functions.https.onRequest(identityBiometricLoginRequest);
+exports.identityBiometricLoginRegional = functions.https.onRequest({
+  region: 'asia-southeast1', memory: '256MiB', concurrency: 4, minInstances: 0,
+}, identityBiometricLoginRequest);
 
 exports.identityAttendance = functions.https.onRequest(runIdentityRequest(req => identityCenter.attendance({
   authorization: req.headers.authorization, device: req.body?.device,

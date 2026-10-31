@@ -3,15 +3,20 @@ export const MAX_REST_PAGE_SIZE = 200;
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hasOnlyKeys = (value, keys) => isObject(value) && Object.keys(value).every(key => keys.includes(key));
-const encoder = new TextEncoder();
-
-const compareNames = (left, right) => {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
+// UTF-8 lexicographic order is Unicode scalar order. Walk scalars directly
+// instead of allocating two byte arrays for every adjacent document name.
+// TextEncoder replaces unpaired surrogates with U+FFFD; preserve that behavior.
+export const compareRestDocumentNames = (left, right) => {
+  let a = 0, b = 0;
+  while (a < left.length && b < right.length) {
+    const leftPoint = left.codePointAt(a), rightPoint = right.codePointAt(b);
+    const x = leftPoint >= 0xd800 && leftPoint <= 0xdfff ? 0xfffd : leftPoint;
+    const y = rightPoint >= 0xd800 && rightPoint <= 0xdfff ? 0xfffd : rightPoint;
+    if (x !== y) return x - y;
+    a += leftPoint > 0xffff ? 2 : 1;
+    b += rightPoint > 0xffff ? 2 : 1;
   }
-  return a.length - b.length;
+  return a < left.length ? 1 : b < right.length ? -1 : 0;
 };
 
 export const normalizeRestPageSize = (value = DEFAULT_REST_PAGE_SIZE) => {
@@ -78,10 +83,10 @@ const validateQuery = (queryBody, context) => {
       throw new Error('Only ascending __name__ ordering is supported.');
     }
   }
-  return structuredClone(query);
+  return JSON.parse(JSON.stringify(query)); // Validated Firestore query is JSON, including on old WebViews.
 };
 
-const parsePage = (response, { prefix, companyId, cursor, pageSize }) => {
+function* parsePage(response, { prefix, companyId, cursor, pageSize }) {
   if (!Array.isArray(response) || response.length === 0) throw new Error('Malformed runQuery response.');
   const documents = [];
   const readTimes = [];
@@ -107,7 +112,7 @@ const parsePage = (response, { prefix, companyId, cursor, pageSize }) => {
       if (!id || id.includes('/') || !isObject(document.fields)) throw new Error('Malformed or out-of-scope document.');
       if (!hasOnlyKeys(document.fields.companyId, ['stringValue'])
         || document.fields.companyId.stringValue !== companyId) throw new Error('Foreign tenant document rejected.');
-      if (previousName !== null && compareNames(name, previousName) <= 0) {
+      if (previousName !== null && compareRestDocumentNames(name, previousName) <= 0) {
         throw new Error('Non-advancing cursor, duplicate or unordered document.');
       }
       previousName = name;
@@ -116,13 +121,14 @@ const parsePage = (response, { prefix, companyId, cursor, pageSize }) => {
     }
     // REST defines stream completion by presence of the boolean field.
     done = hasDone;
+    yield;
   }
   if (documents.length === 0 && readTimes.length === 0 && !done) {
     throw new Error('Explain metrics alone cannot confirm an authoritative query result.');
   }
   if (documents.length > pageSize) throw new Error('runQuery exceeded the bounded page size.');
   return { documents, readTimes, documentReadTimes };
-};
+}
 
 /**
  * Collect a complete employee tenant-only REST query without publishing pages.
@@ -137,7 +143,7 @@ const parsePage = (response, { prefix, companyId, cursor, pageSize }) => {
  * Returns { items: [{ id, data }], readTime, pageCount, requests, documentsRead,
  * pageSize, exhausted: true }. Apply only after resolution and a current check.
  */
-export async function collectTenantRestQuery({
+async function scanTenantRestQuery({
   queryBody,
   context,
   runQuery,
@@ -146,17 +152,37 @@ export async function collectTenantRestQuery({
   maxPages = 10_000,
   signal,
   isCurrent = () => true,
+  consumePage,
+  yieldWork = () => new Promise(resolve => setTimeout(resolve, 0)),
+  now = () => performance.now(),
+  budgetMs = 4,
 } = {}) {
   if (typeof runQuery !== 'function' || typeof decodeFields !== 'function' || typeof isCurrent !== 'function') {
     throw new TypeError('runQuery, decodeFields and isCurrent must be functions.');
   }
   if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new TypeError('maxPages must be a positive safe integer.');
+  if (typeof yieldWork !== 'function' || typeof now !== 'function' || !Number.isFinite(budgetMs) || budgetMs <= 0) {
+    throw new TypeError('Invalid cooperative REST scan configuration.');
+  }
   const baseQuery = validateQuery(queryBody, context);
   const scope = { ...context };
   const normalizedSize = normalizeRestPageSize(pageSize);
   const prefix = `${scope.parent}/${baseQuery.from[0].collectionId}/`;
   const checkCurrent = () => {
     if (signal?.aborted || !isCurrent()) throw abortError();
+  };
+  const runCooperatively = async iterator => {
+    let deadline = now() + budgetMs;
+    for (;;) {
+      checkCurrent();
+      const step = iterator.next();
+      if (step.done) return step.value;
+      if (now() >= deadline) {
+        await yieldWork();
+        checkCurrent();
+        deadline = now() + budgetMs;
+      }
+    }
   };
   const read = async body => {
     checkCurrent();
@@ -194,7 +220,7 @@ export async function collectTenantRestQuery({
     const requestedReadTime = readTime;
     const body = {
       structuredQuery: {
-        ...structuredClone(baseQuery),
+        ...JSON.parse(JSON.stringify(baseQuery)),
         orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
         limit: normalizedSize,
         ...(cursor ? { startAt: { values: [{ referenceValue: cursor }], before: false } } : {}),
@@ -202,7 +228,7 @@ export async function collectTenantRestQuery({
       ...(readTime ? { readTime } : {}),
     };
     requests += 1;
-    const page = parsePage(await read(body), { prefix, companyId: scope.companyId, cursor, pageSize: normalizedSize });
+    const page = await runCooperatively(parsePage(await read(body), { prefix, companyId: scope.companyId, cursor, pageSize: normalizedSize }));
     documentsRead += page.documents.length;
     if (requestedReadTime !== null) {
       if (page.readTimes.length === 0) throw new Error('Missing readTime on a continued snapshot query.');
@@ -218,12 +244,18 @@ export async function collectTenantRestQuery({
     if (page.documents.length === normalizedSize && readTime === null) {
       throw new Error('Missing readTime; cannot continue an authoritative collection scan.');
     }
-    for (const document of page.documents) {
+    const pageItems = [];
+    await runCooperatively((function* () { for (const document of page.documents) {
       checkCurrent();
       const data = decodeFields(document.fields);
       if (!isObject(data) || data.companyId !== scope.companyId) throw new Error('Decoded document tenant mismatch.');
-      items.push({ id: document.name.slice(prefix.length), data });
-    }
+      pageItems.push({ id: document.name.slice(prefix.length), data });
+      yield;
+    } })());
+    if (consumePage) {
+      await consumePage(pageItems);
+      checkCurrent();
+    } else items.push(...pageItems);
     pageCount += 1;
     checkCurrent();
     if (page.documents.length < normalizedSize) {
@@ -231,4 +263,17 @@ export async function collectTenantRestQuery({
     }
     cursor = page.documents.at(-1).name;
   }
+}
+
+export function collectTenantRestQuery(options) {
+  return scanTenantRestQuery({ ...options, consumePage: undefined });
+}
+
+/** Consume bounded pages into a private temporary sink. A late error invalidates
+ * the entire scan: callers must discard partial output and publish only after
+ * this promise resolves. Pages are not retained in the returned items array.
+ */
+export function consumeTenantRestQuery(options, consumePage) {
+  if (typeof consumePage !== 'function') throw new TypeError('consumePage must be a function.');
+  return scanTenantRestQuery({ ...options, consumePage });
 }

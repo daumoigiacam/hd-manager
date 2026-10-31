@@ -9,12 +9,13 @@ import './dispatch-form-actions.css';
  * @property {(id: string) => void} onDriverChange
  * @property {() => void} onReset
  * @property {boolean} saving
+ * @property {boolean} [preparing]
  * @property {string} [suggestion]
  * @property {string} [error]
  */
 /** @param {DispatchFormActionsProps} props */
 export default function DispatchFormActions({ canAssignDriver, driverId, drivers, onDriverChange,
-  onReset, saving, suggestion = '', error = '' }) {
+  onReset, saving, preparing = false, suggestion = '', error = '' }) {
   return <>
     <div className="hd-dispatch-driver-actions hd-dispatch-form-actions">
       {canAssignDriver && <select value={driverId}
@@ -27,8 +28,8 @@ export default function DispatchFormActions({ canAssignDriver, driverId, drivers
     </div>
     {suggestion && <p className="hd-dispatch-form-suggestion">Gợi ý theo khách: {suggestion}</p>}
     {error && <div role="alert" className="hd-dispatch-form-error">{error}</div>}
-    <button type="submit" disabled={saving} aria-busy={saving} className="hd-dispatch-form-save">
-      {saving ? 'Đang lưu...' : 'Lưu lại'}
+    <button type="submit" disabled={saving || preparing} aria-busy={saving || preparing} className="hd-dispatch-form-save">
+      {saving ? 'Đang lưu...' : preparing ? 'Đang đối chiếu...' : 'Lưu lại'}
     </button>
   </>;
 }

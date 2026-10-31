@@ -11,8 +11,27 @@ import {
 } from '../src/services/realtimeFreshness.js';
 import {
   buildReleaseManifestUrl,
+  installReleaseFreshnessMonitor,
   shouldReloadForRelease
 } from '../src/services/releaseFreshness.js';
+
+test('alternating release manifests cannot cause a rapid reload loop across page loads', async () => {
+  const values = new Map();
+  const replacements = [];
+  const storage = { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  for (const [buildId, remote] of [['a', 'b'], ['b', 'a'], ['a', 'c']]) {
+    let timer;
+    const stop = installReleaseFreshnessMonitor({ buildId,
+      windowRef: { sessionStorage: storage, localStorage: storage,
+        location: { protocol: 'https:', origin: 'https://app.hdconnect.net', href: 'https://app.hdconnect.net/', replace: url => replacements.push(url) },
+        setTimeout: callback => { timer = callback; return 1; }, clearTimeout() {}, addEventListener() {}, removeEventListener() {} },
+      documentRef: {}, fetchImpl: async () => ({ ok: true, json: async () => ({ buildId: remote }) }) });
+    timer();
+    await new Promise(resolve => setImmediate(resolve));
+    stop();
+  }
+  assert.equal(replacements.length, 1);
+});
 
 const appSource = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -76,8 +95,8 @@ test('realtime rendering skips repeated metadata-only snapshots but preserves th
   assert.match(appSource, /let hasLocalMutationForCollection = false;/);
   assert.match(appSource, /for \(const write of recentLocalWritesRef\.current\.values\(\)\)/);
   assert.match(appSource, /for \(const entry of recentLocalDeletesRef\.current\.values\(\)\)/);
-  assert.match(appSource, /if \(hasAppliedDataSnapshot && dataChangeCount === 0 && !hasLocalMutationForCollection\)/);
-  assert.match(appSource, /hasAppliedDataSnapshot = true;\s*applyCollectionItems/);
+  assert.match(appSource, /const unchanged = hasAppliedDataSnapshot && dataChangeCount === 0 && !hasSourceDataChanges && !hasLocalMutationForCollection/);
+  assert.match(appSource, /hasAppliedDataSnapshot = true;\s*const applied=await applyCollectionItems/);
   assert.match(appSource, /if \(isPerformanceMonitorEnabled\(\)\)/);
 });
 
@@ -96,7 +115,7 @@ test('persistent business collection cache is purged and never hydrated', () => 
   assert.match(appSource, /Business data must never be hydrated from a stale device cache/);
   assert.doesNotMatch(appSource, /cachedValue\.map\(value => parser\(value\)\)/);
   assert.doesNotMatch(appSource, /saveRealtimeCollectionCache/);
-  assert.match(appSource, /readTenantCollectionViaRest\(colName\)/);
+  assert.match(appSource, /readTenantCollectionViaRest\(colName, \{ signal: controller.signal, isCurrent \}\)/);
 });
 
 test('undated financial rows are not reassigned to the current day or month', () => {
@@ -113,7 +132,7 @@ test('company dashboard renders immediately while server-confirmed data syncs in
   assert.doesNotMatch(appSource, /Đang đồng bộ dữ liệu mới nhất/);
   assert.match(appSource, /const renderExecutiveDashboard = \(\) => \([\s\S]*?<(?:Memoized)?ExecutiveDashboardView/);
   assert.match(appSource, /if \(!shouldApplyRealtimeSnapshot\(snapshot\)\)/);
-  assert.match(appSource, /readTenantCollectionViaRest\(colName\)/);
+  assert.match(appSource, /readTenantCollectionViaRest\(colName, \{ signal: controller.signal, isCurrent \}\)/);
 });
 
 test('preview Firestore supports the same freshness APIs as production', () => {

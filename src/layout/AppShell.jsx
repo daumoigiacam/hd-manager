@@ -19,11 +19,15 @@ export const AppShell = React.forwardRef(function AppShell({
       data-hd-theme={theme}
       className={`hd-enterprise-app-shell hd-theme-${theme} ${className}`.trim()}
       onPointerDownCapture={event => {
-        event.currentTarget.dataset.hdInputFocusMode = 'pointer';
+        if (event.currentTarget.dataset.hdInputFocusMode !== 'pointer') {
+          event.currentTarget.dataset.hdInputFocusMode = 'pointer';
+        }
         onPointerDownCapture?.(event);
       }}
       onKeyDownCapture={event => {
-        if (event.key === 'Tab') event.currentTarget.dataset.hdInputFocusMode = 'keyboard';
+        if (event.key === 'Tab' && event.currentTarget.dataset.hdInputFocusMode !== 'keyboard') {
+          event.currentTarget.dataset.hdInputFocusMode = 'keyboard';
+        }
         onKeyDownCapture?.(event);
       }}
       {...props}

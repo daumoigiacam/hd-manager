@@ -5,6 +5,7 @@ import { createIncrementalProductStockIndex } from '../src/utils/incrementalProd
 import { measureQuantity, productStockBalance, buildProductStockBalanceIndex } from '../src/utils/productMeasures.js';
 import { PRODUCT_PRICING_UNIT_OPTIONS, normalizeProductPricingUnit } from '../src/services/productPricingUnits.js';
 import { retainCollectionIdentity, retainCollectionRecordIdentity } from '../src/utils/collectionIdentity.js';
+import {retainCollectionRecordIdentityAsync} from '../src/utils/cooperativeCollectionIdentity.js';
 import { appFunction } from './helpers/app-source-function.mjs';
 import { resolveTransactionBillingSnapshot, isSameBillingUnit } from '../src/services/customerProductBilling.js';
 
@@ -616,7 +617,7 @@ test('actual App warehouse local writes and dispatch edit/archive/rollback prese
   parity(index, products, imports, dispatches);
 });
 
-test('actual App setter, inventory calculation and explicit immutable view memo retain pure-path parity', () => {
+test('actual App setter, inventory calculation and explicit immutable view memo retain pure-path parity', async () => {
   const bindings = { buildProductStockBalanceIndex, resolveTransactionBillingSnapshot };
   for (const name of ['capitalizeFirst', 'normalizeLookupText', 'parseLooseQuantityValue', 'parseLooseMoneyValue',
     'normalizeLeadingLabel', 'getProductInventoryUnit', 'getProductOpeningStock', 'getProductMainGroupLabel',
@@ -634,7 +635,8 @@ test('actual App setter, inventory calculation and explicit immutable view memo 
   let state = [{ id: 'a', companyId: 'tenant-a', date: '2026-10-02', productId: 'p', quantity: 0.1, totalKg: 2 },
     { id: 'b', companyId: 'tenant-a', date: '2026-10-03', productId: 'p', quantity: 0.2, totalKg: 3 }];
   const apply = appFunction('setCollectionSafely', {
-    retainCollectionRecordIdentity, runNonBlockingStateUpdate: callback => callback(),
+    readWorker:null,cancelled:false,readWorkerCommittedStateRef:{get current(){return {warehouseImports:state}}},
+    retainCollectionRecordIdentityAsync,mergePendingArrayItems:(_name,value)=>value, runNonBlockingStateUpdate: callback => callback(),
     hasCollectionValue: value => value?.length > 0, getPreviousStableCollectionValue: () => state,
     rememberStableCollectionValue() {}, markCollectionLoaded() {},
   });
@@ -664,25 +666,27 @@ test('actual App setter, inventory calculation and explicit immutable view memo 
     const pure = metrics(products, orders, options);
     const incremental = metrics(products, orders, { ...options, stockBalanceResolver: index.build });
     assert.deepStrictEqual(incremental, pure, 'All App rows, groups, totals, fields, and floating-point values');
-    const actualView = appFunction('inventoryMetrics', { useMemo: callback => callback(),
+    const prepareView = appFunction('prepareInventoryMetrics', { useMemo: callback => callback(),
       buildInventoryMetrics: metrics, products, orders, warehouseImports: state,
-      warehouseDispatches: dispatches, stockIndex: index, getTodayString: () => cutoff });
+      warehouseDispatches: dispatches, stockIndex: index, inventoryDateKey:cutoff,inventoryCalculationAttempt:0 },{scope:'ProductManagementView'});
+    const iterator=prepareView();let actualView;
+    for(;;){const step=iterator.next();if(step.done){actualView=step.value;break;}}
     assert.deepStrictEqual(actualView, pure, 'The view passes the actual resolver to the calculation');
   };
   check('2026-10-03');
   assert.equal(index.calls, 6);
   const previous = state;
-  apply('warehouseImports', updater => { state = updater(state); }, structuredClone([...state,
+  await apply('warehouseImports', updater => { state = updater(state); }, structuredClone([...state,
     { id: 'c', companyId: 'tenant-a', productId: 'p', quantity: 4, totalKg: 5 }]));
   assert.strictEqual(state[0], previous[0]);
   check('2026-10-03');
   assert.equal(index.calls, 8);
   const edited = structuredClone(state);
   edited[1].quantity = 7;
-  apply('warehouseImports', updater => { state = updater(state); }, edited);
+  await apply('warehouseImports', updater => { state = updater(state); }, edited);
   check('2026-10-03');
   assert.equal(index.calls, 10);
-  apply('warehouseImports', updater => { state = updater(state); }, structuredClone([state[2], state[1]]));
+  await apply('warehouseImports', updater => { state = updater(state); }, structuredClone([state[2], state[1]]));
   check('2026-10-02');
   check('2026-10-03');
   assert.equal(index.calls, 10);

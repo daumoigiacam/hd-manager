@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getListPage } from '../src/utils/listPage.js';
 import { readFileSync } from 'node:fs';
+import { getDefaultListPageSize } from '../src/services/renderOptimization.js';
+
+test('small and low-power screens bound card DOM while desktop retains its page size', () => {
+  assert.equal(getDefaultListPageSize({ matchMedia: () => ({ matches: true }) }), 20);
+  assert.equal(getDefaultListPageSize({ document: { documentElement: { classList: { contains: () => true } } } }), 20);
+  assert.equal(getDefaultListPageSize({ matchMedia: () => ({ matches: false }) }), 50);
+  const records = Array.from({ length: 603 }, (_, id) => id);
+  const seen = [];
+  for (let page = 0; page < 31; page++) {
+    const bounds = getListPage(records.length, page, 20);
+    seen.push(...records.slice(bounds.start, bounds.end));
+  }
+  assert.deepEqual(seen, records);
+});
 
 test('page bounds include every record exactly once, including a partial last page', () => {
   const rows = Array.from({ length: 602 }, (_, i) => i);
@@ -21,7 +35,6 @@ test('large financial/customer lists paginate rendering, not business totals', (
     assert.match(source, new RegExp(`${name}\\.items\\.map\\(`));
     assert.match(source, new RegExp(`pagination=\\{${name}\\}`));
   }
-  assert.match(source, /const normalizedOrderSnapshots = useMemo\(\(\) => activeOrders/);
   assert.match(source, /dailyOrderRevenueSummary = useMemo\(\(\) => \{\s*const ordersForDate = normalizedOrderSnapshots/);
   assert.match(source, /debtOverviewSummary = useMemo\(\(\) => debtOverviewCustomers.reduce/);
   assert.doesNotMatch(source, /false && activeOrders\.reverse/);

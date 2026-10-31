@@ -1,5 +1,8 @@
 import React, { useId, useState, useEffect, useMemo, useRef } from 'react';
 import { projectAssetExpenses } from './features/assets/assetExpenseProjection.js';
+import { canStartBusinessSubscriptions, startBaselineSubscriptions } from './services/startupSubscriptionPlan.js';
+import { getFirestoreTransportOptions } from './services/firestoreTransport.js';
+import { selectLatestRecords } from './utils/latestRecords.js';
 import ExpenseCategoryPicker from './features/assets/ExpenseCategoryPicker.jsx';
 import DebtBalanceShareButton from './features/customers/DebtBalanceShareButton.jsx';
 import { changeExpenseCategory, isFuelExpenseCategory } from './features/assets/expenseCategory.js';
@@ -7,6 +10,7 @@ import { useCallback, useDeferredValue, useSyncExternalStore } from 'react';
 import { createOrderSearchState } from './services/orderSearchState.js';
 import { isCustomerDebtRepayment } from './utils/expenseClassification.js';
 import { withSalesRevenueIndex } from './utils/salesRevenuePeriod.js';
+import { buildEmployeeReviewSourceIndexes } from './utils/employeeReviewSourceIndex.js';
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
 import WarehouseWeightEntriesModal from './features/warehouse/WarehouseWeightEntriesModal.jsx';
@@ -55,16 +59,22 @@ import { buildFirstRecordLookup } from './utils/firstRecordLookup.js';
 import { createRecordCalculationCache } from './services/recordCalculationCache.js';
 import { createBoundedCollationCompare } from './services/collationCompareCache.js';
 import { createIncrementalStableSorter } from './services/incrementalStableSort.js';
-import { collectTenantRestQuery } from './services/firestoreRestPagination.js';
-import { createRealtimeSnapshotItemsCollector } from './services/realtimeSnapshotItems.js';
+import { collectTenantRestQuery, consumeTenantRestQuery } from './services/firestoreRestPagination.js';
+import { writeAutomaticBackupStream } from './services/automaticBackupStream.js';
+import { decodeFirebaseBackupFields } from '@hd/firebase-backup-values';
+import { createScopedBackupSink } from './services/scopedBackupSink.js';
+import { createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline, createSnapshotRecordMaterializer, materializeSnapshotRecords } from './services/realtimeSnapshotItems.js';
+import { createFirestoreReadWorkerClient, canUseFirestoreReadWorker } from './services/firestoreReadWorkerClient.js';
+import { createReadWorkerActivityStore } from './services/readWorkerActivity.js';
+import ReadWorkerActivityNotice from './layout/ReadWorkerActivityNotice.jsx';
 import { createCooperativeTaskQueue } from './services/cooperativeTaskQueue.js';
 import { collectBackupCollections } from './services/backupReadScheduler.js';
 import { hasLoyaltySnapshotChanges } from './utils/loyaltySnapshot.js';
 import { createCommandFocusGuard, createCommandClickGuard } from './layout/commandFocus.js';
 import { canAutomaticallyRetryWrite, isRetryableWriteError, pendingWriteFailure } from './utils/pendingWriteRetry.js';
 import { isSamePendingWriteRevision } from './utils/pendingWriteRevision.js';
-import { retainCollectionRecordIdentity } from './utils/collectionIdentity.js';
-import { createCustomerLedgerMapBuilder } from './utils/customerLedgerIndex.js';
+import { retainCollectionRecordIdentityAsync } from './utils/cooperativeCollectionIdentity.js';
+import { createCustomerLedgerMapBuilder, createCustomerRecordSelector } from './utils/customerLedgerIndex.js';
 import { canSaveLocallyFirst, coalescePendingWrite } from './utils/localFirstSave.js';
 import { ATOMIC_SAVE_COLLECTION, validateAtomicWrites, mergeAtomicWrites, expandPendingWrites, commitAtomicWrites } from './utils/atomicSave.js';
 import { commitIdempotentWarehouseDispatchCreate } from './features/warehouse/warehouseDispatchCreateRepository.js';
@@ -364,9 +374,13 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { useChunkedList, useDebouncedValue, usePagedList } from './services/renderOptimization';
 import { usePreparedSearch } from './hooks/usePreparedSearch.js';
 import { useCooperativeProjection } from './hooks/useCooperativeProjection.js';
+import { CompletedProjectionGate, LedgerPreparationNotice } from './hooks/CompletedProjectionGate.jsx';
 import { createProjectionCache, sortProjection } from './services/cooperativeProjection.js';
 const getDeliveryProjectionEntry = createProjectionCache();
+const mainCustomerLedgerCache = createProjectionCache();
+const EMPTY_MAIN_LEDGER = Object.freeze({});
 import OrderSearchInput from './features/orders/OrderSearchInput.jsx';
+import PricingSectionShell from './features/pricing/PricingSectionShell.jsx';
 import OrderRequestTableRows from './features/orders/OrderRequestTableRows.jsx';
 import { useCurrentCallback } from './hooks/useCurrentCallback.js';
 import DispatchTableBody from './features/warehouse/DispatchTableBody.jsx';
@@ -394,6 +408,7 @@ import {
 } from './aiZaloAssistant.js';
 import { extractZaloOrderRequest } from './zaloOrderRequestAi.js';
 import { buildExecutiveDashboardSnapshot } from './services/executiveDashboardService.js';
+import { useCooperativeDashboardProjection } from './services/useCooperativeDashboardProjection.js';
 import { buildPricingEngineSnapshot } from './services/pricingEngineService.js';
 import {
   buildPricingProductMarginRows,
@@ -527,7 +542,6 @@ import {
 const LazyIdentitySecurityCenter = React.lazy(
   () => import('./features/identity/IdentitySecurityCenter.jsx'),
 );
-const LazyBiometricEnrollment = React.lazy(() => import('./features/identity/BiometricEnrollment.jsx'));
 
 const legacyIdentitySecurityApi = {
   getQuickLoginAvailability,
@@ -568,6 +582,7 @@ const getCapacitorPlugin = (name) => {
 };
 
 const ExternalLauncher = getCapacitorPlugin('ExternalLauncher');
+const ScopedBackupWriter = getCapacitorPlugin('ScopedBackupWriter');
 const SystemBars = getCapacitorPlugin('SystemBars');
 const isPreviewDataMode = import.meta.env.VITE_DATA_MODE === 'preview';
 
@@ -705,7 +720,7 @@ if (isVpsMode) {
           // Auto-detect can overlap watch target teardown with short-lived reads
           // in WebKit/WebView and poison Firestore's internal AsyncQueue (ca9/b815).
           experimentalAutoDetectLongPolling: false,
-          useFetchStreams: false,
+          ...getFirestoreTransportOptions(),
         });
       } catch (firestoreInitError) {
         console.warn('Firestore da duoc khoi tao truoc do, dung instance hien co:', firestoreInitError);
@@ -3504,7 +3519,7 @@ const getInvoiceTransferProfile = (company = null) => {
 
 const buildCustomerPaymentReference = (customer = null) => {
   const rawId = `${customer?.code || customer?.customerCode || customer?.id || customer?.phone || 'KH'}`.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase();
-  return `TT ${rawId || 'KH'} ${getTodayString().replaceAll('-', '')}`;
+  return `TT ${rawId || 'KH'} ${getTodayString().split('-').join('')}`;
 };
 
 const openExternalPaymentUrl = async (url = '', fallbackUrl = '', { preferSameWindow = false } = {}) => {
@@ -9931,41 +9946,57 @@ const PayrollCloseDialog = React.lazy(payrollCloseModule.load);
 const AssetManagementWorkspace = React.lazy(assetModule.load);
 const AttendanceWorkspace = React.lazy(attendanceModule.load);
 
-const buildDashboardPayrollCostRows = ({
+const buildDashboardPayrollCostSteps = function* ({
   employees = [], attendance = {}, financials = [], performance = {}, customers = [],
   orders = [], payments = [], holidays = [], now = new Date(), company = {}, payrollPeriods = [], lockedPayroll = {}, employeeReviews = [], deliveryReports = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false
-} = {}) => {
+} = {}) {
   const firstMonth = new Date(now.getFullYear(), Math.min(0, now.getMonth() - 11), 1);
   const lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const todayKey = getDateKeyFromAnyValue(now);
   const rows = [];
 
+  // Month preparation also scans history. Yield during that scan, before the
+  // existing per-employee boundary; keep the original predicate and row order.
+  function* selectRows(source, predicate) {
+    const selected=[];let operations=0;
+    for(const row of source){
+      if(predicate(row))selected.push(row);
+      if(++operations%16===0)yield;
+    }
+    return selected;
+  }
+
   for (let cursor = firstMonth; cursor <= lastMonth; cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)) {
     const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
     const policyEmployees = employees.map(emp => applyEmployeePayrollPolicyForMonth(emp, monthKey));
-    const monthAttendance = Object.fromEntries(Object.entries(attendance).filter(([key]) => key.startsWith(monthKey) && key.slice(0, 10) <= todayKey));
-    const monthFinancials = financials.filter(record => {
+    const monthAttendance = Object.fromEntries(yield* selectRows(Object.entries(attendance), ([key]) => key.startsWith(monthKey) && key.slice(0, 10) <= todayKey));
+    const monthFinancials = yield* selectRows(financials, record => {
       const key = getDateKeyFromAnyValue(record?.date);
       return !key || (key.startsWith(monthKey) && key <= todayKey);
     });
-    const monthOrders = orders.filter(order => {
+    const monthOrders = yield* selectRows(orders, order => {
       const key = getDateKeyFromAnyValue(order.date || order.orderDate || order.createdAt);
       return key.startsWith(monthKey) && key <= todayKey;
     });
     const locked = getLockedPayrollPeriod(payrollPeriods, company.id, monthKey);
     const snapshotRows = lockedPayroll[monthKey]?.snapshots || [];
     const salaryEmployees = locked ? snapshotRows.map(snapshot => ({ ...snapshot.employee, id: snapshot.employeeId })) : policyEmployees;
+    const monthDeliveryReports = yield* selectRows(deliveryReports, row => normalizeEmployeeReviewMonthKey(row.date || row.createdAt) === monthKey);
+    const monthReviews = yield* selectRows(employeeReviews, row => normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey);
+    const monthComplaints = complaintsLoaded && Array.isArray(customerComplaints)
+      ? yield* selectRows(customerComplaints, row => row.companyId === company.id && normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey)
+      : null;
     const evaluationContext = {
       attendance: monthAttendance, orders: monthOrders,
-      deliveryReports: deliveryReports.filter(row => normalizeEmployeeReviewMonthKey(row.date || row.createdAt) === monthKey),
-      reviews: employeeReviews.filter(row => normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey),
-      complaints: complaintsLoaded && Array.isArray(customerComplaints) ? customerComplaints.filter(row => row.companyId === company.id && normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey) : null,
+      deliveryReports: monthDeliveryReports,
+      ...(!locked ? buildEmployeeReviewSourceIndexes(monthOrders, monthDeliveryReports) : {}),
+      reviews: monthReviews,
+      complaints: monthComplaints,
       attendanceLoaded, complaintsLoaded, companyId: company.id, currentCompany: company,
       criteriaList: getEmployeeReviewCriteriaList(company), monthKey
     };
-    salaryEmployees
-      .filter(emp => emp?.id && !emp.isArchived && emp.role !== 'super_admin' && !isOwnerPosition(emp.position))
-      .forEach(emp => {
+    yield;
+    for (const emp of salaryEmployees.filter(emp => emp?.id && !emp.isArchived && emp.role !== 'super_admin' && !isOwnerPosition(emp.position))) {
         const details = locked
           ? snapshotRows.find(snapshot => snapshot.employeeId === emp.id)?.salaryDetails
           : applyEvaluationBonusToSalaryDetails(
@@ -9973,7 +10004,7 @@ const buildDashboardPayrollCostRows = ({
             projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey })
           );
         const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
-        if (!amount) return;
+        if (!amount) { yield; continue; }
         const earningDays = [...new Set((details.attendanceEntries || [])
           .filter(entry => (entry.status === 'present' || entry.status === 'late') && !entry.noSalaryDay && entry.date <= todayKey)
           .map(entry => entry.date))];
@@ -9988,17 +10019,31 @@ const buildDashboardPayrollCostRows = ({
           employeeName: emp.name,
           amount: index === dates.length - 1 ? amount - baseAmount * (dates.length - 1) : baseAmount
         }));
-      });
+        yield;
+      }
   }
   return rows;
 };
 
-const compareLedgerItems = (a, b) => {
-  const aDateKey = getPaymentDateKey(a) || getDateKeyFromAnyValue(a?.paymentDate || a?.transactionDate || a?.transactionDateTime || a?.paidAt || a?.transactionAt || a?.date || a?.createdAt || getEntityTimestamp(a));
-  const bDateKey = getPaymentDateKey(b) || getDateKeyFromAnyValue(b?.paymentDate || b?.transactionDate || b?.transactionDateTime || b?.paidAt || b?.transactionAt || b?.date || b?.createdAt || getEntityTimestamp(b));
-  const dateCompare = new Date(`${aDateKey || '1970-01-01'}T00:00:00`).getTime() - new Date(`${bDateKey || '1970-01-01'}T00:00:00`).getTime();
+const buildDashboardPayrollCostRows = options => {
+  const iterator=buildDashboardPayrollCostSteps(options);
+  for(;;){const step=iterator.next();if(step.done)return step.value}
+};
+
+const compareLedgerItems = (a, b, sortKeys = null) => {
+  const keyFor = item => {
+    if (sortKeys?.has(item)) return sortKeys.get(item);
+    const dateKey = getPaymentDateKey(item) || getDateKeyFromAnyValue(item?.paymentDate || item?.transactionDate || item?.transactionDateTime || item?.paidAt || item?.transactionAt || item?.date || item?.createdAt || getEntityTimestamp(item));
+    const key = { day: new Date(`${dateKey || '1970-01-01'}T00:00:00`).getTime(), timestamp: undefined };
+    sortKeys?.set(item, key);
+    return key;
+  };
+  const aKey = keyFor(a), bKey = keyFor(b);
+  const dateCompare = aKey.day - bKey.day;
   if (dateCompare !== 0) return dateCompare;
-  const timestampCompare = (getPaymentTimestamp(a) || getEntityTimestamp(a) || 0) - (getPaymentTimestamp(b) || getEntityTimestamp(b) || 0);
+  if (aKey.timestamp === undefined) aKey.timestamp = getPaymentTimestamp(a) || getEntityTimestamp(a) || 0;
+  if (bKey.timestamp === undefined) bKey.timestamp = getPaymentTimestamp(b) || getEntityTimestamp(b) || 0;
+  const timestampCompare = aKey.timestamp - bKey.timestamp;
   if (timestampCompare !== 0) return timestampCompare;
   return (a.id || '').localeCompare(b.id || '');
 };
@@ -10100,22 +10145,19 @@ const parseEntityTimestampValue = (rawValue) => {
 const getEntityTimestamp = (entity = {}) => {
   if (!entity || typeof entity !== 'object') return parseEntityTimestampValue(entity);
 
-  const timestampFields = [
-    entity.createdAt,
-    entity.updatedAt,
-    entity.timestamp,
-    entity.receivedAt,
-    entity.sentAt,
-    entity.approvedAt,
-    entity.paidAt,
-    entity.lastMessageAt,
-    entity.lastActivityAt
-  ];
-
-  for (const rawValue of timestampFields) {
-    const parsed = parseEntityTimestampValue(rawValue);
-    if (parsed) return parsed;
-  }
+  // Plain business records usually have createdAt. Preserve the existing
+  // priority and truthy/epoch-zero rules without allocating a nine-value array
+  // or reading later fields when an earlier timestamp already resolves.
+  const timestamp = parseEntityTimestampValue(entity.createdAt)
+    || parseEntityTimestampValue(entity.updatedAt)
+    || parseEntityTimestampValue(entity.timestamp)
+    || parseEntityTimestampValue(entity.receivedAt)
+    || parseEntityTimestampValue(entity.sentAt)
+    || parseEntityTimestampValue(entity.approvedAt)
+    || parseEntityTimestampValue(entity.paidAt)
+    || parseEntityTimestampValue(entity.lastMessageAt)
+    || parseEntityTimestampValue(entity.lastActivityAt);
+  if (timestamp) return timestamp;
 
   if (typeof entity.date === 'string' && entity.date.includes('T')) {
     const parsed = new Date(entity.date).getTime();
@@ -10285,8 +10327,11 @@ const buildWarehouseDispatchShortageSummary = ({
   fromDateKey = '',
   statusesOnly = false,
   notificationOnly = false,
-  dispatchIndexCache = null
+  dispatchIndexCache = null,
+  cooperative = false
 } = {}) => {
+  const prepare = function* () {
+  let operations=0;
   const customerLookup = new Map((customers || []).map(customer => [customer.id, customer]));
   const productLookup = new Map((products || []).map(product => [product.id, product]));
   const normalizedAutoCancelDays = Math.max(0, parseInt(autoCancelAfterDays, 10) || 0);
@@ -10515,6 +10560,7 @@ const buildWarehouseDispatchShortageSummary = ({
     dispatchIndexCache.requestProjection = requestCache;
   }
   for (const request of orderRequests || []) {
+    if (++operations % 16 === 0) yield;
     if (request?.isArchived || !shouldIncludeOrderRequestDate(resolveEntityDateKey(request, normalizedDateKey))) continue;
     if (!requestCache || !(statusesOnly || notificationOnly)) {
       appendRequestLines(request, requestedLineMap);
@@ -10546,10 +10592,9 @@ const buildWarehouseDispatchShortageSummary = ({
   const reuseDispatchIndex = cachedDispatchIndex
     && dispatchIndexContext.every((value, index) => Object.is(value, cachedDispatchIndex.context[index]));
   const dispatchedLineMap = reuseDispatchIndex ? cachedDispatchIndex.value : new Map();
-  if (!reuseDispatchIndex) (warehouseDispatches || [])
-    .filter(dispatch => !dispatch?.isArchived)
-    .filter(dispatch => shouldIncludeDispatchForShortage(dispatch))
-    .forEach(dispatch => {
+  if (!reuseDispatchIndex) for (const dispatch of warehouseDispatches || []) {
+      if (++operations % 16 === 0) yield;
+      if (dispatch?.isArchived || !shouldIncludeDispatchForShortage(dispatch)) continue;
       const customer = customerLookup.get(dispatch.customerId);
       const product = productLookup.get(dispatch.productId);
       const customerName = customer?.name || dispatch.customerNameSnapshot || 'Khách hàng';
@@ -10584,12 +10629,12 @@ const buildWarehouseDispatchShortageSummary = ({
         current.dispatchLines.push(dispatchLine);
         dispatchedLineMap.set(lineKey, current);
       });
-    });
+    }
 
   if (dispatchIndexCache && !reuseDispatchIndex) {
     dispatchIndexCache.current = { context: dispatchIndexContext, value: dispatchedLineMap };
   }
-  const lines = Array.from(requestedLineMap.values()).map(line => {
+  const projectLine = (line) => {
     const requestLinesSorted = notificationOnly ? line.requestLines : (line.requestLines || [])
       .slice()
       .sort((a, b) => (a.requestTimestamp || 0) - (b.requestTimestamp || 0) || (a.itemIndex || 0) - (b.itemIndex || 0));
@@ -10698,7 +10743,12 @@ const buildWarehouseDispatchShortageSummary = ({
       remainingKg,
       status: isMissing ? 'missing' : 'done'
     };
-  });
+  };
+  const lines=[];
+  for (const line of requestedLineMap.values()) {
+    if (++operations % 16 === 0) yield;
+    lines.push(projectLine(line));
+  }
 
   if (notificationOnly) return {
     issueLines: lines.filter(line => line.status !== 'done'),
@@ -10728,6 +10778,10 @@ const buildWarehouseDispatchShortageSummary = ({
     requestLineStatuses: lines.flatMap(line => line.requestLineStatuses || []),
     latestTimestamp: Math.max(...lines.map(line => line.latestTimestamp || 0), 0)
   };
+  };
+  const iterator=prepare();
+  if (cooperative) return iterator;
+  for (;;) { const step=iterator.next();if (step.done) return step.value; }
 };
 
 const buildTimeBucketSeries = (items = [], valueGetter = (item) => item?.amount || 0) => {
@@ -10845,48 +10899,51 @@ const buildCustomerOpeningDebtOrder = (customer = null) => {
   };
 };
 
-const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => {
+const selectCustomerHistoryRows = createCustomerRecordSelector();
+const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = [], { cooperative = false, historyAlreadySelected = false } = {}) => {
+  function* calculate() {
+  // Per build only: the ledger mutates allocations/amounts, never these date
+  // fields. Reusing parsed sort keys avoids reparsing every comparator pair;
+  // no cache survives a save, a new ledger build or a different tenant.
+  const sortKeys = new Map();
+  const compareCustomerLedgerItems = (a, b) => compareLedgerItems(a, b, sortKeys);
   const customerRecord = typeof customerOrId === 'object' && customerOrId !== null ? customerOrId : null;
   const customerId = customerRecord?.id || customerOrId || '';
   const openingDebtOrder = buildCustomerOpeningDebtOrder(customerRecord);
-  const orders = [
-    ...(openingDebtOrder ? [openingDebtOrder] : []),
-    ...allOrders
-    .filter(order => order.customerId === customerId && !order.isArchived)
-    .map(order => ({
-      ...order,
-      appliedAmount: 0,
-      creditApplied: 0,
-      outstandingAmount: Math.max(0, order.amount || 0),
-      allocations: []
-    }))
-  ]
-    .sort(compareLedgerItems);
-
-  const payments = allPayments
-    .filter(payment => payment.customerId === customerId && !payment.isArchived && isCashflowOfficial(payment))
-    .map(payment => ({
-      ...payment,
-      appliedAmount: 0,
-      overpaidAmount: 0,
-      allocations: []
-    }))
-    .sort(compareLedgerItems);
-
-  const timeline = [
-    ...orders.map(order => ({ type: 'order', date: order.date, id: `order_${order.id}`, ref: order })),
-    ...payments.map(payment => ({ type: 'payment', date: getPaymentDateKey(payment) || payment.date, id: `payment_${payment.id}`, ref: payment }))
-  ].sort((a, b) => {
-    const baseCompare = compareLedgerItems(a, b);
+  let orders = [];
+  if (openingDebtOrder) orders.push(openingDebtOrder);
+  const customerOrders = historyAlreadySelected ? allOrders : selectCustomerHistoryRows(allOrders, customerId);
+  for (const order of customerOrders) {
+    yield;
+    if (order.customerId !== customerId || order.isArchived) continue;
+    orders.push({...order, appliedAmount: 0, creditApplied: 0,
+      outstandingAmount: Math.max(0, order.amount || 0), allocations: []});
+  }
+  orders = cooperative ? yield* sortProjection(orders, compareCustomerLedgerItems) : orders.sort(compareCustomerLedgerItems);
+  let payments = [];
+  const customerPayments = historyAlreadySelected ? allPayments : selectCustomerHistoryRows(allPayments, customerId);
+  for (const payment of customerPayments) {
+    yield;
+    if (payment.customerId !== customerId || payment.isArchived || !isCashflowOfficial(payment)) continue;
+    payments.push({...payment, appliedAmount: 0, overpaidAmount: 0, allocations: []});
+  }
+  payments = cooperative ? yield* sortProjection(payments, compareCustomerLedgerItems) : payments.sort(compareCustomerLedgerItems);
+  let timeline = [];
+  for (const order of orders) { yield; timeline.push({type: 'order', date: order.date, id: 'order_'+order.id, ref: order}); }
+  for (const payment of payments) { yield; timeline.push({type: 'payment', date: getPaymentDateKey(payment) || payment.date, id: 'payment_'+payment.id, ref: payment}); }
+  const compareTimeline = (a, b) => {
+    const baseCompare = compareCustomerLedgerItems(a, b);
     if (baseCompare !== 0) return baseCompare;
     if (a.type === b.type) return 0;
     return a.type === 'order' ? -1 : 1;
-  });
+  };
+  timeline = cooperative ? yield* sortProjection(timeline, compareTimeline) : timeline.sort(compareTimeline);
 
   const openOrders = [];
   let customerCredit = 0;
 
-  timeline.forEach(item => {
+  for (const item of timeline) {
+    yield;
     if (item.type === 'order') {
       const order = item.ref;
       if (customerCredit > 0) {
@@ -10900,7 +10957,7 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
       if (order.outstandingAmount > 0) {
         openOrders.push(order);
       }
-      return;
+      continue;
     }
 
     const payment = item.ref;
@@ -10908,9 +10965,11 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
     const shouldPrioritizeMatchedOrder = payment.matchedOrderId
       && !payment.allocateOldestFirst
       && payment.allocationMode !== 'oldest_first';
-    const prioritizedOrder = shouldPrioritizeMatchedOrder
-      ? orders.find(order => order.id === payment.matchedOrderId)
-      : null;
+    let prioritizedOrder = null;
+    if (shouldPrioritizeMatchedOrder) for (const order of orders) {
+      yield;
+      if (order.id === payment.matchedOrderId) { prioritizedOrder = order; break; }
+    }
 
     if (prioritizedOrder && prioritizedOrder.outstandingAmount > 0 && remaining > 0) {
       const prioritizedAmount = Math.min(prioritizedOrder.outstandingAmount, remaining);
@@ -10923,6 +10982,7 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
     }
 
     for (const order of openOrders) {
+      yield;
       if (remaining <= 0) break;
       if (prioritizedOrder && order.id === prioritizedOrder.id) continue;
       if (order.outstandingAmount <= 0) continue;
@@ -10940,17 +11000,21 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
       payment.overpaidAmount = remaining;
       customerCredit += remaining;
     }
-  });
+  }
 
-  const orderDetails = orders.map(order => ({
+  const orderDetails = [];
+  for (const order of orders) {
+    yield;
+    orderDetails.push({
     ...order,
     outstandingAmount: Math.max(0, order.outstandingAmount),
     status: order.outstandingAmount <= 0 ? 'paid' : order.appliedAmount > 0 ? 'partial' : 'unpaid'
-  }));
-
-  const totalRevenue = orderDetails.reduce((sum, order) => sum + (order.isOpeningDebt ? 0 : (order.amount || 0)), 0);
-  const totalPaid = payments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-  const currentDebt = orderDetails.reduce((sum, order) => sum + (order.outstandingAmount || 0), 0);
+    });
+  }
+  let totalRevenue = 0, totalPaid = 0, currentDebt = 0;
+  for (const order of orderDetails) { yield; totalRevenue += order.isOpeningDebt ? 0 : (order.amount || 0); }
+  for (const payment of payments) { yield; totalPaid += payment.amount || 0; }
+  for (const order of orderDetails) { yield; currentDebt += order.outstandingAmount || 0; }
 
   return {
     orders: orderDetails,
@@ -10960,11 +11024,15 @@ const buildCustomerLedger = (customerOrId, allOrders = [], allPayments = []) => 
     currentDebt,
     creditBalance: Math.max(0, customerCredit)
   };
+  }
+  const iterator = calculate();
+  if (cooperative) return iterator;
+  for (;;) { const next = iterator.next(); if (next.done) return next.value; }
 };
 
 const indexedCustomerLedgerMap = createCustomerLedgerMapBuilder(buildCustomerLedger);
-const buildCustomerLedgerMap = (customers = [], orders = [], payments = []) => (
-  indexedCustomerLedgerMap(customers, orders, payments, getTodayString())
+const buildCustomerLedgerMap = (customers = [], orders = [], payments = [], options = {}) => (
+  indexedCustomerLedgerMap(customers, orders, payments, getTodayString(), options)
 );
 
 const buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []) => {
@@ -11060,31 +11128,39 @@ const buildCustomerReconciledLedger = (customerOrId, allOrders = [], allPayments
   return applyCustomerSupplierReconciliation(ledger, purchaseLedger, getCustomerDebtRepayments(customerOrId, expenses));
 };
 
-const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments = [], warehouseImports = [], expenses = []) => {
-  const salesLedgers = buildCustomerLedgerMap(customers, orders, payments);
+const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments = [], warehouseImports = [], expenses = [], {cooperative = false} = {}) => {
+  function* calculate() {
+  const preparedSales = buildCustomerLedgerMap(customers, orders, payments, {cooperative});
+  const salesLedgers = cooperative ? yield* preparedSales : preparedSales;
+  yield;
   const importsByCustomerId = new Map();
   const importsByPhone = new Map();
   const importsByName = new Map();
   const repaymentsByCustomer = new Map();
-  expenses.forEach(item => {
-    if (!item || item.isArchived || item.sourceType !== 'customer_debt_repayment') return;
+  for (const item of expenses) {
+    yield;
+    if (!item || item.isArchived || item.sourceType !== 'customer_debt_repayment') continue;
     if (!repaymentsByCustomer.has(item.customerId)) repaymentsByCustomer.set(item.customerId, []);
     repaymentsByCustomer.get(item.customerId).push(item);
-  });
+  }
   const addImport = (index, key, item) => {
     if (!key) return;
     if (!index.has(key)) index.set(key, []);
     index.get(key).push(item);
   };
 
-  (Array.isArray(warehouseImports) ? warehouseImports : []).forEach(item => {
-    if (!item || item.isArchived) return;
+  for (const item of (Array.isArray(warehouseImports) ? warehouseImports : [])) {
+    yield;
+    if (!item || item.isArchived) continue;
     addImport(importsByCustomerId, `${item.supplierCustomerId || item.linkedCustomerId || item.customerId || ''}`.trim(), item);
     addImport(importsByPhone, normalizeCustomerPhone(item.supplierPhone || item.phone || item.customerPhone || ''), item);
     addImport(importsByName, normalizeLookupText(item.supplier || item.supplierName || item.customerName || item.customerNameSnapshot || ''), item);
-  });
+  }
 
-  return Object.fromEntries((Array.isArray(customers) ? customers : []).filter(Boolean).map(customer => {
+  const entries = [];
+  for (const customer of (Array.isArray(customers) ? customers : [])) {
+    yield;
+    if (!customer) continue;
     const customerId = `${customer.id || ''}`.trim();
     const phone = normalizeCustomerPhone(customer.phone || customer.phoneNumber || '');
     const name = normalizeLookupText(getCustomerDisplayName(customer) || customer.name || '');
@@ -11094,10 +11170,18 @@ const buildCustomerReconciledLedgerMap = (customers = [], orders = [], payments 
       ...(importsByName.get(name) || [])
     ])];
     const purchaseLedger = buildCustomerSupplierPurchaseLedger(customer, matchedImports);
-    return [customer.id, applyCustomerSupplierReconciliation(salesLedgers[customer.id], purchaseLedger,
-      getCustomerDebtRepayments(customer, repaymentsByCustomer.get(customer.id) || []))];
-  }));
+    entries.push([customer.id, applyCustomerSupplierReconciliation(salesLedgers[customer.id], purchaseLedger,
+      getCustomerDebtRepayments(customer, repaymentsByCustomer.get(customer.id) || []))]);
+  }
+  return Object.fromEntries(entries);
+  }
+  const iterator = calculate();
+  if (cooperative) return iterator;
+  for (;;) { const next = iterator.next(); if (next.done) return next.value; }
 };
+
+
+const ReconciledLedgerContext = React.createContext(null);
 
 const getCustomerDebt = (customerOrId, allOrders, allPayments, warehouseImports = []) => buildCustomerReconciledLedger(customerOrId, allOrders, allPayments, warehouseImports).currentDebt;
 const getCustomerCredit = (customerOrId, allOrders, allPayments, warehouseImports = []) => buildCustomerReconciledLedger(customerOrId, allOrders, allPayments, warehouseImports).creditBalance;
@@ -11875,7 +11959,11 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   let badDebt = 0;
   if (!options.skipDebt && isEmployeeSalesPosition(emp)) {
     const myCustomers = allCustomers.filter(c => c.empId === empId);
-    badDebt = myCustomers.reduce((sum, cus) => sum + getCustomerDebt(cus, allOrders, allPayments), 0);
+    badDebt = myCustomers.reduce((sum, cus) => sum + (
+      options.customerDebtByRecord?.has(cus)
+        ? options.customerDebtByRecord.get(cus)
+        : getCustomerDebt(cus, allOrders, allPayments)
+    ), 0);
     if (badDebt < 0) badDebt = 0;
   }
   badDebt = roundMoneyValue(badDebt);
@@ -12239,6 +12327,7 @@ export default function App() {
   const [sessionRecoveryTimedOut, setSessionRecoveryTimedOut] = useState(false);
 
   const [currentUser, setCurrentUser] = useState(persistedSession.currentUser); 
+  const isCustomerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
   const [activeTab, setActiveTab] = useState(normalizeAppTab(persistedSession.activeTab));
   const activeTabForSyncRef = useRef(activeTab);
@@ -12251,7 +12340,6 @@ export default function App() {
   const biometricVerifiedIdentityRef = useRef('');
   const biometricPromptInFlightRef = useRef(false);
   const warmResumeLeaseRef = useRef(null);
-  const [biometricOfferIdentity, setBiometricOfferIdentity] = useState(null);
   const [currentDate, setCurrentDate] = useState(getTodayString());
   const [recoverableSyncNotice, setRecoverableSyncNotice] = useState(null);
 
@@ -12304,6 +12392,29 @@ export default function App() {
   const [rawPricingRules, setRawPricingRules] = useState([]);
   const [rawPricingScenarios, setRawPricingScenarios] = useState([]);
   const [rawPricingChangeLogs, setRawPricingChangeLogs] = useState([]);
+  const [readWorkerActivityStore] = useState(createReadWorkerActivityStore);
+  const readWorkerControllerRef = useRef(null);
+  const readWorkerCommittedStateRef = useRef({});
+  useEffect(() => {
+    // This witness runs after React commits raw state, rather than merely after
+    // the worker sends data or a state update is queued in a transition.
+    const committed = {
+      companies:rawCompanies,employees:rawEmployees,employeeReviews:rawEmployeeReviews,
+      payrollPeriods:rawPayrollPeriods,payrollDebtCarryovers:rawPayrollDebtCarryovers,payrollAutoLockPlans:rawPayrollAutoLockPlans,
+      customers:rawCustomers,customerComplaints:rawCustomerComplaints,customer_cart:rawCustomerCart,customer_points:rawCustomerPoints,
+      customerLoans:rawCustomerLoans,reward_catalog:rawRewardCatalog,promotions:rawPromotions,notifications:rawNotifications,
+      products:rawProducts,orders:rawOrders,orderRequests:rawOrderRequests,warehouseImports:rawWarehouseImports,
+      warehouseDispatches:rawWarehouseDispatches,warehouseStockCounts:rawWarehouseStockCounts,assets:rawAssets,assetCostLogs:rawAssetCostLogs,
+      deliveryReports:rawDeliveryReports,payments:rawPayments,bankAccounts:rawBankAccounts,bankTransactions:rawBankTransactions,
+      payment_reconciliations:rawPaymentReconciliations,advances:rawAdvanceRequests,financials:rawFinancials,expenses:rawExpenses,
+      holidays:rawHolidays,messages:rawMessages,zalo_send_queue:rawZaloSendQueue,zalo_campaigns:rawZaloCampaigns,
+      zalo_campaign_queue:rawZaloCampaignQueue,zalo_inbox_messages:rawZaloInboxMessages,zalo_inbox_bridge_logs:rawZaloInboxBridgeLogs,
+      order_requests:rawZaloOrderRequests,ai_reply_rules:rawAiReplyRules,pricingInputs:rawPricingInputs,pricingRules:rawPricingRules,
+      pricingScenarios:rawPricingScenarios,performance:rawPerformance,attendance:rawAttendance,
+    };
+    readWorkerCommittedStateRef.current=committed;
+    readWorkerControllerRef.current?.confirmCommitted(committed);
+  });
   const bankReconcileInFlightRef = useRef(new Set());
   const customerHonorificMigrationRef = useRef(new Set());
   const warehouseDispatchCompanyMigrationRef = useRef(new Set());
@@ -12499,24 +12610,28 @@ export default function App() {
       accountType: currentUser.accountType || (currentUser.role === 'customer' ? 'customer' : 'employee'),
       source: persistedSession.currentUser?.id === currentUser.id ? 'persisted-session' : 'auth-claims',
     });
-    const frameId = window.requestAnimationFrame?.(() => recordStartupEvent('shell.rendered', {
-      activeTab,
-    }));
-    if (!isFirebaseLoading) recordStartupEvent('first.ui.rendered', { activeTab });
+    const frameId = window.requestAnimationFrame?.(() => {
+      // A recognized identity can still be behind enrollment/setup. Do not
+      // report its state release as a visible business screen.
+      const shell = document.querySelector('main[data-hd-module]');
+      if (!shell || shell.getAttribute('data-hd-module') !== activeTab) return;
+      recordStartupEvent('shell.rendered', { activeTab, witness: 'dom-at-animation-frame' });
+      if (!isFirebaseLoading) recordStartupEvent('first.ui.rendered', { activeTab, witness: 'dom-at-animation-frame' });
+    });
     return () => {
       if (frameId && window.cancelAnimationFrame) window.cancelAnimationFrame(frameId);
     };
-  }, [currentUser?.id, activeTab, isFirebaseLoading]);
+  }, [currentUser?.id, activeTab, isFirebaseLoading, biometricUnlockState]);
 
   useEffect(() => {
     if (isCoreDataLoaded) {
-      recordStartupEvent('first.meaningful.data.rendered');
+      recordStartupEvent('data.core.available', { collections: CORE_DATA_COLLECTION_NAMES, witness: 'state-only' });
       recordStartupEvent('background.sync.core_ready');
     }
   }, [isCoreDataLoaded]);
 
   useEffect(() => {
-    if (isInitialDataLoaded) recordStartupEvent('background.sync.completed');
+    if (isInitialDataLoaded) recordStartupEvent('background.sync.core.completed');
   }, [isInitialDataLoaded]);
 
   const persistPendingFirebaseWrites = (writes = [], { alreadyPersisted = false } = {}) => {
@@ -13916,6 +14031,19 @@ export default function App() {
     let refreshTimer = null;
     const collectionReadRevisions = new Map();
     const collectionReadControllers = new Map();
+    const readWorker = import.meta.env.VITE_FIRESTORE_READ_WORKER === 'true'
+      && !isPreviewDataMode && !customerSession && typeof Worker === 'function'
+      ? createFirestoreReadWorkerClient({
+        user:firebaseUser,config:activeFirebaseConfig,appId,companyId:tenantCompanyId,
+        accountType:currentUser?.accountType || 'employee',db,
+        activity:readWorkerActivityStore,getCommittedStates:()=>readWorkerCommittedStateRef.current,
+        onCommitted:({collectionName})=>markCollectionServerConfirmed(collectionName),
+        emulator:getFirebaseEmulatorConfig(activeFirebaseConfig?.projectId),
+        isCurrent:()=>!cancelled && activeTenantScopeRef.current === tenantCompanyId && auth.currentUser?.uid === firebaseUser.uid,
+        onAuthInvalid:()=>{ void handleLogout(); },
+        onFallback:({collection,code})=>recordStartupEvent('data.worker.fallback',{collection,code},'warn'),
+      }) : null;
+    readWorkerControllerRef.current=readWorker;
     realtimeListenerStartTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
     realtimeListenerStartTimersRef.current = [];
     realtimeUnsubscribersRef.current.forEach(unsubscribe => {
@@ -14307,6 +14435,12 @@ export default function App() {
       const deletedIds = getRecentLocalDeleteIds(colName);
       const recentWrites = Array.from(recentLocalWritesRef.current.values())
         .filter(write => write?.collectionName === colName && write?.documentId && write?.payload);
+      // Object-shaped collections need not be expanded/copied merely to find
+      // out there are no local overlays. Construct their rows only on demand.
+      if (typeof arr === 'function') {
+        if (!pendingWrites.length && !recentWrites.length && !deletedIds.size) return null;
+        arr = arr();
+      }
       const filteredArr = deletedIds.size > 0
         ? arr.filter(item => !deletedIds.has(item?.id))
         : arr;
@@ -14375,62 +14509,90 @@ export default function App() {
       lastStableCollectionDataRef.current.set(colName, value);
     };
 
-    const setCollectionSafely = (colName, setFn, nextValue, isObject = false, options = {}) => {
+    const setCollectionSafely = async (colName, setFn, nextValue, isObject = false, options = {}) => {
       const nextHasData = hasCollectionValue(nextValue, isObject);
       const shouldKeepPreviousOnEmpty = Boolean(options.keepPreviousOnEmpty);
-
+      const version=options.workerCommitVersion;
+      const workerPublication=readWorker && version!==null && version!==undefined;
+      const isCurrent=()=>!cancelled && (!options.isCurrent || options.isCurrent())
+        && (!workerPublication || readWorker.isPublicationCurrent(colName,version));
+      const commit = prepared => {
+      if (!isCurrent()) return;
       runNonBlockingStateUpdate(() => {
+        if (!isCurrent()) return;
         setFn(prevValue => {
-          if (!nextHasData && shouldKeepPreviousOnEmpty) {
+          if (!isCurrent()) return prevValue;
+          // A local write/delete may arrive while comparison yields or this
+          // transition is queued. Reapply its live overlay before committing.
+          let publicationValue=prepared.value;
+            if (isObject) {
+              const merged=mergePendingArrayItems(colName,()=>Object.entries(publicationValue).map(([id,data])=>({...data,id})));
+              if (merged) publicationValue=Object.fromEntries(merged.map(row=>[row.id,row]));
+            } else publicationValue=mergePendingArrayItems(colName,publicationValue);
+          const publicationHasData=hasCollectionValue(publicationValue,isObject);
+          const result = (() => {
+          if (!publicationHasData && shouldKeepPreviousOnEmpty) {
             const stableValue = getPreviousStableCollectionValue(colName);
             if (hasCollectionValue(prevValue, isObject)) return prevValue;
             if (hasCollectionValue(stableValue, isObject)) return stableValue;
           }
-          if (!nextHasData && !hasCollectionValue(prevValue, isObject)) return prevValue;
-          return retainCollectionRecordIdentity(prevValue, nextValue);
+          if (!publicationHasData && !hasCollectionValue(prevValue, isObject)) return prevValue;
+          // Reapply live local changes even if React's committed state moved
+          // while preparation yielded. Never deep-scan history in this updater.
+          return publicationValue;
+          })();
+          readWorker?.expectCommit(colName,options.workerCommitVersion,result);
+          return result;
         });
 
-        markCollectionLoaded(colName);
+        if (!workerPublication) markCollectionLoaded(colName);
       });
 
       if (nextHasData || !shouldKeepPreviousOnEmpty) {
         rememberStableCollectionValue(colName, nextValue, isObject, { allowEmpty: !nextHasData });
       }
+      if (workerPublication) readWorker.publicationScheduled(colName);
+      };
+      try {
+        const previous=readWorkerCommittedStateRef.current[colName];
+        const value=await retainCollectionRecordIdentityAsync(previous,nextValue,{isCurrent});
+        commit({previous,value});
+        return isCurrent();
+      } catch(error) { if(error.name==='AbortError')return false;throw error; }
     };
 
     const decodeWarehouseDispatchItems = createWarehouseDispatchReadDecoder({
       companyId: tenantCompanyId,
       customerId: customerSession ? sessionCustomerId : undefined
     });
-    const applyCollectionItems = (colName, setFn, items = [], isObject = false, parser = null, options = {}) => {
+    const snapshotRecordMaterializers = new Map();
+    const materializationRevisions = new Map();
+    const applyCollectionItems = async (colName, setFn, items = [], isObject = false, parser = null, options = {}) => {
+      const revision=(materializationRevisions.get(colName)||0)+1;
+      materializationRevisions.set(colName,revision);
+      const isCurrent=()=>!cancelled && materializationRevisions.get(colName)===revision
+        && (!options.isCurrent || options.isCurrent())
+        && (options.workerCommitVersion==null || !readWorker || readWorker.isPublicationCurrent(colName,options.workerCommitVersion));
+      if(!isCurrent())return false;
+      if (!snapshotRecordMaterializers.has(colName)) snapshotRecordMaterializers.set(colName, createSnapshotRecordMaterializer());
+      const materializeRecord = snapshotRecordMaterializers.get(colName);
       const rawItems = colName === 'warehouseDispatches'
         ? decodeWarehouseDispatchItems(items)
         : (Array.isArray(items) ? items : []);
       clearConfirmedLocalMutations(colName, rawItems, options);
       const safeItems = filterRecentlyDeletedItems(colName, rawItems);
       const isEmptyPayload = safeItems.length === 0;
-      const stableValue = getPreviousStableCollectionValue(colName);
-      const hasStableValue = hasCollectionValue(stableValue, isObject);
       const keepPreviousOnEmpty = Boolean(
         options.keepPreviousOnEmpty
         || (options.source === 'realtime' && options.fromCache && isEmptyPayload)
         || (options.source === 'rest' && isEmptyPayload)
       );
 
-      if (isObject) {
-        const obj = {};
-        safeItems.forEach(({ id, data: rawData }) => {
-          const data = parser ? parser(rawData) : rawData;
-          obj[id] = { id, ...data };
-        });
-        setCollectionSafely(colName, setFn, obj, true, { keepPreviousOnEmpty });
-      } else {
-        const arr = safeItems.map(({ id, data: rawData }) => {
-          const data = parser ? parser(rawData) : rawData;
-          return { id, ...data };
-        });
-        setCollectionSafely(colName, setFn, mergePendingArrayItems(colName, arr), false, { keepPreviousOnEmpty });
-      }
+      try {
+        const value=await materializeSnapshotRecords(safeItems,(id,data)=>materializeRecord(id,data,parser),{isObject,isCurrent});
+        if(!isCurrent())return false;
+        return await setCollectionSafely(colName,setFn,value,isObject,{keepPreviousOnEmpty,workerCommitVersion:options.workerCommitVersion,isCurrent});
+      } catch(error) { if(error.name==='AbortError')return false;throw error; }
     };
 
     const isRecoverableRealtimeError = (error) => {
@@ -14501,14 +14663,15 @@ export default function App() {
         lastRealtimeSnapshotAtRef.current.set(colName, confirmedAt);
         lastRealtimeServerSnapshotAtRef.current.set(colName, confirmedAt);
         markCollectionServerConfirmed(colName);
-        applyCollectionItems(
+        const applied=await applyCollectionItems(
           colName,
           setFn,
           items,
           isObject,
           parser,
-          { source: 'server', keepPreviousOnEmpty: false }
+          { source: 'server', keepPreviousOnEmpty: false, isCurrent }
         );
+        if(applied===false || !isCurrent())return;
         updateRealtimeStatusLightly({
           state: 'online',
           collection: colName,
@@ -14524,7 +14687,7 @@ export default function App() {
           }
           const stableValue = getPreviousStableCollectionValue(colName);
           if (hasCollectionValue(stableValue, isObject)) {
-            setCollectionSafely(colName, setFn, stableValue, isObject, { keepPreviousOnEmpty: true });
+            await setCollectionSafely(colName, setFn, stableValue, isObject, { keepPreviousOnEmpty: true, isCurrent });
           }
         } else {
           console.error(`Failed to load collection ${colName}:`, error);
@@ -14674,6 +14837,9 @@ export default function App() {
       const existingListener = activeRealtimeCollectionListeners.get(colName);
       if (existingListener) return existingListener;
       let hasAppliedDataSnapshot = false;
+      let listenerActive = true;
+      let snapshotPipelines = [];
+      const firestoreUnsubscribes = [];
       try {
         const collectionRefs = getTenantCollectionSources(colName);
         if (collectionRefs.length === 0) {
@@ -14684,9 +14850,9 @@ export default function App() {
         const serverConfirmedSourceIndexes = new Set();
         const snapshotItemCollectors = collectionRefs.map(() =>
           createRealtimeSnapshotItemsCollector(normalizeFirestoreSnapshotData));
-        const applySnapshot = (snapshot, sourceIndex) => {
-            if (cancelled) return;
-            const snapshotItems = snapshotItemCollectors[sourceIndex](snapshot, collectionRefs[sourceIndex]);
+        const applySnapshot = async (snapshot, sourceIndex, collectedItems) => {
+            if (cancelled || !listenerActive) return;
+            const snapshotItems = collectedItems || snapshotItemCollectors[sourceIndex](snapshot, collectionRefs[sourceIndex]);
             if (colName === 'warehouseDispatches') decodeWarehouseDispatchItems(snapshotItems);
             const fromCache = Boolean(snapshot?.metadata?.fromCache);
             const hasPendingWrites = Boolean(snapshot?.metadata?.hasPendingWrites);
@@ -14698,7 +14864,10 @@ export default function App() {
                 collectionReadRevisions.set(colName, (collectionReadRevisions.get(colName) || 0) + 1);
                 collectionReadControllers.get(colName)?.abort();
                 lastRealtimeServerSnapshotAtRef.current.set(colName, snapshotAt);
-                markCollectionServerConfirmed(colName);
+                // The server snapshot has arrived, but cooperative state may
+                // still be queued. Worker readiness is marked after its React
+                // commit, so an empty old state cannot become "ready" early.
+                if (!readWorker || !canUseFirestoreReadWorker(colName,collectionRefs.length,customerSession)) markCollectionServerConfirmed(colName);
               }
             }
             if (!shouldApplyRealtimeSnapshot(snapshot)) {
@@ -14732,14 +14901,18 @@ export default function App() {
                 }
               }
             }
-            if (hasAppliedDataSnapshot && dataChangeCount === 0 && !hasSourceDataChanges && !hasLocalMutationForCollection) {
-              markCollectionLoaded(colName);
+            const unchanged = hasAppliedDataSnapshot && dataChangeCount === 0 && !hasSourceDataChanges && !hasLocalMutationForCollection;
+            const workerCommitVersion = isServerConfirmedRealtimeSnapshot(snapshot)
+              ? readWorker?.beginPublication(colName,unchanged) ?? null : null;
+            if (unchanged) {
+              if (workerCommitVersion === null) markCollectionLoaded(colName);
               updateRealtimeStatusLightly({
                 state: hasPendingWrites ? 'connecting' : 'online',
                 collection: colName,
                 lastAt: new Date().toISOString(),
                 error: ''
               });
+              if (workerCommitVersion !== null) readWorker?.publicationScheduled(colName);
               return;
             }
             const docsById = new Map();
@@ -14748,12 +14921,16 @@ export default function App() {
             });
             const docs = Array.from(docsById.values());
             hasAppliedDataSnapshot = true;
-            applyCollectionItems(colName, setFn, docs, isObject, parser, {
+            const applied=await applyCollectionItems(colName, setFn, docs, isObject, parser, {
               source: 'realtime',
               fromCache,
               hasPendingWrites,
-              keepPreviousOnEmpty: false
+              workerCommitVersion,
+              keepPreviousOnEmpty: false,
+              isCurrent:()=>!cancelled && listenerActive
             });
+            if(applied===false || cancelled || !listenerActive)return;
+            if (workerCommitVersion !== null) readWorker?.publicationScheduled(colName);
             updateRealtimeStatusLightly({
               state: hasPendingWrites ? 'connecting' : 'online',
               collection: colName,
@@ -14762,7 +14939,7 @@ export default function App() {
             });
           };
         const handleListenerError = (error) => {
-            if (cancelled) return;
+            if (cancelled || !listenerActive) return;
             const recoverable = isRecoverableRealtimeError(error);
             if (recoverable) {
               if (shouldLogRecoverableRealtimeError(colName)) {
@@ -14790,29 +14967,51 @@ export default function App() {
             stopCollectionListener(colName);
             scheduleCollectionRefresh(colName, [1200, 4200]);
           };
-        const firestoreUnsubscribes = collectionRefs.map((collectionRef, sourceIndex) => onSnapshot(
+        snapshotPipelines = collectionRefs.map((collectionRef, sourceIndex) => createRealtimeSnapshotPipeline({
+            collect: snapshotItemCollectors[sourceIndex],
+            publish: (snapshot, items) => applySnapshot(snapshot, sourceIndex, items),
+            onError: handleListenerError,
+            isCurrent: () => !cancelled && listenerActive,
+            yieldWork: () => new Promise(resolve => window.setTimeout(resolve, 0)),
+          }));
+        collectionRefs.forEach((collectionRef, sourceIndex) => {
+          const subscribeMain = () => onSnapshot(
           collectionRef,
           { includeMetadataChanges: true },
           (snapshot) => {
-            if (colName !== 'warehouseDispatches') {
-              applySnapshot(snapshot, sourceIndex);
+            if (cancelled || !listenerActive) return;
+            if (snapshotPipelines[sourceIndex]) {
+              snapshotPipelines[sourceIndex].enqueue(snapshot, collectionRef);
               return;
             }
-            try {
-              applySnapshot(snapshot, sourceIndex);
-            } catch (error) {
-              handleListenerError(error);
-            }
+            void applySnapshot(snapshot, sourceIndex).catch(handleListenerError);
           },
           handleListenerError
-        ));
-        const unsubscribe = () => firestoreUnsubscribes.forEach((firestoreUnsubscribe) => firestoreUnsubscribe?.());
+          );
+          const unsubscribeSource = readWorker && canUseFirestoreReadWorker(colName,collectionRefs.length,customerSession)
+            ? readWorker.subscribe(colName,{
+              publish:(snapshot,items)=>{
+                if (!cancelled && listenerActive) return applySnapshot(snapshot,sourceIndex,items);
+              },
+              error:handleListenerError,
+              fallback:subscribeMain,
+            }) : subscribeMain();
+          firestoreUnsubscribes.push(unsubscribeSource);
+        });
+        const unsubscribe = () => {
+          listenerActive = false;
+          snapshotPipelines.forEach(pipeline => pipeline?.dispose());
+          firestoreUnsubscribes.forEach((firestoreUnsubscribe) => firestoreUnsubscribe?.());
+        };
         activeRealtimeCollectionListeners.set(colName, unsubscribe);
         activeRealtimeCollectionsRef.current.add(colName);
         unsubscribeCollectionListeners.push(unsubscribe);
         realtimeUnsubscribersRef.current = [...unsubscribeCollectionListeners];
         return unsubscribe;
       } catch (error) {
+        listenerActive = false;
+        snapshotPipelines.forEach(pipeline => pipeline?.dispose());
+        firestoreUnsubscribes.forEach(unsubscribe => { try { unsubscribe?.(); } catch { /* Preserve subscription failure. */ } });
         console.error(`Cannot subscribe ${colName}:`, error);
         scheduleCollectionRefresh(colName, [1000, 4000, 10000]);
         return () => {};
@@ -14909,22 +15108,13 @@ export default function App() {
     };
     activateForegroundRealtimeRef.current = activateForegroundRealtimeCollections;
 
-    baselineRealtimeCollectionNames.forEach((baselineCollectionName) => {
-      const binding = collectionBindingMap.get(baselineCollectionName);
-      if (!binding) return;
-      const [colName] = binding;
-      const isCoreCollection = CORE_DATA_COLLECTION_NAMES.includes(colName);
-      const priorityStepMs = nativeRealtimeStartup ? 80 : 32;
-      const priorityMaxMs = nativeRealtimeStartup ? 240 : 96;
-      const delay = isCoreCollection
-        ? 0
-        : Math.min(baselineListenerIndex++ * priorityStepMs, priorityMaxMs);
-      const timerId = window.setTimeout(() => {
-        if (cancelled) return;
-        startCollectionListener(binding);
-      }, delay);
-      listenerStartTimers.push(timerId);
-    });
+    listenerStartTimers.push(...startBaselineSubscriptions({
+      bindings: baselineRealtimeCollectionNames.map(name => collectionBindingMap.get(name)).filter(Boolean),
+      coreNames: CORE_DATA_COLLECTION_NAMES,
+      start: binding => { if (!cancelled) startCollectionListener(binding); },
+      schedule: (callback, delay) => window.setTimeout(callback, delay),
+      delayFor: () => Math.min(baselineListenerIndex++ * (nativeRealtimeStartup ? 80 : 32), nativeRealtimeStartup ? 240 : 96),
+    }));
     realtimeListenerStartTimersRef.current = listenerStartTimers;
 
     // REST fallback chỉ để vá khi listener bị rớt, không còn là nguồn cập nhật chính.
@@ -14937,6 +15127,8 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      readWorker?.close();
+      if (readWorkerControllerRef.current === readWorker) readWorkerControllerRef.current=null;
       activateForegroundRealtimeRef.current = () => () => {};
       collectionReadControllers.forEach(controller => controller.abort());
       collectionReadControllers.clear();
@@ -14985,6 +15177,7 @@ export default function App() {
 
   useEffect(() => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
+    if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded)) return undefined;
     const collectionNames = FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || [];
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
@@ -14993,6 +15186,7 @@ export default function App() {
     currentUser?.accountType,
     currentUser?.companyId,
     currentUser?.customerId,
+    isCoreDataLoaded,
   ]);
 
   useEffect(() => {
@@ -15195,6 +15389,7 @@ export default function App() {
   };
   const products = useMemo(() => rawProducts.filter(p => p.companyId === myCompanyId && !p.isArchived), [rawProducts, myCompanyId]);
   const orders = useMemo(() => rawOrders.filter(o => o.companyId === myCompanyId && !o.isArchived), [rawOrders, myCompanyId]);
+  const allCompanyOrders = useMemo(() => rawOrders.filter(order => order.companyId === myCompanyId), [rawOrders, myCompanyId]);
   const orderRequests = useMemo(() => rawOrderRequests.filter(request => request.companyId === myCompanyId && !request.isArchived), [rawOrderRequests, myCompanyId]);
 
   useEffect(() => {
@@ -15285,10 +15480,11 @@ export default function App() {
   loyaltyActivityRef.current.tab = activeTab;
   loyaltyActivityRef.current.ready = loyaltyMaintenanceDataReady;
   loyaltyActivityRef.current.enabled = getCustomerLoyaltySettings(currentCompany).enabled;
+  loyaltyActivityRef.current.coreReady = isCoreDataLoaded;
   loyaltyActivityRef.current.missingCollections = new Set(loyaltyMissingCollectionNames);
 
   useEffect(() => {
-    if (!firebaseUser || !myCompanyId || !loyaltyActivityRef.current.enabled
+    if (!firebaseUser || !myCompanyId || !isCoreDataLoaded || !loyaltyActivityRef.current.enabled
       || activeTab === 'warehouse_dispatch' || !loyaltyMissingCollectionKey) return undefined;
     let disposed = false;
     const retryTimers = new Map();
@@ -15308,7 +15504,7 @@ export default function App() {
       schedule: scheduleMaintenanceWork,
       cancel: cancelMaintenanceWork,
       isPaused: () => document.visibilityState !== 'visible' || navigator.onLine === false
-        || !loyaltyActivityRef.current.enabled || loyaltyActivityRef.current.tab === 'warehouse_dispatch'
+        || !loyaltyActivityRef.current.enabled || !loyaltyActivityRef.current.coreReady || loyaltyActivityRef.current.tab === 'warehouse_dispatch'
         || document.activeElement?.matches('input, textarea, select, [contenteditable="true"]')
         || Date.now() - loyaltyActivityRef.current.lastInputAt < 750,
       run: async (name) => {
@@ -15333,7 +15529,7 @@ export default function App() {
       window.removeEventListener('online', onAvailability);
       window.removeEventListener('offline', onAvailability);
     };
-  }, [firebaseUser, myCompanyId, activeTab, loyaltyMissingCollectionKey, loyaltyActivityRef.current.enabled]);
+  }, [firebaseUser, myCompanyId, activeTab, loyaltyMissingCollectionKey, loyaltyActivityRef.current.enabled, isCoreDataLoaded]);
 
   useEffect(() => {
     if (!firebaseUser || !myCompanyId) return undefined;
@@ -15394,7 +15590,7 @@ export default function App() {
     )) || {};
 
     const orderMap = new Map();
-    (orders || []).forEach(order => {
+    selectCustomerHistoryRows(orders || [], customerId).forEach(order => {
       if (order?.id && order.customerId === customerId) {
         orderMap.set(order.id, order);
       }
@@ -15414,7 +15610,7 @@ export default function App() {
     const ledgerOrdersById = new Map((customerLedger.orders || []).map(order => [order.id, order]));
     const debtLimitStatus = buildCustomerDebtLimitStatus(customer, customerLedger);
     const customerPortalRequestsById = new Map(
-      (orderRequests || [])
+      selectCustomerHistoryRows(orderRequests || [], customerId)
         .filter(request => (
           request?.id
           && request.customerId === customerId
@@ -15428,7 +15624,7 @@ export default function App() {
         .map(request => [request.id, request])
     );
     const requestIdsByDispatchId = new Map(
-      (warehouseDispatches || [])
+      selectCustomerHistoryRows(warehouseDispatches || [], customerId)
         .filter(dispatch => dispatch?.id && dispatch.customerId === customerId && !dispatch.isArchived)
         .map(dispatch => {
           const requestIds = [
@@ -15748,7 +15944,7 @@ export default function App() {
       return;
     }
     loyaltyMaintenanceRef.current?.enqueue(LOYALTY_ELIGIBILITY_SCAN_KEY);
-  }, [currentCompany, customers, firebaseUser, myCompanyId, orders, payments, orderRequests, warehouseDispatches, syncCustomerLoyaltyPoints, loyaltyMaintenanceDataReady, activeTab]);
+  }, [currentCompany, customers, firebaseUser, myCompanyId, orders, payments, orderRequests, warehouseDispatches, loyaltyMaintenanceDataReady, activeTab]);
   const zaloOrderRequests = useMemo(() => rawZaloOrderRequests.filter(item => item.companyId === myCompanyId), [rawZaloOrderRequests, myCompanyId]);
   const aiReplyRules = useMemo(() => rawAiReplyRules.filter(item => item.companyId === myCompanyId), [rawAiReplyRules, myCompanyId]);
   const pricingInputs = useMemo(() => rawPricingInputs.filter(item => item.companyId === myCompanyId && !item.isArchived), [rawPricingInputs, myCompanyId]);
@@ -15901,14 +16097,16 @@ export default function App() {
     return filtered;
   }, [rawPerformance, myCompanyId]);
 
-  const aggregatedPerformance = useMemo(() => {
+  const aggregatedPerformance = useMemo(() => withSalesRevenueIndex(() => {
     const agg = { ...performanceRecords };
     employees.forEach(emp => {
-      if (!agg[emp.id]) agg[emp.id] = { overtime: 0 };
-      agg[emp.id].revenue = calculateMonthRevenue(emp.id, orders, customers);
+      agg[emp.id] = {
+        ...(agg[emp.id] || { overtime: 0 }),
+        revenue: calculateMonthRevenue(emp.id, orders, customers)
+      };
     });
     return agg;
-  }, [performanceRecords, orders, employees, customers]);
+  }), [performanceRecords, orders, employees, customers]);
 
   const verifyAndMaybeSetLoginPassword = async (collectionName, record, password) => {
     const passwordError = validateAccountPasswordInput(password);
@@ -16295,9 +16493,9 @@ export default function App() {
       const needsBiometric = isNativeRuntime() && Boolean(getBiometricAutoLoginProfile({ manual: true })) && !session.requiresSetup;
       biometricVerifiedIdentityRef.current = needsBiometric ? '' : getIdentityAccountScope({ ...session.identity, identityKey: session.identityKey });
       setBiometricUnlockState(needsBiometric ? 'blocked' : 'unlocked');
-      if (isNativeRuntime() && !session.requiresSetup && !getBiometricAutoLoginProfile({ manual: true })) {
-        setBiometricOfferIdentity({ ...session.identity, identityKey: session.identityKey });
-      }
+      // Enrollment is optional and available in Account security. It must not
+      // replace the business screen after a valid password login. Existing
+      // enrolled-device unlock and required account setup remain enforced.
       recordStartupEvent('auth.identity_login.api_completed', {
         durationMs: Date.now() - apiStartedAt,
       });
@@ -16362,7 +16560,6 @@ export default function App() {
       identitySetupPendingRef.current = false;
       biometricVerifiedIdentityRef.current = getIdentityAccountScope(identity);
       setBiometricUnlockState('unlocked');
-      if (isNativeRuntime() && !getBiometricAutoLoginProfile({ manual: true })) setBiometricOfferIdentity(identity);
       return { success: true };
     } catch (error) {
       return { success: false, message: error?.message || 'Không thể hoàn tất bảo mật tài khoản.' };
@@ -16856,7 +17053,6 @@ export default function App() {
 
   const handleLogout = async () => {
     forgetNativeSession();
-    setBiometricOfferIdentity(null);
     suppressBiometricAutoLoginForSession();
     biometricVerifiedIdentityRef.current = '';
     setBiometricUnlockState('unlocked');
@@ -17746,6 +17942,11 @@ export default function App() {
     if (!firebaseUser || !myCompanyId) {
       return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     }
+    if (!canAutomaticallyBackUpCompany || !automaticBackupAccessRef.current?.allowed
+      || automaticBackupAccessRef.current.companyId !== myCompanyId
+      || automaticBackupAccessRef.current.uid !== firebaseUser.uid) {
+      return { success: false, message: 'Bạn không có quyền sao lưu dữ liệu công ty.' };
+    }
 
     const shouldIncludeBackupRecord = (collectionName, record = {}) => {
       if (!record || typeof record !== 'object') return false;
@@ -17771,7 +17972,10 @@ export default function App() {
         .filter(record => shouldIncludeBackupRecord(collectionName, record));
     };
 
-    const isBackupSessionCurrent = () => activeTenantScopeRef.current === myCompanyId;
+    const isBackupSessionCurrent = () => activeTenantScopeRef.current === myCompanyId
+      && automaticBackupAccessRef.current?.allowed
+      && automaticBackupAccessRef.current.companyId === myCompanyId
+      && automaticBackupAccessRef.current.uid === firebaseUser.uid;
     const yieldBackupWork = async () => {
       do {
         if (!isBackupSessionCurrent()) throw Object.assign(new Error('Phiên sao lưu đã thay đổi.'), { name: 'AbortError' });
@@ -17891,14 +18095,139 @@ export default function App() {
     };
   };
 
+  const employeeInfo = currentUser ? (isCustomerSession ? currentUser : (employees.find(e => e.id === currentUser.id) || currentUser)) : null;
+  const backupRoleActions = useMemo(
+    () => getCompanyEffectiveRolePermissionActions(currentCompany, employeeInfo, currentUser),
+    [currentCompany, employeeInfo, currentUser]
+  );
+  const canAutomaticallyBackUpCompany = Boolean(currentUser && !isCustomerSession && (
+    isOwnerAccountUser(employeeInfo, currentUser)
+    || backupRoleActions?.settings?.backup_data
+    || backupRoleActions?.settings?.backup_restore_data
+  ));
+  const automaticBackupAccessRef = useRef(null);
+  automaticBackupAccessRef.current = { allowed: canAutomaticallyBackUpCompany, companyId: myCompanyId, uid: firebaseUser?.uid };
+
+  const handleWriteNativeAutomaticBackup = async () => {
+    const user = firebaseUser;
+    const companyId = myCompanyId;
+    const projectId = activeFirebaseConfig?.projectId;
+    const queryUrl = buildFirebaseRestCollectionQueryUrl(projectId, appId);
+    const isCurrent = () => Boolean(companyId && activeTenantScopeRef.current === companyId
+      && auth.currentUser?.uid === user?.uid && automaticBackupAccessRef.current?.allowed
+      && automaticBackupAccessRef.current.companyId === companyId && automaticBackupAccessRef.current.uid === user?.uid);
+    if (!user?.getIdToken || !queryUrl || !isCurrent()) throw new Error('Phiên sao lưu không hợp lệ.');
+    const check = () => {
+      if (!isCurrent()) throw Object.assign(new Error('Phiên sao lưu đã thay đổi.'), { name: 'AbortError' });
+    };
+    const isBackupPaused = () => document.visibilityState !== 'visible' || navigator.onLine === false
+      || loyaltyActivityRef.current.tab === 'warehouse_dispatch'
+      || document.activeElement?.matches('input, textarea, select, [contenteditable="true"]')
+      || Date.now() - loyaltyActivityRef.current.lastInputAt < 750;
+    const yieldWork = async () => {
+      do {
+        check();
+        await new Promise(resolve => window.setTimeout(resolve, isBackupPaused() ? 500 : 0));
+      } while (isBackupPaused());
+      check();
+    };
+    const filename = `auto-${buildBackupFilename(currentCompany?.name || 'HD Manager')}`;
+    const path = `${AUTO_BACKUP_NATIVE_DIR}/${filename}`;
+    const temporaryPath = `${path}.partial-${crypto.randomUUID()}`;
+    let temporaryStarted = false;
+    const fileOptions = { path: temporaryPath, directory: Directory.Documents, encoding: Encoding.UTF8 };
+    const saved = await writeAutomaticBackupStream({
+      metadata: {
+        schemaVersion: 1, appName: 'HD Manager', appId, sourceCompanyId: companyId,
+        companyName: currentCompany?.name || currentCompany?.displayName || 'HD Manager',
+        exportedAt: new Date().toISOString()
+      },
+      companyRecords: [normalizeBackupSerializableValue({ ...currentCompany, id: companyId, companyId })],
+      collectionNames: BACKUP_DATA_COLLECTIONS,
+      isCurrent,
+      yieldWork,
+      includeRecord: (_name, record) => record.companyId === companyId,
+      readPages: (name, consumePage) => consumeTenantRestQuery({
+        queryBody: { structuredQuery: {
+          from: [{ collectionId: name }],
+          where: { fieldFilter: { field: { fieldPath: 'companyId' }, op: 'EQUAL', value: { stringValue: companyId } } }
+        } },
+        context: { parent: `projects/${projectId}/databases/(default)/documents/artifacts/${appId}/public/data`, companyId, accountType: 'employee' },
+        pageSize: 100,
+        isCurrent,
+        decodeFields: fields => normalizeBackupSerializableValue(decodeFirebaseBackupFields(fields)),
+        runQuery: async body => {
+          await yieldWork();
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), 15000);
+          try {
+            const token = await user.getIdToken();
+            check();
+            const response = await fetch(queryUrl, {
+              method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify(body), signal: controller.signal
+            });
+            if (!response.ok) throw new Error(`Không đọc được trang sao lưu (HTTP ${response.status}).`);
+            const rows = await response.json();
+            check();
+            return rows;
+          } finally { window.clearTimeout(timer); }
+        }
+      }, consumePage),
+      sink: Capacitor.getPlatform() === 'android' ? createScopedBackupSink(ScopedBackupWriter, filename) : {
+        write: data => {
+          temporaryStarted = true;
+          return Filesystem.writeFile({ ...fileOptions, data, recursive: true });
+        },
+        append: data => Filesystem.appendFile({ ...fileOptions, data }),
+        commit: async () => {
+          check();
+          await Filesystem.rename({ from: temporaryPath, to: path, directory: Directory.Documents });
+          temporaryStarted = false;
+          return { path };
+        },
+        abort: () => temporaryStarted
+          ? Filesystem.deleteFile({ path: temporaryPath, directory: Directory.Documents }) : Promise.resolve()
+      }
+    });
+    return { ...saved, filename: saved.filename || filename };
+  };
+
   const handleRunDailyAutoBackup = async () => {
     if (!firebaseUser || !myCompanyId || !currentCompany) {
       return { success: false, message: 'Chưa đủ thông tin để sao lưu tự động.' };
     }
+    if (!canAutomaticallyBackUpCompany) return { success: false, status: 'not_authorized' };
     const dateKey = getTodayString();
     const existingState = getAutoBackupStateForCompany(myCompanyId, dateKey);
     if (existingState?.status === 'saved' || existingState?.status === 'manual_required') {
       return { success: existingState.status === 'saved', ...existingState };
+    }
+
+    // Web cannot persist this automatic file. Do not fetch/serialize an entire
+    // company only to discover that at the final write; manual export is separate.
+    if (Capacitor.getPlatform() === 'web') {
+      const info = {
+        status: 'manual_required',
+        filename: `auto-${buildBackupFilename(currentCompany?.name || 'HD Manager')}`,
+        path: '',
+        platform: 'web',
+        savedAt: '',
+        message: 'Thiết bị hiện tại không cho app tự ghi file nền; vui lòng bấm Sao lưu thủ công.'
+      };
+      setAutoBackupStateForCompany(myCompanyId, dateKey, info);
+      return { success: false, ...info };
+    }
+
+    if (!isPreviewDataMode && !isVpsMode) {
+      const saved = await handleWriteNativeAutomaticBackup();
+      if (activeTenantScopeRef.current !== myCompanyId) throw Object.assign(new Error('Phiên sao lưu đã thay đổi.'), { name: 'AbortError' });
+      const info = {
+        status: 'saved', ...saved, platform: Capacitor.getPlatform(), savedAt: new Date().toISOString(),
+        message: `Đã tự động sao lưu ${saved.recordCount} bản ghi.`
+      };
+      setAutoBackupStateForCompany(myCompanyId, dateKey, info);
+      return { success: true, ...info };
     }
 
     const backupResult = await handleCreateCompanyBackup({ background: true });
@@ -17936,7 +18265,7 @@ export default function App() {
   autoBackupCallbackRef.current = handleRunDailyAutoBackup;
 
   useEffect(() => {
-    if (!firebaseUser || !myCompanyId || !currentCompany) return undefined;
+    if (!firebaseUser || !myCompanyId || !currentCompany || !canAutomaticallyBackUpCompany) return undefined;
     if (activeTab === 'warehouse_dispatch') return undefined;
     const dateKey = getTodayString();
     const stateKey = buildAutoBackupStateKey(myCompanyId, dateKey);
@@ -17986,7 +18315,7 @@ export default function App() {
       window.removeEventListener('online', onVisibility);
       window.removeEventListener('offline', onVisibility);
     };
-  }, [firebaseUser, myCompanyId, currentCompany, activeTab]);
+  }, [firebaseUser, myCompanyId, currentCompany, activeTab, canAutomaticallyBackUpCompany]);
 
   const buildPaymentConfirmationMessage = ({ customer = {}, payment = {}, remainingDebt = 0, matchedOrder = null } = {}) => {
     const companyName = (currentCompany?.displayName || currentCompany?.name || 'Công ty').trim();
@@ -18627,7 +18956,7 @@ export default function App() {
     }, { merge: true });
   };
 
-  const handleLoadPayrollPeriodSnapshots = async ({ monthKey } = {}) => {
+  const handleLoadPayrollPeriodSnapshots = useCallback(async ({ monthKey } = {}) => {
     if (isVpsStagingMode) {
       return { success: false, snapshots: [], message: 'VPS payroll snapshot UI is not yet mapped to the HR payroll contract; Firebase fallback is disabled.' };
     }
@@ -18713,7 +19042,7 @@ export default function App() {
         message: getFriendlyFirebaseErrorMessage(error, 'Không tải được dữ liệu kỳ lương đã khóa.')
       };
     }
-  };
+  }, [firebaseUser, myCompanyId, rawPayrollPeriods]);
 
   const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
     if (isVpsStagingMode) {
@@ -23366,7 +23695,6 @@ export default function App() {
     return id;
   };
 
-  const isCustomerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
   const currentCustomerInfo = isCustomerSession
     ? (() => {
       const sessionAccount = rawCustomerAccounts.find(account =>
@@ -23430,7 +23758,6 @@ export default function App() {
   const effectiveSessionCompanyId = isCustomerSession
     ? (currentUser?.companyId || currentCustomerInfo?.companyId || currentCompany?.id || '')
     : (currentUser?.companyId || '');
-  const employeeInfo = currentUser ? (isCustomerSession ? currentUser : (employees.find(e => e.id === currentUser.id) || currentUser)) : null;
   const companyInfo = currentUser ? (rawCompanies.find(comp => comp.id === effectiveSessionCompanyId) || currentCompany || (effectiveSessionCompanyId ? { id: effectiveSessionCompanyId, name: 'Công ty' } : null)) : null;
   const sessionCompanyRecord = rawCompanies.find(company => company.id === effectiveSessionCompanyId) || null;
   const sessionEmployeeRecord = currentUser && !isCustomerSession
@@ -23576,8 +23903,6 @@ export default function App() {
     );
   }
 
-  if (biometricOfferIdentity) return <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyBiometricEnrollment identity={biometricOfferIdentity} getToken={() => auth.currentUser.getIdToken()} onCancel={handleLogout} onDone={async ({ enabled } = {}) => { if (enabled) await rememberNativeSession(auth, setPersistence); biometricVerifiedIdentityRef.current = getIdentityAccountScope(biometricOfferIdentity); setBiometricUnlockState('unlocked'); setBiometricOfferIdentity(null); }} /></React.Suspense>;
-
   // Firebase Auth is authoritative; cached session data may render the shell while
   // core collections revalidate in the background. Only block if Auth itself is loading.
   if (isSessionRecovering && (isFirebaseLoading || isVpsSessionLoading)) {
@@ -23662,12 +23987,13 @@ export default function App() {
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
       <MainAppView 
+        readWorkerActivityStore={readWorkerActivityStore}
         currentUser={currentUser} employee={employeeInfo} currentCompany={companyInfo} activeTab={activeTab} setActiveTab={setActiveTab}
         isVpsMode={isVpsStagingMode} vpsReadModels={vpsReadModels} vpsMasterData={vpsMasterData}
         serverConfirmedCollectionState={serverConfirmedCollectionState}
         assetExpenses={rawExpenses}
         employees={employees} employeeReviews={employeeReviews} payrollPeriods={payrollPeriods} payrollDebtCarryovers={payrollDebtCarryovers} payrollAutoLockPlans={payrollAutoLockPlans} attendance={attendanceRecords} date={currentDate} onChangeDate={setCurrentDate} financials={financials} performance={aggregatedPerformance}
-        customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} allCompanyOrders={rawOrders.filter(order => order.companyId === myCompanyId)} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
+        customers={customers} customerComplaints={customerComplaints} attendanceLoaded={loadedCollections.attendance === true} complaintsLoaded={loadedCollections.customerComplaints === true} customerPoints={customerPoints} customerLoans={customerLoans} rewardCatalog={rewardCatalog} promotions={promotions} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} payments={payments} paymentReconciliations={paymentReconciliations} bankAccounts={bankAccounts} bankTransactions={bankTransactions} products={products} advanceRequests={advanceRequests} expenses={expenses} holidays={holidays} messages={messages} notifications={notifications} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} pricingInputs={pricingInputs} pricingRules={pricingRules} pricingScenarios={pricingScenarios} pricingChangeLogs={pricingChangeLogs}
         onCheckIn={handleCheckIn} onCheckOut={handleCheckOut} onLeave={handleLeave} onLogout={handleLogout} onGetIdentityToken={() => (isVpsStagingMode ? Promise.resolve('') : (auth?.currentUser?.getIdToken?.() || Promise.resolve('')))} onResetEmployeePassword={handleOwnerResetEmployeePassword} onApproveOwnerResetRequest={handleIdentityOwnerResetApproval} onSwitchToCustomerLogin={handleSwitchToCustomerLogin}
         autoWifiCheckInStatus={autoWifiCheckInStatus} onAutoWifiStatus={setAutoWifiCheckInStatus}
         onAutoWifiAttendanceRecorded={({ workDate, employeeId, companyId, checkIn, status, workRole, checkInMethod, checkInMethodMeta }) => setRawAttendance(previous => {
@@ -24205,6 +24531,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
+  readWorkerActivityStore = null,
   currentUser, employee, currentCompany, activeTab, setActiveTab: setRootActiveTab, employees, employeeReviews = [], payrollPeriods = [], payrollDebtCarryovers = [], payrollAutoLockPlans = [], attendance, date, financials, performance, customers, customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, customerPoints = [], customerLoans = [], rewardCatalog = [], promotions = [], orders, allCompanyOrders = [], orderRequests, warehouseImports = [], warehouseDispatches, warehouseStockCounts = [], assets = [], assetCostLogs = [], deliveryReports = [], payments, paymentReconciliations = [], bankAccounts = [], bankTransactions = [], products, advanceRequests, expenses, holidays, messages = [], notifications = [], zaloSendQueue = [], zaloCampaigns = [], zaloCampaignQueue = [], zaloInboxMessages = [], zaloInboxBridgeLogs = [], zaloOrderRequests = [], aiReplyRules = [], pricingInputs = [], pricingRules = [], pricingScenarios = [], pricingChangeLogs = [],
   isVpsMode = false, vpsReadModels = {}, vpsMasterData = {},
   serverConfirmedCollectionState = { tenantId: '', collections: {} },
@@ -24679,11 +25006,23 @@ function MainAppView({
     dispatchIndexCache: warehouseDispatchCoverageIndex
   }), [customers, notificationDateKey, orderRequests, products, warehouseDispatches]);
 
-  const reconciledLedgerMap = useMemo(
-    () => buildCustomerReconciledLedgerMap(customers, orders, payments, warehouseImports, expenses),
-    [customers, orders, payments, warehouseImports, expenses]
-  );
+  const [ledgerPreparationAttempt, setLedgerPreparationAttempt] = useState(0);
+  const ledgerActorScope = JSON.stringify([currentCompany?.id || '', employee?.id || currentUser?.id || '']);
+  const ledgerProjectionScope = JSON.stringify([ledgerActorScope, notificationDateKey]);
+  const ledgerProjectionEntry = useMemo(() => mainCustomerLedgerCache(
+    [customers, orders, payments, warehouseImports, expenses], ledgerProjectionScope
+  ), [customers, orders, payments, warehouseImports, expenses, ledgerProjectionScope]);
+  const prepareMainCustomerLedgers = useCallback(function* () {
+    void ledgerPreparationAttempt;
+    void ledgerProjectionScope;
+    return yield* buildCustomerReconciledLedgerMap(customers, orders, payments, warehouseImports, expenses, {cooperative: true});
+  }, [customers, orders, payments, warehouseImports, expenses, ledgerProjectionScope, ledgerPreparationAttempt]);
+  const mainLedgerProjection = useCooperativeProjection(prepareMainCustomerLedgers, ledgerProjectionEntry);
+  const mainLedgerReady = !mainLedgerProjection.pending && !mainLedgerProjection.error;
+  const reconciledLedgerMap = mainLedgerReady ? mainLedgerProjection.value : EMPTY_MAIN_LEDGER;
+  const retryMainCustomerLedgers = () => setLedgerPreparationAttempt(value => value + 1);
   const debtLimitAlerts = useMemo(() => {
+    if (!mainLedgerReady) return [];
     return (customers || [])
       .filter(customer => !customer?.isArchived)
       .map(customer => {
@@ -24700,7 +25039,7 @@ function MainAppView({
         return false;
       })
       .sort((a, b) => (b.status.overAmount || 0) - (a.status.overAmount || 0));
-  }, [canViewDebtLimitNotifications, customers, employees, isAccounting, isOwnerAccount, isSales, reconciledLedgerMap, salesNotificationEmployeeIdSet]);
+  }, [canViewDebtLimitNotifications, customers, employees, isAccounting, isOwnerAccount, isSales, reconciledLedgerMap, salesNotificationEmployeeIdSet, mainLedgerReady]);
 
   const customerCareAlerts = useMemo(() => {
     if (!canViewCustomerCareNotifications) return [];
@@ -24717,20 +25056,28 @@ function MainAppView({
     });
   }, [canViewCustomerCareNotifications, customerCareSettings, customers, employees, isAccounting, isOwnerAccount, isSales, notificationDateKey, orders, salesNotificationEmployeeIdSet]);
 
+  const persistentNotificationCandidates = useMemo(() => selectLatestRecords(
+    (Array.isArray(notifications) ? notifications : [])
+      .filter(notice => notice && !notice.isArchived)
+      .filter(notice => !['cancelled', 'canceled', 'archived', 'deleted'].includes(`${notice.status || ''}`.toLowerCase())),
+    40,
+    getEntityTimestamp
+  ), [notifications]);
   const notificationItems = useMemo(() => {
+    // One evaluation per record for this projection; no cross-snapshot cache.
+    const timestampByRecord = new Map();
+    const notificationTimestamp = record => {
+      if (!timestampByRecord.has(record)) timestampByRecord.set(record, getEntityTimestamp(record));
+      return timestampByRecord.get(record);
+    };
     const items = [];
-    const safePersistentNotifications = Array.isArray(notifications) ? notifications : [];
     const persistentOrderRequestNotificationIds = new Set();
     const persistentPayosPaymentIds = new Set();
     const currentEmployeeId = employee?.id || currentUser?.employeeId || currentUser?.id || '';
     const persistentFallbackAt = new Date(`${notificationDateKey || getTodayDateKey()}T07:30:00`).getTime();
     const safePersistentFallbackAt = Number.isFinite(persistentFallbackAt) ? persistentFallbackAt : 0;
 
-    dedupePaymentNotifications(safePersistentNotifications
-      .filter((notice) => notice && !notice.isArchived)
-      .filter((notice) => !['cancelled', 'canceled', 'archived', 'deleted'].includes(`${notice.status || ''}`.toLowerCase()))
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 40)
+    dedupePaymentNotifications(persistentNotificationCandidates
       .filter((notice) => isEmployeeNotificationVisible(notice, { currentEmployeeId, isOwnerAccount })))
       .forEach((notice) => {
         const orderRequestId = notice.orderRequestId || notice.requestId || notice.sourceOrderRequestId || '';
@@ -24750,10 +25097,10 @@ function MainAppView({
           ? formatPaymentNotificationMessage({ customer: payosCustomer, customerName: payosCustomerName, amount: payosAmount })
           : (notice.message || notice.body || notice.note || notice.description || 'Bạn có thông báo mới cần xử lý.');
         items.push({
-          id: `persistent-${notice.id || orderRequestId || getEntityTimestamp(notice) || items.length}`,
+          id: `persistent-${notice.id || orderRequestId || notificationTimestamp(notice) || items.length}`,
           title: isPayosPaymentNotice ? payosTitle : (notice.title || notice.typeLabel || 'Thông báo'),
           message: payosMessage,
-          createdAt: getEntityTimestamp(notice) || (safePersistentFallbackAt - (items.length * 60000)),
+          createdAt: notificationTimestamp(notice) || (safePersistentFallbackAt - (items.length * 60000)),
           tab: notice.tab || notice.actionTab || notice.targetTab || 'messages',
           tone: isPayosPaymentNotice ? 'emerald' : (notice.tone || notice.level || (notice.type === 'customer_order_request_submitted' ? 'orange' : 'sky')),
           customerId: notice.customerId || '',
@@ -24766,11 +25113,10 @@ function MainAppView({
         });
       });
 
-    (messages || [])
+    selectLatestRecords((messages || [])
       .filter((message) => message && !message.isArchived)
-      .filter((message) => `${message.senderType || ''}`.toLowerCase() === 'customer')
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 40)
+      .filter((message) => `${message.senderType || ''}`.toLowerCase() === 'customer'),
+      40, notificationTimestamp)
       .forEach((message) => {
         const customer = customers.find((item) => item.id === message.customerId) || {};
         const customerMessageNotification = buildEmployeeCustomerMessageNotification(message, {
@@ -24781,7 +25127,7 @@ function MainAppView({
         if (customerMessageNotification) items.push(customerMessageNotification);
       });
 
-    (payments || [])
+    selectLatestRecords((payments || [])
       .filter((payment) => payment && !payment.isArchived && isPayosPaymentRecord(payment))
       .filter((payment) => !persistentPayosPaymentIds.has(payment.id))
       .filter((payment) => {
@@ -24796,9 +25142,8 @@ function MainAppView({
           || '';
         if (isSales) return !salesEmpId || salesNotificationEmployeeIdSet.has(salesEmpId);
         return true;
-      })
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 20)
+      }),
+      20, notificationTimestamp)
       .forEach((payment) => {
         const matchedOrder = orders.find((order) => order.id === (payment.matchedOrderId || payment.sourceOrderId || payment.orderId));
         const customer = customers.find((item) => item.id === payment.customerId);
@@ -24815,7 +25160,7 @@ function MainAppView({
           id: `payos-payment-${payment.id}`,
           title: `${customerName} thanh toán qua ${bankLabel}`,
           message: formatPaymentNotificationMessage({ customer: paymentCustomer, customerName, amount: paidAmount }),
-          createdAt: getPaymentTimestamp(payment) || getEntityTimestamp(payment) || (getPaymentDateKey(payment) ? new Date(`${getPaymentDateKey(payment)}T12:00:00`).getTime() : Date.now()),
+          createdAt: getPaymentTimestamp(payment) || notificationTimestamp(payment) || (getPaymentDateKey(payment) ? new Date(`${getPaymentDateKey(payment)}T12:00:00`).getTime() : Date.now()),
           tab: 'finance',
           tone: 'emerald',
           customerId: payment.customerId || '',
@@ -24848,28 +25193,25 @@ function MainAppView({
       });
     }
 
-    pendingAdvanceNotifications
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 8)
+    selectLatestRecords(pendingAdvanceNotifications, 8, notificationTimestamp)
       .forEach((request) => {
         const requester = employees.find((item) => item.id === request.empId);
         items.push({
           id: `advance-${request.id}`,
           title: 'Yêu cầu tạm ứng mới',
           message: `${requester?.name || 'Một nhân sự'} vừa gửi yêu cầu tạm ứng ${formatCurrency(request.amount || 0)} đ.`,
-          createdAt: getEntityTimestamp(request) || new Date(`${notificationDateKey}T10:00:00`).getTime(),
+          createdAt: notificationTimestamp(request) || new Date(`${notificationDateKey}T10:00:00`).getTime(),
           tab: 'payroll',
           tone: 'orange'
         });
       });
 
-    (orderRequests || [])
+    selectLatestRecords((orderRequests || [])
       .filter((request) => !request.isArchived)
       .filter((request) => !persistentOrderRequestNotificationIds.has(request.id))
       .filter((request) => resolveNotificationDateKey(request) === notificationDateKey)
-      .filter((request) => canViewOrderRequestNotification(request))
-      .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-      .slice(0, 12)
+      .filter((request) => canViewOrderRequestNotification(request)),
+      12, notificationTimestamp)
       .forEach((request) => {
         const customer = customers.find((item) => item.id === request.customerId);
         const requestItems = (request.items || []).length > 0 ? request.items : (request.primaryItem ? [request.primaryItem] : []);
@@ -24885,7 +25227,7 @@ function MainAppView({
           message: isPendingCustomerPortalRequest
             ? `${customer?.name || request.customerName || 'Khách hàng'} vừa gửi đơn từ app khách hàng (${requestItems.length} mặt hàng). Hãy kiểm tra nếu cần.`
             : `${customer?.name || request.customerName || 'Khách hàng'} vừa lên ${requestItems.length} mặt hàng cần xử lý.`,
-          createdAt: getEntityTimestamp(request) || new Date(`${notificationDateKey}T11:00:00`).getTime(),
+          createdAt: notificationTimestamp(request) || new Date(`${notificationDateKey}T11:00:00`).getTime(),
           tab: 'order_requests',
           customerId: request.customerId || '',
           tone: isPendingCustomerPortalRequest ? 'orange' : 'sky'
@@ -24893,11 +25235,10 @@ function MainAppView({
       });
 
     if (canViewWarehouseDispatchNotifications) {
-      (warehouseDispatches || [])
+      selectLatestRecords((warehouseDispatches || [])
         .filter((dispatch) => !dispatch.isArchived)
-        .filter((dispatch) => resolveNotificationDateKey(dispatch) === notificationDateKey)
-        .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
-        .slice(0, 12)
+        .filter((dispatch) => resolveNotificationDateKey(dispatch) === notificationDateKey),
+        12, notificationTimestamp)
         .forEach((dispatch) => {
           const customer = customers.find((item) => item.id === dispatch.customerId);
           const product = products.find((item) => item.id === dispatch.productId);
@@ -24905,7 +25246,7 @@ function MainAppView({
             id: `dispatch-${dispatch.id}`,
             title: 'Phiếu xuất kho mới',
             message: `${customer?.name || dispatch.customerNameSnapshot || 'Khách hàng'} - ${product?.name || dispatch.productNameSnapshot || 'Hàng hóa'} ${formatNumber(parseLooseQuantityValue(dispatch.weightKg) || 0)} kg vừa được thêm.`,
-            createdAt: getEntityTimestamp(dispatch) || new Date(`${notificationDateKey}T12:00:00`).getTime(),
+            createdAt: notificationTimestamp(dispatch) || new Date(`${notificationDateKey}T12:00:00`).getTime(),
             tab: 'warehouse_dispatch',
             customerId: dispatch.customerId || '',
             tone: 'violet'
@@ -24954,8 +25295,8 @@ function MainAppView({
       });
     });
 
-    return items.sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0));
-  }, [advanceRequests, attendanceAlerts, canViewWarehouseDispatchNotifications, canViewWarehouseShortageNotifications, currentAttendanceAlert, currentUser?.employeeId, currentUser?.id, customerCareAlerts, customers, debtLimitAlerts, employee?.id, employees, isAccounting, isOwnerAccount, isSales, messages, notificationDateKey, notifications, orderRequests, orders, payments, pendingAdvanceNotifications, products, salesNotificationEmployeeIdSet, warehouseDispatchCoverage, warehouseDispatches]);
+    return items.sort((a, b) => (notificationTimestamp(b) || 0) - (notificationTimestamp(a) || 0));
+  }, [advanceRequests, attendanceAlerts, canViewWarehouseDispatchNotifications, canViewWarehouseShortageNotifications, currentAttendanceAlert, currentUser?.employeeId, currentUser?.id, customerCareAlerts, customers, debtLimitAlerts, employee?.id, employees, isAccounting, isOwnerAccount, isSales, messages, notificationDateKey, persistentNotificationCandidates, orderRequests, orders, payments, pendingAdvanceNotifications, products, salesNotificationEmployeeIdSet, warehouseDispatchCoverage, warehouseDispatches]);
   const visibleNotificationItems = useMemo(
     () => filterNotificationsForActiveTab(notificationItems, activeTab),
     [activeTab, notificationItems]
@@ -24969,7 +25310,8 @@ function MainAppView({
     notificationDialogItems,
     60,
     80,
-    `${activeTab}|${notificationFilter}|${showNotificationCenter ? 'open' : 'closed'}`
+    `${activeTab}|${notificationFilter}|${showNotificationCenter ? 'open' : 'closed'}`,
+    showNotificationCenter
   );
   const unreadNotificationCount = useMemo(
     () => visibleNotificationItems.filter((item) => (getEntityTimestamp(item) || 0) > lastNotificationSeenAt).length,
@@ -25929,7 +26271,11 @@ function MainAppView({
 
 
   const renderExecutiveDashboard = () => (
+    <React.Suspense fallback={<LedgerPreparationNotice />}>
+      <CompletedProjectionGate key={ledgerActorScope} projection={mainLedgerProjection} onRetry={retryMainCustomerLedgers}>
 <MemoizedExecutiveDashboardView isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
+      </CompletedProjectionGate>
+    </React.Suspense>
   );
 
   const renderClassicDashboard = () => (
@@ -26566,6 +26912,11 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
       {renderHeader()}
 
       <main ref={mainContentRef} data-hd-module={activeTab} className="hd-app-content hd-shell-content flex-1 overflow-y-auto pb-24 px-4 pt-4">
+        <ReadWorkerActivityNotice store={readWorkerActivityStore} />
+        {!mainLedgerReady && <p role="status" aria-busy={mainLedgerProjection.pending} className="px-4 py-2 text-xs text-slate-600">
+          {mainLedgerProjection.error ? <>Chưa đối chiếu được công nợ. <button type="button" className="font-bold underline" onClick={retryMainCustomerLedgers}>Thử lại</button></> : 'Đang đối chiếu công nợ; thông báo hạn mức chưa cập nhật.'}
+        </p>}
+
         {isVpsMode && <VpsModuleReadPanel moduleKey={VPS_UI_READ_MODULE_BY_TAB[activeTab]} model={vpsReadModels[VPS_UI_READ_MODULE_BY_TAB[activeTab]]} />}
         {keepExecutiveDashboardMounted && (
           <div style={{ display: (activeTab === 'home' || activeTab === 'executive_dashboard') && canAccess(activeTab) ? undefined : 'none' }}>
@@ -26587,7 +26938,15 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
         >
           <React.Profiler id={`Module:${activeTab}`} onRender={recordReactRender}>
             <React.Suspense fallback={<div data-hd-module-loading role="status" aria-busy="true" className="flex min-h-24 items-center justify-center gap-2 text-sm text-slate-600"><Loader2 size={18} className="animate-spin" />Đang mở...</div>}>
-              {renderContent()}
+              <ReconciledLedgerContext.Provider value={reconciledLedgerMap}>
+                {['orders', 'customers', 'debt'].includes(activeTab) ? (
+                  <React.Suspense fallback={<LedgerPreparationNotice />}>
+                    <CompletedProjectionGate key={ledgerActorScope} projection={mainLedgerProjection} onRetry={retryMainCustomerLedgers}>
+                      <ReconciledLedgerContext.Provider value={reconciledLedgerMap}>{renderContent()}</ReconciledLedgerContext.Provider>
+                    </CompletedProjectionGate>
+                  </React.Suspense>
+                ) : renderContent()}
+              </ReconciledLedgerContext.Provider>
             </React.Suspense>
           </React.Profiler>
         </AppSectionErrorBoundary>
@@ -37102,7 +37461,7 @@ const getPricingDocumentLineItems = (document = {}) => {
   return Object.values(singleLine).some(value => value !== undefined && value !== '') ? [singleLine] : [];
 };
 
-const buildPricingSalesGroupsByActivity = ({ orders = [], orderRequests = [], products = [] } = {}) => {
+const buildPricingSalesGroupsByActivity = ({ orders = [], orderRequests = [], products = [], cooperative = false } = {}) => {
   const productById = new Map((Array.isArray(products) ? products : []).map(product => [product?.id, product]));
   const groups = {};
   const registerLine = (line = {}, parent = {}) => {
@@ -37122,14 +37481,21 @@ const buildPricingSalesGroupsByActivity = ({ orders = [], orderRequests = [], pr
       };
     }
   };
-  const registerDocument = (document = {}) => {
+  function* registerDocument(document = {}) {
     const statusText = normalizeLookupText(document?.status || document?.state || '');
     if (document?.isArchived || statusText.includes('cancel') || statusText.includes('huy')) return;
-    getPricingDocumentLineItems(document).forEach(line => registerLine(line, document));
-  };
-  (Array.isArray(orders) ? orders : []).forEach(registerDocument);
-  (Array.isArray(orderRequests) ? orderRequests : []).forEach(registerDocument);
-  return groups;
+    for (const line of getPricingDocumentLineItems(document)) { registerLine(line, document); yield; }
+  }
+  function* build() {
+    for (const document of Array.isArray(orders) ? orders : []) { yield* registerDocument(document); yield; }
+    for (const document of Array.isArray(orderRequests) ? orderRequests : []) { yield* registerDocument(document); yield; }
+    return groups;
+  }
+  const iterator = build();
+  if (cooperative) return iterator;
+  let result;
+  do { result = iterator.next(); } while (!result.done);
+  return result.value;
 };
 
 const buildPricingGroupRowsFromInputs = (latestInputsByGroup = {}, salesGroupsByGroup = {}, products = []) => {
@@ -37403,12 +37769,16 @@ const buildPricingProductFormulaSummaries = ({
   latestInputsByGroup = {},
   marginByGroup = {},
   fallbackMargin = 20,
+  cooperative = false,
 } = {}) => {
+  function* calculate() {
   const productById = new Map((Array.isArray(products) ? products : [])
     .map(product => [getPricingProductId(product), product])
     .filter(([id]) => id));
 
-  return normalizePricingProductFormulas(productFormulas).map((formula) => {
+  const summaries = [];
+  for (const formula of normalizePricingProductFormulas(productFormulas)) {
+    yield;
     const rootProduct = productById.get(formula.rootProductId) || {};
     const rootProductName = formula.rootProductName || getPricingProductName(rootProduct, 'Sản phẩm gốc');
     const rootGroupKey = formula.rootGroupKey || getPricingProductGroupKey(rootProduct) || inferPricingGroupKeyFromText(rootProductName);
@@ -37442,18 +37812,24 @@ const buildPricingProductFormulaSummaries = ({
     });
 
     const usableWeightTotal = children.reduce((sum, child) => sum + (child.usableRatio * Math.max(child.valueFactor, 0.01)), 0);
-    (Array.isArray(orders) ? orders : []).forEach(order => {
+    for (const order of (Array.isArray(orders) ? orders : [])) {
+      yield;
       const statusText = normalizeLookupText(order?.status || order?.state || '');
-      if (order?.isArchived || statusText.includes('cancel') || statusText.includes('huy')) return;
-      getPricingDocumentLineItems(order).forEach(line => {
-        const childIndex = children.findIndex(child => matchesPricingFormulaChild(line, child, productById));
-        if (childIndex < 0) return;
+      if (order?.isArchived || statusText.includes('cancel') || statusText.includes('huy')) continue;
+      for (const line of getPricingDocumentLineItems(order)) {
+        yield;
+        let childIndex = -1;
+        for (let index = 0; index < children.length; index++) {
+          yield;
+          if (matchesPricingFormulaChild(line, children[index], productById)) { childIndex = index; break; }
+        }
+        if (childIndex < 0) continue;
         const quantity = getPricingOrderLineQuantity(line);
         const revenue = getPricingOrderLineRevenue(line);
         children[childIndex].quantity += quantity;
         children[childIndex].revenue += revenue;
-      });
-    });
+      }
+    }
 
     const childrenWithCost = children.map(child => {
       const allocatedCostPerUnit = inputCostPerKg > 0 && usableWeightTotal > 0
@@ -37470,7 +37846,7 @@ const buildPricingProductFormulaSummaries = ({
     const estimatedProfit = totalRevenue - estimatedCost;
     const recoveredPercent = childrenWithCost.reduce((sum, child) => sum + child.usableRatio * 100, 0);
 
-    return {
+    summaries.push({
       ...formula,
       rootProductName,
       rootGroupKey,
@@ -37485,9 +37861,15 @@ const buildPricingProductFormulaSummaries = ({
       estimatedCost,
       estimatedProfit,
       estimatedMargin: totalRevenue > 0 ? (estimatedProfit / totalRevenue) * 100 : 0,
-    };
-  });
+    });
+  }
+  return summaries;
+  }
+  const iterator = calculate();
+  if (cooperative) return iterator;
+  for (;;) { const next = iterator.next(); if (next.done) return next.value; }
 };
+
 
 const pricingCutPartsToText = (parts = []) =>
   (Array.isArray(parts) ? parts : [])
@@ -38101,7 +38483,11 @@ function PricingEngineView({
   );
 }
 
+const EMPTY_PRICING_DRAFT_ROWS = Object.freeze([]);
+const EMPTY_PRICING_SALES_GROUPS = Object.freeze({});
+const pricingSalesActivityCache = createProjectionCache();
 function SimplePricingEngineView({
+  employee,
   currentCompany,
   products = [],
   orders = [],
@@ -38172,10 +38558,20 @@ function SimplePricingEngineView({
     () => buildLatestPricingInputsByGroup(warehouseImports),
     [warehouseImports],
   );
-  const salesPricingGroupsByGroup = useMemo(
-    () => buildPricingSalesGroupsByActivity({ orders, orderRequests, products }),
-    [orders, orderRequests, products],
-  );
+  const [pricingActivityAttempt, setPricingActivityAttempt] = useState(0);
+  const pricingActivityActor = JSON.stringify([currentCompany?.id || '', employee?.id || '']);
+  const pricingActivityScope = JSON.stringify([pricingActivityActor, getTodayString()]);
+  const pricingActivityEntry = useMemo(() => pricingSalesActivityCache(
+    [orders, orderRequests, products], pricingActivityScope
+  ), [orders, orderRequests, products, pricingActivityScope]);
+  const preparePricingSalesActivity = useCallback(function* () {
+    void pricingActivityAttempt;
+    void pricingActivityScope;
+    return yield* buildPricingSalesGroupsByActivity({orders, orderRequests, products, cooperative: true});
+  }, [orders, orderRequests, products, pricingActivityScope, pricingActivityAttempt]);
+  const pricingActivityProjection = useCooperativeProjection(preparePricingSalesActivity, pricingActivityEntry);
+  const pricingActivityReady = !pricingActivityProjection.pending && !pricingActivityProjection.error;
+  const salesPricingGroupsByGroup = pricingActivityReady ? pricingActivityProjection.value : EMPTY_PRICING_SALES_GROUPS;
   const pricingGroupRows = useMemo(
     () => buildPricingGroupRowsFromInputs(latestWarehouseInputsByGroup, salesPricingGroupsByGroup, products),
     [latestWarehouseInputsByGroup, salesPricingGroupsByGroup, products],
@@ -38218,14 +38614,14 @@ function SimplePricingEngineView({
   useEffect(syncPricingDraftFromSavedRules, [savedRules?.id, savedRules?.updatedAt]);
 
   useEffect(() => {
-    if (!pricingGroupRows.length) return;
+    if (!pricingActivityReady || !pricingGroupRows.length) return;
     if (!pricingGroupRows.some(group => group.key === activeLossGroupKey)) {
       setActiveLossGroupKey(pricingGroupRows[0].key);
     }
-  }, [pricingGroupRows, activeLossGroupKey]);
+  }, [pricingGroupRows, activeLossGroupKey, pricingActivityReady]);
 
-  const lossStageDrafts = lossStageGroupsDraft[activeLossGroupKey] || [];
-  const cutPartDrafts = cutPartGroupsDraft[activeLossGroupKey] || [];
+  const lossStageDrafts = lossStageGroupsDraft[activeLossGroupKey] || EMPTY_PRICING_DRAFT_ROWS;
+  const cutPartDrafts = cutPartGroupsDraft[activeLossGroupKey] || EMPTY_PRICING_DRAFT_ROWS;
   const effectiveLossStageDrafts = useMemo(() => {
     const latestInput = activeGroupLatestInput || {
       totalKg: autoLossInputStats.totalKg,
@@ -38439,23 +38835,20 @@ function SimplePricingEngineView({
     () => (Array.isArray(rulesDraft.productFormulas) ? rulesDraft.productFormulas : []),
     [rulesDraft.productFormulas],
   );
-  const productFormulaSummaries = useMemo(() => buildPricingProductFormulaSummaries({
-    productFormulas: parsedRules.productFormulas,
-    products: activePricingProducts,
-    orders,
-    latestInputsByGroup: effectiveLatestInputsByGroup,
-    marginByGroup: parsedRules.marginByGroup,
-    marginByProduct: parsedRules.marginByProduct,
-    fallbackMargin: parsedRules.targetMargin,
-  }), [
-    parsedRules.productFormulas,
-    activePricingProducts,
-    orders,
-    effectiveLatestInputsByGroup,
-    parsedRules.marginByGroup,
-    parsedRules.targetMargin,
-  ]);
-
+  const formulaSectionOpen = Boolean(openPricingSections['product-formulas']);
+  const [formulaProjectionAttempt, setFormulaProjectionAttempt] = useState(0);
+  const preparePricingFormulaSummaries = useCallback(function* () {
+    void formulaProjectionAttempt;
+    if (!formulaSectionOpen) return [];
+    return yield* buildPricingProductFormulaSummaries({productFormulas: parsedRules.productFormulas,
+      products: activePricingProducts, orders, latestInputsByGroup: effectiveLatestInputsByGroup,
+      marginByGroup: parsedRules.marginByGroup, fallbackMargin: parsedRules.targetMargin, cooperative: true});
+  }, [formulaSectionOpen, formulaProjectionAttempt, parsedRules.productFormulas, activePricingProducts,
+    orders, effectiveLatestInputsByGroup, parsedRules.marginByGroup, parsedRules.targetMargin]);
+  const pricingFormulaProjection = useCooperativeProjection(preparePricingFormulaSummaries);
+  const pricingFormulaReady = !pricingFormulaProjection.pending && !pricingFormulaProjection.error;
+  const productFormulaSummaries = pricingFormulaReady ? pricingFormulaProjection.value : [];
+  const formulaPendingLabel = pricingFormulaProjection.error ? 'Chưa tính được' : 'Đang tính…';
   const updateTodayInputPriceOverride = (groupKey, value) => {
     if (!groupKey) return;
     const textValue = `${value ?? ''}`;
@@ -38925,7 +39318,7 @@ function SimplePricingEngineView({
   };
 
   const handleSavePricingRules = async () => {
-    if (!canEditRules || !onSavePricingRules || pricingSaveInFlightRef.current) return;
+    if (!pricingActivityReady || !canEditRules || !onSavePricingRules || pricingSaveInFlightRef.current) return;
     pricingSaveInFlightRef.current = true;
     const submittedRevision = pricingDraftRevisionRef.current.capture();
     setIsSavingPricing(true);
@@ -38972,7 +39365,7 @@ function SimplePricingEngineView({
   };
 
   const handleShareTodayPriceTable = async () => {
-    if (!hasShareableTodayPrices || isSharingTodayPriceTable) return;
+    if (!pricingActivityReady || !hasShareableTodayPrices || isSharingTodayPriceTable) return;
     setIsSharingTodayPriceTable(true);
     try {
       const safeCompanyName = currentCompany?.name || 'HD Manager';
@@ -39140,35 +39533,7 @@ function SimplePricingEngineView({
     }));
   };
 
-  const PricingSectionShell = ({ sectionKey, title, icon, children }) => {
-    const isOpen = Boolean(openPricingSections[sectionKey]);
-    return (
-      <div className="overflow-hidden rounded-[1.8rem] border border-gray-100 bg-white shadow-sm">
-        <button
-          type="button"
-          onClick={() => togglePricingSection(sectionKey)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
-        >
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-emerald-50">
-              {icon}
-            </div>
-            <h3 className="min-w-0 text-lg font-black text-gray-900">{title}</h3>
-          </div>
-          {isOpen ? (
-            <ChevronUp className="shrink-0 text-gray-400" size={22} />
-          ) : (
-            <ChevronDown className="shrink-0 text-gray-400" size={22} />
-          )}
-        </button>
-        {isOpen && (
-          <div className="border-t border-gray-100 px-4 pb-4 pt-3">
-            {children}
-          </div>
-        )}
-      </div>
-    );
-  };
+
 
   const todayPriceMatrixCard = (
     <div className="rounded-[1.8rem] border border-emerald-100 bg-white p-4 shadow-sm">
@@ -39330,7 +39695,10 @@ function SimplePricingEngineView({
   );
 
   return (
-    <div className="space-y-4 pb-28">
+    <CompletedProjectionGate key={pricingActivityActor} projection={pricingActivityProjection}
+      pendingContent={<div data-hd-pricing-loading role="status" aria-busy="true" className="p-4 text-sm text-slate-600">Đang chuẩn bị bảng giá…</div>}
+      errorContent="Chưa chuẩn bị được bảng giá. Vui lòng thử lại."
+      onRetry={() => setPricingActivityAttempt(value => value + 1)}>{() => <div className="premium-pricing-module space-y-4 pb-28">
       <div className="relative overflow-hidden rounded-[2rem] bg-gradient-to-br from-orange-500 via-amber-500 to-emerald-500 p-5 text-white shadow-xl">
         <div className="absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/20 blur-2xl" />
         <div className="relative text-center">
@@ -39350,7 +39718,7 @@ function SimplePricingEngineView({
         sectionKey="input-cost"
         title="1. Giá đầu vào từ nhập kho"
         icon={<Package className="text-orange-500" size={20} />}
-      >
+       isOpen={Boolean(openPricingSections["input-cost"])} onToggle={() => togglePricingSection("input-cost")}>{() => <>
         <div className="space-y-2">
           {latestWarehouseInputRowsByGroup.length ? (
             latestWarehouseInputRowsByGroup.slice(0, 8).map(row => (
@@ -39378,7 +39746,7 @@ function SimplePricingEngineView({
             </div>
           )}
         </div>
-      </PricingSectionShell>
+      </>}</PricingSectionShell>
       )}
 
       {canViewLossPricingSetup && (
@@ -39387,7 +39755,7 @@ function SimplePricingEngineView({
           sectionKey="margin-by-product"
           title="2. Biên độ lợi nhuận theo sản phẩm"
           icon={<Percent className="text-emerald-500" size={20} />}
-        >
+         isOpen={Boolean(openPricingSections["margin-by-product"])} onToggle={() => togglePricingSection("margin-by-product")}>{() => <>
           <p className="mb-3 text-xs font-semibold text-gray-500">
             Mở từng nhóm để cài biên độ cho từng sản phẩm. Chỉ sản phẩm có biên độ lớn hơn 0 mới xuất hiện trong bảng giá hôm nay.
           </p>
@@ -39446,13 +39814,13 @@ function SimplePricingEngineView({
           <button type="button" disabled={!canEditRules || isSavingPricing} onClick={handleSavePricingRules} className="mt-4 w-full rounded-2xl bg-gray-900 py-3 font-black text-white disabled:bg-gray-200">
             <Save className="mr-2 inline" size={18} /> Lưu biên lợi nhuận
           </button>
-        </PricingSectionShell>
+        </>}</PricingSectionShell>
 
         <PricingSectionShell
           sectionKey="product-formulas"
           title="3. Công thức sản phẩm gốc/phụ"
           icon={<ArrowRightLeft className="text-sky-500" size={20} />}
-        >
+         isOpen={Boolean(openPricingSections["product-formulas"])} onToggle={() => togglePricingSection("product-formulas")}>{() => <>
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-sm font-black text-gray-900">Gom doanh thu sản phẩm phụ về sản phẩm gốc</p>
@@ -39476,6 +39844,9 @@ function SimplePricingEngineView({
             </div>
           )}
 
+          {!pricingFormulaReady && <div role={pricingFormulaProjection.error ? 'alert' : 'status'} aria-busy={pricingFormulaProjection.pending} className="mt-3 text-sm text-slate-600">
+            {formulaPendingLabel} {pricingFormulaProjection.error && <button type="button" className="font-bold underline" onClick={() => setFormulaProjectionAttempt(value => value + 1)}>Thử lại</button>}
+          </div>}
           <div className="mt-3 space-y-3">
             {productFormulaDrafts.map((formula, formulaIndex) => {
               const formulaId = formula.id || `formula_${formulaIndex + 1}`;
@@ -39517,17 +39888,17 @@ function SimplePricingEngineView({
                   <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                     <div className="rounded-2xl bg-white px-2 py-2 shadow-sm">
                       <p className="text-[10px] font-black uppercase text-gray-400">Doanh thu phụ</p>
-                      <p className="mt-1 text-sm font-black text-gray-900">{formatPricingVnd(summary?.totalRevenue || 0)}</p>
+                      <p className="mt-1 text-sm font-black text-gray-900">{pricingFormulaReady ? formatPricingVnd(summary?.totalRevenue || 0) : formulaPendingLabel}</p>
                     </div>
                     <div className="rounded-2xl bg-white px-2 py-2 shadow-sm">
                       <p className="text-[10px] font-black uppercase text-gray-400">Lãi ước tính</p>
                       <p className={`mt-1 text-sm font-black ${(summary?.estimatedProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
-                        {formatPricingVnd(summary?.estimatedProfit || 0)}
+                        {pricingFormulaReady ? formatPricingVnd(summary?.estimatedProfit || 0) : formulaPendingLabel}
                       </p>
                     </div>
                     <div className="rounded-2xl bg-white px-2 py-2 shadow-sm">
                       <p className="text-[10px] font-black uppercase text-gray-400">Hao hụt</p>
-                      <p className="mt-1 text-sm font-black text-amber-700">{formatPricingNumber(summary?.lossPercent || 0)}%</p>
+                      <p className="mt-1 text-sm font-black text-amber-700">{pricingFormulaReady ? formatPricingNumber(summary?.lossPercent || 0) + '%' : formulaPendingLabel}</p>
                     </div>
                   </div>
 
@@ -39601,9 +39972,9 @@ function SimplePricingEngineView({
                               </button>
                             </div>
                             <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-gray-500">
-                              <span className="rounded-full bg-slate-50 px-2 py-1">Bán: {formatPricingVnd(childSummary?.revenue || 0)}</span>
-                              <span className="rounded-full bg-slate-50 px-2 py-1">SL: {formatPricingNumber(childSummary?.quantity || 0)}</span>
-                              <span className="rounded-full bg-slate-50 px-2 py-1">Vốn ước: {formatPricingVnd(childSummary?.estimatedCost || 0)}</span>
+                              <span className="rounded-full bg-slate-50 px-2 py-1">Bán: {pricingFormulaReady ? formatPricingVnd(childSummary?.revenue || 0) : formulaPendingLabel}</span>
+                              <span className="rounded-full bg-slate-50 px-2 py-1">SL: {pricingFormulaReady ? formatPricingNumber(childSummary?.quantity || 0) : formulaPendingLabel}</span>
+                              <span className="rounded-full bg-slate-50 px-2 py-1">Vốn ước: {pricingFormulaReady ? formatPricingVnd(childSummary?.estimatedCost || 0) : formulaPendingLabel}</span>
                             </div>
                           </div>
                         );
@@ -39636,13 +40007,13 @@ function SimplePricingEngineView({
           <button type="button" disabled={!canManageProductFormulas || isSavingPricing} onClick={handleSavePricingRules} className="mt-4 w-full rounded-2xl bg-gray-900 py-3 font-black text-white disabled:bg-gray-200">
             <Save className="mr-2 inline" size={18} /> Lưu công thức sản phẩm
           </button>
-        </PricingSectionShell>
+        </>}</PricingSectionShell>
 
         <PricingSectionShell
           sectionKey="loss-standards"
           title="4. Định mức hao hụt"
           icon={<Target className="text-amber-500" size={20} />}
-        >
+         isOpen={Boolean(openPricingSections["loss-standards"])} onToggle={() => togglePricingSection("loss-standards")}>{() => <>
           <div className="flex items-start justify-between gap-3">
             <div />
             <div className="flex shrink-0 gap-2">
@@ -39913,46 +40284,15 @@ function SimplePricingEngineView({
             <button type="button" disabled={!canEditRules || isSavingPricing} onClick={handleSavePricingRules} className="mt-4 w-full rounded-2xl bg-gray-900 py-3 font-black text-white disabled:bg-gray-200">
               <Save className="mr-2 inline" size={18} /> Lưu định mức hao hụt
             </button>
-        </PricingSectionShell>
+        </>}</PricingSectionShell>
       </>
       )}
-    </div>
+    </div>}</CompletedProjectionGate>
   );
 }
 
-function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, customers = [], products = [], orders = [], payments = [], isAccounting = false, isSales = false, isOwnerAccount = false, onEditCustomer }) {
-  const [selectedProductIds, setSelectedProductIds] = useState([]);
-  const [customerSearch, setCustomerSearch] = useState('');
-  const [selectedQuoteCustomerId, setSelectedQuoteCustomerId] = useState('');
-  const [quoteStatus, setQuoteStatus] = useState('');
-  const [isSharing, setIsSharing] = useState(false);
-  const [showBatchPricePanel, setShowBatchPricePanel] = useState(true);
-  const [batchPriceProductId, setBatchPriceProductId] = useState('');
-  const [batchPriceSize, setBatchPriceSize] = useState('');
-  const [batchPriceValue, setBatchPriceValue] = useState('');
-  const [batchCustomerSearch, setBatchCustomerSearch] = useState('');
-  const [selectedBatchCustomerIds, setSelectedBatchCustomerIds] = useState([]);
-  const [isApplyingBatchPrice, setIsApplyingBatchPrice] = useState(false);
-  const applyingBatchPriceRef = useRef(false);
+function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, customers = [], products = [], orders = [], payments = [], isAccounting = false, isOwnerAccount = false, onEditCustomer }) {
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
-  const activeProductIdSet = useMemo(() => new Set(activeProducts.map(product => product.id).filter(Boolean)), [activeProducts]);
-  const activeProductIdKey = activeProducts.map(product => product.id).join('|');
-
-  useEffect(() => {
-    setSelectedProductIds(prev => {
-      const validIds = activeProducts.map(product => product.id);
-      if (prev.length > 0) return prev.filter(id => validIds.includes(id));
-      return validIds;
-    });
-  }, [activeProductIdKey]);
-
-  useEffect(() => {
-    setBatchPriceProductId(prev => {
-      if (prev && activeProducts.some(product => product.id === prev)) return prev;
-      return activeProducts[0]?.id || '';
-    });
-  }, [activeProductIdKey, activeProducts]);
-
   const salesVisibleEmployeeIdSet = useMemo(() => {
     const ids = new Set();
     if (employee?.id) {
@@ -39968,30 +40308,27 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
       return Boolean(employee?.id) && salesVisibleEmployeeIdSet.has(customer.empId);
     }), [customers, employee?.id, isAccounting, isOwnerAccount, salesVisibleEmployeeIdSet]);
 
-  useEffect(() => {
-    setSelectedQuoteCustomerId(prev => {
-      if (prev && managedCustomers.some(customer => customer.id === prev)) return prev;
-      return managedCustomers[0]?.id || '';
+const [quoteStatus, setQuoteStatus] = useState('');
+  const [isSharing, setIsSharing] = useState(false);
+  const [showBatchPricePanel, setShowBatchPricePanel] = useState(true);
+  const [batchPriceProductId, setBatchPriceProductId] = useState(() => activeProducts[0]?.id || '');
+  const [batchPriceSize, setBatchPriceSize] = useState('');
+  const [batchPriceValue, setBatchPriceValue] = useState('');
+  const [batchCustomerSearch, setBatchCustomerSearch] = useState('');
+  const [selectedBatchCustomerIds, setSelectedBatchCustomerIds] = useState([]);
+  const [isApplyingBatchPrice, setIsApplyingBatchPrice] = useState(false);
+  const applyingBatchPriceRef = useRef(false);
+  const activeProductIdSet = useMemo(() => new Set(activeProducts.map(product => product.id).filter(Boolean)), [activeProducts]);
+  const activeProductIdKey = activeProducts.map(product => product.id).join('|');
+
+useEffect(() => {
+    setBatchPriceProductId(prev => {
+      if (prev && activeProducts.some(product => product.id === prev)) return prev;
+      return activeProducts[0]?.id || '';
     });
-  }, [managedCustomers]);
+  }, [activeProductIdKey, activeProducts]);
 
-  const selectedProducts = useMemo(() => activeProducts
-    .filter(product => selectedProductIds.includes(product.id))
-    .sort((a, b) => `${a.category || ''}${a.name || ''}`.localeCompare(`${b.category || ''}${b.name || ''}`, 'vi')), [activeProducts, selectedProductIds]);
-
-  const filteredCustomers = useMemo(() => {
-    const keyword = normalizeLookupText(customerSearch);
-    if (!keyword) return managedCustomers;
-    return managedCustomers.filter(customer => [
-      customer.name,
-      customer.phone,
-      customer.address,
-      customer.customerGroup,
-      customer.group
-    ].some(value => normalizeLookupText(value || '').includes(keyword)));
-  }, [customerSearch, managedCustomers]);
-
-  const selectedBatchCustomerSet = useMemo(() => new Set(selectedBatchCustomerIds), [selectedBatchCustomerIds]);
+const selectedBatchCustomerSet = useMemo(() => new Set(selectedBatchCustomerIds), [selectedBatchCustomerIds]);
   const allFixedBatchProductCustomers = useMemo(() => {
     if (!batchPriceProductId) return [];
     return managedCustomers
@@ -40018,75 +40355,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
     [fixedBatchProductCustomerIdSet, selectedBatchCustomerIds]
   );
 
-  const selectedQuoteCustomer = useMemo(
-    () => managedCustomers.find(customer => customer.id === selectedQuoteCustomerId) || null,
-    [managedCustomers, selectedQuoteCustomerId]
-  );
-  useEffect(() => {
-    if (!selectedQuoteCustomer) return;
-    const customerProductIds = normalizeCustomerProductIds(selectedQuoteCustomer, activeProducts);
-    setSelectedProductIds(customerProductIds);
-  }, [activeProductIdKey, selectedQuoteCustomer?.id]);
-  const managedCustomerIdSet = useMemo(
-    () => new Set(managedCustomers.map(customer => customer.id)),
-    [managedCustomers]
-  );
-  const quickMainProducts = useMemo(() => {
-    const usageByProductId = new Map();
-    (orders || [])
-      .filter(order => !order?.isArchived)
-      .filter(order => {
-        if (selectedQuoteCustomerId) return order.customerId === selectedQuoteCustomerId;
-        if (isAccounting) return true;
-        if (isSales) return managedCustomerIdSet.has(order.customerId);
-        return managedCustomerIdSet.has(order.customerId);
-      })
-      .forEach(order => {
-        const orderItems = (order.items || []).length > 0 ? order.items : (order.primaryItem ? [order.primaryItem] : []);
-        orderItems.forEach(item => {
-          const productId = item?.productId || '';
-          if (!productId) return;
-          const quantity = parseLooseQuantityValue(item.quantity) || 1;
-          const amount = getTransactionBillingPresentation(item).amount;
-          const current = usageByProductId.get(productId) || { quantity: 0, count: 0, amount: 0, lastTime: 0 };
-          usageByProductId.set(productId, {
-            quantity: current.quantity + quantity,
-            count: current.count + 1,
-            amount: current.amount + amount,
-            lastTime: Math.max(current.lastTime, getEntityTimestamp(order) || 0)
-          });
-        });
-      });
-
-    return activeProducts
-      .map(product => {
-        const usage = usageByProductId.get(product.id) || { quantity: 0, count: 0, amount: 0, lastTime: 0 };
-        return {
-          product,
-          usage,
-          hasCustomConfig: selectedQuoteCustomer ? hasCustomerProductConfig(selectedQuoteCustomer, product.id) : false
-        };
-      })
-      .sort((a, b) => {
-        if (a.hasCustomConfig !== b.hasCustomConfig) return a.hasCustomConfig ? -1 : 1;
-        if ((b.usage.quantity || 0) !== (a.usage.quantity || 0)) return (b.usage.quantity || 0) - (a.usage.quantity || 0);
-        if ((b.usage.count || 0) !== (a.usage.count || 0)) return (b.usage.count || 0) - (a.usage.count || 0);
-        if ((b.usage.lastTime || 0) !== (a.usage.lastTime || 0)) return (b.usage.lastTime || 0) - (a.usage.lastTime || 0);
-        return (a.product.name || '').localeCompare(b.product.name || '', 'vi');
-      })
-      .slice(0, Math.min(6, activeProducts.length))
-      .map(item => item.product);
-  }, [activeProducts, isAccounting, isSales, managedCustomerIdSet, orders, selectedQuoteCustomer, selectedQuoteCustomerId]);
-  const quickMainProductIds = useMemo(() => quickMainProducts.map(product => product.id), [quickMainProducts]);
-
-  const toggleProduct = (productId) => {
-    setSelectedProductIds(prev => prev.includes(productId)
-      ? prev.filter(id => id !== productId)
-      : [...prev, productId]
-    );
-  };
-
-  const toggleBatchCustomer = (customerId) => {
+const toggleBatchCustomer = (customerId) => {
     setSelectedBatchCustomerIds(prev => prev.includes(customerId)
       ? prev.filter(id => id !== customerId)
       : [...prev, customerId]
@@ -40167,7 +40436,6 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
           customerProductIds: currentProductIds
         });
       }));
-      setSelectedProductIds(prev => prev.includes(product.id) ? prev : [...prev, product.id]);
       setQuoteStatus(receipts.some(receipt => receipt?.queued)
         ? `Đã lưu tạm giá ${product.name} cho ${targetCustomers.length} khách. Đang đồng bộ với máy chủ.`
         : `Đã áp giá ${product.name} cho ${targetCustomers.length} khách. Khi lên đơn hoặc gửi báo giá, app sẽ tự lấy giá riêng này.`);
@@ -40246,175 +40514,10 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
     }
   };
 
-  const buildQuoteMessage = (targetCustomer = null, quoteProducts = selectedProducts) => buildCustomerQuoteShareText({
-    customer: targetCustomer,
-    quoteProducts,
-    currentCompany,
-    employees,
-    employee,
-    orders,
-    payments
-  });
-
-  const quotePreview = selectedProducts.length > 0
-    ? buildQuoteMessage(selectedQuoteCustomer)
-    : 'Bạn hãy chọn ít nhất 1 sản phẩm để tạo nội dung báo giá.';
-
-  const handleSelectQuickMainProducts = () => {
-    if (quickMainProductIds.length === 0) {
-      setQuoteStatus('Chưa có sản phẩm chính để chọn nhanh.');
-      return;
-    }
-    setSelectedProductIds(quickMainProductIds);
-    setQuoteStatus(`Đã chọn nhanh ${quickMainProductIds.length} sản phẩm chính để báo giá.`);
-  };
-
-  const handleShareQuickMainProducts = async () => {
-    if (quickMainProducts.length === 0) {
-      setQuoteStatus('Chưa có sản phẩm chính để gửi nhanh.');
-      return;
-    }
-    if (!selectedQuoteCustomer) {
-      setQuoteStatus('Bạn hãy chọn khách hàng cần gửi báo giá trước.');
-      return;
-    }
-
-    setSelectedProductIds(quickMainProductIds);
-    setIsSharing(true);
-    setQuoteStatus('Đang mở bảng chia sẻ báo giá nhanh...');
-    try {
-      await shareTextContent({
-        title: `Báo giá nhanh - ${selectedQuoteCustomer.name || 'Khách hàng'}`,
-        text: buildQuoteMessage(selectedQuoteCustomer, quickMainProducts),
-        dialogTitle: `Chọn Zalo để gửi nhanh cho ${selectedQuoteCustomer.name || 'khách hàng'}`
-      });
-      setQuoteStatus(`Đã mở bảng chia sẻ báo giá nhanh cho ${selectedQuoteCustomer.name || 'khách hàng'}.`);
-    } catch (error) {
-      setQuoteStatus('Chưa mở được bảng chia sẻ. Bạn có thể sao chép nội dung báo giá rồi gửi thủ công trên Zalo.');
-    } finally {
-      setIsSharing(false);
-    }
-  };
-
-  const handleShareAll = async () => {
-    if (selectedProducts.length === 0) {
-      setQuoteStatus('Bạn cần chọn ít nhất 1 sản phẩm để gửi báo giá.');
-      return;
-    }
-    if (managedCustomers.length === 0) {
-      setQuoteStatus('Chưa có khách hàng nào trong phạm vi bạn quản lý.');
-      return;
-    }
-    if (!selectedQuoteCustomer) {
-      setQuoteStatus('Bạn hãy chọn khách hàng cần gửi báo giá trước.');
-      return;
-    }
-
-    setIsSharing(true);
-    setQuoteStatus('Đang mở bảng chia sẻ...');
-    try {
-      await shareTextContent({
-        title: `Báo giá - ${selectedQuoteCustomer.name || 'Khách hàng'}`,
-        text: quotePreview,
-        dialogTitle: `Chọn Zalo để gửi cho ${selectedQuoteCustomer.name || 'khách hàng'}`
-      });
-      setQuoteStatus(`Đã mở bảng chia sẻ cho ${selectedQuoteCustomer.name || 'khách hàng'}. Nếu cần gửi tiếp, chọn khách khác rồi bấm gửi.`);
-    } catch (error) {
-      setQuoteStatus('Chưa mở được bảng chia sẻ. Bạn có thể sao chép nội dung rồi gửi thủ công trên Zalo.');
-    } finally {
-      setIsSharing(false);
-    }
-  };
-
-  const handleCopyQuote = async () => {
-    try {
-      await navigator.clipboard.writeText(quotePreview);
-      setQuoteStatus('Đã sao chép nội dung báo giá.');
-    } catch (error) {
-      setQuoteStatus('Thiết bị chưa cho phép sao chép tự động. Bạn có thể bôi đen nội dung mẫu để sao chép.');
-    }
-  };
-
-  return (
+return (
     <div className="space-y-4 animate-in fade-in pb-20">
-      <div className="hidden rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 p-5 text-white shadow-lg shadow-emerald-500/20">
-        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-100">Báo giá hàng loạt</p>
-        <h2 className="mt-2 text-xl font-black">Cập nhật 1 giá cho nhiều khách</h2>
-        <p className="mt-2 text-sm leading-6 text-emerald-50">
-          Chọn 1 sản phẩm, nhập giá mới, tick khách hàng rồi áp dụng. App chỉ cập nhật những khách đã gắn sản phẩm đó trong sản phẩm cố định.
-        </p>
-      </div>
 
-      <div className="hidden grid grid-cols-3 gap-3">
-        <div className="rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase text-gray-400">Khách quản lý</p>
-          <p className="mt-1 text-lg font-black text-slate-900">{managedCustomers.length}</p>
-        </div>
-        <div className="rounded-2xl border border-sky-100 bg-white p-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase text-gray-400">Phù hợp</p>
-          <p className="mt-1 text-lg font-black text-slate-900">{allFixedBatchProductCustomers.length}</p>
-        </div>
-        <div className="rounded-2xl border border-amber-100 bg-white p-3 shadow-sm">
-          <p className="text-[10px] font-bold uppercase text-gray-400">Đã chọn</p>
-          <p className="mt-1 text-lg font-black text-emerald-600">{selectedFixedBatchCustomerCount}</p>
-        </div>
-      </div>
-
-      <div className="hidden rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm space-y-3">
-        <div className="hidden items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-black text-slate-900">Báo giá nhanh sản phẩm chính</p>
-            <p className="text-xs text-slate-500 mt-1 leading-5">
-              App ưu tiên sản phẩm khách hay lấy, giá riêng theo khách, sau đó đến các mặt hàng đang bán.
-            </p>
-          </div>
-          <Sparkles size={20} className="text-emerald-500 shrink-0" />
-        </div>
-
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {quickMainProducts.map(product => {
-            const isSelected = selectedProductIds.includes(product.id);
-            const price = getCustomerProductPrice(selectedQuoteCustomer, product);
-            const size = getCustomerProductSize(selectedQuoteCustomer, product);
-            const attribute = getCustomerProductAttribute(selectedQuoteCustomer, product);
-            return (
-              <button
-                key={product.id}
-                type="button"
-                onClick={() => toggleProduct(product.id)}
-                className={`shrink-0 min-w-[145px] rounded-2xl border px-3 py-3 text-left transition-colors ${isSelected ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-100 bg-white text-slate-600 hover:bg-slate-50'}`}
-              >
-                <p className="text-sm font-black leading-5">{product.name}</p>
-                <p className="mt-1 text-[11px] font-semibold">{formatCurrency(price)} đ/{product.unit || 'đv'}</p>
-                {size && <p className="mt-1 text-[10px] font-bold text-emerald-600">Size: {size}</p>}
-                {attribute && <p className="mt-1 text-[10px] font-bold text-sky-600">Thuộc tính: {attribute}</p>}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={handleSelectQuickMainProducts}
-            disabled={quickMainProducts.length === 0}
-            className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-xs font-black text-emerald-700 disabled:opacity-50"
-          >
-            Chọn nhanh
-          </button>
-          <button
-            type="button"
-            onClick={handleShareQuickMainProducts}
-            disabled={isSharing || quickMainProducts.length === 0 || !selectedQuoteCustomer}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-3 py-3 text-xs font-black text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isSharing ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-            Gửi nhanh Zalo
-          </button>
-        </div>
-      </div>
-
-      <div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-3">
+<div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-black text-slate-900">Chọn sản phẩm và giá mới</p>
@@ -40577,66 +40680,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
         )}
       </div>
 
-      <div className="hidden rounded-3xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-black text-slate-900">Chọn khách nhận báo giá</p>
-            <p className="text-xs text-slate-500 mt-1">{isSales ? 'Tài khoản kinh doanh chỉ thấy khách mình phụ trách.' : 'Chủ doanh nghiệp và kế toán thấy toàn bộ khách hàng.'}</p>
-          </div>
-          <Users size={20} className="text-emerald-500" />
-        </div>
-        <div className="flex items-center gap-2 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-          <Search size={16} className="text-gray-400" />
-          <input data-hd-search-input="true" value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Tìm khách trong danh sách nhận" />
-        </div>
-        <div className="max-h-44 overflow-y-auto space-y-2 pr-1">
-          {filteredCustomers.slice(0, 80).map(customer => {
-            const isSelected = customer.id === selectedQuoteCustomerId;
-            const customPriceCount = Object.keys(normalizeCustomerPriceOverrides(customer)).length;
-            return (
-            <button
-              key={customer.id}
-              type="button"
-              onClick={() => setSelectedQuoteCustomerId(customer.id)}
-              className={`w-full rounded-2xl border px-3 py-2 text-left transition-colors ${isSelected ? 'border-emerald-200 bg-emerald-50' : 'border-gray-100 bg-gray-50 hover:bg-gray-100'}`}
-            >
-              <p className="text-sm font-bold text-slate-800">{customer.name}</p>
-              <p className="mt-0.5 text-[11px] text-slate-500">
-                {customer.phone || 'Chưa có số điện thoại'}{customPriceCount > 0 ? ` • ${customPriceCount} cài riêng` : ' • Giá mặc định'}
-              </p>
-            </button>
-            );
-          })}
-        </div>
-        {managedCustomers.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-amber-200 bg-amber-50 px-3 py-4 text-center text-xs font-semibold text-amber-700">
-            Chưa có khách hàng nào trong phạm vi quản lý của tài khoản này.
-          </p>
-        )}
-      </div>
-
-      <div className="hidden rounded-3xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-black text-slate-900">Nội dung gửi Zalo</p>
-          <button type="button" onClick={handleCopyQuote} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-600">
-            <Copy size={13} /> Sao chép
-          </button>
-        </div>
-        <textarea readOnly value={quotePreview} className="min-h-[220px] w-full rounded-2xl border border-gray-100 bg-slate-50 p-3 text-sm leading-6 outline-none" />
-        <button
-          type="button"
-          onClick={handleShareAll}
-          disabled={isSharing || selectedProducts.length === 0 || managedCustomers.length === 0 || !selectedQuoteCustomer}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-          {selectedQuoteCustomer ? `Gửi Zalo cho ${selectedQuoteCustomer.name}` : 'Gửi báo giá qua Zalo'}
-        </button>
-        <p className="text-[11px] leading-5 text-slate-400">
-          Lưu ý: nếu mỗi khách có giá riêng, app sẽ tạo đúng nội dung theo khách đang chọn để tránh gửi nhầm giá. Gửi tự động hàng loạt tới từng số Zalo riêng lẻ cần tích hợp Zalo OA/API chính thức.
-        </p>
-      </div>
-    </div>
+</div>
   );
 }
 
@@ -40772,12 +40816,6 @@ function ExecutiveDashboardView({
       .catch(error => { if (active) setPayrollLoadError(error.message); });
     return () => { active = false; };
   }, [payrollPeriods, company?.id]);
-  const payrollCosts = useMemo(() => getCachedDashboardValue(
-    dashboardCache,
-    'payrollCosts',
-    [employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded],
-    () => withSalesRevenueIndex(() => buildDashboardPayrollCostRows({ employees, attendance, financials, performance, customers, orders, payments, holidays, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded }))
-  ), [dashboardCache, employees, attendance, financials, performance, customers, orders, payments, holidays, dashboardDayKey, company, payrollPeriods, lockedPayroll, employeeReviews, deliveryReports, customerComplaints, attendanceLoaded, complaintsLoaded]);
   const debtLedger = useMemo(() => getCachedDashboardValue(
     dashboardCache,
     'debtLedger',
@@ -40788,58 +40826,19 @@ function ExecutiveDashboardView({
       debt: reconciledLedgerMap[customer.id]?.currentDebt || 0
     }))
   ), [dashboardCache, customers, reconciledLedgerMap]);
-  const snapshot = useMemo(() => getCachedDashboardValue(dashboardCache, 'snapshot', [
+  const projectionInputs = useMemo(() => ({
     employee, company, employees, attendance, customers, orders, orderRequests, payments, expenses,
-    financials, payrollCosts, debtLedger, advanceRequests, products, warehouseImports,
-    warehouseDispatches, warehouseStockCounts, assets, assetCostLogs, deliveryReports, dashboardDayKey
-  ], () => buildExecutiveDashboardSnapshot({
-    cashExpenseRecords: expenses.filter(isCashflowOfficial).map(expense => ({
-      ...expense, date: resolveCashflowDateKey(expense),
-    })),
-    employee,
-    company,
-    employees,
-    attendance,
-    customers,
-    orders,
-    orderRequests,
-    payments,
-    expenses,
-    financials,
-    payrollCosts,
-    debtLedger,
-    advances: advanceRequests,
-    products,
-    warehouseImports,
-    warehouseDispatches,
-    warehouseStockCounts,
-    assets,
-    assetCostLogs,
-    deliveryReports
-  })), [
-    dashboardCache,
-    employee,
-    company,
-    employees,
-    attendance,
-    customers,
-    orders,
-    orderRequests,
-    payments,
-    expenses,
-    financials,
-    payrollCosts,
-    debtLedger,
-    advanceRequests,
-    products,
-    warehouseImports,
-    warehouseDispatches,
-    warehouseStockCounts,
-    assets,
-    assetCostLogs,
-    deliveryReports,
-    dashboardDayKey
-  ]);
+    financials, performance, debtLedger, advances: advanceRequests, advanceRequests, products, warehouseImports,
+    warehouseDispatches, warehouseStockCounts, assets, assetCostLogs, deliveryReports,
+    holidays, payrollPeriods, lockedPayroll, employeeReviews, customerComplaints, attendanceLoaded, complaintsLoaded,
+    dashboardDayKey,
+    cashExpenseRecords: expenses.filter(isCashflowOfficial).map(expense => ({...expense,date:resolveCashflowDateKey(expense)})),
+  }), [employee,company,employees,attendance,customers,orders,orderRequests,payments,expenses,financials,performance,
+    debtLedger,advanceRequests,products,warehouseImports,warehouseDispatches,warehouseStockCounts,assets,assetCostLogs,
+    deliveryReports,holidays,payrollPeriods,lockedPayroll,employeeReviews,customerComplaints,attendanceLoaded,complaintsLoaded,dashboardDayKey]);
+  const projection = useCooperativeDashboardProjection(projectionInputs,dashboardCache,buildDashboardPayrollCostSteps);
+  const emptySnapshot = useMemo(() => buildExecutiveDashboardSnapshot({}), []);
+  const snapshot = projection.snapshot || emptySnapshot;
 
   const { kpis, finance, costs, business, profitability, operations, alerts, insights, recommendations, generatedAt } = snapshot;
   const companyDisplayName = getCompanyDisplayName(company);
@@ -41062,7 +41061,10 @@ function ExecutiveDashboardView({
       profit: finiteFinanceNumber(finance.yearProfit, yearRevenue - yearExpense)
     }
   ];
-  const dailyFinanceBreakdownRows = useMemo(() => {
+  const [dailyFinanceAttempt,setDailyFinanceAttempt]=useState(0);
+  const prepareDailyFinanceBreakdown = useMemo(() => function* () {
+    if(!showDailyFinanceDetails)return [];
+    let operations=0;
     const rowsByDate = new Map();
     const ensureRow = (date) => {
       if (!date) return null;
@@ -41094,7 +41096,9 @@ function ExecutiveDashboardView({
       return resolveEntityDateKey({ ...record, date: rawDate || record.date }, '');
     };
 
-    (orders || []).filter(isActiveRecord).forEach((order) => {
+    for(const order of orders || []) {
+      if(++operations%16===0)yield;
+      if(!isActiveRecord(order))continue;
       const date = resolveFinanceDateKey(order, [
         order.date,
         order.orderDate,
@@ -41103,11 +41107,13 @@ function ExecutiveDashboardView({
         order.timestamp
       ]);
       const row = ensureRow(date);
-      if (!row) return;
+      if (!row) continue;
       row.revenue += getOrderRevenue(order);
-    });
+    }
 
-    (expenses || []).filter(isActiveRecord).forEach((expense) => {
+    for(const expense of expenses || []) {
+      if(++operations%16===0)yield;
+      if(!isActiveRecord(expense))continue;
       const date = resolveFinanceDateKey(expense, [
         expense.date,
         expense.transactionDate,
@@ -41118,15 +41124,18 @@ function ExecutiveDashboardView({
         expense.timestamp
       ]);
       const row = ensureRow(date);
-      if (!row) return;
+      if (!row) continue;
       row.expense += getExpenseAmount(expense);
-    });
+    }
 
     return [...rowsByDate.values()]
       .map(row => ({ ...row, profit: row.revenue - row.expense }))
       .filter(row => row.revenue > 0 || row.expense > 0)
       .sort((a, b) => `${b.date}`.localeCompare(`${a.date}`));
-  }, [expenses, orders]);
+  }, [expenses,orders,showDailyFinanceDetails,company,employee,dailyFinanceAttempt]);
+  const dailyFinanceProjection=useCooperativeProjection(prepareDailyFinanceBreakdown);
+  const dailyFinancePending=showDailyFinanceDetails && (dailyFinanceProjection.pending || Boolean(dailyFinanceProjection.error));
+  const dailyFinanceBreakdownRows=dailyFinanceProjection.value;
   const dailyFinanceSummary = dailyFinanceBreakdownRows.reduce((total, row) => ({
     revenue: total.revenue + (Number(row.revenue) || 0),
     expense: total.expense + (Number(row.expense) || 0),
@@ -41769,12 +41778,16 @@ function ExecutiveDashboardView({
   };
 
   if (isMobileReport) {
-    return <>
+    return <div aria-busy={projection.pending || payrollLoading || Boolean(payrollLoadError) || dailyFinancePending}>
       {payrollLoading && !payrollLoadError && <p role="status" className="p-3 text-sm text-slate-600">Đang lấy chi phí từ bảng lương đã chốt…</p>}
       {payrollLoadError && <p role="alert" className="p-3 text-sm text-red-700">Chi phí lương chưa đầy đủ: {payrollLoadError}</p>}
-      <BusinessReportWorkspace snapshot={snapshot} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
-      <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
-    </>;
+      {projection.failed && <p role="alert" className="p-3 text-sm text-red-700">Chưa tổng hợp được báo cáo. <button type="button" onClick={projection.retry} className="font-bold underline">Thử lại</button></p>}
+      {projection.pending && projection.snapshot && <p role="status" className="p-3 text-sm text-slate-600">Đang cập nhật báo cáo…</p>}
+      {projection.snapshot ? <>
+        <BusinessReportWorkspace snapshot={snapshot} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
+        <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
+      </> : <div data-hd-module-loading="true" role="status" className="p-5 text-sm text-slate-600">Đang tổng hợp báo cáo…</div>}
+    </div>;
   }
 
   return (
@@ -41890,16 +41903,16 @@ function ExecutiveDashboardView({
             <div className="hd-dashboard-dialog__summary">
               <div className="rounded-2xl bg-emerald-50 px-2 py-3 text-center">
                 <p className="text-[10px] font-black uppercase tracking-[0.12em] text-emerald-600">Tổng thu</p>
-                <p className="mt-1 text-[14px] font-black text-slate-950 tabular-nums">{formatCurrency(dailyFinanceSummary.revenue)} đ</p>
+                <p className="mt-1 text-[14px] font-black text-slate-950 tabular-nums">{dailyFinancePending?'—':`${formatCurrency(dailyFinanceSummary.revenue)} đ`}</p>
               </div>
               <div className="rounded-2xl bg-rose-50 px-2 py-3 text-center">
                 <p className="text-[10px] font-black uppercase tracking-[0.12em] text-rose-600">Tổng chi</p>
-                <p className="mt-1 text-[14px] font-black text-slate-950 tabular-nums">{formatCurrency(dailyFinanceSummary.expense)} đ</p>
+                <p className="mt-1 text-[14px] font-black text-slate-950 tabular-nums">{dailyFinancePending?'—':`${formatCurrency(dailyFinanceSummary.expense)} đ`}</p>
               </div>
               <div className="rounded-2xl bg-slate-50 px-2 py-3 text-center">
                 <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">Lợi nhuận</p>
                 <p className={`mt-1 text-[14px] font-black tabular-nums ${dailyFinanceSummary.profit >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
-                  {formatCurrency(dailyFinanceSummary.profit)} đ
+                  {dailyFinancePending?'—':`${formatCurrency(dailyFinanceSummary.profit)} đ`}
                 </p>
               </div>
             </div>
@@ -41912,7 +41925,11 @@ function ExecutiveDashboardView({
                   <div className="border-r border-slate-200 px-2 py-2">Chi</div>
                   <div className="px-2 py-2">Lãi</div>
                 </div>
-                {dailyFinanceBreakdownRows.length === 0 ? (
+                {dailyFinancePending ? (
+                  <div role="status" aria-busy="true" className="px-4 py-6 text-center text-sm font-semibold text-slate-500">
+                    {dailyFinanceProjection.error ? <button type="button" onClick={()=>setDailyFinanceAttempt(n=>n+1)}>Không thể tổng hợp. Thử lại</button> : 'Đang tổng hợp chi tiết theo ngày…'}
+                  </div>
+                ) : dailyFinanceBreakdownRows.length === 0 ? (
                   <p className="px-4 py-6 text-center text-sm font-semibold text-slate-500">Chưa có dữ liệu doanh thu hoặc chi phí theo ngày.</p>
                 ) : dailyFinanceBreakdownRows.map((row) => (
                   <div
@@ -41935,7 +41952,7 @@ function ExecutiveDashboardView({
 }
 
 const areExecutiveDashboardPropsEqual = (previousProps, nextProps) => {
-  // Keep the dashboard mounted so returning Home is instant, but freeze its
+  // Keep the dashboard mounted to reuse its report tree, but freeze its
   // expensive report tree while another module owns the screen.
   if (!nextProps.isActive) return true;
   // Visibility is owned by the parent. Only changed data/callbacks invalidate
@@ -41950,8 +41967,9 @@ const RetainedExecutiveDashboardView = React.memo(ExecutiveDashboardView, areExe
 
 function MemoizedExecutiveDashboardView(props) {
   const [deferredProps, setDeferredProps] = useState(props);
+  const dataUnchanged = props.isActive && areExecutiveDashboardPropsEqual(deferredProps, props);
   useEffect(() => {
-    if (!props.isActive || props === deferredProps) return undefined;
+    if (!props.isActive || props === deferredProps || dataUnchanged) return undefined;
     let secondFrame;
     let timer;
     const firstFrame = requestAnimationFrame(() => {
@@ -41964,12 +41982,12 @@ function MemoizedExecutiveDashboardView(props) {
       cancelAnimationFrame(secondFrame);
       clearTimeout(timer);
     };
-  }, [props, deferredProps]);
+  }, [props, deferredProps, dataUnchanged]);
   // Navigation can reveal the retained report before recalculating new data.
   // Never carry a deferred report across an identity or permission change.
   const sameScope = props.company === deferredProps.company
     && props.employee === deferredProps.employee;
-  const reportProps = sameScope ? deferredProps : props;
+  const reportProps = sameScope && !dataUnchanged ? deferredProps : props;
   return (
     <div aria-busy={props.isActive && reportProps !== props}>
       <RetainedExecutiveDashboardView {...reportProps} isActive={props.isActive} />
@@ -44052,22 +44070,27 @@ const getOrderItemCost = (item = {}, product = null) => {
   const unitCost = parseLooseMoneyValue(item?.costPrice ?? product?.costPrice);
   return quantity * unitCost;
 };
-const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', warehouseImports = null, warehouseDispatches = null, stockBalanceResolver = buildProductStockBalanceIndex } = {}) => {
+const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', warehouseImports = null, warehouseDispatches = null, stockBalanceResolver = buildProductStockBalanceIndex, cooperative = false } = {}) => {
+  const prepare=function* () {
+  let operations=0;
   const productMap = new Map((products || []).map(product => [product.id, product]));
+  yield;
   const stockBalances = warehouseImports && warehouseDispatches
     ? stockBalanceResolver(products || [], warehouseImports, warehouseDispatches, untilDate)
     : null;
+  yield;
   const soldByProductId = new Map();
   const revenueByProductId = new Map();
   const costByProductId = new Map();
 
-  (orders || [])
+  for (const order of (orders || [])
     .filter(order => !order?.isArchived)
-    .filter(order => !untilDate || `${order.date || ''}` <= untilDate)
-    .forEach(order => {
-      (order.items || []).forEach(item => {
+    .filter(order => !untilDate || `${order.date || ''}` <= untilDate)) {
+      if (++operations % 16 === 0) yield;
+      for (const item of (order.items || []).filter(()=>true)) {
+        if (++operations % 16 === 0) yield;
         const product = productMap.get(item.productId);
-        if (!product) return;
+        if (!product) continue;
         const productId = product.id;
         const stockUnit = getProductInventoryUnit(product);
         const itemUnit = getOrderItemQuantityUnit(item, product);
@@ -44077,12 +44100,10 @@ const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', war
         }
         revenueByProductId.set(productId, (revenueByProductId.get(productId) || 0) + getOrderItemRevenue(item));
         costByProductId.set(productId, (costByProductId.get(productId) || 0) + getOrderItemCost(item, product));
-      });
-    });
+      }
+    }
 
-  const productRows = (products || [])
-    .filter(product => !product?.isArchived)
-    .map(product => {
+  const projectProduct = product => {
       const openingStock = getProductOpeningStock(product);
       const balance = stockBalances?.get(product) || null;
       const soldQuantity = balance ? balance.outgoing : soldByProductId.get(product.id) || 0;
@@ -44104,7 +44125,13 @@ const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', war
         revenue,
         grossProfit: revenue - soldCost
       };
-    });
+    };
+  const productRows=[];
+  for (const product of (products || []).filter(product => !product?.isArchived)) {
+    if (++operations % 16 === 0) yield;
+    productRows.push(projectProduct(product));
+  }
+  yield;
 
   const groupRows = Array.from(productRows.reduce((acc, product) => {
     const groupKey = `${product.inventoryGroup || 'Chưa phân nhóm'}__${normalizeInventoryUnitKey(product.stockUnit)}`;
@@ -44150,6 +44177,10 @@ const buildInventoryMetrics = (products = [], orders = [], { untilDate = '', war
   }, { openingStock: 0, soldQuantity: 0, remainingStock: 0, stockValue: 0, revenue: 0, soldCost: 0, grossProfit: 0, trackedProducts: 0, outOfStockProducts: 0 });
 
   return { productRows, groupRows, totals };
+  };
+  const iterator=prepare();
+  if(cooperative)return iterator;
+  for(;;){const step=iterator.next();if(step.done)return step.value;}
 };
 
 const DEFAULT_PROCESSING_INVENTORY_GROUPS = ['Vịt', 'Gà', 'Heo', 'Vật tư'];
@@ -54994,6 +55025,9 @@ const HDSingleCellEditDialog = React.memo(function HDSingleCellEditDialog({
 });
 
 
+const warehouseShortageProjectionCache=createProjectionCache();
+const warehouseHistoryProjectionCache=createProjectionCache();
+const EMPTY_DISPATCH_SHORTAGE=Object.freeze({issueLines:Object.freeze([]),totalRequiredLines:0});
 function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
@@ -55181,7 +55215,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const driver = driverId ? employeeLookup.get(driverId) : null;
     return `${source.assignedDriverNameSnapshot || source.driverNameSnapshot || driver?.name || ''}`.trim();
   };
-  const dispatchShortageSummary = useMemo(() => buildWarehouseDispatchShortageSummary({
+  const [dispatchProjectionAttempt,setDispatchProjectionAttempt]=useState(0);
+  const shortageProjectionScope=[currentCompany?.id,employee?.id,workingDate,autoCancelAfterDays].join('|');
+  const shortageProjectionEntry=useMemo(()=>warehouseShortageProjectionCache([orderRequests,warehouseDispatches,customers,products],shortageProjectionScope),[orderRequests,warehouseDispatches,customers,products,shortageProjectionScope]);
+  const prepareDispatchShortageSummary = useMemo(() => () => buildWarehouseDispatchShortageSummary({
     orderRequests,
     warehouseDispatches,
     customers,
@@ -55189,8 +55226,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     dateKey: workingDate,
     dispatchDateKey: workingDate,
     autoCancelAfterDays,
-    includePreviousOpenOrders: true
-  }), [autoCancelAfterDays, customers, orderRequests, products, warehouseDispatches, workingDate]);
+    includePreviousOpenOrders: true,
+    cooperative: true
+  }), [autoCancelAfterDays, customers, orderRequests, products, warehouseDispatches, workingDate,dispatchProjectionAttempt]);
+  const dispatchShortageProjection=useCooperativeProjection(prepareDispatchShortageSummary,shortageProjectionEntry);
+  const dispatchShortageReady=!dispatchShortageProjection.pending && !dispatchShortageProjection.error;
+  const dispatchShortageSummary=dispatchShortageReady ? dispatchShortageProjection.value : EMPTY_DISPATCH_SHORTAGE;
   const normalizeDispatchQuantityUnit = (unit = '') => {
     const normalized = normalizeLookupText(unit || '');
     const unitMap = {
@@ -55705,20 +55746,26 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     deliveryReports,
   }), [filteredEditableDispatchRows, deliveryReports]);
 
-  const historyDispatchGroups = useMemo(() => {
-    const groups = (warehouseDispatches || []).reduce((acc, item) => {
-      if (item.isArchived) return acc;
+  const historyProjectionScope=[currentCompany?.id,employee?.id,getTodayString()].join('|');
+  const historyProjectionEntry=useMemo(()=>warehouseHistoryProjectionCache([warehouseDispatches,customers,products,employees],historyProjectionScope),[warehouseDispatches,customers,products,employees,historyProjectionScope]);
+  const prepareHistoryDispatchGroups = useMemo(() => function* () {
+    let operations=0;
+    const groups={};
+    for (const item of warehouseDispatches || []) {
+      if (++operations % 16 === 0) yield;
+      if (item.isArchived) continue;
       const dateKey = resolveEntityDateKey(item, item.date || item.createdAt || getTodayString());
-      if (!dateKey) return acc;
-      if (!acc[dateKey]) acc[dateKey] = [];
-      acc[dateKey].push(item);
-      return acc;
-    }, {});
+      if (!dateKey) continue;
+      if (!Object.hasOwn(groups,dateKey)) Object.defineProperty(groups,dateKey,{value:[],enumerable:true,writable:true,configurable:true});
+      groups[dateKey].push(item);
+    }
 
-    return Object.entries(groups)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([dateKey, items]) => {
-        const mergedRows = items.reduce((acc, item) => {
+    const result=[];
+    const days=Object.entries(groups).sort((a,b)=>b[0].localeCompare(a[0]));
+    for (const [dateKey,items] of days) {
+        const mergedRows=new Map();
+        for (const item of items) {
+          if (++operations % 16 === 0) yield;
           const customer = customerLookup.get(item.customerId);
           const product = productLookup.get(item.productId);
           const customerName = item.customerNameSnapshot || customer?.name || 'Khách hàng';
@@ -55731,13 +55778,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           const mergeKey = `${item.customerId || customerName}__${item.productId || productName}__${normalizeLookupText(quantityUnit)}__${driverKey}`;
           const weightKg = parseFloat(item.weightKg) || 0;
           const pieceCount = getDispatchRowQuantity(item);
-          const current = acc.get(mergeKey);
+          const current = mergedRows.get(mergeKey);
           if (current) {
             current.weightKg += weightKg;
             current.pieceCount += pieceCount;
-            return acc;
+            continue;
           }
-          acc.set(mergeKey, {
+          mergedRows.set(mergeKey, {
             customerName,
             productName,
             productShortName,
@@ -55749,11 +55796,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
             driverId,
             driverNameSnapshot: driverName
           });
-          return acc;
-        }, new Map());
+        }
 
         const mergedValues = Array.from(mergedRows.values());
-        return {
+        result.push({
           dateKey,
           items,
           mergedRows: mergedValues,
@@ -55761,9 +55807,13 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           totalCustomers: new Set(items.map(item => item.customerId || item.customerNameSnapshot).filter(Boolean)).size,
           totalWeight: mergedValues.reduce((sum, item) => sum + (parseFloat(item.weightKg) || 0), 0),
           totalQuantity: mergedValues.reduce((sum, item) => sum + (parseLooseQuantityValue(item.pieceCount) || 0), 0)
-        };
-      });
-  }, [warehouseDispatches, customerLookup, productLookup]);
+        });
+        yield;
+    }
+    return result;
+  }, [warehouseDispatches,customerLookup,productLookup,employeeLookup,dispatchProjectionAttempt]);
+  const historyProjection=useCooperativeProjection(prepareHistoryDispatchGroups,historyProjectionEntry);
+  const historyDispatchGroups=historyProjection.value;
 
   const historyMonthOptions = useMemo(() => {
     const monthKeySet = new Set([buildMonthKeyFromDate(workingDate), buildMonthKeyFromDate(selectedHistoryMonth)]);
@@ -56220,9 +56270,14 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   };
 
 
-  const handleSubmitDispatch = (event) => submitDispatchForm(event, {
+  const handleSubmitDispatch = (event) => {
+    if (!dispatchShortageReady) {
+      event.preventDefault();setDispatchError('Đang đối chiếu đơn đặt. Vui lòng chờ tính xong rồi lưu.');return;
+    }
+    return submitDispatchForm(event, {
     canCreate, employee, customerLookup, productLookup, employeeLookup, dispatchDraft, normalizeDispatchQuantityUnit, setDispatchError, dispatchSaveLockRef, setIsSavingDispatch, findMatchingOrderRequestRowForDispatch, getDispatchOrderBranchRef, buildDispatchBillingSnapshot, effectiveDispatchDriverId, canCreateDispatchWithoutOrderRequest, canUseManualDispatchProductOverride, workingDate, selectedOrderRequestDateKey, normalizeWarehouseWeightEntries, capitalizeFirst, dispatchCreateMutationRef, vpsUnits, getCustomerDisplayName, buildWarehouseDispatchSourceType, onAddWarehouseDispatch, setDispatchPickerOpen, setDispatchDriverSelectionTouched, setDispatchDraft, createEmptyDispatchDraft, getFriendlyFirebaseErrorMessage
-  });
+    });
+  };
 
   const buildDispatchSheetFilename = (targetDate = workingDate) => `phieu-xuat-kho-${targetDate}`;
 
@@ -56246,7 +56301,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   }
 
   return (
-    <div className="premium-data-module premium-inventory-module premium-dispatch-module animate-in fade-in pb-16">
+    <div className="premium-data-module premium-inventory-module premium-dispatch-module animate-in fade-in pb-16" aria-busy={!dispatchShortageReady || historyProjection.pending || Boolean(historyProjection.error)}>
+      {(dispatchShortageProjection.error || historyProjection.error) && <p role="alert" className="p-3 text-sm text-amber-800">Chưa tính xong đối chiếu hoặc lịch sử.
+        <button type="button" onClick={()=>setDispatchProjectionAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
+      </p>}
+      {(dispatchShortageProjection.pending || historyProjection.pending) && <p role="status" className="p-3 text-sm text-slate-500">Đang đối chiếu đơn đặt và chuẩn bị lịch sử…</p>}
       {dispatchActionError && <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchActionError}</div>}
       {dispatchListWeightEditor && (
         <WarehouseWeightEntriesModal
@@ -56265,7 +56324,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         />
       )}
 
-      {shouldShowDispatchShortage && (
+      {shouldShowDispatchShortage && dispatchShortageReady && (
         <DispatchShortageList groups={dispatchShortageCustomerGroups} expanded={showAllDispatchShortageCustomers}
           onToggle={() => setShowAllDispatchShortageCustomers(previous => !previous)}
           onSelect={setSelectedShortageLine} requiredLines={dispatchShortageSummary.totalRequiredLines}
@@ -56361,7 +56420,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
                 label="Tìm loại hàng" placeholder="Loại Hàng"
                 toggleLabel="Mở danh sách loại hàng"
                 emptyText="Không tìm thấy loại hàng phù hợp."
-                showEmpty={Boolean(dispatchProductSearchKeyword && filteredDispatchProducts.length === 0)}
+                showEmpty={Boolean(dispatchShortageReady && dispatchProductSearchKeyword && filteredDispatchProducts.length === 0)}
                 note={isDispatchCatalogFallbackActive ? 'Khách chưa có đơn đặt - chọn loại hàng trong danh mục sản phẩm.' : ''}
                 groups={[
                   { title: 'Khách đã đặt', options: filteredOrderedDispatchProducts.map(product => ({
@@ -56401,6 +56460,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
               }}
               onReset={resetDispatchDraft}
               saving={isSavingDispatch}
+              preparing={!dispatchShortageReady}
               suggestion={canAssignDriver && suggestedDispatchDriver && !dispatchDriverSelectionTouched && !dispatchDraft.assignedDriverId
                 ? suggestedDispatchDriver.name : ''}
               error={dispatchError}
@@ -56773,6 +56833,7 @@ const OrderRequestSelectableProductGroup = React.memo(function OrderRequestSelec
   );
 });
 
+const EMPTY_REQUEST_STATUS_MAPS = Object.freeze({byRowKey:new Map(),byRequestId:new Map()});
 function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
@@ -57376,20 +57437,25 @@ function OrderRequestView({ employee, employees = [], customers, products, order
     primaryItem: (request.items || [])[0] || null,
     primaryProduct
   })), [employee?.companyId, employee?.tenantId]);
-  const visibleRequests = useMemo(() => latestOrderRequests
-    .filter(request => !request.isArchived)
-    .filter(request => canEmployeeViewRequest(request))
-    .map(request => {
+  const [requestProjectionAttempt,setRequestProjectionAttempt]=useState(0);
+  const prepareVisibleRequests = useMemo(() => function* () {
+    const rows=[];let operations=0;
+    for (const request of latestOrderRequests) {
+      if (++operations % 16 === 0) yield;
+      if (request.isArchived || !canEmployeeViewRequest(request)) continue;
       const primaryItem = (request.items || [])[0] || null;
       const requestDateKey = resolveOrderRequestDateKey(request);
-      return getVisibleRequest(
+      rows.push(getVisibleRequest(
         request,
         requestDateKey,
         requestCustomerLookup.get(request.customerId) || null,
         primaryItem?.productId ? requestProductLookup.get(primaryItem.productId) || null : null
-      );
-    })
-    .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [getVisibleRequest, latestOrderRequests, requestCustomerLookup, requestProductLookup, requestWorkingDate, canViewAllRequests, isSales, salesVisibleEmployeeIdSet]);
+      ));
+    }
+    return yield* sortProjection(rows,(a,b)=>(getEntityTimestamp(b) || 0)-(getEntityTimestamp(a) || 0));
+  }, [getVisibleRequest, latestOrderRequests, requestCustomerLookup, requestProductLookup, requestWorkingDate, canViewAllRequests, isSales, salesVisibleEmployeeIdSet,requestProjectionAttempt]);
+  const visibleRequestsProjection=useCooperativeProjection(prepareVisibleRequests);
+  const visibleRequests=visibleRequestsProjection.value;
   const filteredRequests = useMemo(
     () => visibleRequests.filter((request) => {
       const matchesDate = !requestFilterDate || request.requestDateKey === requestFilterDate;
@@ -57563,8 +57629,9 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   }, [mergedRequestSheetRows, productLookup]);
 
   const orderRequestDispatchIndex = useRef(null);
-  const orderRequestWarehouseStatusMaps = useMemo(() => {
-    const summary = buildWarehouseDispatchShortageSummary({
+  const prepareRequestWarehouseStatuses = useMemo(() => function* () {
+    if (visibleRequestsProjection.pending || visibleRequestsProjection.error) return null;
+    const summary = yield* buildWarehouseDispatchShortageSummary({
       orderRequests: visibleRequests,
       warehouseDispatches,
       customers,
@@ -57574,13 +57641,16 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       includePreviousOpenOrders: true,
       autoCancelAfterDays: 0,
       statusesOnly: true,
+      cooperative: true,
       dispatchIndexCache: orderRequestDispatchIndex
     });
     const byRowKey = new Map();
     const byRequestId = new Map();
 
-    (summary.requestLineStatuses || []).forEach((line) => {
-      if (!line?.requestId) return;
+    let operations=0;
+    for (const line of summary.requestLineStatuses || []) {
+      if (++operations % 16 === 0) yield;
+      if (!line?.requestId) continue;
       const rowKey = `${line.requestId}_${line.itemIndex ?? ''}`;
       byRowKey.set(rowKey, line);
       const current = byRequestId.get(line.requestId) || {
@@ -57604,10 +57674,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           ? 'partial'
           : 'missing';
       byRequestId.set(line.requestId, current);
-    });
+    }
 
     return { byRowKey, byRequestId };
-  }, [activeProducts, customers, requestWorkingDate, visibleRequests, warehouseDispatches]);
+  }, [activeProducts, customers, requestWorkingDate, visibleRequests, warehouseDispatches,visibleRequestsProjection.pending,visibleRequestsProjection.error,requestProjectionAttempt]);
+  const requestStatusProjection=useCooperativeProjection(prepareRequestWarehouseStatuses);
+  const requestProjectionReady=!visibleRequestsProjection.pending && !visibleRequestsProjection.error
+    && !requestStatusProjection.pending && !requestStatusProjection.error && Boolean(requestStatusProjection.value);
+  const orderRequestWarehouseStatusMaps=requestProjectionReady ? requestStatusProjection.value : EMPTY_REQUEST_STATUS_MAPS;
 
 
   const requestPreview = useMemo(() => requestDrafts.reduce((acc, draft) => {
@@ -57867,7 +57941,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       };
     });
   }), [activeProducts, employee?.companyId, employee?.tenantId, productLookup]);
-  const editableCurrentDayRows = useMemo(() => sortEditableRequestRows(filteredRequests.flatMap((request) => {
+  const editableCurrentDayRows = useMemo(() => !requestProjectionReady ? [] : sortEditableRequestRows(filteredRequests.flatMap((request) => {
     const requestWarehouseStatus = orderRequestWarehouseStatusMaps.byRequestId.get(request.id) || null;
     const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
     const salesEmpId = resolveRequestSalesEmpId(request);
@@ -57883,7 +57957,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
         warehouseDispatchIds: rowWarehouseStatus?.dispatchIds || []
       };
     });
-  })), [sortEditableRequestRows, getEditableRequestBaseRows, filteredRequests, orderRequestWarehouseStatusMaps, canEdit, canViewAllRequests, customerLookup, customers, employee?.id, employee?.name, isOwnerAccount, salesEmployeeLookup, salesVisibleEmployeeIdSet]);
+  })), [requestProjectionReady,sortEditableRequestRows, getEditableRequestBaseRows, filteredRequests, orderRequestWarehouseStatusMaps, canEdit, canViewAllRequests, customerLookup, customers, employee?.id, employee?.name, isOwnerAccount, salesEmployeeLookup, salesVisibleEmployeeIdSet]);
   const editableRowsBySales = useMemo(() => {
     const grouped = new Map();
     editableCurrentDayRows.forEach((row, index) => {
@@ -59802,6 +59876,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
 
   const orderRequestShareBusyRef = useRef(false);
   const handleShareOrderRequestSheet = async () => {
+    if (!requestProjectionReady) return;
     if (orderRequestShareBusyRef.current) return;
     if (!canShareOrderRequestSheet) {
       setSheetStatus('Bạn chưa được cấp quyền chia sẻ bảng đơn đặt hàng.');
@@ -60120,7 +60195,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   }
 
   return (
-    <div className="premium-data-module premium-orders-module premium-order-request-module space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-orders-module premium-order-request-module space-y-4 animate-in fade-in pb-16" aria-busy={!requestProjectionReady}>
       {requestStatus && (
         <div role="status" className="flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           <span className="min-w-0 flex-1">{requestStatus}</span>
@@ -60183,7 +60258,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
           </button>
         )}
         {canShareOrderRequestSheet && (
-          <button type="button" onClick={handleShareOrderRequestSheet} disabled={isSheetExporting}
+          <button type="button" onClick={handleShareOrderRequestSheet} disabled={isSheetExporting || !requestProjectionReady}
             aria-label={isSheetExporting ? 'Đang chuẩn bị chia sẻ' : 'Chia sẻ'}
             className="hd-request-toolbar__share">
             {isSheetExporting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -60193,6 +60268,14 @@ function OrderRequestView({ employee, employees = [], customers, products, order
       </div>
 
       <div className="hd-request-list bg-white">
+        {!requestProjectionReady ? (
+          visibleRequestsProjection.error || requestStatusProjection.error
+            ? <p role="alert" className="p-4 text-sm text-amber-800">Chưa đối chiếu xong đơn đặt và xuất kho.
+                <button type="button" onClick={()=>setRequestProjectionAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
+              </p>
+            : <p role="status" className="p-4 text-sm text-slate-500">Đang chuẩn bị đơn đặt và đối chiếu xuất kho…</p>
+        ) : <>
+
 
           {showRequestFilterPanel && (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -60290,6 +60373,7 @@ function OrderRequestView({ employee, employees = [], customers, products, order
               Không có đơn đặt hàng nào khớp bộ lọc hiện tại.
             </div>
           )}
+          </>}
         </div>
 
       {orderCellEditor && orderCellEditorConfig && (
@@ -61557,6 +61641,118 @@ function OrderRequestView({ employee, employees = [], customers, products, order
   );
 }
 
+const getOrderOutstandingBalance = (order = {}) => {
+  const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? 0);
+  const allocatedFromHistory = Array.isArray(order.paymentHistory)
+    ? order.paymentHistory.reduce((sum, payment) => {
+      const allocatedValue = Math.max(
+        parseLooseMoneyValue(payment.allocatedToOrder),
+        parseLooseMoneyValue(payment.appliedAmount),
+        parseLooseMoneyValue(payment.amount)
+      );
+      return sum + allocatedValue;
+    }, 0)
+    : 0;
+  const cashPaidAmount = Math.max(
+    parseLooseMoneyValue(order.paidAmount),
+    parseLooseMoneyValue(order.collectedAmount)
+  );
+  const creditApplied = parseLooseMoneyValue(order.creditApplied);
+  const paidAmount = Math.max(
+    parseLooseMoneyValue(order.appliedAmount),
+    cashPaidAmount,
+    cashPaidAmount + creditApplied,
+    allocatedFromHistory
+  );
+
+  if (orderAmount > 0 && paidAmount >= orderAmount - 1) {
+    return 0;
+  }
+
+  const hasExplicitOutstanding = Object.prototype.hasOwnProperty.call(order, 'outstandingAmount')
+    && order.outstandingAmount !== null
+    && order.outstandingAmount !== undefined
+    && `${order.outstandingAmount}` !== '';
+  if (hasExplicitOutstanding) {
+    return Math.max(0, parseLooseMoneyValue(order.outstandingAmount));
+  }
+
+  const paymentStatusText = [
+    order.status,
+    order.paymentStatus,
+    order.payosPaymentStatus,
+    order.debtStatus
+  ].map(value => `${value || ''}`.toLowerCase());
+  if (paymentStatusText.some(status => ['paid', 'paid_full', 'settled', 'completed'].includes(status))) {
+    return 0;
+  }
+
+  return Math.max(0, orderAmount - paidAmount);
+};
+
+const normalizeOrderPaymentSnapshot = (order = null) => {
+  if (!order) return null;
+  const outstandingAmount = getOrderOutstandingBalance(order);
+  const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? 0);
+  const appliedAmount = Math.max(
+    parseLooseMoneyValue(order.appliedAmount),
+    Math.max(0, orderAmount - outstandingAmount)
+  );
+  return {
+    ...order,
+    appliedAmount,
+    outstandingAmount,
+    status: outstandingAmount <= 0 ? 'paid' : appliedAmount > 0 ? 'partial' : 'unpaid'
+  };
+};
+
+const buildOrderViewModel = (order, {customerLookup,ledgerOrderById,employeeLookup,paymentHistoryByOrderId,deliveryReportIssueByDispatch,zaloQueueByOrderId}) => {
+      const customer = customerLookup.get(order.customerId);
+      const ledgerOrder = ledgerOrderById.get(order.id);
+      const createdBy = employeeLookup.get(order.createdByEmpId || order.empId);
+      const salesEmpId = order.salesEmpId || customer?.empId || order.createdByEmpId || order.empId || null;
+      const salesOwner = employeeLookup.get(salesEmpId);
+      const paymentHistory = paymentHistoryByOrderId.get(order.id) || [];
+      const sourceDispatchIds = Array.isArray(order.sourceDispatchIds) ? order.sourceDispatchIds : [];
+      const deliveryReportIssues = sourceDispatchIds
+        .map(dispatchId => deliveryReportIssueByDispatch.get(dispatchId))
+        .filter(Boolean);
+      const zaloQueueEntry = zaloQueueByOrderId.get(order.id) || null;
+      const effectiveZaloSendStatus = zaloQueueEntry?.status === 'sent'
+        ? 'sent'
+        : (order.zaloSendStatus || zaloQueueEntry?.status || 'not_queued');
+
+      return {
+        ...order,
+        customer,
+        createdBy,
+        salesOwner,
+        paymentHistory,
+        deliveryReportIssues,
+        zaloQueueEntry,
+        zaloSendStatus: effectiveZaloSendStatus,
+        zaloSentAt: order.zaloSentAt || zaloQueueEntry?.sentAt || '',
+        appliedAmount: ledgerOrder?.appliedAmount ?? 0,
+        outstandingAmount: ledgerOrder?.outstandingAmount ?? Math.max(0, order.amount || 0),
+        status: ledgerOrder?.status || ((ledgerOrder?.outstandingAmount ?? order.amount ?? 0) <= 0 ? 'paid' : 'unpaid')
+      };
+};
+
+const EMPTY_ORDER_VIEW_PROJECTION = Object.freeze({byId:Object.freeze({}),snapshots:Object.freeze([])});
+const buildOrderViewProjectionSteps = function* (activeOrders,context) {
+  const byId={},snapshots=[];
+  for(const order of activeOrders){
+    Object.defineProperty(byId,order.id,{value:buildOrderViewModel(order,context),writable:true,enumerable:true,configurable:true});
+    yield;
+  }
+  for(const order of activeOrders){
+    const normalized=normalizeOrderPaymentSnapshot(byId[order.id]||order);
+    if(normalized)snapshots.push(normalized);
+    yield;
+  }
+  return {byId,snapshots};
+};
+
 function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, customerLedgerMap: prefetchedCustomerLedgerMap = null, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchStore = null, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showAddOrder, setShowAddOrder] = useState(false); 
   const [showOrderSourcePicker, setShowOrderSourcePicker] = useState(false);
@@ -61827,115 +62023,16 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     .filter(dispatch => !dispatch.isArchived && (dispatch.date || getTodayString()) === dispatchDate), [dispatchDate, warehouseDispatches]);
   const pendingWarehouseDispatches = useMemo(() => todayWarehouseDispatches
     .filter(dispatch => !importedWarehouseDispatchIds.has(dispatch.id) && !isWarehouseDispatchAlreadyLinked(dispatch)), [todayWarehouseDispatches, importedWarehouseDispatchIds]);
-  const orderViewModels = useMemo(() => Object.fromEntries(
-    activeOrders.map(order => {
-      const customer = customerLookup.get(order.customerId);
-      const ledgerOrder = ledgerOrderById.get(order.id);
-      const createdBy = employeeLookup.get(order.createdByEmpId || order.empId);
-      const salesEmpId = order.salesEmpId || customer?.empId || order.createdByEmpId || order.empId || null;
-      const salesOwner = employeeLookup.get(salesEmpId);
-      const paymentHistory = paymentHistoryByOrderId.get(order.id) || [];
-      const sourceDispatchIds = Array.isArray(order.sourceDispatchIds) ? order.sourceDispatchIds : [];
-      const deliveryReportIssues = sourceDispatchIds
-        .map(dispatchId => deliveryReportIssueByDispatch.get(dispatchId))
-        .filter(Boolean);
-      const zaloQueueEntry = zaloQueueByOrderId.get(order.id) || null;
-      const effectiveZaloSendStatus = zaloQueueEntry?.status === 'sent'
-        ? 'sent'
-        : (order.zaloSendStatus || zaloQueueEntry?.status || 'not_queued');
-
-      return [order.id, {
-        ...order,
-        customer,
-        createdBy,
-        salesOwner,
-        paymentHistory,
-        deliveryReportIssues,
-        zaloQueueEntry,
-        zaloSendStatus: effectiveZaloSendStatus,
-        zaloSentAt: order.zaloSentAt || zaloQueueEntry?.sentAt || '',
-        appliedAmount: ledgerOrder?.appliedAmount ?? 0,
-        outstandingAmount: ledgerOrder?.outstandingAmount ?? Math.max(0, order.amount || 0),
-        status: ledgerOrder?.status || ((ledgerOrder?.outstandingAmount ?? order.amount ?? 0) <= 0 ? 'paid' : 'unpaid')
-      }];
-    })
-  ), [
-    activeOrders,
-    customerLookup,
-    deliveryReportIssueByDispatch,
-    employeeLookup,
-    ledgerOrderById,
-    paymentHistoryByOrderId,
-    zaloQueueByOrderId
-  ]);
-  const getOrderOutstandingBalance = (order = {}) => {
-    const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? 0);
-    const allocatedFromHistory = Array.isArray(order.paymentHistory)
-      ? order.paymentHistory.reduce((sum, payment) => {
-        const allocatedValue = Math.max(
-          parseLooseMoneyValue(payment.allocatedToOrder),
-          parseLooseMoneyValue(payment.appliedAmount),
-          parseLooseMoneyValue(payment.amount)
-        );
-        return sum + allocatedValue;
-      }, 0)
-      : 0;
-    const cashPaidAmount = Math.max(
-      parseLooseMoneyValue(order.paidAmount),
-      parseLooseMoneyValue(order.collectedAmount)
-    );
-    const creditApplied = parseLooseMoneyValue(order.creditApplied);
-    const paidAmount = Math.max(
-      parseLooseMoneyValue(order.appliedAmount),
-      cashPaidAmount,
-      cashPaidAmount + creditApplied,
-      allocatedFromHistory
-    );
-
-    if (orderAmount > 0 && paidAmount >= orderAmount - 1) {
-      return 0;
-    }
-
-    const hasExplicitOutstanding = Object.prototype.hasOwnProperty.call(order, 'outstandingAmount')
-      && order.outstandingAmount !== null
-      && order.outstandingAmount !== undefined
-      && `${order.outstandingAmount}` !== '';
-    if (hasExplicitOutstanding) {
-      return Math.max(0, parseLooseMoneyValue(order.outstandingAmount));
-    }
-
-    const paymentStatusText = [
-      order.status,
-      order.paymentStatus,
-      order.payosPaymentStatus,
-      order.debtStatus
-    ].map(value => `${value || ''}`.toLowerCase());
-    if (paymentStatusText.some(status => ['paid', 'paid_full', 'settled', 'completed'].includes(status))) {
-      return 0;
-    }
-
-    return Math.max(0, orderAmount - paidAmount);
-  };
-
-  const normalizeOrderPaymentSnapshot = (order = null) => {
-    if (!order) return null;
-    const outstandingAmount = getOrderOutstandingBalance(order);
-    const orderAmount = parseLooseMoneyValue(order.amount ?? order.totalAmount ?? order.finalAmount ?? 0);
-    const appliedAmount = Math.max(
-      parseLooseMoneyValue(order.appliedAmount),
-      Math.max(0, orderAmount - outstandingAmount)
-    );
-    return {
-      ...order,
-      appliedAmount,
-      outstandingAmount,
-      status: outstandingAmount <= 0 ? 'paid' : appliedAmount > 0 ? 'partial' : 'unpaid'
-    };
-  };
-
-  const normalizedOrderSnapshots = useMemo(() => activeOrders
-    .map(order => normalizeOrderPaymentSnapshot(orderViewModels[order.id] || order))
-    .filter(Boolean), [activeOrders, orderViewModels]);
+  const orderViewContext = useMemo(()=>({customerLookup,ledgerOrderById,employeeLookup,paymentHistoryByOrderId,deliveryReportIssueByDispatch,zaloQueueByOrderId}),
+    [customerLookup,ledgerOrderById,employeeLookup,paymentHistoryByOrderId,deliveryReportIssueByDispatch,zaloQueueByOrderId]);
+  const prepareOrderViews = useMemo(()=>()=>buildOrderViewProjectionSteps(activeOrders,orderViewContext),[activeOrders,orderViewContext]);
+  const orderViewProjection = useCooperativeProjection(prepareOrderViews);
+  const orderViewsReady = !orderViewProjection.pending && !orderViewProjection.error;
+  const normalizedOrderSnapshots = (orderViewProjection.value || EMPTY_ORDER_VIEW_PROJECTION).snapshots || EMPTY_ORDER_VIEW_PROJECTION.snapshots;
+  const activeOrderById = useMemo(()=>new Map(activeOrders.map(order=>[String(order.id),order])),[activeOrders]);
+  const getLiveOrderViewModel = useCallback(id=>{
+    const order=activeOrderById.get(String(id));return order?buildOrderViewModel(order,orderViewContext):null;
+  },[activeOrderById,orderViewContext]);
   const deferredOrderSearchKeyword = orderSearchKeyword;
   const filteredOrderSnapshots = useMemo(() => {
     const selectedProduct = orderProductFilter ? activeProductLookup.get(orderProductFilter) : null;
@@ -62040,8 +62137,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
       outstandingRevenue: ordersForDate.reduce((sum, order) => sum + getOrderOutstandingBalance(order), 0)
     };
   }, [normalizedOrderSnapshots, selectedRevenueDate]);
-  const selectedOrderLive = useMemo(() => selectedOrderId ? normalizeOrderPaymentSnapshot(orderViewModels[selectedOrderId] || null) : null, [selectedOrderId, orderViewModels]);
-  const zaloPreviewOrderLive = useMemo(() => zaloPreviewOrderId ? normalizeOrderPaymentSnapshot(orderViewModels[zaloPreviewOrderId] || null) : null, [zaloPreviewOrderId, orderViewModels]);
+  const selectedOrderLive = useMemo(() => selectedOrderId ? normalizeOrderPaymentSnapshot(getLiveOrderViewModel(selectedOrderId) || null) : null, [selectedOrderId, getLiveOrderViewModel]);
+  const zaloPreviewOrderLive = useMemo(() => zaloPreviewOrderId ? normalizeOrderPaymentSnapshot(getLiveOrderViewModel(zaloPreviewOrderId) || null) : null, [zaloPreviewOrderId, getLiveOrderViewModel]);
   useEffect(() => {
     if (!selectedOrderId) {
       selectedOrderSnapshotRef.current = null;
@@ -62066,13 +62163,13 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     || (zaloPreviewOrderSnapshotRef.current?.id === zaloPreviewOrderId ? zaloPreviewOrderSnapshotRef.current : null);
 
   useEffect(() => {
-    if (selectedOrderId && !orderViewModels[selectedOrderId] && selectedOrderSnapshotRef.current?.id !== selectedOrderId) {
+    if (selectedOrderId && !getLiveOrderViewModel(selectedOrderId) && selectedOrderSnapshotRef.current?.id !== selectedOrderId) {
       closeOrderDetail();
     }
-    if (zaloPreviewOrderId && !orderViewModels[zaloPreviewOrderId] && zaloPreviewOrderSnapshotRef.current?.id !== zaloPreviewOrderId) {
+    if (zaloPreviewOrderId && !getLiveOrderViewModel(zaloPreviewOrderId) && zaloPreviewOrderSnapshotRef.current?.id !== zaloPreviewOrderId) {
       setZaloPreviewOrderId('');
     }
-  }, [selectedOrderId, zaloPreviewOrderId, orderViewModels]);
+  }, [selectedOrderId, zaloPreviewOrderId, getLiveOrderViewModel]);
 
   useEffect(() => {
     const paymentSource = getOrderPayosPaymentSource(selectedOrder);
@@ -62152,7 +62249,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const totalAmount = Math.max(0, subTotal - discountAmount + customerExtraExpense);
 
   const openOrderDetail = (orderId) => {
-    const orderSnapshot = orderViewModels[orderId] || activeOrders.find(order => order.id === orderId) || null;
+    const orderSnapshot = getLiveOrderViewModel(orderId) || activeOrders.find(order => order.id === orderId) || null;
     if (orderSnapshot) {
       selectedOrderSnapshotRef.current = normalizeOrderPaymentSnapshot(orderSnapshot);
     }
@@ -62334,7 +62431,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   const submitOrderPayment = async (event) => {
     event.preventDefault();
     if (orderPaymentDraft.isSaving) return;
-    const order = orderViewModels[orderPaymentDraft.orderId] || selectedOrder;
+    const order = getLiveOrderViewModel(orderPaymentDraft.orderId) || selectedOrder;
     const amount = parseInputCurrency(orderPaymentDraft.amount);
 
     if (!order || !onAddPayment || !canRecordOrderPayment) {
@@ -64069,7 +64166,7 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   useEffect(() => {
     if (quickActionIntent?.type !== 'open_order_detail' || !quickActionIntent?.orderId) return;
     const orderId = `${quickActionIntent.orderId}`.trim();
-    const orderExists = Boolean(orderViewModels[orderId] || activeOrders.some(order => order.id === orderId));
+    const orderExists = Boolean(getLiveOrderViewModel(orderId) || activeOrders.some(order => order.id === orderId));
     if (orderExists) openOrderDetail(orderId);
     onQuickActionHandled?.();
   }, [
@@ -64078,11 +64175,11 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
     quickActionIntent?.type,
     quickActionIntent?.orderId,
     activeOrders,
-    orderViewModels
+    getLiveOrderViewModel
   ]);
 
   return (
-    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16" aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
       {showFilterPanel && (
         <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">
@@ -64175,16 +64272,16 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
               />
             </div>
           </div>
-          <h2 className="mt-1 text-center text-[14px] font-black tracking-tight">{formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ</h2>
+          <h2 className="mt-1 text-center text-[14px] font-black tracking-tight">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ` : '—'}</h2>
         </div>
         <div className="mt-1 grid grid-cols-2 gap-2 text-center">
           <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Đã thu</p>
-            <p className="mt-1 text-sm font-black">{formatCurrency(dailyOrderRevenueSummary.paidRevenue)} đ</p>
+            <p className="mt-1 text-sm font-black">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.paidRevenue)} đ` : '—'}</p>
           </div>
           <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Còn nợ</p>
-            <p className="mt-1 text-sm font-black">{formatCurrency(dailyOrderRevenueSummary.outstandingRevenue)} đ</p>
+            <p className="mt-1 text-sm font-black">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.outstandingRevenue)} đ` : '—'}</p>
           </div>
         </div>
       </div>
@@ -64201,10 +64298,12 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
         </div>
       )}
       
-      <div className="premium-data-list space-y-3" aria-busy={preparedOrderSearch.pending}>
+      <div className="premium-data-list space-y-3" aria-busy={orderViewProjection.pending || Boolean(orderViewProjection.error) || preparedOrderSearch.pending}>
+        {orderViewProjection.pending && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tổng hợp danh sách đơn…</p>}
+        {orderViewProjection.error && <p role="alert" className="px-4 py-3 text-sm text-red-600">Chưa tổng hợp được danh sách đơn. Hãy mở lại màn hình.</p>}
         {preparedOrderSearch.pending && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tìm kiếm...</p>}
         {preparedOrderSearch.error && <p role="alert" className="px-4 py-3 text-sm text-red-600">Chưa tìm kiếm được. Hãy mở lại danh sách.</p>}
-        {displayOrders.length === 0 && !preparedOrderSearch.pending && !preparedOrderSearch.error && (
+        {displayOrders.length === 0 && !orderViewProjection.pending && !orderViewProjection.error && !preparedOrderSearch.pending && !preparedOrderSearch.error && (
           <HDEmptyState
             icon={<ClipboardList size={24} />}
             title={hasOrderListFilters ? 'Không tìm thấy đơn phù hợp' : 'Chưa có đơn hàng'}
@@ -65796,6 +65895,8 @@ function OrderManagementView({ isAccounting, employee, currentCompany, employees
   );
 }
 
+const productCatalogMetricsCache=createProjectionCache();
+const EMPTY_CATALOG_INVENTORY=Object.freeze({productRows:Object.freeze([]),groupRows:Object.freeze([]),totals:Object.freeze({})});
 function ProductManagementView({ warehouseImports = [], warehouseDispatches = [], isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showForm, setShowForm] = useState(false);
   useModalScrollLock(showForm);
@@ -65871,7 +65972,14 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
   // Published collection records are replaced, including nested stock edits;
   // unchanged records retained by the snapshot setter can reuse measurements.
   const stockIndex = useMemo(() => createIncrementalProductStockIndex({ immutableRecords: true }), [currentCompany?.id]);
-  const inventoryMetrics = useMemo(() => buildInventoryMetrics(products, orders, { untilDate: getTodayString(), warehouseImports, warehouseDispatches, stockBalanceResolver: stockIndex.build }), [products, orders, warehouseImports, warehouseDispatches, stockIndex]);
+  const [inventoryCalculationAttempt,setInventoryCalculationAttempt]=useState(0);
+  const inventoryDateKey=getTodayString();
+  const inventoryScope=[currentCompany?.id,inventoryDateKey].join('|');
+  const inventoryEntry=useMemo(()=>productCatalogMetricsCache([products,orders,warehouseImports,warehouseDispatches],inventoryScope),[products,orders,warehouseImports,warehouseDispatches,inventoryScope]);
+  const prepareInventoryMetrics=useMemo(()=>()=>buildInventoryMetrics(products,orders,{untilDate:inventoryDateKey,warehouseImports,warehouseDispatches,stockBalanceResolver:stockIndex.build,cooperative:true}),[products,orders,warehouseImports,warehouseDispatches,stockIndex,inventoryDateKey,inventoryCalculationAttempt]);
+  const inventoryProjection=useCooperativeProjection(prepareInventoryMetrics,inventoryEntry);
+  const inventoryReady=!inventoryProjection.pending && !inventoryProjection.error;
+  const inventoryMetrics=inventoryReady ? inventoryProjection.value : EMPTY_CATALOG_INVENTORY;
   const inventoryByProductId = useMemo(
     () => new Map(inventoryMetrics.productRows.map(row => [row.id, row])),
     [inventoryMetrics.productRows]
@@ -66215,7 +66323,11 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
   };
 
   return (
-    <div className="premium-data-module premium-products-module space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-products-module space-y-4 animate-in fade-in pb-16" aria-busy={!inventoryReady}>
+      {inventoryProjection.pending && <p role="status" className="p-3 text-sm text-slate-500">Đang đối chiếu số lượng và giá trị tồn kho…</p>}
+      {inventoryProjection.error && <p role="alert" className="p-3 text-sm text-amber-800">Chưa tính xong tồn kho.
+        <button type="button" onClick={()=>setInventoryCalculationAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
+      </p>}
       <div className="hd-section-tabs hd-product-tabs grid grid-cols-3 border-b border-gray-200" role="tablist" aria-label="Kho sản phẩm">
         <button type="button" role="tab" aria-selected={!showArchived && productTab === 'products'} onClick={() => { setProductTab('products'); setShowArchived(false); }} className={`border-b-2 text-sm font-semibold ${!showArchived && productTab === 'products' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Sản phẩm</button>
         <button type="button" role="tab" aria-selected={!showArchived && productTab === 'inventory'} onClick={() => { setProductTab('inventory'); setShowArchived(false); }} className={`border-b-2 text-sm font-semibold ${!showArchived && productTab === 'inventory' ? 'border-emerald-500 text-emerald-600' : 'border-transparent text-gray-500'}`}>Tồn kho</button>
@@ -66402,6 +66514,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
       <>
         <ListPagination pagination={productPage} label="Phân trang sản phẩm" />
       <div className="hd-product-list" role="list" aria-label={productTab === 'inventory' ? 'Danh sách tồn kho sản phẩm' : 'Danh sách sản phẩm'}>
+        {productTab === 'inventory' && !inventoryReady ? <p role="status" className="p-4 text-sm text-slate-500">Chưa có kết quả tồn kho hoàn tất để hiển thị.</p> : <>
         {productPage.items.map(p => {
           const inventoryRow = inventoryByProductId.get(p.id) || {};
           const isInventoryTracked = (inventoryRow.openingStock || 0) > 0;
@@ -66501,6 +66614,7 @@ function ProductManagementView({ warehouseImports = [], warehouseDispatches = []
             className="rounded-2xl border border-dashed border-slate-200 bg-white"
           />
         )}
+      </>}
       </div>
       </>
       )}
@@ -66909,7 +67023,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const [isCapturingNewCustomerLocation, setIsCapturingNewCustomerLocation] = useState(false);
   const [isImportingCustomers, setIsImportingCustomers] = useState(false);
   const [customerImportStatus, setCustomerImportStatus] = useState('');
-  const [customerImportManagerId, setCustomerImportManagerId] = useState('');
+  const [customerImportManagerId, setCustomerImportManagerId] = useState(() => (
+    isEmployeeSalesPosition(employee) ? employee?.id || '' : (employees || []).find(isEmployeeSalesPosition)?.id || ''
+  ));
   const [driverDebtAccessEnabledDraft, setDriverDebtAccessEnabledDraft] = useState(false);
   const [allowedDriverIdsDraft, setAllowedDriverIdsDraft] = useState([]);
   const [isSavingDriverAccess, setIsSavingDriverAccess] = useState(false);
@@ -67034,6 +67150,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
   const newCustomerProductSuggestionLimit = 10;
   const newCustomerProductUsageById = useMemo(() => {
     const usageByProductId = new Map();
+    if (!showAddCustomer) return usageByProductId;
     (orders || [])
       .filter(order => !order?.isArchived)
       .forEach(order => {
@@ -67052,7 +67169,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         });
       });
     return usageByProductId;
-  }, [orders]);
+  }, [orders, showAddCustomer]);
   const activeProductForPricingLookup = useMemo(
     () => new Map(activeProductsForPricing.map(product => [product.id, product])),
     [activeProductsForPricing]
@@ -67062,6 +67179,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     [newCustomerProductIds]
   );
   const newCustomerProductOptions = useMemo(() => {
+    if (!showAddCustomer) return [];
     const keyword = normalizeLookupText(newCustomerProductSearch);
     return activeProductsForPricing
       .filter(product => productMatchesLookup(product, keyword))
@@ -67075,7 +67193,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
         if (bUsage.lastTime !== aUsage.lastTime) return bUsage.lastTime - aUsage.lastTime;
         return (a.name || '').localeCompare(b.name || '', 'vi');
       });
-  }, [activeProductsForPricing, newCustomerProductSearch, newCustomerProductUsageById, selectedNewCustomerProductIdSet]);
+  }, [showAddCustomer, activeProductsForPricing, newCustomerProductSearch, newCustomerProductUsageById, selectedNewCustomerProductIdSet]);
   const toggleNewCustomerProduct = (productId) => {
     if (!productId) return;
     setNewCustomerProductIds(prev => (
@@ -67107,9 +67225,10 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     return lookup;
   }, [customerPoints]);
 
+  const sharedCustomerLedgerMap = React.useContext(ReconciledLedgerContext);
   const customerLedgerIndex = useMemo(
-    () => buildCustomerReconciledLedgerMap(activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses),
-    [activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses]
+    () => sharedCustomerLedgerMap || buildCustomerReconciledLedgerMap(activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses),
+    [sharedCustomerLedgerMap, activeCustomers, orders, payments, safeCustomerWarehouseImports, expenses]
   );
   const buildCustomerSummary = useCallback((cus) => {
     const ledger = customerLedgerIndex[cus.id] || buildCustomerReconciledLedger(cus, orders, payments, safeCustomerWarehouseImports, expenses);
@@ -67778,6 +67897,9 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
       customerPriceAutoSaveTimerRef.current = null;
     }
     if (!selectedCustomerId) {
+      // The list has no editor to reset on mount or a background snapshot.
+      // Reset once when leaving a previously selected customer, not every time.
+      if (selectedCustomerDraftSourceIdRef.current === null) return;
       selectedCustomerDraftSourceIdRef.current = null;
       setAllowedDriverIdsDraft([]);
       setDriverDebtAccessEnabledDraft(false);
@@ -68222,7 +68344,7 @@ function CustomerCRMView({ isVpsMode = false, employee, currentCompany, customer
     if (!showAddCustomer) {
       setCustomerContactStatus('');
       setIsPickingCustomerContact(false);
-      setNewCustomerProductIds([]);
+      setNewCustomerProductIds(current => current.length === 0 ? current : []);
       setNewCustomerProductSearch('');
     }
   }, [showAddCustomer]);
@@ -72077,6 +72199,15 @@ const getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = '', month
     : Object.entries(attendance || {}).map(([key, record]) => ({ key, record }));
 
   return records
+    // Payroll/reporting asks for each employee separately. Avoid cloning every
+    // other employee's full record on each call; retain the original complete
+    // normalization/month/company predicates for the candidate records below.
+    .filter(({key,record})=>{
+      const declaredId=record?.employeeId || record?.empId || record?.targetEmployeeId;
+      if (declaredId) return `${declaredId}` === `${empId || ''}`;
+      const match=`${key || record?.id || ''}`.match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
+      return `${match?.[2] || ''}` === `${empId || ''}`;
+    })
     .map(({ key, record }) => {
       // Attendance payroll rows are keyed by work date and employee. Prefer
       // that document identity so legacy record.date values cannot move the
@@ -72287,7 +72418,9 @@ const calculateEmployeeSystemReview = (emp = {}, {
   orders = [],
   deliveryReports = [],
   monthKey = '',
-  companyId = ''
+  companyId = '',
+  reviewOrdersByEmployee = null,
+  reviewReportsByEmployee = null
 } = {}) => {
   const employeeId = emp?.id || '';
   const attendanceEntries = getEmployeeAttendanceEntriesForMonth(attendance, employeeId, monthKey, companyId);
@@ -72305,13 +72438,15 @@ const calculateEmployeeSystemReview = (emp = {}, {
     return parseMinutesInput(record?.lateMinutes ?? record?.minutesLate ?? record?.late, 0) > 0;
   }).length;
   const missingCheckOut = attendanceEntries.filter(record => (record?.checkIn || record?.checkInAt) && !(record?.checkOut || record?.checkOutAt)).length;
-  const monthOrders = (orders || []).filter(order => (
+  const candidateOrders = reviewOrdersByEmployee instanceof Map ? reviewOrdersByEmployee.get(`${employeeId}`) || [] : orders || [];
+  const monthOrders = candidateOrders.filter(order => (
     isOrderRelatedToEmployeeReview(order, employeeId) &&
     normalizeEmployeeReviewMonthKey(order.date || order.createdAt || getEntityTimestamp(order)) === monthKey &&
     (!companyId || `${order?.companyId || order?.appId || order?.tenantId || ''}` === `${companyId}`)
   ));
   const revenue = monthOrders.reduce((sum, order) => sum + getEmployeeReviewOrderAmount(order), 0);
-  const monthReports = (deliveryReports || []).filter(report => (
+  const candidateReports = reviewReportsByEmployee instanceof Map ? reviewReportsByEmployee.get(`${employeeId}`) || [] : deliveryReports || [];
+  const monthReports = candidateReports.filter(report => (
     isDeliveryReportRelatedToEmployeeReview(report, employeeId) &&
     normalizeEmployeeReviewMonthKey(report.date || report.createdAt || getEntityTimestamp(report)) === monthKey &&
     (!companyId || `${report?.companyId || report?.appId || report?.tenantId || ''}` === `${companyId}`)
@@ -73653,38 +73788,9 @@ function EmployeeView({
     return list.filter(item => item.reviewerEmployeeId === currentId || item.targetEmployeeId === currentId);
   }, [employeeReviews, isSuperAdmin, canViewAllEmployeeReviews, canViewEmployees, currentEmployee?.id]);
 
-  const employeeEvaluationRows = useMemo(() => (
-    (employees || [])
-      .filter(emp => !emp?.isArchived)
-      .map(emp => buildEmployeeReviewSummary(emp, {
-        attendance,
-        orders,
-        deliveryReports,
-        complaints,
-        attendanceLoaded,
-        complaintsLoaded,
-        companyId: currentCompany?.id || currentCompany?.companyId || emp?.companyId || '',
-        currentCompany,
-        criteriaList: getEmployeeReviewCriteriaList(currentCompany),
-        reviews: visibleEmployeeReviews,
-        monthKey: reviewMonth
-      }))
-      .sort((a, b) => {
-        if ((b.finalScore || 0) !== (a.finalScore || 0)) return (b.finalScore || 0) - (a.finalScore || 0);
-        return (a.employee?.name || '').localeCompare(b.employee?.name || '', 'vi');
-      })
-  ), [attendance, attendanceLoaded, complaints, complaintsLoaded, currentCompany, deliveryReports, employees, orders, reviewMonth, visibleEmployeeReviews]);
 
-  const employeeEvaluationOverview = useMemo(() => {
-    const total = employeeEvaluationRows.length;
-    const avgScore = total ? Math.round(employeeEvaluationRows.reduce((sum, row) => sum + (row.finalScore || 0), 0) / total) : 0;
-    return {
-      total,
-      avgScore,
-      fiveStar: employeeEvaluationRows.filter(row => row.stars === 5).length,
-      bonusTotal: employeeEvaluationRows.reduce((sum, row) => sum + (row.bonus || 0), 0)
-    };
-  }, [employeeEvaluationRows]);
+
+
   const employeeAssetLookup = useMemo(() => {
     const lookup = new Map();
     (assets || [])
@@ -74282,7 +74388,7 @@ function EmployeeView({
   );
 
   return (
-    <div className="space-y-4 animate-in fade-in pb-16">
+    <div data-hd-employee-directory className="space-y-4 animate-in fade-in pb-16">
       {employeeStatus && (
         <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           {employeeStatus}
@@ -75388,6 +75494,89 @@ const PayrollCompactMetric = React.memo(function PayrollCompactMetric({ label, v
   );
 });
 
+const EMPTY_PAYROLL_VIEW = Object.freeze({ rows:Object.freeze([]), evaluations:new Map(), detailsByEmployee:new Map() });
+const buildPayrollViewProjectionSteps = function* ({
+  isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports,
+  complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded,
+  currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers,
+  payrollPolicyEmployees, financials, performance, customers, payments, holidays
+}) {
+  if (isPayrollLocked) return EMPTY_PAYROLL_VIEW;
+  // Prepare the complete month off the render stack, with the legacy predicates.
+  const filterRows = function* (rows, include) {
+    const result=[];let count=0;
+    for (const row of rows || []) {
+      if (include(row)) result.push(row);
+      if (++count % 16 === 0) yield;
+    }
+    return result;
+  };
+  const reviewsForMonth=yield* filterRows(employeeReviews,review => (
+    normalizeEmployeeReviewMonthKey(review?.monthKey || review?.date || review?.createdAt) === currentMonth
+  ));
+  const ordersForMonth=yield* filterRows(orders,order => (
+    normalizeEmployeeReviewMonthKey(order?.date || order?.createdAt || getEntityTimestamp(order)) === currentMonth
+  ));
+  const deliveryReportsForMonth=yield* filterRows(deliveryReports,report => (
+    normalizeEmployeeReviewMonthKey(report?.date || report?.createdAt || getEntityTimestamp(report)) === currentMonth
+  ));
+  const complaintsForMonth=complaintsLoaded && Array.isArray(customerComplaints)
+    ? yield* filterRows(customerComplaints,complaint => {
+      const companyId=complaint?.companyId || complaint?.appId || complaint?.tenantId || '';
+      return (!payrollCompanyId || `${companyId}` === `${payrollCompanyId}`)
+        && normalizeEmployeeReviewMonthKey(complaint?.monthKey || complaint?.date || complaint?.createdAt || complaint?.updatedAt || getEntityTimestamp(complaint)) === currentMonth;
+    }) : null;
+  const attendanceForMonth={};let count=0;
+  for (const key of Object.keys(attendance || {})) {
+    const record=attendance[key];
+    if (`${key || ''}`.startsWith(currentMonth)
+      || normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt) === currentMonth) {
+      Object.defineProperty(attendanceForMonth,key,{value:record,enumerable:true,writable:true,configurable:true});
+    }
+    if (++count % 16 === 0) yield;
+  }
+  const context={attendance:attendanceForMonth,orders:ordersForMonth,deliveryReports:deliveryReportsForMonth,
+    ...buildEmployeeReviewSourceIndexes(ordersForMonth,deliveryReportsForMonth),
+    reviews:reviewsForMonth,complaints:complaintsForMonth,attendanceLoaded:Boolean(attendanceLoaded),
+    complaintsLoaded:Boolean(complaintsLoaded && Array.isArray(customerComplaints)),companyId:payrollCompanyId,
+    currentCompany,criteriaList:getEmployeeReviewCriteriaList(currentCompany),monthKey:currentMonth};
+  yield;
+  const evaluations=new Map();
+  for (const emp of employees || []) {
+    if (emp?.id && !emp.isArchived) evaluations.set(emp.id,projectEvaluationSummaryToPayroll(
+      buildEmployeeReviewSummary(emp,context),{employeeId:emp.id,monthKey:currentMonth}
+    ));
+    yield;
+  }
+  const openingDebt=new Map();
+  for (const emp of visibleSalaryEmployees || []) {
+    openingDebt.set(emp.id,getEmployeePayrollOpeningDebt(payrollDebtCarryovers,payrollCompanyId,currentMonth,emp.id));
+    yield;
+  }
+  const salesIds=new Set((payrollPolicyEmployees || []).filter(isEmployeeSalesPosition).map(emp=>emp.id));
+  const customerDebtByRecord=new Map();
+  for (const customer of customers || []) {
+    if (salesIds.has(customer.empId)) customerDebtByRecord.set(customer,getCustomerDebt(customer,orders,payments));
+    // Yield between customer ledgers; do not round/clamp individual balances.
+    yield;
+  }
+  const detailsByEmployee=new Map();
+  for (const emp of payrollPolicyEmployees || []) {
+    const base=buildSalaryDetails(emp.id,payrollPolicyEmployees,attendance,financials,performance,customers,orders,payments,holidays,currentMonth,{customerDebtByRecord});
+    detailsByEmployee.set(emp.id,applyPayrollOpeningDebtToSalaryDetails(
+      applyEvaluationBonusToSalaryDetails(base,evaluations.get(emp.id)),openingDebt.get(emp.id) || 0
+    ));
+    yield;
+  }
+  const rows=[];
+  for (const emp of visibleSalaryEmployees || []) {
+    const details=detailsByEmployee.get(emp.id);
+    if (details) rows.push({emp,details});
+    yield;
+  }
+  return {rows,evaluations,detailsByEmployee};
+};
+
 function SalaryView({
   selectedPayrollEmployeeId, setSelectedPayrollEmployeeId,
   reportPayrollTarget,
@@ -75699,109 +75888,14 @@ function SalaryView({
     }
   };
 
-  const payrollEvaluationContext = useMemo(() => {
-    if (isPayrollLocked) {
-      return { attendance: {}, orders: [], deliveryReports: [], reviews: [], monthKey: currentMonth };
-    }
-    const reviewsForMonth = (employeeReviews || []).filter(review => (
-      normalizeEmployeeReviewMonthKey(review?.monthKey || review?.date || review?.createdAt) === currentMonth
-    ));
-    const ordersForMonth = (orders || []).filter(order => (
-      normalizeEmployeeReviewMonthKey(order?.date || order?.createdAt || getEntityTimestamp(order)) === currentMonth
-    ));
-    const deliveryReportsForMonth = (deliveryReports || []).filter(report => (
-      normalizeEmployeeReviewMonthKey(report?.date || report?.createdAt || getEntityTimestamp(report)) === currentMonth
-    ));
-    const complaintsForMonth = complaintsLoaded && Array.isArray(customerComplaints)
-      ? customerComplaints.filter(complaint => {
-        const complaintCompanyId = complaint?.companyId || complaint?.appId || complaint?.tenantId || '';
-        return (!payrollCompanyId || `${complaintCompanyId}` === `${payrollCompanyId}`)
-          && normalizeEmployeeReviewMonthKey(
-            complaint?.monthKey || complaint?.date || complaint?.createdAt || complaint?.updatedAt || getEntityTimestamp(complaint)
-          ) === currentMonth;
-      })
-      : null;
-    const attendanceForMonth = Object.fromEntries(
-      Object.entries(attendance || {}).filter(([key, record]) => (
-        `${key || ''}`.startsWith(currentMonth)
-        || normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt) === currentMonth
-      ))
-    );
-    return {
-      attendance: attendanceForMonth,
-      orders: ordersForMonth,
-      deliveryReports: deliveryReportsForMonth,
-      reviews: reviewsForMonth,
-      complaints: complaintsForMonth,
-      attendanceLoaded: Boolean(attendanceLoaded),
-      complaintsLoaded: Boolean(complaintsLoaded && Array.isArray(customerComplaints)),
-      companyId: payrollCompanyId,
-      currentCompany,
-      criteriaList: getEmployeeReviewCriteriaList(currentCompany),
-      monthKey: currentMonth
-    };
-  }, [attendance, attendanceLoaded, complaintsLoaded, currentCompany, customerComplaints, deliveryReports, employeeReviews, orders, currentMonth, isPayrollLocked, payrollCompanyId]);
-
-  const payrollEvaluationResultsByEmployee = useMemo(() => {
-    const results = new Map();
-    if (isPayrollLocked) return results;
-    (employees || []).forEach(emp => {
-      if (!emp?.id || emp?.isArchived) return;
-      const summary = buildEmployeeReviewSummary(emp, payrollEvaluationContext);
-      results.set(emp.id, projectEvaluationSummaryToPayroll(summary, {
-        employeeId: emp.id,
-        monthKey: currentMonth
-      }));
-    });
-    return results;
-  }, [employees, payrollEvaluationContext, currentMonth, isPayrollLocked]);
-
-  const payrollOpeningDebtByEmployee = useMemo(() => {
-    if (isPayrollLocked) return new Map();
-    return new Map((visibleSalaryEmployees || []).map(emp => [
-      emp.id,
-      getEmployeePayrollOpeningDebt(
-        payrollDebtCarryovers,
-        payrollCompanyId,
-        currentMonth,
-        emp.id
-      )
-    ]));
-  }, [currentMonth, isPayrollLocked, payrollCompanyId, payrollDebtCarryovers, visibleSalaryEmployees]);
-
-  const buildPayrollSalaryDetails = useCallback((employeeId) => {
-    if (isPayrollLocked) return null;
-    const salaryDetails = buildSalaryDetails(
-      employeeId,
-      payrollPolicyEmployees,
-      attendance,
-      financials,
-      performance,
-      customers,
-      orders,
-      payments,
-      holidays,
-      currentMonth
-    );
-    const detailsWithEvaluationBonus = applyEvaluationBonusToSalaryDetails(
-      salaryDetails,
-      payrollEvaluationResultsByEmployee.get(employeeId)
-    );
-    return applyPayrollOpeningDebtToSalaryDetails(
-      detailsWithEvaluationBonus,
-      payrollOpeningDebtByEmployee.get(employeeId) || 0
-    );
-  }, [attendance, customers, financials, holidays, currentMonth, isPayrollLocked, orders, payments, payrollEvaluationResultsByEmployee, payrollOpeningDebtByEmployee, payrollPolicyEmployees, performance]);
-
-  const liveSalaryRows = useMemo(() => {
-    if (isPayrollLocked) return [];
-    return visibleSalaryEmployees
-      .map(emp => ({
-        emp,
-        details: buildPayrollSalaryDetails(emp.id)
-      }))
-      .filter(row => row.details);
-  }, [visibleSalaryEmployees, buildPayrollSalaryDetails, isPayrollLocked]);
+  const [payrollCalculationAttempt,setPayrollCalculationAttempt]=useState(0);
+  const preparePayrollView=useMemo(()=>()=>buildPayrollViewProjectionSteps({isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays}),[isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays,payrollCalculationAttempt]);
+  const payrollViewProjection=useCooperativeProjection(preparePayrollView);
+  const payrollViewReady=isPayrollLocked || (!payrollViewProjection.pending && !payrollViewProjection.error);
+  const payrollView=payrollViewProjection.value?.detailsByEmployee ? payrollViewProjection.value : EMPTY_PAYROLL_VIEW;
+  const payrollEvaluationResultsByEmployee=payrollView.evaluations;
+  const buildPayrollSalaryDetails=useCallback(employeeId=>payrollView.detailsByEmployee.get(employeeId) || null,[payrollView]);
+  const liveSalaryRows=payrollView.rows;
 
   const salaryRows = isPayrollLocked ? lockedSnapshotRows : liveSalaryRows;
 
@@ -75874,6 +75968,7 @@ function SalaryView({
     ? payrollMonthEndDateKey.split('-').reverse().join('/')
     : '';
   const canLockSelectedPayrollPeriod = Boolean(
+    payrollViewReady &&
     canManagePayrollByRole
     && canViewCompanyPayroll
     && !isPayrollLocked
@@ -75882,6 +75977,7 @@ function SalaryView({
     && typeof onLockPayrollPeriod === 'function'
   );
   const canPreparePayrollAutoLock = Boolean(
+    payrollViewReady &&
     payrollAutomationConfig.autoLockEnabled
     && canManagePayrollByRole
     && canViewCompanyPayroll
@@ -76244,6 +76340,7 @@ function SalaryView({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!payrollViewReady) { setFinancialModalError('Đang cập nhật bảng lương. Vui lòng chờ tính xong rồi lưu.');return; }
     if (!selectedEmp) return;
 
     if (modalType === 'performance') {
@@ -76323,6 +76420,7 @@ function SalaryView({
 
   const handleAdvanceRequestSubmit = async (event) => {
     event.preventDefault();
+    if (!payrollViewReady) { setAdvanceRequestStatus('Đang đối chiếu lại lương. Vui lòng chờ tính xong rồi gửi.');return; }
     const targetId = advanceRequestTargetEmployeeId || currentEmployeeId;
     const isOwnRequest = targetId === currentEmployeeId;
     if (!onAddAdvanceRequest || !targetId) return;
@@ -76490,8 +76588,22 @@ function SalaryView({
     );
   };
 
+  const payrollPendingNotice = (
+    <div className="payroll-workspace space-y-4 pb-16" aria-busy={payrollViewProjection.pending || Boolean(payrollViewProjection.error)}>
+      <label className="block text-sm font-bold text-slate-700">Kỳ lương
+        <input type="month" value={currentMonth} onChange={event=>setSalaryMonth(event.target.value)} className="ml-3 rounded-xl border border-slate-200 p-2" />
+      </label>
+      {payrollViewProjection.error
+        ? <div role="alert" className="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">Chưa tính xong bảng lương. Dữ liệu chưa được chốt.
+            <button type="button" onClick={()=>setPayrollCalculationAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
+          </div>
+        : <p role="status" className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">Đang tính lương, đánh giá và đối chiếu công nợ…</p>}
+    </div>
+  );
+
   return (
-    <div className="payroll-workspace space-y-4 animate-in fade-in pb-16">
+    <div className="payroll-workspace space-y-4 animate-in fade-in pb-16" aria-busy={!payrollViewReady}>
+      {!payrollViewReady ? payrollPendingNotice : <>
       {payrollScreen === 'overview' && showPayrollConfigNotice && (
         <div className="rounded-2xl border border-amber-100 bg-amber-50/80 p-4 text-amber-900 shadow-sm">
           <div className="flex items-start justify-between gap-3">
@@ -77279,6 +77391,7 @@ function SalaryView({
       </details>
       )}
 
+      </>}
       <PayrollEvaluationDetailDialog
         detail={selectedEvaluationDetail}
         monthLabel={currentMonthLabel}
@@ -77465,7 +77578,7 @@ function SalaryView({
               {advanceRequestStatus && <p className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-bold text-red-600">{advanceRequestStatus}</p>}
               <button
                 type="submit"
-                disabled={isSubmittingAdvanceRequest}
+                disabled={isSubmittingAdvanceRequest || !payrollViewReady}
                 className="w-full rounded-2xl bg-orange-500 py-3 font-black text-white shadow-sm disabled:bg-slate-300"
               >
                 {isSubmittingAdvanceRequest ? 'Đang gửi...' : 'Gửi lệnh ứng'}
@@ -77495,7 +77608,7 @@ function SalaryView({
                   {financialModalError && <p className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600">{financialModalError}</p>}
                 </>
               )}
-              <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 transition-colors text-white py-3 rounded-lg font-semibold mt-4">{editingFinancialRecord ? 'Lưu thay đổi' : 'Xác nhận'}</button>
+              <button type="submit" disabled={!payrollViewReady} className="w-full bg-emerald-500 hover:bg-emerald-600 transition-colors text-white py-3 rounded-lg font-semibold mt-4 disabled:opacity-50">{editingFinancialRecord ? 'Lưu thay đổi' : 'Xác nhận'}</button>
             </form>
           </div>
         </div>
@@ -77655,9 +77768,10 @@ function DebtManagementView({ isAccounting, isDriver, employee, customers, order
     [warehouseImports]
   );
 
+  const sharedDebtLedgerMap = React.useContext(ReconciledLedgerContext);
   const debtLedgerIndex = useMemo(
-    () => buildCustomerReconciledLedgerMap(customers, orders, payments, safeDebtWarehouseImports, expenses),
-    [customers, orders, payments, safeDebtWarehouseImports, expenses]
+    () => sharedDebtLedgerMap || buildCustomerReconciledLedgerMap(customers, orders, payments, safeDebtWarehouseImports, expenses),
+    [sharedDebtLedgerMap, customers, orders, payments, safeDebtWarehouseImports, expenses]
   );
   const customerLedgers = useMemo(() => customers.map(customer => {
     const ledger = debtLedgerIndex[customer.id];

@@ -60,6 +60,9 @@ jobs:
       - name: Check Functions syntax
         run: node --check functions/index.js
 
+      - name: Verify static compression check
+        run: node --test tests/static-compression.test.mjs
+
       - name: Lint
         run: npm run lint && npx eslint src/services/backupReadScheduler.js src/services/collationCompareCache.js src/services/customerProductBilling.js src/services/productPricingUnits.js tests/warehouse-dispatch-performance.test.mjs scripts/master-emulator-session-regression.mjs scripts/master-session-regression.mjs scripts/helpers/master-emulator-ui-crud.mjs
 
@@ -100,6 +103,8 @@ jobs:
           VITE_DATA_MODE: cloud
           VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
           VITE_HD_APP_ID: hd-manager-production
+          VITE_FIRESTORE_READ_WORKER: 'true'
+          VITE_IDENTITY_AUTH_REGION: ''
         run: npm run build
 
       - name: Verify Firebase-only production bundle
@@ -107,6 +112,8 @@ jobs:
           VITE_DATA_MODE: cloud
           VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
           VITE_HD_APP_ID: hd-manager-production
+          VITE_FIRESTORE_READ_WORKER: 'true'
+          VITE_IDENTITY_AUTH_REGION: ''
         run: npm run verify:firebase-production-bundle
 
       - name: Verify build output
@@ -188,6 +195,10 @@ jobs:
             trap cleanup EXIT
             chmod 750 /home/hdmanager/deploy.sh
             EXPECTED_INDEX_SHA="${EXPECTED_INDEX_SHA}" /home/hdmanager/deploy.sh
+
+      - name: Verify production static compression
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        run: node scripts/verify-static-compression.mjs --production
 
       - name: Verify production serves this release
         if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true

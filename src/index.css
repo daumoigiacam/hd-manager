@@ -423,6 +423,19 @@ svg {
 .hd-login-3d-field__control {
   position: relative;
   z-index: 1;
+  color: #0f172a;
+  -webkit-text-fill-color: #0f172a;
+  caret-color: #0f172a;
+}
+
+.hd-shell--auth input.hd-login-3d-field__control {
+  font-size: 16px;
+}
+
+.hd-login-3d-field__control::placeholder {
+  color: #475569;
+  -webkit-text-fill-color: #475569;
+  opacity: 1;
 }
 
 @property --hd-login-border-angle {
@@ -870,31 +883,51 @@ svg {
   }
 }
 
+/* Legacy WebView power guard: keep plain selectors (WebView 74 drops :where()). */
+html.hd-low-power-ui .hd-enterprise-app-shell,
 html.hd-low-power-ui .mobile-app-shell,
 html.hd-low-power-ui .customer-portal-shell {
   text-rendering: optimizeSpeed;
 }
 
-html.hd-low-power-ui .mobile-app-shell :where([class*="backdrop-blur"]),
-html.hd-low-power-ui .customer-portal-shell :where([class*="backdrop-blur"]) {
+html.hd-low-power-ui .hd-enterprise-app-shell,
+html.hd-low-power-ui .hd-enterprise-app-shell *,
+html.hd-low-power-ui .mobile-app-shell,
+html.hd-low-power-ui .mobile-app-shell *,
+html.hd-low-power-ui .customer-portal-shell,
+html.hd-low-power-ui .customer-portal-shell *,
+html.hd-low-power-ui .hd-ds-dialog-layer,
+html.hd-low-power-ui .hd-dashboard-dialog-layer {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
-html.hd-low-power-ui .mobile-app-shell :where([class*="shadow-2xl"], [class*="shadow-xl"], [class*="shadow-lg"]),
-html.hd-low-power-ui .customer-portal-shell :where([class*="shadow-2xl"], [class*="shadow-xl"], [class*="shadow-lg"]) {
+html.hd-low-power-ui [class*="shadow-2xl"],
+html.hd-low-power-ui [class*="shadow-xl"],
+html.hd-low-power-ui [class*="shadow-lg"] {
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08) !important;
 }
 
-html.hd-low-power-ui .mobile-app-shell :where(.animate-in, .fade-in, .zoom-in-95, .slide-in-from-bottom-full, .slide-in-from-bottom-10),
-html.hd-low-power-ui .customer-portal-shell :where(.animate-in, .fade-in, .zoom-in-95, .slide-in-from-bottom-full, .slide-in-from-bottom-10) {
-  animation-duration: 80ms !important;
-}
-
+/* Entrance effects only; loading indicators keep their progress feedback. */
+html.hd-low-power-ui .animate-in,
+html.hd-low-power-ui .fade-in,
+html.hd-low-power-ui .zoom-in-95,
+html.hd-low-power-ui .slide-in-from-bottom-full,
+html.hd-low-power-ui .slide-in-from-bottom-10,
+html.hd-low-power-ui .hd-ds-dialog-layer,
+html.hd-low-power-ui .hd-ds-dialog,
+html.hd-low-power-ui .hd-dashboard-dialog-layer,
+html.hd-low-power-ui .hd-dashboard-dialog,
 html.hd-low-power-ui .chat-soft-run-border,
 html.hd-low-power-ui .hd-soft-red-outline {
   animation: none !important;
 }
+
+html.hd-low-power-ui .hd-login-3d-field::before,
+html.hd-low-power-ui .business-report-skeleton i {
+  animation: none !important;
+}
+/* End legacy WebView power guard. */
 
 .animate-in {
   animation-duration: 220ms;

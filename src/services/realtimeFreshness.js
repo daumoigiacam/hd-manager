@@ -21,6 +21,10 @@ export const shouldApplyRealtimeSnapshot = (snapshot) => (
 );
 
 export const getRealtimeDataChangeCount = (snapshot) => {
+  if (snapshot?.kind === 'hd-firestore-worker-snapshot-v1') {
+    return Number.isSafeInteger(snapshot.dataChangeCount) && snapshot.dataChangeCount >= 0
+      ? snapshot.dataChangeCount : null;
+  }
   if (typeof snapshot?.docChanges !== 'function') return null;
 
   try {

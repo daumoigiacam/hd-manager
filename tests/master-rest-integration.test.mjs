@@ -6,7 +6,8 @@ import test from 'node:test';
 import { parseExpression } from '@babel/parser';
 import { appObject } from './helpers/app-source-function.mjs';
 import { collectTenantRestQuery } from '../src/services/firestoreRestPagination.js';
-import { createRealtimeSnapshotItemsCollector } from '../src/services/realtimeSnapshotItems.js';
+import { createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline } from '../src/services/realtimeSnapshotItems.js';
+import { canUseFirestoreReadWorker } from '../src/services/readWorkerPolicy.js';
 import { hasActiveRealtimeListener } from '../src/services/firestoreResilience.js';
 import {
   getRealtimeDataChangeCount, isServerConfirmedRealtimeSnapshot,
@@ -131,7 +132,7 @@ function createClock() {
 }
 
 function createHarness({ companyId = 'company-a', customer = false, role = 'sales', preview = false,
-  fetchPage = () => response([{ readTime }]), sdkRead, tokenRead, stable = [] } = {}) {
+  fetchPage = () => response([{ readTime }]), sdkRead, tokenRead, stable = [], onSubscribeThrowAt = Infinity, worker = null } = {}) {
   const clock = createClock();
   const calls = [];
   const tokens = [];
@@ -141,7 +142,9 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
   const active = new Set();
   const serverAt = new Map();
   const snapshotAt = new Map();
+  const subscriptions = [];
   const bindings = {
+    readWorker:worker,readWorkerControllerRef:ref(worker),canUseFirestoreReadWorker,
     appId, tenantCompanyId: companyId, sessionCustomerId: customer ? 'customer-a' : '',
     customerSession: customer, currentUser: { id: 'employee-a', employeeId: 'employee-a', role },
     db: {}, activeFirebaseConfig: { projectId }, isVpsMode: false, isPreviewDataMode: preview,
@@ -177,7 +180,15 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
       scans.push(options);
       return collectTenantRestQuery(options);
     },
-    createRealtimeSnapshotItemsCollector, hasActiveRealtimeListener, isServerSnapshotFresh,
+    createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline, hasActiveRealtimeListener, isServerSnapshotFresh,
+    CORE_DATA_COLLECTION_NAMES: ['companies', 'employees'],
+    onSnapshot: (target, options, next, error) => {
+      if (subscriptions.length === onSubscribeThrowAt) throw new Error('fixture subscribe failed');
+      const sub = { target, options, next, error, stopped: false };subscriptions.push(sub);
+      return () => { sub.stopped = true; };
+    },
+    isRecoverableRealtimeError: () => false, isFirestoreInternalAssertionError: () => false,
+    shouldLogRecoverableRealtimeError: () => false, scheduleCollectionRefresh: noop,
     isServerConfirmedRealtimeSnapshot, shouldApplyRealtimeSnapshot, getRealtimeDataChangeCount,
     activeRealtimeCollectionsRef: ref(active), lastRealtimeServerSnapshotAtRef: ref(serverAt),
     lastRealtimeSnapshotAtRef: ref(snapshotAt),
@@ -220,8 +231,12 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     let refreshTimer = null;
     let foregroundCollectionRecency = [];
     ${declarations}
+    const activeRealtimeCollectionListeners = new Map();
+    const stopCollectionListener = ${expression('stopCollectionListener')};
+    const startCollectionListener = ${expression('startCollectionListener')};
     return {
       readTenantCollectionViaRest, readCollection, getTenantCollectionSources,
+      startListener: startCollectionListener, stopListener: stopCollectionListener,
       revisions: collectionReadRevisions, controllers: collectionReadControllers,
       dispose: ${cleanup},
       listener(colName, sourceCount = 1) {
@@ -234,6 +249,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
         const isObject = false;
         const parser = null;
         let hasAppliedDataSnapshot = false;
+        let listenerActive = true;
         const applySnapshot = ${expression('applySnapshot')};
         const listener = (snapshot, sourceIndex = 0) => applySnapshot(snapshot, sourceIndex);
         listener.sourceItems = sourceItemsByIndex;
@@ -243,8 +259,62 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
       },
     };
   `)(...Object.values(bindings));
-  return { ...runtime, calls, tokens, sdkCalls, scans, events, clock, active, serverAt, snapshotAt };
+  return { ...runtime, calls, tokens, sdkCalls, scans, events, clock, active, serverAt, snapshotAt, subscriptions };
 }
+
+test('actual business listener yields to input before publication and invalidates disposed work', async () => {
+  const h=createHarness(),items=expected(fixture(400));
+  const setterCalls=[];h.startListener(['orders',data=>setterCalls.push(data),false,null]);
+  h.subscriptions[0].next(incrementalSnapshot(items).snapshot);
+  assert.equal(h.events.publications.length,0);assert.deepEqual(h.events.confirmed,[]);
+  let inputHandled=false;
+  h.clock.setTimeout(()=>{inputHandled=true;assert.equal(setterCalls.length,0)},0);
+  await h.clock.advance(0);
+  assert.equal(inputHandled,true);assert.deepEqual(setterCalls,[items]);
+  assert.deepEqual(h.events.confirmed,['orders']);
+  const fresh=items.map(item=>({...item,data:{...item.data,amount:500}}));
+  h.subscriptions[0].next(incrementalSnapshot(fresh).snapshot);
+  h.stopListener('orders');await h.clock.advance(0);
+  assert.equal(setterCalls.length,1);assert.equal(h.subscriptions[0].stopped,true);
+  h.subscriptions[0].next(incrementalSnapshot(fresh).snapshot);await h.clock.advance(0);
+  assert.equal(setterCalls.length,1);
+});
+
+test('actual App worker branch preserves confirmed snapshot publication, cancellation and original listener fallback',async()=>{
+  const streams=[];let stops=0,closed=0;
+  const worker={subscribe:(name,handlers)=>{streams.push({name,...handlers});return()=>stops++},close:()=>closed++,
+    beginPublication:()=>1,publicationScheduled:()=>{}};
+  const h=createHarness({worker});const values=[];
+  const off=h.startListener(['orders',items=>values.push(items),false,null]);
+  assert.equal(h.subscriptions.length,0);assert.equal(streams.length,1);
+  const items=expected(fixture(2));
+  streams[0].publish({kind:'hd-firestore-worker-snapshot-v1',metadata:{fromCache:false,hasPendingWrites:false},dataChangeCount:null},items);
+  assert.equal(values.length,1);assert.deepEqual(values[0],items);assert.deepEqual(h.events.confirmed,[],'receiving worker data cannot confirm uncommitted React state');
+  const property=appObject('readWorker').consequent.arguments[0].properties.find(p=>p.key.name==='onCommitted');
+  const committed=new Function('markCollectionServerConfirmed',`return (${source.slice(property.value.start,property.value.end)});`)(name=>h.events.confirmed.push(name));
+  committed({collectionName:'orders'});assert.deepEqual(h.events.confirmed,['orders']);
+  off();streams[0].publish({kind:'hd-firestore-worker-snapshot-v1',metadata:{fromCache:false,hasPendingWrites:false},dataChangeCount:0},[]);
+  assert.equal(values.length,1);assert.equal(stops,1);
+  h.stopListener('orders');
+  const offFallback=h.startListener(['orders',items=>values.push(items),false,null]);
+  const fallbackStop=streams[1].fallback();
+  assert.equal(h.subscriptions.length,1);
+  h.subscriptions[0].next(snapshot(items));await h.clock.advance(0);
+  assert.equal(values.length,2);assert.deepEqual(values[1],items);
+  fallbackStop();offFallback();assert.equal(h.subscriptions[0].stopped,true);
+  h.dispose();assert.equal(closed,1);
+});
+
+test('actual core listener yields before publication and a partially failed multi-source subscription is cleaned up',async()=>{
+  const core=createHarness();let count=0;
+  core.startListener(['companies',()=>{count++},false,null]);
+  core.subscriptions[0].next(snapshot(expected(fixture(1))));assert.equal(count,0);
+  await core.clock.advance(0);assert.equal(count,1);
+  const failed=createHarness({onSubscribeThrowAt:1});
+  failed.startListener(['messages',noop,false,null]);
+  assert.equal(failed.subscriptions.length,1);assert.equal(failed.subscriptions[0].stopped,true);
+  assert.equal(failed.active.has('messages'),false);
+});
 
 function assertReadCleanup(h) {
   assert.equal(h.controllers.size, 0);
@@ -261,7 +331,10 @@ for (const size of [0, 199, 200, 201, 400]) {
     await h.readCollection('orders', noop);
     assert.deepEqual(h.events.publications.map(event => event.items), [expected(documents)]);
     assert.deepEqual(h.events.confirmed, ['orders']);
-    assert.deepEqual(h.events.publications[0].options, { source: 'server', keepPreviousOnEmpty: false });
+    const {isCurrent,...publicationOptions}=h.events.publications[0].options;
+    assert.deepEqual(publicationOptions, { source: 'server', keepPreviousOnEmpty: false });
+    assert.equal(isCurrent(),true);
+    h.dispose();assert.equal(isCurrent(),false);
     assert.equal(h.calls.length, Math.floor(size / 200) + 1);
     assert.equal(h.scans.length, 1);
     for (const [index, call] of h.calls.entries()) {
@@ -641,7 +714,7 @@ test('actual listener unchanged metadata ACKs on either source cause no extra co
   assert.deepEqual(listener.setterCalls.at(-1), [...a, ...b]);
 });
 
-test('actual listener decode failure publishes no partial union or confirmation and recovers fully', () => {
+test('actual listener decode failure publishes no partial union or confirmation and recovers fully', async () => {
   const h = createHarness();
   const listener = h.listener('orders');
   const items = expected(fixture(2));
@@ -650,7 +723,7 @@ test('actual listener decode failure publishes no partial union or confirmation 
   const broken = incrementalSnapshot(updated, updated.map((item, index) => ['modified', item.id, index, index]));
   broken.snapshot.docs[1].data = () => { throw new Error('Snapshot decode failed'); };
   const confirmationCount = h.events.confirmed.length;
-  assert.throws(() => listener(broken.snapshot), /Snapshot decode failed/);
+  await assert.rejects(listener(broken.snapshot), /Snapshot decode failed/);
   assert.equal(h.events.publications.length, 1);
   assert.equal(h.events.confirmed.length, confirmationCount);
   assert.deepEqual(listener.sourceItems.get(0), items);

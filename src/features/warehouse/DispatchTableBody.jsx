@@ -68,7 +68,7 @@ export default React.memo(/** @param {DispatchTableBodyProps} props */ function 
                           aria-label={`Sửa người giao phiếu xuất của ${group.customerName || row.customerName || 'khách hàng'}`}
                         >
                           {group.hasAssignedDriver && <span className="hd-dispatch-table__driver-name">{rowDriverName}</span>}
-                          <span className="hd-dispatch-table__delivery-status">{group.deliveryStatus.label}</span>
+                          {!group.hasAssignedDriver && <span className="hd-dispatch-table__delivery-status">Chưa giao</span>}
                         </button>
                       </td>
                       )}

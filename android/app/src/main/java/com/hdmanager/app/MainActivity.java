@@ -35,6 +35,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MicrophonePermissionPlugin.class);
         registerPlugin(WifiInfoPlugin.class);
         registerPlugin(NativeSafeAreaPlugin.class);
+        registerPlugin(ScopedBackupWriterPlugin.class);
         bridgeBuilder.addWebViewListener(new WebViewListener() {
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {

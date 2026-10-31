@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { getLockedPayrollPeriod } from '../src/utils/payrollPeriodLock.js';
+import { buildEmployeeReviewSourceIndexes } from '../src/utils/employeeReviewSourceIndex.js';
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const body = source.slice(source.indexOf('const buildDashboardPayrollCostRows ='), source.indexOf('const compareLedgerItems ='));
+const body = source.slice(source.indexOf('const buildDashboardPayrollCostSteps ='), source.indexOf('const compareLedgerItems ='));
 const toDateInputString = value => {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -14,6 +15,7 @@ assert.equal(dateKey(new Date(NaN)), '');
 assert.equal(dateKey({ toDate: () => new Date(2026, 9, 1) }), '2026-10-01');
 let liveCalls = 0;
 const bindings = {
+  buildEmployeeReviewSourceIndexes,
   getDateKeyFromAnyValue: dateKey,
   applyEmployeePayrollPolicyForMonth: e => e,
   getLockedPayrollPeriod,

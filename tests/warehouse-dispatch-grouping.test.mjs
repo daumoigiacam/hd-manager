@@ -156,5 +156,7 @@ test('the dispatch table uses grouped cells with rowSpan for driver and customer
   const driverCell = tableSource.slice(driverCellStart, tableSource.indexOf('</td>', driverCellStart));
   assert.doesNotMatch(driverCell, />Giao hàng</, 'Do not repeat the delivery label in every driver cell');
   assert.match(driverCell, /rowDriverName/);
-  assert.match(driverCell, /group\.deliveryStatus\.label/);
+  assert.match(driverCell, /group\.hasAssignedDriver && <span className="hd-dispatch-table__driver-name">/);
+  assert.match(driverCell, /!group\.hasAssignedDriver && <span className="hd-dispatch-table__delivery-status">Chưa giao<\/span>/);
+  assert.doesNotMatch(driverCell, /group\.deliveryStatus\.label/, 'The driver column shows assignment, not delivery progress');
 });

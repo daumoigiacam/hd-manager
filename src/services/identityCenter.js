@@ -2,6 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import { NativeBiometric, AccessControl } from '@capgo/capacitor-native-biometric';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { getFirebaseFunctionsOrigin } from '../config/firebase-endpoints.js';
+import { getRegionalIdentityAuthUrl } from '../config/identityAuthRegion.js';
 
 const DEVICE_KEY = 'hd-identity-device-v1';
 const WEB_SECRET_PREFIX = 'hd-identity-device-secret-v1:';
@@ -254,6 +255,8 @@ const getIdentityApiUrl = (path) => {
     if (!functionName) throw new Error('Unknown identity function.');
     return `${getFirebaseFunctionsOrigin(import.meta.env.VITE_FIREBASE_PROJECT_ID)}/${functionName}`;
   }
+  const regionalUrl = getRegionalIdentityAuthUrl(path, import.meta.env || {});
+  if (regionalUrl) return regionalUrl;
   const baseUrl = getIdentityApiBaseUrl();
   if (/cloudfunctions\.net\/?$/i.test(baseUrl)) {
     const functionName = IDENTITY_FUNCTION_NAMES[path];

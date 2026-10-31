@@ -256,8 +256,9 @@ test('the auto-lock worker rejects staged snapshots that lack frozen policy inpu
 test('the locked UI dependency graph exits before live policy and formula calculation', () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /const payrollPolicyEmployees = useMemo\([\s\S]*?isPayrollLocked\s*\?\s*\[\]/);
-  assert.match(source, /const buildPayrollSalaryDetails = useCallback\(\(employeeId\) => \{\s*if \(isPayrollLocked\) return null;/);
-  assert.match(source, /const liveSalaryRows = useMemo\(\(\) => \{\s*if \(isPayrollLocked\) return \[\];/);
+  assert.match(source, /const buildPayrollViewProjectionSteps = function\*[\s\S]*?if \(isPayrollLocked\) return EMPTY_PAYROLL_VIEW;/);
+  assert.match(source, /const buildPayrollSalaryDetails=useCallback\(employeeId=>payrollView\.detailsByEmployee\.get\(employeeId\) \|\| null/);
+  assert.match(source, /const liveSalaryRows=payrollView\.rows;/);
   assert.match(source, /const salaryRows = isPayrollLocked \? lockedSnapshotRows : liveSalaryRows;/);
 });
 

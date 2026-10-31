@@ -9,6 +9,7 @@ import { hasLoyaltySnapshotChanges } from '../src/utils/loyaltySnapshot.js';
 import { createSearchRecordIndex, searchRecords } from '../src/services/searchEngine.js';
 import { planForegroundRealtimeActivation } from '../src/services/realtimeListenerPlanner.js';
 import { appFunction } from './helpers/app-source-function.mjs';
+import { runCooperativeProjection } from '../src/services/cooperativeProjection.js';
 
 function harness(options) {
   const callbacks = new Map();
@@ -23,6 +24,31 @@ function harness(options) {
     await callback();
   } };
 }
+
+test('cooperative shortage modes equal frozen summaries and cancelled work cannot publish partial coverage',async()=>{
+  const frozen=await readFile(new URL('./fixtures/shortage-cooperative.baseline.mjs',import.meta.url),'utf8');
+  const referenceFactory=(name,bindings)=>name==='buildWarehouseDispatchShortageSummary'
+    ? new Function(...Object.keys(bindings),'warehouseShortageKeyCache','return '+frozen.slice(frozen.indexOf('export default ')+15))(...Object.values(bindings),new WeakMap())
+    : appFunction(name,bindings);
+  const current=shortageHarness(),reference=shortageHarness(referenceFactory);
+  const base={dateKey:'2026-10-02',dispatchDateKey:'2026-10-02',includePreviousOpenOrders:true,
+    customers:[{id:'c',name:'Customer'}],products:[{id:'p',name:'Product',unit:'Kg'}],
+    orderRequests:Array.from({length:150},(_,i)=>({id:'r'+i,customerId:'c',date:'2026-10-02',createdAt:'2026-10-02T08:00:00Z',
+      items:[{productId:'p',quantity:i+0.5,quantityUnit:'Kg',attributeLabel:i%2?'To':'Trung'}]})),
+    warehouseDispatches:Array.from({length:80},(_,i)=>({id:'d'+i,customerId:'c',productId:'p',date:'2026-10-02',
+      createdAt:'2026-10-02T09:00:00Z',weightKg:i+1,isArchived:i%13===0}))};
+  const before=structuredClone(base);
+  for(const mode of ['full','statusesOnly','notificationOnly']){
+    const options={...base,statusesOnly:mode==='statusesOnly',notificationOnly:mode==='notificationOnly'};
+    let yields=0;
+    const actual=await runCooperativeProjection(()=>current.calculate({...options,cooperative:true}),{maxOperations:1,yieldTask:async()=>{yields++;}});
+    assert.deepEqual(actual,structuredClone(reference.calculate(options)));assert.ok(yields>10);
+  }
+  const controller=new AbortController();let turns=0,published=false;
+  await assert.rejects(runCooperativeProjection(()=>current.calculate({...base,cooperative:true}),{signal:controller.signal,maxOperations:1,
+    yieldTask:async()=>{if(++turns===2)controller.abort();}}).then(()=>{published=true;}),{name:'AbortError'});
+  assert.equal(published,false);assert.deepEqual(base,before);
+});
 
 test('maintenance deduplicates customers and pauses while dispatch data entry is active', async () => {
   let paused = true;
@@ -125,7 +151,8 @@ test('application wires latest callback, complete input guard and warehouse main
   assert.match(backupEffect, /const backupQueue = createCooperativeTaskQueue/);
   assert.match(backupEffect, /backupQueue\.enqueue\(stateKey\)/);
   assert.match(backupEffect, /backupQueue\.dispose\(\)/);
-  assert.match(backupEffect, /\[firebaseUser, myCompanyId, currentCompany, activeTab\]/);
+  assert.match(backupEffect, /\[firebaseUser, myCompanyId, currentCompany, activeTab, canAutomaticallyBackUpCompany\]/);
+  assert.match(source, /if \(!firebaseUser \|\| !myCompanyId \|\| !currentCompany \|\| !canAutomaticallyBackUpCompany\) return undefined/);
   assert.match(backupEffect, /document\.activeElement\?\.matches/);
 });
 

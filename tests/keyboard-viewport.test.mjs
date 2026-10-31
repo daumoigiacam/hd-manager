@@ -112,3 +112,31 @@ test('desktop resize and browser toolbars do not pretend to be a keyboard', () =
   assert.equal(resolveKeyboardViewport({ ...base, layoutHeight: 600, visualHeight: 600, smallTouchScreen: false }).keyboardVisible, false);
   assert.equal(resolveKeyboardViewport({ ...base, visualHeight: 740 }).keyboardVisible, false);
 });
+
+test('navigation focus does not schedule keyboard layout, while editable blur restores geometry and identical resize avoids CSS writes', async () => {
+  const source = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
+  const tree = parse(source, { sourceType: 'module', plugins: ['jsx'] });
+  const installer = tree.program.body.find(node => node.type === 'FunctionDeclaration' && node.id.name === 'installResponsiveViewportVars');
+  const properties = new Map(), classes = new Map(), events = new Map(), frames = [];
+  let writes = 0;
+  const classList = {toggle(name, enabled) {classes.set(name, enabled)}, contains(name) {return !!classes.get(name)}};
+  const window = {innerWidth:390, innerHeight:844, navigator:{},
+    visualViewport:{height:844,width:390,offsetTop:0,addEventListener(){}},
+    requestAnimationFrame(fn) {frames.push(fn);return 1},matchMedia:()=>({matches:true}),addEventListener(n,fn){events.set(n,fn)}};
+  const document = {documentElement:{style:{getPropertyValue:key=>properties.get(key),setProperty(k,v){writes++;properties.set(k,v)}},dataset:{},classList},
+    body:{classList},activeElement:{tagName:'BUTTON'}};
+  const bindings={window,document,navigator:{maxTouchPoints:5,userAgent:'Android'},globalThis:{},
+    Capacitor:{getPlatform:()=> 'android',isNativePlatform:()=>true},registerPlugin:()=>({getInsets:async()=>({})}),resolveStableViewport,resolveKeyboardViewport};
+  new Function(...Object.keys(bindings),`${source.slice(installer.start,installer.end)};installResponsiveViewportVars()`)(...Object.values(bindings));
+  await Promise.resolve();await Promise.resolve();
+  const flush=()=>frames.splice(0).forEach(fn=>fn());flush();
+  events.get('focusin')({target:document.activeElement});events.get('focusout')({target:document.activeElement});
+  assert.equal(frames.length,0,'button focus must not trigger geometry work');
+  const previousWrites=writes;events.get('resize')();flush();assert.equal(writes,previousWrites,'unchanged viewport writes no CSS variables');
+  const input={tagName:'INPUT',getAttribute:()=> 'text'};document.activeElement=input;
+  window.innerHeight=window.visualViewport.height=504;events.get('focusin')({target:input});flush();
+  assert.equal(classes.get('hd-keyboard-open'),true);assert.equal(properties.get('--hd-modal-viewport-height'),'504px');
+  document.activeElement={tagName:'BUTTON'};window.innerHeight=window.visualViewport.height=844;
+  events.get('focusout')({target:input});flush();assert.equal(classes.get('hd-keyboard-open'),false);
+  assert.equal(properties.get('--hd-modal-viewport-height'),'844px');
+});

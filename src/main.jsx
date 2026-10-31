@@ -1,3 +1,4 @@
+import './services/legacyRuntime.js';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -12,6 +13,9 @@ import { resolveKeyboardViewport, resolveStableViewport } from './utils/keyboard
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
+  const setViewportProperty = (name, value) => {
+    if (root.style.getPropertyValue?.(name) !== value) root.style.setProperty(name, value);
+  };
   const pluginRegistry = globalThis.__HD_MANAGER_CAPACITOR_PLUGINS__ ||= {};
   const nativeSafeArea = pluginRegistry.NativeSafeArea ||= registerPlugin('NativeSafeArea');
   let pendingFrame = 0;
@@ -59,7 +63,7 @@ function installResponsiveViewportVars() {
         for (const side of ['top', 'right', 'bottom', 'left']) {
           const value = Number(insets?.[side]);
           if (Number.isFinite(value) && value >= 0) {
-            root.style.setProperty(`--hd-native-safe-${side}`, `${value}px`);
+            setViewportProperty(`--hd-native-safe-${side}`, `${value}px`);
           }
         }
         nativeInsetsRetries = 0;
@@ -80,15 +84,16 @@ function installResponsiveViewportVars() {
         stableHeight: stableViewportHeight, stableWidth: stableViewportWidth, touch: isTouchLayout });
       stableViewportHeight = stable.height;
       stableViewportWidth = stable.width;
-      root.style.setProperty('--hd-viewport-height', `${stableViewportHeight}px`);
+      setViewportProperty('--hd-viewport-height', `${stableViewportHeight}px`);
     }
     if (viewportWidth > 0) {
-      root.style.setProperty('--hd-viewport-width', `${viewportWidth}px`);
+      setViewportProperty('--hd-viewport-width', `${viewportWidth}px`);
     }
 
     const platform = getPlatform();
     const isAndroidNative = isNativePlatform() && platform === 'android';
-    root.dataset.hdAndroidNative = isAndroidNative ? 'true' : 'false';
+    const androidValue = isAndroidNative ? 'true' : 'false';
+    if (root.dataset.hdAndroidNative !== androidValue) root.dataset.hdAndroidNative = androidValue;
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const isIosInputZoomGuard = platform === 'ios' || isIosWeb;
     const isStandalone = isStandaloneWebApp();
@@ -100,9 +105,10 @@ function installResponsiveViewportVars() {
         : '0px';
 
     // Some WebView/Safari surfaces report env(safe-area-inset-*) as 0 while drawing under system bars.
-    root.style.setProperty('--hd-safe-top-fallback', topFallback);
-    root.style.setProperty('--hd-safe-bottom-fallback', bottomFallback);
-    root.dataset.hdIosInputZoomGuard = isIosInputZoomGuard ? 'true' : 'false';
+    setViewportProperty('--hd-safe-top-fallback', topFallback);
+    setViewportProperty('--hd-safe-bottom-fallback', bottomFallback);
+    const zoomGuardValue = isIosInputZoomGuard ? 'true' : 'false';
+    if (root.dataset.hdIosInputZoomGuard !== zoomGuardValue) root.dataset.hdIosInputZoomGuard = zoomGuardValue;
     if (isAndroidNative) refreshNativeSafeArea();
   };
 
@@ -132,10 +138,10 @@ function installResponsiveViewportVars() {
     const isIosWeb = !isNativePlatform() && isIosWebRuntime();
     const shouldHideBottomNav = Boolean(focusedEditable && (keyboardVisibleByViewport || (isSmallTouchScreen && isIosWeb)));
 
-    root.style.setProperty('--hd-keyboard-height', `${keyboardHeight}px`);
-    root.style.setProperty('--hd-modal-viewport-height', `${viewportState.modalHeight}px`);
-    root.style.setProperty('--hd-modal-viewport-top', `${viewportState.modalTop}px`);
-    root.style.setProperty('--hd-modal-safe-bottom', keyboardVisibleByViewport ? '0px' : 'var(--hd-safe-bottom)');
+    setViewportProperty('--hd-keyboard-height', `${keyboardHeight}px`);
+    setViewportProperty('--hd-modal-viewport-height', `${viewportState.modalHeight}px`);
+    setViewportProperty('--hd-modal-viewport-top', `${viewportState.modalTop}px`);
+    setViewportProperty('--hd-modal-safe-bottom', keyboardVisibleByViewport ? '0px' : 'var(--hd-safe-bottom)');
     root.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
     document.body?.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
   };
@@ -152,6 +158,10 @@ function installResponsiveViewportVars() {
     });
   };
   const scheduleKeyboardUpdate = () => scheduleFrame(false);
+  const scheduleEditableFocusUpdate = (event) => {
+    if (!event || isKeyboardEditableElement(event.target) || isKeyboardEditableElement(document.activeElement)
+      || root.classList.contains?.('hd-keyboard-open')) scheduleKeyboardUpdate();
+  };
   const scheduleViewportAndKeyboardUpdate = () => scheduleFrame(true);
 
   updateVars();
@@ -159,8 +169,8 @@ function installResponsiveViewportVars() {
   window.addEventListener('resize', scheduleViewportAndKeyboardUpdate, { passive: true });
   window.addEventListener('orientationchange', scheduleViewportAndKeyboardUpdate, { passive: true });
   window.addEventListener('pageshow', scheduleViewportAndKeyboardUpdate, { passive: true });
-  window.addEventListener('focusin', scheduleKeyboardUpdate, true);
-  window.addEventListener('focusout', scheduleKeyboardUpdate, true);
+  window.addEventListener('focusin', scheduleEditableFocusUpdate, true);
+  window.addEventListener('focusout', scheduleEditableFocusUpdate, true);
   window.visualViewport?.addEventListener('resize', scheduleViewportAndKeyboardUpdate, { passive: true });
   if (!isNativePlatform()) {
     window.visualViewport?.addEventListener('scroll', scheduleViewportAndKeyboardUpdate, { passive: true });
@@ -545,6 +555,8 @@ class AppErrorBoundary extends React.Component {
 recordStartupEvent('app.launch', {
   platform: Capacitor.getPlatform?.() || 'web',
   userAgent: navigator.userAgent || '',
+  navigationType: performance.getEntriesByType?.('navigation')?.[0]?.type || 'unknown',
+  wasDiscarded: document.wasDiscarded === true,
 });
 initPerformanceMonitor({ appName: 'HD Manager' });
 flushStartupEvents();

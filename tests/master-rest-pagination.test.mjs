@@ -512,15 +512,20 @@ test('AbortSignal promptly rejects an ignored in-flight transport without publis
 test('generation invalidation after a page or a late error suppresses the entire result', async () => {
   for (const rejectLate of [false, true]) {
     const gate = deferred();
+    const secondRequestStarted = deferred();
     let current = true;
     let requests = 0;
     const publications = [];
     const scan = collectTenantRestQuery(options({ isCurrent: () => current, runQuery: async () => {
       requests += 1;
-      return requests === 1 ? rows(fixture(50)) : gate.promise;
+      if (requests === 1) return rows(fixture(50));
+      secondRequestStarted.resolve();
+      return gate.promise;
     } })).then(result => publications.push(result));
     const rejected = assert.rejects(scan, { name: 'AbortError' });
-    await new Promise(resolve => setImmediate(resolve));
+    // Validation may yield to a timer under load. Wait for the actual second
+    // request, rather than assuming it starts before one setImmediate callback.
+    await secondRequestStarted.promise;
     assert.equal(requests, 2);
     current = false;
     if (rejectLate) gate.reject(new Error('late transport failure'));

@@ -3,11 +3,15 @@ const normalizeId = (value) => `${value || ''}`.trim();
 let activeRevenueIndex = null;
 
 // Only synchronous report calculations share this index; never across saves.
-export const withSalesRevenueIndex = (calculate) => {
-  const previous = activeRevenueIndex;
-  activeRevenueIndex = new WeakMap();
-  try { return calculate(); } finally { activeRevenueIndex = previous; }
+export const createSalesRevenueIndexScope = () => {
+  const index = new WeakMap();
+  return calculate => {
+    const previous = activeRevenueIndex;
+    activeRevenueIndex = index;
+    try { return calculate(); } finally { activeRevenueIndex = previous; }
+  };
 };
+export const withSalesRevenueIndex = calculate => createSalesRevenueIndexScope()(calculate);
 
 const toFiniteAmount = (value) => {
   const amount = Number(value);
@@ -60,7 +64,7 @@ export const summarizeEmployeeSalesRevenueForMonth = ({
     return { monthKey: safeMonthKey, revenue: 0, orderCount: 0, customerCount: 0, orderIds: [] };
   }
 
-  const customerById = new Map(
+  const buildCustomerLookup = () => new Map(
     (customers || [])
       .filter(customer => customer?.id)
       .map(customer => [normalizeId(customer.id), customer])
@@ -70,6 +74,7 @@ export const summarizeEmployeeSalesRevenueForMonth = ({
     if (!byCustomers) { byCustomers = new WeakMap(); activeRevenueIndex.set(orders, byCustomers); }
     let index = byCustomers.get(customers);
     if (!index) {
+      const customerById = buildCustomerLookup();
       index = new Map();
       for (const order of orders) {
         if (!order || order.isArchived) continue;
@@ -91,6 +96,7 @@ export const summarizeEmployeeSalesRevenueForMonth = ({
     return { monthKey: safeMonthKey, revenue: row?.revenue || 0, orderCount: row?.orderCount || 0,
       customerCount: row?.customers.size || 0, orderIds: row ? [...row.orderIds] : [] };
   }
+  const customerById = buildCustomerLookup();
   const matchedCustomerIds = new Set();
   const orderIds = [];
   let revenue = 0;
