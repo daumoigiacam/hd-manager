@@ -1,3 +1,4 @@
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -18,7 +19,7 @@ test('password-authenticated enrollment can continue without enrollment, includi
         export async function identitySetBiometric(){window.enrollCalls++;await new Promise(r=>window.finishPrompt=r);throw Error('OS cancelled')}
       ` }));
     } }] });
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_EXECUTABLE || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/google-chrome'), headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     for (const scenario of ['unavailable', 'pending']) {
       const page = await browser.newPage();

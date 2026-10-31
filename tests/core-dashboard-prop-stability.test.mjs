@@ -1,3 +1,4 @@
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -72,7 +73,7 @@ test('actual dashboard loader memoization and deferred guard retain current tena
       root.render(<WrapperHost value={value} mark={mark}/>);
     };
   `, loader: 'jsx', resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', jsx: 'automatic' });
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_EXECUTABLE || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/google-chrome'), headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   const page = await browser.newPage();
   try {
     await page.setContent('<div id="root"></div>');

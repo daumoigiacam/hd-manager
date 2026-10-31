@@ -1,3 +1,4 @@
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -42,7 +43,7 @@ test('real quote component renders and searches without reading financial histor
       onEditCustomer={async(id,patch)=>{window.saved.push({id,patch});return {success:true}}}
     />);
   ` }, bundle: true, write: false, format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' } });
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_EXECUTABLE || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const page = await browser.newPage();
     const errors = [];

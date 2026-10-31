@@ -1,3 +1,4 @@
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -29,7 +30,7 @@ test('actual report hook keeps stale data busy, cancels superseded work, hides o
     : `export function* createExecutiveDashboardSnapshotIterator(input){yield;yield;if(window.failOnce){window.failOnce=false;throw Error('fixture')};return{amount:input.amount,payroll:input.payrollCosts.reduce((s,r)=>s+r.amount,0)}}`,resolveDir:process.cwd()}));
   }
  }]});
- const browser=await chromium.launch({executablePath:process.env.CHROME_EXECUTABLE||(process.platform==='win32'?'C:/Program Files/Google/Chrome/Application/chrome.exe':'/usr/bin/google-chrome'),headless:true});
+ const browser=await chromium.launch(chromiumLaunchOptions());
  const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  try{
   await page.setContent('<div id="root"></div>');await page.addScriptTag({content:bundle.outputFiles[0].text});

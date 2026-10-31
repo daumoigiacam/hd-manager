@@ -1,3 +1,4 @@
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -26,7 +27,7 @@ test('closed notification list queues no expansion; reopening still exposes ever
     window.render=(enabled,mark)=>root.render(<List {...{enabled,mark}}/>);
     window.step=()=>{const callbacks=[...window.jobs.values()];window.jobs.clear();callbacks.forEach(fn=>fn({timeRemaining:()=>10}))};
   ` }, bundle: true, write: false, format: 'iife', define: { 'process.env.NODE_ENV': '"production"' } });
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   const page = await browser.newPage();
   try {
     await page.setContent('<div id="root"></div>');
