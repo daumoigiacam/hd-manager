@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   CHAT_LIST_TABS,
   CHAT_SEARCH_TABS,
@@ -10,7 +11,7 @@ import {
   normalizeChatSearch,
 } from '../src/features/messaging/messagingUiModel.js';
 
-const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const app = readApplicationSource();
 const ui = readFileSync(new URL('../src/features/messaging/MessagingUi.jsx', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/features/messaging/messaging.css', import.meta.url), 'utf8');
 const start = app.indexOf('function MessageCenterView(');

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { subscribeScopedNativeEvent } from '../src/services/scopedNativeListener.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -45,8 +46,19 @@ assert.equal(validatePassword('abcd1234'), '');
 assert.notEqual(validatePassword('12345678'), '');
 assert.equal(validatePin('123456'), '');
 assert.notEqual(validatePin('12345'), '');
-assert.equal(verifyLegacyPassword('Abcd1234', legacyHash('Abcd1234')), true);
-assert.equal(verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
+assert.equal(await verifyLegacyPassword('Abcd1234', legacyHash('Abcd1234')), true);
+assert.equal(await verifyLegacyPassword('Wrong1234', legacyHash('Abcd1234')), false);
+assert.equal(await verifyLegacyPassword('Abcd1234', 'invalid'), false);
+// The expensive legacy verifier must yield to request/health-check work.
+const legacyFixture = legacyHash('Abcd1234');
+let legacyVerificationSettled = false;
+const verification = verifyLegacyPassword('Abcd1234', legacyFixture).then(value => {
+  legacyVerificationSettled = true;
+  return value;
+});
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(legacyVerificationSettled, false);
+assert.equal(await verification, true);
 const recoveryToken = createRecoveryToken('employee_emp_123');
 assert.equal(getRecoveryIdentityIdFromToken(recoveryToken), 'employee_emp_123');
 assert.equal(getRecoveryIdentityIdFromToken('legacy-token-without-routing'), '');
@@ -346,7 +358,38 @@ assert.match(loginViewSource, /void runBiometricLogin\(\)/);
 assert.match(appSource, /onBiometricLogin=\{handleIdentityBiometricLogin\}/);
 assert.match(appSource, /shouldRequireBiometricUnlock\(persistedSession\.currentUser\)/);
 assert.match(appSource, /identityBiometricLogin\(\{ appId, manual: true \}\)/);
-assert.match(appSource, /CapacitorApp\.addListener\('appStateChange'/);
+assert.match(appSource, /subscribeScopedNativeEvent\(CapacitorApp, 'appStateChange'/);
+// Execute the real biometric lifecycle effect with the actual scoped bridge
+// owner, including callbacks retained by native after a late registration.
+const biometricRegistration = appSource.indexOf('const unsubscribe = subscribeScopedNativeEvent(CapacitorApp,');
+const biometricEffectStart = appSource.lastIndexOf('  useEffect(() => {', biometricRegistration);
+const biometricEffectEnd = appSource.indexOf('  }, [biometricIdentityScope, currentUser]);', biometricRegistration);
+assert.ok(biometricRegistration >= 0 && biometricEffectStart >= 0 && biometricEffectEnd > biometricRegistration);
+const biometricEffectBody = appSource.slice(biometricEffectStart + '  useEffect(() => {'.length, biometricEffectEnd);
+for (const lateRegistration of [false, true]) {
+  let callback, registered, removeCount = 0;
+  const states = [], auth = { currentUser: { uid: 'fixture-identity-owner' } };
+  const verified = { current: 'fixture-scope' }, lease = { current: null };
+  const bindings = { subscribeScopedNativeEvent, isVpsStagingMode: false, isNativeRuntime: () => true, currentUser: {},
+    shouldRequireBiometricUnlock: () => true, biometricPromptInFlightRef: { current: false }, auth,
+    rememberedNativeUid: () => '', biometricIdentityScope: 'fixture-scope', biometricVerifiedIdentityRef: verified,
+    warmResumeLeaseRef: lease, setBiometricUnlockState: value => states.push(value),
+    CapacitorApp: { addListener(name, listener) {
+      assert.equal(name, 'appStateChange'); callback = listener;
+      return new Promise(resolve => { registered = () => resolve({ remove() { removeCount++; } }); });
+    } },
+  };
+  const cleanup = new Function(...Object.keys(bindings), biometricEffectBody)(...Object.values(bindings));
+  callback({ isActive: false });
+  assert.equal(lease.current.user, auth.currentUser); assert.equal(lease.current.scope, 'fixture-scope');
+  assert.equal(verified.current, ''); callback({ isActive: true });
+  assert.deepEqual(states, ['blocked', 'pending'], 'The real native callback blocks background access and requires foreground unlock');
+  if (!lateRegistration) { registered(); await Promise.resolve(); }
+  cleanup(); cleanup(); callback({ isActive: true });
+  if (lateRegistration) { registered(); await Promise.resolve(); }
+  assert.deepEqual(states, ['blocked', 'pending'], 'A removed native callback cannot mutate biometric state');
+  assert.equal(removeCount, 1, 'The scoped owner removes both normal and late handles exactly once');
+}
 assert.match(appSource, /biometricVerifiedIdentityRef\.current = getIdentityAccountScope\(established\.identity/);
 assert.match(appSource, /setBiometricUnlockState\('unlocked'\)/);
 assert.match(appSource, /suppressBiometricAutoLoginForSession\(\)/);

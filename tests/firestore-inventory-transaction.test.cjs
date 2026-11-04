@@ -13,7 +13,8 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error('FIRESTORE_EMULATOR_HOST is required. Run this test through Firebase Emulator.');
 }
 
-const projectId = 'hd-manager-phase4-inventory-transaction';
+const projectId = process.env.HD_INVENTORY_TEST_PROJECT || 'demo-hdm-phase4-inventory-transaction';
+if (!projectId.startsWith('demo-')) throw new Error('Inventory test writes require an isolated demo project.');
 const appId = 'phase4-transaction-app';
 const firebaseApp = admin.apps.find(app => app.name === 'phase4-inventory')
   || admin.initializeApp({ projectId }, 'phase4-inventory');
@@ -138,7 +139,7 @@ test.after(async () => {
   fs.writeFileSync('test-results/phase4/firestore-inventory-transaction.json', `${JSON.stringify({
     generatedAt: new Date().toISOString(),
     environment: 'LOCAL_FIRESTORE_EMULATOR',
-    status: 'PASS',
+    status: evidence.length === 6 ? 'PASS' : 'FAIL_INCOMPLETE',
     evidence,
   }, null, 2)}\n`, 'utf8');
   await firebaseApp.delete();

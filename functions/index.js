@@ -23,6 +23,18 @@ const admin = require('firebase-admin');
 const { PayOS } = require('@payos/node');
 const crypto = require('crypto');
 const { createIdentityCenter } = require('./identityCenter');
+const {getStartupRuntimeOptions}=require('./startupRuntime');
+const {createAuthRequestTiming}=require('./authRequestTiming');
+const {createIdentityRuntimeWarmup}=require('./identityRuntimeWarmup');
+const {defineInt,defineString,select}=require('firebase-functions/params');
+const {EMPLOYEE_HOME_QA_OPTIONS,createEmployeeHomeQaEndpoint}=require('./employeeHomeQaEndpoint');
+const employeeHomeQaActorDigest=defineString('HD_HOME_QA_UID_SHA256',{default:'',description:'Approved QA employee UID SHA-256; not a login credential. Empty disables the experimental Home endpoint.'});
+// The CLI discovers endpoint options before loading project dotenv values.
+// A parameter expression is resolved by deployment, unlike process.env here.
+// Only 0/1 can reach minInstances, even if an operator supplies another value.
+const startupMinimumInstances=defineInt('HD_STARTUP_MIN_INSTANCES',{
+  default:0,input:select([0,1]),description:'Approved regional startup capacity; 1 incurs idle instance charges.',
+}).equals(1).thenElse(1,0);
 const { normalizeSsid, normalizeBssid } = require('./attendanceWifi');
 const { recordAutoWifiAttendance } = require('./attendanceAutoWifi');
 const {
@@ -950,13 +962,30 @@ const identityCenter = createIdentityCenter({
   admin,
   getAppId: normalizeAppId
 });
+// Owner approved this one QA-only read endpoint on 2026-11-02. Keep idle
+// capacity zero and deploy only this target, never all functions for this test.
+exports.employeeHomeBootstrapRegional=functions.https.onRequest(EMPLOYEE_HOME_QA_OPTIONS,createEmployeeHomeQaEndpoint({
+ db,admin,identityCenter,getAppId:()=>normalizeAppId(),applyCors,getQaActorSha256:()=>employeeHomeQaActorDigest.value(),
+}));
+const warmIdentityRuntime=createIdentityRuntimeWarmup({
+  readProbe:()=>db.collection('identity_rate_limits').doc('hd-startup-read-only-probe-v1').get(),
+  getAccessToken:()=>admin.app().options.credential.getAccessToken(),
+});
 
-const runIdentityRequest = (operation) => async (req, res) => {
+const runIdentityRequest = (operation,{observeTiming=false,warmup}={}) => async (req, res) => {
   applyCors(req, res);
-  if (req.method === 'OPTIONS') return res.status(204).send('');
+  if (req.method === 'OPTIONS') {
+    if(warmup)await warmup();
+    return res.status(204).send('');
+  }
   if (req.method !== 'POST') return sendJson(res, 405, { success: false, message: 'Chi ho tro POST.' });
   try {
-    const result = await operation(req);
+    const timing=observeTiming?createAuthRequestTiming():null;
+    const result = await operation(req,timing?.measure);
+    if(result?.success===true&&timing){
+      res.set('Server-Timing',timing.header());
+      res.set('Access-Control-Expose-Headers','Server-Timing');
+    }
     return sendJson(res, result?.statusCode || 200, result);
   } catch (error) {
     const statusCode = Number(error?.statusCode || 500);
@@ -970,16 +999,15 @@ const runIdentityRequest = (operation) => async (req, res) => {
   }
 };
 
-const identityLoginRequest = runIdentityRequest((req) => identityCenter.login({
+const identityLoginRequest = runIdentityRequest((req,observeTiming) => identityCenter.login({
   identifier: req.body?.identifier,
   password: req.body?.password,
   device: req.body?.device,
-  appId: req.body?.appId
-}));
+  appId: req.body?.appId,
+  observeTiming,
+}),{observeTiming:true,warmup:warmIdentityRuntime});
 exports.identityLogin = functions.https.onRequest(identityLoginRequest);
-exports.identityLoginRegional = functions.https.onRequest({
-  region: 'asia-southeast1', memory: '256MiB', concurrency: 4, minInstances: 0,
-}, identityLoginRequest);
+exports.identityLoginRegional = functions.https.onRequest(getStartupRuntimeOptions({}, {minInstances:startupMinimumInstances}), identityLoginRequest);
 
 const identityBiometricLoginRequest = runIdentityRequest((req) => identityCenter.biometricLogin({
   identifier: req.body?.identifier,
@@ -988,9 +1016,7 @@ const identityBiometricLoginRequest = runIdentityRequest((req) => identityCenter
   biometricProof: Boolean(req.body?.biometricProof)
 }));
 exports.identityBiometricLogin = functions.https.onRequest(identityBiometricLoginRequest);
-exports.identityBiometricLoginRegional = functions.https.onRequest({
-  region: 'asia-southeast1', memory: '256MiB', concurrency: 4, minInstances: 0,
-}, identityBiometricLoginRequest);
+exports.identityBiometricLoginRegional = functions.https.onRequest(getStartupRuntimeOptions({}, {minInstances:startupMinimumInstances}), identityBiometricLoginRequest);
 
 exports.identityAttendance = functions.https.onRequest(runIdentityRequest(req => identityCenter.attendance({
   authorization: req.headers.authorization, device: req.body?.device,
@@ -1335,7 +1361,7 @@ const loadTenantCatalog = async ({ appId, companyId, collectionName, sanitizer }
   return snapshot.docs.map(snapshotDoc => sanitizer(snapshotDoc.data(), snapshotDoc.id));
 };
 
-exports.customerPortalBootstrap = functions.https.onRequest(runProtectedCustomerRequest(async ({
+const customerPortalBootstrapRequest = runProtectedCustomerRequest(async ({
   appId,
   customerIdentity
 }) => {
@@ -1379,7 +1405,9 @@ exports.customerPortalBootstrap = functions.https.onRequest(runProtectedCustomer
     rewardCatalog,
     promotions
   };
-}, 'Khong the tai du lieu cong khai cho tai khoan khach hang.'));
+}, 'Khong the tai du lieu cong khai cho tai khoan khach hang.');
+exports.customerPortalBootstrap = functions.https.onRequest(customerPortalBootstrapRequest);
+exports.customerPortalBootstrapRegional = functions.https.onRequest(getStartupRuntimeOptions({}, {minInstances:startupMinimumInstances}),customerPortalBootstrapRequest);
 
 const AI_RATE_LIMIT_PER_MINUTE = 24;
 

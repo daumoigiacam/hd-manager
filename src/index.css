@@ -929,6 +929,18 @@ html.hd-low-power-ui .business-report-skeleton i {
 }
 /* End legacy WebView power guard. */
 
+/* The low-power path avoids repeated shadow rasterization during list and
+   route replacement. Keep focus shadows, borders and progress animations. */
+html.hd-low-power-ui .hd-enterprise-app-shell *:not(:focus),
+html.hd-low-power-ui .mobile-app-shell *:not(:focus) {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+html.hd-low-power-ui .hd-enterprise-app-shell *,
+html.hd-low-power-ui .mobile-app-shell * {
+  transition: none !important;
+}
+
 .animate-in {
   animation-duration: 220ms;
   animation-fill-mode: both;

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
-const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const app = readApplicationSource();
 const financeStart = app.indexOf('function FinanceView(');
 const financeEnd = app.indexOf('function DebtManagementViewLegacy', financeStart);
 assert(financeStart >= 0 && financeEnd > financeStart, 'FinanceView source must be available.');

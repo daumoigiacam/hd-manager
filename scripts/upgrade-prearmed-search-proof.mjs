@@ -1,0 +1,31 @@
+import fs from'node:fs/promises';import{connectAndroidWebView}from'./helpers/android-webview-cdp.mjs';
+import{createSearchRecordIndex,getProductSearchFields}from'../src/services/searchEngine.js';import{makeFixture}from'../performance/phase2/synthetic-fixture.mjs';
+const c=await connectAndroidWebView({adb:'D:/HD-DEV/android/sdk/platform-tools/adb.exe',serial:'emulator-5554',packageName:'com.hdmanager.caplab.diag',port:9239});
+const result={at:new Date().toISOString(),status:'RUNNING',condition:'Same trusted input, same exact full-page oracle, two-RAF acknowledgement. Compare in-page observation armed BEFORE input with the old host-delayed observation. Broad asynchronous queries require a real busy-to-ready cycle, not merely coincidentally matching old rows. Diagnostic only.',queries:[]};
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+async function until(expr){for(let i=0;i<300;i++){if(await c.evaluate(expr))return;await wait(20)}throw Error('Input verification timeout')}
+async function press(){const point=await c.evaluate(`(function(){var e=document.querySelector('[data-upgrade-query]');e.scrollIntoView({block:'center'});var r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);await c.send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});await c.send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1})}
+try{
+ if(!await c.evaluate(`Boolean(window.__hdVerification&&window.__hdVerification.fixtureOnly&&document.querySelector('main[data-hd-module=products] [role=list]'))`))throw Error('Owned fixture product view required');
+ const rows=Object.entries(makeFixture('manager',1000).data.products).sort(([a],[b])=>Buffer.compare(Buffer.from(a),Buffer.from(b))).map(([,r])=>r),index=createSearchRecordIndex(rows,getProductSearchFields);
+ const pageSize=await c.evaluate(`document.documentElement.classList.contains('hd-low-power-ui')?15:20`);
+ for(const query of['s','sy','synthetic']){
+  await press();await c.evaluate(`document.querySelector('[data-upgrade-query]').select()`);
+  await c.send('Input.dispatchKeyEvent',{type:'rawKeyDown',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});await c.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});await until(`document.querySelector('[data-upgrade-query]').value===''`);
+  const expected=index.search(query).slice(0,pageSize).map(r=>r.name);
+  await c.evaluate(`(function(){var query=${JSON.stringify(query)},expected=${JSON.stringify(expected)},main=document.querySelector('main[data-hd-module=products]'),started=null,busySeen=false,finishing=false,timer,deadline=performance.now()+10000;
+   window.__prearmedSearchPromise=new Promise(function(resolve,reject){
+    function stop(){observer.disconnect();clearTimeout(timer);document.removeEventListener('input',input,true)}
+    function names(){return Array.from(main.querySelectorAll('.hd-product-list__name')).map(function(e){return e.textContent.trim()})}
+    function valid(){var list=main.querySelector('.hd-product-list');if(list&&list.getAttribute('aria-busy')==='true')busySeen=true;return started!==null&&busySeen&&document.querySelector('[data-upgrade-query]').value===query&&!window.__hdModulePending(main)&&window.__hdSourceContract(main,'products',window.__hdPlans).sourcesReady&&JSON.stringify(names())===JSON.stringify(expected)}
+    function check(){if(finishing)return;if(performance.now()>deadline){stop();reject(Error('No actual busy-to-ready search cycle'));return}if(valid()){finishing=true;requestAnimationFrame(function(){requestAnimationFrame(function(){if(!valid()){finishing=false;check();return}var at=performance.now(),busy=Array.from(main.querySelectorAll('[aria-busy=true]')).map(function(e){var parent=e,hidden=false;while(parent){if(parent.style&&parent.style.display==='none')hidden=true;parent=parent.parentElement}return{tag:e.tagName,cls:typeof e.className==='string'?e.className.slice(0,100):null,hidden:hidden}});stop();resolve({startedAt:started,paintAt:at,ms:at-started,busySeen:busySeen,names:names(),anyBusyAtActualPaint:busy})})})}else{clearTimeout(timer);timer=setTimeout(check,10)}}
+    function input(e){if(e.isTrusted&&e.target.matches('[data-upgrade-query]')&&e.target.value===query&&started===null){started=performance.now();Promise.resolve().then(check)}}
+    var observer=new MutationObserver(check);observer.observe(main,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-busy']});document.addEventListener('input',input,true);window.__prearmedSearchAbort=stop;
+   });window.__prearmedSearchPromise.catch(function(){})
+  })()`);
+  await c.send('Input.insertText',{text:query});await until(`document.querySelector('[data-upgrade-query]').value===${JSON.stringify(query)}`);
+  const old=await c.evaluate(`new Promise(function(resolve){var firstCheckAt=performance.now();function check(){var m=document.querySelector('main[data-hd-module=products]'),names=Array.from(m.querySelectorAll('.hd-product-list__name')).map(function(e){return e.textContent.trim()});if(!m.querySelector('[aria-busy=true]')&&JSON.stringify(names)===${JSON.stringify(JSON.stringify(expected))})requestAnimationFrame(function(){requestAnimationFrame(function(){resolve({firstPostDeliveryCheckAt:firstCheckAt,delayedPaintAt:performance.now()})})});else setTimeout(check,10)}check()})`);
+  const prearmed=await c.evaluate('window.__prearmedSearchPromise');result.queries.push({query,prearmed,oldDelayed:{...old,ms:old.delayedPaintAt-prearmed.startedAt},overcountMs:old.delayedPaintAt-prearmed.paintAt});
+ }
+ result.status='MEASUREMENT_GATE_DIAGNOSTIC_COMPLETE';
+}catch(error){result.status='FAILED';result.error=error.message;process.exitCode=1}finally{try{await c.evaluate('if(window.__prearmedSearchAbort)window.__prearmedSearchAbort();window.__prearmedSearchAbort=null;window.__prearmedSearchPromise=null')}catch{}c.close();result.endedAt=new Date().toISOString();await fs.writeFile('test-results/performance-upgrade-20261103/prearmed-search-proof.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result))}

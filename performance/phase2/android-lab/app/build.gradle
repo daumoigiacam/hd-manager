@@ -1,0 +1,9 @@
+apply plugin: 'com.android.application'
+android {
+ namespace 'com.hdmanager.perflab'
+ compileSdk 36
+ defaultConfig { applicationId 'com.hdmanager.perflab'; minSdk 24; targetSdk 36; versionCode 1; versionName 'synthetic-only-1' }
+ buildTypes { release { debuggable false; minifyEnabled false; signingConfig signingConfigs.debug } }
+ // Built separately: no change to HD Manager, its account/session or plugins.
+ sourceSets.main.assets.srcDirs = [file('../../../../test-results/phase2-performance-20261102/native-assets')]
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { appFunction } from './helpers/app-source-function.mjs';
 import { createSearchRecordIndex, getProductSearchFields, searchProducts } from '../src/services/searchEngine.js';
 
@@ -38,7 +38,7 @@ test('closed extra-product picker does not filter, sort or group catalog variant
 });
 
 test('both detail-form branches exclude closed pickers from per-character collection scans', () => {
-  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const app = readApplicationSource();
   const view = app.slice(app.indexOf('function OrderRequestView('), app.indexOf('function OrderManagementView('));
   assert.equal((view.match(/const filteredCustomers = !isCustomerPickerOpen \? \[\]/g) || []).length, 2);
   assert.match(view, /const branchScopedProducts = isProductPickerOpen && selectedCustomer/);

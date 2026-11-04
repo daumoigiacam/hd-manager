@@ -4,6 +4,7 @@ import path from 'node:path';
 import { connectAndroidWebView } from './helpers/android-webview-cdp.mjs';
 import { resolveAccessibleAuditRoutes } from './helpers/android-audit-routes.mjs';
 import { normalizeTrustedInputTimestamp } from './helpers/browser-interaction-timing.mjs';
+import {readModuleSourceReadiness,isExplicitlyVisible,hasActiveModulePending} from './helpers/module-source-readiness.mjs';
 
 // Never attaches to a user's signed release or changes cloud business data.
 const packageName = 'com.hdmanager.app.acceptance';
@@ -12,6 +13,20 @@ const serial = process.env.HD_ANDROID_SERIAL || 'emulator-5554';
 const authenticated = process.env.HD_ANDROID_AUTHENTICATED_AUDIT === 'true';
 const accessibleOnly = process.env.HD_ANDROID_AUDIT_ACCESSIBLE_ONLY === 'true';
 const lightweight = process.env.HD_ANDROID_AUDIT_LIGHTWEIGHT === 'true';
+const feedbackOnly = process.env.HD_ANDROID_AUDIT_FEEDBACK_ONLY === 'true';
+const sourceAware = process.env.HD_ANDROID_AUDIT_SOURCE_READY === 'true';
+if(sourceAware&&(!authenticated||!lightweight||feedbackOnly))throw Error('Source-ready observation requires authenticated lightweight full-readiness mode.');
+let sourcePlans={};
+if(sourceAware){
+ const {parse}=await import('@babel/parser');
+ const tree=parse(await readFile('src/App.jsx','utf8'),{sourceType:'module',plugins:['jsx']});
+ const declaration=tree.program.body.filter(s=>s.type==='VariableDeclaration').flatMap(s=>s.declarations).find(d=>d.id.name==='FOREGROUND_REALTIME_COLLECTIONS_BY_TAB');
+ const object=declaration?.init?.arguments?.[0];if(object?.type!=='ObjectExpression')throw Error('Actual source plan unavailable.');
+ for(const p of object.properties){
+  if(p.type!=='ObjectProperty'||p.computed||p.value.type!=='ArrayExpression'||p.value.elements.some(e=>e.type!=='StringLiteral'))throw Error('Unsupported actual module source plan.');
+  sourcePlans[p.key.name||p.key.value]=p.value.elements.map(e=>e.value);
+ }
+}
 const rounds = Number(process.env.HD_ANDROID_AUDIT_ROUNDS || 1);
 if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 5) throw Error('Audit rounds must be between 1 and 5');
 const output = path.resolve(process.env.HD_ANDROID_AUDIT_OUTPUT || 'test-results/android10-modules-20261031');
@@ -37,6 +52,7 @@ async function touchButton(label, bottom, expected) {
     var root=document.querySelector(${JSON.stringify(bottom ? '[data-hd-navigation="bottom"]' : 'main')});
     var button=root && Array.from(root.querySelectorAll('button')).find(function(b){return (b.getAttribute('aria-label') || b.innerText).trim()===${JSON.stringify(label)}});
     if(!button) throw Error('Navigation button missing: '+${JSON.stringify(label)});
+    if(!document.hasFocus() || document.visibilityState!=='visible')throw Error('Acceptance WebView is not focused; native taps would target another app.');
     button.scrollIntoView({block:'center'}); var r=button.getBoundingClientRect();
     window.__androidInteraction={started:null,ready:null,feedback:null,feedbackScheduled:false,inputAt:null,inputCapturedAt:null,pointerdownQueueMs:null,inputToFeedbackMs:null,inputToReadyMs:null,expected:${JSON.stringify(expected)}};
     return {x:(r.x+r.width/2)*devicePixelRatio,y:(r.y+r.height/2)*devicePixelRatio};
@@ -44,7 +60,7 @@ async function touchButton(label, bottom, expected) {
   // WebView 74 ignores CDP touch injection on this AVD. Send actual Android
   // input; its shell/ADB overhead occurs before the in-page click timestamp.
   cdp.shell('shell', 'input', 'tap', `${Math.round(position.x)}`, `${Math.round(position.y)}`);
-  return waitFor('window.__androidInteraction && window.__androidInteraction.ready !== null && window.__androidInteraction');
+  return waitFor(`window.__androidInteraction && window.__androidInteraction.${feedbackOnly?'feedback':'ready'} !== null && window.__androidInteraction`,sourceAware?90000:20000);
 }
 const samples = [], failures = [], skippedModules = [];
 try {
@@ -56,16 +72,20 @@ try {
     if(window.__hdAndroidAuditProbe){window.__hdAndroidAuditProbe.restore()}
     if(window.__androidLoadCount===1)throw Error('Old audit probe requires a fresh page; do not stack anonymous observers');
     window.__androidLoadCount=1;
+    ${sourceAware?[readModuleSourceReadiness,isExplicitlyVisible,hasActiveModulePending].map(fn=>fn.toString()).join('\n'):''}
+    ${sourceAware?'var sourcePlans='+JSON.stringify(sourcePlans)+';':''}
     var normalizeStamp=${normalizeTrustedInputTimestamp.toString()};
     function input(event){var t=window.__androidInteraction;if(!t || t.started!==null)return;
       var at=performance.now(),stamp=normalizeStamp(event.timeStamp,at,performance.timeOrigin,event.isTrusted);
       if(stamp!==null){t.inputAt=stamp;t.inputCapturedAt=at;t.pointerdownQueueMs=at-stamp}}
-    function click(){if(window.__androidInteraction)window.__androidInteraction.started=performance.now()}
+    function click(){if(window.__androidInteraction){window.__androidInteraction.started=performance.now();
+      ${sourceAware?"window.__androidInteraction.preconfirmedAtClick=readModuleSourceReadiness(document.querySelector('main[data-hd-module]'),window.__androidInteraction.expected,sourcePlans).sourcesReady;":''}
+    }}
     document.addEventListener('click',click,true);
     document.addEventListener('pointerdown',input,true);
     function observe(){var t=window.__androidInteraction;if(!t || t.started===null || t.ready!==null)return;
       var main=document.querySelector('main[data-hd-module="'+t.expected+'"]');
-      if(!main || ${lightweight ? '!main.firstElementChild' : '!main.innerText.trim()'})return;
+      if(!main || ${sourceAware?"!Array.prototype.some.call(main.children,function(n){return isExplicitlyVisible(n,main)})":feedbackOnly ? "!Array.prototype.some.call(main.children,function(n){return !n.hidden && n.getAttribute('aria-hidden')!=='true' && n.style.display!=='none'})" : lightweight ? '!main.firstElementChild' : '!main.innerText.trim()'})return;
       // Report shell feedback separately; the existing ready/gate still waits
       // for data/loading/busy indicators. Feedback alone cannot make it PASS.
       if(t.feedback===null && !t.feedbackScheduled){t.feedbackScheduled=true;
@@ -75,18 +95,24 @@ try {
           if(t.inputAt!==null)t.inputToFeedbackMs=t.feedback-t.inputAt;
         })});
       }
-      if(main.querySelector('[data-hd-module-loading],[aria-busy="true"]'))return;
+      ${sourceAware?"t.sourceReadiness=readModuleSourceReadiness(main,t.expected,sourcePlans);if(!t.sourceReadiness.sourcesReady||hasActiveModulePending(main))return;": "if(main.querySelector('[data-hd-module-loading],[aria-busy=\"true\"]'))return;"}
+      if(t.readyScheduled)return;t.readyScheduled=true;
       requestAnimationFrame(function(){requestAnimationFrame(function(){
-        if(t!==window.__androidInteraction || t.ready!==null || !main.isConnected || main.querySelector('[data-hd-module-loading],[aria-busy="true"]'))return;
+        t.readyScheduled=false;
+        if(t!==window.__androidInteraction || t.ready!==null || !main.isConnected)return;
+        ${sourceAware?"t.sourceReadiness=readModuleSourceReadiness(main,t.expected,sourcePlans);if(!t.sourceReadiness.sourcesReady||hasActiveModulePending(main))return;":"if(main.querySelector('[data-hd-module-loading],[aria-busy=\"true\"]'))return;"}
         t.ready=performance.now();t.duration=t.ready-t.started;
         if(t.inputAt!==null)t.inputToReadyMs=t.ready-t.inputAt;
       })});
     }
     var observer=new MutationObserver(observe);observer.observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['data-hd-module','aria-busy']});
+    var readinessTimer=${sourceAware?'setInterval(observe,50)':'null'};
     document.addEventListener('click',observe);
-    window.__hdAndroidAuditProbe={restore:function(){observer.disconnect();document.removeEventListener('click',click,true);document.removeEventListener('click',observe);document.removeEventListener('pointerdown',input,true);delete window.__hdAndroidAuditProbe;delete window.__androidLoadCount}};
+    window.__hdAndroidAuditProbe={restore:function(){observer.disconnect();if(readinessTimer!==null)clearInterval(readinessTimer);document.removeEventListener('click',click,true);document.removeEventListener('click',observe);document.removeEventListener('pointerdown',input,true);delete window.__hdAndroidAuditProbe;delete window.__androidLoadCount}};
   })();`;
   if (authenticated) {
+    cdp.shell('shell','am','start','-n',packageName+'/com.hdmanager.app.MainActivity');
+    await waitFor('document.hasFocus() && document.visibilityState==="visible"');
     if (!await cdp.evaluate('Boolean(document.querySelector("main[data-hd-module]"))')) throw Error('Authenticated audit requires an existing module session; it never logs in or reloads');
     await cdp.evaluate(instrumentation);
     await touchButton('Trang chủ', true, 'home');
@@ -136,9 +162,14 @@ try {
     try {
       await touchButton('Thêm', true, 'more');
       const timing = await touchButton(label, bottom, module);
-      samples.push({ module, round, ...timing, gate100ms: timing.duration <= 100 ? 'PASS' : 'FAIL',
-        inputFeedbackGate100ms:Number.isFinite(timing.inputToFeedbackMs)?timing.inputToFeedbackMs<=100?'PASS':'FAIL':'UNMEASURED',
+      const errorSurfaces=await cdp.evaluate(`(function(){var main=document.querySelector('main[data-hd-module="${module}"]');if(!main)return {missing:true};return {
+        renderError:Array.from(main.querySelectorAll('h1,h3')).some(function(n){return ['Mục này đang lỗi hiển thị','App đang gặp lỗi lúc hiển thị'].indexOf(n.textContent.trim())>=0}),
+        chunkError:Array.from(main.querySelectorAll('[role="alert"]')).some(function(n){return /^Không thể mở /.test(n.textContent.trim())&&Array.from(n.querySelectorAll('button')).some(function(b){return b.textContent.trim()==='Thử lại'})})};})()`);
+      samples.push({ module, round, ...timing, gate100ms: Number.isFinite(timing.duration) ? timing.duration < 100 ? 'PASS' : 'FAIL' : 'UNMEASURED',
+        errorSurfaces,
+        inputFeedbackGate100ms:Number.isFinite(timing.inputToFeedbackMs)?timing.inputToFeedbackMs<100?'PASS':'FAIL':'UNMEASURED',
         nodes: await cdp.evaluate('document.getElementsByTagName("*").length') });
+      if(errorSurfaces.missing||errorSurfaces.renderError||errorSurfaces.chunkError)failures.push({module,round,error:'Known module render/load failure surface observed'});
     } catch (error) {
       failures.push({ module, round, error: error.message });
       await writeFile(path.join(output, 'progress.json'), JSON.stringify({ samples, failures }, null, 2));
@@ -155,8 +186,17 @@ try {
     ? 'test-results/android10-history-index/HD-Manager-Acceptance-debug.apk'
     : 'test-results/android10-candidate/HD-Manager-Acceptance-debug.apk');
   const apk = await readFile(apkPath);
-  await writeFile(path.join(output, 'result.json'), JSON.stringify({ harnessVersion:lightweight?3:2,lightweight,device, apkSha256: createHash('sha256').update(apk).digest('hex'), capabilities, startup,
+  await writeFile(path.join(output, 'result.json'), JSON.stringify({ harnessVersion:sourceAware?6:5,thresholdMs:100,thresholdComparison:'<',observerVersion:sourceAware?5:feedbackOnly?4:lightweight?3:2,functionalSurfaceObservationVersion:1,sourceAware,feedbackOnly,lightweight,device, apkSha256: createHash('sha256').update(apk).digest('hex'), capabilities, startup,
+    ...(sourceAware?{sourceReadinessContract:'Current same-tenant MainApp source flags for the actual source plan plus two frames with no ACTIVE visible busy projection. Home uses its actual nonempty contract. Explicitly hidden retained routes are excluded only in this new cohort. Preconfirmed-at-click distinguishes existing validated arrays from a new read. These flags may originate from an earlier server read: not current-server revision/atomicity, fresh-query latency, business ACK or proof of every operation. A 50ms fallback observes props-only commits and can conservatively increase measured delay. Source-aware cohorts are separate from feedback-only and legacy DOM-only results.',sourcePlanSha256:createHash('sha256').update(JSON.stringify(sourcePlans)).digest('hex')}:{}),
     samples, failures, runtimeEvents: cdp.events, appPss, coreReadiness, accessibleOnly, skippedModules, routeSequence,
-    contract: `${authenticated ? 'Existing authenticated cloud session, no reload/login or explicit data-write calls in harness; only known navigation buttons tapped. Normal app background maintenance may run. Runtime domain disabled; exception monitoring unavailable.' : 'Synthetic fixture, no cloud login or writes.'} click capture to expected module DOM plus two requestAnimationFrame callbacks; not compositor paint, EventTiming/INP, complete cloud data or server ACK. V2 additionally records validated trusted pointerdown timestamps and input-to-feedback/readiness proxies; missing or invalid clocks stay null, not zero/PASS. ${lightweight?'V3 uses element presence instead of layout-forcing main.innerText inside the observer; global/hidden busy selectors and 100ms thresholds remain. Kept separate from original V2 measurements.':'Existing click-based readiness gate is unchanged.'} No timeout/missing sample counts as PASS. Android Activity/app PSS excludes separate renderer process.` }, null, 2));
-  console.log(JSON.stringify({ modules: new Set(samples.map(sample => sample.module)).size, rounds, visits: samples.length, failures, over100Count: samples.filter(x=>x.duration>100).length, exceptions: authenticated ? null : cdp.events.filter(x=>x.method==='Runtime.exceptionThrown').length }));
+    contract: `${authenticated ? 'Existing authenticated cloud session, no reload/login or explicit data-write calls in harness; only known navigation buttons tapped. Normal app background maintenance may run. Runtime domain disabled; exception monitoring unavailable.' : 'Synthetic fixture, no cloud login or writes.'} click capture to expected module DOM plus two requestAnimationFrame callbacks; not compositor paint, EventTiming/INP, complete cloud data or server ACK. V2 additionally records validated trusted pointerdown timestamps and input-to-feedback/readiness proxies; missing or invalid clocks stay null, not zero/PASS. ${feedbackOnly?'V4 FEEDBACK-ONLY diagnostic stops each sample after visible module content and two frames. Hidden markers alone cannot satisfy feedback. All busy checks remain in the observer, but a missing data-ready sample stays UNMEASURED; this mode cannot certify full readiness or replace failed V2/V3 results. Different workload; no direct A/B claim.':lightweight?'V3 uses element presence instead of layout-forcing main.innerText inside the observer; global/hidden busy selectors and 100ms thresholds remain. Kept separate from original V2 measurements.':'Existing click-based readiness gate is unchanged.'} V5 applies the strict <100ms contract (exactly100ms fails); timestamp acquisition and elapsed calculations are unchanged. Prior raw cohorts are preserved with their original harness version. No timeout/missing sample counts as PASS. Android Activity/app PSS excludes separate renderer process.` }, null, 2));
+  console.log(JSON.stringify({ modules: new Set(samples.map(sample => sample.module)).size, rounds, visits: samples.length, failures,
+    over100Count:samples.filter(x=>Number.isFinite(x.duration)&&x.duration>=100).length,
+    unmeasuredReadyCount:samples.filter(x=>!Number.isFinite(x.duration)).length,
+    inputFeedbackOver100Count:samples.filter(x=>Number.isFinite(x.inputToFeedbackMs)&&x.inputToFeedbackMs>=100).length,
+    exceptions: authenticated ? null : cdp.events.filter(x=>x.method==='Runtime.exceptionThrown').length }));
+} catch(error) {
+  await writeFile(path.join(output,'incomplete-result.json'),JSON.stringify({status:'FAIL_INCOMPLETE',feedbackOnly,samples,failures,error:error.message,
+    scope:'Initialization or collection failed. Missing module visits and readiness must not count as PASS.'},null,2));
+  throw error;
 } finally { try{await cdp.evaluate('window.__hdAndroidAuditProbe && window.__hdAndroidAuditProbe.restore()')}catch{/* renderer lost */}cdp.close(); }

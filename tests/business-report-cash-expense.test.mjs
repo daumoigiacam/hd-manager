@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
 import { getCashExpenseFinance, getReportPeriod, aggregateReportRows, getPayrollPeriodSummary, getOperatingExpenseItems } from '../src/features/business-report/reportViewModel.js';
+import { appFunction, appObject } from './helpers/app-source-function.mjs';
 
 test('report adds payroll payable once to non-payroll vouchers, without adding inventory valuation', () => {
   const cashExpenseRecords = [
@@ -48,8 +49,25 @@ test('full calendar periods include recorded future dates and are not limited by
 test('home and cash ledger share official-approval and date rules at the application boundary', () => {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.equal((app.match(/const resolveCashflowDateKey =/g) || []).length, 1);
-  assert.match(app, /cashExpenseRecords: expenses\.filter\(isCashflowOfficial\)\.map/);
-  assert.match(app, /date: resolveCashflowDateKey\(expense\)/);
+  const sets=name=>new Set(appObject(name).arguments[0].elements.map(n=>n.value));
+  const approvals=Object.fromEntries(appObject('CASHFLOW_APPROVAL_STATUS').properties.map(n=>[n.key.name,n.value.value]));
+  const requiresCashflowApproval=appFunction('requiresCashflowApproval',{CASHFLOW_APPROVAL_STATUS:approvals});
+  const isUnconfirmedPaymentIntent=appFunction('isUnconfirmedPaymentIntent',{PAYMENT_INTENT_SOURCE_TYPES:sets('PAYMENT_INTENT_SOURCE_TYPES'),UNCONFIRMED_PAYMENT_STATUSES:sets('UNCONFIRMED_PAYMENT_STATUSES')});
+  const isCashflowOfficial=appFunction('isCashflowOfficial',{requiresCashflowApproval,isUnconfirmedPaymentIntent,CASHFLOW_APPROVAL_STATUS:approvals});
+  const getDateKeyFromAnyValue=appFunction('getDateKeyFromAnyValue',{toDateInputString:appFunction('toDateInputString'),parseVietnameseDateTimeString:appFunction('parseVietnameseDateTimeString')});
+  const resolveCashflowDateKey=appFunction('resolveCashflowDateKey',{getDateKeyFromAnyValue,isPayosPaymentRecord:appFunction('isPayosPaymentRecord')});
+  const expenses=Object.freeze([
+    Object.freeze({id:'approved',amount:100,date:'2026-10-12',cashflowDate:'2026-10-24',requiresApproval:true,approvalStatus:'approved'}),
+    Object.freeze({id:'pending',amount:999,date:'2026-10-24',approvalStatus:'pending_handover'}),
+    Object.freeze({id:'intent',amount:999,date:'2026-10-24',isPaymentIntent:true}),
+    Object.freeze({id:'ordinary',amount:200,date:'2026-10-12',paymentDate:'2026-10-23'}),
+  ]);
+  const prepared=appFunction('cashExpenseRecords',{expenses,isCashflowOfficial,resolveCashflowDateKey},{memoCallback:true})();
+  assert.deepEqual(prepared.map(r=>[r.id,r.amount,r.date]),[['approved',100,'2026-10-24'],['ordinary',200,'2026-10-23']]);
+  assert.equal(expenses[0].date,'2026-10-12','date normalization cannot mutate cash vouchers');
+  const properties=appObject('projectionInputs').arguments[0].body.properties;
+  const bindings=Object.fromEntries(properties.filter(p=>p.value?.type==='Identifier').map(p=>[p.value.name,[]]));bindings.cashExpenseRecords=prepared;
+  assert.equal(appFunction('projectionInputs',bindings,{memoCallback:true})().cashExpenseRecords,prepared,'the report receives the exact normalized approved rows');
   assert.match(app, /const officialTransactions = matchingTransactions\.filter\(item => isCashflowOfficial\(item\)\)/);
 });
 

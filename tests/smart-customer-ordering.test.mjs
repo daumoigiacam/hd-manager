@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 import {
   buildCustomerProductPreferenceCacheKey,
@@ -304,7 +304,7 @@ test('negative quantity is safely normalized to zero', () => {
   }).amount, 0);
 });
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 
 test('Firestore integration reads one deterministic preference document', () => {
   assert.match(appSource, /customerProductPreferences/);

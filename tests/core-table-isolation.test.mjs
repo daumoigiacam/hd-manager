@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { transformWithEsbuild } from 'vite';
@@ -42,7 +43,7 @@ test('extracted request rows retain grouping, permissions, selection and origina
   const event = {};
   price.props.onClick(event);
   assert.deepEqual(calls, [[row, 'unitPrice', event]]);
-  const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const app = readApplicationSource();
   assert.match(app, /openOrderCellEditor=\{openRequestTableCell\}/);
   assert.match(app, /const openRequestTableCell = useCurrentCallback\(openOrderCellEditor\)/);
 });

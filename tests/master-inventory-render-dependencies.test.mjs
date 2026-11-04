@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import { parse } from '@babel/parser';
 
 const baseline = execFileSync('git', ['show', '5f162f5:src/App.jsx'], { encoding: 'utf8', maxBuffer: 30 * 1024 * 1024 });
-const current = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const current = readApplicationSource();
 function declarations(source) {
   const found = new Map();
   function visit(node, owner = '') {
@@ -75,42 +75,10 @@ for (const owner of ['WarehouseImportView', 'WarehouseDispatchView']) {
   });
 }
 
-test('actual import calendar memo no longer scans exports after draft-only rerenders', () => {
-  const group = after.get('WarehouseImportView.getWarehouseStockGroupLabel');
-  const calendar = after.get('WarehouseImportView.warehouseExportCalendarMap');
-  const rows = [{ date: '2026-10-02', productId: 'p1', weightKg: 2 }];
-  let scans = 0;
-  let callback;
-  let memo;
-  let dependencies;
-  const bindings = { ...globalBindings,
-    productLookup: new Map([['p1', { name: 'Chicken', category: 'Bird' }]]),
-    warehouseDispatches: rows,
-    isAfterWarehouseStockReset: () => true,
-    resolveWarehouseRecordDateKey: row => { scans++; return row.date; },
-    buildProcessingInventoryGroupKey: value => value.toLowerCase(),
-    buildWarehouseDispatchMeasureEntries: row => [{ unit: 'Kg', quantity: row.weightKg }],
-    parseLooseQuantityValue: Number,
-    useCallback: fn => { callback ||= fn; return callback; },
-    useMemo: (fn, next) => {
-      if (!dependencies || next.some((value, index) => !Object.is(value, dependencies[index]))) memo = fn();
-      dependencies = next;
-      return memo;
-    },
-  };
-  const render = () => {
-    bindings.getWarehouseStockGroupLabel = execute(current, group, bindings);
-    return execute(current, calendar, bindings);
-  };
-  const initial = render();
-  assert.equal(initial.get('2026-10-02').totalKg, 2);
-  assert.equal(scans, 1);
-  for (let draftChange = 0; draftChange < 20; draftChange++) assert.equal(render(), initial);
-  assert.equal(scans, 1, 'unchanged source movements must not be traversed for local input state');
-  bindings.warehouseDispatches = [{ ...rows[0], weightKg: 3 }];
-  assert.equal(render().get('2026-10-02').totalKg, 3);
-  assert.equal(scans, 2, 'real movement changes must invalidate calendar calculations');
-  bindings.productLookup = new Map([['p1', { category: 'Changed group' }]]);
-  assert.deepEqual([...render().get('2026-10-02').groupKeys], ['changed group']);
-  assert.equal(scans, 3);
+test('removed legacy calendar has no eager scan; native date filtering and actual stock calculations remain',()=>{
+ for(const name of ['warehouseCalendarCells','warehouseImportCalendarMap','warehouseExportCalendarMap','warehouseStockCalendarMap','getWarehouseCalendarStat','warehouseCalendarTitle','warehouseCalendarCountLabel','handleWarehouseCalendarMonthChange'])assert.equal(after.has('WarehouseImportView.'+name),false,name+' is not a hidden eager calculation');
+ assert.match(current,/aria-label="Chọn ngày xem danh sách nhập kho"/);
+ assert.ok(after.has('WarehouseImportView.dayImports'));
+ assert.ok(after.has('WarehouseImportView.buildWarehouseStockRowsForDate'));
+ assert.ok(after.has('WarehouseImportView.warehouseStockRows'));
 });

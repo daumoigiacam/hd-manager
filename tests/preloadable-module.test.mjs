@@ -12,8 +12,10 @@ test('preloaded lazy modules render their real content without a fallback or ext
   });
   const View = React.lazy(module.load);
   assert.equal(calls, 0, 'Import must not run at startup');
+  assert.equal(module.getResolved(), undefined);
   assert.equal(module.preload(), module.preload(), 'Concurrent preloads share one promise');
   await module.preload();
+  assert.equal(typeof module.getResolved().default, 'function');
   const html = renderToString(React.createElement(React.Suspense, { fallback: 'Waiting' }, React.createElement(View)));
   assert.ok(html.includes('<p>Ready</p>'));
   assert.ok(!html.includes('Waiting'));
@@ -21,7 +23,7 @@ test('preloaded lazy modules render their real content without a fallback or ext
   assert.ok(renderToString(React.createElement(View)).includes('Ready'));
 });
 
-test('an unprepared module loads once and propagates import failures', async () => {
+test('failed imports propagate and retry only after an explicit caller request', async () => {
   let calls = 0;
   const module = createPreloadableModule(() => {
     calls++;
@@ -30,7 +32,11 @@ test('an unprepared module loads once and propagates import failures', async () 
   const failures = [];
   const thenable = module.load();
   await thenable.then(() => assert.fail('Failed imports must not resolve'), error => failures.push(error.message));
+  assert.equal(calls, 1);
+  assert.equal(module.getResolved(), undefined);
   await assert.rejects(module.preload(), /chunk-unavailable/);
   assert.deepEqual(failures, ['chunk-unavailable']);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 2, 'no automatic retry or document reload loop');
 });

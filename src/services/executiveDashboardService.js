@@ -2289,6 +2289,107 @@ const makeKpi = ({ id, title, value, kind = 'money', current = value, previousDa
   return { id, title, label: title, value, kind, vsYesterday, vsPreviousMonth, dayDeltaPct: vsYesterday, monthDeltaPct: vsPreviousMonth, tone, isPositive: positive };
 };
 
+// Share the exact voucher and daily payroll DTOs with the full report. Payroll
+// earning-day allocation/rounding is already performed by the App payroll builder.
+const buildCashExpenseRows = records => Array.isArray(records) ? records
+  .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense))
+  .map(expense => ({
+    date: expense.date, value: Number(expense.amount) || 0,
+    category: classifyExpense(expense),
+    name: expense.name || expense.title || expense.category || 'Chi phí khác',
+    detail: expense.note || expense.description || '',
+    sourceType: 'expense', sourceId: expense.id,
+    originalAmount: Number(expense.amount) || 0,
+    employeeId: recordEmployeeIdOf(expense),
+    recipient: expense.recipient || expense.payee || expense.employeeName || '',
+  })) : undefined;
+
+const buildPayrollAccrualRows = (source, todayKey, employeesById) => {
+  const rows = [];
+  source.payrollCosts.forEach(row => {
+    const date = dateKey(getDateValue(row));
+    const value = Math.max(0, moneyOfExpense(row));
+    if (!date || date > todayKey || !value) return;
+    const employeeId = recordEmployeeIdOf(row);
+    const employee = employeeId ? employeesById.get(employeeId) : null;
+    rows.push({
+      date,
+      employeeId,
+      name: row.employeeName || row.staffName || employee?.name || employee?.fullName || 'Nhân sự chưa rõ',
+      department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
+      value
+    });
+  });
+  return rows;
+};
+
+function* buildHomePrimaryProjectionSteps(input = {}) {
+  // The caller owns source confirmation, locked payroll loading and ledger
+  // readiness. Explicit empty collections are valid; absent dependencies are not.
+  for (const key of ['cashExpenseRecords', 'payrollCosts', 'debtLedger']) {
+    if (input[key] === undefined || input[key] === null ||
+      (key === 'cashExpenseRecords' ? !Array.isArray(input[key]) : typeof input[key] !== 'object')) {
+      throw new TypeError(`Home primary requires completed ${key}.`);
+    }
+  }
+  // Explicit selection prevents both reading secondary inputs and widening P1
+  // when normalizeInput gains new fields. Imports stay with the external ledger.
+  const source = normalizeInput({
+    now: input.now, orders: input.orders, payments: input.payments,
+    expenses: input.expenses, customers: input.customers, employees: input.employees,
+    payrollCosts: input.payrollCosts, debtLedger: input.debtLedger,
+  });
+  const base = FinancialService.build(source);
+  yield;
+  const employeesById = new Map(source.employees.map(employee => [String(employee.id || employee.employeeId || employee.uid || employee.userId || ''), employee]));
+  const payrollAccrualRows = buildPayrollAccrualRows(source, base.todayKey, employeesById);
+  yield;
+  const cashExpenseRows = buildCashExpenseRows(input.cashExpenseRecords);
+  yield;
+  // Do not expose FinancialService's provisional expense/profit, or COGS and
+  // operational fields. Consumers must apply getCashExpenseFinance followed by
+  // getReportPeriod, exactly as BusinessReportWorkspace does for the full report.
+  const finance = {};
+  for (const key of [
+    'todayKey', 'yesterdayKey', 'weekStartKey', 'weekEndKey', 'currentMonthKey', 'previousMonthKey',
+    'revenueToday', 'revenueYesterday', 'revenueWeek', 'revenueMonth', 'revenuePreviousMonth',
+    'receivables', 'overdueReceivables',
+  ]) finance[key] = base[key];
+  finance.revenueQuarter = source.orders.filter(order => isInQuarter(order, source.now))
+    .reduce((sum, order) => sum + orderTotal(order), 0);
+  finance.revenueYear = sumByYear(source.orders, source.now.getFullYear(), orderTotal);
+  finance.cashExpenseRows = cashExpenseRows;
+  finance.payrollAccrualRows = payrollAccrualRows;
+  for (const key of ['series7Days', 'series30Days', 'series12Months']) {
+    finance[key] = base[key].map(row => row.date
+      ? { date: row.date, revenue: row.revenue }
+      : { month: row.month, revenue: row.revenue });
+  }
+  return { kind: 'home-primary-v1', generatedAt: new Date().toISOString(), finance };
+}
+
+export const createHomePrimaryProjectionIterator = (input = {}) => {
+  const cache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap(), deliveries: new WeakMap() };
+  const iterator = buildHomePrimaryProjectionSteps(input);
+  const scoped = method => value => {
+    const previous = activeBuildCache;
+    activeBuildCache = cache;
+    try { return iterator[method](value); } finally { activeBuildCache = previous; }
+  };
+  return { next: scoped('next'), return: scoped('return') };
+};
+
+// Integration-facing name; both entry points return the same distinct P1 DTO.
+export const createHomePrimarySnapshotIterator = createHomePrimaryProjectionIterator;
+
+export const buildHomePrimaryProjection = (input = {}) => {
+  const iterator = createHomePrimaryProjectionIterator(input);
+  for (;;) {
+    const step = iterator.next();
+    if (step.done) return step.value;
+  }
+};
+
 function* buildDashboardSnapshotSteps(input = {}) {
     const source = normalizeInput(input);
     let finance = FinancialService.build(source);
@@ -2469,21 +2570,9 @@ function* buildDashboardSnapshotSteps(input = {}) {
         expenseDetailRows.push({ date, category: 'Giá vốn', name: 'Giá vốn hàng đã bán', detail: 'Giá vốn hàng đã bán trong ngày, không phải phiếu chi tiền.', sourceType: 'costOfGoods', value: toNumber(value) });
       }
     });
-    const payrollEmployeeRows = [];
-    source.payrollCosts.forEach(row => {
-      const date = dateKey(getDateValue(row));
-      const value = Math.max(0, moneyOfExpense(row));
-      if (!date || date > finance.todayKey || !value) return;
-      const employeeId = recordEmployeeIdOf(row);
-      const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
-      const item = {
-        date,
-        employeeId,
-        name: row.employeeName || row.staffName || employee?.name || employee?.fullName || 'Nhân sự chưa rõ',
-        department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
-        value
-      };
-      payrollEmployeeRows.push(item);
+    const payrollEmployeeRows = buildPayrollAccrualRows(source, finance.todayKey, reportEmployeesById);
+    payrollEmployeeRows.forEach(item => {
+      const { date, employeeId, value } = item;
       expenseCategoryRows.push({ date, category: 'Lương', name: 'Lương', detail: item.name, value });
       expenseDetailRows.push({ date, category: 'Lương', name: `Lương • ${item.name}`, detail: item.department, sourceType: 'payroll', employeeId, value });
     });
@@ -2505,18 +2594,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
       .sort((a, b) => b.value - a.value);
     finance = {
       ...finance,
-      cashExpenseRows: Array.isArray(source.cashExpenseRecords) ? source.cashExpenseRecords
-        .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense))
-        .map(expense => ({
-          date: expense.date, value: Number(expense.amount) || 0,
-          category: classifyExpense(expense),
-          name: expense.name || expense.title || expense.category || 'Chi phí khác',
-          detail: expense.note || expense.description || '',
-          sourceType: 'expense', sourceId: expense.id,
-          originalAmount: Number(expense.amount) || 0,
-          employeeId: recordEmployeeIdOf(expense),
-          recipient: expense.recipient || expense.payee || expense.employeeName || '',
-        })) : undefined,
+      cashExpenseRows: buildCashExpenseRows(source.cashExpenseRecords),
       cashExpenseToday: finance.expenseToday,
       cashExpenseYesterday: finance.expenseYesterday,
       cashExpenseWeek: finance.expenseWeek,

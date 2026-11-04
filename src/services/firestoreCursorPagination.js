@@ -8,8 +8,11 @@ import {
   startAfter,
   where,
 } from 'firebase/firestore';
+import { compareRestDocumentNames } from './firestoreRestPagination.js';
 
-export const DEFAULT_CURSOR_PAGE_SIZE = 50;
+export const DEFAULT_CURSOR_PAGE_SIZE = 20;
+// Compatibility bound for explicit bulk/export callers. New operational data
+// engine adapters accept only 15 or 20 and never collect an entire collection.
 export const MAX_CURSOR_PAGE_SIZE = 200;
 
 export const CRITICAL_CURSOR_COLLECTIONS = Object.freeze([
@@ -41,7 +44,9 @@ export const mergeCursorItems = (currentItems = [], incomingItems = []) => {
   (Array.isArray(incomingItems) ? incomingItems : []).forEach((item) => {
     if (item?.id) byId.set(`${item.id}`, item);
   });
-  return Array.from(byId.values()).sort((left, right) => `${left.id}`.localeCompare(`${right.id}`));
+  // Cursor order is Firestore's UTF-8 document-ID order, not the device's
+  // language collation. Reuse the same comparator as REST pagination.
+  return Array.from(byId.values()).sort((left, right) => compareRestDocumentNames(`${left.id}`, `${right.id}`));
 };
 
 export const readTenantCursorPage = async ({
@@ -68,8 +73,10 @@ export const readTenantCursorPage = async ({
     ...constraints,
   ));
   const items = snapshot.docs.map(documentSnapshot => ({
-    id: documentSnapshot.id,
     ...documentSnapshot.data(),
+    // A stored legacy id is not the document path identity. Using it here can
+    // collapse two distinct documents in collectTenantCursorPages/mergeCursorItems.
+    id: documentSnapshot.id,
   }));
   const lastSnapshot = snapshot.docs.at(-1) || null;
   const previousId = `${cursor?.id || ''}`;

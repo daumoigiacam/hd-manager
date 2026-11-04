@@ -7,6 +7,23 @@ const start=(revision,mode,count,changeCount=count)=>({revision,mode,count,chang
 const row=(id,amount)=>({id,type:'full',value:{amount}});
 const assembler=options=>createReadWorkerSnapshotAssembler({decode:value=>({...value}),retain:(a,b)=>a.amount===b.amount?a:b,...options});
 
+test('initial metadata can reuse only its exact server-confirmed decoded baseline, then accepts ordered deltas',async()=>{
+ const initialItems=[{id:'a',data:{amount:1}},{id:'b',data:{amount:2}}];
+ for(const mutation of ['missing','wrong','cache','pending','count']){
+  const a=assembler({initialItems,initialBaselineId:mutation==='missing'?null:'confirmed-one'});
+  const message={...start(1,'metadata',2,0),baselineId:mutation==='wrong'?'another':'confirmed-one',metadata:{...metadata}};
+  if(mutation==='cache')message.metadata.fromCache=true;
+  if(mutation==='pending')message.metadata.hasPendingWrites=true;
+  if(mutation==='count')message.count=1;
+  await assert.rejects(a.begin(message),/Invalid/);
+ }
+ const a=assembler({initialItems,initialBaselineId:'confirmed-one'});
+ await a.begin({...start(1,'metadata',2,0),baselineId:'confirmed-one'});
+ assert.equal(a.finish({revision:1,chunks:0}).items,initialItems);
+ await a.begin(start(2,'delta',2,1));await a.chunk({revision:2,index:0,rows:[{id:'b',type:'modified',oldIndex:1,newIndex:1,value:{amount:20}}]});
+ assert.deepEqual(a.finish({revision:2,chunks:1}).items.map(r=>r.data.amount),[1,20]);assert.equal(initialItems[1].data.amount,2);
+});
+
 test('worker rows publish atomically, keep unchanged identities and preserve a validated ordered delta', async()=>{
   const a=assembler();await a.begin(start(1,'full',2));
   await a.chunk({revision:1,index:0,rows:[row('a',1),row('b',2)]});

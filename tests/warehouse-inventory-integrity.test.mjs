@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   buildWarehouseStockChecklistRows,
   hasRecordedWarehouseStockMeasure,
@@ -161,8 +159,7 @@ assert.equal(
   'Số 0 đã kiểm phải được giữ nguyên, không thay bằng tồn dự kiến'
 );
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
+const appSource = readApplicationSource();
 assert.match(appSource, /buildWarehouseStockChecklistRows\(warehouseStockRows\)/);
 assert.doesNotMatch(appSource, /visibleWarehouseStockRows\.slice\(0, 12\)/);
 assert.doesNotMatch(appSource, /row\.measureRows\.slice\(0, 3\)/);

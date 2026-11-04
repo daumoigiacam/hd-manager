@@ -7,17 +7,19 @@ import { chromium } from 'playwright-core';
 
 const output=process.env.HD_FIRESTORE_WORKER_INTEGRATION_OUTPUT||'test-results/firestore-read-worker-integration',project='demo-hdm-cache-lab',appId='worker-fixture';
 const collectionName=process.env.HD_FIRESTORE_WORKER_INTEGRATION_COLLECTION||'orders';
-assert.ok(['orders','notifications'].includes(collectionName),'Only isolated fixture collections');
+const persistentCache=process.env.HD_FIRESTORE_WORKER_PERSISTENCE==='true';
+assert.ok(['orders','notifications','employees'].includes(collectionName),'Only isolated fixture collections');
 const firestore='http://127.0.0.1:9195',auth='http://127.0.0.1:9196';await fs.mkdir(output,{recursive:true});
 const base=`projects/${project}/databases/(default)/documents/artifacts/${appId}/public/data/${collectionName}`;
 const response=await fetch(`${firestore}/v1/projects/${project}/databases/(default)/documents:commit`,{
   method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer owner'},
   body:JSON.stringify({writes:[{delete:`${base}/r-050a`},{update:{name:`${base}/foreign`,fields:{companyId:{stringValue:'foreign'},amount:{integerValue:'999999'}}}},...Array.from({length:130},(_,i)=>({update:{name:`${base}/r-${String(i).padStart(3,'0')}`,fields:{
     companyId:{stringValue:'fixture'},amount:{integerValue:String(i+1)},
+    ...(persistentCache?{cacheProbe:{stringValue:'synthetic-persisted-history-marker'}}:{}),
     stamp:{timestampValue:'2026-10-31T01:02:03.123456789Z'},
     detail:{mapValue:{fields:{stamp:{timestampValue:'1969-12-31T23:59:59.999999999Z'}}}},
     link:{referenceValue:`${base}/r-000`},
-  }}}))]}),signal:AbortSignal.timeout(10000),
+  }}}))]}),signal:AbortSignal.timeout(30000),
 });assert.equal(response.ok,true,'Local nested source seed');
 const rules=`rules_version='2';service cloud.firestore{match /databases/{database}/documents{
   match /orders/{id}{allow read:if request.auth!=null&&request.auth.token.companyId==resource.data.companyId;}
@@ -25,7 +27,8 @@ const rules=`rules_version='2';service cloud.firestore{match /databases/{databas
     allow read,delete:if request.auth!=null&&request.auth.token.companyId==resource.data.companyId;
     allow create,update:if request.auth!=null&&request.auth.token.companyId==request.resource.data.companyId;
   }}}`;
-const loaded=await fetch(`${firestore}/emulator/v1/projects/${project}:securityRules`,{method:'PUT',body:JSON.stringify({rules:{files:[{content:rules}]}}),signal:AbortSignal.timeout(10000)});
+// JVM/rules fixture initialization is outside any app timing measurement.
+const loaded=await fetch(`${firestore}/emulator/v1/projects/${project}:securityRules`,{method:'PUT',body:JSON.stringify({rules:{files:[{content:rules}]}}),signal:AbortSignal.timeout(30000)});
 assert.equal(loaded.ok,true,'Local tenant rules load');
 const worker=await build({entryPoints:['src/services/firestoreReadWorker.js'],bundle:true,write:false,format:'iife',target:'chrome74',define:{'process.env.NODE_ENV':'"production"'}});
 const main=await build({stdin:{resolveDir:process.cwd(),contents:`
@@ -33,23 +36,26 @@ const main=await build({stdin:{resolveDir:process.cwd(),contents:`
   import {initializeAuth,inMemoryPersistence,connectAuthEmulator,signInWithCustomToken}from'firebase/auth';
   import {initializeFirestore,connectFirestoreEmulator,doc,setDoc,deleteDoc,Timestamp,getDocFromServer}from'firebase/firestore';
   import {createFirestoreReadWorkerClient}from'./src/services/firestoreReadWorkerClient.js';
+  import {getReadWorkerCacheAppName}from'./src/services/readWorkerPersistence.js';
   const app=initializeApp({projectId:${JSON.stringify(project)},apiKey:'synthetic-read-worker-key',appId:'synthetic-read-worker'});
   const auth=initializeAuth(app,{persistence:inMemoryPersistence});connectAuthEmulator(auth,${JSON.stringify(auth)},{disableWarnings:true});
   const db=initializeFirestore(app,{experimentalAutoDetectLongPolling:false,useFetchStreams:true});connectFirestoreEmulator(db,'127.0.0.1',9195);
   const reference=id=>doc(db,'artifacts',${JSON.stringify(appId)},'public','data',${JSON.stringify(collectionName)},id);
-  let client,off,first,user,clock=0;window.snapshots=[];window.errors=[];window.fallbacks=[];window.statuses=[];window.pause=false;window.paused=false;
+  let client,off,first,user,clock=0;const initialTransfers=new Set();window.initialTransferPeak=0;window.snapshots=[];window.errors=[];window.fallbacks=[];window.statuses=[];window.pause=false;window.paused=false;window.workerChunks=[];window.reuses=0;
   window.prepare=async()=>{
     user=(await signInWithCustomToken(auth,JSON.stringify({uid:'fixture-read-worker-user',claims:{companyId:'fixture',accountType:'employee'}}))).user;
     window.baseline=(await getDocFromServer(reference('r-000'))).data();
-    client=createFirestoreReadWorkerClient({user,config:app.options,appId:${JSON.stringify(appId)},companyId:'fixture',accountType:'employee',db,
+    window.startClient=()=>{client=createFirestoreReadWorkerClient({user,config:app.options,appId:${JSON.stringify(appId)},companyId:'fixture',accountType:'employee',db,persistentCache:${JSON.stringify(persistentCache)},
       emulator:{host:'127.0.0.1',authPort:9196,firestorePort:9195},
+      workerFactory:()=>{const w=new Worker('/worker.js');w.addEventListener('message',e=>{if(e.data.type==='source-started'){initialTransfers.add(e.data.streamId);window.initialTransferPeak=Math.max(window.initialTransferPeak,initialTransfers.size)}if(['complete','data-error','fallback'].includes(e.data.type))initialTransfers.delete(e.data.streamId);if(e.data.type==='chunk')window.workerChunks.push(e.data.rows.length);if(e.data.type==='begin'&&e.data.baselineId)window.reuses++});return w},
       onAuthInvalid:()=>window.errors.push('Unexpected auth invalidation'),onFallback:value=>window.fallbacks.push(value),
-      now:()=>clock++,yieldWork:async()=>{if(window.pause){window.paused=true;await new Promise(resolve=>window.release=resolve)}else await new Promise(resolve=>setTimeout(resolve,0))}});
+      now:()=>clock++,yieldWork:async()=>{if(window.pause){window.paused=true;await new Promise(resolve=>window.release=resolve)}else await new Promise(resolve=>setTimeout(resolve,0))}});};
+    window.startClient();
     window.subscribe();
   };
   window.subscribe=()=>{off=client.subscribe(${JSON.stringify(collectionName)},{
     publish:(snapshot,items)=>{
-      if(snapshot.metadata.fromCache){window.statuses.push('cache');return}
+      if(snapshot.metadata.fromCache){window.statuses.push('cache');if(items.length)window.errors.push('Cached rows must not be published');return}
       window.snapshots.push({snapshot,items});if(!first)first=items;
     },error:error=>window.errors.push(error.code||error.message),fallback:()=>{window.fallbacks.push('Unexpected fallback');return()=>{}}});};
   window.change=async(id,amount)=>{await setDoc(reference(id),{companyId:'fixture',amount},{merge:true})};
@@ -57,6 +63,80 @@ const main=await build({stdin:{resolveDir:process.cwd(),contents:`
   window.checkForeignAccess=async()=>{try{await getDocFromServer(reference('foreign'));return 'UNEXPECTED_ACCESS'}catch(error){return error.code}};
   window.burst=async()=>{for(let i=0;i<15;i++)await setDoc(reference('r-001'),{companyId:'fixture',amount:5000+i},{merge:true})};
   window.stop=()=>off();window.close=()=>client.close();
+  window.checkVolatileIdentity=async()=>{
+    await setDoc(doc(db,'artifacts',${JSON.stringify(appId)},'public','data','companies','fixture'),
+      {companyId:'fixture',privateFixtureMarker:'synthetic-volatile-identity-marker'});
+    let stop;
+    const value=await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(Error('Volatile identity source timed out')),10000);
+      stop=client.subscribe('companies',{publish:(snapshot,items)=>{if(!snapshot.metadata.fromCache){clearTimeout(timer);resolve(items[0]?.data.privateFixtureMarker==='synthetic-volatile-identity-marker')}},
+        error:error=>{clearTimeout(timer);reject(error)},fallback:()=>{clearTimeout(timer);reject(Error('Unexpected volatile identity fallback'));return()=>{}}});
+    });
+    await new Promise(resolve=>setTimeout(resolve,0));stop();return value;
+  };
+  window.inspectFixtureCache=async()=>{
+    const name=await getReadWorkerCacheAppName({uid:user.uid,projectId:app.options.projectId,appId:${JSON.stringify(appId)},companyId:'fixture',accountType:'employee',appName:app.name});
+    let businessPresent=false,identityPresent=false;
+    for(const descriptor of (await indexedDB.databases()).filter(database=>database.name.includes(name))){
+      const storage=await new Promise((resolve,reject)=>{const request=indexedDB.open(descriptor.name);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(Error('Fixture IDB open failed'))});
+      try{for(const storeName of Array.from(storage.objectStoreNames)){
+        const values=await new Promise((resolve,reject)=>{const request=storage.transaction(storeName,'readonly').objectStore(storeName).getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(Error('Fixture IDB scan failed'))});
+        const text=JSON.stringify(values);businessPresent ||= text.includes('synthetic-persisted-history-marker');identityPresent ||= text.includes('synthetic-volatile-identity-marker');
+      }}finally{storage.close()}
+    }
+    return{businessPresent,identityPresent};
+  };
+  window.purgeCache=async()=>{
+    const name=await getReadWorkerCacheAppName({uid:user.uid,projectId:app.options.projectId,appId:${JSON.stringify(appId)},companyId:'fixture',accountType:'employee',appName:app.name});
+    const before=(await indexedDB.databases()).some(database=>database.name.includes(name));
+    await client.clearPersistentCache();
+    const after=(await indexedDB.databases()).some(database=>database.name.includes(name));
+    return {before,after,mainSessionPreserved:auth.currentUser===user};
+  };
+  window.churnEmptyModules=async()=>{
+    for(const letter of 'ABCDEFGHIJKL'){
+      let stop;
+      await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('Empty fixture source did not confirm')),10000);
+        stop=client.subscribe('baseline_empty_'+letter,{
+          publish:(snapshot,items)=>{if(!snapshot.metadata.fromCache){clearTimeout(timer);if(items.length)reject(Error('Expected empty fixture'));else resolve()}},
+          error:error=>{clearTimeout(timer);reject(error)},fallback:()=>{clearTimeout(timer);reject(Error('Unexpected empty fixture fallback'));return()=>{}},
+        });
+      });
+      // complete ACK is posted by the client microtask before unsubscribe on
+      // the same ordered MessagePort. This tests confirmed cache retention.
+      await new Promise(resolve=>setTimeout(resolve,0));stop();
+    }
+  };
+  window.concurrentInitialReads=async()=>{
+    const stops=[];window.initialTransferPeak=0;
+    try{
+      await Promise.all(Array.from('ABCDEFGHIJ',letter=>new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('Concurrent fixture source did not confirm')),15000);
+        stops.push(client.subscribe('admission_empty_'+letter,{
+          publish:(snapshot,items)=>{if(!snapshot.metadata.fromCache){clearTimeout(timer);if(items.length)reject(Error('Expected empty admission fixture'));else resolve()}},
+          error:error=>{clearTimeout(timer);reject(error)},fallback:()=>{clearTimeout(timer);reject(Error('Unexpected admission fallback'));return()=>{}},
+        }));
+      })));
+      await new Promise(resolve=>setTimeout(resolve,0));
+      return window.initialTransferPeak;
+    }finally{stops.forEach(stop=>stop())}
+  };
+  window.churnNonemptyModules=async()=>{
+    for(const letter of 'ABCDEFGHI'){
+      const name='baseline_nonempty_'+letter;
+      await setDoc(doc(db,'artifacts',${JSON.stringify(appId)},'public','data',name,'only'),{companyId:'fixture',amount:1});
+      let stop;
+      await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('Nonempty fixture did not confirm')),10000);
+        stop=client.subscribe(name,{
+          publish:(snapshot,items)=>{if(!snapshot.metadata.fromCache){clearTimeout(timer);if(items.length!==1)reject(Error('Expected one fixture row'));else resolve()}},
+          error:error=>{clearTimeout(timer);reject(error)},fallback:()=>{clearTimeout(timer);reject(Error('Unexpected retained source fallback'));return()=>{}},
+        });
+      });
+      await new Promise(resolve=>setTimeout(resolve,0));stop();
+    }
+  };
   window.state=()=>{const items=window.snapshots.at(-1)?.items||[];const zero=first?.find(r=>r.id==='r-000'),one=items.find(r=>r.id==='r-001');
     return {snapshots:window.snapshots.length,count:items.length,ids:items.map(r=>r.id),sum:items.reduce((s,r)=>s+r.data.amount,0),one:one?.data.amount,
       firstZero:zero?.data.amount,firstOne:first?.find(r=>r.id==='r-001')?.data.amount,
@@ -80,6 +160,10 @@ try{
   });
   const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));await page.goto(origin);await page.evaluate(()=>window.prepare());
   await page.waitForFunction(()=>window.snapshots.length>0,null,{timeout:30000});
+  const batches=await page.evaluate(()=>window.workerChunks);
+  const batchLimit=collectionName==='employees'?1:16;
+  assert.ok(batches.length>=Math.ceil(130/batchLimit) && batches.every(n=>n>0&&n<=batchLimit),'Large real SDK snapshot transfers bounded groups without truncation');
+  checks.push('130 rows transferred in groups bounded by row count and clone-work budget before publication');
   let state=await page.evaluate(()=>window.state());assert.equal(state.count,130);assert.equal(state.sum,130*131/2);
   assert.equal(state.topTimestamp,'2026-10-31T01:02:03.123Z');assert.equal(state.nestedNanos,state.expectedNestedNanos);
   assert.ok(state.nestedNanos>0,'nested timestamp precision must not disappear');
@@ -91,27 +175,72 @@ try{
   state=await page.evaluate(()=>window.state());assert.deepEqual(state.ids,[...state.ids].sort());checks.push('inserted row keeps SDK query order');
   await page.evaluate(()=>window.remove('r-000'));await page.waitForFunction(()=>window.state().count===130);
   state=await page.evaluate(()=>window.state());assert.equal(state.firstZero,1);checks.push('server deletion keeps previous snapshot intact');
+  await page.waitForTimeout(100);
+  const beforeReuse=await page.evaluate(()=>({snapshots:window.snapshots.length,chunks:window.workerChunks.length,reuses:window.reuses}));
+  await page.evaluate(()=>{window.stop();window.subscribe()});
+  await page.waitForFunction(n=>window.snapshots.length>n,beforeReuse.snapshots);
+  assert.deepEqual(await page.evaluate(()=>({chunks:window.workerChunks.length,reuses:window.reuses})),{chunks:beforeReuse.chunks,reuses:beforeReuse.reuses+1});
+  checks.push('unchanged reopened source is server-confirmed without retransferring decoded rows');
+  const beforeEmptyChurn=await page.evaluate(()=>({snapshots:window.snapshots.length,chunks:window.workerChunks.length,reuses:window.reuses}));
+  await page.evaluate(async()=>{window.stop();await window.churnEmptyModules();window.subscribe()});
+  await page.waitForFunction(n=>window.snapshots.length>n,beforeEmptyChurn.snapshots);
+  assert.deepEqual(await page.evaluate(()=>({chunks:window.workerChunks.length,reuses:window.reuses})),
+    {chunks:beforeEmptyChurn.chunks,reuses:beforeEmptyChurn.reuses+1});
+  checks.push('12 empty module sources do not evict or retransmit the unchanged nonempty server baseline');
+  assert.equal(await page.evaluate(()=>window.concurrentInitialReads()),2);
+  checks.push('10 concurrent SDK sources are admitted with a peak of two initial server transfers');
+  const beforeEviction=await page.evaluate(()=>({snapshots:window.snapshots.length,chunks:window.workerChunks.length}));
+  await page.evaluate(async()=>{window.stop();await window.churnNonemptyModules();await window.change('r-002',321);window.subscribe()});
+  await page.waitForFunction(previous=>window.snapshots.length>previous,beforeEviction.snapshots);
+  assert((await page.evaluate(()=>window.workerChunks.length))>beforeEviction.chunks,'evicted source needs a complete transfer');
+  assert.equal(await page.evaluate(()=>window.snapshots.at(-1).items.find(row=>row.id==='r-002').data.amount),321);
+  checks.push('nine nonempty source completions evict reopen state; changed source reopens in full with authoritative current rows');
   // Hold an acknowledgement while updates replace the queued snapshot. A
   // reopened stream must still receive the latest server value in full.
-  await page.evaluate(()=>{window.stop();window.pause=true;window.subscribe()});
+  await page.evaluate(async()=>{window.stop();await window.change('r-002',23);window.pause=true;window.subscribe()});
   await page.waitForFunction(()=>window.paused===true);
   const before=await page.evaluate(()=>window.snapshots.length);
   await page.evaluate(()=>window.burst());
   await page.evaluate(()=>{window.pause=false;window.release()});
   await page.waitForFunction(()=>window.state().one===5014,null,{timeout:30000});
   state=await page.evaluate(()=>window.state());assert.equal(state.count,130);assert.ok(state.snapshots>before);checks.push('bounded queued snapshots recover data-only updates');
-  await page.evaluate(()=>{window.stop();window.pause=true;window.paused=false;window.subscribe()});
+  await page.evaluate(async()=>{window.stop();await window.change('r-003',34);window.pause=true;window.paused=false;window.subscribe()});
   await page.waitForFunction(()=>window.paused===true);const oldCount=await page.evaluate(()=>window.snapshots.length);
   await page.evaluate(()=>{window.stop();window.pause=false;window.release()});await page.waitForTimeout(150);
   assert.equal(await page.evaluate(()=>window.snapshots.length),oldCount);checks.push('unsubscribe during chunk processing suppresses late publication');
   await page.evaluate(()=>window.subscribe());await page.waitForFunction(previous=>window.snapshots.length>previous,oldCount,{timeout:30000});
   state=await page.evaluate(()=>window.state());assert.equal(state.one,5014);assert.equal(state.mainSessionPreserved,true);
   assert.deepEqual(state.errors,[]);assert.deepEqual(state.fallbacks,[]);assert.deepEqual(errors,[]);checks.push('reopen uses complete current server state and same main Auth session');
+  if(persistentCache){
+    assert.equal(await page.evaluate(()=>window.checkVolatileIdentity()),true);
+    assert.deepEqual(await page.evaluate(()=>window.inspectFixtureCache()),{businessPresent:true,identityPresent:false});
+    checks.push('actual persistent IDB contains approved business history but excludes the volatile identity document sentinel');
+    const previous=await page.evaluate(()=>({snapshots:window.snapshots.length,cacheEvents:window.statuses.length}));
+    await page.evaluate(async()=>{window.close();await window.change('r-001',7000);window.startClient();window.subscribe()});
+    await page.waitForFunction(count=>window.snapshots.length>count,previous.snapshots,{timeout:30000});
+    state=await page.evaluate(()=>window.state());assert.equal(state.one,7000);assert.deepEqual(state.errors,[]);
+    assert((await page.evaluate(()=>window.statuses.length))>previous.cacheEvents,'new worker should see a cached metadata event before server confirmation');
+    checks.push('new worker restores its scoped IndexedDB target, suppresses cached rows and publishes the changed server-confirmed value');
+    await page.evaluate(()=>window.close());
+    const deniedRules=rules.replace('allow read,delete:if request.auth!=null&&request.auth.token.companyId==resource.data.companyId;',
+      'allow read:if false;allow delete:if request.auth!=null&&request.auth.token.companyId==resource.data.companyId;');
+    assert.notEqual(deniedRules,rules);
+    const deniedResponse=await fetch(`${firestore}/emulator/v1/projects/${project}:securityRules`,{method:'PUT',body:JSON.stringify({rules:{files:[{content:deniedRules}]}}),signal:AbortSignal.timeout(10000)});
+    assert.equal(deniedResponse.ok,true);
+    const beforeDenied=await page.evaluate(()=>window.snapshots.length);
+    await page.evaluate(()=>{window.startClient();window.subscribe()});
+    await page.waitForFunction(()=>window.errors.includes('permission-denied'),null,{timeout:30000});
+    assert.equal(await page.evaluate(()=>window.snapshots.length),beforeDenied,'cached history cannot bypass a revoked server read permission');
+    assert.equal(await page.evaluate(()=>window.errors.includes('Cached rows must not be published')),false);
+    checks.push('revoked server access never exposes cached records or marks an authoritative empty success');
+    assert.deepEqual(await page.evaluate(()=>window.purgeCache()),{before:true,after:false,mainSessionPreserved:true});
+    checks.push('explicit cache purge deletes only the scoped IndexedDB data and preserves main Firebase Auth');
+  }
   await page.evaluate(()=>window.close());const closedCount=await page.evaluate(()=>window.snapshots.length);
   await page.evaluate(()=>window.change('r-001',9000));await page.waitForTimeout(150);
   assert.equal(await page.evaluate(()=>window.snapshots.length),closedCount);checks.push('closed worker cannot publish after later writes');
   await context.close();
-}finally{await fs.writeFile(output+'/result.json',JSON.stringify({collectionName,checks,errors,
+}finally{await fs.writeFile(output+'/result.json',JSON.stringify({collectionName,persistentCache,checks,errors,
   scope:'Actual product read worker + client + Auth persistence, local demo Auth/Firestore SDK integration. Complete data/types/order/edits/deletes/queued-update gaps/cancellation verified. No real credentials or production data. Not Android/performance acceptance.'},null,2));
   await browser.close();await new Promise(resolve=>server.close(resolve));}
 console.log(JSON.stringify({checks,errors}));

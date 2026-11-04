@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {retainCollectionRecordIdentityAsync as reconcile} from '../src/utils/cooperativeCollectionIdentity.js';
+import {areEquivalentPlainDates} from '../src/utils/collectionIdentity.js';
 import {retainCollectionRecordIdentityAsync as reference} from './fixtures/cooperative-identity-copy.baseline.mjs';
 import {retainFirestoreWorkerValue as retain} from '../src/services/firestoreWorkerValues.js';
 import {retainFirestoreWorkerValue as oldRetain} from './fixtures/firestore-worker-copy.baseline.mjs';
@@ -57,7 +58,9 @@ test('unchanged cooperative records need no shallow copies',async()=>{
   const read=file=>readFileSync(new URL(file,import.meta.url),'utf8');
   async function countCopies(source){
     const context=vm.createContext({});
-    vm.runInContext(source.replaceAll('export async function ','async function '),context);
+    const executable=source.replace("import {areEquivalentPlainDates} from './collectionIdentity.js';",'')
+      .replaceAll('export async function ','async function ');
+    vm.runInContext(`const areEquivalentPlainDates=${areEquivalentPlainDates.toString()};\n${executable}`,context);
     return vm.runInContext(`(async function(){
       var a=Array.from({length:120},function(_,id){return {id:'r'+id,meta:{amount:id},items:[{quantity:1},{quantity:2}]}}),b=JSON.parse(JSON.stringify(a));
       var copies=0,proto=Object.setPrototypeOf,slice=Array.prototype.slice;

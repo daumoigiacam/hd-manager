@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getListPage } from '../utils/listPage.js';
 
 export const getDefaultListPageSize = (scope = globalThis) => (
-  scope.document?.documentElement?.classList?.contains('hd-low-power-ui')
-    || scope.matchMedia?.('(max-width: 600px)')?.matches ? 20 : 50
+  scope.document?.documentElement?.classList?.contains('hd-low-power-ui') ? 15 : 20
 );
 
 export const usePagedList = (items, resetKey = '', pageSize) => {

@@ -387,6 +387,12 @@ export function query(collectionRef, ...constraints) {
   };
 }
 
+export function queryEqual(left, right) {
+  return left === right || Boolean(left && right && left.kind === right.kind
+    && left.name === right.name && left.path === right.path
+    && JSON.stringify(left.constraints || []) === JSON.stringify(right.constraints || []));
+}
+
 export const getDocsFromServer = getDocs;
 
 export async function getDoc(ref) {

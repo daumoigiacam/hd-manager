@@ -6,6 +6,7 @@ import {retainCollectionRecordIdentityAsync} from '../src/utils/cooperativeColle
 import { appFunction } from './helpers/app-source-function.mjs';
 import { createSaveQueueHarness } from './helpers/save-queue-harness.mjs';
 import { DashboardService, buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
+import { createReadOwnerAccess } from '../src/services/readOwnerAccess.js';
 
 test('snapshots preserve references only when every field and row order agrees', () => {
   const previous = [{ id: 'a', companyId: 'one', items: [{ price: 60 }], pending: true }, { id: 'b' }];
@@ -80,9 +81,11 @@ test('actual snapshot setter skips no-op replacement but applies price and confi
   let state = [{ id: 'o', price: 60, __pendingFirebaseSync: true }];
   let loaded = 0;
   const committed={current:{orders:state}};
+  const readAccess = createReadOwnerAccess({ ownerKey: 'shared-hotpaths-fixture', isOwnerCurrent: () => true,
+    isPermissionError: error => ['permission-denied', 'unauthenticated'].includes(error?.code) });
   const setter = updater => { state = updater(state);committed.current.orders=state; };
   const apply = appFunction('setCollectionSafely', {
-    readWorker:null,cancelled:false,readWorkerCommittedStateRef:committed,
+    readWorker:null,cancelled:false,readWorkerCommittedStateRef:committed,isReadAccessCurrent:readAccess.isCurrent,
     retainCollectionRecordIdentityAsync,mergePendingArrayItems:(_name,value)=>value, runNonBlockingStateUpdate: callback => callback(),
     hasCollectionValue: value => value?.length > 0,
     getPreviousStableCollectionValue: () => state, rememberStableCollectionValue() {},

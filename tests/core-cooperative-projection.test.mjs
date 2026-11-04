@@ -1,7 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProjectionCache, runCooperativeProjection, sortProjection } from '../src/services/cooperativeProjection.js';
+import { createProjectionCache, createProjectionScheduler, runCooperativeProjection, sortProjection } from '../src/services/cooperativeProjection.js';
 import { appFunction } from './helpers/app-source-function.mjs';
+
+test('task scheduler yields every parallel waiter once in FIFO order and closing releases pending waiters', {timeout:5000}, async()=>{
+  const scheduler=createProjectionScheduler(), received=[];
+  try {
+    const waiting=Array.from({length:80},(_,index)=>scheduler.yieldTask().then(()=>received.push(index)));
+    assert.deepEqual(received,[],'acknowledgements cannot run inside the current input task');
+    await Promise.all(waiting);
+    assert.deepEqual(received,Array.from({length:80},(_,index)=>index));
+    const pending=[scheduler.yieldTask(),scheduler.yieldTask()];
+    scheduler.close();await Promise.all(pending);await scheduler.yieldTask();
+  } finally {scheduler.close()}
+});
 
 test('projection cache isolates every immutable source and date/employee scope, with bounded retention', () => {
   const entryFor = createProjectionCache();

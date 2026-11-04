@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import { appFunction } from './helpers/app-source-function.mjs';
 
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const source = readApplicationSource();
 
 test('share-only grouping runs once on demand and rebuilds for replacement source rows', () => {
   let scans = 0;

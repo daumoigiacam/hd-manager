@@ -635,7 +635,7 @@ test('actual App setter, inventory calculation and explicit immutable view memo 
   let state = [{ id: 'a', companyId: 'tenant-a', date: '2026-10-02', productId: 'p', quantity: 0.1, totalKg: 2 },
     { id: 'b', companyId: 'tenant-a', date: '2026-10-03', productId: 'p', quantity: 0.2, totalKg: 3 }];
   const apply = appFunction('setCollectionSafely', {
-    readWorker:null,cancelled:false,readWorkerCommittedStateRef:{get current(){return {warehouseImports:state}}},
+    readWorker:null,cancelled:false,isReadAccessCurrent:()=>true,readWorkerCommittedStateRef:{get current(){return {warehouseImports:state}}},
     retainCollectionRecordIdentityAsync,mergePendingArrayItems:(_name,value)=>value, runNonBlockingStateUpdate: callback => callback(),
     hasCollectionValue: value => value?.length > 0, getPreviousStableCollectionValue: () => state,
     rememberStableCollectionValue() {}, markCollectionLoaded() {},

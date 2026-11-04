@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   normalizeCompanyDepartments,
   removeCompanyDepartment,
@@ -49,10 +47,7 @@ assert.equal(
   2,
 );
 
-const appSource = fs.readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'App.jsx'),
-  'utf8',
-);
+const appSource = readApplicationSource();
 const employeeViewSource = appSource.slice(
   appSource.indexOf('function EmployeeView'),
   appSource.indexOf('function SalaryViewLegacy'),

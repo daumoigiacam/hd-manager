@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@babel/parser';
 import babelTraverse from '@babel/traverse';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { createRecordCalculationCache } from '../src/services/recordCalculationCache.js';
 import { retainCollectionRecordIdentity } from '../src/utils/collectionIdentity.js';
 
@@ -21,7 +22,7 @@ class RequestDate extends Date {
   static now() { return new RequestDate().getTime(); }
 }
 const globals = { Array, Object, Map, Set, WeakMap, Number, String, Boolean, Math, Intl,
-  Date: RequestDate, RegExp, JSON, TypeError, parseInt, parseFloat, undefined, NaN, Infinity };
+  Date: RequestDate, RegExp, JSON, TypeError, RangeError, parseInt, parseFloat, undefined, NaN, Infinity };
 const modules = new Map();
 const gitSources = new Map();
 
@@ -31,7 +32,7 @@ function moduleAst(revision, path = 'src/App.jsx') {
   assert.ok(path.startsWith('src/') && !path.includes('..'), `Unexpected source dependency: ${path}`);
   const frozenFile = new URL(path, frozenRoot);
   let source;
-  if (revision === 'current') source = readFileSync(new URL(path, root), 'utf8');
+  if (revision === 'current') source = path === 'src/App.jsx' ? readApplicationSource() : readFileSync(new URL(path, root), 'utf8');
   else if (revision === 'frozen' && existsSync(frozenFile)) source = readFileSync(frozenFile, 'utf8');
   else {
     if (!gitSources.has(path)) gitSources.set(path, execFileSync('git', ['show', `${baselineRevision}:${path}`], {

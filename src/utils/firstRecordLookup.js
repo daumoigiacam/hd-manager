@@ -8,3 +8,13 @@ export function buildFirstRecordLookup(records = []) {
   }
   return lookup;
 }
+
+// Opt in only for immutable snapshot arrays. Weak keys release the lookup with
+// its source; no cross-source/ID/name heuristics and no mutable default cache.
+export function createImmutableFirstRecordLookupSelector() {
+  const snapshots=new WeakMap();
+  return records=>{
+    if(!snapshots.has(records))snapshots.set(records,buildFirstRecordLookup(records));
+    return snapshots.get(records);
+  };
+}

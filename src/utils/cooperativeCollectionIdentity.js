@@ -1,9 +1,11 @@
 // Same conservative value/ID semantics as collectionIdentity, with a task
 // boundary during deep traversal. No partial result is published or mutated.
+import {areEquivalentPlainDates} from './collectionIdentity.js';
 const plain = value => [Object.prototype,null].includes(Object.getPrototypeOf(value));
 function* retainValue(previous,next,budget,depth=0) {
   if (Object.is(previous,next)) return previous;
   if (!previous || !next || typeof previous!=='object' || typeof next!=='object' || depth>64) return next;
+  if(areEquivalentPlainDates(previous,next))return previous;
   const array=Array.isArray(next);
   if (array!==Array.isArray(previous) || (array ? previous.length!==next.length
     : !plain(previous)||!plain(next)||Object.getPrototypeOf(previous)!==Object.getPrototypeOf(next))) return next;
@@ -45,6 +47,8 @@ function* lookup(rows,budget){
   return byId;
 }
 function* reconcile(previous,next){
+  if(Object.is(previous,next))return previous;
+  if(Array.isArray(previous)&&Array.isArray(next)&&(!previous.length||!next.length))return previous.length===next.length?previous:next;
   const budget={left:64};
   if(!Array.isArray(previous)||!Array.isArray(next))return yield* retainValue(previous,next,budget);
   const byId=yield* lookup(previous,budget);

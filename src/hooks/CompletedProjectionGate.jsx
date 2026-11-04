@@ -1,4 +1,4 @@
-import {memo} from 'react';
+import {memo,useLayoutEffect,useRef} from 'react';
 
 // Do not suspend a source update whose calculation starts in a parent effect:
 // startTransition can delay that commit indefinitely. Retain the completed
@@ -8,13 +8,19 @@ const CompletedContent = memo(function CompletedContent({ready, children}) {
   return ready ? (typeof children === 'function' ? children() : children) : null;
 }, (_previous, next) => !next.ready);
 
-export function CompletedProjectionGate({projection, onRetry, children, pendingContent, errorContent}) {
+export function CompletedProjectionGate({projection, onRetry, children, pendingContent, errorContent, retainWhilePending = false, retainIdentity,disableRetainedInteraction=false}) {
   const ready = !projection.pending && !projection.error;
+  const completed = useRef({ready: false, identity: null});
+  useLayoutEffect(() => { if (ready) completed.current = {ready: true, identity: retainIdentity}; }, [ready, retainIdentity]);
+  // Opt in only for read-only reports. The parent key must include identity and
+  // effective permissions so an old private report cannot survive a scope change.
+  const retained = retainWhilePending && completed.current.ready && completed.current.identity === retainIdentity && projection.pending && !projection.error;
   return <>
-    <div data-hd-projection-content style={{display: ready ? undefined : 'none'}} aria-hidden={!ready || undefined}>
+    <div data-hd-projection-content style={{display: ready || retained ? undefined : 'none'}} aria-hidden={!(ready || retained) || undefined} aria-busy={retained || undefined}
+      onClickCapture={retained&&disableRetainedInteraction?event=>{event.preventDefault();event.stopPropagation()}:undefined}>
       <CompletedContent ready={ready}>{children}</CompletedContent>
     </div>
-    {projection.pending && (pendingContent || <LedgerPreparationNotice />)}
+    {projection.pending && (retained ? <span hidden aria-hidden="true" aria-busy="true" data-hd-ledger-loading /> : (pendingContent || <LedgerPreparationNotice />))}
     {!projection.pending && projection.error && <div role="alert" className="p-4 text-sm text-rose-700">
       {errorContent || 'Chưa đối chiếu được công nợ. Vui lòng thử lại.'}
       <button type="button" className="ml-2 font-bold underline" onClick={onRetry}>Thử lại</button>

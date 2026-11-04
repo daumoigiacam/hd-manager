@@ -5,8 +5,9 @@ self.onmessage = ({ data }) => {
   // One bitmap at a time bounds memory when a share contains many pages.
   queue = queue.then(async () => {
     const { id, width, height, commands, options } = data;
+    let canvas;
     try {
-      const canvas = new OffscreenCanvas(width, height);
+      canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Canvas worker has no 2D context');
       replayShareCanvas(context, commands);
@@ -14,6 +15,8 @@ self.onmessage = ({ data }) => {
       self.postMessage({ id, blob });
     } catch (error) {
       self.postMessage({ id, error: error?.message || String(error) });
+    } finally {
+      if(canvas){canvas.width=0;canvas.height=0}
     }
   });
 };

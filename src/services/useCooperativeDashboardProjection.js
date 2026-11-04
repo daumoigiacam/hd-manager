@@ -6,7 +6,7 @@ import {runCooperativeReportProjection as runCooperativeProjection} from './coop
 const equalInputs=(a,b)=>a===b || Boolean(a && b && Object.keys(a).length===Object.keys(b).length
   && Object.keys(b).every(key=>Object.is(a[key],b[key])));
 
-export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps) {
+export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps,{enabled=true}={}) {
   const [result,setResult]=useState(()=>equalInputs(cache.cooperativeProjection?.inputs,inputs)?cache.cooperativeProjection:null);
   const [failure,setFailure]=useState(null);
   const [attempt,setAttempt]=useState(0);
@@ -20,6 +20,10 @@ export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps
       startTransition(()=>setResult(previous=>isCurrent()?projection:previous));
     };
     setFailure(null);
+    // Initial hydration updates many raw source props independently. Do not
+    // rebuild financial/payroll reports for incomplete prefixes of the data.
+    // A retained same-scope report remains pending, never newly authoritative.
+    if(!enabled)return()=>{active=false};
     if(equalInputs(cache.cooperativeProjection?.inputs,inputs)) {
       publish({...cache.cooperativeProjection,inputs});
       return()=>{active=false};
@@ -31,10 +35,12 @@ export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps
       publish({inputs,snapshot});
     })().catch(error=>{if(isCurrent() && error.name!=='AbortError')setFailure({inputs})});
     return()=>{active=false};
-  },[inputs,cache,buildPayrollSteps,attempt]);
+  },[inputs,cache,buildPayrollSteps,attempt,enabled]);
   // A previous tenant/permission snapshot must disappear in this render, before
   // effect cleanup or a new calculation. Same-scope old data remains visibly busy.
-  const sameScope=result?.inputs.company===inputs.company && result?.inputs.employee===inputs.employee;
-  return {snapshot:sameScope?result?.snapshot:null,pending:!sameScope || !equalInputs(result?.inputs,inputs),
+  const sameScope=result?.inputs.company?.id===inputs.company?.id && result?.inputs.employee?.id===inputs.employee?.id
+    && (typeof inputs.privacyScope==='string' ? result?.inputs.privacyScope===inputs.privacyScope
+      : result?.inputs.company===inputs.company && result?.inputs.employee===inputs.employee);
+  return {snapshot:sameScope?result?.snapshot:null,pending:!enabled || !sameScope || !equalInputs(result?.inputs,inputs),
     failed:failure?.inputs===inputs,retry:()=>setAttempt(n=>n+1)};
 }

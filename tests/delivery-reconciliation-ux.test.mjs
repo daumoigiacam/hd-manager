@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 import {
   DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT,
@@ -154,7 +154,7 @@ test('pending list preparation stays well below one frame for a large workday', 
   console.log(`INFO 1000 groups prepared in ${elapsedMs.toFixed(2)} ms; initial cards 1000 -> ${visible.length}`);
 });
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 
 test('delivery report screen uses the memoized pending-only reconciliation section', () => {
   assert.match(appSource, /const DeliveryReconciliationCard = React\.memo/);

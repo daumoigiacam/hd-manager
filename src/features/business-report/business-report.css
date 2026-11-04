@@ -20,6 +20,19 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
 }
+
+/* A permanent metadata line identifies retained financial snapshots without
+   a floating sync banner or content moving when background work starts. */
+.business-report-freshness {
+  height: 1.25rem;
+  min-height: 1.25rem;
+  line-height: 1.25rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--report-muted);
+  font-size: 0.6875rem;
+}
 .business-report-workspace *, .business-report-workspace *::before, .business-report-workspace *::after { box-sizing: border-box; }
 .business-report-workspace button { cursor: pointer; }
 .business-report-workspace button:focus-visible,

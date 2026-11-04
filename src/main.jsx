@@ -10,6 +10,8 @@ import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } fro
 import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
 import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
 import { resolveKeyboardViewport, resolveStableViewport } from './utils/keyboardViewport.js';
+import {installAdaptivePerformance} from './services/adaptivePerformance.js';
+import {installDetachedEditorCleanup} from './services/detachedEditorCleanup.js';
 
 function installResponsiveViewportVars() {
   const root = document.documentElement;
@@ -563,6 +565,11 @@ flushStartupEvents();
 recordStartupEvent('react.ready');
 installResponsiveViewportVars();
 installRuntimePerformanceMode();
+const disposeAdaptivePerformance=installAdaptivePerformance({enabled:import.meta.env.VITE_ADAPTIVE_PERFORMANCE!=='false'});
+if(import.meta.hot)import.meta.hot.dispose(disposeAdaptivePerformance);
+const disposeDetachedEditors=import.meta.env.VITE_DETACHED_EDITOR_CLEANUP==='false'
+  ?()=>{}:installDetachedEditorCleanup(document.getElementById('root'));
+if(import.meta.hot)import.meta.hot.dispose(disposeDetachedEditors);
 installReleaseFreshnessMonitor({
   buildId: import.meta.env.VITE_HD_BUILD_ID,
   enabled: import.meta.env.PROD && !Capacitor.isNativePlatform?.()

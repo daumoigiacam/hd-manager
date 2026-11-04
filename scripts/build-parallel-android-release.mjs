@@ -38,7 +38,7 @@ export async function buildParallelAndroidRelease({buildOutput='dist',output,exp
     child.on('error',reject);child.on('exit',resolve);
   });
   assert.equal(code,0,'Signed parallel release build failed');
-  const apk=path.join(directory,`HD-Manager-Moi-1.0.11-${expectedCommit.slice(0,8)}.apk`);
+  const apk=path.join(directory,`HD-Manager-Moi-1.0.12-${expectedCommit.slice(0,8)}.apk`);
   await cp('android/app/build/outputs/apk/release/app-release.apk',apk);
   return apk;
 }

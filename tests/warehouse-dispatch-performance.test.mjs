@@ -141,17 +141,18 @@ test('warehouse workspace closes unrelated warm listeners but keeps dispatch sou
 test('application wires latest callback, complete input guard and warehouse maintenance pause', async () => {
   const source = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(source, /loyaltySyncCallbackRef\.current = syncCustomerLoyaltyPoints/);
-  assert.match(source, /if \(!loyaltyMaintenanceDataReady \|\| activeTab === 'warehouse_dispatch'\) return/);
+  assert.match(source, /if \(!loyaltyMaintenanceDataReady \|\| moduleNavigation\.getSnapshot\(\) === 'warehouse_dispatch'\) return/);
   assert.match(source, /loyaltyActivityRef\.current\.tab === 'warehouse_dispatch'/);
   assert.match(source, /loyaltyMaintenanceRef\.current\?\.enqueue\(customerId, 'eligibility_sync'\)/);
-  assert.match(source, /retainRecent: activeTabForSyncRef\.current !== 'warehouse_dispatch'/);
+  assert.match(source, /retainRecent: false/);
   const backupEffect = source.slice(source.indexOf('if (autoBackupInFlightRef.current.has(stateKey))'),
     source.indexOf('const buildPaymentConfirmationMessage'));
   assert.match(source, /if \(activeTab === 'warehouse_dispatch'\) return undefined;\s*const dateKey = getTodayString\(\)/);
   assert.match(backupEffect, /const backupQueue = createCooperativeTaskQueue/);
   assert.match(backupEffect, /backupQueue\.enqueue\(stateKey\)/);
   assert.match(backupEffect, /backupQueue\.dispose\(\)/);
-  assert.match(backupEffect, /\[firebaseUser, myCompanyId, currentCompany, activeTab, canAutomaticallyBackUpCompany\]/);
+  assert.match(backupEffect, /\[firebaseUser, myCompanyId, currentCompany, canAutomaticallyBackUpCompany\]/);
+  assert.match(source, /useModuleNavigationEffect\(moduleNavigation, \(activeTab\) => \{\s*if \(!firebaseUser \|\| !myCompanyId \|\| !currentCompany \|\| !canAutomaticallyBackUpCompany\)/);
   assert.match(source, /if \(!firebaseUser \|\| !myCompanyId \|\| !currentCompany \|\| !canAutomaticallyBackUpCompany\) return undefined/);
   assert.match(backupEffect, /document\.activeElement\?\.matches/);
 });

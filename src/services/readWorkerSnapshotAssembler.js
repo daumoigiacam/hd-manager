@@ -3,7 +3,7 @@ const invalid = () => { throw new Error('Invalid or incomplete read-worker snaps
 
 // A stream publishes complete snapshots only. Incoming chunks cannot mutate the
 // committed array or a record already used by a view/pending local save.
-export function createReadWorkerSnapshotAssembler({ decode, retain, initialItems = [],
+export function createReadWorkerSnapshotAssembler({ decode, retain, initialItems = [], initialBaselineId = null,
   yieldWork = () => new Promise(resolve => setTimeout(resolve, 0)), now = () => performance.now(), budgetMs = 4,
 } = {}) {
   if (typeof decode !== 'function' || typeof retain !== 'function' || !Array.isArray(initialItems)
@@ -26,7 +26,10 @@ export function createReadWorkerSnapshotAssembler({ decode, retain, initialItems
           || message.mode === 'full' && message.changeCount === null)
         || !['full','delta','metadata'].includes(message.mode)
         || typeof message.metadata?.fromCache !== 'boolean' || typeof message.metadata?.hasPendingWrites !== 'boolean') return invalid();
-      if (message.mode !== 'full' && (message.revision !== revision + 1 || revision === 0)) return invalid();
+      const verifiedInitialMetadata = revision===0 && message.revision===1 && message.mode==='metadata'
+        && typeof initialBaselineId==='string' && initialBaselineId.length>0 && message.baselineId===initialBaselineId
+        && message.metadata.fromCache===false && message.metadata.hasPendingWrites===false;
+      if (message.mode !== 'full' && (message.revision !== revision + 1 || revision === 0 && !verifiedInitialMetadata)) return invalid();
       if (message.mode === 'metadata' && (message.count !== committed.length || message.changeCount !== 0)) return invalid();
       const transfer = { ...message, nextChunk: 0, seen: new Set(), byId: new Map(),
         rows: message.mode === 'full' ? [] : message.mode === 'metadata' ? committed : committed.slice() };

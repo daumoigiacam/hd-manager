@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { appFunction } from './helpers/app-source-function.mjs';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { createSearchRecordIndexAsync, getOrderSearchFields, searchOrders } from '../src/services/searchEngine.js';
 
 const orders = Array.from({ length: 1800 }, (_, i) => ({ id: `order-${i}`, customerId: `c${i % 360}`,
@@ -68,6 +68,6 @@ test('delivery scroll requests coalesce and release their timer after firing', (
   [...timers.values()][0]();
   assert.equal(scrolls, 1);
   assert.equal(deliveryFormScrollTimerRef.current, null);
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   assert.match(source, /useEffect\(\(\) => \(\) => \{[^]*?window\.clearTimeout\(deliveryFormScrollTimerRef\.current\);\s*\}, \[\]\)/);
 });

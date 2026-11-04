@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@babel/parser';
 import babelTraverse from '@babel/traverse';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 const traverse = babelTraverse.default || babelTraverse;
 const root = new URL('../', import.meta.url);
@@ -41,7 +42,7 @@ function moduleAst(revision, path = 'src/App.jsx') {
   // Git is the CI oracle; ignored frozen files are only an additional local
   // reference. Neither a missing frozen App nor helper needs a shipped artifact.
   const { source, origin } = revision === 'current'
-    ? { source: readFileSync(new URL(path, root), 'utf8'), origin: 'current' }
+    ? { source: path === 'src/App.jsx' ? readApplicationSource() : readFileSync(new URL(path, root), 'utf8'), origin: 'current' }
     : baselineSource(path, { useFrozen: revision === 'baseline' });
   const tree = parse(source, { sourceType: 'module', plugins: ['jsx'] });
   const top = new Map();

@@ -1,5 +1,7 @@
+import {getAdaptivePerformancePolicy} from './adaptivePerformance.js';
 // Immutable source identities isolate cached projections; scopes are bounded per source set.
-export function createProjectionCache() {
+export function createProjectionCache({maxScopes=8}={}) {
+  if(!Number.isSafeInteger(maxScopes)||maxScopes<1||maxScopes>8)throw new RangeError('Invalid projection cache scope bound');
   const root = new WeakMap();
   return (sources, scope) => {
     if (!sources.length || sources.some(source => !source || typeof source !== 'object')) {
@@ -12,7 +14,7 @@ export function createProjectionCache() {
       node = node.get(source);
     }
     if (!node.has(scope)) {
-      if (node.size >= 8) node.delete(node.keys().next().value);
+      if (node.size >= maxScopes) node.delete(node.keys().next().value);
       node.set(scope, { complete: false });
     }
     return node.get(scope);
@@ -24,11 +26,15 @@ export function createProjectionScheduler() {
     yieldTask: () => new Promise(resolve => setTimeout(resolve, 0)), close() {},
   };
   const channel = new MessageChannel();
-  let pending;
-  channel.port1.onmessage = () => { const resolve = pending; pending = null; resolve?.(); };
+  const pending = [];
+  let closed = false;
+  channel.port1.onmessage = () => { pending.shift()?.(); };
   return {
-    yieldTask: () => new Promise(resolve => { pending = resolve; channel.port2.postMessage(null); }),
-    close: () => { channel.port1.close(); channel.port2.close(); },
+    yieldTask: () => closed ? Promise.resolve() : new Promise(resolve => { pending.push(resolve); channel.port2.postMessage(null); }),
+    close: () => {
+      closed = true; channel.port1.close(); channel.port2.close();
+      pending.splice(0).forEach(resolve => resolve());
+    },
   };
 }
 
@@ -53,7 +59,7 @@ export function* sortProjection(records, compare) {
 }
 
 export async function runCooperativeProjection(factory, { signal, yieldTask,
-  now = () => performance.now(), budgetMs = 4, maxOperations = 128 } = {}) {
+  now = () => performance.now(), budgetMs = getAdaptivePerformancePolicy().workBudgetMs, maxOperations = getAdaptivePerformancePolicy().maxOperations } = {}) {
   if (!(budgetMs > 0) || !Number.isFinite(budgetMs) || !Number.isInteger(maxOperations) || maxOperations < 1) {
     throw new RangeError('Invalid projection budget');
   }

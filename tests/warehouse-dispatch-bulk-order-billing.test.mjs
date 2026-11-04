@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { performance } from 'node:perf_hooks';
 import {
   buildWarehouseDispatchOrderBillingSnapshot,
@@ -434,7 +435,7 @@ const stressDurationMs = performance.now() - stressStartedAt;
 assert.equal(stressDrafts.length, 500, 'the stress fixture creates exactly 500 order drafts');
 assert.equal(stressActualTotal, stressExpectedTotal, 'all 500 order totals match the authoritative dispatch weights');
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 assert.match(appSource, /buildWarehouseDispatchOrderBillingSnapshot\(/, 'bulk conversion uses the dispatch-to-order billing resolver');
 assert.match(appSource, /mergeWarehouseDispatchOrderBillingItems\(group\.items\)/, 'bulk conversion consolidates duplicate product rows before review');
 assert.match(appSource, /draft\.sourceType === 'warehouse_dispatch'[\s\S]*prepareWarehouseDispatchOrderItems\(draft\.items\)/, 'warehouse drafts preserve manual lines while consolidating dispatch lines before persistence');

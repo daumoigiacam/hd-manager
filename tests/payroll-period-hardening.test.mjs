@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 import {
   createPayrollEmployeeSnapshot,
@@ -254,7 +255,7 @@ test('the auto-lock worker rejects staged snapshots that lack frozen policy inpu
 });
 
 test('the locked UI dependency graph exits before live policy and formula calculation', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   assert.match(source, /const payrollPolicyEmployees = useMemo\([\s\S]*?isPayrollLocked\s*\?\s*\[\]/);
   assert.match(source, /const buildPayrollViewProjectionSteps = function\*[\s\S]*?if \(isPayrollLocked\) return EMPTY_PAYROLL_VIEW;/);
   assert.match(source, /const buildPayrollSalaryDetails=useCallback\(employeeId=>payrollView\.detailsByEmployee\.get\(employeeId\) \|\| null/);
@@ -263,7 +264,7 @@ test('the locked UI dependency graph exits before live policy and formula calcul
 });
 
 test('company payroll summary uses the current month and row data in the redesigned workspace', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   const workspace = readFileSync(new URL('../src/features/payroll/PayrollWorkspace.jsx', import.meta.url), 'utf8');
   assert.match(source, /<PayrollWorkspace[\s\S]*?rows=\{salaryRows\}[\s\S]*?monthKey=\{currentMonth\}[\s\S]*?onMonthChange=\{setSalaryMonth\}/);
   assert.match(workspace, /<MonthControl monthKey=\{monthKey\} onChange=\{onMonthChange\}/);
@@ -272,7 +273,7 @@ test('company payroll summary uses the current month and row data in the redesig
 });
 
 test('manual payroll lock reads only the period document before creating immutable artifacts', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   const handlerStart = source.indexOf('const handleLockPayrollPeriod');
   const handlerEnd = source.indexOf('const handleAdjustLockedPayroll', handlerStart);
   const handlerSource = source.slice(handlerStart, handlerEnd);
@@ -282,7 +283,7 @@ test('manual payroll lock reads only the period document before creating immutab
 });
 
 test('payroll summary shows opening debt beside current-period advances without changing salary math', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   assert.match(source, /Ứng \+ nợ đầu kỳ/);
   assert.match(source, /\(details\.totalAdvance \|\| 0\) \+ \(details\.openingDebt \|\| 0\)/);
   assert.match(source, /<span>Dư nợ đầu kỳ<\/span>/);
@@ -290,7 +291,7 @@ test('payroll summary shows opening debt beside current-period advances without 
 });
 
 test('current payroll directs owners to review an unlocked previous month instead of inventing history', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   assert.match(source, /getPreviousPayrollMonthKey\(currentMonth\)/);
   assert.match(source, /const shouldReviewPreviousPayrollPeriod = Boolean\(/);
   assert.match(source, /chưa được chốt/);

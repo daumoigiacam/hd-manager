@@ -6,6 +6,7 @@ import { writeAutomaticBackupStream } from '../src/services/automaticBackupStrea
 import { consumeTenantRestQuery, collectTenantRestQuery } from '../src/services/firestoreRestPagination.js';
 import { decodeFirebaseBackupFields } from '../src/services/firebaseBackupValues.js';
 import { createScopedBackupSink } from '../src/services/scopedBackupSink.js';
+import { parseFirebaseResponseJsonInBackground } from '../src/services/backgroundJsonParser.js';
 
 let normalize;
 normalize = appFunction('normalizeBackupSerializableValue', { normalizeBackupSerializableValue: value => normalize(value) });
@@ -141,7 +142,7 @@ test('full collection API cannot accidentally switch to the partial-consumer con
 });
 
 function nativeAppHarness({ fail = false, changeTenant = false, platform = 'android', allowed = true,
-  revokeAccess = false, paused = false } = {}) {
+  revokeAccess = false, paused = false, invalidBody = false } = {}) {
   const files = new Map(), writes = [], states = [];
   const delays = [];
   const currentCompany = { id: companyId, companyId, name: 'Fixture 🦆' };
@@ -162,7 +163,7 @@ function nativeAppHarness({ fail = false, changeTenant = false, platform = 'andr
     loyaltyActivityRef: activity,
     buildBackupFilename: () => 'fixture.json', AUTO_BACKUP_NATIVE_DIR: 'HDManager/AutoBackups',
     normalizeBackupSerializableValue: normalize, BACKUP_DATA_COLLECTIONS: ['orders', 'empty'],
-    writeAutomaticBackupStream, consumeTenantRestQuery, decodeFirebaseBackupFields, createScopedBackupSink,
+    writeAutomaticBackupStream, consumeTenantRestQuery, decodeFirebaseBackupFields, createScopedBackupSink, parseFirebaseResponseJsonInBackground,
     Directory: { Documents: 'DOCUMENTS' }, Encoding: { UTF8: 'utf8' },
     Filesystem: {
       writeFile: async opts => { assert.equal(opts.encoding, 'utf8'); writes.push('write'); files.set(opts.path, opts.data); },
@@ -185,9 +186,9 @@ function nativeAppHarness({ fail = false, changeTenant = false, platform = 'andr
       if (changeTenant) scope.current = 'tenant-b';
       if (revokeAccess) access.current.allowed = false;
       const name = q.from[0].collectionId;
-      return { ok: !fail, status: fail ? 403 : 200, json: async () => name === 'orders' ? [{
+      return { ok: !fail, status: fail ? 403 : 200, json: async () => {throw Error('Main-thread response.json must not run for automatic backup');}, text: async () => invalidBody ? '{invalid-private-body' : JSON.stringify(name === 'orders' ? [{
         document: { name: `${parent}/orders/o1`, fields: { companyId: { stringValue: companyId }, amount: { integerValue: '1000' }, archived: { booleanValue: true } } }, readTime
-      }] : [{ readTime }] };
+      }] : [{ readTime }]) };
     },
     Capacitor: { getPlatform: () => platform }, isPreviewDataMode: false, isVpsMode: false,
     getTodayString: () => '2026-10-31', getAutoBackupStateForCompany: () => states.at(-1)?.info,
@@ -269,7 +270,7 @@ test('scoped sink awaits write and publication acknowledgements and retains abor
 });
 
 test('actual App REST permission denial or stale tenant never publishes or marks a completed backup', async () => {
-  for (const config of [{ fail: true }, { changeTenant: true }]) {
+  for (const config of [{ fail: true }, { changeTenant: true }, { invalidBody: true }]) {
     const h = nativeAppHarness(config);
     await assert.rejects(h.run());
     assert.equal(h.files.size, 0);

@@ -113,8 +113,10 @@ test('delayed product snapshots never create a transient false onboarding screen
 
 test('App marks only server-backed reads as workflow-ready and gates all sales guides', () => {
   assert.match(appSource, /const markCollectionServerConfirmed = \(colName\) =>/);
-  assert.match(appSource, /markCollectionServerConfirmed\(colName\);[\s\S]*?source: 'server'/);
-  assert.match(appSource, /isServerConfirmedRealtimeSnapshot\(snapshot\)[\s\S]*?markCollectionServerConfirmed\(colName\)/);
+  assert.match(appSource, /onCommitted:colName=>markCollectionServerConfirmed\(colName\)/);
+  assert.match(appSource, /collectionCommitWitnessRef\.current\?\.confirmCommitted\(committed\)/);
+  assert.match(appSource, /const serverCommitVersion=publicationWitness\.begin\(colName\);[\s\S]*?source: 'server'/);
+  assert.match(appSource, /!workerEligible && isServerConfirmedRealtimeSnapshot\(snapshot\)[\s\S]*?publicationWitness\.begin\(colName\)/);
   assert.match(appSource, /case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup\(/);
   assert.match(appSource, /case 'order_requests': return shouldShowMissingWorkflowSetup\(/);
   assert.match(appSource, /case 'orders': return shouldShowMissingWorkflowSetup\(/);

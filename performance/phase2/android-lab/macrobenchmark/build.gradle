@@ -1,0 +1,22 @@
+apply plugin: 'com.android.test'
+android {
+ namespace 'com.hdmanager.perflab.benchmark'
+ compileSdk 36
+ defaultConfig {
+  minSdk 24
+  targetSdk 36
+  testApplicationId 'com.hdmanager.perflab.benchmark'
+  testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+ }
+ targetProjectPath = ':app'
+ experimentalProperties['android.experimental.self-instrumenting'] = true
+ buildTypes {
+  benchmark { debuggable true; signingConfig signingConfigs.debug; matchingFallbacks = ['release'] }
+ }
+}
+androidComponents { beforeVariants(selector().all()) { variant -> variant.enable = variant.buildType == 'benchmark' } }
+dependencies {
+ implementation 'androidx.benchmark:benchmark-macro-junit4:1.4.1'
+ implementation 'androidx.test.ext:junit:1.2.1'
+ implementation 'androidx.test:runner:1.6.2'
+}

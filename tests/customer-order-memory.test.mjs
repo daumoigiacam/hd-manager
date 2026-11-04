@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import {
   buildCustomerOrderPreferenceKey,
@@ -12,8 +10,7 @@ import {
 } from '../src/utils/customerOrderMemory.js';
 import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixedProductMemory.js';
 
-const directory = path.dirname(fileURLToPath(import.meta.url));
-const appSource = fs.readFileSync(path.join(directory, '..', 'src', 'App.jsx'), 'utf8');
+const appSource = readApplicationSource();
 
 const request = ({
   id = 'order-1',

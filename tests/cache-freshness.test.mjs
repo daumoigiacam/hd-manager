@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { parse } from '@babel/parser';
+import { subscribeScopedNativeEvent } from '../src/services/scopedNativeListener.js';
 import {
   getRealtimeDataChangeCount,
   getRealtimeSnapshotSource,
@@ -47,7 +49,7 @@ test('only a server-confirmed snapshot can suppress a background refresh', () =>
   assert.equal(getRealtimeSnapshotSource({ metadata: { fromCache: false } }), 'server');
 });
 
-test('Firestore listeners distinguish cache delivery from server confirmation', () => {
+test('Firestore listeners distinguish cache delivery from server confirmation', async () => {
   assert.match(appSource, /lastRealtimeServerSnapshotAtRef/);
   assert.match(appSource, /includeMetadataChanges:\s*true/);
   assert.match(appSource, /isServerConfirmedRealtimeSnapshot\(snapshot\)/);
@@ -56,7 +58,83 @@ test('Firestore listeners distinguish cache delivery from server confirmation', 
   assert.match(appSource, /const readTenantCollectionViaRest = async/);
   assert.match(appSource, /hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, collectionName\)/);
   assert.match(appSource, /forceRefreshCollectionRef\.current\?\.\(collectionName, \{ serverOnly: true \}\)/);
-  assert.match(appSource, /CapacitorApp\.addListener\('appStateChange'/);
+  // Extract and execute the current App effect, rather than requiring the old
+  // direct addListener spelling or testing a reimplementation of its callback.
+  const tree = parse(appSource, { sourceType: 'module', plugins: ['jsx'] });
+  const effects = [], registrations = [];
+  const visit = (node, inspect) => {
+    if (!node || typeof node !== 'object') return;
+    inspect(node);
+    for (const [key, value] of Object.entries(node)) {
+      if (['loc', 'extra', 'comments'].includes(key)) continue;
+      if (Array.isArray(value)) value.forEach(child => visit(child, inspect));
+      else if (value?.type) visit(value, inspect);
+    }
+  };
+  visit(tree, node => {
+    if (node.type === 'CallExpression' && node.callee.name === 'useEffect'
+      && Array.isArray(node.arguments[0]?.body?.body)
+      && node.arguments[0].body.body.some(statement => statement.type === 'VariableDeclaration'
+        && statement.declarations.some(declaration => declaration.id.name === 'refreshForegroundCollections'))) effects.push(node.arguments[0]);
+  });
+  assert.equal(effects.length, 1, 'App must own one foreground refresh effect');
+  visit(effects[0], node => {
+    if (node.type === 'CallExpression' && node.callee.name === 'subscribeScopedNativeEvent'
+      && node.arguments[0]?.name === 'CapacitorApp' && node.arguments[1]?.value === 'appStateChange') registrations.push(node);
+  });
+  assert.equal(registrations.length, 1, 'the App effect must register appStateChange through the scoped owner');
+  assert.ok(tree.program.body.some(node => node.type === 'ImportDeclaration'
+    && node.source.value === './services/scopedNativeListener.js'
+    && node.specifiers.some(specifier => specifier.imported?.name === 'subscribeScopedNativeEvent'
+      && specifier.local.name === 'subscribeScopedNativeEvent')), 'the wrapper must resolve to the actual lifecycle helper');
+  const effect = appSource.slice(effects[0].start, effects[0].end);
+  const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  for (const lateRegistration of [false, true]) {
+    let now = 20000;
+    const refreshes = [];
+    const mount = (uid, names) => {
+      let resolve, callback, removals = 0;
+      const windowListeners = new Map(), documentListeners = new Map(), registrations = [];
+      const plugin = { addListener(name, listener) {
+        registrations.push(name); callback = listener;
+        return new Promise(ready => { resolve = ready; });
+      } };
+      const bindings = {
+        firebaseUser: { uid }, isFirebaseConfigured: true, isNativeRuntime: () => true,
+        CapacitorApp: plugin, subscribeScopedNativeEvent, Date: { now: () => now },
+        window: { addEventListener: (name, listener) => windowListeners.set(name, listener),
+          removeEventListener: (name, listener) => { assert.equal(windowListeners.get(name), listener); windowListeners.delete(name); } },
+        document: { visibilityState: 'visible', addEventListener: (name, listener) => documentListeners.set(name, listener),
+          removeEventListener: (name, listener) => { assert.equal(documentListeners.get(name), listener); documentListeners.delete(name); } },
+        FIRESTORE_WRITE_EVENT: 'fixture-write', lastCriticalRefreshAtRef: { current: 0 },
+        activeRealtimeCollectionsRef: { current: new Set(names) },
+        scheduleCollectionRefresh: (name, delays) => refreshes.push({ uid, name, delays }),
+        applyLocalCollectionDelete() {}, applyLocalCollectionWrite() {},
+      };
+      const cleanup = new Function(...Object.keys(bindings), `return (${effect})();`)(...Object.values(bindings));
+      return { cleanup, emit: value => callback(value), registrations,
+        resolve: () => resolve({ remove() { removals++; } }),
+        read: () => ({ removals, window: windowListeners.size, document: documentListeners.size }) };
+    };
+    const old = mount('actor-a', ['orders', 'payments']);
+    assert.deepEqual(old.registrations, ['appStateChange']);
+    old.emit({ isActive: false }); assert.equal(refreshes.length, 0);
+    old.emit({ isActive: true });
+    assert.deepEqual(refreshes, ['orders', 'payments'].map(name => ({ uid: 'actor-a', name, delays: [900, 3200] })));
+    old.emit({ isActive: true }); assert.equal(refreshes.length, 2, 'foreground bursts retain the existing throttle');
+    if (!lateRegistration) { old.resolve(); await flush(); }
+    old.cleanup(); now += 20000; old.emit({ isActive: true });
+    assert.equal(refreshes.length, 2, 'cleanup detaches the App closure synchronously, even before native removal resolves');
+    if (lateRegistration) { old.resolve(); await flush(); }
+    assert.deepEqual(old.read(), { removals: 1, window: 0, document: 0 });
+    const current = mount('actor-b', ['financials']);
+    old.emit({ isActive: true }); current.emit({ isActive: true });
+    assert.deepEqual(refreshes.at(-1), { uid: 'actor-b', name: 'financials', delays: [900, 3200] });
+    assert.equal(refreshes.length, 3, 'an old native callback cannot refresh a replacement account');
+    current.resolve(); await flush(); current.cleanup(); now += 20000;
+    old.emit({ isActive: true }); current.emit({ isActive: true });
+    assert.equal(refreshes.length, 3); assert.deepEqual(current.read(), { removals: 1, window: 0, document: 0 });
+  }
   assert.match(appSource, /native-app-active/);
 });
 
@@ -96,7 +174,7 @@ test('realtime rendering skips repeated metadata-only snapshots but preserves th
   assert.match(appSource, /for \(const write of recentLocalWritesRef\.current\.values\(\)\)/);
   assert.match(appSource, /for \(const entry of recentLocalDeletesRef\.current\.values\(\)\)/);
   assert.match(appSource, /const unchanged = hasAppliedDataSnapshot && dataChangeCount === 0 && !hasSourceDataChanges && !hasLocalMutationForCollection/);
-  assert.match(appSource, /hasAppliedDataSnapshot = true;\s*const applied=await applyCollectionItems/);
+  assert.match(appSource, /const applied=await applyCollectionItems[\s\S]*if\(applied===false \|\| cancelled \|\| !listenerActive\)return;[\s\S]*committedSourceItemsByIndex\.clear\(\);[\s\S]*hasAppliedDataSnapshot = true;/);
   assert.match(appSource, /if \(isPerformanceMonitorEnabled\(\)\)/);
 });
 

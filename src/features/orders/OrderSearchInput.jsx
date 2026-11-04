@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
 
-export default function OrderSearchInput({ searchStore, onCommit, onClose, inputRef, className, placeholder }) {
+export default function OrderSearchInput({ searchStore, onCommit, onClose, inputRef, className, placeholder, commitDelayMs = 250 }) {
   const committed = useSyncExternalStore(searchStore.subscribe, searchStore.getSnapshot);
   const [draft, setDraft] = useState(committed);
   const timer = useRef(null);
@@ -17,7 +17,8 @@ export default function OrderSearchInput({ searchStore, onCommit, onClose, input
         const next = event.target.value;
         setDraft(next);
         cancel();
-        timer.current = setTimeout(() => { timer.current = null; callbacks.current.onCommit(next); }, 250);
+        if(commitDelayMs<=0)callbacks.current.onCommit(next);
+        else timer.current = setTimeout(() => { timer.current = null; callbacks.current.onCommit(next); }, commitDelayMs);
       }}
       onKeyDown={event => { if (event.key === 'Enter') { commit(draft); event.currentTarget.blur(); } }}
       placeholder={placeholder} enterKeyHint="search" autoFocus className={className} />

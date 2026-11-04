@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 // fixtures. Preview-only identities; all external requests are blocked.
 const output = process.env.HD_AUTH_INIT_UI_OUTPUT || 'test-results/backup-auth-initialization-ui';
 const requestedRoutes=(process.env.HD_AUTH_INIT_UI_ROUTES || '').split(',').filter(Boolean);
-const routeLabels={orders:'Đơn hàng',order_requests:'Đặt hàng',payroll:'Bảng lương',products:'Kho sản phẩm',warehouse_dispatch:'Xuất kho',customers:'Khách hàng',debt:'Sổ nợ',employees:'Nhân sự',pricing:'Giá cả'};
+const routeLabels={orders:'Đơn hàng',order_requests:'Đặt hàng',payroll:'Bảng lương',products:'Kho sản phẩm',warehouse_import:'Nhập Xuất Tồn',delivery_reports:'Báo cáo giao hàng',warehouse_dispatch:'Xuất kho',customers:'Khách hàng',debt:'Sổ nợ',employees:'Nhân sự',pricing:'Giá cả',messages:'Tin nhắn'};
 for(const route of requestedRoutes)assert.ok(routeLabels[route],'Unsupported preview route');
 await mkdir(output, { recursive: true });
 Object.assign(process.env, { VITE_DATA_MODE: 'preview', VITE_ALLOW_PREVIEW_BUILD: 'true',
@@ -59,11 +59,42 @@ try {
           await target.click();
           await page.waitForFunction(module=>{
             const main=document.querySelector('main[data-hd-module="'+module+'"]');
-            const selector={payroll:'.payroll-workspace',products:'.premium-products-module',warehouse_dispatch:'.premium-dispatch-module',customers:'.premium-customer-module',debt:'.premium-debt-module',employees:'[data-hd-employee-directory]',pricing:'.premium-pricing-module'}[module] || '.premium-orders-module';
+            const selector={payroll:'.payroll-workspace',products:'.premium-products-module',warehouse_import:'.premium-inventory-module',delivery_reports:'input[aria-label="Chọn ngày báo cáo"]',warehouse_dispatch:'.premium-dispatch-module',customers:'.premium-customer-module',debt:'.premium-debt-module',employees:'[data-hd-employee-directory]',pricing:'.premium-pricing-module',messages:'.hd-messaging'}[module] || '.premium-orders-module';
             return main && main.querySelector(selector)
               && !main.querySelector('[aria-busy="true"],[data-hd-module-loading]');
           },module,{timeout:20000});
           routeChecks.push({module,status:'PASS_PROJECTION_READY'});
+          if(module==='customers'){
+            await page.locator('header').getByRole('button',{name:'Tìm kiếm',exact:true}).click();
+            const search=page.getByPlaceholder('Tìm khách hàng, nhà cung cấp...');
+            await search.waitFor();await search.fill('no-fixture-customer-83917');
+            await page.locator('main').getByText('Không tìm thấy khách hàng phù hợp.',{exact:true}).waitFor();
+            assert.equal(await search.inputValue(),'no-fixture-customer-83917');
+            assert.equal(await search.evaluate(node=>document.activeElement===node),true);
+            await page.locator('header').getByRole('button',{name:'Xóa tìm kiếm',exact:true}).click();
+            await page.waitForFunction(()=>document.querySelector('input[placeholder="Tìm khách hàng, nhà cung cấp..."]')?.value==='');
+            await page.locator('main').getByText('Không tìm thấy khách hàng phù hợp.',{exact:true}).waitFor({state:'hidden'});
+            routeChecks.push({module:'customers_search',status:'PASS_ACTUAL_APP_SEARCH_CLEAR_FOCUS_NO_SAVE'});
+          }
+          if(module==='messages'){
+            const list=page.locator('.hd-messaging[data-chat-screen="list"]');
+            assert((await list.locator('[data-chat-item]').count())<=20);
+            const pager=list.getByRole('navigation',{name:'Phân trang tin nhắn'});
+            if(await pager.count()){
+              const first=await list.locator('[data-chat-item]').first().innerText();
+              await pager.getByRole('button',{name:'Trang sau',exact:true}).click();
+              assert.notEqual(await list.locator('[data-chat-item]').first().innerText(),first);
+              await pager.getByRole('button',{name:'Trang trước',exact:true}).click();
+              assert.equal(await list.locator('[data-chat-item]').first().innerText(),first);
+            }
+            const search=page.getByLabel('Tìm kiếm tin nhắn, người dùng...',{exact:true});
+            await search.fill('no-fixture-result-83917');
+            await page.locator('.hd-messaging[data-chat-screen="search"]').waitFor();
+            await page.getByRole('button',{name:'Xóa tìm kiếm',exact:true}).click();
+            await list.waitFor();await page.waitForTimeout(500);
+            assert((await list.locator('[data-chat-item]').count())<=20,'idle time must not grow the mounted list');
+            routeChecks.push({module:'messages_list',status:'PASS_BOUNDED_LIST_SEARCH_CLEAR_AND_AVAILABLE_PAGE_NAVIGATION'});
+          }
           if(module==='orders')ordersChecked=true;
           if(module==='pricing' && scenario.name==='owner'){
             const note=page.getByPlaceholder('Ghi chú công thức nếu cần');
@@ -83,7 +114,7 @@ try {
             routeChecks.push({module:'pricing_formula_editor',status:'PASS_DIRTY_INPUT_NODE_AND_FOCUS_RETAINED_NO_SAVE'});
           }
         }else {
-          routeChecks.push({module,status:'NOT_PERMITTED_NOT_TESTED'});
+          routeChecks.push({module,status:'NOT_IN_AVAILABLE_MENU_NOT_TESTED'});
           if(module==='orders')ordersUnavailable=true;
         }
       }
@@ -92,7 +123,7 @@ try {
       assert.deepEqual(errors, [], scenario.name);
       checks.push({ scenario: scenario.name, status: 'PASS', blockedExternalRequests,
         routes:routeChecks,
-        ...(ordersChecked?{ordersProjectionReady:true}:{}),...(ordersUnavailable?{ordersProjection:'NOT_PERMITTED_NOT_TESTED'}:{}), });
+        ...(ordersChecked?{ordersProjectionReady:true}:{}),...(ordersUnavailable?{ordersProjection:'NOT_IN_AVAILABLE_MENU_NOT_TESTED'}:{}), });
       await page.screenshot({ path: `${output}/${scenario.name}.png` });
     } catch (error) {
       await page.screenshot({ path: `${output}/${scenario.name}-failure.png` });

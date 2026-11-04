@@ -3,12 +3,22 @@ const isPlainRecord = value => {
   return prototype === Object.prototype || prototype === null;
 };
 
+// Attendance parsing creates new native Dates on each confirmed snapshot.
+// A plain Date's complete value is its timestamp. Decorated/subclass/unknown
+// SDK objects stay conservative and are never treated as equivalent here.
+export function areEquivalentPlainDates(previous,next){
+  if(Object.getPrototypeOf(previous)!==Date.prototype||Object.getPrototypeOf(next)!==Date.prototype
+    ||Reflect.ownKeys(previous).length||Reflect.ownKeys(next).length)return false;
+  try{return Object.is(Date.prototype.getTime.call(previous),Date.prototype.getTime.call(next))}catch{return false}
+}
+
 // Repeated server/cache snapshots must not invalidate every derived view.
 // Compare every field, including deletion and local sync markers. Unknown SDK
 // instances remain changed rather than risking a false equality decision.
 export function retainCollectionIdentity(previous, next, depth = 0) {
   if (Object.is(previous, next)) return previous;
   if (!previous || !next || typeof previous !== 'object' || typeof next !== 'object' || depth > 64) return next;
+  if(areEquivalentPlainDates(previous,next))return previous;
   const array = Array.isArray(next);
   if (array !== Array.isArray(previous)) return next;
   if (array) {

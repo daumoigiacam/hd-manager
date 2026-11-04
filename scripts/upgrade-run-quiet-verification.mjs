@@ -1,0 +1,23 @@
+import fs from'node:fs/promises';import{spawn,execFileSync}from'node:child_process';
+const root='test-results/performance-upgrade-20261103',adb='D:/HD-DEV/android/sdk/platform-tools/adb.exe',pkg='com.hdmanager.caplab.diag';
+const state={at:new Date().toISOString(),pid:process.pid,status:'WAITING_BASELINE_NATIVE',realAccounts:false,productionRequests:0,steps:[]};
+const write=()=>fs.writeFile(root+'/quiet-verification-controller.json',JSON.stringify(state,null,2));const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const call=(...args)=>execFileSync(adb,['-s','emulator-5554',...args],{encoding:'utf8',windowsHide:true,timeout:60000});
+async function run(label,args){state.status=label;await write();const file=root+'/'+label.toLowerCase()+'.log',output=await fs.open(file,'w');const step={label,args,startedAt:new Date().toISOString(),log:file};state.steps.push(step);await write();try{const child=spawn(process.execPath,args,{stdio:['ignore',output.fd,output.fd],windowsHide:true});step.pid=child.pid;await write();step.exitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)});}finally{step.endedAt=new Date().toISOString();await output.close();await write()}return step.exitCode;}
+try{
+ await write();const deadline=Date.now()+20*60000;while(true){const names=(await fs.readdir(root)).filter(n=>n.startsWith('native-macro-baseline-quiet-probe-'));let latest=null;for(const n of names){const s=JSON.parse(await fs.readFile(root+'/'+n+'/state.json'));if(!latest||s.at>latest.at)latest=s;}if(latest?.endedAt){state.baselineNative={status:latest.status,runId:latest.runId};break;}if(Date.now()>deadline)throw Error('Baseline native controller still active; preserve observation');await wait(2000)}
+ await run('QUIET_AFTER_NATIVE',['scripts/upgrade-capacitor-macro.mjs','after-quiet-probe','--harness=after-query-witness']);
+ const ui=await run('QUIET_AFTER_UI',['scripts/upgrade-run-android-ab.mjs','after-quiet-probe','--fixture-rich','--broad-search','--run-label=prearmed-clean']);
+ const result=JSON.parse(await fs.readFile(root+'/android-after-quiet-probe-prearmed-clean.json'));state.cleanUiStatus=result.status;
+ if(ui!==0||result.status==='FAILED'||result.probe?.errors?.length||result.probe?.rejections||result.probe?.nativeTelemetryCalls!==0)throw Error('Clean UI failed or native telemetry still perturbs it; preserve results before soak');
+ await run('QUIET_NATIVE_SHARE',['scripts/upgrade-android-share-compat.mjs','after-quiet-probe']);
+ await run('QUIET_NAVIGATION_BURST',['scripts/upgrade-android-navigation-burst.mjs']);
+ call('shell','am','force-stop',pkg);state.customerClear=call('shell','pm','clear',pkg);call('shell','am','start','-W','-n',pkg+'/com.hdmanager.app.VerificationActivity');
+ await run('QUIET_CUSTOMER_READONLY',['scripts/upgrade-android-customer-readonly.mjs','after-quiet-probe']);
+ call('shell','am','force-stop',pkg);state.preSoakClear=call('shell','pm','clear',pkg);call('shell','am','start','-W','-n',pkg+'/com.hdmanager.app.VerificationActivity');
+ const active=JSON.parse(await fs.readFile('performance/upgrade-20261103/active-session.json'));active.lastCoordinationAt=new Date().toISOString();active.currentCandidate={cohort:'after-quiet-probe',built:true,measured:true,businessAssets:'Identical to after-query-witness except measurement HTML; no performance gain attributed to removing probe overhead.'};active.nextSoak={status:'STARTING',root:root+'/soak-editor-cleanup',durationRequestedMs:7200000};active.sourceFrozen=true;await fs.writeFile('performance/upgrade-20261103/active-session.json',JSON.stringify(active,null,2));
+ try{await fs.access(root+'/soak-editor-cleanup/sdk-soak-result.json');throw Error('Existing current-candidate soak result must never be overwritten');}catch(error){if(error.code!=='ENOENT')throw error;}
+ await run('QUIET_TWO_HOUR_SOAK',['scripts/upgrade-android-retention-soak.mjs','--native-share-preflight']);
+ const soak=JSON.parse(await fs.readFile(root+'/soak-editor-cleanup/sdk-soak-result.json'));if(soak.state.elapsedMs>=7200000)await run('QUIET_SOAK_ANALYSIS',['scripts/upgrade-summarize-soak.mjs','soak-editor-cleanup']);
+ await run('QUIET_REPORT_REFRESH',['scripts/upgrade-write-verification-report.mjs']);state.status='OBSERVATIONS_COMPLETE_REVIEW_REQUIRED_NOT_PASS';
+}catch(error){state.status='STOPPED_REQUIRES_INVESTIGATION';state.error=error.message;process.exitCode=1;}finally{state.endedAt=new Date().toISOString();await write();console.log(JSON.stringify({status:state.status,error:state.error,steps:state.steps.map(s=>({label:s.label,exitCode:s.exitCode}))}));}

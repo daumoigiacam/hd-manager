@@ -1,6 +1,8 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
+import {employeeHomeDomainPlugin} from './scripts/helpers/employee-home-domain-extraction.mjs';
+import {selectVendorChunk} from './scripts/helpers/vendor-chunks.mjs';
 
 const previewFirebaseConfig = {
   apiKey: 'preview-api-key',
@@ -72,6 +74,12 @@ export default defineConfig(({ mode }) => {
   ));
   const runtimeAliases = {
     ...firebaseAliases,
+    '@hd/personal-home-worker': fileURLToPath(new URL(
+      useCloudData&&env.VITE_PERSONAL_HOME_WORKER==='true' ? './src/services/personalHomeWorkerFactory.js' : './src/mocks/personalHomeWorkerFactory.js',import.meta.url,
+    )),
+    '@hd/personal-home-values': fileURLToPath(new URL(
+      useCloudData ? './src/services/firestoreNativeWireValues.js' : './src/mocks/personalHomeValues.js',import.meta.url,
+    )),
     '@hd/firestore-read-worker': fileURLToPath(new URL(
       readWorkerEnabled ? './src/services/firestoreReadWorkerFactory.js' : './src/mocks/firestoreReadWorkerFactory.js', import.meta.url,
     )),
@@ -133,7 +141,7 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: runtimeAliases
     },
-    worker: { format: 'iife', rollupOptions: { output: { inlineDynamicImports: true } } },
+    worker: { format: 'iife', plugins:()=>[employeeHomeDomainPlugin()], rollupOptions: { output: { inlineDynamicImports: true } } },
     // This workspace also contains installers, backups and other websites.
     // Scan only HD Manager's entry, while still discovering its imported deps.
     optimizeDeps: {
@@ -149,15 +157,8 @@ export default defineConfig(({ mode }) => {
       sourcemap: profileInteractions,
       rollupOptions: {
         output: {
-          manualChunks(id) {
-            if (!id.includes('node_modules')) return undefined;
-            if (id.includes('firebase')) return 'vendor-firebase';
-            if (id.includes('lucide-react')) return 'vendor-icons';
-            if (/[\\/]node_modules[\\/]qrcode[\\/]/.test(id)) return 'vendor-qrcode';
-            if (id.includes('html-to-image') || id.includes('jspdf')) return 'vendor-export';
-            if (id.includes('tesseract') || id.includes('@zxing') || id.includes('read-excel-file')) return 'vendor-tools';
-            return 'vendor';
-          }
+          onlyExplicitManualChunks:true,
+          manualChunks:selectVendorChunk
         }
       }
     },

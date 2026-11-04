@@ -1,16 +1,22 @@
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+// ICU formatter construction is expensive in old WebViews. Keep the exact
+// locale/rounding of the existing display helpers and reuse three instances.
+const vndFormat=new Intl.NumberFormat('vi-VN');
+const compactBillionsFormat=new Intl.NumberFormat('vi-VN',{maximumFractionDigits:2});
+const compactMillionsAndPercentFormat=new Intl.NumberFormat('vi-VN',{maximumFractionDigits:1});
 
-export const formatVnd = (value) => `${Math.round(number(value)).toLocaleString('vi-VN')} đ`;
+export const formatVnd = (value) => `${vndFormat.format(Math.round(number(value)))} đ`;
 
 export const formatCompactVnd = (value) => {
   const amount = number(value);
   const magnitude = Math.abs(amount);
-  if (magnitude >= 1_000_000_000) return `${(amount / 1_000_000_000).toLocaleString('vi-VN', { maximumFractionDigits: 2 })} tỷ`;
-  if (magnitude >= 1_000_000) return `${(amount / 1_000_000).toLocaleString('vi-VN', { maximumFractionDigits: 1 })} tr`;
+  if (magnitude >= 1_000_000_000) return `${compactBillionsFormat.format(amount / 1_000_000_000)} tỷ`;
+  if (magnitude >= 1_000_000) return `${compactMillionsAndPercentFormat.format(amount / 1_000_000)} tr`;
   return formatVnd(amount);
 };
 
-export const formatPercent = (value) => `${number(value).toLocaleString('vi-VN', { maximumFractionDigits: 1 })}%`;
+export const formatPercent = (value) => `${compactMillionsAndPercentFormat.format(number(value))}%`;
+export const formatReportQuantity = value => compactMillionsAndPercentFormat.format(Number(value));
 export const formatShortDate = (key) => {
   const [year, month, day] = String(key || '').split('-');
   return year && month && day ? `${day}/${month}` : String(key || '');

@@ -1,0 +1,841 @@
+{
+  "sourceSha256": "e71a5fe7c8d7c439f731f45b52b1183ad128045a85a457d1f36bd0f199e00fbb",
+  "scope": "Golden IDs/order from pre-change application ranking, synthetic only",
+  "records": [
+    {
+      "id": "a",
+      "name": "Chị Trang Vịt Sống Chơn Thành",
+      "alias": "Vịt Sống",
+      "phone": "0909123456"
+    },
+    {
+      "id": "b",
+      "name": "Vịt Không Móc",
+      "alias": "VKM",
+      "address": "Thủ Đức"
+    },
+    {
+      "id": "c",
+      "name": "Vịt Không Móc To",
+      "alias": "VKM To"
+    },
+    {
+      "id": "d",
+      "name": "Thu Gò Vấp",
+      "phone": "0912345678"
+    },
+    {
+      "id": "p0",
+      "name": "Gà Công Nghiệp 0",
+      "alias": "GCN 0"
+    },
+    {
+      "id": "p1",
+      "name": "Gà Công Nghiệp 1",
+      "alias": "GCN 1"
+    },
+    {
+      "id": "p2",
+      "name": "Gà Công Nghiệp 2",
+      "alias": "GCN 2"
+    },
+    {
+      "id": "p3",
+      "name": "Gà Công Nghiệp 3",
+      "alias": "GCN 3"
+    },
+    {
+      "id": "p4",
+      "name": "Gà Công Nghiệp 4",
+      "alias": "GCN 4"
+    },
+    {
+      "id": "p5",
+      "name": "Gà Công Nghiệp 5",
+      "alias": "GCN 5"
+    },
+    {
+      "id": "p6",
+      "name": "Gà Công Nghiệp 6",
+      "alias": "GCN 6"
+    },
+    {
+      "id": "p7",
+      "name": "Gà Công Nghiệp 7",
+      "alias": "GCN 7"
+    },
+    {
+      "id": "p8",
+      "name": "Gà Công Nghiệp 8",
+      "alias": "GCN 8"
+    },
+    {
+      "id": "p9",
+      "name": "Gà Công Nghiệp 9",
+      "alias": "GCN 9"
+    },
+    {
+      "id": "p10",
+      "name": "Gà Công Nghiệp 10",
+      "alias": "GCN 10"
+    },
+    {
+      "id": "p11",
+      "name": "Gà Công Nghiệp 11",
+      "alias": "GCN 11"
+    },
+    {
+      "id": "p12",
+      "name": "Gà Công Nghiệp 12",
+      "alias": "GCN 12"
+    },
+    {
+      "id": "p13",
+      "name": "Gà Công Nghiệp 13",
+      "alias": "GCN 13"
+    },
+    {
+      "id": "p14",
+      "name": "Gà Công Nghiệp 14",
+      "alias": "GCN 14"
+    },
+    {
+      "id": "p15",
+      "name": "Gà Công Nghiệp 15",
+      "alias": "GCN 15"
+    },
+    {
+      "id": "p16",
+      "name": "Gà Công Nghiệp 16",
+      "alias": "GCN 16"
+    },
+    {
+      "id": "p17",
+      "name": "Gà Công Nghiệp 17",
+      "alias": "GCN 17"
+    },
+    {
+      "id": "p18",
+      "name": "Gà Công Nghiệp 18",
+      "alias": "GCN 18"
+    },
+    {
+      "id": "p19",
+      "name": "Gà Công Nghiệp 19",
+      "alias": "GCN 19"
+    },
+    {
+      "id": "p20",
+      "name": "Gà Công Nghiệp 20",
+      "alias": "GCN 20"
+    },
+    {
+      "id": "p21",
+      "name": "Gà Công Nghiệp 21",
+      "alias": "GCN 21"
+    },
+    {
+      "id": "p22",
+      "name": "Gà Công Nghiệp 22",
+      "alias": "GCN 22"
+    },
+    {
+      "id": "p23",
+      "name": "Gà Công Nghiệp 23",
+      "alias": "GCN 23"
+    },
+    {
+      "id": "p24",
+      "name": "Gà Công Nghiệp 24",
+      "alias": "GCN 24"
+    },
+    {
+      "id": "p25",
+      "name": "Gà Công Nghiệp 25",
+      "alias": "GCN 25"
+    },
+    {
+      "id": "p26",
+      "name": "Gà Công Nghiệp 26",
+      "alias": "GCN 26"
+    },
+    {
+      "id": "p27",
+      "name": "Gà Công Nghiệp 27",
+      "alias": "GCN 27"
+    },
+    {
+      "id": "p28",
+      "name": "Gà Công Nghiệp 28",
+      "alias": "GCN 28"
+    },
+    {
+      "id": "p29",
+      "name": "Gà Công Nghiệp 29",
+      "alias": "GCN 29"
+    },
+    {
+      "id": "p30",
+      "name": "Gà Công Nghiệp 30",
+      "alias": "GCN 30"
+    },
+    {
+      "id": "p31",
+      "name": "Gà Công Nghiệp 31",
+      "alias": "GCN 31"
+    },
+    {
+      "id": "p32",
+      "name": "Gà Công Nghiệp 32",
+      "alias": "GCN 32"
+    },
+    {
+      "id": "p33",
+      "name": "Gà Công Nghiệp 33",
+      "alias": "GCN 33"
+    },
+    {
+      "id": "p34",
+      "name": "Gà Công Nghiệp 34",
+      "alias": "GCN 34"
+    },
+    {
+      "id": "p35",
+      "name": "Gà Công Nghiệp 35",
+      "alias": "GCN 35"
+    },
+    {
+      "id": "p36",
+      "name": "Gà Công Nghiệp 36",
+      "alias": "GCN 36"
+    },
+    {
+      "id": "p37",
+      "name": "Gà Công Nghiệp 37",
+      "alias": "GCN 37"
+    },
+    {
+      "id": "p38",
+      "name": "Gà Công Nghiệp 38",
+      "alias": "GCN 38"
+    },
+    {
+      "id": "p39",
+      "name": "Gà Công Nghiệp 39",
+      "alias": "GCN 39"
+    },
+    {
+      "id": "p40",
+      "name": "Gà Công Nghiệp 40",
+      "alias": "GCN 40"
+    },
+    {
+      "id": "p41",
+      "name": "Gà Công Nghiệp 41",
+      "alias": "GCN 41"
+    },
+    {
+      "id": "p42",
+      "name": "Gà Công Nghiệp 42",
+      "alias": "GCN 42"
+    },
+    {
+      "id": "p43",
+      "name": "Gà Công Nghiệp 43",
+      "alias": "GCN 43"
+    },
+    {
+      "id": "p44",
+      "name": "Gà Công Nghiệp 44",
+      "alias": "GCN 44"
+    },
+    {
+      "id": "p45",
+      "name": "Gà Công Nghiệp 45",
+      "alias": "GCN 45"
+    },
+    {
+      "id": "p46",
+      "name": "Gà Công Nghiệp 46",
+      "alias": "GCN 46"
+    },
+    {
+      "id": "p47",
+      "name": "Gà Công Nghiệp 47",
+      "alias": "GCN 47"
+    },
+    {
+      "id": "p48",
+      "name": "Gà Công Nghiệp 48",
+      "alias": "GCN 48"
+    },
+    {
+      "id": "p49",
+      "name": "Gà Công Nghiệp 49",
+      "alias": "GCN 49"
+    },
+    {
+      "id": "p50",
+      "name": "Gà Công Nghiệp 50",
+      "alias": "GCN 50"
+    },
+    {
+      "id": "p51",
+      "name": "Gà Công Nghiệp 51",
+      "alias": "GCN 51"
+    },
+    {
+      "id": "p52",
+      "name": "Gà Công Nghiệp 52",
+      "alias": "GCN 52"
+    },
+    {
+      "id": "p53",
+      "name": "Gà Công Nghiệp 53",
+      "alias": "GCN 53"
+    },
+    {
+      "id": "p54",
+      "name": "Gà Công Nghiệp 54",
+      "alias": "GCN 54"
+    },
+    {
+      "id": "p55",
+      "name": "Gà Công Nghiệp 55",
+      "alias": "GCN 55"
+    },
+    {
+      "id": "p56",
+      "name": "Gà Công Nghiệp 56",
+      "alias": "GCN 56"
+    },
+    {
+      "id": "p57",
+      "name": "Gà Công Nghiệp 57",
+      "alias": "GCN 57"
+    },
+    {
+      "id": "p58",
+      "name": "Gà Công Nghiệp 58",
+      "alias": "GCN 58"
+    },
+    {
+      "id": "p59",
+      "name": "Gà Công Nghiệp 59",
+      "alias": "GCN 59"
+    },
+    {
+      "id": "p60",
+      "name": "Gà Công Nghiệp 60",
+      "alias": "GCN 60"
+    },
+    {
+      "id": "p61",
+      "name": "Gà Công Nghiệp 61",
+      "alias": "GCN 61"
+    },
+    {
+      "id": "p62",
+      "name": "Gà Công Nghiệp 62",
+      "alias": "GCN 62"
+    },
+    {
+      "id": "p63",
+      "name": "Gà Công Nghiệp 63",
+      "alias": "GCN 63"
+    },
+    {
+      "id": "p64",
+      "name": "Gà Công Nghiệp 64",
+      "alias": "GCN 64"
+    },
+    {
+      "id": "p65",
+      "name": "Gà Công Nghiệp 65",
+      "alias": "GCN 65"
+    },
+    {
+      "id": "p66",
+      "name": "Gà Công Nghiệp 66",
+      "alias": "GCN 66"
+    },
+    {
+      "id": "p67",
+      "name": "Gà Công Nghiệp 67",
+      "alias": "GCN 67"
+    },
+    {
+      "id": "p68",
+      "name": "Gà Công Nghiệp 68",
+      "alias": "GCN 68"
+    },
+    {
+      "id": "p69",
+      "name": "Gà Công Nghiệp 69",
+      "alias": "GCN 69"
+    },
+    {
+      "id": "p70",
+      "name": "Gà Công Nghiệp 70",
+      "alias": "GCN 70"
+    },
+    {
+      "id": "p71",
+      "name": "Gà Công Nghiệp 71",
+      "alias": "GCN 71"
+    },
+    {
+      "id": "p72",
+      "name": "Gà Công Nghiệp 72",
+      "alias": "GCN 72"
+    },
+    {
+      "id": "p73",
+      "name": "Gà Công Nghiệp 73",
+      "alias": "GCN 73"
+    },
+    {
+      "id": "p74",
+      "name": "Gà Công Nghiệp 74",
+      "alias": "GCN 74"
+    },
+    {
+      "id": "p75",
+      "name": "Gà Công Nghiệp 75",
+      "alias": "GCN 75"
+    },
+    {
+      "id": "p76",
+      "name": "Gà Công Nghiệp 76",
+      "alias": "GCN 76"
+    },
+    {
+      "id": "p77",
+      "name": "Gà Công Nghiệp 77",
+      "alias": "GCN 77"
+    },
+    {
+      "id": "p78",
+      "name": "Gà Công Nghiệp 78",
+      "alias": "GCN 78"
+    },
+    {
+      "id": "p79",
+      "name": "Gà Công Nghiệp 79",
+      "alias": "GCN 79"
+    },
+    {
+      "id": "p80",
+      "name": "Gà Công Nghiệp 80",
+      "alias": "GCN 80"
+    },
+    {
+      "id": "p81",
+      "name": "Gà Công Nghiệp 81",
+      "alias": "GCN 81"
+    },
+    {
+      "id": "p82",
+      "name": "Gà Công Nghiệp 82",
+      "alias": "GCN 82"
+    },
+    {
+      "id": "p83",
+      "name": "Gà Công Nghiệp 83",
+      "alias": "GCN 83"
+    },
+    {
+      "id": "p84",
+      "name": "Gà Công Nghiệp 84",
+      "alias": "GCN 84"
+    },
+    {
+      "id": "p85",
+      "name": "Gà Công Nghiệp 85",
+      "alias": "GCN 85"
+    },
+    {
+      "id": "p86",
+      "name": "Gà Công Nghiệp 86",
+      "alias": "GCN 86"
+    },
+    {
+      "id": "p87",
+      "name": "Gà Công Nghiệp 87",
+      "alias": "GCN 87"
+    },
+    {
+      "id": "p88",
+      "name": "Gà Công Nghiệp 88",
+      "alias": "GCN 88"
+    },
+    {
+      "id": "p89",
+      "name": "Gà Công Nghiệp 89",
+      "alias": "GCN 89"
+    },
+    {
+      "id": "p90",
+      "name": "Gà Công Nghiệp 90",
+      "alias": "GCN 90"
+    },
+    {
+      "id": "p91",
+      "name": "Gà Công Nghiệp 91",
+      "alias": "GCN 91"
+    },
+    {
+      "id": "p92",
+      "name": "Gà Công Nghiệp 92",
+      "alias": "GCN 92"
+    },
+    {
+      "id": "p93",
+      "name": "Gà Công Nghiệp 93",
+      "alias": "GCN 93"
+    },
+    {
+      "id": "p94",
+      "name": "Gà Công Nghiệp 94",
+      "alias": "GCN 94"
+    },
+    {
+      "id": "p95",
+      "name": "Gà Công Nghiệp 95",
+      "alias": "GCN 95"
+    },
+    {
+      "id": "p96",
+      "name": "Gà Công Nghiệp 96",
+      "alias": "GCN 96"
+    },
+    {
+      "id": "p97",
+      "name": "Gà Công Nghiệp 97",
+      "alias": "GCN 97"
+    },
+    {
+      "id": "p98",
+      "name": "Gà Công Nghiệp 98",
+      "alias": "GCN 98"
+    },
+    {
+      "id": "p99",
+      "name": "Gà Công Nghiệp 99",
+      "alias": "GCN 99"
+    },
+    {
+      "id": "b",
+      "name": "Vịt Không Móc",
+      "alias": "VKM",
+      "address": "Thủ Đức"
+    }
+  ],
+  "cases": [
+    {
+      "query": "",
+      "ids": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10",
+        "p11",
+        "p12",
+        "p13",
+        "p14",
+        "p15",
+        "p16",
+        "p17",
+        "p18",
+        "p19",
+        "p20",
+        "p21",
+        "p22",
+        "p23",
+        "p24",
+        "p25",
+        "p26",
+        "p27",
+        "p28",
+        "p29",
+        "p30",
+        "p31",
+        "p32",
+        "p33",
+        "p34",
+        "p35",
+        "p36",
+        "p37",
+        "p38",
+        "p39",
+        "p40",
+        "p41",
+        "p42",
+        "p43",
+        "p44",
+        "p45",
+        "p46",
+        "p47",
+        "p48",
+        "p49",
+        "p50",
+        "p51",
+        "p52",
+        "p53",
+        "p54",
+        "p55",
+        "p56",
+        "p57",
+        "p58",
+        "p59",
+        "p60",
+        "p61",
+        "p62",
+        "p63",
+        "p64",
+        "p65",
+        "p66",
+        "p67",
+        "p68",
+        "p69",
+        "p70",
+        "p71",
+        "p72",
+        "p73",
+        "p74",
+        "p75",
+        "p76",
+        "p77",
+        "p78",
+        "p79",
+        "p80",
+        "p81",
+        "p82",
+        "p83",
+        "p84",
+        "p85",
+        "p86",
+        "p87",
+        "p88",
+        "p89",
+        "p90",
+        "p91",
+        "p92",
+        "p93",
+        "p94",
+        "p95",
+        "p96",
+        "p97",
+        "p98",
+        "p99",
+        "b"
+      ]
+    },
+    {
+      "query": "vịt không móc",
+      "ids": [
+        "b",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "query": "vit khng moc",
+      "ids": [
+        "a",
+        "b",
+        "c",
+        "b"
+      ]
+    },
+    {
+      "query": "VKM",
+      "ids": [
+        "b",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "query": "chi trang",
+      "ids": [
+        "a"
+      ]
+    },
+    {
+      "query": "0909123",
+      "ids": [
+        "a"
+      ]
+    },
+    {
+      "query": "0912",
+      "ids": [
+        "d",
+        "a"
+      ]
+    },
+    {
+      "query": "thu duc",
+      "ids": [
+        "b",
+        "b"
+      ]
+    },
+    {
+      "query": "gò vấp",
+      "ids": [
+        "d"
+      ]
+    },
+    {
+      "query": "ga cong nghip 9",
+      "ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10",
+        "p11",
+        "p12",
+        "p13",
+        "p14",
+        "p15",
+        "p16",
+        "p17",
+        "p18",
+        "p19",
+        "p20",
+        "p21",
+        "p22",
+        "p23",
+        "p24",
+        "p25",
+        "p26",
+        "p27",
+        "p28",
+        "p29",
+        "p30",
+        "p31",
+        "p32",
+        "p33",
+        "p34",
+        "p35",
+        "p36",
+        "p37",
+        "p38",
+        "p39",
+        "p40",
+        "p41",
+        "p42",
+        "p43",
+        "p44",
+        "p45",
+        "p46",
+        "p47",
+        "p48",
+        "p49",
+        "p50",
+        "p51",
+        "p52",
+        "p53",
+        "p54",
+        "p55",
+        "p56",
+        "p57",
+        "p58",
+        "p59",
+        "p60",
+        "p61",
+        "p62",
+        "p63",
+        "p64",
+        "p65",
+        "p66",
+        "p67",
+        "p68",
+        "p69",
+        "p70",
+        "p71",
+        "p72",
+        "p73",
+        "p74",
+        "p75",
+        "p76",
+        "p77",
+        "p78",
+        "p79",
+        "p80",
+        "p81",
+        "p82",
+        "p83",
+        "p84",
+        "p85",
+        "p86",
+        "p87",
+        "p88",
+        "p89",
+        "p90",
+        "p91",
+        "p92",
+        "p93",
+        "p94",
+        "p95",
+        "p96",
+        "p97",
+        "p98",
+        "p99",
+        "a",
+        "d"
+      ]
+    },
+    {
+      "query": "nghiep 99",
+      "ids": [
+        "p9",
+        "p99"
+      ]
+    },
+    {
+      "query": "does not match at all",
+      "ids": []
+    },
+    {
+      "query": "999999999999",
+      "ids": []
+    },
+    {
+      "query": "to",
+      "ids": [
+        "c"
+      ]
+    },
+    {
+      "query": "v",
+      "ids": [
+        "a",
+        "b",
+        "c",
+        "b",
+        "d"
+      ]
+    }
+  ]
+}

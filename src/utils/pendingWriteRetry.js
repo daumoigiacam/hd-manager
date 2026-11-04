@@ -7,14 +7,16 @@ export const isRetryableWriteError = error => {
     || (!code && /network|fetch|offline|timeout|connection/i.test(String(error?.message || '')));
 };
 
-export function pendingWriteFailure(write, error, now = Date.now()) {
+export function pendingWriteFailure(write, error, now = Date.now(), random = Math.random) {
   const attempts = (Number(write.attempts) || 0) + 1;
   const retryable = isRetryableWriteError(error);
+  const sample=Number(random()),jitter=Number.isFinite(sample)?Math.max(0,Math.min(1,sample)):.5;
+  const delay=Math.min(60000,1500*2**Math.min(attempts-1,6))*(.5+jitter);
   return {
     attempts,
     lastErrorCode: error?.code || 'write-failed',
     syncState: !retryable ? 'blocked' : attempts >= MAX_AUTOMATIC_WRITE_ATTEMPTS ? 'paused' : 'queued',
-    nextRetryAt: retryable ? now + Math.min(300000, 30000 * 2 ** (attempts - 1)) : null,
+    nextRetryAt: retryable ? now + Math.round(delay) : null,
   };
 }
 

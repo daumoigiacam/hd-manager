@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 import {
   ORDER_REQUEST_SELECTION_LOCK_MS,
@@ -22,7 +23,7 @@ import { buildCustomerFixedProductMemoryPatch } from '../src/utils/customerFixed
 import { resolveCustomerProductConfiguration } from '../src/services/customerProductBilling.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
-const appSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'App.jsx'), 'utf8');
+const appSource = readApplicationSource();
 const requestTableSource = fs.readFileSync(path.join(testDirectory, '..', 'src', 'features', 'orders', 'OrderRequestTableRows.jsx'), 'utf8');
 
 const tests = [];
@@ -600,7 +601,7 @@ test('mobile footer stays fixed for accounting, delivery and sales roles', () =>
 
   const footerSource = appSource.slice(
     appSource.indexOf('const footerNavItems = useMemo'),
-    appSource.indexOf('const desktopSidebarItems = useMemo'),
+    appSource.indexOf('const displayedFooterNavItems', appSource.indexOf('const footerNavItems = useMemo')),
   );
   assert.match(footerSource, /getFixedFooterNavIds\(\{/);
   assert.doesNotMatch(footerSource, /footerUsage|activeTab|\.sort\(/);

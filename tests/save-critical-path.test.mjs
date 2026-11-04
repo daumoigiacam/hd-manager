@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import { isSamePendingWriteRevision } from '../src/utils/pendingWriteRevision.js';
 import { canSaveLocallyFirst, coalescePendingWrite, isReplayableJson } from '../src/utils/localFirstSave.js';
@@ -69,7 +69,7 @@ test('legacy queued writes compare content as well as timestamp', () => {
   assert.equal(isSamePendingWriteRevision({ ...sent, revision: 'new' }, sent), false);
 });
 
-const source = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const source = readApplicationSource();
 const saveSource = source.slice(source.indexOf('  const saveDataDocument ='), source.indexOf('\n  useEffect(() => {', source.indexOf('  const saveDataDocument =')));
 
 test('actual shared save returns after local persistence without waiting for remote ACK', async () => {

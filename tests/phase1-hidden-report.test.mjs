@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { execFileSync } from 'node:child_process';
 import vm from 'node:vm';
 import { parse } from '@babel/parser';
@@ -9,7 +10,7 @@ import './warehouse-dispatch-command.test.mjs';
 import './warehouse-dispatch-edit-ack.test.mjs';
 
 const baseline = execFileSync('git', ['show', '5f162f5:src/App.jsx'], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
-const current = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const current = readApplicationSource();
 function callback(source) {
   source = source.replace(/\r\n/g, '\n');
   const start = source.indexOf('  const warehouseMovementTableRows = useMemo(() => {');

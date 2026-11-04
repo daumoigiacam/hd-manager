@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   collectUsedWarehouseDispatchIds,
   findDuplicateWarehouseDispatchIds,
@@ -112,7 +112,7 @@ assert.deepEqual(
 assert.equal(isWarehouseDispatchAlreadyLinked({ linkedOrderId: 'order-1' }), true);
 assert.equal(isWarehouseDispatchAlreadyLinked({ id: 'dispatch-free' }), false);
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 assert.ok(/resolveOrderCreationDateKey\(\{[\s\S]{0,220}sourceType: isWarehouseDispatchDraft \? 'warehouse_dispatch' : draft\.sourceType/.test(appSource));
 assert.ok(/sourceDispatchDate: draft\.sourceDispatchDate \|\| ''/.test(appSource));
 assert.ok(/findDuplicateWarehouseDispatchIds\(\s*\[orderData\],\s*existingCompanyOrders\s*\)/.test(appSource));

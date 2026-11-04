@@ -85,6 +85,10 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+performance/**/build/
+performance/**/.gradle/
+performance/**/.kotlin/
+performance/**/local.properties
 
 # Electron
 release/

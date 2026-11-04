@@ -31,7 +31,7 @@ test('a superseded batch returns no partial result and the actual App rejects ol
   assert.equal(published,false);assert.deepEqual(input,before);
   const gates=[],commits=[],cache=new Map();
   const apply=appFunction('applyCollectionItems',{
-    cancelled:false,readWorker:null,materializationRevisions:new Map(),snapshotRecordMaterializers:cache,createSnapshotRecordMaterializer,
+    cancelled:false,isReadAccessCurrent:()=>true,readWorker:null,materializationRevisions:new Map(),snapshotRecordMaterializers:cache,createSnapshotRecordMaterializer,
     materializeSnapshotRecords:(items,fn,options)=>materializeSnapshotRecords(items,fn,{...options,yieldWork:()=>new Promise(resolve=>gates.push(resolve))}),
     clearConfirmedLocalMutations(){},filterRecentlyDeletedItems:(_name,data)=>data,
     setCollectionSafely:(_name,_setter,value)=>{commits.push(value);return true},
@@ -49,7 +49,7 @@ test('every publication path prepares outside React and merges live edits/delete
     const recent=new Map(),deleted=new Set(),queue=[];
     const merge=appFunction('mergePendingArrayItems',{expandPendingWrites:x=>x,pendingFirebaseWritesRef:{current:[]},pruneRecentLocalMutations(){},getRecentLocalDeleteIds:()=>deleted,recentLocalWritesRef:{current:recent}});
     const worker=workerMode?{isPublicationCurrent:()=>true,expectCommit:(_name,_version,result)=>expected=result,publicationScheduled(){}}:null;
-    const publish=appFunction('setCollectionSafely',{readWorker:worker,cancelled:false,readWorkerCommittedStateRef:{current:{orders:committed}},
+    const publish=appFunction('setCollectionSafely',{readWorker:worker,cancelled:false,isReadAccessCurrent:()=>true,readWorkerCommittedStateRef:{current:{orders:committed}},
       hasCollectionValue:x=>Boolean(x?.length),getPreviousStableCollectionValue:()=>committed,rememberStableCollectionValue(){},
       mergePendingArrayItems:merge,retainCollectionRecordIdentityAsync,runNonBlockingStateUpdate:job=>queue.push(job),markCollectionLoaded(){loaded++}});
     const incoming=structuredClone(committed);incoming[3].amount=800;
@@ -71,7 +71,7 @@ test('object overlays are lazy and an obsolete queued commit neither publishes n
   recent.set('attendance:a',{collectionName:'attendance',documentId:'a',payload:{amount:2}});
   assert.equal(merge('attendance',makeRows)[0].amount,2);assert.equal(expansions,1);
   const queued=[];let current=true,loaded=0,setters=0;
-  const publish=appFunction('setCollectionSafely',{readWorker:null,cancelled:false,readWorkerCommittedStateRef:{current:{orders:[]}},
+  const publish=appFunction('setCollectionSafely',{readWorker:null,cancelled:false,isReadAccessCurrent:()=>true,readWorkerCommittedStateRef:{current:{orders:[]}},
     retainCollectionRecordIdentityAsync,mergePendingArrayItems:(_name,value)=>value,hasCollectionValue:x=>x?.length>0,
     getPreviousStableCollectionValue:()=>[],rememberStableCollectionValue(){},runNonBlockingStateUpdate:job=>queued.push(job),markCollectionLoaded(){loaded++}});
   await publish('orders',()=>{setters++},[{id:'x'}],false,{isCurrent:()=>current});current=false;

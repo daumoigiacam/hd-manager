@@ -3,7 +3,10 @@ import { connectAndroidWebView } from './helpers/android-webview-cdp.mjs';
 const output = process.env.HD_CPU_PROFILE_OUTPUT || 'test-results/android10-busy-profile';
 const captureTasks = process.env.HD_CPU_PROFILE_TASKS === 'true';
 const captureNavigationProbe = process.env.HD_CPU_PROFILE_NAVIGATION_PROBE !== 'false';
+const captureCompile=process.env.HD_CPU_PROFILE_COMPILE==='true';
+const captureSampling=process.env.HD_CPU_PROFILE_SAMPLING!=='false';
 const armLogin = process.env.HD_CPU_PROFILE_ARM_LOGIN === 'true';
+const reloadRememberedSession = process.env.HD_CPU_PROFILE_JS_RELOAD === 'true';
 const captureSeconds=Number(process.env.HD_CPU_PROFILE_SECONDS||8);
 if(!Number.isFinite(captureSeconds)||captureSeconds<2||captureSeconds>60)throw Error('Invalid CPU diagnostic duration');
 await mkdir(output, { recursive: true });
@@ -15,6 +18,7 @@ try {
   const route = process.env.HD_CPU_PROFILE_ROUTE;
   const prepRoute = process.env.HD_CPU_PROFILE_PREP_ROUTE;
   if (armLogin && (route || prepRoute)) throw Error('Login profiling cannot navigate modules');
+  if (reloadRememberedSession && (armLogin || route || prepRoute)) throw Error('Remembered-session reload must be profiled independently');
   let target;
   if (armLogin) {
     const armed = await cdp.evaluate(`(function(){
@@ -50,7 +54,7 @@ try {
   if (route) {
     const labels = { home: 'Trang chủ', executive_dashboard: 'Điều hành', payroll: 'Bảng lương', price_quotes: 'Báo giá hàng loạt', customers: 'Khách hàng', products: 'Kho sản phẩm', orders:'Đơn hàng',
       order_requests: 'Đặt hàng', warehouse_dispatch: 'Xuất kho',pricing:'Giá cả',employees:'Nhân sự',
-      bank_payments:'Ngân hàng',warehouse_import:'Nhập Xuất Tồn',debt:'Sổ nợ',finance:'Thu chi' };
+      bank_payments:'Ngân hàng',warehouse_import:'Nhập Xuất Tồn',debt:'Sổ nợ',finance:'Thu chi',settings:'Cài đặt',billing:'Gói cước',messages:'Tin nhắn',company_attendance:'Chấm công' };
     if (!Object.hasOwn(labels, route)) throw Error('Unsupported read-only profiling route');
     const position = (label, selector) => cdp.evaluate(`(function(){var root=document.querySelector(${JSON.stringify(selector)});var b=root && Array.from(root.querySelectorAll('button')).find(function(b){return (b.getAttribute('aria-label')||b.innerText).trim()===${JSON.stringify(label)}});if(!b)throw Error('Navigation missing');b.scrollIntoView({block:'center'});var r=b.getBoundingClientRect();return {x:(r.x+r.width/2)*devicePixelRatio,y:(r.y+r.height/2)*devicePixelRatio}})()`);
     if (prepRoute) {
@@ -95,9 +99,13 @@ try {
     window.__hdNavCpuProbe={read:function(){return {origin:performance.timeOrigin,module:expected,started:started,ready:ready,duration:ready===null?null:ready-started,
       inputAt:inputAt,inputCapturedAt:inputCapturedAt,pointerdownQueueMs:inputAt===null?null:inputCapturedAt-inputAt,inputToReadyMs:inputAt===null||ready===null?null:ready-inputAt}},restore:function(){observer.disconnect();document.removeEventListener('click',click,true);document.removeEventListener('pointerdown',input,true);delete window.__hdNavCpuProbe}};
   })()`);
-  await cdp.send('Tracing.start', { categories: captureTasks
-    ? 'disabled-by-default-v8.cpu_profiler,devtools.timeline,toplevel,blink.user_timing'
-    : 'disabled-by-default-v8.cpu_profiler', options: 'record-as-much-as-possible', transferMode: 'ReturnAsStream' });
+  if(!captureSampling&&!captureTasks)throw Error('Timeline-only diagnosis requires task metadata.');
+  const categories=[...(captureSampling?['disabled-by-default-v8.cpu_profiler']:[]),...(captureTasks?['devtools.timeline','toplevel','blink.user_timing']:[])].join(',');
+  await cdp.send('Tracing.start', { categories:categories+(captureCompile?',v8,disabled-by-default-v8.compile':''), options: 'record-as-much-as-possible', transferMode: 'ReturnAsStream' });
+  if (reloadRememberedSession) {
+    await cdp.send('Page.enable');
+    await cdp.send('Page.reload', { ignoreCache: false });
+  }
   if (target) cdp.shell('shell', 'input', 'tap', `${Math.round(target.x)}`, `${Math.round(target.y)}`);
   await new Promise(resolve => setTimeout(resolve, captureSeconds*1000));
   await cdp.send('Tracing.end');
@@ -119,6 +127,11 @@ try {
   // Keep only CPU samples. No network URLs, request headers, document contents,
   // console arguments, screenshots or general trace metadata are saved.
   const events = raw.traceEvents.filter(e => ['Profile', 'ProfileChunk', 'CpuProfile'].includes(e.name));
+  if(captureCompile){
+    const compile=raw.traceEvents.filter(e=>/^(?:V8\.|v8\.|Compile|Parse|Recompile|Optimize)/.test(e.name)&&/^[A-Za-z0-9_.:]+$/.test(e.name)).map(e=>({
+      name:e.name,cat:e.cat,ph:e.ph,pid:e.pid,tid:e.tid,...Object.fromEntries(['ts','dur','tts','tdur'].filter(k=>Number.isFinite(e[k])&&e[k]>=0).map(k=>[k,e[k]]))}));
+    await writeFile(`${output}/compile-metadata.json`,JSON.stringify({events:compile,scope:'Fixed-prefix compiler/runtime timing metadata only, no trace arguments, source text, user data or URLs. Additional tracing overhead; diagnosis only, not clean latency acceptance.'}));
+  }
   if (captureTasks) {
     // Strict metadata allowlist: never retain timeline args (URLs, DOM nodes,
     // console/native messages or user data can occur there).
@@ -132,13 +145,14 @@ try {
       const url=data && (data.url || data.scriptName);
       const asset=typeof url==='string' && /^https:\/\/localhost\/assets\/[A-Za-z0-9_.-]+\.js$/.test(url) ? url.split('/').at(-1) : null;
       const line=data && (data.lineNumber ?? data.scriptLine),column=data && (data.columnNumber ?? data.scriptColumn);
-      return {name,cat,ph,ts,dur,pid,tid,...(typeof type==='string' && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(type)?{eventType:type}:{}),
+      return {name,cat,ph,ts,dur,pid,tid,...Object.fromEntries(['tts','tdur'].filter(key=>Number.isFinite(e[key])&&e[key]>=0).map(key=>[key,e[key]])),
+        ...(typeof type==='string' && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(type)?{eventType:type}:{}),
         ...(asset?{localCallSite:{asset,...(Number.isSafeInteger(line)&&line>=0?{line}:{}),...(Number.isSafeInteger(column)&&column>=0?{column}:{})}}:{})};
     });
     const navigation=await cdp.evaluate('window.__hdNavCpuProbe && window.__hdNavCpuProbe.read()');
     const login=armLogin?await cdp.evaluate(`(function(){var p=window.__hdCpuLoginArm;if(!p)return null;return {state:p.state,
       startup:(window.__HD_STARTUP_TIMING__||[]).filter(function(e){return e.atEpochMs>=p.state.origin+p.state.submitAt}).map(function(e){return {name:e.name,atEpochMs:e.atEpochMs,durationMs:e.durationMs}})}})()`):undefined;
-    await writeFile(`${output}/task-metadata.json`, JSON.stringify({tasks,navigation,login,captureNavigationProbe,
+    await writeFile(`${output}/task-metadata.json`, JSON.stringify({tasks,navigation,login,captureNavigationProbe,captureSampling,captureCompile,
       scope:'Timeline timing/type/PID/TID metadata only, no args. Instrumented diagnostic, not a clean interaction benchmark. When captureNavigationProbe=false no DOM mutation/readiness observer is installed; navigation timings are unmeasured.'}));
   }
   for (const event of events) for (const node of event.args?.data?.cpuProfile?.nodes || []) {

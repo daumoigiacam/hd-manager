@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
-const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const app = readApplicationSource();
 const foundation = readFileSync(new URL('../src/design-system/foundation.css', import.meta.url), 'utf8');
 const debtStart = app.indexOf('function DebtManagementView(');
 const debtEnd = app.indexOf('function CustomerPortalView(', debtStart);

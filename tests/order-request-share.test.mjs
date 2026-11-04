@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   buildOrderRequestShareFiles,
   prepareOrderRequestNativeFiles,
@@ -33,7 +33,7 @@ assert.deepEqual(
   ['page-1', 'page-2', 'page-3', 'page-4']
 );
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 assert.match(appSource, /hasCompleteOrderRequestShareBlobSet\(persistedBlobs, expectedBlobCount\)/);
 assert.match(appSource, /buildOrderRequestShareFiles\(blobs, baseFilename\)/);
 assert.doesNotMatch(appSource, /Retry the same complete file set without optional text/);

@@ -7,10 +7,11 @@ import vm from 'node:vm';
 import {normalizeTrustedInputTimestamp} from '../scripts/helpers/browser-interaction-timing.mjs';
 const source=readFileSync(new URL('../scripts/audit-android-webview.mjs',import.meta.url),'utf8');let expression;
 simple(parse(source,{ecmaVersion:'latest',sourceType:'module'}),{VariableDeclarator(n){if(n.id.name==='instrumentation')expression=source.slice(n.init.start,n.init.end)}});
-function install(lightweight){
- const code=vm.runInNewContext(expression,{normalizeTrustedInputTimestamp,lightweight});
+function install(lightweight,feedbackOnly=false,visibleContent=true){
+ const code=vm.runInNewContext(expression,{normalizeTrustedInputTimestamp,lightweight,feedbackOnly,sourceAware:false});
  let clock=20,busy=true,mutation;const listeners=new Map(),frames=[];
- const main={firstElementChild:{},isConnected:true,querySelector:()=>busy?{}:null};
+ const main={firstElementChild:{},isConnected:true,querySelector:()=>busy?{}:null,
+  children:[{hidden:!visibleContent,getAttribute:()=>null,style:{display:''}}]};
  Object.defineProperty(main,'innerText',{get(){throw Error('Layout-forcing innerText read')}});
  main.getBoundingClientRect=()=>{throw Error('Forced layout query')};
  const window={__androidInteraction:{expected:'bank_payments',started:null,ready:null,feedback:null,feedbackScheduled:false,inputAt:null,inputCapturedAt:null}};
@@ -29,4 +30,12 @@ test('lightweight actual observer measures trusted feedback without forcing layo
 });
 test('legacy mode is retained unchanged; poisoned layout getter demonstrates why its overhead is kept separate',()=>{
  const p=install(false);assert.throws(()=>p.click(),/Layout-forcing innerText/);p.window.__hdAndroidAuditProbe.restore();
+});
+test('feedback-only diagnostic cannot treat a hidden busy marker as visible module feedback',()=>{
+ const hidden=install(true,true,false);hidden.click();hidden.flush();
+ assert.equal(hidden.window.__androidInteraction.feedback,null);assert.equal(hidden.window.__androidInteraction.ready,null);
+ hidden.window.__hdAndroidAuditProbe.restore();
+ const visible=install(true,true,true);visible.click();visible.flush();
+ assert.ok(visible.window.__androidInteraction.feedback>0);assert.equal(visible.window.__androidInteraction.ready,null,'feedback is not data readiness');
+ visible.window.__hdAndroidAuditProbe.restore();
 });

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import {createHash} from 'node:crypto';
 
 export async function connectAndroidWebView({ adb, serial, packageName, port = 9227, enableRuntime = true }) {
   const shell = (...args) => execFileSync(adb, ['-s', serial, ...args], { encoding: 'utf8', timeout: 20000 }).trim();
@@ -23,6 +24,12 @@ export async function connectAndroidWebView({ adb, serial, packageName, port = 9
   const tasks = new Map();
   const events = [];
   const listeners = new Set();
+  const rejectPending = reason => {
+    for (const task of tasks.values()) { clearTimeout(task.timer); const error=Error(reason);error.request={method:task.method,expressionDigest:task.expressionDigest};task.reject(error); }
+    tasks.clear();
+  };
+  socketConnection.onclose = event => rejectPending(`CDP WebSocket closed: code=${event.code}, clean=${event.wasClean}`);
+  socketConnection.onerror = event => rejectPending('CDP WebSocket transport error: '+(event.message||'no detail'));
   socketConnection.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.id) {
@@ -35,10 +42,18 @@ export async function connectAndroidWebView({ adb, serial, packageName, port = 9
     }
     if (message.method) for (const listener of listeners) listener(message);
   };
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, timeoutMs = 30000) => new Promise((resolve, reject) => {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) { reject(Error('Invalid diagnostic transport timeout')); return; }
     const id = ++sequence;
-    const timer = setTimeout(() => { tasks.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 30000);
-    tasks.set(id, { resolve, reject, timer });
+    const expressionDigest = params.expression ? createHash('sha256').update(params.expression).digest('hex') : null;
+    const requestedAt = performance.now();
+    const timer = setTimeout(() => {
+      tasks.delete(id);
+      const error=Error(`CDP timeout: ${method}`);
+      error.request={method,expressionDigest,elapsedMs:performance.now()-requestedAt,socketReadyState:socketConnection.readyState};
+      reject(error);
+    }, timeoutMs);
+    tasks.set(id, { resolve, reject, timer, method, expressionDigest });
     socketConnection.send(JSON.stringify({ id, method, params }));
   });
   const evaluate = async expression => {

@@ -59,7 +59,7 @@ for (const group of groups.values()) {
       for(let i=0;node && i<80;i++,node=group.nodes.get(node.parent))stack.push(node.callFrame);
       frames.push({selfSampleMs:ms,frame:await mapped(group.nodes.get(id)?.callFrame),stack:await Promise.all(stack.reverse().slice(-10).map(mapped))});
     }
-    longTasks.push({ts:task.ts,durationMs:task.dur/1000,frames});
+    longTasks.push({ts:task.ts,durationMs:task.dur/1000,...(Number.isFinite(task.tdur)?{threadCpuMs:task.tdur/1000}:{}),frames});
   }
   results.push({ pid: group.pid, tid:group.tid, samples: group.samples, missingDeltas: group.missingDeltas,gapsOver50ms:group.gapsOver50ms,maxSampleIntervalMs:group.maxSampleIntervalMs,top, longTasks });
 }

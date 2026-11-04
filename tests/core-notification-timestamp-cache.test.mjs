@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { appFunction, appObject } from './helpers/app-source-function.mjs';
 import { selectLatestRecords } from '../src/utils/latestRecords.js';
+import {createImmutableFirstRecordLookupSelector} from '../src/utils/firstRecordLookup.js';
 
 let parseTimestamp;
 parseTimestamp = appFunction('parseEntityTimestampValue', {
@@ -10,6 +11,16 @@ parseTimestamp = appFunction('parseEntityTimestampValue', {
 });
 const timestamp = appFunction('getEntityTimestamp', { parseEntityTimestampValue: parseTimestamp });
 const callbackOptions = { memoCallback: true, scope: 'MainAppView' };
+
+test('notification date key retains legacy raw-date behavior without constructing unused Date objects',()=>{
+ const input={notificationDateKey:'2026-11-02',getEntityTimestamp:()=>0};
+ const current=appFunction('resolveNotificationDateKey',input,{scope:'MainAppView'});
+ let parsed=0;const legacySource=current.toString().replace('if (rawDate) return rawDate;','if (rawDate && parseDateInputValue(rawDate)) return rawDate;');
+ const legacy=new Function('parseDateInputValue',...Object.keys(input),`return (${legacySource})`)(()=>{parsed++;return new Date()},...Object.values(input));
+ for(const value of ['2026-11-02','invalid',' 2026-11-02 ',0,null,undefined,'',new Date('2026-11-02T00:00:00Z')])
+  assert.equal(current({date:value}),legacy({date:value}));
+ assert(parsed>0,'the replaced branch used to construct a Date for every nonempty string');
+});
 const callbackSource = appFunction('notificationItems', {}, callbackOptions).toString();
 const cache = /const notificationTimestamp = record => \{[\s\S]*?\n\s*};/;
 assert.ok(cache.test(callbackSource));
@@ -28,6 +39,7 @@ const run = (cached, role, revision = false) => {
   const data = { notifications: rows('n'), payments: rows('p'), messages: rows('m'), orderRequests: rows('r'), warehouseDispatches: rows('d'), pendingAdvanceNotifications: rows('a') };
   if (revision) { data.payments = data.payments.slice(10).map((r, i) => i === 1 ? { ...r, createdAt: '2026-10-31T12:30:00Z' } : r); data.notifications = []; }
   const bindings = {
+    notificationRecordLookup:createImmutableFirstRecordLookupSelector(),
     selectLatestRecords: cached ? selectLatestRecords : (records, limit, getter) => [...records].sort((a, b) => (getter(b) || 0) - (getter(a) || 0)).slice(0, limit),
     ...data, customers, products: [], employees: [], orders: [], employee: { id: 'e1' }, currentUser: { id: 'e1' },
     Date: FixedDate, notificationDateKey: '2026-10-31', getTodayDateKey: () => '2026-10-31',

@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../../scripts/helpers/application-source.cjs';
 import { parse } from '@babel/parser';
 import { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch } from '../../src/features/warehouse/warehouseDispatchUseCases.js';
+import {createSourcePhaseDiagnostics} from '../../src/services/sourcePhaseDiagnostics.js';
 
-const source = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
+const source = readApplicationSource();
 const tree = parse(source, { sourceType: 'module', plugins: ['jsx'] });
 const declarations = new Map();
 const scopedDeclarations = new Map();
@@ -42,7 +43,9 @@ export function appFunction(name, bindings = {}, { memoCallback = false, scope =
       cacheBindings[dependency] = new Map();
     } else throw new Error(`Unexpected primitive cache binding: ${dependency}`);
   }
-  const environment = { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch, ...cacheBindings, ...bindings };
+  const environment = { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch,
+    sourcePhaseDiagnostics:createSourcePhaseDiagnostics(),yieldPublicationWork:()=>new Promise(resolve=>setTimeout(resolve,0)),
+    ...cacheBindings, ...bindings };
   return new Function(...Object.keys(environment), `return (${source.slice(node.start, node.end)});`)(...Object.values(environment));
 }
 

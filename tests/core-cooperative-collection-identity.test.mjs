@@ -6,6 +6,19 @@ import {appFunction} from './helpers/app-source-function.mjs';
 const turn=()=>new Promise(resolve=>setTimeout(resolve,0));
 const records=n=>Array.from({length:n},(_,i)=>({id:'r-'+i,amount:i,nested:{details:Array.from({length:12},(_,j)=>({quantity:j/10,name:'Vịt 🦆'}))}}));
 
+test('reconfirmed attendance reuses equal plain Dates but actual time edits, decoration and subclasses remain fresh',async()=>{
+ for(const reconcile of [retainCollectionRecordIdentity,retainCollectionRecordIdentityAsync]){
+  const previous={date:new Date('2026-11-02T01:00:00Z')};
+  assert.equal(await reconcile(previous,{date:new Date(previous.date)}),previous);
+  const changed={date:new Date('2026-11-02T01:00:01Z')};assert.equal(await reconcile(previous,changed),changed);
+  const invalid={date:new Date(NaN)};assert.equal(await reconcile(invalid,{date:new Date(NaN)}),invalid);
+  const decorated={date:Object.assign(new Date(previous.date),{extra:1})};assert.equal(await reconcile(previous,decorated),decorated);
+  const hidden={date:new Date(previous.date)};Object.defineProperty(hidden.date,'extra',{value:1});assert.equal(await reconcile(previous,hidden),hidden);
+  class CustomDate extends Date{}const subclass={date:new CustomDate(previous.date)};assert.equal(await reconcile(previous,subclass),subclass);
+  assert.equal(previous.date.toISOString(),'2026-11-02T01:00:00.000Z');
+ }
+});
+
 test('cooperative complete reconciliation matches the synchronous reference, including duplicate IDs, order, deletes and local markers',async()=>{
   const before=records(150),equal=structuredClone(before),changed=structuredClone(before);
   changed.reverse();changed[30].amount=900;delete changed[31].nested;changed[40].__pendingFirebaseSync=true;
@@ -35,6 +48,15 @@ test('deep comparison yields inside a single large record and aborts without mut
   assert.ok(yields>0,'one deep record must still yield before completion');
 });
 
+test('initial/empty and exact-reference collection publications do not scan rows that cannot reuse older identities',async()=>{
+ let reads=0;
+ const rows=Array.from({length:12000},(_,i)=>({get id(){reads++;return String(i)},amount:i}));
+ assert.equal(await retainCollectionRecordIdentityAsync([],rows),rows);assert.equal(reads,0);
+ assert.deepEqual(await retainCollectionRecordIdentityAsync(rows,[]),[]);assert.equal(reads,0);
+ assert.equal(await retainCollectionRecordIdentityAsync(rows,rows),rows);assert.equal(reads,0);
+ await assert.rejects(retainCollectionRecordIdentityAsync([],rows,{isCurrent:()=>false}),{name:'AbortError'});
+});
+
 test('actual App publication waits for complete comparison and preserves a concurrent local state edit',async()=>{
   let state=records(100),committed=state,version=1,resolve,preparedAgainst,loaded=0,expected;
   const input=structuredClone(state);input[3].amount=800;
@@ -46,7 +68,7 @@ test('actual App publication waits for complete comparison and preserves a concu
   });
   const worker={isPublicationCurrent:(_name,v)=>v===version,expectCommit:(_name,_v,value)=>expected=value,publicationScheduled(){}};
   const apply=appFunction('setCollectionSafely',{
-    readWorker:worker,cancelled:false,readWorkerCommittedStateRef:{current:{orders:committed}},mergePendingArrayItems:merge,
+    readWorker:worker,cancelled:false,isReadAccessCurrent:()=>true,readWorkerCommittedStateRef:{current:{orders:committed}},mergePendingArrayItems:merge,
     retainCollectionRecordIdentity,retainCollectionRecordIdentityAsync:async(previous,next)=>{
       preparedAgainst=previous;await new Promise(r=>resolve=r);return retainCollectionRecordIdentity(previous,next);
     },runNonBlockingStateUpdate:fn=>queue.push(fn),

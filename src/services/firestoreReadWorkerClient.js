@@ -2,28 +2,59 @@ import { createFirestoreReadWorker } from '@hd/firestore-read-worker';
 import { decodeFirestoreWorkerValue, decodeFirestoreNativeValue, retainFirestoreWorkerValue } from '@hd/firestore-worker-values';
 import { createWorkerAuthEnvelope } from './workerAuthSession.js';
 import { createReadWorkerSnapshotAssembler } from './readWorkerSnapshotAssembler.js';
+import {createProjectionScheduler} from './cooperativeProjection.js';
+import {getReadWorkerCacheAppName,clearReadWorkerPersistentCache} from './readWorkerPersistence.js';
 
 export { canUseFirestoreReadWorker } from './readWorkerPolicy.js';
 
 // Test-injectable transport; factory/codec remain real in the cloud build.
 export function createFirestoreReadWorkerClient({ user, config, appId, companyId, accountType, db, emulator,
-  isCurrent = () => true, onAuthInvalid = () => {}, onFallback = () => {}, onCommitted = () => {},
+  isCurrent = () => true, onAuthInvalid = () => {}, onFallback = () => {}, onPending = () => {}, onCommitted = () => {},
   workerFactory = createFirestoreReadWorker, decode = wire => wire?.kind === 'hd-firestore-native-value-v1'
     ? decodeFirestoreNativeValue(wire,db) : decodeFirestoreWorkerValue(wire,db),
   retain = retainFirestoreWorkerValue, yieldWork, now, activity, getCommittedStates = () => ({}),
+  retainedSnapshotLimit = 8,
+  persistentCache = false,
 }) {
+  if (!Number.isInteger(retainedSnapshotLimit) || retainedSnapshotLimit < 1 || retainedSnapshotLimit > 8)
+    throw new TypeError('Invalid read-worker reopen snapshot limit.');
   const scope = {uid:user?.uid,apiKey:config?.apiKey,appName:user?.auth?.app?.name || '[DEFAULT]',
     projectId:config?.projectId,appId,companyId,accountType};
   const scopeId = `${Date.now()}-${crypto.randomUUID()}`;
   let worker, disposed = false, ready = false, failed = false, nextId = 0, initTimer;
-  const subscriptions = new Map(), committed = new Map();
+  let persistentCacheConfigured=false;
+  // Create task ports only if decoding actually exhausts its 4 ms budget.
+  // One scheduler per authenticated client; closing releases pending yields.
+  let decodeScheduler;
+  const yieldDecode=yieldWork||(()=>{
+    decodeScheduler??=createProjectionScheduler();
+    return decodeScheduler.yieldTask();
+  });
+  const subscriptions = new Map(), committed = new Map(), baselineIds = new Map();
+  // Only CLOSED subscriptions use this bounded cache. Active assemblers and
+  // application state own their references independently. Eviction changes no
+  // data/readiness; a later reopen must receive a complete authoritative transfer.
+  const retainCompletedSnapshot = (collectionName, items, baselineId) => {
+    committed.delete(collectionName);baselineIds.delete(collectionName);
+    if (!items.length) return;
+    committed.set(collectionName,items);
+    if (typeof baselineId === 'string' && baselineId) baselineIds.set(collectionName,baselineId);
+    while (committed.size > retainedSnapshotLimit) {
+      const oldest = committed.keys().next().value;
+      committed.delete(oldest);baselineIds.delete(oldest);
+    }
+  };
   const unset = Symbol('uncommitted');
-  const setPending = (entry,value) => { entry.pending=value;activity?.setPending(`${scopeId}:${entry.id}`,value); };
+  const setPending = (entry,value) => {
+    entry.pending=value;
+    if(value&&entry.active&&valid())onPending({collectionName:entry.collectionName,generation:entry.generation});
+    activity?.setPending(`${scopeId}:${entry.id}`,value);
+  };
   const confirmCommitted = states => {
     if (!valid()) return;
     for (const entry of subscriptions.values()) if (entry.active && entry.pending && entry.expected !== unset
       && states[entry.collectionName] === entry.expected) {
-      setPending(entry,false);onCommitted({collectionName:entry.collectionName,generation:entry.generation});
+      setPending(entry,false);entry.phase='committed';onCommitted({collectionName:entry.collectionName,generation:entry.generation});
     }
   };
   const afterPublication = entry => {
@@ -34,7 +65,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
   const post = message => { if (valid() && worker) worker.postMessage({...message,scopeId}); };
   const fallback = (entry, code) => {
     if (!valid() || !entry.active || entry.fallbackStarted) return;
-    entry.fallbackStarted = true;entry.assembler.close();
+    entry.fallbackStarted = true;entry.phase='fallback';entry.assembler.close();
     post({type:'unsubscribe',streamId:entry.id});
     onFallback({collection:entry.collectionName,code});
     try { entry.fallbackStop = entry.fallback(); }
@@ -42,13 +73,13 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
   };
   const fail = code => {
     if (!valid() || failed) return;
-    failed = true;clearTimeout(initTimer);worker?.terminate();worker = null;
+    failed = true;clearTimeout(initTimer);worker?.terminate();worker = null;decodeScheduler?.close();
     for (const entry of subscriptions.values()) fallback(entry,code);
   };
   const subscribeWorker = entry => {
     if (!valid() || !entry.active || entry.fallbackStarted) return;
     if (failed) fallback(entry,'worker-unavailable');
-    else if (ready) post({type:'subscribe',streamId:entry.id,collectionName:entry.collectionName});
+    else if (ready) { entry.phase='queued';post({type:'subscribe',streamId:entry.id,collectionName:entry.collectionName,baselineId:entry.initialBaselineId}); }
   };
   const handle = async message => {
     if (!valid() || !message || message.scopeId !== scopeId) return;
@@ -60,21 +91,33 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
     if (message.type === 'auth-invalid') { close();onAuthInvalid();return; }
     const entry = subscriptions.get(message.streamId);
     if (!entry?.active || entry.fallbackStarted) return;
+    entry.lastPacketAfterMs=Date.now()-entry.startedAt;
     try {
+      if (message.type === 'source-started') {
+        if (entry.phase==='queued' || entry.phase==='subscribing') entry.phase='subscribing';
+        return;
+      }
       if (message.type === 'fallback') { fallback(entry,message.code);return; }
       if (message.type === 'data-error') {
+        entry.phase='error';
         const error = new Error('Firestore read-worker listener failed.');error.code = message.code;
         entry.error(error);return;
       }
       if (message.type === 'cache') {
+        entry.phase='cache';
+        entry.cachedRows=Number.isSafeInteger(message.count)&&message.count>=0?message.count:null;
         if (message.metadata?.fromCache !== true || typeof message.metadata.hasPendingWrites !== 'boolean') throw new Error('Invalid worker cache metadata.');
         await entry.publish({kind:'hd-firestore-worker-snapshot-v1',metadata:message.metadata,dataChangeCount:null},[]);
-      } else if (message.type === 'begin') await entry.assembler.begin(message);
-      else if (message.type === 'chunk') await entry.assembler.chunk(message);
+      } else if (message.type === 'begin') {
+        entry.phase='receiving';entry.rowsReceived=0;entry.expectedRows=message.count;
+        await entry.assembler.begin(message);
+      }
+      else if (message.type === 'chunk') { await entry.assembler.chunk(message);entry.rowsReceived+=message.rows.length; }
       else if (message.type === 'complete') {
         const result = entry.assembler.finish(message);
         if (!valid() || !entry.active) return;
-        committed.set(entry.collectionName,result.items);
+        entry.phase='publishing';
+        entry.completedSnapshot={items:result.items,baselineId:message.baselineId};
         await entry.publish(result.snapshot,result.items);
       } else throw new Error('Invalid worker message.');
       if (valid() && entry.active) post({type:'ack',streamId:entry.id,packetId:message.packetId});
@@ -84,11 +127,11 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
   };
   const close = () => {
     if (disposed) return;
-    post({type:'close'});disposed = true;clearTimeout(initTimer);worker?.terminate();worker = null;
+    post({type:'close'});disposed = true;clearTimeout(initTimer);worker?.terminate();worker = null;decodeScheduler?.close();
     for (const entry of subscriptions.values()) {
-      entry.active = false;clearTimeout(entry.commitTimer);setPending(entry,false);entry.assembler.close();entry.fallbackStop?.();
+      entry.active = false;clearTimeout(entry.commitTimer);setPending(entry,false);entry.assembler.close();entry.completedSnapshot=null;entry.fallbackStop?.();
     }
-    subscriptions.clear();committed.clear();
+    subscriptions.clear();committed.clear();baselineIds.clear();
   };
   void (async () => {
     try {
@@ -96,22 +139,38 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
       await user.getIdToken();
       if (!valid() || failed) return;
       const envelope = createWorkerAuthEnvelope(user,scope);
+      let workerScope=scope,cacheEnabled=false;
+      if(persistentCache && typeof globalThis.indexedDB!=='undefined' && globalThis.crypto?.subtle){
+        const appName=await getReadWorkerCacheAppName(scope);
+        workerScope={...scope,sourceAppName:scope.appName,appName};envelope.appName=appName;cacheEnabled=true;
+      }
+      if(!valid()||failed)return;
       worker = workerFactory();
+      persistentCacheConfigured=cacheEnabled;
       worker.onmessage = event => { void handle(event.data); };
       worker.onerror = () => fail('worker-unavailable');
-      post({type:'init',scope,config,envelope,...(emulator ? {emulator} : {})});
+      post({type:'init',scope:workerScope,config,envelope,persistentCache:cacheEnabled,...(emulator ? {emulator} : {})});
     } catch { fail('worker-unavailable'); }
   })();
   return {
     subscribe(collectionName,{publish,error,fallback:subscribeFallback}) {
       if (!valid()) return () => {};
       const id = `${++nextId}`;
+      const initialItems=committed.get(collectionName)||[],initialBaselineId=baselineIds.get(collectionName)||null;
+      // Transfer ownership to the live assembler; active source ACKs must not
+      // evict the small cache of routes which are actually closed.
+      committed.delete(collectionName);baselineIds.delete(collectionName);
       const entry = {id,collectionName,publish,error,fallback:subscribeFallback,active:true,fallbackStarted:false,fallbackStop:null,
+        startedAt:Date.now(),phase:'subscribing',rowsReceived:0,expectedRows:null,lastPacketAfterMs:null,
         generation:0,expected:unset,pending:true,commitTimer:null,
-        assembler:createReadWorkerSnapshotAssembler({decode,retain,initialItems:committed.get(collectionName)||[],yieldWork,now})};
+        initialBaselineId,completedSnapshot:initialItems.length?{items:initialItems,baselineId:initialBaselineId}:null,
+        assembler:createReadWorkerSnapshotAssembler({decode,retain,initialItems,
+          initialBaselineId,yieldWork:yieldDecode,now})};
       subscriptions.set(id,entry);setPending(entry,true);subscribeWorker(entry);
       return () => {
         if (!entry.active) return;
+        if(entry.completedSnapshot)retainCompletedSnapshot(collectionName,entry.completedSnapshot.items,entry.completedSnapshot.baselineId);
+        entry.completedSnapshot=null;
         entry.active = false;clearTimeout(entry.commitTimer);setPending(entry,false);entry.assembler.close();entry.fallbackStop?.();subscriptions.delete(id);
         post({type:'unsubscribe',streamId:id});
       };
@@ -135,6 +194,23 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
     publicationScheduled(collectionName) {
       const entry=[...subscriptions.values()].find(entry=>entry.active&&entry.collectionName===collectionName);
       if (entry && valid()) afterPublication(entry);
+    },
+    // On-demand diagnostic metadata only: no rows, account IDs or credentials.
+    // Do not clear pending based on this view; only actual committed references
+    // satisfy the publication witness above.
+    getReadinessDiagnostics() {
+      const states=getCommittedStates();
+      return {ready,failed,disposed,persistentCacheRequested:persistentCache,persistentCacheConfigured,streams:[...subscriptions.values()].map(entry=>({
+        collection:entry.collectionName,pending:entry.pending,generation:entry.generation,
+        fallback:entry.fallbackStarted,expectedSet:entry.expected!==unset,
+        expectedCommitted:entry.expected!==unset && states[entry.collectionName]===entry.expected,
+        phase:entry.phase,rowsReceived:entry.rowsReceived,expectedRows:entry.expectedRows,lastPacketAfterMs:entry.lastPacketAfterMs,
+        cachedRows:entry.cachedRows??null,
+      }))};
+    },
+    clearPersistentCache() {
+      close();
+      return persistentCache ? clearReadWorkerPersistentCache(config,scope) : Promise.resolve();
     },
     confirmCommitted,close,
   };

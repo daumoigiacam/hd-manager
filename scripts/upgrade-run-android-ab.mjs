@@ -1,0 +1,25 @@
+import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
+import{execFileSync,spawn}from'node:child_process';
+import{assertNoActiveUpgradeSoak}from'./helpers/upgrade-observation-barrier.mjs';
+import{assertVerificationFixtureReady}from'./helpers/verification-fixture-preflight.mjs';
+const cohort=process.argv[2];if(!/^(baseline-fair|baseline-native-v3|after-[a-z0-9-]+)$/.test(cohort||''))throw Error('Explicit cohort required');
+const labelArg=process.argv.slice(3).find(arg=>arg.startsWith('--run-label=')),label=labelArg?.slice('--run-label='.length);
+if(label&&!/^[a-z0-9-]+$/.test(label))throw Error('Invalid run label');const observation=label?`${cohort}-${label}`:cohort;
+const root='test-results/performance-upgrade-20261103';
+try{await fs.access(`${root}/android-${observation}.json`);throw Error('Existing observation must be preserved; choose a new run-label')}catch(error){if(error.code!=='ENOENT')throw error}
+await assertNoActiveUpgradeSoak();
+const fixtureAvailability=await assertVerificationFixtureReady();
+const soak=JSON.parse(await fs.readFile(`${root}/soak-integrated/sdk-soak-result.json`)),worker=JSON.parse(await fs.readFile(`${root}/worker-heap-two-hour.json`));
+if(!soak.state.endedAt||soak.state.elapsedMs<7200000||!worker.endedAt||worker.elapsedMs<7200000)throw Error('Both collectors must complete before restarting the owned fixture package');
+const build=cohort==='baseline-fair'?'test-results/phase2-verification-20261102':`${root}/${cohort}`;
+const identity=JSON.parse(await fs.readFile(`${build}/capacitor-build-identity.json`));if(identity.project!=='demo-hdm-perf-verification')throw Error('Not synthetic');
+const adb='D:/HD-DEV/android/sdk/platform-tools/adb.exe',pkg='com.hdmanager.caplab.diag',shell=(...args)=>execFileSync(adb,['-s','emulator-5554',...args],{encoding:'utf8',windowsHide:true,timeout:60000});
+const apk=`${build}/capacitor-project/app/build/outputs/apk/diagnostic/app-diagnostic.apk`,bytes=await fs.readFile(apk);
+const record={at:new Date().toISOString(),cohort,observation,apk,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),sourceIdentity:identity,fixtureAvailability,driverSha256:crypto.createHash('sha256').update(await fs.readFile('scripts/upgrade-android-ab.mjs')).digest('hex'),conditions:'Owned synthetic package only; clean app storage for each cohort, same explicitly recorded fixture and hardware. No profiler or forced GC; metadata/CDP overhead remains.'};
+shell('shell','am','force-stop','com.hdmanager.caplab');shell('install','-r',apk);record.clear=shell('shell','pm','clear',pkg);
+for(const port of[8185,9199,5002,...(identity.featureFlags?.homeReadModelPilot?[5003]:[])])shell('reverse',`tcp:${port}`,`tcp:${port}`);
+record.launch=shell('shell','am','start','-W','-n',pkg+'/com.hdmanager.app.VerificationActivity');
+await fs.writeFile(`${root}/android-${observation}-setup.json`,JSON.stringify(record,null,2));
+const child=spawn(process.execPath,['scripts/upgrade-android-ab.mjs',observation,...process.argv.slice(3).filter(arg=>arg!==labelArg)],{stdio:'inherit',windowsHide:true});
+await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>{process.exitCode=code??1;resolve()})});

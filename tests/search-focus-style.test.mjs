@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-const app = read('src/App.jsx');
+const app = readApplicationSource();
 const foundation = read('src/design-system/foundation.css');
 const components = read('src/design-system/components.jsx');
 const appShell = read('src/layout/AppShell.jsx');

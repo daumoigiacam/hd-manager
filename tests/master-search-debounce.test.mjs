@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import { parse } from '@babel/parser';
 
@@ -116,14 +117,16 @@ test('zero delay stays cancellable and publishes the final input without waiting
   assert.equal(hook.advance(0), 'last');
 });
 
-test('only the three prepared product/dispatch searches opt into leading debounce', () => {
-  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+test('prepared product/dispatch/debt searches have no fixed positive debounce; unrelated consumers retain their policy', () => {
+  const app = readApplicationSource();
   const calls = [...app.matchAll(/useDebouncedValue\(([^\n]+)\)/g)].map(match => match[1]);
-  assert.deepEqual(calls.filter(call => call.includes('leading: true')), [
-    'dispatchCustomerSearchKeyword, 120, { leading: true }',
-    'dispatchProductSearchKeyword, 120, { leading: true }',
-    'productSearch, 160, { leading: true }',
-  ]);
+  assert.deepEqual(calls.filter(call => call.includes('leading: true')), []);
+  assert.ok(calls.every(call=>!/^(dispatchCustomerSearchKeyword|dispatchProductSearchKeyword|productSearch),/.test(call)));
+  assert.match(app,/usePreparedSearch\(requestCustomerOptions,getDispatchCustomerFields,dispatchPickerOpen==='customer'\?dispatchCustomerSearchKeyword:''\)/);
+  assert.match(app,/usePreparedSearch\(dispatchProductPickerOptions,getDispatchProductFields,dispatchPickerOpen==='product'\?dispatchProductSearchKeyword:''\)/);
+  assert.match(app,/usePreparedSearch\(filteredProductCatalog, getProductSearchFields, productSearch/);
+  assert.match(app,/const debtSearchQuery = searchKeyword;/);
+  assert.match(app,/usePreparedSearch\(debtBaseCustomers,getCustomerSearchFields,debtSearchQuery/);
+  assert.ok(calls.every(call=>!/^searchKeyword,/.test(call)));
   assert.ok(calls.includes('customerSearch, 160'));
-  assert.ok(calls.includes('searchKeyword, 160'));
 });

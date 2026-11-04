@@ -1,4 +1,6 @@
 import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
+import {createProjectionCache} from './cooperativeProjection.js';
+const immutableSalesCache=createProjectionCache({maxScopes:2});
 
 const toNumber = (value, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -543,6 +545,7 @@ export const buildPricingEngineSnapshot = ({
   pricingRules = [],
   pricingScenarios = [],
   date = new Date(),
+  reuseImmutableSales = false,
 } = {}) => {
   const rules = normalizeRules(pricingRules?.[0] || {});
   const inputRows = buildInputMetrics({ pricingInputs, warehouseImports, today: date });
@@ -566,7 +569,15 @@ export const buildPricingEngineSnapshot = ({
   const pricingCostPerKg = latestInputCost.global?.costPerKg || costPerKg;
   const pricingCostPerUnit = latestInputCost.global?.costPerUnit || costPerUnit;
   const inventoryRows = buildInventoryRows({ inputRows, warehouseDispatches, warehouseStockCounts });
-  const salesRows = buildSalesMetrics({ orders, products, today: date });
+  let salesRows;
+  if(reuseImmutableSales){
+    const entry=immutableSalesCache([orders,products],JSON.stringify([currentCompany?.id||'',dateKey(date)]));
+    if(!entry.complete){entry.value=buildSalesMetrics({orders,products,today:date});entry.complete=true}
+    // Only private derived primitive metrics are cached. Public callers own
+    // their arrays/rows; sorting or editing a returned snapshot cannot poison
+    // another calculation. Mutable-source callers keep the uncached default.
+    salesRows=entry.value.map(row=>({...row}));
+  }else salesRows=buildSalesMetrics({orders,products,today:date});
   const thisMonth = monthKey(date);
   const monthlyRevenue = salesRows.reduce((sum, item) => sum + item.monthRevenue, 0);
   const monthlyProfit = monthlyRevenue - totalCost;

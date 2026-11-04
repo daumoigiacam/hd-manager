@@ -1,6 +1,21 @@
 export default [
   {
-    files: ['src/features/business-report/*.{jsx,js}', 'src/features/customers/DebtBalanceShareButton.jsx', 'src/hooks/CompletedProjectionGate.jsx', 'src/features/pricing/PricingSectionShell.jsx'],
+    files: ['src/features/legacy/*.jsx', 'src/layout/PreloadedWorkspace.jsx'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
+    rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
+    files: ['src/utils/supplierEntryIndex.js', 'src/utils/preloadableModule.js', 'scripts/extract-legacy-view.mjs', 'src/services/initialReadAdmission.js', 'tests/core-initial-read-admission.test.mjs', 'tests/core-read-worker-baseline-retention.test.mjs', 'scripts/measure-android-search-input.mjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    rules: { 'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }], 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
+    files: ['scripts/helpers/application-source.cjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs' },
+    rules: { 'no-unused-vars': 'error', 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
+  },
+  {
+    files: ['src/features/business-report/*.{jsx,js}', 'src/features/products/SearchableProductPicker.jsx', 'src/features/customers/DebtBalanceShareButton.jsx', 'src/hooks/CompletedProjectionGate.jsx', 'src/features/pricing/PricingSectionShell.jsx', 'src/layout/ReadWorkerActivityNotice.jsx', 'src/features/employees/PersonalHomeProjectionGate.jsx','src/layout/RetainedReadOnlyHome.jsx'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
   },
@@ -15,14 +30,24 @@ export default [
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }
   },
   {
-    files: ['src/services/firestoreRestPagination.js', 'src/services/recordCalculationCache.js', 'src/services/collationCompareCache.js',
+    files: ['src/data/*.js', 'src/layout/moduleNavigation.js', 'src/layout/useModuleScrollReset.js',
+      'tests/instant-data-engine.test.mjs', 'tests/instant-firestore-transport.test.mjs',
+      'tests/instant-realtime.test.mjs', 'tests/instant-react.test.mjs',
+      'tests/module-navigation.test.mjs', 'tests/module-scroll-reset.test.mjs',
+      'scripts/audit-full-system.mjs', 'scripts/audit-approved-runtime-roles.mjs', 'scripts/run-system-data-lab.mjs',
+      'scripts/report-system-transformation.mjs', 'scripts/verify-android-candidate-identity.mjs',
+      'scripts/measure-android-candidate.mjs', 'scripts/measure-remembered-session-startup.mjs',
+      'src/services/firestoreRestPagination.js', 'src/services/recordCalculationCache.js', 'src/services/collationCompareCache.js',
       'src/services/cooperativeTaskQueue.js', 'src/services/backupReadScheduler.js', 'src/services/searchEngine.js',
       'src/mocks/preview-store-serializer.js', 'src/mocks/firebase-firestore.js', 'src/mocks/preview-journal.js',
       'src/hooks/usePreparedSearch.js', 'src/hooks/useCooperativeProjection.js', 'src/services/cooperativeProjection.js',
-      'src/services/groupedRowPage.js', 'src/utils/firstRecordLookup.js', 'src/utils/customerLedgerIndex.js',
+      'src/services/groupedRowPage.js', 'src/utils/firstRecordLookup.js', 'src/utils/scopedRecordIdentity.js', 'src/utils/customerLedgerIndex.js',
       'src/services/realtimeSnapshotItems.js', 'src/utils/incrementalProductStock.js',
       'src/services/firestoreReadWorker*.js', 'src/services/firestoreWorkerValues.js', 'src/services/firestoreNativeWireValues.js',
-      'src/services/readWorker*.js', 'src/services/workerAuthSession.js',
+      'src/services/readWorker*.js', 'src/services/workerAuthSession.js', 'src/services/personalHome*.js', 'src/services/acceptanceRememberedSession.js', 'scripts/helpers/employee-home-domain-extraction.mjs',
+      'src/utils/dashboardPrivacyScope.js', 'src/utils/warehouseGroupOptions.js',
+      'src/services/backgroundJsonParser.js', 'src/services/jsonParseWorker.js', 'src/services/startupSubscriptionPlan.js',
+      'scripts/audit-android-webview.mjs', 'scripts/capture-android-native-health.mjs',
       'src/utils/collectionIdentity.js', 'src/utils/cooperativeCollectionIdentity.js', 'src/services/renderOptimization.js',
       'scripts/master-production-release-smoke.mjs', 'scripts/compare-master-performance.mjs',
       'scripts/master-emulator-session-regression.mjs', 'scripts/master-session-regression.mjs',
@@ -141,7 +166,7 @@ export default [
     }
   },
   {
-    files: ['functions/index.js', 'functions/payrollAutoLock.js', 'tests/payroll*.test.cjs'],
+    files: ['functions/index.js', 'functions/payrollAutoLock.js', 'functions/employeeHome*.{js,cjs}', 'tests/payroll*.test.cjs'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'commonjs',

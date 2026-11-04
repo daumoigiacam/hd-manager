@@ -105,8 +105,10 @@ const appRuntime = (() => {
         assignments.set(target, textOf(node.right));
       }
     }
-    if (node.type === 'CallExpression' && node.callee?.name === 'useEffect') {
-      effects.push({ callback: textOf(node.arguments[0]), dependencies: node.arguments[1] ? textOf(node.arguments[1]) : 'undefined' });
+    if (node.type === 'CallExpression' && ['useEffect', 'useModuleNavigationEffect'].includes(node.callee?.name)) {
+      const routeEffect = node.callee.name === 'useModuleNavigationEffect';
+      const offset = routeEffect ? 1 : 0;
+      effects.push({ routeEffect, callback: textOf(node.arguments[offset]), dependencies: node.arguments[offset + 1] ? textOf(node.arguments[offset + 1]) : 'undefined' });
     }
     for (const [key, value] of Object.entries(node)) {
       if (['loc', 'start', 'end', 'extra', 'comments'].includes(key)) continue;
@@ -130,8 +132,14 @@ const appRuntime = (() => {
       assert.ok(assignments.has(name), `App assignment ${name}`);
       return evaluate(assignments.get(name), bindings);
     },
-    effect: (anchor, bindings) => evaluate(selectEffect(anchor).callback, bindings)(),
-    dependencies: (anchor, bindings) => evaluate(selectEffect(anchor).dependencies, bindings),
+    effect: (anchor, bindings) => evaluate(selectEffect(anchor).callback, bindings)(bindings.moduleNavigation?.getSnapshot()),
+    dependencies: (anchor, bindings) => {
+      const effect = selectEffect(anchor);
+      const dependencies = evaluate(effect.dependencies, bindings);
+      // The production hook subscribes to route transitions independently of
+      // React data renders; model that trigger alongside captured data values.
+      return effect.routeEffect ? [...dependencies, bindings.moduleNavigation.getSnapshot()] : dependencies;
+    },
     forceRefresh: (bindings) => {
       assert.ok(refreshCollectionExpression, 'App forceRefreshCollectionRef implementation');
       return evaluate(refreshCollectionExpression, bindings);
@@ -193,6 +201,10 @@ function appHarness({ idle = false } = {}) {
       return queue;
     },
     firebaseUser: { uid: 'user-a' }, myCompanyId: 'tenant-a', activeTab: 'orders', isCoreDataLoaded: true,
+    homeReadinessCollections: ['customers', 'orders', 'payments'],
+    appCurrentEmployee: { id: 'employee-a' }, currentUser: { companyId: 'tenant-a' },
+    usesCompanyHomeDashboard: () => true,
+    startupUiAdmissionRef: { current: { personalReady: false } },
     canAutomaticallyBackUpCompany: true,
     activeTenantScopeRef: { current: 'tenant-a' }, currentCompany: { enabled: true, name: 'Company A' },
     getCustomerLoyaltySettings: company => ({ enabled: company.enabled, earnAmountPerPoint: company.earnAmountPerPoint || 2000 }),
@@ -202,6 +214,7 @@ function appHarness({ idle = false } = {}) {
     loyaltyMaintenanceRef: { current: null }, loyaltySyncCallbackRef: { current: null },
     loyaltyFingerprintCallbackRef: { current: null }, loyaltyActivityRef: { current: { lastInputAt: 0 } },
     loyaltyEligibilitySyncFingerprintRef: { current: new Map() }, loyaltyEligibilitySyncPrimedRef: { current: false },
+    loyaltyFingerprintSourcesRef: { current: null },
     autoBackupInFlightRef: { current: new Set() }, autoBackupCallbackRef: { current: null },
     customers: [{ id: 'c1' }, { id: 'c2' }],
     orders: [{ id: 'o1', customerId: 'c1', finalTotal: 10 }, { id: 'o2', customerId: 'c2', finalTotal: 20 }],
@@ -215,6 +228,7 @@ function appHarness({ idle = false } = {}) {
     setAutoBackupStateForCompany: (company, date, state) => states.set(`${company}:${date}`, state),
     getFriendlyFirebaseErrorMessage: error => error.message,
   };
+  bindings.moduleNavigation = { getSnapshot: () => bindings.activeTab };
   for (const name of [
     'isNativeAppShellRuntime', 'getIdleScheduler', 'cancelIdleScheduler', 'scheduleMaintenanceWork',
     'cancelMaintenanceWork', 'AUTO_BACKUP_DELAY_MS', 'LOYALTY_ELIGIBILITY_SCAN_KEY', 'LOYALTY_MAINTENANCE_COLLECTION_NAMES',
@@ -224,7 +238,7 @@ function appHarness({ idle = false } = {}) {
     bindings.loyaltyMissingCollectionNames = appRuntime.declaration('loyaltyMissingCollectionNames', bindings);
     bindings.loyaltyMissingCollectionKey = appRuntime.declaration('loyaltyMissingCollectionKey', bindings);
     bindings.loyaltyMaintenanceDataReady = appRuntime.declaration('loyaltyMaintenanceDataReady', bindings);
-    for (const property of ['tab', 'ready', 'enabled', 'coreReady', 'missingCollections']) {
+    for (const property of ['tab', 'ready', 'enabled', 'coreReady', 'missingCollections', 'homeReady', 'personalHome']) {
       bindings.loyaltyActivityRef.current[property] = appRuntime.assignment(`loyaltyActivityRef.current.${property}`, bindings);
     }
     bindings.loyaltySyncCallbackRef.current = appRuntime.assignment('loyaltySyncCallbackRef.current', bindings);
@@ -766,6 +780,25 @@ test('App point-result callback changes do not schedule another full-history fin
   }
 });
 
+test('unchanged route changes do not rescan loyalty histories; actual source/policy changes and deferred work still run',()=>{
+  const h=appHarness();let reads=0;
+  const order=Object.freeze({get id(){reads++;return'o1'},customerId:'c1',finalTotal:10});
+  const orders=Object.freeze([order]);h.render({orders});const cleanup=h.startLoyalty();
+  const scan=()=>h.bindings.loyaltyFingerprintCallbackRef.current();
+  scan();const initial=reads;assert.ok(initial>0);const fingerprints=new Map(h.bindings.loyaltyEligibilitySyncFingerprintRef.current);
+  h.render({activeTab:'customers'});scan();h.render({activeTab:'finance'});scan();
+  assert.equal(reads,initial,'unchanged immutable histories must not be traversed on navigation');
+  assert.deepEqual(h.bindings.loyaltyEligibilitySyncFingerprintRef.current,fingerprints);
+  h.render({orders:Object.freeze([...orders])});scan();assert.ok(reads>initial,'replacement source must be rechecked');
+  let before=reads;h.render({currentCompany:{enabled:true,earnAmountPerPoint:2500}});scan();assert.ok(reads>before,'policy changes invalidate the scan');
+  before=reads;h.render({activeTab:'warehouse_dispatch',orders:Object.freeze([...orders])});scan();assert.equal(reads,before);
+  h.render({activeTab:'orders'});scan();assert.ok(reads>before,'leaving paused warehouse must process new data');
+  before=reads;h.bindings.serverConfirmedCollectionState.collections.customer_points=false;h.render({orders:Object.freeze([...orders])});scan();assert.equal(reads,before);
+  h.bindings.serverConfirmedCollectionState.collections.customer_points=true;h.render();scan();assert.ok(reads>before,'unconfirmed data must not be cached as already scanned');
+  before=reads;h.render({currentCompany:{enabled:false}});scan();h.render({currentCompany:{enabled:true,earnAmountPerPoint:2500}});scan();assert.ok(reads>before);
+  cleanup();const restart=h.startLoyalty();before=reads;scan();assert.ok(reads>before,'new maintenance lifetime must prime its own work');restart();
+});
+
 test('App readiness, warehouse entry, editable focus and recent input defer rather than discard loyalty work', async () => {
   const h = appHarness();
   h.bindings.serverConfirmedCollectionState.collections.customer_points = false;
@@ -1132,6 +1165,38 @@ test('App defers missing-history scans until identity core is ready, then retain
   sources.dispose();
 });
 
+test('App keeps loyalty history reads behind initial Home confirmation without dropping pending work',async()=>{
+  const h=appHarness();missingSources(h,['orderRequests','customer_points']);h.render({activeTab:'home'});
+  h.bindings.loyaltyActivityRef.current.homeReady=false;
+  const reads=[];h.bindings.forceRefreshCollectionRef.current=async name=>{reads.push(name)};
+  const cleanup=h.startSources();await h.timers.advance(10000);
+  assert.deepEqual(reads,[],'background histories cannot compete with initial Home sources');
+  assert.equal(h.queues[0].size,2,'deferred work remains queued rather than marked ready');
+  h.bindings.loyaltyActivityRef.current.homeReady=true;await h.timers.advance(3400);
+  assert.deepEqual(reads,['orderRequests','customer_points']);assert.equal(h.bindings.loyaltyActivityRef.current.ready,false);
+  cleanup();
+});
+
+test('personal Home defers loyalty reads and writes until both sources and its real projection are ready', async () => {
+  const h=appHarness();
+  missingSources(h,['orderRequests','customer_points']);
+  h.render({activeTab:'home',usesCompanyHomeDashboard:()=>false});
+  const reads=[];
+  h.bindings.forceRefreshCollectionRef.current=async name=>reads.push(name);
+  const sources=mountSourceEffect(h),cleanup=h.startLoyalty();h.enqueueFingerprint();
+  await h.timers.advance(10000);
+  assert.deepEqual(reads,[]);assert.deepEqual(h.calls,[]);
+  h.bindings.startupUiAdmissionRef.current.personalReady=true;
+  await h.timers.advance(3400);
+  assert.deepEqual(reads,['orderRequests','customer_points']);
+  assert.deepEqual(h.calls,[],'projection completion cannot fabricate missing server confirmations');
+  missingSources(h,[]);sources.update();
+  await h.timers.advance(10000);
+  assert.deepEqual(h.calls,[['loyalty','c1','eligibility_policy_sync'],['loyalty','c2','eligibility_policy_sync']]);
+  sources.dispose();cleanup();
+  assert.equal(h.timers.pending.size,0);
+});
+
 test('App forceRefresh acknowledgements are not server confirmation and preserve server-only read options', async () => {
   const h = appHarness();
   missingSources(h, ['customer_points']);
@@ -1139,7 +1204,7 @@ test('App forceRefresh acknowledgements are not server confirmation and preserve
   const setter = () => {};
   const parser = value => value;
   const bindings = {
-    cancelled: false,
+    cancelled:false,isReadAccessCurrent:()=>true,
     activeRealtimeCollectionsRef: { current: new Set() },
     hasActiveRealtimeListener: (names, name) => names.has(name),
     collectionBindingMap: new Map([['customer_points', ['customer_points', setter, false, parser]]]),
@@ -1152,7 +1217,7 @@ test('App forceRefresh acknowledgements are not server confirmation and preserve
   assert.equal(await refresh('customer_points', { serverOnly: true }), true);
   assert.equal(reads.length, 1, 'active listener acknowledgement does not invoke another read');
   assert.equal(await refresh('missing-binding', { serverOnly: true }), false);
-  assert.equal(await appRuntime.forceRefresh({ ...bindings, cancelled: true })('customer_points'), false);
+  assert.equal(await appRuntime.forceRefresh({ ...bindings, cancelled: true, isReadAccessCurrent:()=>false })('customer_points'), false);
   assert.equal(h.bindings.loyaltyActivityRef.current.ready, false);
   h.bindings.forceRefreshCollectionRef.current = refresh;
   const cleanup = h.startSources();
@@ -1331,6 +1396,27 @@ test('App source tenant cleanup drops queued old reads and suppresses retry afte
   assert.equal(h.timers.pending.size, 0);
   assert.equal(h.browser.listeners.size, 0);
   assert.equal(h.document.listeners.size, 0);
+});
+
+test('primary Home does not hydrate unopened loyalty history; an opened operational route can still maintain loyalty', async () => {
+  const h = appHarness();
+  missingSources(h, ['orderRequests', 'warehouseDispatches', 'customer_points']);
+  h.render({ activeTab: 'home' });
+  h.bindings.loyaltyActivityRef.current.homePriority = true;
+  assert.equal(h.startSources(), undefined);
+  await h.timers.advance(10000);
+  assert.equal(h.queues.length, 0);
+  const reads = [];
+  h.bindings.forceRefreshCollectionRef.current = async name => {
+    reads.push(name);
+    h.bindings.serverConfirmedCollectionState.collections[name] = true;
+    missingSources(h, ['orderRequests', 'warehouseDispatches', 'customer_points'].filter(value => !reads.includes(value)));
+  };
+  h.render({ activeTab: 'orders' });
+  const cleanup = h.startSources();
+  await h.timers.advance(1700 * 6);
+  assert.deepEqual(reads, ['orderRequests', 'warehouseDispatches', 'customer_points']);
+  cleanup();
 });
 
 test('App source gate changes dispose pending/retry work and re-enablement loads retained missing sources', async () => {

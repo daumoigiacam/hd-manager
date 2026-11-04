@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   getRelatedShareCollectionItems,
   upsertOrderIntoShareCollection
@@ -49,7 +49,7 @@ assert.equal(
   'An already canonical collection should retain its reference for fingerprint caching.'
 );
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 assert.match(
   appSource,
   /prepareOrderShareNativeFile\(orderForShare, blob, reason\)/,

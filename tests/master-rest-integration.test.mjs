@@ -6,6 +6,11 @@ import test from 'node:test';
 import { parseExpression } from '@babel/parser';
 import { appObject } from './helpers/app-source-function.mjs';
 import { collectTenantRestQuery } from '../src/services/firestoreRestPagination.js';
+import { createRequestAdmission } from '../src/data/requestAdmission.js';
+import { createReadOwnerAccess } from '../src/services/readOwnerAccess.js';
+import { CUSTOMER_FINANCIAL_SOURCES } from '../src/services/customerFinancialReadiness.js';
+import {createCollectionCommitWitness} from '../src/services/collectionCommitWitness.js';
+import {parseFirebaseResponseJsonInBackground} from '../src/services/backgroundJsonParser.js';
 import { createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline } from '../src/services/realtimeSnapshotItems.js';
 import { canUseFirestoreReadWorker } from '../src/services/readWorkerPolicy.js';
 import { hasActiveRealtimeListener } from '../src/services/firestoreResilience.js';
@@ -26,10 +31,10 @@ const expression = name => {
 };
 const scopeStart = source.indexOf('const collectionReadRevisions =');
 assert.ok(scopeStart >= 0, 'Missing collection read revision scope');
-const cleanupStart = /return \(\) => \{\s*cancelled = true;/.exec(source.slice(scopeStart));
+const cleanupStart = appObject('stopReadSources');
 assert.ok(cleanupStart, 'Missing tenant cleanup');
-const cleanupOffset = scopeStart + cleanupStart.index + 'return '.length;
-const cleanupEnd = source.indexOf('  }, [', cleanupOffset);
+const cleanupOffset = cleanupStart.start;
+const cleanupEnd = cleanupStart.end;
 assert.ok(cleanupEnd > cleanupOffset, 'Missing tenant effect dependency boundary');
 const cleanup = source.slice(cleanupOffset, cleanupEnd).trim().replace(/;$/, '');
 assert.equal(parseExpression(cleanup).type, 'ArrowFunctionExpression');
@@ -48,7 +53,7 @@ const deferred = () => {
 };
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300, status,
-  json: async () => body, text: async () => 'fixture transport error',
+  json: async () => body, text: async () => status>=200&&status<300?JSON.stringify(body):'fixture transport error',
 });
 const fixture = (size, companyId = 'company-a', collectionName = 'orders') => Array.from({ length: size }, (_, index) => ({
   name: `${parent}/${collectionName}/doc-${String(index).padStart(4, '0')}`,
@@ -136,20 +141,29 @@ function createClock() {
   };
 }
 
-function createHarness({ companyId = 'company-a', customer = false, role = 'sales', preview = false,
-  fetchPage = () => response([{ readTime }]), sdkRead, tokenRead, stable = [], onSubscribeThrowAt = Infinity, worker = null } = {}) {
+function createHarness({ companyId = 'company-a', customer = false, role = 'sales', preview = false, native = false,
+  fetchPage = () => response([{ readTime }]), sdkRead, tokenRead, stable = [], onSubscribeThrowAt = Infinity, onSubscribe=noop, worker = null,deferPublication=false,nativeConcurrency=1 } = {}) {
   const clock = createClock();
   const calls = [];
   const tokens = [];
   const sdkCalls = [];
   const scans = [];
-  const events = { publications: [], confirmed: [], loaded: [], statuses: [], stable: [], errors: [] };
+  const events = { publications: [], confirmed: [], pending: [], loaded: [], statuses: [], stable: [], errors: [] };
+  events.schedulerClosures=0;
+  const committed={},pendingCommits=[];
+  const publicationWitness=createCollectionCommitWitness({getCommittedStates:()=>committed,onCommitted:name=>events.confirmed.push(name),
+    schedule:clock.setTimeout,cancel:clock.clearTimeout});
   const active = new Set();
   const serverAt = new Map();
   const snapshotAt = new Map();
   const subscriptions = [];
   const bindings = {
-    readWorker:worker,readWorkerControllerRef:ref(worker),canUseFirestoreReadWorker,
+    createReadOwnerAccess,retryCustomerBootstrapRef:ref(null),customerBootstrapCommitRef:ref(null),
+    CUSTOMER_FINANCIAL_SOURCES,
+    startupUiAdmission:{close:noop},startupUiAdmissionRef:ref(null),
+    createProjectionScheduler:()=>({yieldTask:()=>new Promise(resolve=>clock.setTimeout(resolve,0)),close:()=>events.schedulerClosures++}),
+    createRequestAdmission,NATIVE_REST_READ_CONCURRENCY:nativeConcurrency,activeTenantScopeRef:ref(companyId),
+    readWorker:worker,readWorkerControllerRef:ref(worker),canUseFirestoreReadWorker,parseFirebaseResponseJsonInBackground,isNativeRuntime:()=>native,
     appId, tenantCompanyId: companyId, sessionCustomerId: customer ? 'customer-a' : '',
     customerSession: customer, currentUser: { id: 'employee-a', employeeId: 'employee-a', role },
     db: {}, activeFirebaseConfig: { projectId }, isVpsMode: false, isPreviewDataMode: preview,
@@ -161,6 +175,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     collection: (_, ...path) => ({ kind: 'collection', path }),
     doc: (_, ...path) => ({ kind: 'doc', path }),
     firebaseQuery: (target, ...constraints) => ({ kind: 'query', target, constraints }),
+    firebaseQueryEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
     firebaseWhere: (field, op, value) => ({ kind: 'where', field, op, value }),
     firebaseOrderBy: (field, direction) => ({ kind: 'orderBy', field, direction }),
     firebaseLimit: count => ({ kind: 'limit', count }),
@@ -188,6 +203,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline, hasActiveRealtimeListener, isServerSnapshotFresh,
     CORE_DATA_COLLECTION_NAMES: ['companies', 'employees'],
     onSnapshot: (target, options, next, error) => {
+      onSubscribe();
       if (subscriptions.length === onSubscribeThrowAt) throw new Error('fixture subscribe failed');
       const sub = { target, options, next, error, stopped: false };subscriptions.push(sub);
       return () => { sub.stopped = true; };
@@ -199,10 +215,14 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     lastRealtimeSnapshotAtRef: ref(snapshotAt),
     recentLocalWritesRef: ref(new Map()), recentLocalDeletesRef: ref(new Map()),
     markCollectionLoaded: name => events.loaded.push(name),
+    markCollectionServerPending: name => events.pending.push(name),
     markCollectionServerConfirmed: name => events.confirmed.push(name),
+    publicationWitness,collectionCommitWitnessRef:ref(publicationWitness),
     applyCollectionItems: (name, setter, items, isObject, parser, options) => {
       events.publications.push({ name, items, isObject, parser, options });
       setter(items);
+      const commit=()=>{committed[name]=items;publicationWitness.expectCommit(name,options?.serverCommitVersion,items);publicationWitness.confirmCommitted(committed)};
+      if(deferPublication)pendingCommits.push(commit);else commit();
     },
     updateRealtimeStatusLightly: status => events.statuses.push(status),
     setRealtimeStatus: status => events.statuses.push(status),
@@ -219,34 +239,53 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     activateForegroundRealtimeRef: ref(noop),
     pendingLoadedCollectionMarks: new Set(), pendingServerConfirmedCollectionMarks: new Set(),
     unsubscribeCollectionListeners: [], realtimeUnsubscribersRef: ref([]),
-    foregroundReadOnlyTimers: new Map(), foregroundReadOnlyCollectionNames: new Set(),
+    foregroundReadOnlyTimers: new Map(), foregroundReadOnlyControllers: new Map(), foregroundReadOnlyCollectionNames: new Set(),
+    baselineCollectionNames: new Set(), foregroundRealtimeCollectionNames: new Set(),
     realtimeListenerStartTimersRef: ref([]), refreshCollectionsInFlightRef: ref(false),
     forceRefreshCollectionRef: ref(noop), collectionRefreshTimersRef: ref(new Map()),
   };
   const declarations = [
-    'customerOwnedCollections', 'customerInboxCollectionNames', 'collectionReadRevisions', 'collectionReadControllers',
+    'customerOwnedCollections', 'customerInboxCollectionNames', 'collectionReadRevisions', 'collectionReadControllers', 'restReadAdmission',
     'fromFirestoreRestValue', 'fromFirestoreRestFields', 'buildFirestoreRestDocumentUrl',
     'normalizeFirestoreSnapshotData', 'getTenantCollectionSources', 'getSnapshotItems',
     'readTenantCollectionViaRest', 'hasCollectionValue', 'isRecoverableCollectionReadError', 'withTimeout', 'readCollection',
   ].map(name => `const ${name} = ${expression(name)};`).join('\n');
   const runtime = new Function(...Object.keys(bindings), `"use strict";
     let cancelled = ${expression('cancelled')};
+    const readOwnerKey='fixture-session',readOwnerRef={current:'fixture-session'};
+    const getErrorText=${expression('getErrorText')};
+    const isFirebasePermissionError=${expression('isFirebasePermissionError')};
+    const readAccess=createReadOwnerAccess({ownerKey:readOwnerKey,
+      isOwnerCurrent:()=>readOwnerRef.current===readOwnerKey,isPermissionError:isFirebasePermissionError});
+    const isReadAccessCurrent=${expression('isReadAccessCurrent')};
+    const failReadAccess=${expression('failReadAccess')};
+    const startupNotificationBarrier = null;
     let loadedCollectionMarkTimer = null;
     let serverConfirmedCollectionMarkTimer = null;
     let refreshTimer = null;
+    let publicationScheduler;
+    const yieldPublicationWork = ${expression('yieldPublicationWork')};
     let foregroundCollectionRecency = [];
     ${declarations}
     const activeRealtimeCollectionListeners = new Map();
     const stopCollectionListener = ${expression('stopCollectionListener')};
     const startCollectionListener = ${expression('startCollectionListener')};
+    const cancelForegroundReadOnlyCollection = ${expression('cancelForegroundReadOnlyCollection')};
+    const scheduleForegroundReadOnlyCollection = ${expression('scheduleForegroundReadOnlyCollection')};
+    const stopReadSources = ${cleanup};
+    const removeDenialCleanup=readAccess.onDenied(stopReadSources);
     return {
       readTenantCollectionViaRest, readCollection, getTenantCollectionSources,
+      scheduleOverflow: scheduleForegroundReadOnlyCollection, cancelOverflow: cancelForegroundReadOnlyCollection,
       startListener: startCollectionListener, stopListener: stopCollectionListener,
       revisions: collectionReadRevisions, controllers: collectionReadControllers,
-      dispose: ${cleanup},
+      readAdmission: restReadAdmission,
+      dispose(){removeDenialCleanup();stopReadSources();},
       listener(colName, sourceCount = 1) {
         const collectionRefs = Array.from({ length: sourceCount }, () => ({}));
+        const workerEligible = Boolean(readWorker && canUseFirestoreReadWorker(colName, sourceCount, customerSession));
         const sourceItemsByIndex = new Map();
+        const committedSourceItemsByIndex = new Map();
         const serverConfirmedSourceIndexes = new Set();
         const snapshotItemCollectors = ${expression('snapshotItemCollectors')};
         const setterCalls = [];
@@ -254,6 +293,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
         const isObject = false;
         const parser = null;
         let hasAppliedDataSnapshot = false;
+        let hasServerPublication = false;
         let listenerActive = true;
         const applySnapshot = ${expression('applySnapshot')};
         const listener = (snapshot, sourceIndex = 0) => applySnapshot(snapshot, sourceIndex);
@@ -264,8 +304,18 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
       },
     };
   `)(...Object.values(bindings));
-  return { ...runtime, calls, tokens, sdkCalls, scans, events, clock, active, serverAt, snapshotAt, subscriptions };
+  return { ...runtime, calls, tokens, sdkCalls, scans, events, clock, active, serverAt, snapshotAt, subscriptions,
+    commitPublications:()=>pendingCommits.splice(0).forEach(commit=>commit()) };
 }
+
+test('actual REST and main-SDK listener paths confirm data only after their publication commits',async()=>{
+ const h=createHarness({deferPublication:true,fetchPage:()=>response(fixture(2).map(document=>({document,readTime})))});
+ const values=[];await h.readCollection('orders',value=>values.push(value));
+ assert.equal(values.length,1);assert.deepEqual(h.events.confirmed,[],'received/queued REST rows are not a React commit');
+ h.commitPublications();assert.deepEqual(h.events.confirmed,['orders']);
+ const listener=h.listener('payments');await listener(snapshot(expected(fixture(1))));
+ assert.deepEqual(h.events.confirmed,['orders']);h.commitPublications();assert.deepEqual(h.events.confirmed,['orders','payments']);h.dispose();
+});
 
 test('actual business listener yields to input before publication and invalidates disposed work', async () => {
   const h=createHarness(),items=expected(fixture(400));
@@ -283,6 +333,66 @@ test('actual business listener yields to input before publication and invalidate
   assert.equal(setterCalls.length,1);assert.equal(h.subscriptions[0].stopped,true);
   h.subscriptions[0].next(incrementalSnapshot(fresh).snapshot);await h.clock.advance(0);
   assert.equal(setterCalls.length,1);
+});
+
+test('tenant cleanup releases the lazily created publication task scheduler',async()=>{
+ const h=createHarness(),items=expected(fixture(80));
+ h.startListener(['orders',()=>{},false,null]);h.subscriptions[0].next(incrementalSnapshot(items).snapshot);
+ await h.clock.advance(0);assert.equal(h.events.publications.length,1);assert.equal(h.events.schedulerClosures,0);
+ h.dispose();assert.equal(h.events.schedulerClosures,1);
+});
+
+test('new SDK subscription is pending before physical subscribe, dedupes reopen calls, and cannot confirm cached/pending-write rows',async()=>{
+ let physical=0;
+ const h=createHarness({deferPublication:true,onSubscribe:()=>{physical++;assert.ok(h.events.pending.includes('orders'));}});
+ const values=[],binding=['orders',items=>values.push(items),false,null];
+ h.startListener(binding);const count=h.events.pending.length;h.startListener(binding);
+ assert.equal(physical,1);assert.equal(h.events.pending.length,count,'existing listeners do not begin a new freshness generation');
+ const items=expected(fixture(1));
+ h.subscriptions[0].next(incrementalSnapshot(items,[],{fromCache:true}).snapshot);await h.clock.advance(0);
+ assert.deepEqual(h.events.confirmed,[]);assert.equal(values.length,0);
+ h.subscriptions[0].next(incrementalSnapshot(items,[],{hasPendingWrites:true}).snapshot);await h.clock.advance(0);
+ assert.equal(values.length,1);h.commitPublications();assert.deepEqual(h.events.confirmed,[]);
+ h.subscriptions[0].next(incrementalSnapshot(items).snapshot);await h.clock.advance(0);
+ assert.deepEqual(h.events.confirmed,[],'server receipt is not a committed publication');
+ h.commitPublications();assert.deepEqual(h.events.confirmed,['orders'],'unchanged server ACK must replace the unset start witness');
+ h.dispose();
+});
+
+test('REST start marks pending before token/fetch and retires the previous uncommitted witness',async()=>{
+ const gate=deferred();let attempt=0;
+ const h=createHarness({deferPublication:true,fetchPage:()=>{
+  assert.ok(h.events.pending.includes('orders'));return ++attempt===1?response(fixture(1).map(document=>({document,readTime}))):gate.promise;
+ }});
+ await h.readCollection('orders',noop,false,null,{force:true});assert.deepEqual(h.events.confirmed,[]);
+ const next=h.readCollection('orders',noop,false,null,{force:true});await waitUntil(()=>h.calls.length===2);
+ h.commitPublications();assert.deepEqual(h.events.confirmed,[],'the earlier generation cannot confirm after the replacement physical read starts');
+ gate.resolve(response(fixture(1).map(document=>({document,readTime}))));await next;
+ assert.deepEqual(h.events.confirmed,[]);h.commitPublications();assert.deepEqual(h.events.confirmed,['orders']);h.dispose();
+});
+
+test('live customer financial updates become pending without reopening and only a committed server ACK restores confirmation',async()=>{
+ const h=createHarness({customer:true,deferPublication:true});h.startListener(['orders',noop,false,null]);
+ const first=expected(fixture(1));h.subscriptions[0].next(incrementalSnapshot(first).snapshot);await h.clock.advance(0);h.commitPublications();
+ assert.deepEqual(h.events.confirmed,['orders']);const pendingCount=h.events.pending.length;
+ const next=first.map(item=>({...item,data:{...item.data,amount:999}}));
+ h.subscriptions[0].next(incrementalSnapshot(next,[['modified',next[0].id,0,0]],{hasPendingWrites:true}).snapshot);await h.clock.advance(0);
+ assert.equal(h.events.pending.length,pendingCount+1,'an existing customer listener must invalidate financial readiness before changed rows publish');
+ h.commitPublications();assert.deepEqual(h.events.confirmed,['orders'],'pending writes are never a fresh financial baseline');
+ h.subscriptions[0].next(incrementalSnapshot(next).snapshot);await h.clock.advance(0);
+ assert.deepEqual(h.events.confirmed,['orders']);h.commitPublications();assert.deepEqual(h.events.confirmed,['orders','orders']);h.dispose();
+});
+
+test('customer offline cache receipt invalidates freshness without replacing rows and needs a new committed server witness',async()=>{
+ const h=createHarness({customer:true,deferPublication:true});h.startListener(['orders',noop,false,null]);
+ const first=expected(fixture(1));h.subscriptions[0].next(incrementalSnapshot(first).snapshot);await h.clock.advance(0);h.commitPublications();
+ assert.deepEqual(h.events.confirmed,['orders']);const pendingCount=h.events.pending.length;
+ const cached=first.map(item=>({...item,data:{...item.data,amount:999}}));
+ h.subscriptions[0].next(incrementalSnapshot(cached,[],{fromCache:true}).snapshot);await h.clock.advance(0);
+ assert.equal(h.events.pending.length,pendingCount+1);assert.equal(h.events.publications.length,1,'offline cache rows never replace the last complete ledger inputs');
+ h.commitPublications();assert.deepEqual(h.events.confirmed,['orders']);
+ h.subscriptions[0].next(incrementalSnapshot(first).snapshot);await h.clock.advance(0);
+ assert.deepEqual(h.events.confirmed,['orders']);h.commitPublications();assert.deepEqual(h.events.confirmed,['orders','orders']);h.dispose();
 });
 
 test('actual App worker branch preserves confirmed snapshot publication, cancellation and original listener fallback',async()=>{
@@ -329,6 +439,48 @@ function assertReadCleanup(h) {
   }
 }
 
+for(const [native,nativeConcurrency] of [[true,1],[true,2],[false,1]])test(`actual App REST pages share bounded admission and still return complete exact histories (native=${native}, nativeConcurrency=${nativeConcurrency})`,async()=>{
+  const names=['orders','payments','expenses','products','warehouseImports'];let active=0,peak=0;
+  const h=createHarness({native,nativeConcurrency,fetchPage:async({body})=>{
+    active++;peak=Math.max(peak,active);await timerTurn(2);active--;
+    const name=body.structuredQuery.from[0].collectionId;
+    return pageResponse(fixture(205,'company-a',name),body);
+  }});
+  try{
+    const results=await Promise.all(names.map(name=>h.readTenantCollectionViaRest(name)));
+    assert.equal(peak,native?nativeConcurrency:2);
+    results.forEach((items,index)=>assert.deepEqual(items,expected(fixture(205,'company-a',names[index]))));
+    assert.equal(h.scans.length,5);
+    assert.equal(h.calls.length,10,'larger bulk pages reduce HTTP calls without truncating any complete history');
+    await nextTurn();assert.equal(h.readAdmission.getDiagnostics().activeRequests,0);
+    assert.equal(h.readAdmission.getDiagnostics().queuedRequests,0);
+  }finally{h.dispose()}
+});
+
+test('actual App cancels a waiting REST page before token/fetch work and closes admission on tenant cleanup',async()=>{
+  const gate=deferred(),h=createHarness({native:true,fetchPage:()=>gate.promise}),controller=new AbortController();
+  const first=h.readTenantCollectionViaRest('orders');await waitUntil(()=>h.calls.length===1);
+  const second=h.readTenantCollectionViaRest('payments',{signal:controller.signal}),rejected=assert.rejects(second,{name:'AbortError'});
+  await waitUntil(()=>h.readAdmission.getDiagnostics().queuedRequests===1);controller.abort();await rejected;
+  assert.equal(h.calls.length,1);assert.equal(h.tokens.length,1);
+  const third=h.readTenantCollectionViaRest('expenses'),closed=assert.rejects(third,{name:'AbortError'});
+  await waitUntil(()=>h.readAdmission.getDiagnostics().queuedRequests===1);h.dispose();await closed;
+  gate.resolve(response([{readTime}]));await assert.rejects(first,{name:'AbortError'});
+  assert.equal(h.calls.length,1);assert.equal(h.readAdmission.getDiagnostics().closed,true);
+});
+
+test('native 200-document bulk pages publish one complete pinned tenant snapshot, including empty and exact boundaries',async()=>{
+ for(const size of [0,199,200,201,401]){
+  const documents=fixture(size),h=createHarness({native:true,fetchPage:({body})=>pageResponse(documents,body)});
+  await h.readCollection('orders',noop);
+  assert.deepEqual(h.events.publications.map(e=>e.items),[expected(documents)]);
+  assert.equal(h.calls.length,Math.floor(size/200)+1);
+  assert.ok(h.calls.every(call=>call.body.structuredQuery.limit===200));
+  assert.ok(h.calls.slice(1).every(call=>call.body.readTime===readTime));
+  assert.deepEqual(h.events.confirmed,['orders']);assertReadCleanup(h);h.dispose();
+ }
+});
+
 for (const size of [0, 199, 200, 201, 400]) {
   test(`actual App transport completely collects ${size} records at its 200-page boundary`, async () => {
     const documents = fixture(size);
@@ -337,7 +489,7 @@ for (const size of [0, 199, 200, 201, 400]) {
     assert.deepEqual(h.events.publications.map(event => event.items), [expected(documents)]);
     assert.deepEqual(h.events.confirmed, ['orders']);
     const {isCurrent,...publicationOptions}=h.events.publications[0].options;
-    assert.deepEqual(publicationOptions, { source: 'server', keepPreviousOnEmpty: false });
+    assert.deepEqual(publicationOptions, { source: 'server', keepPreviousOnEmpty: false,serverCommitVersion:1 });
     assert.equal(isCurrent(),true);
     h.dispose();assert.equal(isCurrent(),false);
     assert.equal(h.calls.length, Math.floor(size / 200) + 1);
@@ -440,7 +592,7 @@ for (const failure of ['http', 'json', 'missing-time', 'foreign-tenant']) {
     const h = createHarness({ fetchPage: ({ body }, call) => {
       if (call === 1) return pageResponse(fixture(201), body);
       if (failure === 'http') return response(null, 503);
-      if (failure === 'json') return { ...response(null), json: async () => { throw new SyntaxError('Invalid JSON'); } };
+      if (failure === 'json') return { ...response(null), text: async () => 'invalid JSON body', json: async () => { throw new SyntaxError('Invalid JSON'); } };
       if (failure === 'missing-time') return response([{ document: fixture(201).at(-1) }]);
       return response([{ document: fixture(201, 'company-b').at(-1), readTime }]);
     } });
@@ -496,6 +648,49 @@ test('different collections keep independent controllers and revisions', async (
   assert.deepEqual(h.events.confirmed, ['products', 'orders']);
 });
 
+test('leaving overflow module cancels its timer or running scan without publishing partial data', async () => {
+  const pending = deferred();
+  const h = createHarness({ fetchPage: () => pending.promise });
+  h.scheduleOverflow(['orders', noop]); h.cancelOverflow('orders');
+  await h.clock.advance(100); assert.equal(h.calls.length, 0);
+  h.scheduleOverflow(['orders', noop]); await h.clock.advance(40);
+  await waitUntil(() => h.calls.length === 1);
+  const signal = h.calls[0].signal;
+  h.cancelOverflow('orders'); assert.equal(signal.aborted, true);
+  await waitUntil(() => h.controllers.size === 0);
+  pending.resolve(pageResponse(fixture(1), h.calls[0].body)); await nextTurn();
+  assert.deepEqual(h.events.publications, []); assert.deepEqual(h.events.confirmed, []);
+  assert.deepEqual(h.events.loaded, []); assert.deepEqual(h.events.statuses, []);
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test('cancelled overflow completion cannot cancel or erase a new explicit same-collection read', async () => {
+  const oldPage = deferred(), newPage = deferred();
+  const h = createHarness({ fetchPage: (_, call) => call === 1 ? oldPage.promise : newPage.promise });
+  h.scheduleOverflow(['orders', noop]); await h.clock.advance(40); await waitUntil(() => h.calls.length === 1);
+  const forced = h.readCollection('orders', noop, false, null, { force: true });
+  await waitUntil(() => h.calls.length === 2);
+  h.cancelOverflow('orders');
+  assert.equal(h.calls[0].signal.aborted, true); assert.equal(h.calls[1].signal.aborted, false);
+  newPage.resolve(pageResponse(fixture(1), h.calls[1].body)); await forced;
+  oldPage.resolve(pageResponse(fixture(1), h.calls[0].body)); await nextTurn();
+  assert.deepEqual(h.events.publications.map(event => event.items), [expected(fixture(1))]);
+  assert.deepEqual(h.events.confirmed, ['orders']); assert.equal(h.controllers.size, 0);
+});
+
+test('leaving and immediately revisiting overflow keeps the new job after old finally runs', async () => {
+  const oldPage = deferred(), newPage = deferred();
+  const h = createHarness({ fetchPage: (_, call) => call === 1 ? oldPage.promise : newPage.promise });
+  h.scheduleOverflow(['orders', noop]); await h.clock.advance(40); await waitUntil(() => h.calls.length === 1);
+  h.cancelOverflow('orders'); h.scheduleOverflow(['orders', noop]);
+  await nextTurn(); await h.clock.advance(40); await waitUntil(() => h.calls.length === 2);
+  assert.equal(h.calls[1].signal.aborted, false);
+  newPage.resolve(pageResponse(fixture(1), h.calls[1].body));
+  await waitUntil(() => h.events.publications.length === 1);
+  oldPage.resolve(pageResponse(fixture(1), h.calls[0].body)); await nextTurn();
+  assert.equal(h.events.publications.length, 1); assert.deepEqual(h.events.confirmed, ['orders']);
+});
+
 test('confirmed listener metadata invalidates REST before the no-data-change early return', async () => {
   const pending = deferred();
   const h = createHarness({ fetchPage: () => pending.promise });
@@ -544,63 +739,63 @@ test('all listener sources must confirm before aborting the collection REST scan
   assert.equal(h.clock.timers.size, 0);
 });
 
-test('actual listener feeds initial ignored cache snapshot before a metadata-only first publication', () => {
+test('actual listener feeds initial ignored cache snapshot before a metadata-only first publication', async () => {
   const h = createHarness();
   const listener = h.listener('orders');
   const items = expected(fixture(3));
   const cached = incrementalSnapshot(items, [], { fromCache: true, hasPendingWrites: true });
-  listener(cached.snapshot);
+  await listener(cached.snapshot);
   assert.deepEqual(cached.reads, items.map(item => item.id));
   assert.deepEqual(h.events.publications, []);
   assert.deepEqual(h.events.confirmed, []);
   assert.equal(listener.sourceItems.size, 0, 'Ignored cache must not enter the published source union');
   const confirmed = incrementalSnapshot(items);
-  listener(confirmed.snapshot);
+  await listener(confirmed.snapshot);
   assert.notEqual(cached.snapshot.query, confirmed.snapshot.query);
   assert.deepEqual(confirmed.reads, [], 'Captured source ref must survive new snapshot query wrappers');
   assert.deepEqual(h.events.publications.map(event => event.items), [items]);
   assert.deepEqual(h.events.confirmed, ['orders']);
   const ack = incrementalSnapshot(items);
-  listener(ack.snapshot);
+  await listener(ack.snapshot);
   assert.deepEqual(ack.reads, []);
   assert.equal(h.events.publications.length, 1);
 });
 
-test('actual listener decodes one of 4000 changed documents and no metadata-only ACK data', () => {
+test('actual listener decodes one of 4000 changed documents and no metadata-only ACK data', async () => {
   const h = createHarness();
   const listener = h.listener('orders');
   const items = expected(fixture(4000));
   const first = incrementalSnapshot(items);
-  listener(first.snapshot);
+  await listener(first.snapshot);
   assert.equal(first.reads.length, 4000);
   const updated = items.map((item, index) => index === 2000
     ? { ...item, data: { ...item.data, amount: 99000 } } : item);
   const next = incrementalSnapshot(updated, [['modified', items[2000].id, 2000, 2000]], { hasPendingWrites: true });
-  listener(next.snapshot);
+  await listener(next.snapshot);
   assert.deepEqual(next.reads, [items[2000].id]);
   assert.deepEqual(h.events.publications.at(-1).items, updated);
   const ack = incrementalSnapshot(updated);
-  listener(ack.snapshot);
+  await listener(ack.snapshot);
   assert.deepEqual(ack.reads, []);
   assert.equal(h.events.publications.length, 2);
   assert.deepEqual(h.events.publications[0].items, items, 'Previously published records remain unchanged');
 });
 
-test('actual listener publishes ignored cache modifications on the zero-change server ACK', () => {
+test('actual listener publishes ignored cache modifications on the zero-change server ACK', async () => {
   const h = createHarness();
   const listener = h.listener('orders');
   const items = expected(fixture(2));
-  listener(incrementalSnapshot(items).snapshot);
+  await listener(incrementalSnapshot(items).snapshot);
   const cachedItems = items.map((item, index) => index === 0
     ? { ...item, data: { ...item.data, amount: 200 } } : item);
   const cache = incrementalSnapshot(cachedItems, [['modified', items[0].id, 0, 0]], { fromCache: true });
-  listener(cache.snapshot);
+  await listener(cache.snapshot);
   assert.deepEqual(cache.reads, [items[0].id]);
   assert.equal(h.events.publications.length, 1);
   assert.equal(listener.setterCalls.length, 1);
   assert.deepEqual(listener.sourceItems.get(0), items, 'Ignored cache does not directly replace published-source items');
   const ack = incrementalSnapshot(cachedItems);
-  listener(ack.snapshot);
+  await listener(ack.snapshot);
   assert.deepEqual(ack.reads, []);
   assert.equal(h.events.publications.length, 2, 'Server ACK must publish the previously ignored source change');
   assert.equal(listener.setterCalls.length, 2);
@@ -608,20 +803,20 @@ test('actual listener publishes ignored cache modifications on the zero-change s
   assert.deepEqual(listener.setterCalls.at(-1), cachedItems);
   assert.deepEqual(listener.sourceItems.get(0), cachedItems);
   const unchangedAck = incrementalSnapshot(cachedItems);
-  listener(unchangedAck.snapshot);
+  await listener(unchangedAck.snapshot);
   assert.deepEqual(unchangedAck.reads, []);
   assert.equal(h.events.publications.length, 2);
   assert.equal(listener.setterCalls.length, 2, 'Unchanged metadata must not trigger another setter');
   const finalItems = cachedItems.map((item, index) => index === 1
     ? { ...item, data: { ...item.data, amount: 300 } } : item);
   const final = incrementalSnapshot(finalItems, [['modified', items[1].id, 1, 1]]);
-  listener(final.snapshot);
+  await listener(final.snapshot);
   assert.deepEqual(final.reads, [items[1].id]);
   assert.deepEqual(h.events.publications.at(-1).items, finalItems);
   assert.deepEqual(h.events.publications[0].items, items);
 });
 
-test('actual listener source union preserves per-source deltas and overlapping-ID precedence', () => {
+test('actual listener source union preserves per-source deltas and overlapping-ID precedence', async () => {
   const h = createHarness();
   const listener = h.listener('messages', 2);
   assert.notEqual(listener.sources[0], listener.sources[1]);
@@ -629,23 +824,23 @@ test('actual listener source union preserves per-source deltas and overlapping-I
   const a = [item('shared', 10), item('assigned', 1)];
   const b = [item('shared', 20), item('internal', 2)];
   const union = (...sources) => [...new Map(sources.flat().map(record => [record.id, record])).values()];
-  listener(incrementalSnapshot(a, a.map((item, index) => ['added', item.id, -1, index])).snapshot, 0);
-  listener(incrementalSnapshot(b, b.map((item, index) => ['added', item.id, -1, index])).snapshot, 1);
+  await listener(incrementalSnapshot(a, a.map((item, index) => ['added', item.id, -1, index])).snapshot, 0);
+  await listener(incrementalSnapshot(b, b.map((item, index) => ['added', item.id, -1, index])).snapshot, 1);
   assert.deepEqual(h.events.publications.at(-1).items, union(a, b));
   const nextA = [item('shared', 30), a[1]];
   const updateA = incrementalSnapshot(nextA, [['modified', 'shared', 0, 0]]);
-  listener(updateA.snapshot, 0);
+  await listener(updateA.snapshot, 0);
   assert.deepEqual(updateA.reads, ['shared']);
   assert.deepEqual(h.events.publications.at(-1).items, union(nextA, b));
   const nextB = [b[1]];
   const removeB = incrementalSnapshot(nextB, [['removed', 'shared', 0, -1]]);
-  listener(removeB.snapshot, 1);
+  await listener(removeB.snapshot, 1);
   assert.deepEqual(removeB.reads, []);
   assert.deepEqual(h.events.publications.at(-1).items, union(nextA, nextB));
   assert.equal(h.events.publications.at(-1).items[0].data.amount, 30);
   const publicationCount = h.events.publications.length;
   const metadataB = incrementalSnapshot(nextB);
-  listener(metadataB.snapshot, 1);
+  await listener(metadataB.snapshot, 1);
   assert.deepEqual(metadataB.reads, []);
   assert.equal(h.events.publications.length, publicationCount);
 });
@@ -663,19 +858,19 @@ test('actual listener restart creates a fresh collector even for identical docum
   assert.deepEqual(h.events.publications.at(-1).items, items);
 });
 
-test('actual listener immediately publishes cache-first secondary source union on a zero-change server ACK', () => {
+test('actual listener immediately publishes cache-first secondary source union on a zero-change server ACK', async () => {
   const h = createHarness();
   const listener = h.listener('messages', 2);
   const a = [{ id: 'assigned', data: { companyId: 'company-a', amount: 1 } }];
   const b = [{ id: 'internal', data: { companyId: 'company-a', amount: 2 } }];
-  listener(incrementalSnapshot(a, [['added', 'assigned', -1, 0]]).snapshot, 0);
+  await listener(incrementalSnapshot(a, [['added', 'assigned', -1, 0]]).snapshot, 0);
   const cachedB = incrementalSnapshot(b, [['added', 'internal', -1, 0]], { fromCache: true });
-  listener(cachedB.snapshot, 1);
+  await listener(cachedB.snapshot, 1);
   assert.deepEqual(h.events.publications.map(event => event.items), [a]);
   assert.equal(listener.setterCalls.length, 1);
   assert.equal(listener.sourceItems.has(1), false);
   const confirmedB = incrementalSnapshot(b);
-  listener(confirmedB.snapshot, 1);
+  await listener(confirmedB.snapshot, 1);
   assert.deepEqual(cachedB.reads, ['internal']);
   assert.deepEqual(confirmedB.reads, []);
   assert.deepEqual(listener.sourceItems.get(1), b);
@@ -684,22 +879,22 @@ test('actual listener immediately publishes cache-first secondary source union o
   assert.deepEqual(listener.setterCalls.at(-1), [...a, ...b]);
   assert.deepEqual(h.events.confirmed, ['messages']);
   const unchangedB = incrementalSnapshot(b);
-  listener(unchangedB.snapshot, 1);
+  await listener(unchangedB.snapshot, 1);
   assert.deepEqual(unchangedB.reads, []);
   assert.equal(h.events.publications.length, 2);
   assert.equal(listener.setterCalls.length, 2);
   const updatedA = [{ ...a[0], data: { ...a[0].data, amount: 3 } }];
-  listener(incrementalSnapshot(updatedA, [['modified', 'assigned', 0, 0]]).snapshot, 0);
+  await listener(incrementalSnapshot(updatedA, [['modified', 'assigned', 0, 0]]).snapshot, 0);
   assert.deepEqual(h.events.publications.at(-1).items, [...updatedA, ...b]);
 });
 
-test('actual listener unchanged metadata ACKs on either source cause no extra collection setter calls', () => {
+test('actual listener unchanged metadata ACKs on either source cause no extra collection setter calls', async () => {
   const h = createHarness();
   const listener = h.listener('messages', 2);
   const a = [{ id: 'assigned', data: { companyId: 'company-a', amount: 1 } }];
   const b = [{ id: 'internal', data: { companyId: 'company-a', amount: 2 } }];
-  listener(incrementalSnapshot(a, [['added', 'assigned', -1, 0]]).snapshot, 0);
-  listener(incrementalSnapshot(b, [['added', 'internal', -1, 0]]).snapshot, 1);
+  await listener(incrementalSnapshot(a, [['added', 'assigned', -1, 0]]).snapshot, 0);
+  await listener(incrementalSnapshot(b, [['added', 'internal', -1, 0]]).snapshot, 1);
   assert.equal(listener.setterCalls.length, 2);
   const priorA = listener.sourceItems.get(0)[0].data;
   const priorB = listener.sourceItems.get(1)[0].data;
@@ -709,7 +904,7 @@ test('actual listener unchanged metadata ACKs on either source cause no extra co
     [1, b, { hasPendingWrites: false }],
   ]) {
     const ack = incrementalSnapshot(items, [], metadata);
-    listener(ack.snapshot, sourceIndex);
+    await listener(ack.snapshot, sourceIndex);
     assert.deepEqual(ack.reads, []);
     assert.equal(listener.setterCalls.length, 2);
     assert.equal(h.events.publications.length, 2);
@@ -874,11 +1069,14 @@ test('page 9s deadline during auth refresh cannot renew the page budget', async 
 test('page 9s deadline while the later JSON body is pending suppresses late completion', async () => {
   const json = deferred();
   const h = createHarness({ fetchPage: ({ body }, call) => (
-    call === 1 ? pageResponse(fixture(201), body) : { ...response(null), json: () => json.promise }
+    call === 1 ? pageResponse(fixture(201), body) : { ...response(null), text: () => json.promise.then(value=>JSON.stringify(value)), json: () => json.promise }
   ) });
-  const read = h.readCollection('orders', noop);
+  let settled=false;
+  const read = h.readCollection('orders', noop).finally(()=>{settled=true});
   await waitUntil(() => h.calls.length === 2);
-  await h.clock.advance(9000);
+  await h.clock.advance(8999);
+  assert.equal(settled,false,'the pending body must not fail early via an unintended JSON path');
+  await h.clock.advance(1);
   await read;
   json.resolve([{ document: fixture(201).at(-1), readTime }]);
   await nextTurn();

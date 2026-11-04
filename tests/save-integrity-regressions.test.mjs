@@ -6,7 +6,7 @@ import { createSaveQueueHarness } from './helpers/save-queue-harness.mjs';
 import { commitAtomicWrites, ATOMIC_SAVE_COLLECTION, expandPendingWrites } from '../src/utils/atomicSave.js';
 import { canAutomaticallyRetryWrite, pendingWriteFailure, isRetryableWriteError } from '../src/utils/pendingWriteRetry.js';
 import { isSamePendingWriteRevision } from '../src/utils/pendingWriteRevision.js';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { createDeliverySavePlan } from '../src/utils/deliverySavePlan.js';
 import { mergeAtomicWrites } from '../src/utils/atomicSave.js';
 import { replayShareCanvas } from '../src/utils/shareCanvasCommands.js';
@@ -535,7 +535,7 @@ test('delivery compound save stages reports, payment, expense and cost without a
   await assert.rejects(save('e', { commandId: 'other', operations: [{ type: 'unknown' }] }));
   assert.equal(accepted.length, 1);
   assert.throws(() => createDeliverySavePlan('../invalid'));
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   const start = source.indexOf('function DeliveryReportView(');
   const delivery = source.slice(start, source.indexOf('\nfunction ', start + 1));
   assert.ok(delivery.includes('if (deliverySaveInFlightRef.current) return false;'));
@@ -641,7 +641,7 @@ test('resolved delivery command replay preserves later order edits and rejects a
 });
 
 test('warehouse submit does not await secondary company settings and debt errors retain the form', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   const warehouse = source.slice(source.indexOf('function WarehouseImportView('), source.indexOf('function WarehouseDispatchView('));
   assert.equal(warehouse.includes('await ensureWarehouseInventoryGroupExists(groupName)'), false);
   assert.ok(warehouse.includes('if (importSubmitRef.current) return;'));

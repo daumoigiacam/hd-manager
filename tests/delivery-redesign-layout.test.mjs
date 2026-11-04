@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import {
   filterDeliveryWorkspaceGroups,
   formatDeliveryCompactMoney,
@@ -7,7 +8,7 @@ import {
   getDeliveryActivityByHour,
 } from '../src/features/delivery/deliveryWorkspaceModel.js';
 
-const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const app = readApplicationSource();
 const workspace = readFileSync(new URL('../src/features/delivery/DeliveryRedesignWorkspace.jsx', import.meta.url), 'utf8');
 const model = readFileSync(new URL('../src/features/delivery/deliveryWorkspaceModel.js', import.meta.url), 'utf8');
 

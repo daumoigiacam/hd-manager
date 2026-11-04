@@ -63,13 +63,16 @@ test('actual dashboard loader memoization and deferred guard retain current tena
     const RetainedExecutiveDashboardView=React.memo(function Report(p){window.reportRenders++;return <div id="report">{p.company.id+':'+p.orders[0].id}</div>},areExecutiveDashboardPropsEqual);
     ${wrapper}
     const base={isActive:true,company:{id:'a'},employee:{id:'employee-a'},orders:[{id:'one'}],dashboardCache:{},onLoadPayrollPeriodSnapshots:()=>{},setActiveTab:()=>{}};
-    const changedOrders=[{id:'two'}],otherCompany={id:'b'};
+    const changedOrders=[{id:'two'}],otherCompany={id:'b'},updatedCompany={id:'a',backupAt:99};
     function WrapperHost({value,mark}){useEffect(()=>{window.wrapperMark=mark},[mark]);return <MemoizedExecutiveDashboardView {...value}/>}
     window.renderWrapper=(scenario,mark)=>{
       const value={...base};
       if(scenario==='changed')value.orders=changedOrders;
       if(scenario==='scope')value.company=otherCompany;
       if(scenario==='hidden'){value.isActive=false;value.orders=changedOrders;}
+      if(scenario.startsWith('privacy'))value.privacyScope='grants-one';
+      if(scenario==='privacy-metadata'){value.company=updatedCompany;value.orders=changedOrders;}
+      if(scenario==='privacy-revoked'){value.privacyScope='grants-two';value.company=updatedCompany;value.orders=changedOrders;}
       root.render(<WrapperHost value={value} mark={mark}/>);
     };
   `, loader: 'jsx', resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', jsx: 'automatic' });
@@ -118,5 +121,14 @@ test('actual dashboard loader memoization and deferred guard retain current tena
     await wrapperRender('scope', 5);
     assert.equal(await page.locator('#report').textContent(), 'b:one', 'scope changes never display a deferred prior-tenant report');
     assert.equal(await page.locator('[aria-busy]').getAttribute('aria-busy'), 'false');
+    await wrapperRender('privacy-base', 6);
+    await page.evaluate(() => { window.stepFrame(); window.stepFrame(); });
+    await page.waitForFunction(() => document.querySelector('[aria-busy]').getAttribute('aria-busy') === 'false');
+    await wrapperRender('privacy-metadata', 7);
+    assert.equal(await page.locator('#report').textContent(),'a:one','same access scope retains completed read view across metadata changes');
+    assert.equal(await page.locator('[aria-busy]').getAttribute('aria-busy'),'true');
+    await wrapperRender('privacy-revoked', 8);
+    assert.equal(await page.locator('#report').textContent(),'a:two','grant change immediately replaces prior private view');
+    assert.equal(await page.locator('[aria-busy]').getAttribute('aria-busy'),'false');
   } finally { await browser.close(); }
 });

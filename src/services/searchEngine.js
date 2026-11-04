@@ -174,7 +174,8 @@ const intersectSearchCandidates = (left, right) => {
   return intersection;
 };
 
-import { createProjectionScheduler } from './cooperativeProjection.js';
+import { createProjectionScheduler, sortProjection } from './cooperativeProjection.js';
+import {getAdaptivePerformancePolicy} from './adaptivePerformance.js';
 
 /**
  * Explicit snapshot of membership, order and prepared fields. getFields runs
@@ -237,29 +238,75 @@ const createSearchIndexBuilder = (getFields) => {
       .sort(compareSearchResults);
   };
     const searchAsync = async (query = '', { signal, yieldTask,
-      budgetMs = 4, maxOperations = 128, now = () => performance.now(), orderedRecords, membership, orderRanks } = {}) => {
+      budgetMs = getAdaptivePerformancePolicy().workBudgetMs, maxOperations = getAdaptivePerformancePolicy().maxOperations, now = () => performance.now(), orderedRecords, membership, orderRanks } = {}) => {
       if (!Number.isFinite(budgetMs) || budgetMs <= 0 || !Number.isInteger(maxOperations) || maxOperations <= 0) {
         throw new RangeError('Search budgets must be positive finite values');
       }
       const preparedQuery = prepareSearchQuery(query);
       function* work() {
-        let candidates = null;
+        const postings=[];
         for (const token of new Set(preparedQuery.tokens)) {
-          const found = new Set();
+          let found;
           if (/^\d+$/.test(token)) {
-            for (const index of digitPostings.get(token.slice(0, 3)) || []) { found.add(index); yield; }
+            found=digitPostings.get(token.slice(0,3))||[];
           } else {
+            const start=lowerBoundSearchToken(vocabulary,token);
             const end = lowerBoundSearchToken(vocabulary, `${token}{`);
-            for (let position = lowerBoundSearchToken(vocabulary, token); position < end; position++) {
-              for (const index of tokenPostings.get(vocabulary[position])) { found.add(index); yield; }
+            if(start===end)return [];
+            if(end===start+1)found=tokenPostings.get(vocabulary[start]);
+            else {
+              let union=new Set(),dense=null;
+              for(let position=start;position<end;position++){
+                for(const index of tokenPostings.get(vocabulary[position])){
+                  if(dense)dense[index]=1;
+                  else{
+                    union.add(index);
+                    // Dense broad prefixes need source-ordered membership, not
+                    // a merge-sort of thousands of one-element SKU postings.
+                    // Selective/sparse queries keep the small Set path.
+                    if(union.size>=256&&entries.length<=union.size*4&&entries.length<=1000000){
+                      dense=new Uint8Array(entries.length);
+                      for(const member of union){dense[member]=1;yield;}
+                      union=null;
+                    }
+                  }
+                  yield;
+                }
+              }
+              const values=[];
+              if(dense){for(let index=0;index<dense.length;index++){if(dense[index])values.push(index);yield;}found=values;}
+              else{for(const index of union){values.push(index);yield;}found=yield* sortProjection(values,(a,b)=>a-b);}
             }
           }
-          if (candidates) {
-            for (const index of candidates) { if (!found.has(index)) candidates.delete(index); yield; }
-          } else candidates = found;
-          if (!candidates.size) return [];
+          if(!found.length)return [];
+          postings.push(found);
+          yield;
+        }
+        // Posting arrays are immutable and already in source order. Start
+        // with the smallest, then binary-probe larger lists; do not build and
+        // delete full 50k Sets for broad words before seeing a unique SKU.
+        postings.sort((a,b)=>a.length-b.length);
+        let candidates=postings[0]||null;
+        for(let position=1;position<postings.length;position++){
+          const right=postings[position],intersection=[];
+          if(right.length<=candidates.length*8){
+            let leftIndex=0,rightIndex=0;
+            while(leftIndex<candidates.length&&rightIndex<right.length){
+              const left=candidates[leftIndex],value=right[rightIndex];
+              if(left<value)leftIndex++;else if(left>value)rightIndex++;else{intersection.push(left);leftIndex++;rightIndex++;}
+              yield;
+            }
+          }else for(const index of candidates){
+              let low=0,high=right.length;
+              while(low<high){const middle=(low+high)>>>1;if(right[middle]<index)low=middle+1;else high=middle;yield;}
+              if(right[low]===index)intersection.push(index);
+              yield;
+            }
+          candidates=intersection;if(!candidates.length)return [];
         }
         const results = [];
+        const compare=(a,b)=>(orderRanks?orderRanks.get(a.record)-orderRanks.get(b.record):0)||compareSearchResults(a,b);
+        let alreadySorted=true,previous=null;
         const positions = candidates || entries.keys();
         for (const index of positions) {
           const entry = entries[index];
@@ -267,7 +314,10 @@ const createSearchIndexBuilder = (getFields) => {
             const result = preparedQuery.tokens.length
               ? buildSearchResult(entry.record, entry.index, preparedQuery, entry.fields)
               : emptySearchResult(entry.record, entry.index);
-            if (result) results.push(result);
+            if (result) {
+              if(previous&&compare(previous,result)>0)alreadySorted=false;
+              results.push(result);previous=result;
+            }
           }
           yield;
         }
@@ -279,10 +329,8 @@ const createSearchIndexBuilder = (getFields) => {
           return ordered;
         }
         let from = results;
-        let to = new Array(from.length);
-        const compare = (a, b) => (orderRanks ? orderRanks.get(a.record) - orderRanks.get(b.record) : 0)
-          || compareSearchResults(a, b);
-        for (let width = 1; width < from.length; width *= 2) {
+        let to = alreadySorted?null:new Array(from.length);
+        for (let width = 1; !alreadySorted&&width < from.length; width *= 2) {
           for (let offset = 0; offset < from.length; offset += width * 2) {
             let left = offset;
             const middle = Math.min(offset + width, from.length);
@@ -315,7 +363,46 @@ const createSearchIndexBuilder = (getFields) => {
       }
       } finally { scheduler.close(); iterator.return?.(); }
     };
-    return Object.freeze({ rank, search: (query = '') => rank(query).map(result => result.record), searchAsync });
+    // A bounded synchronous lane avoids two effect/paint cycles for selective
+    // loaded-data queries. Broad/expensive queries explicitly return null and
+    // keep using the cancellable cooperative path; no partial answer escapes.
+    const searchIfSmall=(query='',maxCandidates=128)=>{
+      if(!Number.isSafeInteger(maxCandidates)||maxCandidates<1||maxCandidates>256)throw new RangeError('Invalid fast-search bound');
+      const prepared=prepareSearchQuery(query),tokens=[...new Set(prepared.tokens)];
+      if(!tokens.length||tokens.length>16)return null;
+      const lists=[];let work=0;
+      for(const token of tokens){
+        let list;
+        if(/^\d+$/.test(token))list=digitPostings.get(token.slice(0,3))||[];
+        else{
+          const start=lowerBoundSearchToken(vocabulary,token),end=lowerBoundSearchToken(vocabulary,`${token}{`);
+          if(start===end)return [];
+          if(end===start+1)list=tokenPostings.get(vocabulary[start]);
+          else{
+            if(end-start>16)return null;
+            const union=new Set();
+            for(let p=start;p<end;p++)for(const id of tokenPostings.get(vocabulary[p])){if(++work>4096)return null;union.add(id);if(union.size>maxCandidates)return null}
+            list=[...union].sort((a,b)=>a-b);
+          }
+        }
+        if(!list.length)return [];lists.push(list);
+      }
+      lists.sort((a,b)=>a.length-b.length);
+      if(lists[0].length>maxCandidates)return null;
+      let candidates=lists[0];
+      for(let p=1;p<lists.length;p++){
+        const right=lists[p],intersection=[];
+        for(const id of candidates){let lo=0,hi=right.length;
+          while(lo<hi){if(++work>4096)return null;const middle=(lo+hi)>>>1;if(right[middle]<id)lo=middle+1;else hi=middle}
+          if(right[lo]===id)intersection.push(id);
+        }
+        candidates=intersection;if(!candidates.length)return [];
+      }
+      const results=[];
+      for(const id of candidates){const entry=entries[id],result=buildSearchResult(entry.record,entry.index,prepared,entry.fields);if(result)results.push(result)}
+      return results.sort(compareSearchResults).map(result=>result.record);
+    };
+    return Object.freeze({ rank, search: (query = '') => rank(query).map(result => result.record), searchAsync, searchIfSmall });
   };
   return { append, finish, tokens: () => tokenPostings.keys() };
 };
@@ -328,7 +415,7 @@ export const createSearchRecordIndex = (records = [], getFields = () => []) => {
 
 // Build outside render, yielding within both field preparation and vocabulary sort.
 export const createSearchRecordIndexAsync = async (records = [], getFields = () => [], {
-  signal, budgetMs = 4, maxRecordsPerTurn = 24,
+  signal, budgetMs = getAdaptivePerformancePolicy().workBudgetMs, maxRecordsPerTurn = getAdaptivePerformancePolicy().searchRows,
   now = () => performance.now(),
   yieldTask,
 } = {}) => {

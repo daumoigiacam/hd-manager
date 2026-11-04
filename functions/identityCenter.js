@@ -150,13 +150,18 @@ const verifyPassword = async (password = '', storedHash = '') => {
   }
 };
 
-const verifyLegacyPassword = (password = '', storedHash = '') => {
+const verifyLegacyPassword = async (password = '', storedHash = '') => {
   const [scheme, iterationsText, saltHex, expectedHex] = `${storedHash || ''}`.split('$');
   const iterations = Number(iterationsText);
   if (scheme !== LEGACY_HASH_SCHEME || !Number.isInteger(iterations) || iterations < 100000 || !/^[0-9a-f]+$/i.test(saltHex || '') || !/^[0-9a-f]+$/i.test(expectedHex || '')) return false;
   try {
-    const actual = crypto.pbkdf2Sync(`${password}`, Buffer.from(saltHex, 'hex'), iterations, 32, 'sha256').toString('hex');
-    return timingSafeTextEqual(actual, expectedHex);
+    // Preserve the legacy format and work factor while releasing the Node
+    // event loop during verification. Never weaken the hash for a faster login.
+    const actual = await new Promise((resolve, reject) => {
+      crypto.pbkdf2(`${password}`, Buffer.from(saltHex, 'hex'), iterations, 32, 'sha256',
+        (error, value) => error ? reject(error) : resolve(value));
+    });
+    return timingSafeTextEqual(actual.toString('hex'), expectedHex);
   } catch (error) {
     return false;
   }
@@ -295,7 +300,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       return { identityId, identity };
     }
 
-    const legacyVerified = legacyHash ? verifyLegacyPassword(password, legacyHash) : password === DEFAULT_FIRST_LOGIN_PASSWORD;
+    const legacyVerified = legacyHash ? await verifyLegacyPassword(password, legacyHash) : password === DEFAULT_FIRST_LOGIN_PASSWORD;
     if (!legacyVerified) return { error: 'Số điện thoại hoặc mật khẩu không đúng.' };
 
     const now = new Date();
@@ -353,11 +358,17 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
   };
 
-  const issueSession = async ({ identityId, identity, device, loginRateRef = null }) => {
+  const issueSession = async ({ identityId, identity, device, loginRateRef = null, observeTiming }) => {
+    const timed=typeof observeTiming==='function'?observeTiming:(_name,operation)=>operation();
     const now = new Date();
     const cleanDevice = sanitizeDevice(device);
     const deviceRef = getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId);
-    const deviceSnapshotPromise = deviceRef.get();
+    // Observe every parallel failure immediately. A failing IAM/token or
+    // device read must never become an unhandled rejection while claims wait.
+    const outcome = promise => Promise.resolve(promise).then(
+      value => ({ ok: true, value }), error => ({ ok: false, error })
+    );
+    const deviceSnapshotPromise = outcome(timed('device',()=>deviceRef.get()));
     const claims = {
       identityId,
       companyId: identity.companyId || '',
@@ -374,7 +385,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     // Persist the same tenant claims used by the custom token. This keeps
     // refreshed Firebase ID tokens company-scoped instead of reverting to a
     // claim-less session after the original custom token expires.
-    try {
+    const claimsReady = timed('claims',async () => { try {
       await admin.auth().setCustomUserClaims(firebaseUid, claims);
     } catch (error) {
       if (error?.code !== 'auth/user-not-found') throw error;
@@ -384,9 +395,15 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
         if (createError?.code !== 'auth/uid-already-exists') throw createError;
       }
       await admin.auth().setCustomUserClaims(firebaseUid, claims);
-    }
-    const customTokenPromise = admin.auth().createCustomToken(firebaseUid, claims);
-    const deviceSnap = await deviceSnapshotPromise;
+    } });
+    // Signing does not depend on the persisted Auth-user claims. Run its IAM
+    // round trip concurrently, but release NOTHING until claims and audit /
+    // device / rate-limit commit have all succeeded below.
+    const customTokenPromise = outcome(Promise.resolve().then(() => timed('sign',()=>admin.auth().createCustomToken(firebaseUid, claims))));
+    await claimsReady;
+    const deviceResult = await deviceSnapshotPromise;
+    if (!deviceResult.ok) throw deviceResult.error;
+    const deviceSnap = deviceResult.value;
     const currentDevice = deviceSnap.exists ? deviceSnap.data() : {};
     const batch = db.batch();
     batch.set(deviceRef, {
@@ -423,10 +440,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     }
     const [customToken] = await Promise.all([
       customTokenPromise,
-      batch.commit()
+      timed('commit',()=>batch.commit())
     ]);
+    if (!customToken.ok) throw customToken.error;
     return {
-      customToken,
+      customToken: customToken.value,
       identityKey: identityId,
       identity: { ...buildPublicIdentity(identity), identityKey: identityId },
       device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
@@ -620,8 +638,9 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { identityId, identity, decoded, alreadyDeleted: false };
   };
 
-  const login = async ({ identifier, password, device, appId }) => {
-    const rate = await enforceLoginRateLimit(identifier);
+  const login = async ({ identifier, password, device, appId, observeTiming }) => {
+    const timed=typeof observeTiming==='function'?observeTiming:(_name,operation)=>operation();
+    const rate = await timed('rate',()=>enforceLoginRateLimit(identifier));
     if (rate.blocked) return { success: false, statusCode: 429, message: `Đăng nhập bị tạm khóa. Vui lòng thử lại sau ${Math.ceil(rate.waitMs / 60000)} phút.` };
     // The documented first-login password is intentionally allowed only for the
     // one-time migration path. Every replacement password still uses the
@@ -629,26 +648,26 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     const isInitialDefaultPassword = `${password || ''}` === DEFAULT_FIRST_LOGIN_PASSWORD;
     const passwordError = validatePassword(password);
     if (passwordError && !isInitialDefaultPassword) return { success: false, statusCode: 400, message: passwordError };
-    let identity = await findIdentity(identifier);
+    let identity = await timed('lookup',()=>findIdentity(identifier));
     let identityId = identity?.id;
     if (!identity) {
-      const publicAccount = await getPublicAccountFromIdentifier({ db, appId: getAppId(appId), identifier });
+      const publicAccount = await timed('migration',()=>getPublicAccountFromIdentifier({ db, appId: getAppId(appId), identifier }));
       if (!publicAccount) {
         await recordLoginAttempt(rate.ref, false);
         return { success: false, statusCode: 401, message: 'Số điện thoại hoặc mật khẩu không đúng.' };
       }
-      const migrated = await createOrMigrateIdentity({ publicAccount, password, identifier });
+      const migrated = await timed('migration',()=>createOrMigrateIdentity({ publicAccount, password, identifier }));
       if (migrated.error) {
         await recordLoginAttempt(rate.ref, false);
         return { success: false, statusCode: 401, message: migrated.error };
       }
       identity = migrated.identity;
       identityId = migrated.identityId;
-    } else if (identity.status !== 'active' || identity.lockedAt || !(await verifyPassword(password, identity.passwordHash))) {
+    } else if (identity.status !== 'active' || identity.lockedAt || !(await timed('password',()=>verifyPassword(password, identity.passwordHash)))) {
       await recordLoginAttempt(rate.ref, false);
       return { success: false, statusCode: 401, message: 'Số điện thoại hoặc mật khẩu không đúng.' };
     }
-    const session = await issueSession({ identityId, identity, device, loginRateRef: rate.ref });
+    const session = await issueSession({ identityId, identity, device, loginRateRef: rate.ref, observeTiming });
     return { success: true, ...session };
   };
 
