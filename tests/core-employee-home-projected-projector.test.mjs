@@ -38,7 +38,12 @@ test('missing/changed projection specification is rejected; omitted source value
 });
 test('guarded original math survives the actual private child transport, with no proxy markers or records in the DTO',async()=>{
  const actor={...scope,timeZone:'Asia/Ho_Chi_Minh'},snapshot=fixture('Kinh doanh',scope.date);
+ // The child deliberately uses the verified actor timezone. Build its oracle
+ // in that same timezone, rather than accidentally using the CI host's UTC.
+ const previousTimeZone=process.env.TZ;let expected;
+ try{process.env.TZ=actor.timeZone;expected=original.projectEmployeeHomeSnapshot(actor,snapshot)}
+ finally{if(previousTimeZone===undefined)delete process.env.TZ;else process.env.TZ=previousTimeZone}
  const calculate=createEmployeeHomeProcessProjector({...built,validate:projected.validateEmployeeHomeScreenDto});
- const reply=await calculate({scope:actor,snapshot:select(snapshot)});assert.deepEqual(reply.model,original.projectEmployeeHomeSnapshot(actor,snapshot));
+ const reply=await calculate({scope:actor,snapshot:select(snapshot)});assert.deepEqual(reply.model,expected);
  assert.doesNotMatch(JSON.stringify(reply),/private-home-projection|synthetic-only|synthetic-company|productPreferences|sources/);
 });
