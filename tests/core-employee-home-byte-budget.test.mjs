@@ -9,7 +9,10 @@ test('private budget bounds actual complete codec serialization without changing
   new Timestamp(-123,999999999),new GeoPoint(10.8,106.7),Buffer.from([0,255]),new Date(NaN),new Date(0),[],new Array(10000),nullMap];
  const array=[1,,3];Object.defineProperty(array,'__proto__',{value:'literal array key',enumerable:true,writable:true,configurable:true});values.push(array);
  let nested={stamp:new Timestamp(42,987654321)};for(let i=0;i<60;i++)nested={['path_'+i]:nested};values.push(nested);
- for(const value of values){const before=encode(value),actual=serialize(before).byteLength,upper=measure(value);assert(upper>=actual,`bound ${upper} < ${actual}`);assert.deepEqual(encode(value),before);assert.deepEqual(encode(decode(deserialize(serialize(before)))),before)}
+ // Node22 considers distinct invalid Date instances unequal (and its TAP
+ // reporter can throw while printing them). Compare the exact serialized wire
+ // bytes instead: this still checks invalid dates, sparse arrays and -0/NaN.
+ for(const value of values){const before=encode(value),wire=serialize(before),actual=wire.byteLength,upper=measure(value);assert(upper>=actual,`bound ${upper} < ${actual}`);assert.deepEqual(serialize(encode(value)),wire);assert.deepEqual(serialize(encode(decode(deserialize(wire)))),wire)}
 });
 test('conservative estimate compacts to original exact record sizes before rejecting any valid snapshot',()=>{
  const values=[{amount:100,note:'Tiếng Việt'},new Timestamp(123,456),{data:Buffer.alloc(300)}],exact=values.reduce((sum,v)=>sum+serialize(encode(v)).byteLength,0);
