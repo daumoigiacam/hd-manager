@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import{appFunction}from'./helpers/app-source-function.mjs';
+import {clearHomeSessionReport as clearReport} from '../src/services/homeSessionReport.js';
 test('transport metadata keeps ordered object and functional updates without allocating unused React state',()=>{
  const original=Object.freeze({state:'idle',collection:'',lastAt:'',error:''}),realtimeStatusRef={current:original};
  const set=appFunction('setRealtimeStatus',{realtimeStatusRef},{memoCallback:true});
@@ -19,9 +20,11 @@ test('route restoration saves once outside navigation, flushes on hide, and canc
  const writes=[];win.localStorage={setItem:(key,value)=>writes.push(JSON.parse(value)),removeItem:()=>writes.push('cleared')};
  const appSessionStorageBaseline={current:null}, APP_SESSION_NAVIGATION_KEY='fixture-navigation';
  const save=appFunction('saveAppSession',{window:win,pendingAppSessionPersistence,appSessionStorageBaseline,APP_SESSION_NAVIGATION_KEY,APP_SESSION_KEY:'fixture-session'});
- const clear=appFunction('clearAppSession',{window:win,pendingAppSessionPersistence,appSessionStorageBaseline,APP_SESSION_NAVIGATION_KEY,APP_SESSION_KEY:'fixture-session'});
+ const reportEntries=new Map([['hd-home-completed-report-v1','completed-report']]);
+ const clearHomeSessionReport=()=>clearReport({removeItem:key=>reportEntries.delete(key)});
+ const clear=appFunction('clearAppSession',{clearHomeSessionReport,window:win,pendingAppSessionPersistence,appSessionStorageBaseline,APP_SESSION_NAVIGATION_KEY,APP_SESSION_KEY:'fixture-session'});
  persist(old);const beforeLogin=[...queue.values()].at(-1);save(next);beforeLogin();assert.equal(saved.length,3);assert.equal(writes[0].currentUser.id,'b','explicit login wins before React effect cleanup');
- persist(next);const beforeLogout=[...queue.values()].at(-1);clear();beforeLogout();win.dispatchEvent(new Event('pagehide'));assert.equal(saved.length,3);assert.equal(writes.at(-1),'cleared','explicit logout cancels old deferred persistence immediately');
+ persist(next);const beforeLogout=[...queue.values()].at(-1);clear();beforeLogout();win.dispatchEvent(new Event('pagehide'));assert.equal(saved.length,3);assert.equal(writes.at(-1),'cleared','explicit logout cancels old deferred persistence immediately');assert.equal(reportEntries.size,0,'logout clears the read-only report backing entry');
 });
 test('optional navigation preferences write only in maintenance work and cancelled scopes never persist',()=>{
  const queue=new Map(),writes=[];let id=0;
@@ -37,7 +40,8 @@ test('small route preferences cannot override identity, cross context revisions 
  const values=new Map(),writes=[];
  const window={location:{search:''},localStorage:{getItem:key=>values.get(key)??null,setItem:(key,value)=>{values.set(key,value);writes.push([key,value])},removeItem:key=>values.delete(key)}};
  const pendingAppSessionPersistence={cancel:null},appSessionStorageBaseline={current:null};
- const bindings={window,pendingAppSessionPersistence,appSessionStorageBaseline,APP_SESSION_KEY:'session',APP_SESSION_NAVIGATION_KEY:'route',savePreferredLoginMode(){}};
+ const reportEntries=new Map([['hd-home-completed-report-v1','completed-report']]);
+ const bindings={clearHomeSessionReport:()=>clearReport({removeItem:key=>reportEntries.delete(key)}),window,pendingAppSessionPersistence,appSessionStorageBaseline,APP_SESSION_KEY:'session',APP_SESSION_NAVIGATION_KEY:'route',savePreferredLoginMode(){}};
  const clear=appFunction('clearAppSession',bindings);bindings.clearAppSession=clear;
  const save=appFunction('saveAppSession',bindings);bindings.saveAppSession=save;
  const preference=appFunction('saveAppSessionPreference',bindings),load=appFunction('loadAppSession',bindings);
@@ -53,7 +57,7 @@ test('small route preferences cannot override identity, cross context revisions 
  save(next);values.set('route',JSON.stringify({revision:oldRevision,userId:'u',companyId:'one',activeTab:'orders'}));assert.equal(load().currentUser.id,'v');assert.equal(load().activeTab,'home');
  // Changing context identity (even with the same user id) must save all new permissions.
  const changed={...next,currentUser:{...next.currentUser,permissions:{finance:false}}};preference(changed);assert.deepEqual(JSON.parse(values.get('session')).currentUser.permissions,{finance:false});
- clear();assert.equal(appSessionStorageBaseline.current,null);assert.equal(values.size,0);assert.equal(load().currentUser,null);
+ clear();assert.equal(reportEntries.size,0);assert.equal(appSessionStorageBaseline.current,null);assert.equal(values.size,0);assert.equal(load().currentUser,null);
  values.set('session',JSON.stringify(session));assert.equal(load().activeTab,'home','legacy full sessions still restore');
  const restored=load();preference({...restored,activeTab:'orders'});assert(JSON.parse(values.get('session')).revision,'legacy is upgraded by full save before route-only writes');
  window.location.search='?clearSession=1';assert.equal(load().currentUser,null);assert.equal(values.size,0);
