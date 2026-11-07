@@ -15602,6 +15602,7 @@ export default function App() {
       foregroundCollectionRecency = activationPlan.recentNames;
       const notificationPrerequisites=collectionNames.filter(name=>collectionBindingMap.has(name)&&!baselineCollectionNames.has(name));
       if(activeTabForSyncRef.current==='home'&&isPersonalHomeReadPlan(collectionNames))notificationPrerequisites.push('personal-home-projection');
+      if(activeTabForSyncRef.current==='home'&&isCompanyPrimaryHomeReadPlan(collectionNames))notificationPrerequisites.push('warehouseDispatches');
       startupNotificationBarrier?.activate(notificationPrerequisites);
       const nextCollectionNames = new Set(activationPlan.liveNames);
       const overflowCollectionNames = activationPlan.overflowNames;
@@ -15734,7 +15735,8 @@ export default function App() {
   const onHomeDetailsClosed=useCallback(()=>setHomeDetailDemand(previous=>previous===homeDemandScope?null:previous),[homeDemandScope]);
   const homePrimaryMode=import.meta.env.VITE_HOME_PRIORITY_DATA==='true';
   const homeSourceEmployee = rawEmployees.find(row=>row.id===currentUser?.id&&row.companyId===currentUser?.companyId)||currentUser;
-  const homeReadinessCollections = getForegroundReadCollections('home',{
+  const homeReadinessCollections = !homePrimaryMode&&usesCompanyHomeDashboard(homeSourceEmployee,currentUser)&&!homeDetailsRequested
+    ? COMPANY_HOME_PRIMARY_COLLECTIONS : getForegroundReadCollections('home',{
     companyHome:usesCompanyHomeDashboard(homeSourceEmployee,currentUser),byTab:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB,primaryHome:homePrimaryMode,detailsRequested:homeDetailsRequested,
   });
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
@@ -16047,7 +16049,7 @@ export default function App() {
   loyaltyActivityRef.current.missingCollections = new Set(loyaltyMissingCollectionNames);
   loyaltyActivityRef.current.homePriority = homePrimaryMode;
   loyaltyActivityRef.current.homeReady = serverConfirmedCollectionState?.tenantId === myCompanyId
-    && homeReadinessCollections.every(name => serverConfirmedCollectionState?.collections?.[name] === true);
+    && (!homePrimaryMode&&usesCompanyHomeDashboard(homeSourceEmployee,currentUser)?FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.home:homeReadinessCollections).every(name => serverConfirmedCollectionState?.collections?.[name] === true);
   loyaltyActivityRef.current.personalHome = !usesCompanyHomeDashboard(appCurrentEmployee,currentUser);
 
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
@@ -26838,7 +26840,7 @@ function MainAppView({
     <React.Suspense fallback={<LedgerPreparationNotice />}>
       <div key={dashboardPrivacyScope}>
       {mainLedgerProjection.error&&<p role="alert">Chưa đối chiếu được công nợ. <button type="button" onClick={retryMainCustomerLedgers}>Thử lại</button></p>}
-<MemoizedExecutiveDashboardView reportCacheReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&['companies','employees'].every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
+<MemoizedExecutiveDashboardView reportCacheReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&['companies','employees'].every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?(homePrimaryMode?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.home):FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
       </div>
     </React.Suspense>
   );
@@ -40262,6 +40264,7 @@ function PriorityExecutiveDashboardView({privacyScope,primarySourceReady,sourceR
 
 function FullExecutiveDashboardView({
   privacyScope,
+  onRequestDetails,
   reportCacheReady = false,
   primarySourceReady = false,
   sourceReady = true,
@@ -40391,6 +40394,7 @@ function FullExecutiveDashboardView({
     debtLedger,advanceRequests,products,warehouseImports,warehouseDispatches,warehouseStockCounts,assets,assetCostLogs,
     deliveryReports,holidays,payrollPeriods,lockedPayroll,employeeReviews,customerComplaints,attendanceLoaded,complaintsLoaded,dashboardDayKey,cashExpenseRecords]);
   const projection = useCooperativeDashboardProjection(projectionInputs,dashboardCache,buildDashboardPayrollCostSteps,{enabled:sourceReady&&!payrollLoading&&!payrollLoadError,primaryReady:primarySourceReady&&!payrollLoading&&!payrollLoadError,restoreReady:reportCacheReady});
+  useEffect(()=>{if(projection.primaryComplete)onRequestDetails?.();},[projection.primaryComplete,onRequestDetails]);
   const emptySnapshot = useMemo(() => buildExecutiveDashboardSnapshot({}), []);
   // Legacy desktop calculations below require the full structural contract.
   // The visible workspace receives the untouched DTO, so unavailable secondary
@@ -41343,7 +41347,7 @@ function FullExecutiveDashboardView({
       {projection.failed && <p role="alert" className="p-3 text-sm text-red-700">Chưa tổng hợp được báo cáo. <button type="button" onClick={projection.retry} className="font-bold underline">Thử lại</button></p>}
       {projection.pending && projection.snapshot && <span hidden aria-hidden="true" aria-busy="true" data-hd-report-refreshing />}
       {projection.snapshot ? <>
-        <BusinessReportWorkspace snapshot={projection.snapshot} sourcePending={projection.pending||dailyFinancePending||payrollLoading} detailsPending={projection.pending} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
+        <BusinessReportWorkspace snapshot={projection.snapshot} onRequestDetails={onRequestDetails} sourcePending={projection.pending||dailyFinancePending||payrollLoading} detailsPending={projection.pending} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
         {projection.snapshot.kind!=='home-primary-v1'&&<SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />}
       </> : <div data-hd-module-loading="true" role="status" className="p-5 text-sm text-slate-600">Đang tổng hợp báo cáo…</div>}
     </div>;

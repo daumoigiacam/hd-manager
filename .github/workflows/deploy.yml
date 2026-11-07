@@ -107,6 +107,7 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
           VITE_HD_APP_ID: hd-manager-production
           VITE_FIRESTORE_READ_WORKER: 'true'
+          VITE_WORKER_TRANSFER_PROFILE: 'balanced-64k'
           VITE_IDENTITY_AUTH_REGION: ''
         run: npm run build
 
@@ -116,6 +117,7 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
           VITE_HD_APP_ID: hd-manager-production
           VITE_FIRESTORE_READ_WORKER: 'true'
+          VITE_WORKER_TRANSFER_PROFILE: 'balanced-64k'
           VITE_IDENTITY_AUTH_REGION: ''
         run: npm run verify:firebase-production-bundle
 

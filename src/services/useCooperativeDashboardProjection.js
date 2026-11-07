@@ -72,6 +72,7 @@ export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps
  useEffect(()=>{if(!sameScope||!result?.snapshot||result.restored)return undefined;
   const timer=setTimeout(()=>{const span=probe.current.start('session-report-save');const saved=saveHomeSessionReport(result);probe.current.end('session-report-save',{saved});},0);return()=>clearTimeout(timer);
  },[result,sameScope]);
-  return {snapshot:sameScope&&(!result?.restored||restoreReady)?result?.snapshot:null,pending:!enabled || !sameScope || !equalInputs(result?.inputs,inputs),
+  return {primaryComplete:sameScope&&result?.mode==='primary'&&!result.restored&&primaryReady&&equalInputs(result.inputs,inputs),
+    snapshot:sameScope&&(!result?.restored||restoreReady)?result?.snapshot:null,pending:!enabled || !sameScope || !equalInputs(result?.inputs,inputs),
     failed:failure?.inputs===inputs,retry:()=>setAttempt(n=>n+1)};
 }

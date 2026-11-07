@@ -13,8 +13,8 @@ export function isPersonalHomeReadPlan(names) {
 // Complete debt/payroll inputs remain primary. Dispatch history is a dependency
 // of detailed costing/operations, not the four visible financial cards.
 export const COMPANY_HOME_PRIMARY_COLLECTIONS=Object.freeze([
- 'customers','orders','payments','expenses','financials','attendance','performance',
- 'warehouseImports','payrollPeriods','employeeReviews','customerComplaints','holidays','deliveryReports',
+ 'customers','payrollPeriods','employeeReviews','orders','payments','expenses','financials',
+ 'attendance','performance','warehouseImports','customerComplaints','holidays','deliveryReports',
 ]);
 export function isCompanyPrimaryHomeReadPlan(names){
  return Array.isArray(names)&&names.length===COMPANY_HOME_PRIMARY_COLLECTIONS.length&&new Set(names).size===names.length

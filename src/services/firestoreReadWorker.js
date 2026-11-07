@@ -137,7 +137,7 @@ self.onmessage = async event => {
   if (message.type === 'init') {
     if (scopeId !== null) return;
     scopeId = message.scopeId;scope = message.scope;
-    diagnostics=message.diagnostics===true;diagnosticProfile=diagnostics&&message.transferProfile==='balanced-64k'?'balanced-64k':null;transferWindow=diagnostics&&message.transferWindow===4?4:1;
+    diagnostics=message.diagnostics===true;diagnosticProfile=diagnostics&&message.transferProfile==='balanced-64k'?'balanced-64k':null;transferWindow=diagnosticProfile?(message.transferWindow===4?4:1):workerEnvironment.VITE_WORKER_TRANSFER_PROFILE==='balanced-64k'?4:1;
     diagnostic('worker-init-start');
     try {
       if (typeof scopeId !== 'string' || !scopeId || scope?.accountType !== 'employee'

@@ -8,11 +8,11 @@ test('same projection owner publishes primary before details and keeps cached fi
  window.calls=[];window.owners=0;window.closed=0;window.hold=false;window.release=null;
  function Fixture(){const[flags,setFlags]=useState({enabled:false,primaryReady:false}),[inputs,setInputs]=useState(input);window.flags=setFlags;window.scope=scope=>setInputs({...input,privacyScope:scope});
  const p=useCooperativeDashboardProjection(inputs,cache,function*(){return[]},flags);
- return <button data-kind={p.snapshot?.kind||'none'} data-pending={p.pending} onClick={()=>window.clicks=(window.clicks||0)+1}>{p.snapshot?.finance.revenueToday??'pending'}</button>}
+ return <button data-kind={p.snapshot?.kind||'none'} data-pending={p.pending} data-primary-complete={Boolean(p.primaryComplete)} onClick={()=>window.clicks=(window.clicks||0)+1}>{p.snapshot?.finance.revenueToday??'pending'}</button>}
  createRoot(document.getElementById('root')).render(<Fixture/>);`},bundle:true,write:false,jsx:'automatic',format:'iife',define:{'process.env.NODE_ENV':'"development"'},plugins:[{name:'controlled-worker',setup(api){api.onLoad({filter:/onlineHomeProjectionClient\.js$/},()=>({loader:'js',contents:`export function createOnlineHomeProjectionClient(){window.owners++;return {async calculate(input,mode){window.calls.push(mode);if(window.hold)await new Promise(r=>window.release=r);return {payrollCosts:[],snapshot:{kind:mode==='primary'?'home-primary-v1':'full',generatedAt:'2026-11-07T12:00:00Z',finance:{revenueToday:123}},timings:{totalMs:0}}},close(){window.closed++}}}` }));}}]});
  const browser=await chromium.launch(chromiumLaunchOptions());try{const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.route('http://home-test.local/',r=>r.fulfill({body:'<div id="root"></div>',contentType:'text/html'}));await page.goto('http://home-test.local/');await page.addScriptTag({content:bundle.outputFiles[0].text});
  await page.locator('[data-kind="none"]').waitFor();assert.deepEqual(await page.evaluate(()=>window.calls),[]);
- await page.evaluate(()=>window.flags({enabled:false,primaryReady:true}));await page.locator('[data-kind="home-primary-v1"]').waitFor();assert.deepEqual(await page.evaluate(()=>window.calls),['primary']);
+ await page.evaluate(()=>window.flags({enabled:false,primaryReady:true}));await page.locator('[data-kind="home-primary-v1"]').waitFor();assert.deepEqual(await page.evaluate(()=>window.calls),['primary']);assert.equal(await page.locator('button').getAttribute('data-primary-complete'),'true');
  await page.evaluate(()=>{window.hold=true;window.flags({enabled:true,primaryReady:true})});await page.locator('button').click();assert.equal(await page.evaluate(()=>window.clicks),1);assert.equal(await page.locator('button').textContent(),'123');
  await page.waitForFunction?.(()=>window.release); // Optional backends use the next explicit state witness below.
  for(let i=0;i<40&&!await page.evaluate(()=>Boolean(window.release));i++)await new Promise(r=>setTimeout(r,10));
@@ -30,6 +30,10 @@ test('live Home keeps both source-confirmation and completed ledger guards; logo
  assert.match(source,/projection\.snapshot\.kind!=='home-primary-v1'&&<SmartAIAssistant/);
  assert.match(source,/reportCacheReady=\{serverConfirmedCollectionState\?\.tenantId===currentUser\?\.companyId&&\['companies','employees'\]\.every/);
  assert.match(source,/restoreReady:reportCacheReady/);
+ assert.match(source,/!homePrimaryMode&&usesCompanyHomeDashboard\(homeSourceEmployee,currentUser\)&&!homeDetailsRequested\s*\? COMPANY_HOME_PRIMARY_COLLECTIONS/);
+ assert.match(source,/if\(projection\.primaryComplete\)onRequestDetails\?\.\(\)/);
+ assert.match(source,/homePrimaryMode\?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB\.home/);
+ assert.match(source,/isCompanyPrimaryHomeReadPlan\(collectionNames\)\)notificationPrerequisites\.push\('warehouseDispatches'\)/);
 });
 test('session backing report stays hidden until live core identity and permission context is confirmed',{timeout:30000},async()=>{
  const bundle=await build({stdin:{resolveDir:process.cwd(),loader:'jsx',contents:`
@@ -42,11 +46,11 @@ test('session backing report stays hidden until live core identity and permissio
  const cache={},payroll=function*(){return[]};
  function Fixture(){const[ready,setReady]=useState(false),[current,setCurrent]=useState(input);window.ready=setReady;window.switchTenant=()=>setCurrent({...input,privacyScope:'other-tenant',company:{id:'b'}});
  const result=useCooperativeDashboardProjection(current,cache,payroll,{enabled:false,primaryReady:false,restoreReady:ready});
- return <p data-visible={Boolean(result.snapshot)}>{result.snapshot?.finance.revenueToday??'hidden'}</p>}
+ return <p data-visible={Boolean(result.snapshot)} data-primary-complete={Boolean(result.primaryComplete)}>{result.snapshot?.finance.revenueToday??'hidden'}</p>}
  createRoot(document.getElementById('root')).render(<Fixture/>);`},bundle:true,write:false,jsx:'automatic',format:'iife',define:{'process.env.NODE_ENV':'"development"'}});
  const browser=await chromium.launch(chromiumLaunchOptions());try{const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.route('http://home-permission-test.local/',r=>r.fulfill({body:'<div id="root"></div>',contentType:'text/html'}));await page.goto('http://home-permission-test.local/');await page.addScriptTag({content:bundle.outputFiles[0].text});
  await page.locator('[data-visible="false"]').waitFor();assert.equal(await page.locator('p').textContent(),'hidden');
- await page.evaluate(()=>window.ready(true));await page.locator('[data-visible="true"]').waitFor();assert.equal(await page.locator('p').textContent(),'123');
+ await page.evaluate(()=>window.ready(true));await page.locator('[data-visible="true"]').waitFor();assert.equal(await page.locator('p').textContent(),'123');assert.equal(await page.locator('p').getAttribute('data-primary-complete'),'false','restored data cannot authorize secondary startup');
  await page.evaluate(()=>window.ready(false));await page.locator('[data-visible="false"]').waitFor();
  await page.evaluate(()=>{window.switchTenant();window.ready(true)});await page.locator('[data-visible="false"]').waitFor();assert.equal(await page.locator('p').textContent(),'hidden');assert.deepEqual(errors,[]);
  }finally{await browser.close()}

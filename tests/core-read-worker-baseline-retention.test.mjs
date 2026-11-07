@@ -177,3 +177,14 @@ test('nonempty baseline retention stays bounded and clearing a collection cannot
 test('actual worker pipeline retains every ordered row and confirms only after complete ACK',async()=>{
  const f=await fixture({diagnostics:true,transferWindow:4});try{f.records.set('orders',Array.from({length:700},(_,i)=>[String(i),String(i).padEnd(900,'x')]));const result=await f.open('orders');assert.equal(result.rows.length,700);assert.equal(new Set(result.rows.map(row=>row.id)).size,700);assert.deepEqual(result.rows.map(row=>row.id),Array.from({length:700},(_,i)=>String(i)));assert(result.baselineId);const reopened=await (async()=>{await f.stop(result);return f.open('orders',result.baselineId)})();assert.equal(reopened.received.find(row=>row.type==='begin').mode,'metadata');}finally{await f.close()}
 });
+
+test('production transfer flag uses the proven bounded pipeline without diagnostics and retains core isolation',async()=>{
+ const f=await fixture({transferEnv:{VITE_WORKER_TRANSFER_PROFILE:'balanced-64k'}});try{
+  f.records.set('orders',Array.from({length:700},(_,i)=>[String(i),String(i).padEnd(900,'x')]));
+  const result=await f.open('orders');assert.equal(result.rows.length,700);assert(result.received.filter(packet=>packet.type==='chunk').length<20);
+  assert.deepEqual(result.rows.map(row=>row.id),Array.from({length:700},(_,i)=>String(i)));
+  assert(!f.packets.some(packet=>packet.type==='source-timing'));
+  f.records.set('employees',Array.from({length:27},(_,i)=>[String(i),'employee']));const core=await f.open('employees');
+  assert(core.received.filter(packet=>packet.type==='chunk').every(packet=>packet.rows.length===1));
+ }finally{await f.close()}
+});
