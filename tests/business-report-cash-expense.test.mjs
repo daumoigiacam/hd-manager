@@ -62,11 +62,14 @@ test('home and cash ledger share official-approval and date rules at the applica
     Object.freeze({id:'intent',amount:999,date:'2026-10-24',isPaymentIntent:true}),
     Object.freeze({id:'ordinary',amount:200,date:'2026-10-12',paymentDate:'2026-10-23'}),
   ]);
-  const prepared=appFunction('cashExpenseRecords',{expenses,isCashflowOfficial,resolveCashflowDateKey},{memoCallback:true})();
+  const dashboardCache={},dashboardDayKey='2026-10-24',getCachedDashboardValue=appFunction('getCachedDashboardValue');
+  const prepare=values=>appFunction('cashExpenseRecords',{expenses:values,isCashflowOfficial,resolveCashflowDateKey,dashboardCache,dashboardDayKey,getCachedDashboardValue},{memoCallback:true,scope:'FullExecutiveDashboardView'})();
+  const prepared=prepare(expenses);assert.equal(prepare(expenses),prepared,'reopening Home reuses the normalized rows when vouchers and day are unchanged');
+  const refreshed=prepare([...expenses]);assert.notEqual(refreshed,prepared);assert.deepEqual(refreshed,prepared,'source identity invalidates cache without changing accounting values');
   assert.deepEqual(prepared.map(r=>[r.id,r.amount,r.date]),[['approved',100,'2026-10-24'],['ordinary',200,'2026-10-23']]);
   assert.equal(expenses[0].date,'2026-10-12','date normalization cannot mutate cash vouchers');
   const properties=appObject('projectionInputs').arguments[0].body.properties;
-  const bindings=Object.fromEntries(properties.filter(p=>p.value?.type==='Identifier').map(p=>[p.value.name,[]]));bindings.cashExpenseRecords=prepared;
+  const bindings=Object.fromEntries(properties.filter(p=>p.value?.type==='Identifier').map(p=>[p.value.name,[]]));bindings.cashExpenseRecords=prepared;bindings.lockedPayroll={};bindings.dashboardCache=dashboardCache;bindings.getCachedDashboardValue=getCachedDashboardValue;
   assert.equal(appFunction('projectionInputs',bindings,{memoCallback:true})().cashExpenseRecords,prepared,'the report receives the exact normalized approved rows');
   assert.match(app, /const officialTransactions = matchingTransactions\.filter\(item => isCashflowOfficial\(item\)\)/);
 });
