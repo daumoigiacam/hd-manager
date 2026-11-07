@@ -283,3 +283,8 @@ test('active-source publication does not evict an inactive exact reopen baseline
  await f.receive({type:'complete',streamId:reopened.streamId,packetId:++packet,revision:1,chunks:0,baselineId:'closed_history-1'});
  assert.equal(f.published.at(-1).items,original);reopened.off();a.off();b.off();f.client.close();
 });
+
+test('opt-in source diagnostics preserve auth envelope and log metadata only',async()=>{
+ const oldLocation=globalThis.location,oldInfo=console.info,logs=[];let f;
+ try{globalThis.location={search:'?hd_home_sources=1&hd_source_profile=balanced'};console.info=message=>logs.push(message);f=fixture();f.subscribe();await turn();const init=f.messages.find(m=>m.type==='init');assert.equal(init.diagnostics,true);assert.equal(init.transferProfile,'balanced-64k');await f.receive({type:'source-timing',event:'query-start',collection:'orders',logicalQueries:1,initialQueueMs:0});assert(logs.some(line=>line.includes('query-start')));assert(!logs.join('').includes('synthetic-access'));assert(!logs.join('').includes('synthetic-refresh'));assert.equal(f.fallbacks.length,0);}finally{f?.client.close();console.info=oldInfo;if(oldLocation===undefined)delete globalThis.location;else globalThis.location=oldLocation;}
+});

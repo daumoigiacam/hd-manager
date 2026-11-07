@@ -15,7 +15,8 @@ const streams = new Map(), acknowledgements = new Map();
 const serverBaselines = new Map();
 const workerEnvironment=import.meta.env||{};
 const initialAdmission = createInitialReadAdmission({concurrency:workerEnvironment.VITE_WORKER_INITIAL_CONCURRENCY==='4'?4:2});
-let baselineSequence = 0;
+let baselineSequence = 0, diagnostics=false,diagnosticProfile=null;
+const diagnostic=(event,fields={})=>{if(diagnostics)post({type:'source-timing',event,atEpochMs:performance.timeOrigin+performance.now(),...fields})};
 const abort = () => Object.assign(new Error('Read-worker stream closed.'), { name: 'AbortError' });
 const post = message => { if (!closed) self.postMessage({ ...message, scopeId }); };
 const retainClosedBaseline=stream=>{
@@ -43,6 +44,8 @@ const send = (stream, message) => new Promise((resolve, reject) => {
     acknowledgements.delete(id);reject(new Error('Read-worker chunk acknowledgement timeout.'));
   }, 45000);
   acknowledgements.set(id,{ resolve,reject,timer,stream });
+  const sentAt=diagnostics?performance.now():0;
+  if(diagnostics){const prior=resolve;resolve=()=>{stream.ackWaitMs+=(performance.now()-sentAt);prior()};acknowledgements.get(id).resolve=resolve;}
   post({ ...message, packetId:id,streamId:stream.id });
 });
 const normalize = data => Object.fromEntries(Object.entries(data).map(([key,value]) => [
@@ -62,6 +65,7 @@ async function pump(stream) {
   try {
     while (stream.active && stream.pending) {
       const snapshot = stream.pending;stream.pending = null;
+      if(diagnostics)diagnostic('snapshot',{collection:stream.collectionName,fromCache:snapshot.metadata.fromCache,rows:snapshot.size,queryWaitMs:performance.now()-stream.admittedAt});
       if (snapshot.metadata.fromCache) {
         stream.forceFull = true;
         await send(stream,{type:'cache',count:snapshot.size,metadata:{fromCache:true,hasPendingWrites:snapshot.metadata.hasPendingWrites}});
@@ -84,12 +88,15 @@ async function pump(stream) {
       // Bound both row count and estimated clone work. Four rows per ACK for
       // every tiny record caused thousands of round trips at startup; large
       // records must not be combined into an unbounded main-thread message.
-      const transferPolicy=getWorkerTransferPolicy(stream.collectionName,workerEnvironment);
+      const transferPolicy=getWorkerTransferPolicy(stream.collectionName,diagnosticProfile?{...workerEnvironment,VITE_WORKER_TRANSFER_PROFILE:diagnosticProfile}:workerEnvironment);
+      const transferStarted=diagnostics?performance.now():0;let encodingMs=0,bytes=0,diagnosticCpuMs=0;stream.ackWaitMs=0;
       for (const payload of createBudgetedTransferChunks(rows,row => {
-          if (mode === 'full') return {id:row.id,type:'full',value:encodeFirestoreWorkerValue(normalize(row.data()),stream.firestore)};
+          const encodeStarted=diagnostics?performance.now():0;
+          if (mode === 'full'){const encoded={id:row.id,type:'full',value:encodeFirestoreWorkerValue(normalize(row.data()),stream.firestore)};if(diagnostics)encodingMs+=performance.now()-encodeStarted;return encoded;}
           return {id:row.doc.id,type:row.type,oldIndex:row.oldIndex,newIndex:row.newIndex,
             ...(row.type === 'removed' ? {} : {value:encodeFirestoreWorkerValue(normalize(row.doc.data()),stream.firestore)})};
         },transferPolicy)) {
+        if(diagnostics){const t=performance.now();bytes+=new TextEncoder().encode(JSON.stringify(payload)).byteLength;diagnosticCpuMs+=performance.now()-t;}
         await send(stream,{type:'chunk',revision,index:chunks++,rows:payload});
       }
       // An empty full transfer carries no rows to reuse. Keeping its token in
@@ -98,6 +105,7 @@ async function pump(stream) {
       const baselineId=snapshot.metadata.hasPendingWrites || snapshot.size===0 ? null
         : reuseBaseline?baseline.id:`server-${++baselineSequence}`;
       await send(stream,{type:'complete',revision,chunks,baselineId});
+      diagnostic('transferred',{collection:stream.collectionName,mode,rows:snapshot.size,chunks,serializedBytes:bytes,encodingMs,diagnosticCpuMs,transferMs:diagnostics?performance.now()-transferStarted:0,ackWaitMs:stream.ackWaitMs,initialQueueMs:stream.admittedAt-stream.queuedAt});
       // Cache only a server-confirmed snapshot whose transfer was acknowledged.
       // The next subscription must present the exact decoded baseline token.
       if(stream.active){
@@ -127,6 +135,8 @@ self.onmessage = async event => {
   if (message.type === 'init') {
     if (scopeId !== null) return;
     scopeId = message.scopeId;scope = message.scope;
+    diagnostics=message.diagnostics===true;diagnosticProfile=diagnostics&&message.transferProfile==='balanced-64k'?'balanced-64k':null;
+    diagnostic('worker-init-start');
     try {
       if (typeof scopeId !== 'string' || !scopeId || scope?.accountType !== 'employee'
         || typeof scope.appId !== 'string' || !scope.appId || scope.appId.includes('/')
@@ -172,7 +182,7 @@ self.onmessage = async event => {
         try { assertWorkerIdentity(user,(await getIdTokenResult(user)).claims,scope); }
         catch { post({type:'auth-invalid',code:'worker-auth-scope'});stopAll();closed=true; }
       });
-      post({type:'ready'});
+      diagnostic('worker-auth-ready');post({type:'ready'});
     } catch { post({type:'init-failed',code:'worker-auth-init-failed'});stopAll();closed=true; }
     return;
   }
@@ -194,7 +204,8 @@ self.onmessage = async event => {
   const initialBaseline=serverBaselines.get(col)||null;serverBaselines.delete(col);
   const stream = {id:message.streamId,collectionName:col,initialBaselineId:message.baselineId,initialBaseline,confirmedBaseline:initialBaseline,
     documentTarget:col==='companies',active:true,busy:false,pending:null,forceFull:true,revision:0,unsubscribe:null};
-  streams.set(stream.id,stream);
+  stream.queuedAt=diagnostics?performance.now():0;stream.ackWaitMs=0;
+  streams.set(stream.id,stream);diagnostic('queued',{collection:col});
   try {
     initialAdmission.enqueue(stream.id,{start:()=>{
     // Company bootstrap has always read one exact tenant document, never the
@@ -209,6 +220,7 @@ self.onmessage = async event => {
         // The assigned-employee two-query inbox stays on its existing path.
         ? query(tenantCollection,where('companyId','==',scope.companyId),orderBy('createdAt','desc'),limit(200))
         : query(tenantCollection,where('companyId','==',scope.companyId));
+    stream.admittedAt=diagnostics?performance.now():0;diagnostic('query-start',{collection:col,initialQueueMs:stream.admittedAt-stream.queuedAt,logicalQueries:1});
     post({type:'source-started',streamId:stream.id});
     stream.unsubscribe = onSnapshot(source,{includeMetadataChanges:true},snapshot => {
       if (!stream.active || closed) return;

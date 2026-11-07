@@ -18,6 +18,10 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
 }) {
   if (!Number.isInteger(retainedSnapshotLimit) || retainedSnapshotLimit < 1 || retainedSnapshotLimit > 8)
     throw new TypeError('Invalid read-worker reopen snapshot limit.');
+  const diagnosticParams=typeof location==='undefined'?null:new URLSearchParams(location.search);
+  const diagnostics=diagnosticParams?.get('hd_home_sources')==='1';
+  const diagnostic=(event,fields={})=>{if(diagnostics)console.info('HD_SOURCE_PERF '+JSON.stringify({event,atMs:performance.now(),...fields}))};
+  diagnostic('client-init-start');
   const scope = {uid:user?.uid,apiKey:config?.apiKey,appName:user?.auth?.app?.name || '[DEFAULT]',
     projectId:config?.projectId,appId,companyId,accountType};
   const scopeId = `${Date.now()}-${crypto.randomUUID()}`;
@@ -54,6 +58,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
     if (!valid()) return;
     for (const entry of subscriptions.values()) if (entry.active && entry.pending && entry.expected !== unset
       && states[entry.collectionName] === entry.expected) {
+      diagnostic('react-committed',{collection:entry.collectionName,rows:entry.expectedRows,decodeMs:entry.decodeMs,publishMs:entry.publishMs,chunks:entry.chunkCount});
       setPending(entry,false);entry.phase='committed';onCommitted({collectionName:entry.collectionName,generation:entry.generation});
     }
   };
@@ -83,9 +88,10 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
   };
   const handle = async message => {
     if (!valid() || !message || message.scopeId !== scopeId) return;
+    if(message.type==='source-timing'){diagnostic(message.event,{...Object.fromEntries(Object.entries(message).filter(([key])=>!['type','scopeId','event'].includes(key)))});return;}
     if (message.type === 'ready') {
       if (ready || failed) return;
-      ready = true;clearTimeout(initTimer);for (const entry of subscriptions.values()) subscribeWorker(entry);return;
+      diagnostic('client-worker-ready');ready = true;clearTimeout(initTimer);for (const entry of subscriptions.values()) subscribeWorker(entry);return;
     }
     if (message.type === 'init-failed') { fail('worker-auth-init-failed');return; }
     if (message.type === 'auth-invalid') { close();onAuthInvalid();return; }
@@ -112,13 +118,13 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
         entry.phase='receiving';entry.rowsReceived=0;entry.expectedRows=message.count;
         await entry.assembler.begin(message);
       }
-      else if (message.type === 'chunk') { await entry.assembler.chunk(message);entry.rowsReceived+=message.rows.length; }
+      else if (message.type === 'chunk') {const started=diagnostics?performance.now():0;await entry.assembler.chunk(message);if(diagnostics){entry.decodeMs+=performance.now()-started;entry.chunkCount++;}entry.rowsReceived+=message.rows.length; }
       else if (message.type === 'complete') {
         const result = entry.assembler.finish(message);
         if (!valid() || !entry.active) return;
         entry.phase='publishing';
         entry.completedSnapshot={items:result.items,baselineId:message.baselineId};
-        await entry.publish(result.snapshot,result.items);
+        const publishStarted=diagnostics?performance.now():0;await entry.publish(result.snapshot,result.items);if(diagnostics){entry.publishMs+=performance.now()-publishStarted;diagnostic('published',{collection:entry.collectionName,rows:entry.expectedRows,decodeMs:entry.decodeMs,publishMs:entry.publishMs,chunks:entry.chunkCount});}
       } else throw new Error('Invalid worker message.');
       if (valid() && entry.active) post({type:'ack',streamId:entry.id,packetId:message.packetId});
     } catch (error) {
@@ -136,7 +142,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
   void (async () => {
     try {
       initTimer = setTimeout(() => fail('worker-init-timeout'),20000);
-      await user.getIdToken();
+      const authStarted=diagnostics?performance.now():0;await user.getIdToken();diagnostic('main-token-ready',{elapsedMs:diagnostics?performance.now()-authStarted:0});
       if (!valid() || failed) return;
       const envelope = createWorkerAuthEnvelope(user,scope);
       let workerScope=scope,cacheEnabled=false;
@@ -149,7 +155,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
       persistentCacheConfigured=cacheEnabled;
       worker.onmessage = event => { void handle(event.data); };
       worker.onerror = () => fail('worker-unavailable');
-      post({type:'init',scope:workerScope,config,envelope,persistentCache:cacheEnabled,...(emulator ? {emulator} : {})});
+      post({type:'init',scope:workerScope,config,envelope,persistentCache:cacheEnabled,diagnostics,transferProfile:diagnostics&&diagnosticParams?.get('hd_source_profile')==='balanced'?'balanced-64k':null,...(emulator ? {emulator} : {})});
     } catch { fail('worker-unavailable'); }
   })();
   return {
@@ -161,7 +167,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
       // evict the small cache of routes which are actually closed.
       committed.delete(collectionName);baselineIds.delete(collectionName);
       const entry = {id,collectionName,publish,error,fallback:subscribeFallback,active:true,fallbackStarted:false,fallbackStop:null,
-        startedAt:Date.now(),phase:'subscribing',rowsReceived:0,expectedRows:null,lastPacketAfterMs:null,
+        decodeMs:0,publishMs:0,chunkCount:0,startedAt:Date.now(),phase:'subscribing',rowsReceived:0,expectedRows:null,lastPacketAfterMs:null,
         generation:0,expected:unset,pending:true,commitTimer:null,
         initialBaselineId,completedSnapshot:initialItems.length?{items:initialItems,baselineId:initialBaselineId}:null,
         assembler:createReadWorkerSnapshotAssembler({decode,retain,initialItems,

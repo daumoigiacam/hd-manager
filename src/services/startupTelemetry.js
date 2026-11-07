@@ -53,6 +53,7 @@ export const recordStartupEvent = (name, detail = {}, level = 'info') => {
     level,
     detail: safeDetail(detail),
   };
+  if(typeof location!=='undefined'&&new URLSearchParams(location.search).get('hd_home_sources')==='1')console.info('HD_SOURCE_PERF '+JSON.stringify({event:'startup-phase',name:entry.name,atMs:performance.now(),durationMs:entry.durationMs}));
   startupEvents.push(entry);
   while (startupEvents.length > MAX_STARTUP_EVENTS) startupEvents.shift();
 
