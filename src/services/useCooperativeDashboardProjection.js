@@ -36,7 +36,7 @@ export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps
       return()=>{active=false};
     }
     void (async()=>{
-    probe.current.once('sources-ready');const calculationSpan=probe.current.start('calculation');
+    probe.current.once('sources-ready');if(cache.cooperativeProjection?.inputs)probe.current.once('cache-recalculation',{changedInputs:Object.keys(inputs).filter(key=>!Object.is(cache.cooperativeProjection.inputs[key],inputs[key]))});const calculationSpan=probe.current.start('calculation');
     let payrollCosts,snapshot,workerTimings,clientTimings;
     try {
      if(!calculationOwner.current)calculationOwner.current=createOnlineHomeProjectionClient();

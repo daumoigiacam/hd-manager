@@ -21,7 +21,7 @@ test('actual report hook keeps stale data busy, cancels superseded work, hides o
  }
  window.renderCase=(scope,amount,mark,role,privacy,revision,enabled)=>root.render(<Harness {...{scope,amount,mark,role,privacy,revision,enabled}}/>);
  window.release=()=>{const task=window.yields.shift();if(task)task();return Boolean(task)};
- window.unmount=()=>root.unmount();
+ window.clear=()=>root.render(null);window.unmount=()=>root.unmount();
  `,loader:'jsx'},bundle:true,write:false,format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'},plugins:[{
   name:'controlled-projection-test',setup(b){
    b.onResolve({filter:/^\.\/cooperativeReportProjection\.js$/},()=>({path:'controlled-driver',namespace:'fixture'}));
@@ -62,6 +62,10 @@ test('actual report hook keeps stale data busy, cancels superseded work, hides o
   assert.equal(await page.locator('output').textContent(),'','tenant change cannot reuse even an identical explicit privacy key');await settle();
   await render('a',11,11,'a','grants-two',4);
   assert.equal(await page.locator('output').textContent(),'','principal change cannot reuse an explicit privacy key');await settle();
+  await render('a',13,13);await settle();await page.evaluate(()=>window.clear());await page.waitForFunction(()=>!document.querySelector('section'));
+  const beforeRemount=await page.evaluate(()=>window.yields.length);await render('a',13,14);
+  assert.equal(await page.locator('output').textContent(),'13','same-scope cached report survives a real unmount/remount');await settle();
+  assert.equal(await page.evaluate(()=>window.yields.length),beforeRemount,'unchanged inputs must not schedule payroll or report work again');
   await render('a',9,12);await page.evaluate(()=>window.unmount());for(let i=0;i<10;i++){await page.evaluate(()=>window.release());await page.waitForTimeout(5)}
   assert.equal(await page.evaluate(()=>window.commits.includes(9)),false);assert.deepEqual(errors,[]);
  }finally{await browser.close()}

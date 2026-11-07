@@ -40363,13 +40363,13 @@ function FullExecutiveDashboardView({
       debt: reconciledLedgerMap[customer.id]?.currentDebt || 0
     }))
   ), [dashboardCache, customers, reconciledLedgerMap]);
-  const cashExpenseRecords = useMemo(() => expenses.filter(isCashflowOfficial)
-    .map(expense => ({...expense,date:resolveCashflowDateKey(expense)})), [expenses,dashboardDayKey]);
+  const cashExpenseRecords = useMemo(() => getCachedDashboardValue(dashboardCache, 'homeCashExpenseRecords', [expenses,dashboardDayKey],
+    () => expenses.filter(isCashflowOfficial).map(expense => ({...expense,date:resolveCashflowDateKey(expense)}))), [dashboardCache,expenses,dashboardDayKey]);
   const projectionInputs = useMemo(() => ({
     privacyScope, employee, company, employees, attendance, customers, orders, orderRequests, payments, expenses,
     financials, performance, debtLedger, advances: advanceRequests, advanceRequests, products, warehouseImports,
     warehouseDispatches, warehouseStockCounts, assets, assetCostLogs, deliveryReports,
-    holidays, payrollPeriods, lockedPayroll, employeeReviews, customerComplaints, attendanceLoaded, complaintsLoaded,
+    holidays, payrollPeriods, lockedPayroll: Object.keys(lockedPayroll).length ? lockedPayroll : getCachedDashboardValue(dashboardCache, 'homeEmptyLockedPayroll', [company?.id], () => ({})), employeeReviews, customerComplaints, attendanceLoaded, complaintsLoaded,
     dashboardDayKey,
     cashExpenseRecords,
   }), [privacyScope,employee,company,employees,attendance,customers,orders,orderRequests,payments,expenses,financials,performance,
