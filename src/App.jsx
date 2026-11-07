@@ -14462,6 +14462,9 @@ export default function App() {
     };
 
     const readTenantCollectionViaRest = async (colName, { signal, isCurrent = () => isReadAccessCurrent() } = {}) => {
+      const tracing=typeof location!=='undefined'&&new URLSearchParams(location.search).get('hd_home_sources')==='1';
+      const trace=(event,fields={})=>{if(tracing)console.info('HD_SOURCE_PERF '+JSON.stringify({event,collection:colName,atMs:performance.now(),...fields}))};
+      const scanStarted=tracing?performance.now():0;trace('rest-scan-start');
       const collectionSources = getTenantCollectionSources(colName);
       if (collectionSources.length === 0) return [];
       if (isPreviewDataMode) {
@@ -14534,9 +14537,11 @@ export default function App() {
       };
 
       const send = async (forceRefreshToken = false, body = queryBody, requestSignal = signal) => {
-        const token = await authenticatedUser.getIdToken(forceRefreshToken);
+        const tokenStarted=tracing?performance.now():0;
+        const token = await authenticatedUser.getIdToken(forceRefreshToken);trace('rest-token',{elapsedMs:tracing?performance.now()-tokenStarted:0});
         if (requestSignal?.aborted || !isCurrent()) throw Object.assign(new Error('Firebase read cancelled.'), { name: 'AbortError' });
-        return fetch(directUrl || queryUrl, {
+        const networkStarted=tracing?performance.now():0;
+        const response=await fetch(directUrl || queryUrl, {
           method: directUrl ? 'GET' : 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -14545,6 +14550,7 @@ export default function App() {
           ...(body ? { body: JSON.stringify(body) } : {}),
           signal: requestSignal,
         });
+        trace('rest-headers',{status:response.status,elapsedMs:tracing?performance.now()-networkStarted:0});return response;
       };
 
       if (!directUrl && !customerSession && colName !== 'messages') {
@@ -14562,7 +14568,8 @@ export default function App() {
           signal,
           isCurrent,
           decodeFields: fromFirestoreRestFields,
-          runQuery: body => restReadAdmission.run(async () => {
+          runQuery: body => {const queuedAt=tracing?performance.now():0;trace('rest-page-queued');return restReadAdmission.run(async () => {
+            trace('rest-page-start',{queueMs:tracing?performance.now()-queuedAt:0});
             const pageController = new AbortController();
             const abortPage = () => pageController.abort();
             signal?.addEventListener('abort', abortPage, { once: true });
@@ -14578,15 +14585,18 @@ export default function App() {
                   error.code = response.status === 401 ? 'auth/unauthenticated' : response.status === 403 ? 'firestore/permission-denied' : 'firestore/rest-read-failed';
                   throw error;
                 }
-                return parseFirebaseResponseJsonInBackground(response, {signal: pageController.signal});
+                const parseStarted=tracing?performance.now():0;const parsed=await parseFirebaseResponseJsonInBackground(response, {signal: pageController.signal});
+                const serializedBytes=tracing?new TextEncoder().encode(JSON.stringify(parsed)).byteLength:0;
+                trace('rest-page-decoded',{bodyAndParseWallMs:tracing?performance.now()-parseStarted:0,serializedBytes});return parsed;
               })(), 9000, `Firebase page timeout: ${colName}`);
             } finally {
               window.clearTimeout(pageDeadline);
               signal?.removeEventListener('abort', abortPage);
               pageController.abort();
             }
-          }, signal),
+          }, signal)},
         });
+        trace('rest-scan-complete',{rows:result.items.length,pages:result.pageCount,requests:result.requests,documentsRead:result.documentsRead,elapsedMs:tracing?performance.now()-scanStarted:0});
         return result.items;
       }
 
