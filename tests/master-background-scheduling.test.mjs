@@ -191,6 +191,7 @@ function appHarness({ idle = false } = {}) {
   document.visibilityState = 'visible';
   document.activeElement = null;
   document.createElement = () => { throw new Error('automatic downloads are forbidden in this harness'); };
+  const foregroundCollections=appRuntime.declaration('FOREGROUND_REALTIME_COLLECTIONS_BY_TAB',{});
   const bindings = {
     window: browser, document, navigator: { onLine: true }, Date: RuntimeDate,
     console: { warn: (...args) => errors.push(args) },
@@ -202,6 +203,7 @@ function appHarness({ idle = false } = {}) {
     },
     firebaseUser: { uid: 'user-a' }, myCompanyId: 'tenant-a', activeTab: 'orders', isCoreDataLoaded: true,
     homeReadinessCollections: ['customers', 'orders', 'payments'],
+    homePrimaryMode:false,homeSourceEmployee:{id:'employee-a'},FOREGROUND_REALTIME_COLLECTIONS_BY_TAB:foregroundCollections,
     appCurrentEmployee: { id: 'employee-a' }, currentUser: { companyId: 'tenant-a' },
     usesCompanyHomeDashboard: () => true,
     startupUiAdmissionRef: { current: { personalReady: false } },
@@ -209,7 +211,7 @@ function appHarness({ idle = false } = {}) {
     activeTenantScopeRef: { current: 'tenant-a' }, currentCompany: { enabled: true, name: 'Company A' },
     getCustomerLoyaltySettings: company => ({ enabled: company.enabled, earnAmountPerPoint: company.earnAmountPerPoint || 2000 }),
     serverConfirmedCollectionState: { tenantId: 'tenant-a', collections: Object.fromEntries(
-      ['customers', 'orders', 'payments', 'orderRequests', 'warehouseDispatches', 'customer_points'].map(name => [name, true])
+      [...new Set([...foregroundCollections.home,'orderRequests','customer_points'])].map(name => [name, true])
     ) },
     loyaltyMaintenanceRef: { current: null }, loyaltySyncCallbackRef: { current: null },
     loyaltyFingerprintCallbackRef: { current: null }, loyaltyActivityRef: { current: { lastInputAt: 0 } },
@@ -277,7 +279,10 @@ function mountSourceEffect(h) {
 function missingSources(h, names, tenantId = h.bindings.myCompanyId) {
   const missing = new Set(names);
   h.render({ serverConfirmedCollectionState: { tenantId, collections: Object.fromEntries(
-    h.bindings.LOYALTY_MAINTENANCE_COLLECTION_NAMES.map(name => [name, !missing.has(name)])
+    [...new Set([
+      ...h.bindings.FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.home,
+      ...h.bindings.LOYALTY_MAINTENANCE_COLLECTION_NAMES,
+    ])].map(name => [name, !missing.has(name)])
   ) } });
 }
 
@@ -1175,6 +1180,26 @@ test('App keeps loyalty history reads behind initial Home confirmation without d
   h.bindings.loyaltyActivityRef.current.homeReady=true;await h.timers.advance(3400);
   assert.deepEqual(reads,['orderRequests','customer_points']);assert.equal(h.bindings.loyaltyActivityRef.current.ready,false);
   cleanup();
+});
+
+test('financial-first Home confirmation does not admit loyalty before deferred Home history is confirmed', async () => {
+  const h = appHarness();
+  missingSources(h, ['orderRequests', 'customer_points', 'warehouseDispatches']);
+  h.render({ activeTab: 'home' });
+  assert.equal(h.bindings.homeReadinessCollections.every(name => h.bindings.serverConfirmedCollectionState.collections[name]), true);
+  assert.equal(h.bindings.loyaltyActivityRef.current.homeReady, false);
+  const reads = [];
+  h.bindings.forceRefreshCollectionRef.current = async name => reads.push(name);
+  const sources = mountSourceEffect(h);
+  await h.timers.advance(10000);
+  assert.deepEqual(reads, [], 'maintenance must not compete with financial-first Home or deferred dispatch reads');
+  h.bindings.serverConfirmedCollectionState.collections.warehouseDispatches = true;
+  h.render();
+  sources.update();
+  await h.timers.advance(1700 * 3);
+  assert.equal(h.bindings.loyaltyActivityRef.current.homeReady, true);
+  assert.deepEqual(reads, ['orderRequests', 'customer_points']);
+  sources.dispose();
 });
 
 test('personal Home defers loyalty reads and writes until both sources and its real projection are ready', async () => {
