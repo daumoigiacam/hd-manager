@@ -48,3 +48,27 @@ test('invalid, duplicate and excess jobs fail explicitly instead of silently ope
   assert.throws(()=>queue.enqueue('c',job),{code:'resource-exhausted'});
   assert.deepEqual(queue.getSnapshot(),{active:1,queued:1,closed:false});queue.close();
 });
+
+test('one bulk history leaves the second initial slot available for small required sources',()=>{
+  const queue=createInitialReadAdmission({groupLimits:{history:1}}),started=[];
+  const add=(key,group='')=>queue.enqueue(key,{group,start:()=>started.push(key),onError:assert.fail});
+  add('orders','history');add('payments','history');add('payroll');add('expenses');
+  assert.deepEqual(started,['orders','payroll']);
+  queue.settle('payroll');assert.deepEqual(started,['orders','payroll','expenses']);
+  queue.settle('expenses');assert.equal(queue.getSnapshot().active,1);
+  assert.deepEqual(started,['orders','payroll','expenses'],'bulk work remains queued until explicit server ACK');
+  queue.settle('orders');assert.deepEqual(started,['orders','payroll','expenses','payments']);
+  assert.equal(queue.settle('orders'),false);queue.settle('payments');
+  assert.deepEqual(queue.getSnapshot(),{active:0,queued:0,closed:false});queue.close();
+});
+
+test('group cancellation, construction error and reentrant ACK cannot strand or over-admit a bulk history',()=>{
+ const queue=createInitialReadAdmission({groupLimits:{history:1}}),started=[],errors=[];
+ const add=(key,start=()=>started.push(key))=>queue.enqueue(key,{group:'history',start,onError:e=>errors.push(e.message)});
+ add('held');add('cancelled');add('throws',()=>{throw Error('listener error')});
+ add('reentrant',()=>{started.push('reentrant');queue.settle('reentrant')});add('last');
+ queue.settle('cancelled');assert.deepEqual(started,['held']);queue.settle('held');
+ assert.deepEqual(started,['held','reentrant','last']);assert.deepEqual(errors,['listener error']);
+ assert.equal(queue.getSnapshot().active,1);queue.close();
+ for(const groupLimits of [{history:0},{history:1.5},{'':1}])assert.throws(()=>createInitialReadAdmission({groupLimits}),RangeError);
+});
