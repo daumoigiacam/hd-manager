@@ -35,12 +35,12 @@ export function extractEmployeeHomeDomain(source,sourceDirectory,exportedRoots=r
  return [...imports.values(),...Array.from(declarations.values()).sort((a,b)=>a.start-b.start).map(n=>(n.type==='VariableDeclarator'?'const ':'')+source.slice(n.start,n.end)+(n.type==='VariableDeclarator'?';':'')),`export {${exportedRoots.join(',')}};`].join('\n\n');
 }
 
-export function employeeHomeDomainPlugin() {
- const id='\0hd-employee-home-domain';
- return {name:'hd-employee-home-domain',resolveId(name){if(name==='@hd/employee-home-domain')return id},
+export function employeeHomeDomainPlugin(moduleName='@hd/employee-home-domain',exportedRoots=roots) {
+ const id=moduleName==='@hd/employee-home-domain'?'\0hd-employee-home-domain':'\0'+moduleName;
+ return {name:moduleName==='@hd/employee-home-domain'?'hd-employee-home-domain':'hd-employee-home-domain:'+moduleName,resolveId(name){if(name===moduleName)return id},
   async load(name){
    if(name!==id)return;
    const sourceFile=path.resolve('src/App.jsx');this.addWatchFile(sourceFile);
-   return extractEmployeeHomeDomain(await readFile(sourceFile,'utf8'),path.dirname(sourceFile));
+   return extractEmployeeHomeDomain(await readFile(sourceFile,'utf8'),path.dirname(sourceFile),exportedRoots);
   }};
 }

@@ -153,6 +153,28 @@ jobs:
           echo "index_sha=${INDEX_SHA}" >> "$GITHUB_OUTPUT"
           echo "Build index SHA: ${INDEX_SHA}"
 
+      - name: Preserve active frontend release before activation
+        id: home_release_backup
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          RUN_ID: ${{ github.run_id }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: RUN_ID
+          script: |
+            set -euo pipefail
+            BASE=/var/www/hd-manager
+            test -L "$BASE/current"
+            OLD="$(readlink -f "$BASE/current")"
+            case "$OLD" in "$BASE"/releases/*) ;; *) echo 'Unexpected active frontend path'; exit 1;; esac
+            test -f "$OLD/index.html"
+            test -w "$BASE"
+            tar -czf "/tmp/hd-manager-frontend-$RUN_ID.tgz" -C "$OLD" .
+            printf '%s' "$OLD" > "/tmp/hd-manager-frontend-$RUN_ID.previous"
+
       - name: Prepare VPS deployment package path
         if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         uses: appleboy/ssh-action@v1.2.2
@@ -244,6 +266,27 @@ jobs:
       - name: Verify production entry-point assets
         if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
         run: node scripts/master-production-release-smoke.mjs --production --expected-commit "${GITHUB_SHA}" --local-dist dist
+
+      - name: Restore previous frontend if release verification fails
+        if: failure() && steps.home_release_backup.outcome == 'success'
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          RUN_ID: ${{ github.run_id }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: RUN_ID
+          script: |
+            set -euo pipefail
+            BASE=/var/www/hd-manager
+            OLD="$(cat "/tmp/hd-manager-frontend-$RUN_ID.previous")"
+            case "$OLD" in "$BASE"/releases/*) ;; *) exit 1;; esac
+            test -f "$OLD/index.html"
+            test -L "$BASE/current"
+            ln -s "$OLD" "$BASE/.rollback-$RUN_ID"
+            mv -Tf "$BASE/.rollback-$RUN_ID" "$BASE/current"
+            test "$(readlink -f "$BASE/current")" = "$OLD"
 
       - name: Upload production static verification evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true

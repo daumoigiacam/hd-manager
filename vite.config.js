@@ -141,7 +141,7 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: runtimeAliases
     },
-    worker: { format: 'iife', plugins:()=>[employeeHomeDomainPlugin()], rollupOptions: { output: { inlineDynamicImports: true } } },
+    worker: { format: 'iife', plugins:()=>[employeeHomeDomainPlugin(),employeeHomeDomainPlugin('@hd/online-home-payroll',['buildDashboardPayrollCostRows'])], rollupOptions: { output: { inlineDynamicImports: true } } },
     // This workspace also contains installers, backups and other websites.
     // Scan only HD Manager's entry, while still discovering its imported deps.
     optimizeDeps: {

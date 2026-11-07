@@ -12,7 +12,7 @@ assert.equal((workflow.match(/VITE_FIRESTORE_READ_WORKER: 'true'/g) || []).lengt
 assert.equal((workflow.match(/VITE_IDENTITY_AUTH_REGION: ''/g) || []).length, 2, 'regional endpoints remain disabled until separately deployed');
 assert.doesNotMatch(workflow, /VITE_API_BASE_URL|VITE_INVENTORY_VPS_ENABLED|VITE_DATA_MODE:\s+vps-production/);
 assert.doesNotMatch(workflow, /if:.*github\.event_name == 'push'/);
-assert.equal((workflow.match(/if: github\.event_name == 'workflow_dispatch' && inputs\.confirm_production_release == true/g) || []).length, 8);
+assert.equal((workflow.match(/if: github\.event_name == 'workflow_dispatch' && inputs\.confirm_production_release == true/g) || []).length, 9);
 assert.match(workflow, /name: Verify production static compression\s+if: github\.event_name == 'workflow_dispatch' && inputs\.confirm_production_release == true\s+run: node scripts\/verify-static-compression\.mjs --production/);
 assert.match(workflow, /host: \$\{\{ secrets\.VPS_HOST \}\}/);
 assert.match(workflow, /\/home\/hdmanager\/deploy\.sh/);
@@ -24,3 +24,9 @@ assert.match(workflow, /path: test-results\/master-production-release-smoke\/\*\
 assert.doesNotMatch(workflow, /app\.hdconnect\.net\/api\/v1|hd-connect-platform/);
 
 console.log('Production deployment workflow safety checks passed.');
+
+assert.match(workflow,/id: home_release_backup/);
+assert.match(workflow,/if: failure\(\) && steps\.home_release_backup\.outcome == 'success'/);
+assert(workflow.indexOf('Preserve active frontend')<workflow.indexOf('Deploy frontend to VPS'));
+assert.match(workflow,/test -w "\$BASE"/);
+assert.match(workflow,/mv -Tf "\$BASE\/\.rollback-\$RUN_ID" "\$BASE\/current"/);

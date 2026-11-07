@@ -1,3 +1,4 @@
+import {createOnlineHomeProjectionClient} from './onlineHomeProjectionClient.js';
 import {useEffect,useRef,useState,startTransition} from 'react';
 import {createSalesRevenueIndexScope} from '../utils/salesRevenuePeriod.js';
 import {runCooperativeReportProjection} from './cooperativeReportProjection.js';
@@ -13,6 +14,8 @@ export const hasSameHomeProjectionScope=(previous,next)=>Boolean(previous&&next
 // Reuse the authenticated dashboard-cache owner; no additional data store or
 // subscription. Only a complete, same-scope read projection can be retained.
 export function useHomePrimaryProjection(inputs,cache,buildPayrollSteps,{enabled=false}={}){
+ const calculationOwner=useRef(null);
+ useEffect(()=>()=>{calculationOwner.current?.close();calculationOwner.current=null;},[]);
  const [result,setResult]=useState(()=>hasSameHomeProjectionScope(cache.homePrimaryProjection?.inputs,inputs)?cache.homePrimaryProjection:null);
  const [failure,setFailure]=useState(null),[attempt,setAttempt]=useState(0);
  const latest=useRef(inputs);latest.current=inputs;
@@ -23,8 +26,17 @@ export function useHomePrimaryProjection(inputs,cache,buildPayrollSteps,{enabled
   if(enabled){
    if(equalInputs(cache.homePrimaryProjection?.inputs,inputs))publish({...cache.homePrimaryProjection,inputs});
    else void(async()=>{
-    const payrollCosts=await runCooperativeReportProjection(buildPayrollSteps(inputs),{isCurrent,runStep:createSalesRevenueIndexScope()});
-    const snapshot=await runCooperativeReportProjection(createHomePrimarySnapshotIterator({...inputs,payrollCosts}),{isCurrent});
+    let payrollCosts,snapshot;
+    try {
+     if(!calculationOwner.current)calculationOwner.current=createOnlineHomeProjectionClient();
+     ({payrollCosts,snapshot}=await calculationOwner.current.calculate(inputs,'primary'));
+    } catch(error) {
+     if(error.name==='AbortError'||!isCurrent())throw error;
+     // Older WebViews or non-cloneable provider values retain the proven path.
+    payrollCosts=await runCooperativeReportProjection(buildPayrollSteps(inputs),{isCurrent,runStep:createSalesRevenueIndexScope()});
+    snapshot=await runCooperativeReportProjection(createHomePrimarySnapshotIterator({...inputs,payrollCosts}),{isCurrent});
+
+    }
     publish({inputs,snapshot});
    })().catch(error=>{if(isCurrent()&&error.name!=='AbortError')setFailure({inputs})});
   }
