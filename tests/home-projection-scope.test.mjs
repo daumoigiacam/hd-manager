@@ -7,4 +7,8 @@ test('retains a pending report across recreated source arrays but not an account
  for(const patch of [{privacyScope:'permission-version-2'},{company:{id:'b'}},{employee:{id:'f'}},{dashboardDayKey:'2026-11-08'},{dashboardClockScope:'other'}])assert.equal(hasSameDashboardProjectionScope(before,{...before,...patch}),false);
  assert.equal(hasSameDashboardProjectionScope(before,{...before,privacyScope:undefined}),false);
  assert.equal(hasSameDashboardProjectionScope(undefined,before),false);
+ const legacy={company:{id:'a'},employee:{id:'e'}};
+ assert.equal(hasSameDashboardProjectionScope(legacy,{...legacy}),true);
+ assert.equal(hasSameDashboardProjectionScope(legacy,{...legacy,employee:{id:'e',role:'changed'}}),false);
+ assert.equal(hasSameDashboardProjectionScope(legacy,{...legacy,company:{id:'a'}}),false);
 });
