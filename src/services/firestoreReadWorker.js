@@ -15,8 +15,7 @@ let volatileDb=null,volatileAuthAdapter=null,removeVolatileTokenListener=null;
 const streams = new Map(), acknowledgements = new Map();
 const serverBaselines = new Map();
 const workerEnvironment=import.meta.env||{};
-const initialAdmission = createInitialReadAdmission({concurrency:workerEnvironment.VITE_WORKER_INITIAL_CONCURRENCY==='4'?4:2,
-  groupLimits:workerEnvironment.VITE_WORKER_BULK_ADMISSION==='single-history'?{history:1}:{}});
+const initialAdmission = createInitialReadAdmission({concurrency:workerEnvironment.VITE_WORKER_INITIAL_CONCURRENCY==='4'?4:2});
 let baselineSequence = 0, diagnostics=false,diagnosticProfile=null,transferWindow=1;
 const diagnostic=(event,fields={})=>{if(diagnostics)post({type:'source-timing',event,atEpochMs:performance.timeOrigin+performance.now(),...fields})};
 const abort = () => Object.assign(new Error('Read-worker stream closed.'), { name: 'AbortError' });
@@ -210,7 +209,7 @@ self.onmessage = async event => {
   stream.queuedAt=diagnostics?performance.now():0;stream.ackWaitMs=0;
   streams.set(stream.id,stream);diagnostic('queued',{collection:col});
   try {
-    initialAdmission.enqueue(stream.id,{group:['orders','payments','warehouseDispatches'].includes(col)?'history':'',start:()=>{
+    initialAdmission.enqueue(stream.id,{start:()=>{
     // Company bootstrap has always read one exact tenant document, never the
     // companies collection query. All other admitted sources keep companyId ==.
     const sourceDb=volatileDb&&!canPersistReadCollection(col)?volatileDb:db;

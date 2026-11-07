@@ -86,20 +86,6 @@ test('four-read experiment is explicit and bounded; the fifth source still waits
  }finally{await f.close()}
 });
 
-test('production bulk admission keeps orders and payments apart until confirmed transfer, while small sources still start',async()=>{
- const f=await fixture({holdBegins:true,transferEnv:{VITE_WORKER_BULK_ADMISSION:'single-history'}});try{
-  await f.send({type:'subscribe',streamId:'O',collectionName:'orders'});
-  await f.send({type:'subscribe',streamId:'P',collectionName:'payments'});
-  await f.send({type:'subscribe',streamId:'E',collectionName:'expenses'});
-  await turn();assert.deepEqual(f.startedCollections,['orders','expenses']);
-  assert(!f.packets.some(p=>p.streamId==='P'));
-  await f.releaseBegin();
-  for(let n=0;n<50&&f.startedCollections.length<3;n++)await turn();
-  assert.deepEqual(f.startedCollections,['orders','expenses','payments']);
-  assert(f.packets.some(p=>p.streamId==='O'&&p.type==='complete'),'bulk admission still requires the complete receipt');
- }finally{await f.close()}
-});
-
 test('actual worker experimental profile keeps every row and reduces packet count without weakening server metadata',async()=>{
  const f=await fixture({transferEnv:{VITE_WORKER_TRANSFER_PROFILE:'balanced-64k'}});
  try{

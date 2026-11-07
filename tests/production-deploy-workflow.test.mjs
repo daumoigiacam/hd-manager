@@ -10,7 +10,6 @@ assert.match(workflow, /VITE_HD_APP_ID:\s+hd-manager-production/);
 assert.match(workflow, /npm run verify:firebase-production-bundle/);
 assert.equal((workflow.match(/VITE_FIRESTORE_READ_WORKER: 'true'/g) || []).length, 2, 'build and verification must use tested worker mode');
 assert.equal((workflow.match(/VITE_WORKER_TRANSFER_PROFILE: 'balanced-64k'/g) || []).length, 2, 'build and static verification use the same measured bounded transfer profile');
-assert.equal((workflow.match(/VITE_WORKER_BULK_ADMISSION: 'single-history'/g) || []).length, 2, 'build and verification keep only one bulk history in initial SDK admission');
 assert.equal((workflow.match(/VITE_IDENTITY_AUTH_REGION: ''/g) || []).length, 2, 'regional endpoints remain disabled until separately deployed');
 assert.doesNotMatch(workflow, /VITE_API_BASE_URL|VITE_INVENTORY_VPS_ENABLED|VITE_DATA_MODE:\s+vps-production/);
 assert.doesNotMatch(workflow, /if:.*github\.event_name == 'push'/);
