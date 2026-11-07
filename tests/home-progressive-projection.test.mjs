@@ -28,4 +28,26 @@ test('live Home keeps both source-confirmation and completed ledger guards; logo
  assert.match(source,/const snapshot = projection\.snapshot\?\.kind === 'home-primary-v1'\s*\? \{\.\.\.emptySnapshot,\.\.\.projection\.snapshot,finance:\{\.\.\.emptySnapshot\.finance,\.\.\.projection\.snapshot\.finance\}\}/);
  assert.match(source,/<BusinessReportWorkspace snapshot=\{projection\.snapshot\}/);
  assert.match(source,/projection\.snapshot\.kind!=='home-primary-v1'&&<SmartAIAssistant/);
+ assert.match(source,/reportCacheReady=\{serverConfirmedCollectionState\?\.tenantId===currentUser\?\.companyId&&\['companies','employees'\]\.every/);
+ assert.match(source,/restoreReady:reportCacheReady/);
+});
+test('session backing report stays hidden until live core identity and permission context is confirmed',{timeout:30000},async()=>{
+ const bundle=await build({stdin:{resolveDir:process.cwd(),loader:'jsx',contents:`
+ import React,{useState}from'react';import{createRoot}from'react-dom/client';
+ import{useCooperativeDashboardProjection}from'./src/services/useCooperativeDashboardProjection.js';
+ import{saveHomeSessionReport}from'./src/services/homeSessionReport.js';
+ import{buildHomePrimaryProjection}from'./src/services/executiveDashboardService.js';
+ const input={privacyScope:'verified-user-tenant-session-grants',company:{id:'a'},employee:{id:'e'},dashboardDayKey:'2026-11-07',now:'2026-11-07T12:00:00',orders:[{id:'o',date:'2026-11-07',totalAmount:123}],cashExpenseRecords:[],payrollCosts:[],debtLedger:[]};
+ if(!saveHomeSessionReport({inputs:input,snapshot:buildHomePrimaryProjection(input)}))throw Error('Fixture report was not saved');
+ const cache={},payroll=function*(){return[]};
+ function Fixture(){const[ready,setReady]=useState(false),[current,setCurrent]=useState(input);window.ready=setReady;window.switchTenant=()=>setCurrent({...input,privacyScope:'other-tenant',company:{id:'b'}});
+ const result=useCooperativeDashboardProjection(current,cache,payroll,{enabled:false,primaryReady:false,restoreReady:ready});
+ return <p data-visible={Boolean(result.snapshot)}>{result.snapshot?.finance.revenueToday??'hidden'}</p>}
+ createRoot(document.getElementById('root')).render(<Fixture/>);`},bundle:true,write:false,jsx:'automatic',format:'iife',define:{'process.env.NODE_ENV':'"development"'}});
+ const browser=await chromium.launch(chromiumLaunchOptions());try{const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.route('http://home-permission-test.local/',r=>r.fulfill({body:'<div id="root"></div>',contentType:'text/html'}));await page.goto('http://home-permission-test.local/');await page.addScriptTag({content:bundle.outputFiles[0].text});
+ await page.locator('[data-visible="false"]').waitFor();assert.equal(await page.locator('p').textContent(),'hidden');
+ await page.evaluate(()=>window.ready(true));await page.locator('[data-visible="true"]').waitFor();assert.equal(await page.locator('p').textContent(),'123');
+ await page.evaluate(()=>window.ready(false));await page.locator('[data-visible="false"]').waitFor();
+ await page.evaluate(()=>{window.switchTenant();window.ready(true)});await page.locator('[data-visible="false"]').waitFor();assert.equal(await page.locator('p').textContent(),'hidden');assert.deepEqual(errors,[]);
+ }finally{await browser.close()}
 });

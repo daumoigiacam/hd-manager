@@ -11,12 +11,18 @@ import {runCooperativeReportProjection as runCooperativeProjection} from './coop
 const equalInputs=(a,b)=>a===b || Boolean(a && b && Object.keys(a).length===Object.keys(b).length
   && Object.keys(b).every(key=>Object.is(a[key],b[key])));
 
-export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps,{enabled=true,primaryReady=false}={}) {
+export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps,{enabled=true,primaryReady=false,restoreReady=false}={}) {
  const probe=useRef(null);if(!probe.current)probe.current=createHomePerformanceProbe('full');
  useEffect(()=>()=>probe.current.close(),[]);
  const calculationOwner=useRef(null);
  useEffect(()=>()=>{calculationOwner.current?.close();calculationOwner.current=null;},[]);
-  const [result,setResult]=useState(()=>hasSameDashboardProjectionScope(cache.cooperativeProjection?.inputs,inputs)?cache.cooperativeProjection:restoreHomeSessionReport(inputs));
+  const [result,setResult]=useState(()=>hasSameDashboardProjectionScope(cache.cooperativeProjection?.inputs,inputs)?cache.cooperativeProjection:null);
+  const restoreAttempt=useRef(null);
+  useLayoutEffect(()=>{
+   if(!restoreReady||hasSameDashboardProjectionScope(restoreAttempt.current,inputs))return;
+   restoreAttempt.current=inputs;const saved=restoreHomeSessionReport(inputs);
+   if(saved)setResult(previous=>hasSameDashboardProjectionScope(previous?.inputs,inputs)?previous:saved);
+  },[restoreReady,inputs]);
   const [failure,setFailure]=useState(null);
   const [attempt,setAttempt]=useState(0);
   const latest=useRef(inputs);latest.current=inputs;
@@ -60,12 +66,12 @@ export function useCooperativeDashboardProjection(inputs,cache,buildPayrollSteps
   // A previous tenant/permission snapshot must disappear in this render, before
   // effect cleanup or a new calculation. Same-scope old data remains visibly busy.
   const sameScope=hasSameDashboardProjectionScope(result?.inputs,inputs);
- useLayoutEffect(()=>{if(result?.snapshot&&sameScope){probe.current.once('first-data-commit',{restored:result.restored===true,projectionMode:result.mode||'full'});probe.current.end('render-commit');}},[result,sameScope]);
+ useLayoutEffect(()=>{if(result?.snapshot&&sameScope&&(!result.restored||restoreReady)){probe.current.once('first-data-commit',{restored:result.restored===true,projectionMode:result.mode||'full'});probe.current.end('render-commit');}},[result,sameScope,restoreReady]);
  // Persist only after publication, on a background task; never in the source
  // ACK or save/commit path. Cleanup prevents an old scope saving after logout.
  useEffect(()=>{if(!sameScope||!result?.snapshot||result.restored)return undefined;
   const timer=setTimeout(()=>{const span=probe.current.start('session-report-save');const saved=saveHomeSessionReport(result);probe.current.end('session-report-save',{saved});},0);return()=>clearTimeout(timer);
  },[result,sameScope]);
-  return {snapshot:sameScope?result?.snapshot:null,pending:!enabled || !sameScope || !equalInputs(result?.inputs,inputs),
+  return {snapshot:sameScope&&(!result?.restored||restoreReady)?result?.snapshot:null,pending:!enabled || !sameScope || !equalInputs(result?.inputs,inputs),
     failed:failure?.inputs===inputs,retry:()=>setAttempt(n=>n+1)};
 }
