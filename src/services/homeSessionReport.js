@@ -3,8 +3,9 @@
 // reports enter it; restored values remain visibly pending until live validation.
 const key='hd-home-completed-report-v1',maxChars=750000,maxAgeMs=30*60*1000;
 const storage=()=>{try{return globalThis.sessionStorage}catch{return null}};
+const currentClock=()=>{try{return JSON.stringify([Intl.DateTimeFormat().resolvedOptions().timeZone,new Date().getTimezoneOffset()])}catch{return 'unavailable'}};
 const identity=inputs=>({privacyScope:inputs?.privacyScope,companyId:inputs?.company?.id,
- employeeId:inputs?.employee?.id,day:inputs?.dashboardDayKey,clock:inputs?.dashboardClockScope??null});
+ employeeId:inputs?.employee?.id,day:inputs?.dashboardDayKey,clock:inputs?.dashboardClockScope??currentClock()});
 const valid=value=>Boolean(value&&typeof value.privacyScope==='string'&&value.privacyScope
  &&typeof value.companyId==='string'&&value.companyId&&typeof value.employeeId==='string'&&value.employeeId
  &&/^\d{4}-\d{2}-\d{2}$/.test(value.day));
@@ -30,7 +31,13 @@ export function saveHomeSessionReport(projection,{store=storage(),now=Date.now()
   if(!valid(scope)||!validFinance(report?.finance,scope)||!Number.isFinite(Date.parse(report.generatedAt)))return false;
   // Keep only the existing financial-card DTO. No customer directory, forms,
   // credentials, raw transactions or command/outbox values are persisted here.
-  const snapshot={kind:'home-primary-v1',generatedAt:report.generatedAt,finance:report.finance};
+  const finance={};
+  for(const field of ['todayKey','yesterdayKey','weekStartKey','weekEndKey','currentMonthKey','previousMonthKey',
+   'revenueToday','revenueYesterday','revenueWeek','revenueMonth','revenuePreviousMonth','revenueQuarter','revenueYear',
+   'receivables','overdueReceivables','cashExpenseRows','payrollAccrualRows'])finance[field]=report.finance[field];
+  for(const field of ['series7Days','series30Days','series12Months'])finance[field]=report.finance[field].map(row=>row.date
+   ?{date:row.date,revenue:row.revenue}:{month:row.month,revenue:row.revenue});
+  const snapshot={kind:'home-primary-v1',generatedAt:report.generatedAt,finance};
   const raw=JSON.stringify({version:1,scope,savedAt:now,snapshot});if(raw.length>maxChars)return false;
   store?.setItem(key,raw);return Boolean(store);
  }catch{return false}

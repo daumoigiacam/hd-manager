@@ -17,7 +17,7 @@ test('principal/tenant/permissions/session/day/clock mismatches and expiry fail 
  assert.equal(restoreHomeSessionReport(scope,{store,now:999}),null);
 });
 test('malformed, oversized and unavailable storage cannot break Home or clear business data',()=>{
- const store=memory();assert.equal(saveHomeSessionReport({...projection,snapshot:{...projection.snapshot,finance:{...projection.snapshot.finance,x:'x'.repeat(750001)}}},{store}),false);
+ const store=memory();assert.equal(saveHomeSessionReport({...projection,snapshot:{...projection.snapshot,finance:{...projection.snapshot.finance,cashExpenseRows:[{detail:'x'.repeat(750001)}]}}},{store}),false);
  store.setItem('hd-home-completed-report-v1','invalid-json');assert.equal(restoreHomeSessionReport(scope,{store}),null);
  const denied={getItem(){throw Error('blocked')},setItem(){throw Error('quota')},removeItem(){throw Error('blocked')}};
  assert.equal(saveHomeSessionReport(projection,{store:denied}),false);assert.equal(restoreHomeSessionReport(scope,{store:denied}),null);clearHomeSessionReport(denied);
