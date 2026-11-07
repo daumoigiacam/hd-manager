@@ -141,7 +141,7 @@
     "test:instant-data": "node --test tests/instant-*.test.mjs tests/module-navigation.test.mjs tests/module-scroll-reset.test.mjs",
     "test:system-data-lab": "node scripts/run-system-data-lab.mjs --extended",
     "test:system-load:local": "node scripts/run-system-data-lab.mjs --load",
-    "test:home-cold-calculation": "node --test tests/core-dashboard-payroll-yields.test.mjs tests/online-home-projection-client.test.mjs tests/home-performance-probe.test.mjs tests/home-projection-scope.test.mjs"
+    "test:home-cold-calculation": "node --test tests/core-dashboard-payroll-yields.test.mjs tests/online-home-projection-client.test.mjs tests/home-performance-probe.test.mjs tests/home-projection-scope.test.mjs tests/home-session-report.test.mjs tests/home-progressive-projection.test.mjs tests/home-primary-projection.test.mjs"
   },
   "build": {
     "appId": "com.hdmanager.desktop",

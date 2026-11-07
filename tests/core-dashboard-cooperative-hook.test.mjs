@@ -28,7 +28,7 @@ test('actual report hook keeps stale data busy, cancels superseded work, hides o
    b.onResolve({filter:/^\.\/executiveDashboardService\.js$/},()=>({path:'snapshot-steps',namespace:'fixture'}));
    b.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:args.path==='controlled-driver'
     ? `import{runCooperativeReportProjection as run}from ${JSON.stringify(driver)};let clock=0;export const runCooperativeReportProjection=(iterator,options)=>run(iterator,{...options,budgetMs:1,now:()=>clock++,yieldWork:()=>new Promise(resolve=>window.yields.push(resolve))});`
-    : `export function* createExecutiveDashboardSnapshotIterator(input){yield;yield;if(window.failOnce){window.failOnce=false;throw Error('fixture')};return{amount:input.amount,payroll:input.payrollCosts.reduce((s,r)=>s+r.amount,0)}}`,resolveDir:process.cwd()}));
+    : `export function* createExecutiveDashboardSnapshotIterator(input){yield;yield;if(window.failOnce){window.failOnce=false;throw Error('fixture')};return{amount:input.amount,payroll:input.payrollCosts.reduce((s,r)=>s+r.amount,0)}};export const createHomePrimarySnapshotIterator=createExecutiveDashboardSnapshotIterator;`,resolveDir:process.cwd()}));
   }
  }]});
  const browser=await chromium.launch(chromiumLaunchOptions());

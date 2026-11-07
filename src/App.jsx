@@ -444,6 +444,7 @@ import {useHomePrimaryProjection} from './services/useHomePrimaryProjection.js';
 import {bindScopedReadPublication} from './services/scopedReadPublication.js';
 import {canonicalQueryValue} from './data/instantDataEngine.js';
 import { createDashboardPrivacyScope } from './utils/dashboardPrivacyScope.js';
+import {clearHomeSessionReport} from './services/homeSessionReport.js';
 import { parseFirebaseResponseJsonInBackground } from './services/backgroundJsonParser.js';
 import { buildWarehouseGroupOptions } from './utils/warehouseGroupOptions.js';
 const warehouseGroupOptionsCache=createProjectionCache();
@@ -1147,7 +1148,7 @@ const CORE_DATA_COLLECTION_NAMES = ['companies', 'employees'];
 // from opening dozens of tenant-wide collection listeners at startup.
 const BASELINE_REALTIME_COLLECTION_NAMES = ['companies', 'employees', 'notifications'];
 const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
-  home: ['customers', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches', 'payrollPeriods', 'employeeReviews', 'customerComplaints', 'holidays', 'deliveryReports'],
+  home: ['customers', 'payrollPeriods', 'employeeReviews', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches', 'customerComplaints', 'holidays', 'deliveryReports'],
   executive_dashboard: ['customers', 'products', 'orders', 'orderRequests', 'payments', 'expenses', 'financials', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'assets', 'assetCostLogs', 'deliveryReports', 'attendance', 'performance', 'payrollPeriods', 'employeeReviews', 'customerComplaints', 'holidays'],
   order_requests: ['customers', 'products', 'orderRequests', 'warehouseDispatches', 'employees'],
   orders: ['customers', 'products', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'zalo_send_queue'],
@@ -9762,6 +9763,7 @@ const saveAppSession = (session) => {
 };
 
 const clearAppSession = () => {
+  clearHomeSessionReport();
   pendingAppSessionPersistence.cancel?.();
   pendingAppSessionPersistence.cancel = null;
   appSessionStorageBaseline.current = null;
@@ -26834,9 +26836,10 @@ function MainAppView({
 
   const renderExecutiveDashboard = () => (
     <React.Suspense fallback={<LedgerPreparationNotice />}>
-      <CompletedProjectionGate key={dashboardPrivacyScope} projection={mainLedgerProjection} onRetry={retryMainCustomerLedgers} retainWhilePending retainIdentity={dashboardPrivacyScope}>
-<MemoizedExecutiveDashboardView privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
-      </CompletedProjectionGate>
+      <div key={dashboardPrivacyScope}>
+      {mainLedgerProjection.error&&<p role="alert">Chưa đối chiếu được công nợ. <button type="button" onClick={retryMainCustomerLedgers}>Thử lại</button></p>}
+<MemoizedExecutiveDashboardView privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
+      </div>
     </React.Suspense>
   );
 
@@ -40259,6 +40262,7 @@ function PriorityExecutiveDashboardView({privacyScope,primarySourceReady,sourceR
 
 function FullExecutiveDashboardView({
   privacyScope,
+  primarySourceReady = false,
   sourceReady = true,
   payrollPeriods = [], onLoadPayrollPeriodSnapshots, employeeReviews = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false,
   employee,
@@ -40385,7 +40389,7 @@ function FullExecutiveDashboardView({
   }), [privacyScope,employee,company,employees,attendance,customers,orders,orderRequests,payments,expenses,financials,performance,
     debtLedger,advanceRequests,products,warehouseImports,warehouseDispatches,warehouseStockCounts,assets,assetCostLogs,
     deliveryReports,holidays,payrollPeriods,lockedPayroll,employeeReviews,customerComplaints,attendanceLoaded,complaintsLoaded,dashboardDayKey,cashExpenseRecords]);
-  const projection = useCooperativeDashboardProjection(projectionInputs,dashboardCache,buildDashboardPayrollCostSteps,{enabled:sourceReady&&!payrollLoading&&!payrollLoadError});
+  const projection = useCooperativeDashboardProjection(projectionInputs,dashboardCache,buildDashboardPayrollCostSteps,{enabled:sourceReady&&!payrollLoading&&!payrollLoadError,primaryReady:primarySourceReady&&!payrollLoading&&!payrollLoadError});
   const emptySnapshot = useMemo(() => buildExecutiveDashboardSnapshot({}), []);
   const snapshot = projection.snapshot || emptySnapshot;
 
