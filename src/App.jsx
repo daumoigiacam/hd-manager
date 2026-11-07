@@ -40391,7 +40391,12 @@ function FullExecutiveDashboardView({
     deliveryReports,holidays,payrollPeriods,lockedPayroll,employeeReviews,customerComplaints,attendanceLoaded,complaintsLoaded,dashboardDayKey,cashExpenseRecords]);
   const projection = useCooperativeDashboardProjection(projectionInputs,dashboardCache,buildDashboardPayrollCostSteps,{enabled:sourceReady&&!payrollLoading&&!payrollLoadError,primaryReady:primarySourceReady&&!payrollLoading&&!payrollLoadError});
   const emptySnapshot = useMemo(() => buildExecutiveDashboardSnapshot({}), []);
-  const snapshot = projection.snapshot || emptySnapshot;
+  // Legacy desktop calculations below require the full structural contract.
+  // The visible workspace receives the untouched DTO, so unavailable secondary
+  // analytics are never displayed as the empty report's provisional zeros.
+  const snapshot = projection.snapshot?.kind === 'home-primary-v1'
+    ? {...emptySnapshot,...projection.snapshot,finance:{...emptySnapshot.finance,...projection.snapshot.finance}}
+    : projection.snapshot || emptySnapshot;
 
   const { kpis, finance, costs, business, profitability, operations, alerts, insights, recommendations, generatedAt } = snapshot;
   const companyDisplayName = getCompanyDisplayName(company);
@@ -41337,8 +41342,8 @@ function FullExecutiveDashboardView({
       {projection.failed && <p role="alert" className="p-3 text-sm text-red-700">Chưa tổng hợp được báo cáo. <button type="button" onClick={projection.retry} className="font-bold underline">Thử lại</button></p>}
       {projection.pending && projection.snapshot && <span hidden aria-hidden="true" aria-busy="true" data-hd-report-refreshing />}
       {projection.snapshot ? <>
-        <BusinessReportWorkspace snapshot={snapshot} sourcePending={projection.pending||dailyFinancePending||payrollLoading} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
-        <SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />
+        <BusinessReportWorkspace snapshot={projection.snapshot} sourcePending={projection.pending||dailyFinancePending||payrollLoading} detailsPending={projection.pending} employee={employee} accountName={accountName} companyName={companyDisplayName} companyLogoUrl={companyLogoUrl} products={products} orders={orders} notificationUnreadCount={executiveUnreadInboxCount} setActiveTab={setActiveTab} onOpenAssistant={() => setShowMobileReportAssistant(true)} />
+        {projection.snapshot.kind!=='home-primary-v1'&&<SmartAIAssistant employee={employee} company={company} activeTab="executive_dashboard" customers={customers} orders={orders} expenses={expenses} employees={employees} attendance={attendance} products={products} warehouseImports={warehouseImports} dashboardSnapshot={snapshot} reportTheme externalOpen={showMobileReportAssistant} onExternalClose={() => setShowMobileReportAssistant(false)} hideTrigger />}
       </> : <div data-hd-module-loading="true" role="status" className="p-5 text-sm text-slate-600">Đang tổng hợp báo cáo…</div>}
     </div>;
   }

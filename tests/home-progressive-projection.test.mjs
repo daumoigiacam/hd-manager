@@ -25,4 +25,7 @@ test('live Home keeps both source-confirmation and completed ledger guards; logo
  assert.match(source,/primarySourceReady=\{!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
  assert.match(source,/sourceReady=\{!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
  assert.match(source,/const clearAppSession = \(\) => \{\s*clearHomeSessionReport\(\)/);
+ assert.match(source,/const snapshot = projection\.snapshot\?\.kind === 'home-primary-v1'\s*\? \{\.\.\.emptySnapshot,\.\.\.projection\.snapshot,finance:\{\.\.\.emptySnapshot\.finance,\.\.\.projection\.snapshot\.finance\}\}/);
+ assert.match(source,/<BusinessReportWorkspace snapshot=\{projection\.snapshot\}/);
+ assert.match(source,/projection\.snapshot\.kind!=='home-primary-v1'&&<SmartAIAssistant/);
 });
