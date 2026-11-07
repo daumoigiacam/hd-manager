@@ -47,7 +47,9 @@ test('payroll preparation yields preserve filtering, row order, salary rounding 
 });
 
 test('superseded payroll preparation aborts before a full result without changing source records',async()=>{
-  const source=input(),before=structuredClone(source);let active=true,yields=0;
+  const source=input();source.orders=Array.from({length:20000},(_,i)=>({...source.orders[i%source.orders.length],id:'cancel-'+i}));const before=structuredClone(source);let active=true,yields=0;
   await assert.rejects(runCooperativeReportProjection(current(source),{isCurrent:()=>active,budgetMs:1,now:()=>0,yieldWork:async()=>{if(++yields===2)active=false}}),{name:'AbortError'});
   assert.equal(yields,2);assert.deepEqual(source,before);
 });
+
+test('date normalization is bounded by input size rather than number of payroll months',()=>{let calls=0;const measured=appFunction('buildDashboardPayrollCostSteps',{...bindings,getDateKeyFromAnyValue:value=>{calls++;return bindings.getDateKeyFromAnyValue(value)}});const source=input();drain(measured(source));assert(calls<source.orders.length+source.financials.length+50,'one input date normalization plus bounded report-date overhead');});

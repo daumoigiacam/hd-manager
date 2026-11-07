@@ -1,4 +1,5 @@
-import { useId, useMemo, useState } from 'react';
+import {createHomePerformanceProbe} from '../../services/homePerformanceProbe.js';
+import { useId, useMemo, useState, useRef, useCallback, useLayoutEffect, useEffect } from 'react';
 import {
   AlertCircle, ArrowDownRight, ArrowLeft, ArrowRight, ArrowUpRight, BarChart3,
   Bell, CalendarDays, ChevronDown, ChevronRight, CircleDollarSign, Filter,
@@ -184,8 +185,12 @@ function ReportHeader({ route, accountName, companyName, companyLogoUrl, notific
 export default function BusinessReportWorkspace({ snapshot, sourcePending=false,detailsPending=false,detailsError='',onRequestDetails=()=>{},onCloseDetails=()=>{}, employee, accountName, companyName = 'Doanh nghiệp', companyLogoUrl = '', products = [], orders = [], notificationUnreadCount = 0, setActiveTab, onOpenAssistant = () => {} }) {
   const primaryOnly=snapshot?.kind==='home-primary-v1';
   const [route, setRoute] = useState('home');
-  const [period, setPeriod] = useState('today');
-  const [customRange, setCustomRange] = useState(null);
+  const probe=useRef(null);if(!probe.current)probe.current=createHomePerformanceProbe('report-ui');
+  useEffect(()=>()=>probe.current.close(),[]);
+  const [period, setPeriodState] = useState('today');
+  const setPeriod=useCallback(value=>{if(value!==period)probe.current.start('filter');setPeriodState(value);},[period]);
+  const [customRange, setCustomRangeState] = useState(null);
+  const setCustomRange=useCallback(value=>{if(value!==customRange)probe.current.start('filter');setCustomRangeState(value);},[customRange]);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productTab, setProductTab] = useState('revenue');
   const [reportTab, setReportTab] = useState('revenue');
@@ -200,6 +205,7 @@ export default function BusinessReportWorkspace({ snapshot, sourcePending=false,
   const finance = useMemo(() => getCashExpenseFinance(snapshot?.finance), [snapshot?.finance]);
   const business = snapshot?.business || {};
   const report = useMemo(() => getReportPeriod(finance, period, customRange), [finance, period, customRange]);
+  useLayoutEffect(()=>{if(snapshot){probe.current.once('report-first-commit');probe.current.end('filter',{period});}},[snapshot,period,customRange,report]);
   const reportSalesEmployees = useMemo(() => getTopSalesEmployees(business, finance, period, customRange), [business, finance, period, customRange]);
   const stockRows = useMemo(() => products
     .filter((item) => item && !item.archived && !item.isArchived && item.stock !== undefined && item.stock !== null && item.stock !== '')

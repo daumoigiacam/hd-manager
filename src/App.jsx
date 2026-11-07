@@ -10090,44 +10090,47 @@ const AttendanceWorkspace = React.lazy(attendanceModule.load);
 
 const buildDashboardPayrollCostSteps = function* ({
   employees = [], attendance = {}, financials = [], performance = {}, customers = [],
-  orders = [], payments = [], holidays = [], now = new Date(), company = {}, payrollPeriods = [], lockedPayroll = {}, employeeReviews = [], deliveryReports = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false
+  orders = [], payments = [], holidays = [], now = new Date(), company = {}, payrollPeriods = [], lockedPayroll = {}, employeeReviews = [], deliveryReports = [], customerComplaints = null, attendanceLoaded = false, complaintsLoaded = false, monthRowsCache = null
 } = {}) {
   const firstMonth = new Date(now.getFullYear(), Math.min(0, now.getMonth() - 11), 1);
   const lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const todayKey = getDateKeyFromAnyValue(now);
   const rows = [];
 
-  // Month preparation also scans history. Yield during that scan, before the
-  // existing per-employee boundary; keep the original predicate and row order.
-  function* selectRows(source, predicate) {
-    const selected=[];let operations=0;
-    for(const row of source){
-      if(predicate(row))selected.push(row);
-      if(++operations%16===0)yield;
-    }
-    return selected;
+  // Normalize each source date once. Buckets retain original record order,
+  // including undated financial entries which belong to every month.
+  const months=new Map();
+  for(let cursor=firstMonth;cursor<=lastMonth;cursor=new Date(cursor.getFullYear(),cursor.getMonth()+1,1))months.set(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`,{});
+  function* indexRows(name,source,keyFor,{undated=false,dayLimit=false}={}){
+   for(const bucket of months.values())bucket[name]=[];
+   let operations=0;for(const row of source){const key=keyFor(row);
+    if(undated&&!key){for(const bucket of months.values())bucket[name].push(row);}
+    else if(!dayLimit||key<=todayKey){const bucket=months.get(key.slice(0,7));if(bucket)bucket[name].push(row);}
+    if(++operations%16===0)yield;
+   }
   }
+  yield* indexRows('attendance',Object.entries(attendance),([key])=>key.slice(0,10),{dayLimit:true});
+  yield* indexRows('financials',financials,row=>getDateKeyFromAnyValue(row?.date),{undated:true,dayLimit:true});
+  yield* indexRows('orders',orders,row=>getDateKeyFromAnyValue(row.date||row.orderDate||row.createdAt),{dayLimit:true});
+  yield* indexRows('delivery',deliveryReports,row=>normalizeEmployeeReviewMonthKey(row.date||row.createdAt));
+  yield* indexRows('reviews',employeeReviews,row=>normalizeEmployeeReviewMonthKey(row.monthKey||row.date||row.createdAt));
+  if(complaintsLoaded&&Array.isArray(customerComplaints))yield* indexRows('complaints',customerComplaints,row=>row.companyId===company.id?normalizeEmployeeReviewMonthKey(row.monthKey||row.date||row.createdAt):'');
 
   for (let cursor = firstMonth; cursor <= lastMonth; cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)) {
     const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    if(monthRowsCache?.has(monthKey)){rows.push(...monthRowsCache.get(monthKey));yield;continue;}
+    const monthRowStart=rows.length;
     const policyEmployees = employees.map(emp => applyEmployeePayrollPolicyForMonth(emp, monthKey));
-    const monthAttendance = Object.fromEntries(yield* selectRows(Object.entries(attendance), ([key]) => key.startsWith(monthKey) && key.slice(0, 10) <= todayKey));
-    const monthFinancials = yield* selectRows(financials, record => {
-      const key = getDateKeyFromAnyValue(record?.date);
-      return !key || (key.startsWith(monthKey) && key <= todayKey);
-    });
-    const monthOrders = yield* selectRows(orders, order => {
-      const key = getDateKeyFromAnyValue(order.date || order.orderDate || order.createdAt);
-      return key.startsWith(monthKey) && key <= todayKey;
-    });
+    const bucket=months.get(monthKey);
+    const monthAttendance=Object.fromEntries(bucket.attendance);
+    const monthFinancials=bucket.financials;
+    const monthOrders=bucket.orders;
     const locked = getLockedPayrollPeriod(payrollPeriods, company.id, monthKey);
     const snapshotRows = lockedPayroll[monthKey]?.snapshots || [];
     const salaryEmployees = locked ? snapshotRows.map(snapshot => ({ ...snapshot.employee, id: snapshot.employeeId })) : policyEmployees;
-    const monthDeliveryReports = yield* selectRows(deliveryReports, row => normalizeEmployeeReviewMonthKey(row.date || row.createdAt) === monthKey);
-    const monthReviews = yield* selectRows(employeeReviews, row => normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey);
-    const monthComplaints = complaintsLoaded && Array.isArray(customerComplaints)
-      ? yield* selectRows(customerComplaints, row => row.companyId === company.id && normalizeEmployeeReviewMonthKey(row.monthKey || row.date || row.createdAt) === monthKey)
-      : null;
+    const monthDeliveryReports=bucket.delivery;
+    const monthReviews=bucket.reviews;
+    const monthComplaints=complaintsLoaded&&Array.isArray(customerComplaints)?bucket.complaints:null;
     const evaluationContext = {
       attendance: monthAttendance, orders: monthOrders,
       deliveryReports: monthDeliveryReports,
@@ -10163,6 +10166,7 @@ const buildDashboardPayrollCostSteps = function* ({
         }));
         yield;
       }
+    if(monthRowsCache)monthRowsCache.set(monthKey,rows.slice(monthRowStart));
   }
   return rows;
 };
