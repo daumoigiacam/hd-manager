@@ -1,3 +1,4 @@
+import {transferWithWindow} from './streamTransferWindow.js';
 import './legacyRuntime.js';
 import { initializeApp } from 'firebase/app';
 import { initializeAuth, connectAuthEmulator, getIdTokenResult, onIdTokenChanged } from 'firebase/auth';
@@ -15,7 +16,7 @@ const streams = new Map(), acknowledgements = new Map();
 const serverBaselines = new Map();
 const workerEnvironment=import.meta.env||{};
 const initialAdmission = createInitialReadAdmission({concurrency:workerEnvironment.VITE_WORKER_INITIAL_CONCURRENCY==='4'?4:2});
-let baselineSequence = 0, diagnostics=false,diagnosticProfile=null;
+let baselineSequence = 0, diagnostics=false,diagnosticProfile=null,transferWindow=1;
 const diagnostic=(event,fields={})=>{if(diagnostics)post({type:'source-timing',event,atEpochMs:performance.timeOrigin+performance.now(),...fields})};
 const abort = () => Object.assign(new Error('Read-worker stream closed.'), { name: 'AbortError' });
 const post = message => { if (!closed) self.postMessage({ ...message, scopeId }); };
@@ -90,15 +91,16 @@ async function pump(stream) {
       // records must not be combined into an unbounded main-thread message.
       const transferPolicy=getWorkerTransferPolicy(stream.collectionName,diagnosticProfile?{...workerEnvironment,VITE_WORKER_TRANSFER_PROFILE:diagnosticProfile}:workerEnvironment);
       const transferStarted=diagnostics?performance.now():0;let encodingMs=0,bytes=0,diagnosticCpuMs=0;stream.ackWaitMs=0;
-      for (const payload of createBudgetedTransferChunks(rows,row => {
+      const packets=createBudgetedTransferChunks(rows,row => {
           const encodeStarted=diagnostics?performance.now():0;
           if (mode === 'full'){const encoded={id:row.id,type:'full',value:encodeFirestoreWorkerValue(normalize(row.data()),stream.firestore)};if(diagnostics)encodingMs+=performance.now()-encodeStarted;return encoded;}
           return {id:row.doc.id,type:row.type,oldIndex:row.oldIndex,newIndex:row.newIndex,
             ...(row.type === 'removed' ? {} : {value:encodeFirestoreWorkerValue(normalize(row.doc.data()),stream.firestore)})};
-        },transferPolicy)) {
+        },transferPolicy);
+      await transferWithWindow(packets,async payload=>{
         if(diagnostics){const t=performance.now();bytes+=new TextEncoder().encode(JSON.stringify(payload)).byteLength;diagnosticCpuMs+=performance.now()-t;}
         await send(stream,{type:'chunk',revision,index:chunks++,rows:payload});
-      }
+      },{size:['companies','employees','messages'].includes(stream.collectionName)?1:transferWindow,isCurrent:()=>stream.active&&!closed});
       // An empty full transfer carries no rows to reuse. Keeping its token in
       // the eight-entry cache evicted large unchanged histories when visiting
       // modules with empty queues/catalogues, forcing thousands of row ACKs.
@@ -135,7 +137,7 @@ self.onmessage = async event => {
   if (message.type === 'init') {
     if (scopeId !== null) return;
     scopeId = message.scopeId;scope = message.scope;
-    diagnostics=message.diagnostics===true;diagnosticProfile=diagnostics&&message.transferProfile==='balanced-64k'?'balanced-64k':null;
+    diagnostics=message.diagnostics===true;diagnosticProfile=diagnostics&&message.transferProfile==='balanced-64k'?'balanced-64k':null;transferWindow=diagnostics&&message.transferWindow===4?4:1;
     diagnostic('worker-init-start');
     try {
       if (typeof scopeId !== 'string' || !scopeId || scope?.accountType !== 'employee'

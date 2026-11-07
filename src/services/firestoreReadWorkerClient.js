@@ -153,9 +153,9 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
       if(!valid()||failed)return;
       worker = workerFactory();
       persistentCacheConfigured=cacheEnabled;
-      worker.onmessage = event => { void handle(event.data); };
+      worker.onmessage = event => {const entry=subscriptions.get(event.data?.streamId);if(!entry){void handle(event.data);return;}entry.receiveChain=entry.receiveChain.then(()=>handle(event.data));};
       worker.onerror = () => fail('worker-unavailable');
-      post({type:'init',scope:workerScope,config,envelope,persistentCache:cacheEnabled,diagnostics,transferProfile:diagnostics&&diagnosticParams?.get('hd_source_profile')==='balanced'?'balanced-64k':null,...(emulator ? {emulator} : {})});
+      post({type:'init',scope:workerScope,config,envelope,persistentCache:cacheEnabled,diagnostics,transferProfile:diagnostics&&['balanced','pipeline'].includes(diagnosticParams?.get('hd_source_profile'))?'balanced-64k':null,transferWindow:diagnostics&&diagnosticParams?.get('hd_source_profile')==='pipeline'?4:1,...(emulator ? {emulator} : {})});
     } catch { fail('worker-unavailable'); }
   })();
   return {
@@ -167,7 +167,7 @@ export function createFirestoreReadWorkerClient({ user, config, appId, companyId
       // evict the small cache of routes which are actually closed.
       committed.delete(collectionName);baselineIds.delete(collectionName);
       const entry = {id,collectionName,publish,error,fallback:subscribeFallback,active:true,fallbackStarted:false,fallbackStop:null,
-        decodeMs:0,publishMs:0,chunkCount:0,startedAt:Date.now(),phase:'subscribing',rowsReceived:0,expectedRows:null,lastPacketAfterMs:null,
+        receiveChain:Promise.resolve(),decodeMs:0,publishMs:0,chunkCount:0,startedAt:Date.now(),phase:'subscribing',rowsReceived:0,expectedRows:null,lastPacketAfterMs:null,
         generation:0,expected:unset,pending:true,commitTimer:null,
         initialBaselineId,completedSnapshot:initialItems.length?{items:initialItems,baselineId:initialBaselineId}:null,
         assembler:createReadWorkerSnapshotAssembler({decode,retain,initialItems,

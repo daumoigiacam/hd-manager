@@ -1,3 +1,4 @@
+import {transferWithWindow} from '../src/services/streamTransferWindow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -15,7 +16,7 @@ for (const node of imports.reverse()) executable = executable.slice(0,node.start
 executable=executable.replace('import.meta.env','transferEnv');
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
-async function fixture({holdBegins=false,cacheOnly=false,transferEnv={}}={}) {
+async function fixture({holdBegins=false,cacheOnly=false,transferEnv={},diagnostics=false,transferWindow=1}={}) {
   const scopeId='synthetic-worker', packets=[], records=new Map(),held=[],startedCollections=[],receivers=new Map();
   const self={onmessage:null,close(){},postMessage(message){
     packets.push(message);
@@ -25,7 +26,7 @@ async function fixture({holdBegins=false,cacheOnly=false,transferEnv={}}={}) {
     }
   }};
   const query=(target,...constraints)=>({...target,constraints});
-  const dependencies={self,createInitialReadAdmission,createBudgetedTransferChunks,getWorkerTransferPolicy,sendBoundedWorkerChunks,transferEnv, initializeApp:()=>({}), initializeAuth:()=>({authStateReady:async()=>{},currentUser:{}}),
+  const dependencies={self,transferWithWindow,createInitialReadAdmission,createBudgetedTransferChunks,getWorkerTransferPolicy,sendBoundedWorkerChunks,transferEnv, initializeApp:()=>({}), initializeAuth:()=>({authStateReady:async()=>{},currentUser:{}}),
     getIdTokenResult:async()=>({claims:{}}),onIdTokenChanged:()=>()=>{},initializeFirestore:()=>({}),
     connectAuthEmulator(){},connectFirestoreEmulator(){},
     createWorkerAuthPersistence:()=>({Persistence:class {},clear(){}}),assertWorkerIdentity(){},
@@ -44,7 +45,7 @@ async function fixture({holdBegins=false,cacheOnly=false,transferEnv={}}={}) {
   };
   new Function(...Object.keys(dependencies),executable)(...Object.values(dependencies));
   const send=data=>self.onmessage({data:{scopeId,...data}});
-  await send({type:'init',config:{apiKey:'synthetic',projectId:'demo-worker-retention'},scope:{accountType:'employee',appId:'synthetic',companyId:'synthetic',apiKey:'synthetic',projectId:'demo-worker-retention'}});
+  await send({type:'init',diagnostics,transferWindow,transferProfile:diagnostics?'balanced-64k':null,config:{apiKey:'synthetic',projectId:'demo-worker-retention'},scope:{accountType:'employee',appId:'synthetic',companyId:'synthetic',apiKey:'synthetic',projectId:'demo-worker-retention'}});
   assert(packets.some(packet=>packet.type==='ready'));
   let sequence=0;
   return {records,packets,send,startedCollections,
@@ -171,4 +172,8 @@ test('nonempty baseline retention stays bounded and clearing a collection cannot
     assert.equal(later.received.find(packet=>packet.type==='begin').mode,'full');
     assert.deepEqual(later.rows.map(row=>row.id),['b']);
   }finally{await f.close()}
+});
+
+test('actual worker pipeline retains every ordered row and confirms only after complete ACK',async()=>{
+ const f=await fixture({diagnostics:true,transferWindow:4});try{f.records.set('orders',Array.from({length:700},(_,i)=>[String(i),String(i).padEnd(900,'x')]));const result=await f.open('orders');assert.equal(result.rows.length,700);assert.equal(new Set(result.rows.map(row=>row.id)).size,700);assert.deepEqual(result.rows.map(row=>row.id),Array.from({length:700},(_,i)=>String(i)));assert(result.baselineId);const reopened=await (async()=>{await f.stop(result);return f.open('orders',result.baselineId)})();assert.equal(reopened.received.find(row=>row.type==='begin').mode,'metadata');}finally{await f.close()}
 });
