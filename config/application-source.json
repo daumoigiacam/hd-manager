@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "developmentRoot": "development/hd-manager/application",
+  "productionRoot": ".",
+  "productionWebDir": "dist",
+  "localWebDir": ".local-dev/web-dist",
+  "historicalSnapshot": "test-results/firebase-home-release-20261107/source",
+  "policy": "Historical snapshot retained only as previous evidence. Local build and live Local server use developmentRoot. Production source is not overwritten, deployed or claimed to contain Local integrations."
+}

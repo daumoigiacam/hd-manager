@@ -1,0 +1,47 @@
+import React,{useEffect,useState} from 'react';
+import {HDButton,HDCard} from '../../design-system/index.js';import {businessDayKey} from '../../utils/businessDate.js';import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
+const money=value=>Number.isSafeInteger(value)?new Intl.NumberFormat('vi-VN').format(value)+' đ':'Chưa có số nguồn hợp lệ';
+const empty=()=>({open:false,amount:'',reference:'',method:'Tiền mặt',note:''});
+export default function SalarySettlementsWorkspace({runtime,onClose}){
+ const[repository,setRepository]=useState(null),[month,setMonth]=useState(()=>businessDayKey(new Date()).slice(0,7)),[catalog,setCatalog]=useState([]),[after,setAfter]=useState(null),[snapshot,setSnapshot]=useState(''),[view,setView]=useState(null),[intents,setIntents]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false),[form,setForm]=useState(empty),[note,setNote]=useState(''),[revision,setRevision]=useState(0);
+ const usable=()=>runtime.isCurrent()&&Date.now()<runtime.expiresAtMs;
+ useAppScreenBack(()=>{if(form.open){setForm(empty());return true;}onClose();return true;});
+ useEffect(()=>{let active=true;runtime.salarySettlementRepository().then(r=>{if(active&&usable())setRepository(r);}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[runtime]);
+ useEffect(()=>runtime.subscribe(topic=>{if(topic==='salarySettlements'&&usable())setRevision(n=>n+1);}),[runtime]);
+ useEffect(()=>{if(!repository)return;let active=true;void repository.catalog(month).then(rows=>{if(active&&usable())setCatalog(rows);}).catch(e=>{if(active)setError(e.message);});const refresh=async()=>{try{const next=await repository.refreshCatalog(month);const rows=await repository.catalog(month);if(active&&usable()){setCatalog(rows);setAfter(next);}}catch(e){if(active)setError('Đang dùng danh mục Local. '+e.message);}};if(navigator.onLine)void refresh();return()=>{active=false;};},[repository,month,runtime]);
+ useEffect(()=>{if(!repository||!snapshot)return;let active=true;const local=async()=>{const [value,queue]=await Promise.all([repository.read(snapshot),repository.intents(snapshot)]);if(active&&usable()){setView(value);setIntents(queue);}};void local().catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[repository,snapshot,runtime,revision]);
+ useEffect(()=>{if(!repository||!snapshot)return;let active=true;const refresh=async()=>{try{await repository.refresh(snapshot);if(active&&usable())setRevision(n=>n+1);}catch(e){if(active)setError('Số dư Local được giữ. '+e.message);}};if(navigator.onLine)void refresh();const online=()=>void refresh();window.addEventListener('online',online);return()=>{active=false;window.removeEventListener('online',online);};},[repository,snapshot,runtime]);
+ async function run(work){if(!repository||busy||!usable())return;setBusy(true);setError('');try{await work();setRevision(n=>n+1);}catch(e){setError(e.message);}finally{setBusy(false);}}
+ const pending=intents.some(x=>x.state!=='SYNCED'),own=view?.employeeId===runtime.appSession.currentUser.id;
+ if(!usable())return <p role="alert">Phiên hoặc quyền lương đã hết hiệu lực. Giao dịch đang chờ được giữ trên thiết bị.</p>;
+ return <section className="space-y-3 p-3 pb-24" aria-label="Thanh toán và đối soát lương SQLite">
+  <HDButton onClick={onClose}>Quay lại</HDButton><h2 className="text-xl font-bold">Thanh toán và đối soát lương</h2>
+  <p>Thực trả chỉ giảm số lương còn phải trả. Không cộng lại chi phí lương; không sửa bảng lương đã chốt. Khoản ứng và khấu trừ đã nằm trong lương nguồn, không trừ thêm lần nữa.</p>
+  <label className="block">Kỳ lương thanh toán<input aria-label="Kỳ lương thanh toán" type="month" value={month} disabled={busy||form.open} onChange={e=>{setMonth(e.target.value);setSnapshot('');setView(null);setIntents([]);setAfter(null);}}/></label>
+  {error&&<p role="alert">{error}</p>}
+  {!catalog.length&&<p>Chưa có bản lương đã tải trong kỳ này. Không tự tạo số phải trả.</p>}
+  <div className="flex flex-wrap gap-2">{catalog.map(item=><HDButton key={item.id} data-salary-catalog-id={item.id} disabled={busy||form.open} onClick={()=>{setView(null);setIntents([]);setSnapshot(item.id);}}>{item.employeeName} · {item.monthKey}</HDButton>)}</div>
+  {after&&<HDButton disabled={busy} onClick={()=>void run(async()=>{const cursor=after,next=await repository.refreshCatalog(month,cursor);setCatalog(await repository.catalog(month,{after:cursor}));setAfter(next);})}>Trang lương tiếp theo</HDButton>}
+  {snapshot&&!view&&<p role="status">Đang đọc số dư từ SQLite. Nếu chưa từng tải bản này, cần kết nối để xác minh nguồn lần đầu.</p>}
+  {view&&view.snapshotId===snapshot&&<HDCard className="space-y-3 p-3" data-salary-snapshot-id={snapshot}>
+   <h3 className="font-bold">{view.employeeName} · {view.monthKey}</h3>
+   <dl className="grid grid-cols-2 gap-2"><dt>Phải trả từ lương đã chốt</dt><dd data-salary-due={view.dueVnd}>{money(view.dueVnd)}</dd><dt>Đã thanh toán · Server xác nhận</dt><dd data-salary-paid={view.paidVnd}>{money(view.paidVnd)}</dd><dt>Còn phải trả / chênh lệch</dt><dd data-salary-remaining={view.remainingVnd}>{money(view.remainingVnd)}</dd><dt>Nhân viên xác nhận đã nhận</dt><dd>{money(view.confirmedVnd)}</dd></dl>
+   {view.sourceChanged&&<p role="alert">Bảng lương nguồn thay đổi. Dừng thanh toán/đối soát, giữ lịch sử để xử lý.</p>}
+   <p>{view.reconciledAt?'Đã đối soát: '+view.reconciledAt+' · '+view.reconciledBy:'Chưa xác nhận đối soát'}</p>
+   <HDButton disabled={busy} onClick={()=>void run(()=>repository.refresh(snapshot))}>Cập nhật số dư từ server</HDButton>
+   {runtime.capabilities.includes('salarySettlement.pay')&&!form.open&&<HDButton disabled={busy||pending||view.sourceChanged||view.remainingVnd<=0} onClick={()=>setForm({...empty(),open:true,reference:'LUONG-'+crypto.randomUUID()})}>Ghi thanh toán lương</HDButton>}
+   {form.open&&<form aria-label="Phiếu thanh toán lương Local" className="space-y-2" onSubmit={e=>{e.preventDefault();void run(async()=>{if(!/^[1-9]\d*$/.test(form.amount)||!Number.isSafeInteger(Number(form.amount)))throw Error('Nhập số VND nguyên dương');await repository.enqueue('pay',snapshot,{amountVnd:Number(form.amount),reference:form.reference,method:form.method,note:form.note});setForm(empty());});}}>
+    <label className="block">Số tiền trả lương<input aria-label="Số tiền trả lương" inputMode="numeric" required value={form.amount} disabled={busy} onChange={e=>setForm(v=>({...v,amount:e.target.value}))}/></label>
+    <label className="block">Mã chứng từ trả lương<input aria-label="Mã chứng từ trả lương" required maxLength={100} value={form.reference} disabled={busy} onChange={e=>setForm(v=>({...v,reference:e.target.value}))}/></label>
+    <label className="block">Phương thức trả lương<select aria-label="Phương thức trả lương" value={form.method} disabled={busy} onChange={e=>setForm(v=>({...v,method:e.target.value}))}><option>Tiền mặt</option><option>Chuyển khoản</option></select></label>
+    <label className="block">Nội dung trả lương<input aria-label="Nội dung trả lương" required maxLength={1000} value={form.note} disabled={busy} onChange={e=>setForm(v=>({...v,note:e.target.value}))}/></label>
+    <HDButton type="submit" disabled={busy||pending}>Lưu thanh toán Local</HDButton><HDButton type="button" disabled={busy} onClick={()=>setForm(empty())}>Đóng phiếu chưa lưu</HDButton>
+   </form>}
+   <label className="block">Nội dung xác nhận / đối soát<input aria-label="Nội dung xác nhận / đối soát" value={note} maxLength={1000} onChange={e=>setNote(e.target.value)}/></label>
+   <div aria-label="Lịch sử thanh toán lương" className="space-y-2">{view.payments.map(payment=><div key={payment.id} className="rounded border p-2" data-salary-payment-id={payment.id}><p>{payment.reference} · {money(payment.amountVnd)} · {payment.method}</p><p>{payment.paidAt} · Người chi: {payment.paidBy}</p><p>{payment.receivedAt?'Đã xác nhận nhận tiền · '+payment.receivedAt:'Nhân viên chưa xác nhận đã nhận tiền'}</p>{own&&!payment.receivedAt&&runtime.capabilities.includes('salarySettlement.acknowledge')&&<HDButton disabled={busy||pending||!note.trim()||view.sourceChanged} onClick={()=>void run(()=>repository.enqueue('acknowledge',snapshot,{paymentId:payment.id,note}))}>Xác nhận đã nhận tiền</HDButton>}</div>)}</div>
+   {runtime.capabilities.includes('salarySettlement.reconcile')&&<HDButton disabled={busy||pending||view.sourceChanged||view.remainingVnd!==0||view.payments.some(p=>!p.receivedAt)||!view.payments.length||!note.trim()||!!view.reconciledAt} onClick={()=>void run(()=>repository.enqueue('reconcile',snapshot,{note}))}>Xác nhận đối soát lương</HDButton>}
+   <details><summary>Lịch sử thanh toán và đối soát</summary>{view.history.map((h,i)=><p key={i}>{h.at} · {h.by} · {h.action} · {h.note}</p>)}</details>
+   <div aria-label="Giao dịch lương trên thiết bị">{intents.map(intent=><p key={intent.commandId} data-salary-command-id={intent.commandId} data-salary-command-state={intent.state}>{intent.kind} · {intent.state} · {intent.payload.amountVnd===null?'Xác nhận/đối soát':money(intent.payload.amountVnd)}{intent.state==='CONFLICT_REQUIRES_REVIEW'?' · Giữ nguyên lệnh; cần đối chiếu nguồn, không ghi đè':''}</p>)}</div>
+  </HDCard>}
+ </section>;
+}

@@ -3,3 +3,6 @@ include ':capacitor-cordova-android-plugins'
 project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
 
 apply from: 'capacitor.settings.gradle'
+
+// Measurement companion only; absent from all normal application builds.
+if (providers.gradleProperty('HD_STARTUP_HARNESS').orNull == 'true') include ':startup-harness'

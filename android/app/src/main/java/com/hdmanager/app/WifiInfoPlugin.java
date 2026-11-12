@@ -54,16 +54,51 @@ public class WifiInfoPlugin extends Plugin {
     private volatile WifiInfo callbackWifiInfo;
     private volatile Network callbackNetwork;
     private String lastNetworkSignature = "";
+    private volatile boolean monitoring;
+    private volatile int monitorGeneration;
 
     @Override
     public void load() {
+        super.load();
+        // A point-in-time WiFi read does not need a permanent subscription.
+        // Attendance/settings attach one when their screen actually needs events.
+    }
+
+    @Override
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void addListener(PluginCall call) {
+        super.addListener(call);
+        if (hasListeners("wifiConnectionChanged")) startMonitoring();
+    }
+
+    @Override
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void removeListener(PluginCall call) {
+        super.removeListener(call);
+        if (!hasListeners("wifiConnectionChanged")) stopMonitoring();
+    }
+
+    @Override
+    @PluginMethod
+    public void removeAllListeners(PluginCall call) {
+        super.removeAllListeners(call);
+        stopMonitoring();
+    }
+
+    private synchronized void startMonitoring() {
+        if (monitoring) return;
+        monitoring = true;
+        final int generation = ++monitorGeneration;
         wifiReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
+                synchronized (WifiInfoPlugin.this) {
+                if (!monitoring || generation != monitorGeneration) return;
                 JSObject event = new JSObject();
                 WifiManager manager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
                 event.put("connected", manager != null && isConnectedToWifi(connectivityManager, manager));
                 notifyListeners("wifiConnectionChanged", event);
+                }
             }
         };
         IntentFilter filter = new IntentFilter();
@@ -86,6 +121,8 @@ public class WifiInfoPlugin extends Plugin {
             WifiNetworkCallback(int flags) { super(flags); }
             @Override
             public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                synchronized (WifiInfoPlugin.this) {
+                if (!monitoring || generation != monitorGeneration) return;
                 WifiInfo info = null;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && capabilities.getTransportInfo() instanceof WifiInfo) {
                     info = (WifiInfo) capabilities.getTransportInfo();
@@ -98,10 +135,13 @@ public class WifiInfoPlugin extends Plugin {
                 JSObject event = new JSObject();
                 event.put("connected", true);
                 notifyListeners("wifiConnectionChanged", event);
+                }
             }
 
             @Override
             public void onLost(Network network) {
+                synchronized (WifiInfoPlugin.this) {
+                if (!monitoring || generation != monitorGeneration) return;
                 if (network.equals(callbackNetwork)) {
                     callbackWifiInfo = null;
                     callbackNetwork = null;
@@ -110,6 +150,7 @@ public class WifiInfoPlugin extends Plugin {
                 JSObject event = new JSObject();
                 event.put("connected", false);
                 notifyListeners("wifiConnectionChanged", event);
+                }
             }
         }
         networkCallback = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -124,18 +165,41 @@ public class WifiInfoPlugin extends Plugin {
         }
     }
 
-    @Override
-    protected void handleOnDestroy() {
+    private synchronized void stopMonitoring() {
+        monitoring = false;
+        monitorGeneration++;
         if (connectivityManager != null && networkCallback != null) {
-            connectivityManager.unregisterNetworkCallback(networkCallback);
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); }
+            catch (IllegalArgumentException error) { Log.w(TAG, "WiFi callback already released"); }
             networkCallback = null;
-            callbackWifiInfo = null;
-            callbackNetwork = null;
         }
         if (wifiReceiver != null) {
-            getContext().unregisterReceiver(wifiReceiver);
+            try { getContext().unregisterReceiver(wifiReceiver); }
+            catch (IllegalArgumentException error) { Log.w(TAG, "WiFi receiver already released"); }
             wifiReceiver = null;
         }
+        callbackWifiInfo = null;
+        callbackNetwork = null;
+        lastNetworkSignature = "";
+    }
+
+    @PluginMethod
+    public synchronized void getDevelopmentMonitorState(PluginCall call) {
+        if ((getContext().getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            call.reject("Development-only lifecycle inspection");
+            return;
+        }
+        JSObject state = new JSObject();
+        state.put("monitoring", monitoring);
+        state.put("receiver", wifiReceiver != null);
+        state.put("networkCallback", networkCallback != null);
+        state.put("hasListeners", hasListeners("wifiConnectionChanged"));
+        call.resolve(state);
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        stopMonitoring();
         super.handleOnDestroy();
     }
 

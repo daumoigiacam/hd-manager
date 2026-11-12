@@ -1,0 +1,38 @@
+{
+  "name": "local",
+  "enabled": true,
+  "projectId": "demo-hdmanager-local-20261110",
+  "appId": "hd-manager-local",
+  "appOrigin": "http://127.0.0.1:5221",
+  "apiEndpoint": "http://127.0.0.1:5018/",
+  "auth": {
+    "kind": "firebase-emulator",
+    "host": "127.0.0.1",
+    "port": 9299
+  },
+  "firestore": {
+    "kind": "emulator",
+    "host": "127.0.0.1",
+    "port": 8285
+  },
+  "postgres": {
+    "host": "127.0.0.1",
+    "port": 55432,
+    "database": "hdmanager_local"
+  },
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 56379,
+    "database": 0
+  },
+  "syncTransport": "local-emulator-v1",
+  "tenantNamespace": "local-20261110",
+  "flags": {
+    "offline": true,
+    "productionAccess": false,
+    "realCustomerData": false,
+    "billing": false,
+    "emulatorUi": false,
+    "nativeReadLease": true
+  }
+}

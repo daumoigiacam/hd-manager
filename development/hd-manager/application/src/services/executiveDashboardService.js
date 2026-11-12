@@ -1,0 +1,2845 @@
+import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
+import { isCustomerDebtRepayment } from '../utils/expenseClassification.js';
+import { sortProjection } from './cooperativeProjection.js';
+import {BusinessDate as Date} from '../utils/businessDate.js';
+import {createTransactionUnitEvidence} from './transactionUnitEvidence.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Dashboard builds are synchronous. Cache only for that call, never across
+// saves, tenants or local-timezone changes.
+let activeBuildCache = null;
+
+const toNumber = (value, fallback = 0) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const normalized = value.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+};
+
+const toArray = (value) => (Array.isArray(value) ? value : []);
+const toCollectionArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return Object.values(value);
+  return [];
+};
+
+const normalizeText = (value = '') => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .trim();
+
+const DEPARTMENT_LABELS = {
+  super_admin: 'Chủ doanh nghiệp',
+  owner: 'Chủ doanh nghiệp',
+  admin: 'Chủ doanh nghiệp',
+  employee: 'Nhân sự',
+  accounting: 'Kế toán & nhân sự',
+  accountant: 'Kế toán & nhân sự',
+  hr: 'Kế toán & nhân sự',
+  sales: 'Kinh doanh',
+  sale: 'Kinh doanh',
+  business: 'Kinh doanh',
+  driver: 'Tài xế',
+  delivery: 'Giao hàng',
+  production: 'Sản xuất',
+  warehouse: 'Xuất kho',
+  warehouse_export: 'Xuất kho',
+  asset: 'Quản lý tài sản',
+  finance: 'Thu chi',
+  general: 'Chi phí chung'
+};
+
+const formatDepartmentLabel = (value = '', fallback = 'Chi phí chung') => {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  const key = normalizeText(raw).replace(/[\s-]+/g, '_');
+  return DEPARTMENT_LABELS[key] || raw;
+};
+
+const parseDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') return new Date(value.toDate());
+    if (value.seconds) return new Date(value.seconds * 1000);
+  }
+  const raw = String(value).trim();
+  const vietnameseDateMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (vietnameseDateMatch) {
+    const [, dayText, monthText, yearText, hourText = '0', minuteText = '0', secondText = '0'] = vietnameseDateMatch;
+    const day = Number(dayText);
+    const month = Number(monthText);
+    const year = Number(yearText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText);
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
+    const date = new Date(year, month - 1, day, hour, minute, second);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+  }
+  const isoLike = raw.includes('T') ? raw : raw.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1');
+  const date = new Date(isoLike);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const dateKey = (value) => {
+  const cache = (typeof value === 'string' || typeof value === 'number') ? activeBuildCache?.dates : null;
+  if (cache?.has(value)) return cache.get(value);
+  const date = parseDate(value);
+  const key = date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : '';
+  cache?.set(value, key);
+  return key;
+};
+
+const monthKey = (value) => dateKey(value).slice(0, 7);
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const addMonths = (date, months) => new Date(date.getFullYear(), date.getMonth() + months, 1);
+
+const getPreviousMonthKey = (date = new Date()) => monthKey(addMonths(date, -1));
+
+const getWeekStartDate = (value = new Date()) => {
+  const date = parseDate(value) || new Date();
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return start;
+};
+
+const getDateValue = (entity = {}) => (
+  entity.date ||
+  entity.orderDate ||
+  entity.requestDate ||
+  entity.dispatchDate ||
+  entity.importDate ||
+  entity.paymentDate ||
+  entity.expenseDate ||
+  entity.createdAt ||
+  entity.updatedAt ||
+  entity.timestamp ||
+  ''
+);
+
+const isArchived = (item = {}) => item.archived || item.isArchived || item.deleted || item.isDeleted;
+const isCancelled = (item = {}) => ['cancelled', 'canceled', 'deleted'].includes(normalizeText(item.status));
+
+const getItems = (order = {}) => (
+  toArray(order.items).length ? toArray(order.items) :
+  toArray(order.lines).length ? toArray(order.lines) :
+  toArray(order.products)
+);
+
+const itemQuantity = (item = {}) => toNumber(
+  item.quantity ?? item.qty ?? item.weight ?? item.weightKg ?? item.kg ?? item.count ?? item.pieceCount
+);
+
+const itemUnitPrice = (item = {}) => toNumber(
+  item.unitPrice ?? item.price ?? item.unit_price ?? item.salePrice ?? item.finalPrice
+);
+
+const itemCost = (item = {}) => toNumber(
+  item.costPrice ?? item.cost ?? item.unitCost ?? item.purchasePrice
+);
+
+const itemBillingSnapshot = (item = {}) => {
+  const cache = item && typeof item === 'object' ? activeBuildCache?.billing : null;
+  if (cache?.has(item)) return cache.get(item);
+  const snapshot = resolveTransactionBillingSnapshot({ record: item });
+  const result = snapshot.hasFrozenPricing || toNumber(item.billingSnapshotVersion) > 0
+    ? snapshot
+    : null;
+  cache?.set(item, result);
+  return result;
+};
+
+const itemLineTotal = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  if (snapshot) return toNumber(snapshot.amount);
+  const direct = toNumber(item.total ?? item.lineTotal ?? item.amount ?? item.subtotal, NaN);
+  if (Number.isFinite(direct)) return direct;
+  return itemQuantity(item) * itemUnitPrice(item);
+};
+
+const itemBillingQuantity = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  return snapshot ? toNumber(snapshot.billingQuantity) : itemQuantity(item);
+};
+
+const itemBillingUnit = (item = {}, fallback = 'đơn vị') => {
+  const snapshot = itemBillingSnapshot(item);
+  return snapshot?.billingUnit || quantityUnitOf(item, fallback);
+};
+
+const orderTotal = (order = {}) => {
+  const direct = toNumber(order.totalAmount ?? order.grandTotal ?? order.total ?? order.amount ?? order.finalAmount, NaN);
+  if (Number.isFinite(direct)) return direct;
+  return getItems(order).reduce((sum, item) => sum + itemLineTotal(item), 0);
+};
+
+const orderProfit = (order = {}) => {
+  const direct = toNumber(order.profit ?? order.netProfit ?? order.grossProfit, NaN);
+  if (Number.isFinite(direct)) return direct;
+  const revenue = orderTotal(order);
+  const directCost = toNumber(order.costAmount ?? order.totalCost ?? order.costOfGoods, NaN);
+  if (Number.isFinite(directCost)) return revenue - directCost;
+  const itemCostTotal = getItems(order).reduce((sum, item) => sum + itemQuantity(item) * itemCost(item), 0);
+  return itemCostTotal > 0 ? revenue - itemCostTotal : revenue;
+};
+
+const paidAmountOfOrder = (order = {}) => toNumber(
+  order.paidAmount ?? order.receivedAmount ?? order.upfrontPayment ?? order.prepaidAmount ?? order.deposit
+);
+
+const outstandingOfOrder = (order = {}) => {
+  const direct = toNumber(order.outstandingAmount ?? order.remainingAmount ?? order.debtAmount, NaN);
+  if (Number.isFinite(direct)) return Math.max(0, direct);
+  return Math.max(0, orderTotal(order) - paidAmountOfOrder(order));
+};
+
+const moneyOfPayment = (payment = {}) => toNumber(payment.amount ?? payment.total ?? payment.paidAmount ?? payment.receivedAmount);
+const moneyOfExpense = (expense = {}) => toNumber(expense.amount ?? expense.total ?? expense.cost ?? expense.value);
+const isInventoryPurchaseExpense = (expense = {}) => (
+  normalizeText(expense.sourceType || expense.source || expense.origin) === 'warehouse_import_purchase' ||
+  Boolean(expense.sourceWarehouseImportId || expense.warehouseImportId || expense.importId) ||
+  (
+    /mua hang|nhap kho|nguyen lieu|hang song/.test(normalizeText(expense.category || expense.type || expense.name || expense.title || '')) &&
+    Boolean(expense.autoCreated || expense.autoGenerated || expense.linkedToWarehouseImport)
+  )
+);
+const isPayrollDisbursementExpense = (expense = {}) => /luong|salary|payroll/.test(normalizeText([
+  expense.sourceType, expense.category, expense.type, expense.name, expense.title
+].filter(Boolean).join(' ')));
+const isSalaryAdvanceExpense = (expense = {}) => /ung luong|tam ung luong|salary.advance|advance.salary/.test(normalizeText([
+  expense.sourceType, expense.category, expense.type, expense.name, expense.title
+].filter(Boolean).join(' ')));
+
+const customerNameOf = (entity = {}, customersById = new Map()) => {
+  const customer = entity.customerId ? customersById.get(entity.customerId) : null;
+  return entity.customerName || entity.customer?.name || entity.name || customer?.name || customer?.displayName || 'Khách chưa rõ';
+};
+
+const productNameOf = (item = {}, productsById = new Map()) => {
+  const product = item.productId ? productsById.get(item.productId) : null;
+  return item.productShortName || item.shortName || product?.shortName || item.productName || item.name || product?.name || 'Sản phẩm';
+};
+
+const employeeNameOf = (entity = {}, employeesById = new Map()) => {
+  const employeeId = entity.employeeId || entity.salesId || entity.createdBy || entity.staffId || entity.userId;
+  const employee = employeeId ? employeesById.get(employeeId) : null;
+  return entity.employeeName || entity.salesName || entity.createdByName || employee?.name || 'Chưa rõ nhân viên';
+};
+
+const employeeDisplayNameOf = (employee = {}) => (
+  employee.name ||
+  employee.displayName ||
+  employee.fullName ||
+  employee.phone ||
+  employee.id ||
+  'Chưa rõ nhân viên'
+);
+
+const isSalesEmployeeRecord = (employee = {}) => {
+  const text = normalizeText([
+    employee.position,
+    employee.role,
+    employee.roleName,
+    employee.department,
+    employee.type,
+    employee.title
+  ].filter(Boolean).join(' '));
+  return /kinh doanh|ban hang|cong tac vien|sales|sale|business|nvkd|ctv/.test(text);
+};
+
+const customerSalesEmployeeIdOf = (customer = {}) => String(
+  customer.empId ||
+  customer.salesEmpId ||
+  customer.managerEmpId ||
+  customer.salesOwnerId ||
+  customer.assignedSalesEmpId ||
+  customer.responsibleEmployeeId ||
+  customer.employeeId ||
+  ''
+);
+
+const percentChange = (current, previous) => {
+  if (!previous && !current) return 0;
+  if (!previous) return current > 0 ? 100 : 0;
+  return ((current - previous) / Math.abs(previous)) * 100;
+};
+
+const getPeriodTotals = (entities, amountGetter) => {
+  if (!activeBuildCache || !Array.isArray(entities)) return null;
+  let getters = activeBuildCache.totals.get(entities);
+  if (!getters) { getters = new Map(); activeBuildCache.totals.set(entities, getters); }
+  if (getters.has(amountGetter)) return getters.get(amountGetter);
+  const totals = { date: new Map(), month: new Map(), year: new Map() };
+  for (const item of entities) {
+    const value = getDateValue(item);
+    const day = dateKey(value);
+    const month = monthKey(value);
+    const amount = amountGetter(item);
+    for (const [map, key] of [[totals.date, day], [totals.month, month], [totals.year, day.slice(0, 4)]]) {
+      map.set(key, (map.get(key) || 0) + amount);
+    }
+  }
+  getters.set(amountGetter, totals);
+  return totals;
+};
+
+const sumByDate = (entities, key, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.date.get(key) || 0;
+  return toArray(entities)
+  .filter(item => dateKey(getDateValue(item)) === key)
+  .reduce((sum, item) => sum + amountGetter(item), 0);
+};
+
+const sumByMonth = (entities, key, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.month.get(key) || 0;
+  return toArray(entities)
+  .filter(item => monthKey(getDateValue(item)) === key)
+  .reduce((sum, item) => sum + amountGetter(item), 0);
+};
+
+const sumByYear = (entities, year, amountGetter) => {
+  const totals = getPeriodTotals(entities, amountGetter);
+  if (totals) return totals.year.get(String(year)) || 0;
+  return toArray(entities)
+  .filter(item => dateKey(getDateValue(item)).startsWith(`${year}-`))
+  .reduce((sum, item) => sum + amountGetter(item), 0);
+};
+
+const sumByDateRange = (entities, startKey, endKey, amountGetter) => toArray(entities)
+  .filter(item => {
+    const key = dateKey(getDateValue(item));
+    return key && key >= startKey && key <= endKey;
+  })
+  .reduce((sum, item) => sum + amountGetter(item), 0);
+
+const sumMapByDateRange = (costByDate = new Map(), startKey = '', endKey = '') => (
+  [...costByDate.entries()]
+    .filter(([key]) => key && key >= startKey && key <= endKey)
+    .reduce((sum, [, value]) => sum + toNumber(value), 0)
+);
+
+const isInQuarter = (entity, now) => {
+  const date = parseDate(getDateValue(entity));
+  if (!date) return false;
+  const quarter = Math.floor(now.getMonth() / 3);
+  return date.getFullYear() === now.getFullYear() && Math.floor(date.getMonth() / 3) === quarter;
+};
+
+const buildSeriesDays = ({ orders, expenses, payments, today, days }) => {
+  const rows = [];
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const key = dateKey(addDays(today, -index));
+    const revenue = sumByDate(orders, key, orderTotal);
+    const expense = sumByDate(expenses, key, moneyOfExpense);
+    const income = sumByDate(payments, key, moneyOfPayment);
+    rows.push({ date: key, revenue, expense, operatingExpense: expense, income, profit: revenue - expense, cashflow: income - expense });
+  }
+  return rows;
+};
+
+const buildSeriesMonths = ({ orders, expenses, payments, today, months }) => {
+  const rows = [];
+  for (let index = months - 1; index >= 0; index -= 1) {
+    const key = monthKey(addMonths(today, -index));
+    const revenue = sumByMonth(orders, key, orderTotal);
+    const expense = sumByMonth(expenses, key, moneyOfExpense);
+    const income = sumByMonth(payments, key, moneyOfPayment);
+    rows.push({ month: key, revenue, expense, operatingExpense: expense, income, profit: revenue - expense, cashflow: income - expense });
+  }
+  return rows;
+};
+
+const normalizeInput = (input = {}) => ({
+  now: input.now ? new Date(input.now) : new Date(),
+  company: input.company || {},
+  employee: input.employee || {},
+  orders: toCollectionArray(input.orders).filter(item => !isArchived(item) && !isCancelled(item)),
+  orderRequests: toCollectionArray(input.orderRequests).filter(item => !isArchived(item) && !isCancelled(item)),
+  payments: toCollectionArray(input.payments).filter(item => !isArchived(item)),
+  expenses: toCollectionArray(input.expenses).filter(item => !isArchived(item)),
+  cashExpenseRecords: input.cashExpenseRecords,
+  financials: toCollectionArray(input.financials).filter(item => !isArchived(item)),
+  payrollCosts: toCollectionArray(input.payrollCosts).filter(item => !isArchived(item)),
+  debtLedger: toCollectionArray(input.debtLedger),
+  hasDebtLedger: input.debtLedger !== undefined,
+  advances: toCollectionArray(input.advances || input.advanceRequests).filter(item => !isArchived(item) && !isCancelled(item)),
+  products: toCollectionArray(input.products).filter(item => !isArchived(item)),
+  customers: toCollectionArray(input.customers).filter(item => !isArchived(item)),
+  employees: toCollectionArray(input.employees).filter(item => !isArchived(item)),
+  attendance: toCollectionArray(input.attendance).filter(item => !isArchived(item)),
+  warehouseImports: toCollectionArray(input.warehouseImports).filter(item => !isArchived(item)),
+  warehouseDispatches: toCollectionArray(input.warehouseDispatches)
+    .filter(item => !isArchived(item) && item.__pendingFirebaseSync !== true),
+  warehouseStockCounts: toCollectionArray(input.warehouseStockCounts).filter(item => !isArchived(item)),
+  assets: toCollectionArray(input.assets).filter(item => !isArchived(item)),
+  assetCostLogs: toCollectionArray(input.assetCostLogs).filter(item => !isArchived(item)),
+  deliveryReports: toCollectionArray(input.deliveryReports).filter(item => !isArchived(item))
+});
+
+const classifyExpense = (expense = {}) => {
+  const text = normalizeText([
+    expense.category,
+    expense.type,
+    expense.name,
+    expense.title,
+    expense.note,
+    expense.description,
+    expense.reason
+  ].filter(Boolean).join(' '));
+  if (/gia von|mua hang|hang hoa|nhap kho|nguyen lieu|hang song/.test(text)) return 'Giá vốn';
+  if (/luong|thuong|phat|nhan su|cong nhan|salary|payroll/.test(text)) return 'Lương';
+  if (/thue|mat bang|nha xuong|kho bai|rent/.test(text)) return 'Thuê tài sản';
+  if (/dien|nuoc|internet|nuoc may/.test(text)) return 'Điện nước';
+  if (/xang|dau|van chuyen|giao hang|fuel/.test(text)) return 'Xăng dầu';
+  return 'Chi phí khác';
+};
+
+const topRows = (map, valueKey = 'value', limit = 10) => [...map.entries()]
+  .map(([name, payload]) => {
+    const data = typeof payload === 'number' ? { [valueKey]: payload } : payload;
+    const displayName = data.name || data.label || name;
+    return {
+      id: data.id || normalizeText(displayName) || `${valueKey}-${Math.random()}`,
+      name: displayName,
+      label: displayName,
+      value: toNumber(data[valueKey] ?? data.value),
+      [valueKey]: toNumber(data[valueKey] ?? data.value),
+      revenue: toNumber(data.revenue),
+      profit: toNumber(data.profit),
+      debt: toNumber(data.debt),
+      quantity: toNumber(data.quantity),
+      orders: toNumber(data.orders)
+    };
+  })
+  .sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]))
+  .slice(0, limit);
+
+const buildDispatchSignature = (dispatch = {}) => `${dispatch.customerId || normalizeText(dispatch.customerName || dispatch.name)}|${dispatch.productId || normalizeText(dispatch.productName || dispatch.product || dispatch.itemName)}`;
+const buildRequestSignature = (request = {}) => `${request.customerId || normalizeText(request.customerName || request.name)}|${request.productId || normalizeText(request.productName || request.product || request.itemName)}`;
+
+export const createRequestDeliveryLookup = (dispatches = []) => {
+  const cached = activeBuildCache?.deliveries?.get(dispatches);
+  if (cached) return cached;
+  const bySignature = new Map();
+  dispatches.forEach(dispatch => {
+    const signature = buildDispatchSignature(dispatch);
+    const time = parseDate(getDateValue(dispatch))?.getTime() || 0;
+    const previous = bySignature.get(signature);
+    bySignature.set(signature, {
+      unknownTime: !time || Boolean(previous?.unknownTime),
+      latestTime: Math.max(previous?.latestTime ?? -Infinity, time),
+    });
+  });
+  const lookup = (request = {}) => {
+    const entry = bySignature.get(buildRequestSignature(request));
+    if (!entry) return false;
+    const requestTime = parseDate(getDateValue(request))?.getTime() || 0;
+    return !requestTime || entry.unknownTime || entry.latestTime >= requestTime;
+  };
+  activeBuildCache?.deliveries?.set(dispatches, lookup);
+  return lookup;
+};
+
+const inventoryValueOfImports = (imports = []) => imports.reduce((sum, item) => {
+  const direct = toNumber(item.totalAmount ?? item.amount ?? item.totalCost ?? item.finalAmount, NaN);
+  if (Number.isFinite(direct)) return sum + direct;
+  return sum + toNumber(item.totalKg ?? item.weightKg ?? item.kg) * toNumber(item.unitPrice ?? item.price);
+}, 0);
+
+const inventoryValueOfCounts = (counts = []) => counts.reduce((sum, item) => (
+  sum + toNumber(item.value ?? item.totalValue ?? item.amount)
+), 0);
+
+export const FinancialService = {
+  build(source) {
+    const today = source.now;
+    const todayKey = dateKey(today);
+    const yesterdayKey = dateKey(addDays(today, -1));
+    const weekStartKey = dateKey(getWeekStartDate(today));
+    const weekEndKey = todayKey;
+    const currentMonthKey = monthKey(today);
+    const previousMonthKey = getPreviousMonthKey(today);
+    const year = today.getFullYear();
+
+    const revenueToday = sumByDate(source.orders, todayKey, orderTotal);
+    const revenueYesterday = sumByDate(source.orders, yesterdayKey, orderTotal);
+    const revenueWeek = sumByDateRange(source.orders, weekStartKey, weekEndKey, orderTotal);
+    const revenueMonth = sumByMonth(source.orders, currentMonthKey, orderTotal);
+    const revenuePreviousMonth = sumByMonth(source.orders, previousMonthKey, orderTotal);
+    const expenseToday = sumByDate(source.expenses, todayKey, moneyOfExpense);
+    const expenseYesterday = sumByDate(source.expenses, yesterdayKey, moneyOfExpense);
+    const expenseWeek = sumByDateRange(source.expenses, weekStartKey, weekEndKey, moneyOfExpense);
+    const expenseMonth = sumByMonth(source.expenses, currentMonthKey, moneyOfExpense);
+    const expensePreviousMonth = sumByMonth(source.expenses, previousMonthKey, moneyOfExpense);
+    const operatingExpenseToday = expenseToday;
+    const operatingExpenseYesterday = expenseYesterday;
+    const operatingExpenseWeek = expenseWeek;
+    const operatingExpenseMonth = expenseMonth;
+    const operatingExpensePreviousMonth = expensePreviousMonth;
+    const incomeToday = sumByDate(source.payments, todayKey, moneyOfPayment);
+    const outcomeToday = expenseToday;
+    const incomeWeek = sumByDateRange(source.payments, weekStartKey, weekEndKey, moneyOfPayment);
+    const outcomeWeek = expenseWeek;
+    const incomeMonth = sumByMonth(source.payments, currentMonthKey, moneyOfPayment);
+    const outcomeMonth = expenseMonth;
+    const profitToday = revenueToday - expenseToday;
+    const profitYesterday = revenueYesterday - expenseYesterday;
+    const profitWeek = revenueWeek - expenseWeek;
+    const profitMonth = revenueMonth - expenseMonth;
+    const profitPreviousMonth = revenuePreviousMonth - expensePreviousMonth;
+    const quarterProfit = source.orders.filter(order => isInQuarter(order, today)).reduce((sum, order) => sum + orderTotal(order), 0)
+      - source.expenses.filter(expense => isInQuarter(expense, today)).reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
+    const yearProfit = sumByYear(source.orders, year, orderTotal) - sumByYear(source.expenses, year, moneyOfExpense);
+
+    const customerProfileReceivable = source.customers.reduce((sum, customer) => (
+      sum + Math.max(0, toNumber(customer.currentDebt ?? customer.debt ?? customer.balanceDue))
+    ), 0);
+    const orderReceivable = source.orders.reduce((sum, order) => sum + outstandingOfOrder(order), 0);
+    const receivables = source.hasDebtLedger
+      ? source.debtLedger.reduce((sum, row) => sum + Math.max(0, toNumber(row.debt)), 0)
+      : (orderReceivable > 0 ? orderReceivable : customerProfileReceivable);
+    const payables = source.expenses
+      .filter(expense => ['pending', 'unpaid', 'draft'].includes(normalizeText(expense.status)) || expense.isPaid === false)
+      .reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
+    const overdueReceivables = source.orders.reduce((sum, order) => {
+      const dueDate = parseDate(order.dueDate || order.paymentDueDate);
+      const outstanding = outstandingOfOrder(order);
+      return dueDate && dueDate < today && outstanding > 0 ? sum + outstanding : sum;
+    }, 0);
+    const cashBalance = source.payments.reduce((sum, item) => sum + moneyOfPayment(item), 0)
+      - source.expenses.reduce((sum, item) => sum + moneyOfExpense(item), 0);
+    const cashflowMonth = incomeMonth - outcomeMonth;
+    const cashflowPreviousMonth = sumByMonth(source.payments, previousMonthKey, moneyOfPayment) - expensePreviousMonth;
+
+    const series7Days = buildSeriesDays({ orders: source.orders, expenses: source.expenses, payments: source.payments, today, days: 7 });
+    const series30Days = buildSeriesDays({ orders: source.orders, expenses: source.expenses, payments: source.payments, today, days: 30 });
+    const series12Months = buildSeriesMonths({ orders: source.orders, expenses: source.expenses, payments: source.payments, today, months: 12 });
+
+    const costBreakdownMap = new Map();
+    source.expenses
+      .filter(expense => monthKey(getDateValue(expense)) === currentMonthKey)
+      .forEach(expense => {
+        const category = classifyExpense(expense);
+        costBreakdownMap.set(category, (costBreakdownMap.get(category) || 0) + moneyOfExpense(expense));
+      });
+    const costBreakdown = ['Giá vốn', 'Lương', 'Thuê tài sản', 'Điện nước', 'Xăng dầu', 'Chi phí khác']
+      .map(name => ({ name, value: costBreakdownMap.get(name) || 0 }));
+
+    return {
+      todayKey,
+      yesterdayKey,
+      weekStartKey,
+      weekEndKey,
+      currentMonthKey,
+      previousMonthKey,
+      revenueToday,
+      revenueYesterday,
+      revenueWeek,
+      revenueMonth,
+      revenuePreviousMonth,
+      revenueChangePct: percentChange(revenueMonth, revenuePreviousMonth),
+      profitToday,
+      profitYesterday,
+      profitWeek,
+      profitMonth,
+      profitPreviousMonth,
+      quarterProfit,
+      yearProfit,
+      expenseToday,
+      expenseYesterday,
+      expenseWeek,
+      expenseMonth,
+      expensePreviousMonth,
+      operatingExpenseToday,
+      operatingExpenseYesterday,
+      operatingExpenseWeek,
+      operatingExpenseMonth,
+      operatingExpensePreviousMonth,
+      expenseChangePct: percentChange(expenseMonth, expensePreviousMonth),
+      incomeToday,
+      outcomeToday,
+      incomeWeek,
+      outcomeWeek,
+      incomeMonth,
+      outcomeMonth,
+      cashBalance,
+      cashflowMonth,
+      cashflowPreviousMonth,
+      receivables,
+      payables,
+      overdueReceivables,
+      series7Days,
+      series30Days,
+      dailyCashflowRows: series30Days,
+      series12Months,
+      costBreakdown
+    };
+  }
+};
+
+export const CostAnalysisService = {
+  build(source, finance) {
+    const daysPassed = Math.max(1, source.now.getDate());
+    const activeEmployees = payrollEmployeesOf(source.employees, source.now).length || 1;
+    const salaryMonth = toArray(finance.costBreakdown)
+      .filter(row => row.name === 'Lương')
+      .reduce((sum, row) => sum + toNumber(row.value), 0);
+
+    return {
+      totalMonth: finance.expenseMonth,
+      previousMonth: finance.expensePreviousMonth,
+      averageDaily: finance.expenseMonth / daysPassed,
+      salaryMonth,
+      salaryAverageDaily: salaryMonth / daysPassed,
+      salaryAverageEmployee: salaryMonth / activeEmployees,
+      salaryToRevenuePct: finance.revenueMonth > 0 ? (salaryMonth / finance.revenueMonth) * 100 : 0,
+      byDepartment: finance.expenseByDepartment || [],
+      trend: {
+        currentMonth: finance.expenseMonth,
+        previousMonth: finance.expensePreviousMonth,
+        changePct: percentChange(finance.expenseMonth, finance.expensePreviousMonth)
+      }
+    };
+  }
+};
+
+const productGroupOf = (entity = {}, productsById = new Map()) => {
+  const product = entity.productId ? productsById.get(entity.productId) : null;
+  return (
+    entity.mainGroup ||
+    entity.groupName ||
+    entity.productGroup ||
+    entity.category ||
+    product?.mainGroup ||
+    product?.groupName ||
+    product?.productGroup ||
+    product?.category ||
+    product?.name ||
+    entity.productName ||
+    entity.name ||
+    'Chưa phân nhóm'
+  );
+};
+
+const productProfitKeyOf = (entity = {}, productsById = new Map()) => {
+  const product = entity.productId ? productsById.get(entity.productId) : null;
+  return (
+    entity.productId ||
+    product?.id ||
+    normalizeText(entity.productName || entity.name || entity.groupName || product?.name || product?.shortName || 'san-pham')
+  );
+};
+
+const inventoryCostKeyOf = (entity = {}, productsById = new Map()) => {
+  const group = productGroupOf(entity, productsById);
+  return normalizeText(group || productProfitKeyOf(entity, productsById) || 'san-pham');
+};
+
+const quantityUnitOf = (entity = {}, fallback = 'đơn vị') => (
+  entity.quantityUnit ||
+  entity.unit ||
+  entity.stockUnit ||
+  entity.productUnit ||
+  fallback
+);
+
+const importQuantityOf = (item = {}) => toNumber(
+  item.quantity ??
+  item.totalQuantity ??
+  item.count ??
+  item.pieceCount ??
+  item.packageCount
+);
+
+const importKgOf = (item = {}) => toNumber(
+  item.totalKg ??
+  item.weightKg ??
+  item.kg ??
+  item.weight
+);
+
+const dispatchQuantityOf = (item = {}) => toNumber(
+  item.quantity ??
+  item.pieceCount ??
+  item.quantityCount ??
+  item.totalQuantity ??
+  item.count
+);
+
+const dispatchKgOf = (item = {}) => toNumber(
+  item.weightKg ??
+  item.totalKg ??
+  item.kg ??
+  item.weight
+);
+
+const addQuantityByUnit = (target = {}, unit = '', value = 0) => {
+  const normalizedUnit = String(unit || '').trim() || 'đv';
+  const quantity = toNumber(value);
+  if (quantity <= 0) return target;
+  target[normalizedUnit] = (target[normalizedUnit] || 0) + quantity;
+  return target;
+};
+
+const mergeQuantityByUnit = (target = {}, source = {}) => {
+  Object.entries(source || {}).forEach(([unit, value]) => addQuantityByUnit(target, unit, value));
+  return target;
+};
+
+const PROFIT_QUANTITY_UNIT_PRIORITY = ['Con', 'Kg', 'Bo', 'Bao', 'Boc', 'Thung', 'Cai'];
+
+const selectPrimaryProfitQuantity = (quantityByUnit = {}, preferredUnit = '') => {
+  const entries = Object.entries(quantityByUnit || {})
+    .map(([unit, value]) => ({ unit, quantity: toNumber(value) }))
+    .filter(entry => entry.quantity > 0);
+  if (!entries.length) return null;
+  const priorityUnits = [preferredUnit, ...PROFIT_QUANTITY_UNIT_PRIORITY].filter(Boolean);
+  for (const priorityUnit of priorityUnits) {
+    const match = entries.find(entry => normalizeText(entry.unit) === normalizeText(priorityUnit));
+    if (match) return match;
+  }
+  return entries[0];
+};
+
+const profitQuantityBasisOf = (row = {}) => {
+  const dispatchBasis = selectPrimaryProfitQuantity(row.dispatchQuantitiesByUnit, row.unit);
+  if (dispatchBasis?.quantity > 0) return dispatchBasis;
+  const soldQuantity = toNumber(row.soldQuantity ?? row.quantitySold);
+  if (soldQuantity > 0) return { unit: row.unit || 'dv', quantity: soldQuantity };
+  const inputQuantity = toNumber(row.inputQuantity ?? row.todayInputQty);
+  if (inputQuantity > 0) return { unit: row.unit || 'dv', quantity: inputQuantity };
+  return { unit: row.unit || 'dv', quantity: 0 };
+};
+
+const importValueOf = (item = {}) => {
+  const direct = toNumber(item.amount ?? item.totalAmount ?? item.total ?? item.value ?? item.costAmount, NaN);
+  if (Number.isFinite(direct)) return direct;
+  const kg = importKgOf(item);
+  const quantity = importQuantityOf(item);
+  const unitPrice = toNumber(item.unitPrice ?? item.price ?? item.costPrice ?? item.purchasePrice);
+  if (kg > 0 && unitPrice > 0) return kg * unitPrice;
+  if (quantity > 0 && unitPrice > 0) return quantity * unitPrice;
+  return 0;
+};
+
+const PROFIT_EVENT_ORDER = { import: 0, dispatch: 1, sale: 1, revenue: 2 };
+const canonicalDay = /^\d{4}-\d{2}-\d{2}$/;
+
+const sortProfitEvents = (a, b) => {
+  // Internally generated ISO days sort exactly by code units. Avoid locale
+  // collation on every event pair; retain the previous fallback for other keys.
+  const dayCompare = a.dateKey === b.dateKey ? 0
+    : canonicalDay.test(a.dateKey) && canonicalDay.test(b.dateKey)
+      ? a.dateKey < b.dateKey ? -1 : 1
+      : a.dateKey.localeCompare(b.dateKey);
+  if (dayCompare !== 0) return dayCompare;
+  if (a.type === b.type) return 0;
+  return (PROFIT_EVENT_ORDER[a.type] ?? 9) - (PROFIT_EVENT_ORDER[b.type] ?? 9);
+};
+
+const buildProfitRow = (state = {}) => {
+  const soldQuantity = toNumber(state.todaySoldQty);
+  const revenue = toNumber(state.todayRevenue);
+  const inputCost = toNumber(state.todayCost);
+  const profit = revenue - inputCost;
+  const dispatchQuantitiesByUnit = { ...(state.dispatchQuantitiesByUnit || {}) };
+  const quantityBasis = profitQuantityBasisOf({
+    ...state,
+    soldQuantity,
+    quantitySold: soldQuantity,
+    inputQuantity: toNumber(state.todayInputQty),
+    dispatchQuantitiesByUnit
+  });
+  const costQuantity = toNumber(quantityBasis.quantity);
+  const averageInputCost = costQuantity > 0
+    ? inputCost / costQuantity
+    : (state.todayInputQty > 0
+      ? state.todayInputValue / state.todayInputQty
+      : (state.carryQty > 0 ? state.carryValue / state.carryQty : 0));
+  const averageSalePrice = costQuantity > 0 ? revenue / costQuantity : 0;
+  return {
+    id: state.key,
+    name: state.name,
+    groupName: state.groupName,
+    unit: state.unit || 'đơn vị',
+    inputQuantity: toNumber(state.todayInputQty),
+    inputKg: toNumber(state.todayInputKg),
+    inputValue: toNumber(state.todayInputValue),
+    soldQuantity,
+    quantitySold: soldQuantity,
+    dispatchQuantitiesByUnit,
+    revenue,
+    inputCost,
+    cost: inputCost,
+    costQuantity,
+    costQuantityUnit: quantityBasis.unit,
+    averageInputCost,
+    averageSalePrice,
+    profitPerUnit: averageSalePrice - averageInputCost,
+    profit,
+    carryoverQuantity: Math.max(0, toNumber(state.carryQty)),
+    carryoverValue: Math.max(0, toNumber(state.carryValue)),
+    value: profit
+  };
+};
+
+const aggregateProfitRowsByGroup = (rows = []) => {
+  const groupMap = new Map();
+  rows.forEach(row => {
+    const key = normalizeText(row.groupName || row.name) || 'chua-phan-nhom';
+    const current = groupMap.get(key) || {
+      id: key,
+      name: row.groupName || row.name || 'Chưa phân nhóm',
+      groupName: row.groupName || row.name || 'Chưa phân nhóm',
+      unit: row.unit || 'đơn vị',
+      inputQuantity: 0,
+      inputKg: 0,
+      inputValue: 0,
+      soldQuantity: 0,
+      quantitySold: 0,
+      dispatchQuantitiesByUnit: {},
+      revenue: 0,
+      inputCost: 0,
+      cost: 0,
+      profit: 0,
+      carryoverQuantity: 0,
+      carryoverValue: 0,
+      products: 0
+    };
+    current.inputQuantity += row.inputQuantity || 0;
+    current.inputKg += row.inputKg || 0;
+    current.inputValue += row.inputValue || 0;
+    current.soldQuantity += row.soldQuantity || 0;
+    current.quantitySold = current.soldQuantity;
+    mergeQuantityByUnit(current.dispatchQuantitiesByUnit, row.dispatchQuantitiesByUnit);
+    current.revenue += row.revenue || 0;
+    current.inputCost += row.inputCost || 0;
+    current.cost = current.inputCost;
+    current.profit += row.profit || 0;
+    current.carryoverQuantity += row.carryoverQuantity || 0;
+    current.carryoverValue += row.carryoverValue || 0;
+    current.products += 1;
+    groupMap.set(key, current);
+  });
+  return [...groupMap.values()]
+    .map(row => {
+      const quantityBasis = profitQuantityBasisOf(row);
+      const costQuantity = toNumber(quantityBasis.quantity);
+      return {
+        ...row,
+        costQuantity,
+        costQuantityUnit: quantityBasis.unit,
+        averageInputCost: costQuantity > 0 ? row.inputCost / costQuantity : (row.inputQuantity > 0 ? row.inputValue / row.inputQuantity : 0),
+        averageSalePrice: costQuantity > 0 ? row.revenue / costQuantity : 0,
+        profitPerUnit: costQuantity > 0 ? row.profit / costQuantity : 0,
+        value: row.profit
+      };
+    })
+    .sort((a, b) => b.profit - a.profit);
+};
+
+const prepareProfitabilityEvents = (source, todayKey, requestedDays) => {
+    const productsById = new Map(source.products.map(product => [product.id, product]));
+    const dispatchSummaries = new Map();
+    const dispatchUsageKeysByDate = new Set();
+    const events = [];
+
+    source.warehouseDispatches.forEach(dispatch => {
+      const eventDateKey = dateKey(getDateValue(dispatch));
+      if (!eventDateKey || eventDateKey > todayKey) return;
+      const quantity = dispatchQuantityOf(dispatch);
+      const kg = dispatchKgOf(dispatch);
+      if (quantity <= 0 && kg <= 0) return;
+      const key = inventoryCostKeyOf(dispatch, productsById);
+      dispatchUsageKeysByDate.add(`${eventDateKey}__${key}`);
+      events.push({
+        type: 'dispatch',
+        dateKey: eventDateKey,
+        key,
+        name: productNameOf(dispatch, productsById),
+        groupName: productGroupOf(dispatch, productsById),
+        unit: quantity > 0 ? quantityUnitOf(dispatch, 'Con') : 'Kg',
+        quantity: quantity > 0 ? quantity : kg,
+        kg,
+        fallbackCostPerUnit: itemCost(dispatch)
+      });
+      if (!requestedDays.has(eventDateKey)) return;
+      if (!dispatchSummaries.has(eventDateKey)) dispatchSummaries.set(eventDateKey, new Map());
+      const dispatchSummaryMap = dispatchSummaries.get(eventDateKey);
+      const summary = dispatchSummaryMap.get(key) || {
+        key,
+        name: productNameOf(dispatch, productsById),
+        groupName: productGroupOf(dispatch, productsById),
+        unit: quantityUnitOf(dispatch, kg > 0 ? 'Kg' : 'Con'),
+        dispatchQuantitiesByUnit: {}
+      };
+      if (quantity > 0) addQuantityByUnit(summary.dispatchQuantitiesByUnit, quantityUnitOf(dispatch, 'Con'), quantity);
+      if (kg > 0) addQuantityByUnit(summary.dispatchQuantitiesByUnit, 'Kg', kg);
+      dispatchSummaryMap.set(key, summary);
+    });
+
+    source.warehouseImports.forEach(item => {
+      const eventDateKey = dateKey(getDateValue(item));
+      if (!eventDateKey || eventDateKey > todayKey) return;
+      const quantity = importQuantityOf(item);
+      const kg = importKgOf(item);
+      const value = importValueOf(item);
+      const primaryQuantity = quantity > 0 ? quantity : kg;
+      if (primaryQuantity <= 0 && value <= 0) return;
+      const key = inventoryCostKeyOf(item, productsById);
+      const name = item.productName || item.name || item.groupName || item.productGroup || productNameOf(item, productsById);
+      events.push({
+        type: 'import',
+        dateKey: eventDateKey,
+        key,
+        name,
+        groupName: productGroupOf(item, productsById),
+        unit: quantity > 0 ? quantityUnitOf(item, 'con') : 'kg',
+        quantity: primaryQuantity,
+        kg,
+        value
+      });
+    });
+
+    source.orders.forEach(order => {
+      const eventDateKey = dateKey(getDateValue(order));
+      if (!eventDateKey || eventDateKey > todayKey) return;
+      getItems(order).forEach(item => {
+        const quantity = itemQuantity(item);
+        const revenue = itemLineTotal(item);
+        if (quantity <= 0 && revenue <= 0) return;
+        const key = inventoryCostKeyOf(item, productsById);
+        events.push({
+          type: 'revenue',
+          dateKey: eventDateKey,
+          key,
+          name: productNameOf(item, productsById),
+          groupName: productGroupOf(item, productsById),
+          unit: quantityUnitOf(item, productsById.get(item.productId)?.unit || 'đơn vị'),
+          quantity,
+          revenue,
+          fallbackCostPerUnit: itemCost(item)
+        });
+        if (dispatchUsageKeysByDate.has(`${eventDateKey}__${key}`)) return;
+        events.push({
+          type: 'sale',
+          dateKey: eventDateKey,
+          key,
+          name: productNameOf(item, productsById),
+          groupName: productGroupOf(item, productsById),
+          unit: quantityUnitOf(item, productsById.get(item.productId)?.unit || 'dv'),
+          quantity,
+          fallbackCostPerUnit: itemCost(item)
+        });
+      });
+    });
+
+    return { events: events.sort(sortProfitEvents), dispatchSummaries };
+};
+
+const buildPreparedProfitability = ({ events, dispatchSummaries }, todayKey, progress) => {
+    const stateMap = progress?.states || new Map();
+    if(progress)for(const state of stateMap.values()){
+      state.todayInputQty=0;state.todayInputKg=0;state.todayInputValue=0;
+      state.todaySoldQty=0;state.todayRevenue=0;state.todayCost=0;state.dispatchQuantitiesByUnit={};
+    }
+    const ensureState = (event) => {
+      if (!stateMap.has(event.key)) {
+        stateMap.set(event.key, {
+          key: event.key,
+          name: event.name,
+          groupName: event.groupName,
+          unit: event.unit,
+          carryQty: 0,
+          carryValue: 0,
+          todayInputQty: 0,
+          todayInputKg: 0,
+          todayInputValue: 0,
+          todaySoldQty: 0,
+          todayRevenue: 0,
+          todayCost: 0,
+          dispatchQuantitiesByUnit: {}
+        });
+      }
+      const state = stateMap.get(event.key);
+      state.name = state.name || event.name;
+      state.groupName = state.groupName || event.groupName;
+      state.unit = state.unit || event.unit;
+      return state;
+    };
+
+    let end=progress?.index||0;
+    if(progress)while(end<events.length&&events[end].dateKey<=todayKey)end++;
+    (progress?events.slice(progress.index,end):events).forEach(event => {
+      if (event.dateKey > todayKey) return;
+      const state = ensureState(event);
+      if (event.type === 'import') {
+        state.carryQty += event.quantity;
+        state.carryValue += event.value;
+        if (event.dateKey === todayKey) {
+          state.todayInputQty += event.quantity;
+          state.todayInputKg += event.kg || 0;
+          state.todayInputValue += event.value;
+        }
+        return;
+      }
+
+      if (event.type === 'revenue') {
+        if (event.dateKey === todayKey) {
+          state.todayRevenue += event.revenue || 0;
+        }
+        return;
+      }
+
+      const quantity = event.quantity || 0;
+      const averageCost = state.carryQty > 0
+        ? state.carryValue / state.carryQty
+        : toNumber(event.fallbackCostPerUnit);
+      const saleCost = quantity * averageCost;
+      state.carryQty = Math.max(0, state.carryQty - quantity);
+      state.carryValue = Math.max(0, state.carryValue - saleCost);
+      if (event.dateKey === todayKey) {
+        state.todaySoldQty += quantity;
+        state.todayCost += saleCost;
+      }
+    });
+
+    if(progress)progress.index=end;
+    dispatchSummaries.get(todayKey)?.forEach(summary => {
+      const state = ensureState(summary);
+      mergeQuantityByUnit(state.dispatchQuantitiesByUnit, summary.dispatchQuantitiesByUnit);
+    });
+
+    const productRows = [...stateMap.values()]
+      .map(buildProfitRow)
+      .filter(row => (
+        row.inputQuantity > 0 ||
+        row.soldQuantity > 0 ||
+        row.carryoverQuantity > 0 ||
+        row.revenue > 0 ||
+        Object.keys(row.dispatchQuantitiesByUnit || {}).length > 0
+      ))
+      .sort((a, b) => b.profit - a.profit);
+    const groupRows = aggregateProfitRowsByGroup(productRows);
+    const totals = productRows.reduce((sum, row) => ({
+      revenue: sum.revenue + row.revenue,
+      inputCost: sum.inputCost + row.inputCost,
+      profit: sum.profit + row.profit,
+      soldQuantity: sum.soldQuantity + row.soldQuantity,
+      carryoverQuantity: sum.carryoverQuantity + row.carryoverQuantity,
+      carryoverValue: sum.carryoverValue + row.carryoverValue
+    }), { revenue: 0, inputCost: 0, profit: 0, soldQuantity: 0, carryoverQuantity: 0, carryoverValue: 0 });
+
+    return {
+      todayKey,
+      totals,
+      productRows,
+      groupRows,
+      topProduct: productRows.find(row => row.profit > 0) || productRows[0] || null,
+      topGroup: groupRows.find(row => row.profit > 0) || groupRows[0] || null
+    };
+};
+
+// One immutable preparation per dashboard build; never cache across saves or
+// tenants. Daily diagnostics reuse the same ordered events and today's result.
+const createProfitabilitySnapshotReader = (source, days) => {
+  const requestedDays = new Set(days);
+  const orderedDays=[...requestedDays].sort();
+  const latestDay = orderedDays.at(-1);
+  const prepared = prepareProfitabilityEvents(source, latestDay, requestedDays);
+  const snapshots = new Map();
+  const progress={states:new Map(),index:0};let nextDay=0;
+  return day => {
+    if (!requestedDays.has(day)) throw new Error('Profitability day was not prepared.');
+    // Carry the same inventory event arithmetic forward once, in date order.
+    // Daily amounts reset; persisted inputs and accounting rules do not change.
+    while(nextDay<orderedDays.length&&orderedDays[nextDay]<=day){const key=orderedDays[nextDay++];snapshots.set(key,buildPreparedProfitability(prepared,key,progress));}
+    return snapshots.get(day);
+  };
+};
+
+export const ProfitabilityService = {
+  build(source, finance) {
+    const todayKey = finance.todayKey || dateKey(source.now);
+    return createProfitabilitySnapshotReader(source, [todayKey])(todayKey);
+  }
+};
+
+// Period production reuses the exact daily dispatch grouping/unit accounting.
+// Do not sum orders and dispatches, or mix Con and Kg into one quantity.
+export function buildHomePeriodProduction(input,periods){
+ const source=normalizeInput(input),today=dateKey(source.now),allDays=new Set();
+ const daysByPeriod={};
+ for(const [period,range]of Object.entries(periods)){
+  const days=[];const end=range.end<today?range.end:today;
+  for(let ms=Date.parse(range.start+'T00:00:00Z');ms<=Date.parse(end+'T00:00:00Z');ms+=DAY_MS){const day=new Date(ms).toISOString().slice(0,10);days.push(day);allDays.add(day);}
+  daysByPeriod[period]=days;
+ }
+ const read=createProfitabilitySnapshotReader(source,[...allDays]);
+ return Object.fromEntries(Object.entries(daysByPeriod).map(([period,days])=>{
+  const groups=new Map();for(const day of days)for(const row of read(day).groupRows){const name=row.groupName||row.name;const units=groups.get(name)||{};mergeQuantityByUnit(units,row.dispatchQuantitiesByUnit);groups.set(name,units);}
+  return [period,[...groups].map(([groupName,quantities])=>({groupName,quantities}))];
+ }));
+}
+
+function* buildInventorySoldCostSteps(source = {}, endDateKey = '') {
+  let operations=0;
+  const productsById = new Map(source.products.map(product => [product.id, product]));
+  const dispatchUsageKeysByDate = new Set();
+  const events = [];
+
+  for (const dispatch of source.warehouseDispatches) {
+    if(++operations%16===0)yield;
+    const eventDateKey = dateKey(getDateValue(dispatch));
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
+    const quantity = dispatchQuantityOf(dispatch);
+    const kg = dispatchKgOf(dispatch);
+    const primaryQuantity = quantity > 0 ? quantity : kg;
+    if (primaryQuantity <= 0) continue;
+    const key = inventoryCostKeyOf(dispatch, productsById);
+    dispatchUsageKeysByDate.add(`${eventDateKey}__${key}`);
+    events.push({
+      type: 'sale',
+      dateKey: eventDateKey,
+      key,
+      quantity: primaryQuantity,
+      fallbackCostPerUnit: itemCost(dispatch)
+    });
+  }
+
+  for (const item of source.warehouseImports) {
+    if(++operations%16===0)yield;
+    const eventDateKey = dateKey(getDateValue(item));
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
+    const quantity = importQuantityOf(item);
+    const kg = importKgOf(item);
+    const value = importValueOf(item);
+    const primaryQuantity = quantity > 0 ? quantity : kg;
+    if (primaryQuantity <= 0 && value <= 0) continue;
+    events.push({
+      type: 'import',
+      dateKey: eventDateKey,
+      key: inventoryCostKeyOf(item, productsById),
+      quantity: primaryQuantity,
+      value
+    });
+  }
+
+  for (const order of source.orders) {
+    if(++operations%16===0)yield;
+    const eventDateKey = dateKey(getDateValue(order));
+    if (!eventDateKey || (endDateKey && eventDateKey > endDateKey)) continue;
+    for (const item of getItems(order)) {
+      if(++operations%16===0)yield;
+      const quantity = itemQuantity(item);
+      const revenue = itemLineTotal(item);
+      if (quantity <= 0 && revenue <= 0) continue;
+      const key = inventoryCostKeyOf(item, productsById);
+      if (dispatchUsageKeysByDate.has(`${eventDateKey}__${key}`)) continue;
+      events.push({
+        type: 'sale',
+        dateKey: eventDateKey,
+        key,
+        quantity,
+        fallbackCostPerUnit: itemCost(item)
+      });
+    }
+  }
+
+  const stateMap = new Map();
+  const costByDate = new Map();
+  const sortedEvents = yield* sortProjection(events,sortProfitEvents);
+  for (const event of sortedEvents) {
+    if(++operations%16===0)yield;
+    const state = stateMap.get(event.key) || { carryQty: 0, carryValue: 0 };
+    if (event.type === 'import') {
+      state.carryQty += event.quantity || 0;
+      state.carryValue += event.value || 0;
+      stateMap.set(event.key, state);
+      continue;
+    }
+
+    const quantity = event.quantity || 0;
+    const averageCost = state.carryQty > 0
+      ? state.carryValue / state.carryQty
+      : toNumber(event.fallbackCostPerUnit);
+    const saleCost = quantity * averageCost;
+    state.carryQty = Math.max(0, state.carryQty - quantity);
+    state.carryValue = Math.max(0, state.carryValue - saleCost);
+    stateMap.set(event.key, state);
+    costByDate.set(event.dateKey, (costByDate.get(event.dateKey) || 0) + saleCost);
+  }
+
+  return costByDate;
+}
+
+const sumInventorySoldCostByMonth = (costByDate = new Map(), targetMonthKey = '') => (
+  [...costByDate.entries()]
+    .filter(([key]) => key.startsWith(targetMonthKey))
+    .reduce((sum, [, value]) => sum + toNumber(value), 0)
+);
+
+function* buildBusinessAnalysisSteps(source, finance, profitability = {}) {
+    let operations=0;
+    const customersById = new Map();
+    source.customers.forEach(customer => {
+      if (customer.id) customersById.set(customer.id, customer);
+      if (customer.id) customersById.set(String(customer.id), customer);
+      if (customer.customerId) customersById.set(String(customer.customerId), customer);
+    });
+    const customersByName = new Map();
+    source.customers.forEach(customer => {
+      const nameKey = normalizeText(customer.name || customer.displayName || customer.customerName);
+      if (nameKey && !customersByName.has(nameKey)) customersByName.set(nameKey, customer);
+    });
+    const productsById = new Map(source.products.map(product => [product.id, product]));
+    const employeesById = new Map();
+    source.employees.forEach(employee => {
+      if (employee.id) employeesById.set(employee.id, employee);
+      if (employee.id) employeesById.set(String(employee.id), employee);
+      if (employee.employeeId) employeesById.set(String(employee.employeeId), employee);
+    });
+    const customerRevenue = new Map();
+    const customerProfit = new Map();
+    const customerDebt = new Map();
+    const customerDebtFromProfile = new Map();
+    const productRevenue = new Map();
+    const productRevenueMonth = new Map();
+    const productProfit = new Map();
+    const productProfitMonth = new Map();
+    const productProfitByDay = new Map();
+    const employeeRevenue = new Map();
+    const employeeProfit = new Map();
+    const salesEmployees = source.employees.filter(isSalesEmployeeRecord);
+    const salesEmployeeIds = new Set(salesEmployees.map(employee => String(employee.id || employee.employeeId || '')));
+    const salesEmployeeOrders = [];
+    const productPerformanceRows = [];
+    const customerPerformanceRows = [];
+    salesEmployees.forEach(employee => {
+      const employeeId = String(employee.id || employee.employeeId || employeeDisplayNameOf(employee));
+      const employeeName = employeeDisplayNameOf(employee);
+      employeeRevenue.set(employeeId, { id: employeeId, name: employeeName, revenue: 0, orders: 0 });
+      employeeProfit.set(employeeId, { id: employeeId, name: employeeName, profit: 0, orders: 0 });
+    });
+    const customerOfOrder = (order = {}) => {
+      const customerId = order.customerId || order.customer?.id || order.customer?.customerId || '';
+      const customerNameKey = normalizeText(order.customerName || order.customer?.name || order.name);
+      return (
+        (customerId ? customersById.get(customerId) || customersById.get(String(customerId)) : null) ||
+        (customerNameKey ? customersByName.get(customerNameKey) : null) ||
+        null
+      );
+    };
+    const salesOwnerOfOrder = (order = {}) => {
+      const customer = customerOfOrder(order);
+      const customerSalesEmpId = customerSalesEmployeeIdOf(customer || {});
+      const customerSalesEmployee = customerSalesEmpId ? employeesById.get(customerSalesEmpId) : null;
+      if (customerSalesEmployee) {
+        const employeeId = String(customerSalesEmployee.id || customerSalesEmpId);
+        return { id: employeeId, name: employeeDisplayNameOf(customerSalesEmployee) };
+      }
+      const orderSalesEmpId = String(
+        order.salesEmpId ||
+        order.assignedSalesEmpId ||
+        order.responsibleEmployeeId ||
+        order.employeeId ||
+        order.empId ||
+        ''
+      );
+      const orderSalesEmployee = orderSalesEmpId ? employeesById.get(orderSalesEmpId) : null;
+      if (orderSalesEmployee) {
+        const employeeId = String(orderSalesEmployee.id || orderSalesEmpId);
+        return { id: employeeId, name: employeeDisplayNameOf(orderSalesEmployee) };
+      }
+      const fallbackName = customer?.managerName || customer?.salesName || employeeNameOf(order, employeesById);
+      return { id: normalizeText(fallbackName), name: fallbackName };
+    };
+    const profitabilityProductRows = toArray(profitability.productRows);
+    const profitabilityCostByKey = new Map();
+    const rememberProfitabilityCost = (key, row) => {
+      const normalizedKey = normalizeText(key);
+      if (!normalizedKey || profitabilityCostByKey.has(normalizedKey)) return;
+      profitabilityCostByKey.set(normalizedKey, row);
+    };
+
+    profitabilityProductRows.forEach(row => {
+      rememberProfitabilityCost(row.id, row);
+      rememberProfitabilityCost(row.name, row);
+      rememberProfitabilityCost(row.groupName, row);
+    });
+
+    const costRowForItem = (item = {}) => {
+      const product = item.productId ? productsById.get(item.productId) : null;
+      return (
+        profitabilityCostByKey.get(inventoryCostKeyOf(item, productsById)) ||
+        profitabilityCostByKey.get(normalizeText(item.productName || item.name || product?.name || product?.shortName)) ||
+        profitabilityCostByKey.get(normalizeText(item.groupName || item.productGroup || product?.groupName || product?.productGroup))
+      );
+    };
+
+    const itemProfitFromProfitability = (item = {}) => {
+      const revenue = itemLineTotal(item);
+      const quantity = itemQuantity(item);
+      const costRow = costRowForItem(item);
+      const averageCost = toNumber(costRow?.averageInputCost, NaN);
+      if (quantity > 0 && Number.isFinite(averageCost) && averageCost > 0) {
+        return { profit: revenue - quantity * averageCost, hasCost: true };
+      }
+      const fallbackCost = itemCost(item);
+      if (quantity > 0 && fallbackCost > 0) {
+        return { profit: revenue - quantity * fallbackCost, hasCost: true };
+      }
+      return { profit: revenue, hasCost: false };
+    };
+
+    const orderProfitFromProfitability = (order = {}) => {
+      let hasCost = false;
+      const profit = getItems(order).reduce((sum, item) => {
+        const itemProfit = itemProfitFromProfitability(item);
+        hasCost = hasCost || itemProfit.hasCost;
+        return sum + itemProfit.profit;
+      }, 0);
+      return hasCost ? profit : orderProfit(order);
+    };
+
+    source.customers.forEach(customer => {
+      const name = customer.name || customer.displayName || 'Khách chưa rõ';
+      const debt = Math.max(0, toNumber(customer.currentDebt ?? customer.debt ?? customer.balanceDue));
+      const key = normalizeText(name);
+      if (key && debt > 0) {
+        customerDebtFromProfile.set(key, {
+          id: customer.id || customer.customerId || key,
+          name,
+          debt,
+          value: debt
+        });
+      }
+    });
+
+    for (const order of source.orders) {
+      if(++operations%16===0)yield;
+      const customerName = customerNameOf(order, customersById);
+      const salesOwner = salesOwnerOfOrder(order);
+      const employeeKey = salesOwner.id || normalizeText(salesOwner.name);
+      const revenue = orderTotal(order);
+      const profit = orderProfitFromProfitability(order);
+      const debt = outstandingOfOrder(order);
+      const currentCustomerRevenue = customerRevenue.get(customerName) || { revenue: 0, orders: 0 };
+      customerRevenue.set(customerName, { revenue: currentCustomerRevenue.revenue + revenue, orders: currentCustomerRevenue.orders + 1 });
+      customerProfit.set(customerName, { profit: (customerProfit.get(customerName)?.profit || 0) + profit });
+      if (debt > 0) {
+        const debtKey = normalizeText(customerName);
+        const currentDebt = customerDebt.get(debtKey);
+        const nextDebt = (currentDebt?.debt || 0) + debt;
+        customerDebt.set(debtKey, {
+          id: order.customerId || currentDebt?.id || debtKey,
+          name: currentDebt?.name || customerName,
+          debt: nextDebt,
+          value: nextDebt
+        });
+      }
+      const currentEmployeeRevenue = employeeRevenue.get(employeeKey) || { id: employeeKey, name: salesOwner.name, revenue: 0, orders: 0 };
+      employeeRevenue.set(employeeKey, {
+        ...currentEmployeeRevenue,
+        revenue: currentEmployeeRevenue.revenue + revenue,
+        orders: currentEmployeeRevenue.orders + 1
+      });
+      const currentEmployeeProfit = employeeProfit.get(employeeKey) || { id: employeeKey, name: salesOwner.name, profit: 0, orders: 0 };
+      employeeProfit.set(employeeKey, {
+        ...currentEmployeeProfit,
+        profit: currentEmployeeProfit.profit + profit,
+        orders: currentEmployeeProfit.orders + 1
+      });
+      const orderDay = dateKey(getDateValue(order));
+      if (salesEmployeeIds.has(employeeKey) && orderDay && orderDay <= finance.todayKey) {
+        salesEmployeeOrders.push({ date: orderDay, id: employeeKey, name: salesOwner.name, revenue, orders: 1,
+          orderId: order.id || '', orderCode: order.code || order.orderCode || order.id || '',
+          customerName, salesEmployeeName: salesOwner.name });
+      }
+
+      if (orderDay && orderDay <= finance.todayKey) {
+        customerPerformanceRows.push({
+          orderId: order.id || '',
+          orderCode: order.code || order.orderCode || order.id || '',
+          customerName,
+          salesEmployeeName: salesOwner.name,
+          date: orderDay,
+          id: String(order.customerId || order.customer?.id || normalizeText(customerName)),
+          name: customerName,
+          revenue,
+          profit,
+          orders: 1
+        });
+        const reportItems = getItems(order);
+        const rawItemRevenue = reportItems.reduce((sum, item) => sum + Math.max(0, itemLineTotal(item)), 0);
+        const orderRevenueScale = rawItemRevenue > 0 ? revenue / rawItemRevenue : 0;
+        const itemProfitRows = reportItems.map(item => ({
+          item,
+          revenue: rawItemRevenue > 0
+            ? Math.max(0, itemLineTotal(item)) * orderRevenueScale
+            : revenue / Math.max(1, reportItems.length),
+          profit: itemProfitFromProfitability(item).profit,
+          weight: rawItemRevenue > 0 ? Math.max(0, itemLineTotal(item)) / rawItemRevenue : 1 / Math.max(1, reportItems.length)
+        }));
+        const itemProfitTotal = itemProfitRows.reduce((sum, row) => sum + row.profit, 0);
+        itemProfitRows.forEach(({ item, revenue: itemRevenue, profit: baseProfit, weight }) => {
+          const productName = productNameOf(item, productsById);
+          productPerformanceRows.push({
+            date: orderDay,
+            id: String(item.productId || normalizeText(productName)),
+            name: productName,
+            revenue: itemRevenue,
+            profit: baseProfit + (profit - itemProfitTotal) * weight,
+            quantity: itemQuantity(item)
+          });
+        });
+        if (!reportItems.length && revenue > 0) productPerformanceRows.push({
+          date: orderDay,
+          id: 'unassigned-product',
+          name: 'Chưa có chi tiết mặt hàng',
+          revenue,
+          profit,
+          quantity: 0
+        });
+      }
+
+      for (const item of getItems(order)) {
+        if(++operations%16===0)yield;
+        const productName = productNameOf(item, productsById);
+        const itemRevenue = itemLineTotal(item);
+        const itemQty = itemQuantity(item);
+        const itemProfit = itemProfitFromProfitability(item).profit;
+        const productRevenueRow = productRevenue.get(productName) || { revenue: 0, quantity: 0 };
+        productRevenue.set(productName, { revenue: productRevenueRow.revenue + itemRevenue, quantity: productRevenueRow.quantity + itemQty });
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          const monthRevenueRow = productRevenueMonth.get(productName) || {
+            id: item.productId || normalizeText(productName),
+            name: productName,
+            revenue: 0,
+            quantity: 0
+          };
+          productRevenueMonth.set(productName, {
+            ...monthRevenueRow,
+            revenue: monthRevenueRow.revenue + itemRevenue,
+            quantity: monthRevenueRow.quantity + itemQty
+          });
+        }
+        const productProfitRow = productProfit.get(productName) || { profit: 0, revenue: 0, quantity: 0 };
+        productProfit.set(productName, { profit: productProfitRow.profit + itemProfit, revenue: productProfitRow.revenue + itemRevenue, quantity: productProfitRow.quantity + itemQty });
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          const monthProfitRow = productProfitMonth.get(productName) || {
+            id: item.productId || normalizeText(productName),
+            name: productName,
+            profit: 0,
+            revenue: 0,
+            quantity: 0
+          };
+          productProfitMonth.set(productName, {
+            ...monthProfitRow,
+            profit: monthProfitRow.profit + itemProfit,
+            revenue: monthProfitRow.revenue + itemRevenue,
+            quantity: monthProfitRow.quantity + itemQty
+          });
+        }
+        // The daily ranking must use product-level revenue and cost, not the
+        // aggregate profitability row (which is grouped by inventory cost).
+        if (monthKey(getDateValue(order)) === finance.currentMonthKey) {
+          if (!productProfitByDay.has(productName)) productProfitByDay.set(productName, new Map());
+          const dayMap = productProfitByDay.get(productName);
+          const currentDay = dayMap.get(orderDay) || { revenue: 0, profit: 0 };
+          dayMap.set(orderDay, {
+            revenue: currentDay.revenue + itemRevenue,
+            profit: currentDay.profit + itemProfit
+          });
+        }
+      }
+    }
+
+    // The profile debt is a fallback for legacy/old-debt records. When an
+    // order has an outstanding balance, use that order total instead of
+    // adding it to the profile total a second time.
+    customerDebtFromProfile.forEach((profileDebt, key) => {
+      if (!customerDebt.has(key)) customerDebt.set(key, profileDebt);
+    });
+
+    const topProductsByAverageDailyProfit = [...productProfitByDay.entries()]
+      .map(([name, dayMap]) => {
+        const dailyRows = [...dayMap.values()];
+        const totalRevenue = dailyRows.reduce((sum, value) => sum + toNumber(value?.revenue), 0);
+        const totalProfit = dailyRows.reduce((sum, value) => sum + toNumber(value?.profit), 0);
+        const totalCost = totalRevenue - totalProfit;
+        const activeDays = Math.max(1, dayMap.size);
+        return {
+          id: normalizeText(name),
+          name,
+          revenue: totalRevenue,
+          cost: totalCost,
+          profit: totalProfit,
+          activeDays,
+          averageDailyRevenue: totalRevenue / activeDays,
+          averageDailyCost: totalCost / activeDays,
+          averageDailyProfit: totalProfit / activeDays,
+          value: totalProfit / activeDays
+        };
+      })
+      .filter(row => row.averageDailyProfit > 0)
+      .sort((a, b) => b.averageDailyProfit - a.averageDailyProfit)
+      .slice(0, 10);
+
+    const topProductsByRevenueFromMonth = topRows(productRevenueMonth, 'revenue', productRevenueMonth.size || 10);
+    const topProductsByProfitFromMonth = topRows(productProfitMonth, 'profit', productProfitMonth.size || 10);
+    const daysPassed = Math.max(1, source.now.getDate());
+    return {
+      topCustomersByRevenue: topRows(customerRevenue, 'revenue'),
+      topCustomersByProfit: topRows(customerProfit, 'profit'),
+      topProductsByRevenue: topProductsByRevenueFromMonth,
+      topProductsByProfit: topProductsByProfitFromMonth,
+      topProductsByAverageDailyProfit,
+      topEmployeesByRevenue: topRows(employeeRevenue, 'revenue', employeeRevenue.size || 10),
+      topEmployeesByProfit: topRows(employeeProfit, 'profit', employeeProfit.size || 10),
+      topCustomersByDebt: source.hasDebtLedger
+        ? source.debtLedger.filter(row => toNumber(row.debt) > 0)
+          .map(row => ({ ...row, value: toNumber(row.debt), debt: toNumber(row.debt) }))
+          .sort((a, b) => b.debt - a.debt).slice(0, 30)
+        : topRows(customerDebt, 'debt', 30),
+      debtCustomerCount: source.hasDebtLedger
+        ? source.debtLedger.filter(row => toNumber(row.debt) > 0).length
+        : [...customerDebt.values()].filter(row => toNumber(row.debt) > 0).length,
+      productPerformanceRows,
+      customerPerformanceRows,
+      salesEmployeeOrders,
+      revenuePerDay: finance.revenueMonth / daysPassed,
+      profitPerDay: finance.profitMonth / daysPassed,
+      profitMarginPct: finance.revenueMonth > 0 ? (finance.profitMonth / finance.revenueMonth) * 100 : 0
+    };
+}
+
+export const BusinessAnalysisService = {
+  build(source,finance,profitability={}) {
+    const iterator=buildBusinessAnalysisSteps(source,finance,profitability);
+    for(;;){const step=iterator.next();if(step.done)return step.value}
+  }
+};
+
+const buildOperations = (source, finance) => {
+  const todayKey = finance.todayKey;
+  const stockCountValue = inventoryValueOfCounts(source.warehouseStockCounts);
+  const importValue = inventoryValueOfImports(source.warehouseImports);
+  const inventoryValue = stockCountValue > 0 ? stockCountValue : importValue;
+  const inventoryQuantity = source.warehouseStockCounts.reduce((sum, item) => sum + toNumber(item.quantity ?? item.count ?? item.pieceCount ?? item.totalQuantity), 0);
+  const lowStockProducts = source.products.filter(product => {
+    const minimum = toNumber(product.minStock ?? product.minimumStock, NaN);
+    const stock = toNumber(product.stock ?? product.quantity ?? product.remainingStock, NaN);
+    return Number.isFinite(minimum) && Number.isFinite(stock) && stock <= minimum;
+  });
+  const slowMovingRows = source.products.filter(product => toNumber(product.daysInStock ?? product.stockAgeDays ?? product.daysWithoutSale ?? product.slowDays) >= 7).slice(0, 10);
+  const attendanceToday = source.attendance.filter(item => dateKey(getDateValue(item)) === todayKey);
+  const presentEmployeeIds = new Set(attendanceToday.filter(item => item.checkIn || item.checkInAt || item.inAt || item.startTime).map(item => item.employeeId || item.empId || item.userId).filter(Boolean));
+  const leaveEmployeeIds = new Set(attendanceToday.filter(item => /nghi|leave|phep/.test(normalizeText(item.status || item.type))).map(item => item.employeeId || item.empId || item.userId).filter(Boolean));
+  const assetsInMaintenance = source.assets.filter(asset => /bao tri|maintenance|sua chua/.test(normalizeText(asset.status)));
+  const assetsInUse = source.assets.filter(asset => /dang hoat dong|dang su dung|active|in use/.test(normalizeText(asset.status)));
+  const assetsDueMaintenance = source.assets.filter(asset => {
+    const next = parseDate(asset.nextMaintenanceDate || asset.maintenanceDueDate || asset.inspectionExpiryDate || asset.registrationExpiryDate);
+    return next && next.getTime() - source.now.getTime() <= 15 * DAY_MS && next >= source.now;
+  });
+
+  return {
+    inventoryValue,
+    inventoryQuantity,
+    lowStockProducts: lowStockProducts.length,
+    lowStockRows: lowStockProducts.slice(0, 10),
+    slowMovingProducts: slowMovingRows.length,
+    slowMovingRows,
+    employeesPresentToday: presentEmployeeIds.size,
+    employeesAbsentToday: Math.max(0, source.employees.length - presentEmployeeIds.size - leaveEmployeeIds.size),
+    employeesOnLeaveToday: leaveEmployeeIds.size,
+    monthlySalaryCost: payrollEmployeesOf(source.employees, source.now).reduce((sum, row) => sum + row.salary, 0),
+    assetsTotal: source.assets.length,
+    assetsInUse: assetsInUse.length,
+    assetsInMaintenance: assetsInMaintenance.length,
+    assetsDueMaintenance: assetsDueMaintenance.length,
+    assetsDueMaintenanceRows: assetsDueMaintenance.slice(0, 10)
+  };
+};
+
+export const AlertService = {
+  build(source, dashboard) {
+    const alerts = [];
+    const add = (alert) => alerts.push({
+      severity: alert.severity || alert.level || 'medium',
+      time: alert.time || dashboard.period.todayKey,
+      ...alert
+    });
+
+    if (dashboard.finance.overdueReceivables > 0) {
+      add({ id: 'overdueDebt', severity: 'high', title: 'Khách nợ quá hạn', message: `Còn ${Math.round(dashboard.finance.overdueReceivables / 1000000)} triệu cần thu hồi hoặc đối chiếu.`, targetTab: 'debt' });
+    }
+    if (dashboard.finance.receivables > 0) {
+      const overLimit = source.customers.filter(customer => {
+        const debt = toNumber(customer.currentDebt ?? customer.debt ?? customer.balanceDue);
+        const limit = toNumber(customer.debtLimit ?? customer.creditLimit, NaN);
+        return Number.isFinite(limit) && debt > limit;
+      });
+      if (overLimit.length > 0) add({ id: 'debtLimit', severity: 'high', title: 'Khách vượt hạn mức nợ', message: `${overLimit.length} khách đã vượt hạn mức công nợ.`, targetTab: 'customers' });
+    }
+    const isRequestDelivered = createRequestDeliveryLookup(source.warehouseDispatches);
+    const undeliveredOrders = source.orderRequests.filter(request => !isRequestDelivered(request)).length;
+    if (undeliveredOrders > 0) {
+      add({ id: 'undelivered', severity: 'medium', title: 'Đơn hàng chưa giao', message: `${undeliveredOrders} đơn đặt chưa có phiếu xuất tương ứng.`, targetTab: 'warehouse_dispatch' });
+    }
+    if (dashboard.operations.slowMovingProducts > 0) {
+      add({ id: 'oldStock', severity: 'medium', title: 'Hàng tồn quá lâu', message: `${dashboard.operations.slowMovingProducts} mặt hàng có dấu hiệu bán chậm.`, targetTab: 'warehouse_import' });
+    }
+    if (dashboard.operations.lowStockProducts > 0) {
+      add({ id: 'lowStock', severity: 'high', title: 'Tồn kho dưới định mức', message: `${dashboard.operations.lowStockProducts} mặt hàng cần nhập thêm hoặc kiểm lại tồn.`, targetTab: 'products' });
+    }
+    if (dashboard.finance.profitMonth < 0) {
+      add({ id: 'negativeProfit', severity: 'high', title: 'Lợi nhuận âm', message: 'Lợi nhuận tháng đang âm, cần kiểm tra giá vốn, giá bán và chi phí.', targetTab: 'executive_dashboard' });
+    }
+    if (dashboard.finance.expensePreviousMonth > 0 && dashboard.finance.expenseMonth > dashboard.finance.expensePreviousMonth * 1.3) {
+      add({ id: 'expenseSpike', severity: 'medium', title: 'Chi phí tăng đột biến', message: `Chi phí tháng tăng ${Math.round(percentChange(dashboard.finance.expenseMonth, dashboard.finance.expensePreviousMonth))}% so với tháng trước.`, targetTab: 'finance' });
+    }
+    if (dashboard.operations.employeesAbsentToday >= Math.max(2, Math.ceil(source.employees.length * 0.2))) {
+      add({ id: 'absence', severity: 'medium', title: 'Nhân viên nghỉ bất thường', message: `${dashboard.operations.employeesAbsentToday} nhân viên chưa có chấm công hôm nay.`, targetTab: 'company_attendance' });
+    }
+    if (dashboard.operations.assetsDueMaintenance > 0) {
+      add({ id: 'assetMaintenance', severity: 'medium', title: 'Tài sản đến hạn bảo trì', message: `${dashboard.operations.assetsDueMaintenance} tài sản cần kiểm tra trong 15 ngày tới.`, targetTab: 'asset_management' });
+    }
+
+    return alerts.slice(0, 20);
+  }
+};
+
+const formatPercentInsight = (value = 0) => `${Math.abs(Math.round(value)).toLocaleString('vi-VN')}%`;
+
+const formatDateShort = (key = '') => {
+  const [, month, day] = String(key || '').split('-');
+  if (!day || !month) return '';
+  return `${day}/${month}`;
+};
+
+const entityDateKey = (entity = {}) => dateKey(getDateValue(entity));
+
+const entityMonthKey = (entity = {}) => monthKey(getDateValue(entity));
+
+const recordEmployeeIdOf = (entity = {}) => String(
+  entity.employeeId ||
+  entity.empId ||
+  entity.userId ||
+  entity.staffId ||
+  entity.salesId ||
+  entity.assignedTo ||
+  entity.createdBy ||
+  ''
+);
+
+const employeeExperienceSalaryOf = (employee = {}, referenceDate = new Date()) => {
+  const amount = toNumber(employee.experienceSalary);
+  if (amount <= 0) return 0;
+  const startDate = parseDate(employee.startDate || employee.hireDate || employee.joinDate);
+  if (!startDate) return 0;
+  const now = parseDate(referenceDate) || new Date();
+  let months = (now.getFullYear() - startDate.getFullYear()) * 12 + (now.getMonth() - startDate.getMonth());
+  if (now.getDate() < startDate.getDate()) months -= 1;
+  if (months < 0) return 0;
+  const periodText = normalizeText(employee.experienceSalaryPeriod || 'months');
+  const monthsPerCycle = /year|nam/.test(periodText) ? 12 : 1;
+  const cycles = Math.floor(months / monthsPerCycle);
+  return cycles > 0 ? amount * cycles : 0;
+};
+
+const employeeSalaryOf = (employee = {}, referenceDate = new Date()) => {
+  const baseSalary = toNumber(
+    employee.basicSalary ??
+    employee.baseSalary ??
+    employee.salary ??
+    employee.monthlySalary ??
+    employee.actualSalary ??
+    employee.contractSalary
+  );
+  const fixedAllowances = (
+    toNumber(employee.supportSalary) +
+    toNumber(employee.responsibilitySalary) +
+    employeeExperienceSalaryOf(employee, referenceDate)
+  );
+  return Math.max(0, baseSalary + fixedAllowances);
+};
+
+const isOwnerEmployeeRecord = (employee = {}) => {
+  if (employee.role === 'super_admin' || employee.isOwner || employee.isCompanyOwner) return true;
+  const text = normalizeText([
+    employee.position,
+    employee.role,
+    employee.roleName,
+    employee.department,
+    employee.type,
+    employee.title
+  ].filter(Boolean).join(' ')).replace(/[_-]+/g, ' ');
+  return /chu doanh nghiep|chu cua hang|giam doc|owner|business owner|super admin/.test(text);
+};
+
+const payrollEmployeesOf = (employees = [], referenceDate = new Date()) => employees
+  .filter(employee => isActiveEmployee(employee) && !isOwnerEmployeeRecord(employee))
+  .map(employee => ({ employee, salary: employeeSalaryOf(employee, referenceDate) }))
+  .filter(row => row.salary > 0);
+
+const employeeAdvanceLimitPercentOf = (employee = {}, company = {}) => {
+  const raw = employee.salaryAdvancePercent ??
+    employee.advancePercent ??
+    employee.advanceLimitPercent ??
+    company.salaryAdvancePercent ??
+    company.defaultSalaryAdvancePercent ??
+    company.advanceLimitPercent ??
+    30;
+  const percent = toNumber(raw, 30);
+  return percent > 1 ? percent : percent * 100;
+};
+
+const isActiveEmployee = (employee = {}) => {
+  const status = normalizeText(employee.status || employee.state || employee.workStatus || '');
+  return !isArchived(employee) && !['inactive', 'blocked', 'disabled', 'nghi viec', 'da nghi', 'ngung hoat dong'].includes(status);
+};
+
+const isAttendanceLeave = (record = {}) => {
+  const text = normalizeText([record.status, record.state, record.type, record.note, record.reason].filter(Boolean).join(' '));
+  return /nghi|leave|absent|phep/.test(text) && !/di lam|present|checked|vao ca|ra ca/.test(text);
+};
+
+const isAttendancePresent = (record = {}) => {
+  const text = normalizeText([record.status, record.state, record.type, record.note].filter(Boolean).join(' '));
+  if (/di lam|present|checked|vao ca|ra ca|working|completed/.test(text)) return true;
+  return Boolean(record.checkIn || record.checkInAt || record.clockIn || record.startAt || record.timeIn || record.checkedInAt);
+};
+
+const buildMissingAttendanceRows = (source = {}, todayKey = '') => {
+  const employeesById = new Map(source.employees.map(employee => [String(employee.id || employee.uid || employee.userId || ''), employee]));
+  const presentIds = new Set();
+  const leaveIds = new Set();
+  source.attendance
+    .filter(record => entityDateKey(record) === todayKey)
+    .forEach(record => {
+      const employeeId = recordEmployeeIdOf(record);
+      if (!employeeId) return;
+      if (isAttendanceLeave(record)) {
+        leaveIds.add(employeeId);
+        return;
+      }
+      if (isAttendancePresent(record)) presentIds.add(employeeId);
+    });
+
+  return source.employees
+    .filter(isActiveEmployee)
+    .filter(employee => {
+      const employeeId = String(employee.id || employee.uid || employee.userId || '');
+      if (!employeeId) return false;
+      return !presentIds.has(employeeId) && !leaveIds.has(employeeId);
+    })
+    .map(employee => ({
+      id: String(employee.id || employee.uid || employee.userId || ''),
+      name: employee.name || employee.fullName || employee.displayName || 'Nhân viên chưa rõ',
+      department: formatDepartmentLabel(employee.department || employee.role || employee.roleKey || employee.position || '')
+    }))
+    .filter(row => employeesById.has(row.id));
+};
+
+const isAdvanceRecord = (record = {}) => {
+  const text = normalizeText([
+    record.category,
+    record.type,
+    record.kind,
+    record.name,
+    record.title,
+    record.note,
+    record.description,
+    record.reason,
+    record.sourceType
+  ].filter(Boolean).join(' '));
+  return /ung luong|tam ung|advance|salary advance/.test(text);
+};
+
+const advanceAmountOf = (record = {}) => toNumber(
+  record.approvedAmount ??
+  record.amount ??
+  record.requestedAmount ??
+  record.total ??
+  record.value ??
+  record.money
+);
+
+const buildAdvanceRiskRows = (source = {}, currentMonthKey = '') => {
+  const employeesById = new Map(source.employees.map(employee => [String(employee.id || employee.uid || employee.userId || ''), employee]));
+  const records = [
+    ...source.advances.map(record => ({ ...record, __advanceCollection: true })),
+    ...source.financials,
+    ...source.expenses
+  ].filter(record => {
+    if (entityMonthKey(record) !== currentMonthKey) return false;
+    const status = normalizeText(record.status || record.state || '');
+    if (/reject|tu choi|huy|cancel/.test(status)) return false;
+    return record.__advanceCollection || isAdvanceRecord(record);
+  });
+
+  const grouped = new Map();
+  records.forEach(record => {
+    const employeeId = recordEmployeeIdOf(record);
+    const employee = employeeId ? employeesById.get(employeeId) : null;
+    const name = record.employeeName || record.staffName || record.createdByName || employee?.name || employee?.fullName || 'Nhân viên chưa rõ';
+    const key = employeeId || normalizeText(name);
+    if (!key) return;
+    const current = grouped.get(key) || {
+      id: key,
+      employee,
+      name,
+      amount: 0,
+      count: 0,
+      pending: 0
+    };
+    const amount = advanceAmountOf(record);
+    current.amount += amount;
+    current.count += 1;
+    const status = normalizeText(record.status || record.state || '');
+    if (!/approved|da duyet|paid|da chi|done|completed/.test(status)) current.pending += amount;
+    grouped.set(key, current);
+  });
+
+  return [...grouped.values()]
+    .map(row => {
+      const salary = employeeSalaryOf(row.employee || {});
+      const percent = employeeAdvanceLimitPercentOf(row.employee || {}, source.company || {});
+      const allowed = salary > 0 ? (salary * percent) / 100 : 0;
+      return {
+        ...row,
+        salary,
+        percent,
+        allowed,
+        overAmount: allowed > 0 ? row.amount - allowed : 0,
+        missingPolicy: salary <= 0
+      };
+    })
+    .filter(row => row.amount > 0)
+    .sort((a, b) => {
+      if ((b.overAmount > 0) !== (a.overAmount > 0)) return (b.overAmount > 0) ? 1 : -1;
+      return b.amount - a.amount;
+    });
+};
+
+const customerCurrentDebtOf = (customer = {}) => Math.max(0, toNumber(
+  customer.currentDebt ??
+  customer.totalDebt ??
+  customer.debt ??
+  customer.openingDebt ??
+  customer.oldDebt ??
+  customer.initialDebt
+));
+
+const buildDebtRiskRows = (source = {}) => {
+  const customersById = new Map(source.customers.map(customer => [String(customer.id || customer.customerId || ''), customer]));
+  const rows = new Map();
+  const upsert = (key, patch = {}) => {
+    const current = rows.get(key) || {
+      id: key,
+      name: patch.name || 'Khách chưa rõ',
+      debt: 0,
+      orderDebt: 0,
+      profileDebt: 0,
+      orderCount: 0,
+      oldestDate: '',
+      latestDate: '',
+      customer: patch.customer || null
+    };
+    rows.set(key, { ...current, ...patch });
+    return rows.get(key);
+  };
+
+  source.orders.forEach(order => {
+    const debt = outstandingOfOrder(order);
+    if (debt <= 0) return;
+    const customer = order.customerId ? customersById.get(String(order.customerId)) : null;
+    const name = customerNameOf(order, customersById);
+    const key = String(order.customerId || customer?.id || normalizeText(name));
+    const row = upsert(key, { name, customer });
+    const orderKey = entityDateKey(order);
+    row.orderDebt += debt;
+    row.debt = Math.max(row.debt, row.orderDebt);
+    row.orderCount += 1;
+    if (orderKey && (!row.oldestDate || orderKey < row.oldestDate)) row.oldestDate = orderKey;
+    if (orderKey && (!row.latestDate || orderKey > row.latestDate)) row.latestDate = orderKey;
+  });
+
+  source.customers.forEach(customer => {
+    const profileDebt = customerCurrentDebtOf(customer);
+    if (profileDebt <= 0) return;
+    const name = customer.name || customer.displayName || customer.customerName || 'Khách chưa rõ';
+    const key = String(customer.id || customer.customerId || normalizeText(name));
+    const row = upsert(key, { name, customer });
+    row.profileDebt = profileDebt;
+    row.debt = Math.max(row.debt, profileDebt, row.orderDebt);
+  });
+
+  return [...rows.values()]
+    .filter(row => row.debt > 0)
+    .sort((a, b) => b.debt - a.debt || b.orderCount - a.orderCount)
+    .slice(0, 20);
+};
+
+const buildLatestDebtOrderRows = (source = {}) => buildDebtRiskRows(source)
+  .filter(row => row.orderCount > 0)
+  .sort((a, b) => b.orderCount - a.orderCount || b.debt - a.debt)
+  .slice(0, 10);
+
+const formatInsightMoney = (value = 0) => {
+  const amount = Math.round(toNumber(value));
+  if (Math.abs(amount) >= 1000000000) return `${(amount / 1000000000).toLocaleString('vi-VN', { maximumFractionDigits: 1 })} tỷ`;
+  if (Math.abs(amount) >= 1000000) return `${Math.round(amount / 1000000).toLocaleString('vi-VN')} triệu`;
+  return `${amount.toLocaleString('vi-VN')} đ`;
+};
+
+const rangeChangePct = (values = []) => {
+  const cleanValues = values.map(value => toNumber(value)).filter(value => value > 0);
+  if (cleanValues.length < 2) return 0;
+  const min = Math.min(...cleanValues);
+  const max = Math.max(...cleanValues);
+  return min > 0 ? ((max - min) / min) * 100 : 0;
+};
+
+const itemPriceOf = (item = {}) => {
+  const snapshot = itemBillingSnapshot(item);
+  if (snapshot?.unitPrice > 0) return snapshot.unitPrice;
+  const directPrice = itemUnitPrice(item);
+  if (directPrice > 0) return directPrice;
+  const quantity = itemBillingQuantity(item);
+  const total = itemLineTotal(item);
+  return quantity > 0 && total > 0 ? total / quantity : 0;
+};
+
+const buildProfitabilityDiagnostics = (source = {}, finance = {}, readSnapshot = day => ProfitabilityService.build(source, { ...finance, todayKey: day })) => {
+  const todayKey = finance.todayKey || dateKey(source.now || new Date());
+  const todayDate = parseDate(todayKey) || source.now || new Date();
+  const dayKeys = [2, 1, 0].map(offset => dateKey(addDays(todayDate, -offset))).filter(Boolean);
+  const byGroup = new Map();
+
+  dayKeys.forEach(day => {
+    const snapshot = readSnapshot(day);
+    snapshot.groupRows.forEach(row => {
+      if (!row?.name || toNumber(row.costQuantity) <= 0 || toNumber(row.revenue) <= 0) return;
+      const key = normalizeText(row.name);
+      const current = byGroup.get(key) || { key, name: row.name, unit: row.costQuantityUnit || row.unit || 'đv', rows: [] };
+      current.rows.push({
+        dateKey: day,
+        inputCost: toNumber(row.averageInputCost),
+        salePrice: toNumber(row.averageSalePrice),
+        profitPerUnit: toNumber(row.profitPerUnit),
+        profit: toNumber(row.profit),
+        quantity: toNumber(row.costQuantity),
+        unit: row.costQuantityUnit || row.unit || current.unit
+      });
+      byGroup.set(key, current);
+    });
+  });
+
+  const anomalyRows = [...byGroup.values()]
+    .map(group => {
+      const rows = group.rows.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+      if (rows.length < 2) return null;
+      const first = rows[0];
+      const last = rows[rows.length - 1];
+      const profitDeltaPct = percentChange(last.profitPerUnit, first.profitPerUnit);
+      const profitDeltaValue = last.profitPerUnit - first.profitPerUnit;
+      const inputCostRangePct = rangeChangePct(rows.map(row => row.inputCost));
+      const salePriceRangePct = rangeChangePct(rows.map(row => row.salePrice));
+      const stableInputs = inputCostRangePct <= 3 && salePriceRangePct <= 3;
+      const abnormalProfit = Math.abs(profitDeltaPct) >= 12 && Math.abs(profitDeltaValue) >= 500;
+      if (!stableInputs || !abnormalProfit) return null;
+      return {
+        ...group,
+        fromDate: first.dateKey,
+        toDate: last.dateKey,
+        firstProfitPerUnit: first.profitPerUnit,
+        lastProfitPerUnit: last.profitPerUnit,
+        profitDeltaPct,
+        profitDeltaValue,
+        inputCostRangePct,
+        salePriceRangePct,
+        unit: last.unit || group.unit,
+        severity: Math.abs(profitDeltaPct)
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.severity - a.severity)
+    .slice(0, 6);
+
+  const productsById = new Map(source.products.map(product => [product.id, product]));
+  const customersById = new Map(source.customers.map(customer => [customer.id, customer]));
+  const baselineMap = new Map();
+
+  source.orders.forEach(order => {
+    const orderDay = dateKey(getDateValue(order));
+    if (!orderDay || orderDay >= todayKey || orderDay < dayKeys[0]) return;
+    getItems(order).forEach(item => {
+      const quantity = itemBillingQuantity(item);
+      const price = itemPriceOf(item);
+      if (quantity <= 0 || price <= 0) return;
+      const key = inventoryCostKeyOf(item, productsById);
+      const row = baselineMap.get(key) || { quantity: 0, value: 0 };
+      row.quantity += quantity;
+      row.value += quantity * price;
+      baselineMap.set(key, row);
+    });
+  });
+
+  const impactMap = new Map();
+  source.orders.forEach(order => {
+    const orderDay = dateKey(getDateValue(order));
+    if (orderDay !== todayKey) return;
+    const customerName = customerNameOf(order, customersById);
+    const customerKey = String(order.customerId || normalizeText(customerName));
+    getItems(order).forEach(item => {
+      const quantity = itemBillingQuantity(item);
+      const price = itemPriceOf(item);
+      if (quantity <= 0 || price <= 0) return;
+      const productKey = inventoryCostKeyOf(item, productsById);
+      const baseline = baselineMap.get(productKey);
+      const baselinePrice = baseline?.quantity > 0 ? baseline.value / baseline.quantity : 0;
+      if (baselinePrice <= 0) return;
+      const priceDelta = price - baselinePrice;
+      const impact = priceDelta * quantity;
+      const impactPct = percentChange(price, baselinePrice);
+      if (Math.abs(priceDelta) < 500 && Math.abs(impact) < 50000 && Math.abs(impactPct) < 2) return;
+      const productName = productNameOf(item, productsById);
+      const key = `${customerKey}__${productKey}`;
+      const row = impactMap.get(key) || {
+        customerName,
+        productName,
+        unit: itemBillingUnit(item, 'đv'),
+        quantity: 0,
+        value: 0,
+        baselineValue: 0,
+        impact: 0
+      };
+      row.quantity += quantity;
+      row.value += price * quantity;
+      row.baselineValue += baselinePrice * quantity;
+      row.impact += impact;
+      row.currentPrice = row.quantity > 0 ? row.value / row.quantity : price;
+      row.baselinePrice = row.quantity > 0 ? row.baselineValue / row.quantity : baselinePrice;
+      row.priceDelta = row.currentPrice - row.baselinePrice;
+      row.impactPct = percentChange(row.currentPrice, row.baselinePrice);
+      row.impactAbs = Math.abs(row.impact);
+      impactMap.set(key, row);
+    });
+  });
+
+  const priceImpactRows = [...impactMap.values()]
+    .sort((a, b) => b.impactAbs - a.impactAbs)
+    .slice(0, 8);
+
+  return { anomalyRows, priceImpactRows };
+};
+
+const buildExecutiveInsightItems = (source = {}, dashboard = {}, alerts = []) => {
+  const insightRows = [];
+  const usedIds = new Set();
+  const finance = dashboard.finance || {};
+  const todayKey = finance.todayKey || dateKey(source.now || new Date());
+  const currentMonthKey = finance.currentMonthKey || monthKey(source.now || new Date());
+  const add = (priority, insight) => {
+    if (!insight?.text || usedIds.has(insight.id)) return;
+    usedIds.add(insight.id);
+    insightRows.push({ priority, ...insight });
+  };
+
+  const revenueDelta = percentChange(finance.revenueToday, finance.revenueYesterday);
+  const profitDelta = percentChange(finance.profitToday, finance.profitYesterday);
+  const monthProfitDelta = percentChange(finance.profitMonth, finance.profitPreviousMonth);
+
+  if (finance.profitToday < 0) {
+    add(5, {
+      id: 'profit-today-negative',
+      type: 'warn',
+      text: `Lợi nhuận hôm nay đang âm ${formatInsightMoney(Math.abs(finance.profitToday))}. Cần kiểm tra ngay giá vốn đã dùng, chi phí phát sinh và các đơn bán dưới giá.`
+    });
+  } else if (Math.abs(profitDelta) >= 5) {
+    add(profitDelta < 0 ? 12 : 42, {
+      id: 'profit-today-delta',
+      type: profitDelta >= 0 ? 'good' : 'warn',
+      text: `Lợi nhuận hôm nay ${profitDelta >= 0 ? 'tăng' : 'giảm'} ${formatPercentInsight(profitDelta)} so với hôm qua${finance.profitToday ? `, hiện khoảng ${formatInsightMoney(finance.profitToday)}` : ''}.`
+    });
+  }
+
+  if (Math.abs(revenueDelta) >= 5) {
+    add(revenueDelta < 0 ? 15 : 45, {
+      id: 'revenue-today-delta',
+      type: revenueDelta >= 0 ? 'good' : 'warn',
+      text: `Doanh thu hôm nay ${revenueDelta >= 0 ? 'tăng' : 'giảm'} ${formatPercentInsight(revenueDelta)} so với hôm qua, đạt ${formatInsightMoney(finance.revenueToday)}.`
+    });
+  }
+
+  if (Math.abs(monthProfitDelta) >= 8) {
+    add(monthProfitDelta < 0 ? 18 : 48, {
+      id: 'profit-month-delta',
+      type: monthProfitDelta >= 0 ? 'good' : 'warn',
+      text: `Lợi nhuận tháng này ${monthProfitDelta >= 0 ? 'tốt hơn' : 'kém hơn'} ${formatPercentInsight(monthProfitDelta)} so với tháng trước.`
+    });
+  }
+
+  const debtRows = buildDebtRiskRows(source);
+  const topDebt = debtRows[0];
+  const receivables = Math.max(toNumber(finance.receivables), debtRows.reduce((sum, row) => sum + toNumber(row.debt), 0));
+  if (topDebt?.debt > 0) {
+    const share = receivables > 0 ? Math.round((topDebt.debt / receivables) * 100) : 0;
+    add(20, {
+      id: 'customer-top-debt-risk',
+      type: share >= 30 ? 'warn' : 'neutral',
+      text: `${topDebt.name} đang là khách nợ cao nhất với ${formatInsightMoney(topDebt.debt)}${share > 0 ? `, chiếm khoảng ${share}% tổng công nợ` : ''}. Nên ưu tiên nhắc thu hoặc đối soát trước khi giao thêm.`
+    });
+  }
+
+  const debtOrderRisk = buildLatestDebtOrderRows(source)[0];
+  if (debtOrderRisk?.orderCount >= 2) {
+    add(22, {
+      id: 'customer-many-debt-orders',
+      type: 'warn',
+      text: `${debtOrderRisk.name} còn ${debtOrderRisk.orderCount} đơn chưa tất toán${debtOrderRisk.oldestDate ? `, đơn cũ nhất từ ${formatDateShort(debtOrderRisk.oldestDate)}` : ''}. Đây là khách cần theo sát dòng tiền.`
+    });
+  }
+
+  const advanceRows = buildAdvanceRiskRows(source, currentMonthKey);
+  const overAdvance = advanceRows.find(row => row.overAmount > 0);
+  if (overAdvance) {
+    add(24, {
+      id: 'employee-advance-over-limit',
+      type: 'warn',
+      text: `${overAdvance.name} đã ứng ${formatInsightMoney(overAdvance.amount)}, vượt hạn mức khoảng ${formatInsightMoney(overAdvance.overAmount)} so với chính sách ${Math.round(overAdvance.percent)}% lương.`
+    });
+  } else {
+    const missingPolicyAdvance = advanceRows.find(row => row.missingPolicy);
+    if (missingPolicyAdvance) {
+      add(34, {
+        id: 'employee-advance-missing-policy',
+        type: 'warn',
+        text: `${missingPolicyAdvance.name} có phát sinh ứng lương ${formatInsightMoney(missingPolicyAdvance.amount)} nhưng chưa thấy cấu hình lương/hạn mức để kiểm soát tự động.`
+      });
+    }
+  }
+
+  const missingAttendanceRows = buildMissingAttendanceRows(source, todayKey);
+  if (missingAttendanceRows.length > 0) {
+    const names = missingAttendanceRows.slice(0, 3).map(row => row.name).join(', ');
+    add(28, {
+      id: 'attendance-missing-today',
+      type: 'warn',
+      text: `${missingAttendanceRows.length} nhân viên chưa ghi nhận chấm công hôm nay${names ? `: ${names}${missingAttendanceRows.length > 3 ? '...' : ''}` : ''}. Nên kiểm tra để tránh sai lệch lương và ca làm.`
+    });
+  }
+
+  const topGroup = dashboard.profitability?.topGroup;
+  if (topGroup?.profit > 0) {
+    add(40, {
+      id: 'today-top-profit-group',
+      type: 'good',
+      text: `Nhóm ${topGroup.name} đang là trụ cột lợi nhuận hôm nay: lãi khoảng ${formatInsightMoney(topGroup.profit)}${topGroup.profitPerUnit ? `, bình quân ${formatInsightMoney(topGroup.profitPerUnit)}/${topGroup.unit || 'đơn vị'}` : ''}.`
+    });
+  }
+
+  const topProduct = dashboard.profitability?.topProduct || dashboard.business?.topProductsByProfit?.[0];
+  const topProductProfit = toNumber(topProduct?.profit);
+  if (topProduct?.name && topProductProfit > 0) {
+    add(44, {
+      id: 'today-top-profit-product',
+      type: 'good',
+      text: `${topProduct.name} là sản phẩm lãi tốt nhất hiện tại với ${formatInsightMoney(topProductProfit)}${topProduct.profitPerUnit ? `, khoảng ${formatInsightMoney(topProduct.profitPerUnit)}/${topProduct.unit || 'đơn vị'}` : ''}.`
+    });
+  }
+
+  const profitAnomaly = dashboard.profitability?.anomalyRows?.[0];
+  if (profitAnomaly) {
+    add(30, {
+      id: 'profitability-anomaly-3-days',
+      type: 'warn',
+      text: `Nhóm ${profitAnomaly.name} có lãi bình quân ${profitAnomaly.profitDeltaValue >= 0 ? 'tăng' : 'giảm'} ${formatPercentInsight(profitAnomaly.profitDeltaPct)} trong 3 ngày dù giá mua và giá bán gần như không đổi. Nên kiểm tra hao hụt, phiếu xuất, kiểm tồn hoặc giá vốn của nhóm này.`
+    });
+  }
+
+  const priceImpact = dashboard.profitability?.priceImpactRows?.[0];
+  if (priceImpact) {
+    add(priceImpact.impact >= 0 ? 46 : 31, {
+      id: 'customer-price-impact',
+      type: priceImpact.impact >= 0 ? 'good' : 'warn',
+      text: `${priceImpact.customerName} mua ${priceImpact.productName} ${priceImpact.priceDelta >= 0 ? 'cao hơn' : 'thấp hơn'} bình quân 3 ngày khoảng ${formatInsightMoney(Math.abs(priceImpact.priceDelta))}/${priceImpact.unit || 'đơn vị'}, làm ${priceImpact.impact >= 0 ? 'tăng' : 'giảm'} lãi ước tính ${formatInsightMoney(Math.abs(priceImpact.impact))}.`
+    });
+  }
+
+  const topRevenueProduct = dashboard.business?.topProductsByRevenue?.[0];
+  if (topRevenueProduct?.revenue > 0) {
+    const revenueShare = finance.revenueMonth > 0 ? Math.round((topRevenueProduct.revenue / finance.revenueMonth) * 100) : 0;
+    add(52, {
+      id: 'pillar-revenue-product',
+      type: 'neutral',
+      text: `${topRevenueProduct.name} đang kéo doanh thu mạnh nhất tháng này với ${formatInsightMoney(topRevenueProduct.revenue)}${revenueShare > 0 ? `, khoảng ${revenueShare}% doanh thu tháng` : ''}.`
+    });
+  }
+
+  const carryoverValue = toNumber(dashboard.profitability?.totals?.carryoverValue);
+  if (carryoverValue > 0) {
+    add(62, {
+      id: 'carryover-stock-value',
+      type: 'neutral',
+      text: `Tồn chuyển sang ngày sau khoảng ${formatInsightMoney(carryoverValue)} theo giá vốn bình quân; khoản này không nên tính hết vào chi phí đã dùng hôm nay.`
+    });
+  }
+
+  if (dashboard.operations?.slowMovingProducts > 0) {
+    add(70, {
+      id: 'slow-moving-products',
+      type: 'warn',
+      text: `${dashboard.operations.slowMovingProducts} mặt hàng đang bán chậm. Nên xem lại giá bán, lịch nhập hoặc đẩy ưu tiên tiêu thụ để tránh kẹt vốn.`
+    });
+  }
+
+  if (alerts.length > 0) {
+    add(80, {
+      id: 'open-alerts',
+      type: 'warn',
+      text: `Hôm nay có ${alerts.length} cảnh báo đang mở. Ưu tiên xử lý cảnh báo công nợ, tồn kho và chấm công trước.`
+    });
+  }
+
+  if (insightRows.length === 0) {
+    add(100, {
+      id: 'stable',
+      type: 'good',
+      text: 'Các chỉ số chính đang ổn định. Nên tiếp tục theo dõi công nợ, tồn kho và chấm công trong ngày để tránh phát sinh rủi ro.'
+    });
+  }
+
+  return insightRows
+    .sort((a, b) => a.priority - b.priority)
+    .slice(0, 12)
+    .map(({ priority, ...insight }) => insight);
+};
+
+export const InsightService = {
+  build(source, dashboard, alerts = []) {
+    return buildExecutiveInsightItems(source, dashboard, alerts);
+  }
+};
+
+export const RecommendationService = {
+  build(source, dashboard, alerts = []) {
+    const recommendations = [];
+    const topDebt = dashboard.business.topCustomersByDebt[0];
+    if (topDebt?.debt > 0) {
+      recommendations.push({
+        id: 'collect-debt',
+        title: `Thu hồi công nợ ${topDebt.name}`,
+        impact: `Dự kiến thu về ${Math.round(topDebt.debt / 1000000)} triệu`,
+        detail: 'Ưu tiên nhắc khách hoặc giao hàng kèm điều kiện thu tiền.',
+        targetTab: 'debt'
+      });
+    }
+    const slowStock = dashboard.operations.slowMovingRows?.[0];
+    if (slowStock) {
+      recommendations.push({
+        id: 'reduce-slow-stock',
+        title: `Giảm nhập hoặc đẩy bán ${slowStock.name || slowStock.productName || 'hàng bán chậm'}`,
+        impact: 'Giảm vốn bị kẹt trong tồn kho',
+        detail: 'Kiểm tra lại tốc độ bán, size, giá và lịch nhập.',
+        targetTab: 'warehouse_import'
+      });
+    }
+    const lowMarginCustomer = dashboard.business.topCustomersByRevenue.find(row => row.revenue > 0 && (dashboard.business.topCustomersByProfit.find(p => p.name === row.name)?.profit || 0) / row.revenue < 0.02);
+    if (lowMarginCustomer) {
+      recommendations.push({
+        id: 'adjust-low-margin',
+        title: `Rà soát giá bán khách ${lowMarginCustomer.name}`,
+        impact: 'Có thể tăng biên lợi nhuận nhóm khách doanh thu cao',
+        detail: 'Khách có doanh thu cao nhưng biên lợi nhuận thấp.',
+        targetTab: 'customers'
+      });
+    }
+    const biggestCost = dashboard.finance.costBreakdown?.slice().sort((a, b) => b.value - a.value)[0];
+    if (biggestCost?.value > 0) {
+      recommendations.push({
+        id: 'cost-control',
+        title: `Kiểm soát ${biggestCost.name.toLowerCase()}`,
+        impact: `Khoản này đang chiếm ${Math.round((biggestCost.value / Math.max(1, dashboard.finance.expenseMonth)) * 100)}% tổng chi tháng`,
+        detail: 'So sánh với tháng trước và đặt giới hạn chi theo ngày.',
+        targetTab: 'finance'
+      });
+    }
+    if (dashboard.operations.employeesAbsentToday > 0) {
+      recommendations.push({
+        id: 'attendance-action',
+        title: 'Rà soát nhân sự chưa chấm công',
+        impact: 'Giảm sai lệch lương và thiếu người vận hành',
+        detail: 'Kiểm tra lý do nghỉ, quên chấm hoặc phân ca chưa đúng.',
+        targetTab: 'company_attendance'
+      });
+    }
+    if (recommendations.length === 0 && alerts[0]) {
+      recommendations.push({
+        id: 'handle-first-alert',
+        title: `Xử lý cảnh báo: ${alerts[0].title}`,
+        impact: 'Giảm rủi ro vận hành trong ngày',
+        detail: alerts[0].message,
+        targetTab: alerts[0].targetTab || 'executive_dashboard'
+      });
+    }
+    return recommendations.slice(0, 5);
+  }
+};
+
+const makeKpi = ({ id, title, value, kind = 'money', current = value, previousDay = 0, currentMonth = value, previousMonth = 0, positiveWhen = 'up' }) => {
+  const vsYesterday = percentChange(current, previousDay);
+  const vsPreviousMonth = percentChange(currentMonth, previousMonth);
+  const positive = positiveWhen === 'down' ? vsYesterday <= 0 : vsYesterday >= 0;
+  const tone = ['profitToday', 'profitMonth', 'cashBalance', 'cashflowMonth'].includes(id)
+    ? (toNumber(value) >= 0 ? 'good' : 'bad')
+    : ['receivables', 'payables', 'undeliveredOrders', 'openAlerts'].includes(id)
+      ? (toNumber(value) > 0 ? 'warn' : 'good')
+      : positive ? 'good' : 'bad';
+  return { id, title, label: title, value, kind, vsYesterday, vsPreviousMonth, dayDeltaPct: vsYesterday, monthDeltaPct: vsPreviousMonth, tone, isPositive: positive };
+};
+
+// Share the exact voucher and daily payroll DTOs with the full report. Payroll
+// earning-day allocation/rounding is already performed by the App payroll builder.
+const buildCashExpenseRows = records => Array.isArray(records) ? records
+  .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense))
+  .map(expense => ({
+    date: expense.date, value: Number(expense.amount) || 0,
+    category: classifyExpense(expense),
+    name: expense.name || expense.title || expense.category || 'Chi phí khác',
+    detail: expense.note || expense.description || '',
+    sourceType: 'expense', sourceId: expense.id,
+    originalAmount: Number(expense.amount) || 0,
+    employeeId: recordEmployeeIdOf(expense),
+    recipient: expense.recipient || expense.payee || expense.employeeName || '',
+  })) : undefined;
+
+const buildPayrollAccrualRows = (source, todayKey, employeesById) => {
+  const rows = [];
+  source.payrollCosts.forEach(row => {
+    const date = dateKey(getDateValue(row));
+    const value = Math.max(0, moneyOfExpense(row));
+    if (!date || date > todayKey || !value) return;
+    const employeeId = recordEmployeeIdOf(row);
+    const employee = employeeId ? employeesById.get(employeeId) : null;
+    rows.push({
+      date,
+      employeeId,
+      name: row.employeeName || row.staffName || employee?.name || employee?.fullName || 'Nhân sự chưa rõ',
+      department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
+      value
+    });
+  });
+  return rows;
+};
+
+function* buildHomePrimaryProjectionSteps(input = {}) {
+  // The caller owns source confirmation, locked payroll loading and ledger
+  // readiness. Explicit empty collections are valid; absent dependencies are not.
+  for (const key of ['cashExpenseRecords', 'payrollCosts', 'debtLedger']) {
+    if (input[key] === undefined || input[key] === null ||
+      (key === 'cashExpenseRecords' ? !Array.isArray(input[key]) : typeof input[key] !== 'object')) {
+      throw new TypeError(`Home primary requires completed ${key}.`);
+    }
+  }
+  // Explicit selection prevents both reading secondary inputs and widening P1
+  // when normalizeInput gains new fields. Imports stay with the external ledger.
+  const source = normalizeInput({
+    now: input.now, orders: input.orders, payments: input.payments,
+    expenses: input.expenses, customers: input.customers, employees: input.employees,
+    payrollCosts: input.payrollCosts, debtLedger: input.debtLedger,
+  });
+  const base = FinancialService.build(source);
+  yield;
+  const employeesById = new Map(source.employees.map(employee => [String(employee.id || employee.employeeId || employee.uid || employee.userId || ''), employee]));
+  const payrollAccrualRows = buildPayrollAccrualRows(source, base.todayKey, employeesById);
+  yield;
+  const cashExpenseRows = buildCashExpenseRows(input.cashExpenseRecords);
+  yield;
+  // Do not expose FinancialService's provisional expense/profit, or COGS and
+  // operational fields. Consumers must apply getCashExpenseFinance followed by
+  // getReportPeriod, exactly as BusinessReportWorkspace does for the full report.
+  const finance = {};
+  for (const key of [
+    'todayKey', 'yesterdayKey', 'weekStartKey', 'weekEndKey', 'currentMonthKey', 'previousMonthKey',
+    'revenueToday', 'revenueYesterday', 'revenueWeek', 'revenueMonth', 'revenuePreviousMonth',
+    'receivables', 'overdueReceivables',
+  ]) finance[key] = base[key];
+  finance.revenueQuarter = source.orders.filter(order => isInQuarter(order, source.now))
+    .reduce((sum, order) => sum + orderTotal(order), 0);
+  finance.revenueYear = sumByYear(source.orders, source.now.getFullYear(), orderTotal);
+  finance.cashExpenseRows = cashExpenseRows;
+  finance.payrollAccrualRows = payrollAccrualRows;
+  for (const key of ['series7Days', 'series30Days', 'series12Months']) {
+    finance[key] = base[key].map(row => row.date
+      ? { date: row.date, revenue: row.revenue }
+      : { month: row.month, revenue: row.revenue });
+  }
+  return { kind: 'home-primary-v1', generatedAt: new Date().toISOString(), finance };
+}
+
+export const createHomePrimaryProjectionIterator = (input = {}) => {
+  const cache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap(), deliveries: new WeakMap() };
+  const iterator = buildHomePrimaryProjectionSteps(input);
+  const scoped = method => value => {
+    const previous = activeBuildCache;
+    activeBuildCache = cache;
+    try { return iterator[method](value); } finally { activeBuildCache = previous; }
+  };
+  return { next: scoped('next'), return: scoped('return') };
+};
+
+// Integration-facing name; both entry points return the same distinct P1 DTO.
+export const createHomePrimarySnapshotIterator = createHomePrimaryProjectionIterator;
+
+export const buildHomePrimaryProjection = (input = {}) => {
+  const iterator = createHomePrimaryProjectionIterator(input);
+  for (;;) {
+    const step = iterator.next();
+    if (step.done) return step.value;
+  }
+};
+
+function* buildDashboardSnapshotSteps(input = {}) {
+    const source = normalizeInput(input);
+    let finance = FinancialService.build(source);
+    yield;
+    const inventorySoldCostByDate = yield* buildInventorySoldCostSteps(source, finance.todayKey);
+    yield;
+    const inventoryPurchaseExpenses = source.expenses.filter(isInventoryPurchaseExpense);
+    const payrollCostByDate = new Map();
+    source.payrollCosts.forEach(row => {
+      const key = dateKey(getDateValue(row));
+      if (key && key <= finance.todayKey) payrollCostByDate.set(key, (payrollCostByDate.get(key) || 0) + Math.max(0, moneyOfExpense(row)));
+    });
+    const payrollByMonth = new Map();
+    payrollCostByDate.forEach((amount, key) => payrollByMonth.set(key.slice(0, 7), (payrollByMonth.get(key.slice(0, 7)) || 0) + amount));
+    const salaryDisbursementByMonth = new Map();
+    source.expenses.filter(expense => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense)).forEach(expense => {
+      const day = dateKey(getDateValue(expense));
+      if (!day || day > finance.todayKey) return;
+      const key = day.slice(0, 7);
+      if (key) salaryDisbursementByMonth.set(key, (salaryDisbursementByMonth.get(key) || 0) + moneyOfExpense(expense));
+    });
+    const operatingExpenses = source.expenses
+      .filter(expense => {
+        const day = dateKey(getDateValue(expense));
+        return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense);
+      })
+      .map(expense => {
+        const key = monthKey(getDateValue(expense));
+        const recordedSalary = salaryDisbursementByMonth.get(key) || 0;
+        const accruedSalary = payrollByMonth.get(key) || 0;
+        const salaryFactor = recordedSalary > 0 ? Math.max(0, recordedSalary - accruedSalary) / recordedSalary : 0;
+        return { ...expense, originalAmount: moneyOfExpense(expense), amount: isSalaryAdvanceExpense(expense) ? 0 : moneyOfExpense(expense) * (isPayrollDisbursementExpense(expense) ? salaryFactor : 1) };
+      });
+    const costOfGoodsToday = toNumber(inventorySoldCostByDate.get(finance.todayKey));
+    const costOfGoodsYesterday = toNumber(inventorySoldCostByDate.get(finance.yesterdayKey));
+    const costOfGoodsWeek = sumMapByDateRange(inventorySoldCostByDate, finance.weekStartKey, finance.weekEndKey);
+    const costOfGoodsMonth = sumInventorySoldCostByMonth(inventorySoldCostByDate, finance.currentMonthKey);
+    const costOfGoodsPreviousMonth = sumInventorySoldCostByMonth(inventorySoldCostByDate, finance.previousMonthKey);
+    const inventoryPurchaseExpenseToday = sumByDate(inventoryPurchaseExpenses, finance.todayKey, moneyOfExpense);
+    const inventoryPurchaseExpenseYesterday = sumByDate(inventoryPurchaseExpenses, finance.yesterdayKey, moneyOfExpense);
+    const inventoryPurchaseExpenseWeek = sumByDateRange(inventoryPurchaseExpenses, finance.weekStartKey, finance.weekEndKey, moneyOfExpense);
+    const inventoryPurchaseExpenseMonth = sumByMonth(inventoryPurchaseExpenses, finance.currentMonthKey, moneyOfExpense);
+    const inventoryPurchaseExpensePreviousMonth = sumByMonth(inventoryPurchaseExpenses, finance.previousMonthKey, moneyOfExpense);
+    const nonInventoryExpenseToday = sumByDate(operatingExpenses, finance.todayKey, moneyOfExpense);
+    const nonInventoryExpenseYesterday = sumByDate(operatingExpenses, finance.yesterdayKey, moneyOfExpense);
+    const nonInventoryExpenseWeek = sumByDateRange(operatingExpenses, finance.weekStartKey, finance.weekEndKey, moneyOfExpense);
+    const nonInventoryExpenseMonth = sumByMonth(operatingExpenses, finance.currentMonthKey, moneyOfExpense);
+    const nonInventoryExpensePreviousMonth = sumByMonth(operatingExpenses, finance.previousMonthKey, moneyOfExpense);
+    const salaryExpenseToday = toNumber(payrollCostByDate.get(finance.todayKey));
+    const salaryExpenseYesterday = toNumber(payrollCostByDate.get(finance.yesterdayKey));
+    const salaryExpenseWeek = sumMapByDateRange(payrollCostByDate, finance.weekStartKey, finance.weekEndKey);
+    const salaryExpenseMonth = payrollByMonth.get(finance.currentMonthKey) || 0;
+    const salaryExpensePreviousMonth = payrollByMonth.get(finance.previousMonthKey) || 0;
+    const actualExpenseToday = nonInventoryExpenseToday + costOfGoodsToday + salaryExpenseToday;
+    const actualExpenseYesterday = nonInventoryExpenseYesterday + costOfGoodsYesterday + salaryExpenseYesterday;
+    const actualExpenseWeek = nonInventoryExpenseWeek + costOfGoodsWeek + salaryExpenseWeek;
+    const actualExpenseMonth = nonInventoryExpenseMonth + costOfGoodsMonth + salaryExpenseMonth;
+    const actualExpensePreviousMonth = nonInventoryExpensePreviousMonth + costOfGoodsPreviousMonth + salaryExpensePreviousMonth;
+    const rebuildDayRow = (row = {}) => {
+      const cashExpense = toNumber(row.expense);
+      const inventoryPurchaseExpense = sumByDate(inventoryPurchaseExpenses, row.date, moneyOfExpense);
+      const nonInventoryExpense = sumByDate(operatingExpenses, row.date, moneyOfExpense);
+      const costOfGoods = toNumber(inventorySoldCostByDate.get(row.date));
+      const salaryExpense = toNumber(payrollCostByDate.get(row.date));
+      const actualExpense = nonInventoryExpense + costOfGoods + salaryExpense;
+      return {
+        ...row,
+        cashExpense,
+        inventoryPurchaseExpense,
+        nonInventoryExpense,
+        costOfGoods,
+        salaryExpense,
+        actualUsedCost: costOfGoods,
+        expense: actualExpense,
+        operatingExpense: actualExpense,
+        profitExpense: actualExpense,
+        profit: toNumber(row.revenue) - actualExpense,
+        cashflow: toNumber(row.income) - cashExpense
+      };
+    };
+    const rebuildMonthRow = (row = {}) => {
+      const cashExpense = toNumber(row.expense);
+      const inventoryPurchaseExpense = sumByMonth(inventoryPurchaseExpenses, row.month, moneyOfExpense);
+      const nonInventoryExpense = sumByMonth(operatingExpenses, row.month, moneyOfExpense);
+      const costOfGoods = sumInventorySoldCostByMonth(inventorySoldCostByDate, row.month);
+      const salaryExpense = payrollByMonth.get(row.month) || 0;
+      const actualExpense = nonInventoryExpense + costOfGoods + salaryExpense;
+      return {
+        ...row,
+        cashExpense,
+        inventoryPurchaseExpense,
+        nonInventoryExpense,
+        costOfGoods,
+        salaryExpense,
+        actualUsedCost: costOfGoods,
+        expense: actualExpense,
+        operatingExpense: actualExpense,
+        profitExpense: actualExpense,
+        profit: toNumber(row.revenue) - actualExpense,
+        cashflow: toNumber(row.income) - cashExpense
+      };
+    };
+    const series7Days = finance.series7Days.map(rebuildDayRow);
+    const series30Days = finance.series30Days.map(rebuildDayRow);
+    const series12Months = finance.series12Months.map(rebuildMonthRow);
+    const year = source.now.getFullYear();
+    const cashExpenseQuarter = source.expenses
+      .filter(expense => isInQuarter(expense, source.now))
+      .reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
+    const inventoryPurchaseExpenseQuarter = inventoryPurchaseExpenses
+      .filter(expense => isInQuarter(expense, source.now))
+      .reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
+    const costOfGoodsQuarter = [...inventorySoldCostByDate.entries()]
+      .filter(([key]) => {
+        const date = parseDate(key);
+        return date && date.getFullYear() === source.now.getFullYear()
+          && Math.floor(date.getMonth() / 3) === Math.floor(source.now.getMonth() / 3);
+      })
+      .reduce((sum, [, value]) => sum + toNumber(value), 0);
+    const revenueQuarter = source.orders
+      .filter(order => isInQuarter(order, source.now))
+      .reduce((sum, order) => sum + orderTotal(order), 0);
+    const incomeQuarter = source.payments
+      .filter(payment => isInQuarter(payment, source.now))
+      .reduce((sum, payment) => sum + moneyOfPayment(payment), 0);
+    const quarterStartKey = dateKey(new Date(source.now.getFullYear(), Math.floor(source.now.getMonth() / 3) * 3, 1));
+    const salaryExpenseQuarter = sumMapByDateRange(payrollCostByDate, quarterStartKey, finance.todayKey);
+    const actualExpenseQuarter = operatingExpenses.filter(expense => isInQuarter(expense, source.now)).reduce((sum, expense) => sum + moneyOfExpense(expense), 0) + costOfGoodsQuarter + salaryExpenseQuarter;
+    const cashExpenseYear = sumByYear(source.expenses, year, moneyOfExpense);
+    const inventoryPurchaseExpenseYear = sumByYear(inventoryPurchaseExpenses, year, moneyOfExpense);
+    const costOfGoodsYear = [...inventorySoldCostByDate.entries()]
+      .filter(([key]) => key.startsWith(`${year}-`))
+      .reduce((sum, [, value]) => sum + toNumber(value), 0);
+    const revenueYear = sumByYear(source.orders, year, orderTotal);
+    const incomeYear = sumByYear(source.payments, year, moneyOfPayment);
+    const salaryExpenseYear = sumMapByDateRange(payrollCostByDate, `${year}-01-01`, finance.todayKey);
+    const actualExpenseYear = sumByYear(operatingExpenses, year, moneyOfExpense) + costOfGoodsYear + salaryExpenseYear;
+    const currentMonthCostBreakdownMap = new Map();
+    currentMonthCostBreakdownMap.set('Giá vốn đã dùng', costOfGoodsMonth);
+    operatingExpenses
+      .filter(expense => monthKey(getDateValue(expense)) === finance.currentMonthKey)
+      .forEach(expense => {
+        const category = classifyExpense(expense);
+        currentMonthCostBreakdownMap.set(category, (currentMonthCostBreakdownMap.get(category) || 0) + moneyOfExpense(expense));
+      });
+    currentMonthCostBreakdownMap.set('Lương', (currentMonthCostBreakdownMap.get('Lương') || 0) + salaryExpenseMonth);
+    const costBreakdown = [...currentMonthCostBreakdownMap.entries()]
+      .filter(([, value]) => toNumber(value) > 0)
+      .map(([name, value]) => ({ name, value }));
+    const expenseCategoryRows = [];
+    const expenseDetailRows = [];
+    const salaryEmployeeRows = [];
+    const reportEmployeesById = new Map(source.employees.map(employee => [String(employee.id || employee.employeeId || employee.uid || employee.userId || ''), employee]));
+    operatingExpenses.forEach(expense => {
+      const date = dateKey(getDateValue(expense));
+      const value = Math.max(0, toNumber(expense.amount));
+      if (!date || !value) return;
+      const category = classifyExpense(expense);
+      const employeeId = recordEmployeeIdOf(expense);
+      const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
+      const name = expense.name || expense.title || expense.description || expense.reason || expense.category || category;
+      expenseCategoryRows.push({ date, category, name: category, detail: name, value });
+      expenseDetailRows.push({ date, category, name, detail: expense.note || expense.description || expense.reason || name, value,
+        sourceType: 'expense', sourceId: expense.id || '', originalAmount: expense.originalAmount,
+        recipient: expense.recipient || expense.payee || expense.employeeName || expense.staffName || '',
+      });
+      if (category === 'Lương') salaryEmployeeRows.push({
+        date,
+        employeeId,
+        name: expense.employeeName || expense.staffName || employee?.name || employee?.fullName || 'Lương chưa gắn nhân sự',
+        department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, 'Chưa phân bộ phận'),
+        value
+      });
+    });
+    inventorySoldCostByDate.forEach((value, date) => {
+      if (date <= finance.todayKey && toNumber(value) > 0) {
+        expenseCategoryRows.push({ date, category: 'Giá vốn', name: 'Giá vốn đã dùng', detail: 'Hàng đã bán', value: toNumber(value) });
+        expenseDetailRows.push({ date, category: 'Giá vốn', name: 'Giá vốn hàng đã bán', detail: 'Giá vốn hàng đã bán trong ngày, không phải phiếu chi tiền.', sourceType: 'costOfGoods', value: toNumber(value) });
+      }
+    });
+    const payrollEmployeeRows = buildPayrollAccrualRows(source, finance.todayKey, reportEmployeesById);
+    payrollEmployeeRows.forEach(item => {
+      const { date, employeeId, value } = item;
+      expenseCategoryRows.push({ date, category: 'Lương', name: 'Lương', detail: item.name, value });
+      expenseDetailRows.push({ date, category: 'Lương', name: `Lương • ${item.name}`, detail: item.department, sourceType: 'payroll', employeeId, value });
+    });
+    salaryEmployeeRows.push(...payrollEmployeeRows);
+    const expenseByDepartmentMap = new Map([['Giá vốn', costOfGoodsMonth]]);
+    operatingExpenses.filter(expense => monthKey(getDateValue(expense)) === finance.currentMonthKey).forEach(expense => {
+      const department = formatDepartmentLabel(expense.department || expense.departmentName || expense.team, 'Chi phí chung');
+      expenseByDepartmentMap.set(department, (expenseByDepartmentMap.get(department) || 0) + moneyOfExpense(expense));
+    });
+    const employeesById = new Map(source.employees.map(employee => [String(employee.id || employee.employeeId || ''), employee]));
+    source.payrollCosts.filter(row => monthKey(getDateValue(row)) === finance.currentMonthKey).forEach(row => {
+      const employee = employeesById.get(String(row.employeeId || '')) || {};
+      const department = formatDepartmentLabel(employee.position || employee.department || employee.roleName || employee.role, 'Lương nhân sự');
+      expenseByDepartmentMap.set(department, (expenseByDepartmentMap.get(department) || 0) + moneyOfExpense(row));
+    });
+    const expenseByDepartment = [...expenseByDepartmentMap.entries()]
+      .filter(([, value]) => value > 0)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    finance = {
+      ...finance,
+      cashExpenseRows: buildCashExpenseRows(source.cashExpenseRecords),
+      cashExpenseToday: finance.expenseToday,
+      cashExpenseYesterday: finance.expenseYesterday,
+      cashExpenseWeek: finance.expenseWeek,
+      cashExpenseMonth: finance.expenseMonth,
+      cashExpensePreviousMonth: finance.expensePreviousMonth,
+      inventoryPurchaseExpenseToday,
+      inventoryPurchaseExpenseYesterday,
+      inventoryPurchaseExpenseWeek,
+      inventoryPurchaseExpenseMonth,
+      inventoryPurchaseExpensePreviousMonth,
+      nonInventoryExpenseToday,
+      nonInventoryExpenseYesterday,
+      nonInventoryExpenseWeek,
+      nonInventoryExpenseMonth,
+      nonInventoryExpensePreviousMonth,
+      costOfGoodsToday,
+      costOfGoodsYesterday,
+      costOfGoodsWeek,
+      costOfGoodsMonth,
+      costOfGoodsPreviousMonth,
+      salaryExpenseToday,
+      salaryExpenseYesterday,
+      salaryExpenseWeek,
+      salaryExpenseMonth,
+      salaryExpensePreviousMonth,
+      salaryExpenseQuarter,
+      salaryExpenseYear,
+      actualUsedCostToday: costOfGoodsToday,
+      actualUsedCostYesterday: costOfGoodsYesterday,
+      actualUsedCostWeek: costOfGoodsWeek,
+      actualUsedCostMonth: costOfGoodsMonth,
+      actualUsedCostPreviousMonth: costOfGoodsPreviousMonth,
+      expenseToday: actualExpenseToday,
+      expenseYesterday: actualExpenseYesterday,
+      expenseWeek: actualExpenseWeek,
+      expenseMonth: actualExpenseMonth,
+      expensePreviousMonth: actualExpensePreviousMonth,
+      operatingExpenseToday: actualExpenseToday,
+      operatingExpenseYesterday: actualExpenseYesterday,
+      operatingExpenseWeek: actualExpenseWeek,
+      operatingExpenseMonth: actualExpenseMonth,
+      operatingExpensePreviousMonth: actualExpensePreviousMonth,
+      profitExpenseToday: actualExpenseToday,
+      profitExpenseWeek: actualExpenseWeek,
+      profitExpenseMonth: actualExpenseMonth,
+      profitExpensePreviousMonth: actualExpensePreviousMonth,
+      totalExpenseToday: actualExpenseToday,
+      totalExpenseWeek: actualExpenseWeek,
+      totalExpenseMonth: actualExpenseMonth,
+      profitToday: finance.revenueToday - actualExpenseToday,
+      profitYesterday: finance.revenueYesterday - actualExpenseYesterday,
+      profitWeek: finance.revenueWeek - actualExpenseWeek,
+      profitMonth: finance.revenueMonth - actualExpenseMonth,
+      profitPreviousMonth: finance.revenuePreviousMonth - actualExpensePreviousMonth,
+      expenseChangePct: percentChange(actualExpenseMonth, actualExpensePreviousMonth),
+      revenueQuarter,
+      revenueYear,
+      expenseQuarter: actualExpenseQuarter,
+      expenseYear: actualExpenseYear,
+      incomeQuarter,
+      incomeYear,
+      outcomeQuarter: cashExpenseQuarter,
+      outcomeYear: cashExpenseYear,
+      cashflowToday: finance.incomeToday - finance.expenseToday,
+      cashflowWeek: finance.incomeWeek - finance.expenseWeek,
+      cashflowQuarter: incomeQuarter - cashExpenseQuarter,
+      cashflowYear: incomeYear - cashExpenseYear,
+      quarterProfit: revenueQuarter - actualExpenseQuarter,
+      yearProfit: revenueYear - actualExpenseYear,
+      series7Days,
+      series30Days,
+      dailyCashflowRows: series30Days,
+      series12Months,
+      costBreakdown,
+      expenseByDepartment,
+      expenseCategoryRows,
+      expenseDetailRows,
+      payrollAccrualRows: payrollEmployeeRows,
+      salaryEmployeeRows
+    };
+    const profitabilityDate = parseDate(finance.todayKey) || source.now || new Date();
+    yield;
+    const readProfitabilitySnapshot = createProfitabilitySnapshotReader(source,
+      [finance.todayKey, ...[2, 1, 0].map(offset => dateKey(addDays(profitabilityDate, -offset))).filter(Boolean)]);
+    yield;
+    const profitabilityBase = readProfitabilitySnapshot(finance.todayKey);
+    yield;
+    const profitabilityDiagnostics = buildProfitabilityDiagnostics(source, finance, readProfitabilitySnapshot);
+    yield;
+    const profitability = { ...profitabilityBase, ...profitabilityDiagnostics };
+    const costs = CostAnalysisService.build(source, finance);
+    yield;
+    const business = yield* buildBusinessAnalysisSteps(source, finance, profitability);
+    yield;
+    const operations = buildOperations(source, finance);
+    yield;
+
+    const isRequestDelivered = createRequestDeliveryLookup(source.warehouseDispatches);
+    const undeliveredRequests = source.orderRequests.filter(request => !isRequestDelivered(request));
+    const shell = {
+      generatedAt: new Date().toISOString(),
+      period: {
+        todayKey: finance.todayKey,
+        yesterdayKey: finance.yesterdayKey,
+        currentMonthKey: finance.currentMonthKey,
+        previousMonthKey: finance.previousMonthKey
+      },
+      finance,
+      costs,
+      business,
+      profitability,
+      operations,
+      sourceCounts: {
+        orders: source.orders.length,
+        orderRequests: source.orderRequests.length,
+        warehouseDispatches: source.warehouseDispatches.length,
+        customers: source.customers.length
+      }
+    };
+
+    const alerts = AlertService.build(source, shell);
+    yield;
+    const kpis = [
+      makeKpi({ id: 'revenueToday', title: 'Doanh thu hôm nay', value: finance.revenueToday, current: finance.revenueToday, previousDay: finance.revenueYesterday, currentMonth: finance.revenueMonth, previousMonth: finance.revenuePreviousMonth }),
+      makeKpi({ id: 'revenueMonth', title: 'Doanh thu tháng', value: finance.revenueMonth, current: finance.revenueToday, previousDay: finance.revenueYesterday, currentMonth: finance.revenueMonth, previousMonth: finance.revenuePreviousMonth }),
+      makeKpi({ id: 'profitToday', title: 'Lợi nhuận hôm nay', value: finance.profitToday, current: finance.profitToday, previousDay: finance.profitYesterday, currentMonth: finance.profitMonth, previousMonth: finance.profitPreviousMonth }),
+      makeKpi({ id: 'profitMonth', title: 'Lợi nhuận tháng', value: finance.profitMonth, current: finance.profitToday, previousDay: finance.profitYesterday, currentMonth: finance.profitMonth, previousMonth: finance.profitPreviousMonth }),
+      makeKpi({ id: 'expenseMonth', title: 'Tổng chi tháng', value: finance.expenseMonth, current: finance.expenseToday, previousDay: finance.expenseYesterday, currentMonth: finance.expenseMonth, previousMonth: finance.expensePreviousMonth, positiveWhen: 'down' }),
+      makeKpi({ id: 'receivables', title: 'Công nợ phải thu', value: finance.receivables, current: finance.receivables, previousDay: finance.receivables, currentMonth: finance.receivables, previousMonth: finance.receivables, positiveWhen: 'down' }),
+      makeKpi({ id: 'payables', title: 'Công nợ phải trả', value: finance.payables, current: finance.payables, previousDay: finance.payables, currentMonth: finance.payables, previousMonth: finance.payables, positiveWhen: 'down' }),
+      makeKpi({ id: 'cashBalance', title: 'Tiền mặt hiện có', value: finance.cashBalance, current: finance.cashBalance, previousDay: finance.cashBalance, currentMonth: finance.cashBalance, previousMonth: finance.cashBalance }),
+      makeKpi({ id: 'inventoryValue', title: 'Giá trị tồn kho', value: operations.inventoryValue, current: operations.inventoryValue, previousDay: operations.inventoryValue, currentMonth: operations.inventoryValue, previousMonth: operations.inventoryValue }),
+      makeKpi({ id: 'undeliveredOrders', title: 'Đơn chưa giao', value: undeliveredRequests.length, kind: 'number', current: undeliveredRequests.length, previousDay: 0, currentMonth: undeliveredRequests.length, previousMonth: 0, positiveWhen: 'down' }),
+      makeKpi({ id: 'employeesPresent', title: 'Nhân viên đi làm hôm nay', value: operations.employeesPresentToday, kind: 'number', current: operations.employeesPresentToday, previousDay: 0, currentMonth: operations.employeesPresentToday, previousMonth: source.employees.length }),
+      makeKpi({ id: 'openAlerts', title: 'Cảnh báo đang mở', value: alerts.length, kind: 'number', current: alerts.length, previousDay: 0, currentMonth: alerts.length, previousMonth: 0, positiveWhen: 'down' })
+    ];
+
+    const completed = { ...shell, kpis, alerts };
+    const insights = InsightService.build(source, completed, alerts);
+    yield;
+    const recommendations = RecommendationService.build(source, completed, alerts);
+    return { ...completed, insights, recommendations };
+}
+
+export const DashboardService = {
+  build(input = {}) {
+    const iterator=buildDashboardSnapshotSteps(input);
+    for(;;){const step=iterator.next();if(step.done)return step.value}
+  }
+};
+
+export const createExecutiveDashboardSnapshotIterator = input => {
+  const cache={dates:new Map(),billing:new WeakMap(),totals:new WeakMap(),deliveries:new WeakMap()};
+  const iterator=buildDashboardSnapshotSteps(input);
+  const scoped=method=>value=>{
+    const previous=activeBuildCache;activeBuildCache=cache;
+    try{return iterator[method](value)}finally{activeBuildCache=previous}
+  };
+  return {next:scoped('next'),return:scoped('return')};
+};
+
+export const buildExecutiveDashboardSnapshot = (input = {}) => {
+  const previous = activeBuildCache;
+  activeBuildCache = { dates: new Map(), billing: new WeakMap(), totals: new WeakMap(), deliveries: new WeakMap() };
+  try {
+    return DashboardService.build(input);
+  } finally {
+    activeBuildCache = previous;
+  }
+};
+
+export function buildHomeProductDetail({orders=[],products=[],product={},orderRequests=[],warehouseDispatches=[]}){
+ const resolveUnits=createTransactionUnitEvidence({orderRequests,warehouseDispatches});
+ const catalog=new Map(products.map(p=>[p.id,p])),lines=[];
+ for(const order of orders){if(isArchived(order)||isCancelled(order))continue;getItems(order).forEach((item,index)=>{
+  const name=productNameOf(item,catalog);if(item.productId?String(item.productId)!==String(product.id):normalizeText(name)!==normalizeText(product.name))return;
+  const billing=resolveTransactionBillingSnapshot({record:item});
+  const quantity=toNumber(item.actualQuantity??item.actualQuantityCount??item.quantityCount??(billing.actualQuantity||itemQuantity(item)));
+  const savedUnit=item.actualUnit||item.actualQuantityUnit||item.quantityUnit||item.unit||item.stockUnit||item.productUnit;
+  const unitEvidence=resolveUnits({order,item,itemIndex:index});
+  lines.push({lineId:`${order.id}:${index}`,orderId:order.id,productId:item.productId||product.id,name,date:dateKey(getDateValue(order)),invoiceQuantity:itemQuantity(item),quantity,unit:savedUnit||'Chưa lưu ĐVT',unitStatus:savedUnit?'SAVED':'NOT_RECORDED',orderedUnit:unitEvidence.orderedUnit||'Chưa lưu ĐVT',pricingUnit:unitEvidence.pricingUnit||'Chưa lưu ĐVT',unitPrice:item.unitPrice??item.price??null,unitEvidence,billingQuantity:billing.billingQuantity||itemQuantity(item),billingUnit:billing.billingUnit||savedUnit||'Chưa lưu ĐVT',amount:itemLineTotal(item),documentAmount:orderTotal(order),sourceDispatchIds:[...new Set(toArray(item.sourceDispatchIds))]});
+ });}
+ return {productId:product.id,lines,amount:lines.reduce((n,l)=>n+l.amount,0),quantities:lines.reduce((m,l)=>(m[l.unit]=(m[l.unit]||0)+l.quantity,m),{})};
+}
+export const buildProductDailyReportSeries = ({ orders = [], products = [], profitability = {}, product = {}, dateKeys = [] } = {}) => {
+  const productsById = new Map(toCollectionArray(products).map((item) => [item.id, item]));
+  const costByKey = new Map();
+  toArray(profitability.productRows).forEach((row) => {
+    [row.id, row.name, row.groupName].forEach((key) => {
+      const normalized = normalizeText(key);
+      if (normalized && !costByKey.has(normalized)) costByKey.set(normalized, row);
+    });
+  });
+  const wantedId = String(product.id || '');
+  const wantedName = normalizeText(product.name);
+  const rows = new Map(dateKeys.map((key) => [key, { date: key, revenue: 0, profit: 0, quantity: 0 }]));
+  toCollectionArray(orders)
+    .filter((order) => !isArchived(order) && !isCancelled(order))
+    .forEach((order) => {
+      const key = dateKey(getDateValue(order));
+      const row = rows.get(key);
+      if (!row) return;
+      getItems(order).forEach((item) => {
+        const name = productNameOf(item, productsById);
+        if (!(wantedId && String(item.productId || '') === wantedId) && normalizeText(name) !== wantedName) return;
+        const revenue = itemLineTotal(item);
+        const quantity = itemQuantity(item);
+        const costRow = costByKey.get(inventoryCostKeyOf(item, productsById))
+          || costByKey.get(normalizeText(name));
+        const averageCost = toNumber(costRow?.averageInputCost);
+        const unitCost = averageCost > 0 ? averageCost : itemCost(item);
+        row.revenue += revenue;
+        row.profit += unitCost > 0 ? revenue - quantity * unitCost : revenue;
+        row.quantity += quantity;
+      });
+    });
+  return [...rows.values()];
+};

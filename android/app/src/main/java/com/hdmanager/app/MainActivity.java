@@ -3,6 +3,11 @@ package com.hdmanager.app;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.SystemClock;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.view.FrameMetrics;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import android.graphics.Color;
 import android.util.Log;
 import android.view.Gravity;
@@ -21,7 +26,36 @@ import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.WebViewListener;
 
 public class MainActivity extends BridgeActivity {
+    public long startupCreateMs;
+    public long startupNativeFrameMs;
+    public final JSONArray startupEvents = new JSONArray();
+    public final JSONArray startupFrames = new JSONArray();
+    private HandlerThread startupFrameThread;
+    private Window.OnFrameMetricsAvailableListener startupFrameListener;
+    private void startupEvent(String stage) {
+        if (!"com.hdmanager.app.localdev".equals(getPackageName()) && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return;
+        AndroidStartupTimeline.mark(stage);
+        try {
+            JSONObject row = new JSONObject();
+            row.put("stage", stage); row.put("elapsedNs", SystemClock.elapsedRealtimeNanos()); row.put("monotonicNs", System.nanoTime());
+            synchronized (startupEvents) { if (startupEvents.length() < 128) startupEvents.put(row); }
+            Log.i("HDStartupPhase", row.toString());
+        } catch (org.json.JSONException ignored) { }
+    }
+    @Override public void setContentView(int layoutResID) {
+        startupEvent("webview.layout-inflation.begin");
+        super.setContentView(layoutResID);
+        startupEvent("webview.layout-inflation.end");
+    }
+    @Override protected void load() {
+        startupEvent("capacitor.bridge-initialization.begin");
+        super.load();
+        startupEvent("capacitor.bridge-initialization.end");
+    }
     private static final String TAG = "HDManagerMainActivity";
+    private boolean isLocalInstantWindow() {
+        return "com.hdmanager.app.localdev".equals(getPackageName());
+    }
     private static final String RENDERER_RETRY_COUNT = "hd_renderer_retry_count";
     private static final String RENDERER_LAST_EXIT = "hd_renderer_last_exit";
     private static final long RENDERER_RETRY_WINDOW_MS = 60_000L;
@@ -30,6 +64,15 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        startupEvent("activity.creation.begin");
+        if (isLocalInstantWindow()) {
+            getWindow().setWindowAnimations(0);
+            overridePendingTransition(0, 0);
+        }
+        if (("com.hdmanager.app.localdev".equals(getPackageName()) || (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)) {
+            startupCreateMs = SystemClock.elapsedRealtime();
+            Log.i("HDStartup", "processStartMs=" + android.os.Process.getStartElapsedRealtime() + " activityCreateMs=" + startupCreateMs);
+        }
         registerPlugin(ContactPickerPlugin.class);
         registerPlugin(ExternalLauncherPlugin.class);
         registerPlugin(MicrophonePermissionPlugin.class);
@@ -37,6 +80,15 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeSafeAreaPlugin.class);
         registerPlugin(ScopedBackupWriterPlugin.class);
         bridgeBuilder.addWebViewListener(new WebViewListener() {
+            @Override public void onPageStarted(WebView view) { startupEvent("webview.page-started"); }
+            @Override public void onPageLoaded(WebView view) { startupEvent("webview.page-loaded"); }
+            @Override public void onPageCommitVisible(WebView view, String url) {
+                startupEvent("webview.page-commit-visible");
+                if (("com.hdmanager.app.localdev".equals(getPackageName()) || (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0))
+                    view.postVisualStateCallback(1, new WebView.VisualStateCallback() {
+                        @Override public void onComplete(long requestId) { startupEvent("webview.visual-state-checkpoint"); }
+                    });
+            }
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 Log.e(TAG, detail.didCrash() ? "WebView renderer crashed" : "WebView renderer was killed by Android");
@@ -51,6 +103,39 @@ public class MainActivity extends BridgeActivity {
             }
         });
         super.onCreate(savedInstanceState);
+        if ("com.hdmanager.app.localdev".equals(getPackageName())) WebView.setWebContentsDebuggingEnabled(true);
+        startupEvent("activity.super-create.end");
+        if (("com.hdmanager.app.localdev".equals(getPackageName()) || (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                && getIntent().getBooleanExtra("hd_startup_native_trace", false)) {
+            startupFrameThread = new HandlerThread("HDStartupFrames"); startupFrameThread.start();
+            startupFrameListener = (window, frame, dropped) -> {
+                try {
+                    JSONObject row = new JSONObject();
+                    row.put("observedElapsedNs", SystemClock.elapsedRealtimeNanos());
+                    row.put("intendedVsyncNs", frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP));
+                    row.put("vsyncNs", frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP));
+                    row.put("totalNs", frame.getMetric(FrameMetrics.TOTAL_DURATION));
+                    row.put("layoutNs", frame.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION));
+                    row.put("drawNs", frame.getMetric(FrameMetrics.DRAW_DURATION));
+                    row.put("syncNs", frame.getMetric(FrameMetrics.SYNC_DURATION));
+                    row.put("commandIssueNs", frame.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION));
+                    row.put("swapNs", frame.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION));
+                    row.put("droppedReports", dropped);
+                    synchronized (startupFrames) { if (startupFrames.length() < 1024) startupFrames.put(row); }
+                } catch (org.json.JSONException ignored) { }
+            };
+            getWindow().addOnFrameMetricsAvailableListener(startupFrameListener, new Handler(startupFrameThread.getLooper()));
+        }
+        if (("com.hdmanager.app.localdev".equals(getPackageName()) || (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                && getIntent().getBooleanExtra("hd_startup_native_trace", false)) {
+            try {
+                getBridge().registerPlugin(Class.forName("com.hdmanager.app.StartupBiometricTracePlugin").asSubclass(com.getcapacitor.Plugin.class));
+            } catch (ClassNotFoundException error) { Log.w("HDStartup", "Optional native tracing unavailable"); }
+        }
+        if (("com.hdmanager.app.localdev".equals(getPackageName()) || (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)) getWindow().getDecorView().post(() -> android.view.Choreographer.getInstance().postFrameCallback(time -> {
+            startupNativeFrameMs = SystemClock.elapsedRealtime();
+            Log.i("HDStartup", "nativeFirstFrameMs=" + startupNativeFrameMs);
+        }));
 
         try {
             Window window = getWindow();
@@ -70,10 +155,24 @@ public class MainActivity extends BridgeActivity {
         } catch (RuntimeException error) {
             Log.w(TAG, "Unable to apply optional system bar styling", error);
         }
+        startupEvent("activity.creation.end");
+    }
+
+    @Override public void onDestroy() {
+        if (startupFrameListener != null) {
+            getWindow().removeOnFrameMetricsAvailableListener(startupFrameListener);
+            startupFrameListener = null;
+        }
+        if (startupFrameThread != null) startupFrameThread.quitSafely();
+        super.onDestroy();
     }
 
     @Override
     public void onResume() {
+        if (isLocalInstantWindow()) {
+            getWindow().setWindowAnimations(0);
+            overridePendingTransition(0, 0);
+        }
         super.onResume();
         isForeground = true;
         if (rendererRecoveryPending) scheduleRendererRecovery();

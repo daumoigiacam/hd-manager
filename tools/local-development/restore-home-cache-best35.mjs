@@ -1,0 +1,20 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {localSourceHash} from './source-hash.mjs';
+import {workspace} from './environment.mjs';
+const done=JSON.parse(await fs.readFile(path.join(workspace,'.local-dev/runtime/dev37-final50-verification.json'),'utf8'));
+if(done.status!=='COMPLETED_MEASURED_NOT_AUTOMATIC_ACCEPTANCE')throw Error('Finish dev37 measurement before restoration');
+const currentFile=path.join(workspace,'.local-dev/runtime/android-build.json');
+const current=JSON.parse(await fs.readFile(currentFile,'utf8'));if(current.versionName!=='1.0.12-local-dev.37')throw Error('Expected measured dev37');
+const root=path.join(workspace,'development/hd-manager/application/src/data'),backup=path.join(workspace,'.local-dev/source-backups/home-cache-dev37-rollback');await fs.mkdir(backup,{recursive:true});
+for(const file of ['bootstrapOfflineCustomer.js','assembleOfflineCustomerRuntime.js'])await fs.copyFile(path.join(root,file),path.join(backup,file));
+await fs.copyFile(path.join(workspace,'.local-dev/source-backups/home-cache-dev35-continuation/bootstrapOfflineCustomer.js'),path.join(root,'bootstrapOfflineCustomer.js'));
+// Only this trial's newly created module is removed; no application data file.
+await fs.unlink(path.join(root,'assembleOfflineCustomerRuntime.js'));
+await fs.copyFile(path.join(workspace,'.local-dev/source-backups/home-cache-dev35-continuation/build-android.mjs'),path.join(workspace,'tools/local-development/build-android.mjs'));
+const directory=path.join(workspace,'.local-dev/android-build/local-dev-1794394465628');
+const candidate=JSON.parse(await fs.readFile(path.join(directory,'manifest.json'),'utf8'));
+if(candidate.sourceHash!==await localSourceHash())throw Error('Source must exactly match measured dev35');
+await fs.writeFile(path.join(workspace,'.local-dev/runtime/android-build-dev37-preserved.json'),JSON.stringify(current,null,2));
+await fs.writeFile(currentFile,JSON.stringify({...candidate,directory},null,2));
+console.log(JSON.stringify({status:'SOURCE_RESTORED_TO_MEASURED_DEV35',sourceHash:candidate.sourceHash,sha256:candidate.sha256,installedStillRequiresVerifiedLocalRollback:true,dataFilesChanged:false}));

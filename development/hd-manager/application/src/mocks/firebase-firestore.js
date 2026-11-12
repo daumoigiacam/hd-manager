@@ -1,0 +1,454 @@
+import { seedData } from './seed-data.js';
+import { createPreviewJournal, readPreviewJournal } from './preview-journal.js';
+
+const STORAGE_KEY = 'hd-manager-local-db-v2-clean-preview';
+const BROADCAST_CHANNEL_NAME = `${STORAGE_KEY}-channel`;
+class MockIncrementSentinel {
+  constructor(amount) {
+    this.amount = Number(amount) || 0;
+  }
+}
+
+const clone = (value) => {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+};
+
+function createInitialStore() {
+  return Object.fromEntries(
+    Object.entries(seedData).map(([name, docs]) => [name, clone(docs)])
+  );
+}
+
+function normalizeStore(parsedStore = {}) {
+  const initialStore = parsedStore?.__replaceSeed === true ? {} : createInitialStore();
+  const collectionNames = new Set([
+    ...Object.keys(initialStore),
+    ...Object.keys(parsedStore || {}).filter((name) => name !== '__replaceSeed')
+  ]);
+
+  return Object.fromEntries(
+    [...collectionNames].map((name) => [
+      name,
+      {
+        ...(initialStore[name] || {}),
+        ...(parsedStore?.[name] || {})
+      }
+    ])
+  );
+}
+
+function loadStore() {
+  const initialStore = createInitialStore();
+
+  if (typeof window === 'undefined') {
+    return initialStore;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return readPreviewJournal(window.localStorage, STORAGE_KEY, normalizeStore(parsed));
+  } catch (error) {
+    console.warn('Failed to load local preview data, using seed data instead.', error);
+    return initialStore;
+  }
+}
+
+function persistStore(refs) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (!persistPatches) persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY);
+  persistPatches(refs.map(ref => ({ collection: ref.collectionName, id: ref.id,
+    value: store[ref.collectionName]?.[ref.id] ?? null })));
+  if (broadcastChannel) {
+    broadcastChannel.postMessage({ type: 'store-updated', at: Date.now() });
+  }
+}
+
+let store = loadStore();
+let persistPatches = null;
+if (typeof window !== 'undefined') {
+  try { persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY); }
+  catch (error) { console.warn('Preview storage unavailable; writes will retry and must confirm persistence.', error); }
+}
+
+const collectionListeners = new Map();
+const broadcastChannel =
+  typeof window !== 'undefined' && 'BroadcastChannel' in window
+    ? new BroadcastChannel(BROADCAST_CHANNEL_NAME)
+    : null;
+let syncListenersBound = false;
+
+function emitCollection(name) {
+  const listeners = collectionListeners.get(name);
+  if (!listeners) return;
+
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+function queryValue(entry, field) {
+  if (field === '__name__') return entry.id;
+  return field.split('.').reduce((value, key) => value?.[key], entry);
+}
+
+function createSnapshot(ref, previousEntries = [], captureEntries = () => {}) {
+  let entries = Object.values(store[ref.name] || {});
+  const constraints = ref.constraints || [];
+  for (const { field, operator, value } of constraints.filter(item => item.kind === 'where')) {
+    entries = entries.filter(entry => {
+      const actual = queryValue(entry, field);
+      switch (operator) {
+        case '==': return actual === value;
+        case '!=': return actual !== undefined && actual !== value;
+        case '<': return actual < value;
+        case '<=': return actual <= value;
+        case '>': return actual > value;
+        case '>=': return actual >= value;
+        case 'in': return value.includes(actual);
+        case 'array-contains': return Array.isArray(actual) && actual.includes(value);
+        default: throw new Error(`Unsupported preview query operator: ${operator}`);
+      }
+    });
+  }
+  const ordering = constraints.filter(item => item.kind === 'orderBy');
+  const compare = (left, right) => {
+    for (const { field, direction } of ordering) {
+      const a = queryValue(left, field);
+      const b = queryValue(right, field);
+      if (a !== b) return (a < b ? -1 : 1) * (direction === 'desc' ? -1 : 1);
+    }
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  };
+  entries = [...entries].sort(compare);
+  const cursor = constraints.find(item => item.kind === 'startAfter');
+  if (cursor) {
+    const boundary = { ...cursor.snapshot.data(), id: cursor.snapshot.id };
+    entries = entries.filter(entry => compare(entry, boundary) > 0);
+  }
+  const max = constraints.find(item => item.kind === 'limit');
+  if (max) entries = entries.slice(0, max.count);
+  captureEntries(entries);
+  const document = (entry) => ({
+      id: entry.id,
+      exists: () => true,
+      data: () => clone(entry)
+  });
+  let changes;
+  return {
+    query: ref,
+    docs: entries.map(document),
+    docChanges() {
+      if (changes) return changes;
+      changes = [];
+      const remaining = previousEntries.slice();
+      const finalIds = new Set(entries.map(entry => entry.id));
+      for (let index = remaining.length - 1; index >= 0; index--) {
+        if (finalIds.has(remaining[index].id)) continue;
+        changes.push({ type: 'removed', doc: document(remaining[index]), oldIndex: index, newIndex: -1 });
+        remaining.splice(index, 1);
+      }
+      // Indexes refer to the evolving result, as in Firestore QuerySnapshot.
+      entries.forEach((entry, newIndex) => {
+        const oldIndex = newIndex >= remaining.length ? -1 : remaining[newIndex]?.id === entry.id
+          ? newIndex : remaining.findIndex((candidate, index) => index >= newIndex && candidate.id === entry.id);
+        if (oldIndex === newIndex && remaining[oldIndex] === entry) return;
+        if (oldIndex >= 0) remaining.splice(oldIndex, 1);
+        remaining.splice(newIndex, 0, entry);
+        changes.push({ type: oldIndex < 0 ? 'added' : 'modified', doc: document(entry), oldIndex, newIndex });
+      });
+      return changes;
+    },
+    empty: entries.length === 0,
+    size: entries.length,
+    metadata: {
+      fromCache: false,
+      hasPendingWrites: false
+    },
+    forEach(callback) {
+      entries.forEach((entry) => {
+        callback({
+          id: entry.id,
+          exists: () => true,
+          data: () => clone(entry)
+        });
+      });
+    }
+  };
+}
+
+function createDocumentSnapshot(docRef) {
+  const entry = store[docRef.collectionName]?.[docRef.id];
+  return {
+    id: docRef.id,
+    exists: () => Boolean(entry),
+    data: () => (entry ? clone(entry) : undefined),
+    metadata: {
+      fromCache: false,
+      hasPendingWrites: false
+    }
+  };
+}
+
+function applyFirestoreValue(value, existingValue) {
+  if (value instanceof MockIncrementSentinel) {
+    const current = Number(existingValue) || 0;
+    return current + value.amount;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) => applyFirestoreValue(item, existingValue?.[index]));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        applyFirestoreValue(nestedValue, existingValue?.[key])
+      ])
+    );
+  }
+  return value;
+}
+
+function applySetDoc(docRef, data, options = {}) {
+  const collectionName = docRef.collectionName;
+  const currentCollection = store[collectionName] || {};
+  const existingDoc = currentCollection[docRef.id] || { id: docRef.id };
+  const appliedData = applyFirestoreValue(data, existingDoc);
+  const nextDoc = options.merge ? { ...existingDoc, ...clone(appliedData), id: docRef.id } : { ...clone(appliedData), id: docRef.id };
+
+  store[collectionName] = {
+    ...currentCollection,
+    [docRef.id]: nextDoc
+  };
+}
+
+function emitAllCollections() {
+  const collectionNames = new Set([
+    ...Object.keys(store || {}),
+    ...collectionListeners.keys()
+  ]);
+
+  for (const name of collectionNames) {
+    emitCollection(name);
+  }
+}
+
+function reloadStoreFromStorage() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    store = readPreviewJournal(window.localStorage, STORAGE_KEY, normalizeStore(parsed));
+    persistPatches = createPreviewJournal(window.localStorage, STORAGE_KEY);
+    emitAllCollections();
+  } catch (error) {
+    console.warn('Failed to sync local preview data from storage.', error);
+  }
+}
+
+function bindSyncListeners() {
+  if (syncListenersBound || typeof window === 'undefined') {
+    return;
+  }
+
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORAGE_KEY && !event.key?.startsWith(`${STORAGE_KEY}:patch:`)) return;
+    reloadStoreFromStorage();
+  });
+
+  if (broadcastChannel) {
+    broadcastChannel.addEventListener('message', (event) => {
+      if (event?.data?.type !== 'store-updated') return;
+      reloadStoreFromStorage();
+    });
+  }
+
+  syncListenersBound = true;
+}
+
+bindSyncListeners();
+
+export function getFirestore(app) {
+  return { app };
+}
+
+export function initializeFirestore(app) {
+  return getFirestore(app);
+}
+
+export function collection(_, ...segments) {
+  return {
+    kind: 'collection',
+    path: segments.join('/'),
+    name: segments.at(-1)
+  };
+}
+
+export function doc(_, ...segments) {
+  return {
+    kind: 'doc',
+    path: segments.join('/'),
+    collectionName: segments.at(-2),
+    id: segments.at(-1)
+  };
+}
+
+export async function setDoc(docRef, data, options = {}) {
+  applySetDoc(docRef, data, options);
+  persistStore([docRef]);
+  emitCollection(docRef.collectionName);
+}
+
+export async function deleteDoc(docRef) {
+  const collectionName = docRef.collectionName;
+  const currentCollection = { ...(store[collectionName] || {}) };
+  delete currentCollection[docRef.id];
+  store[collectionName] = currentCollection;
+  persistStore([docRef]);
+  emitCollection(collectionName);
+}
+
+export function onSnapshot(ref, optionsOrNext, nextOrError) {
+  const onNext = typeof optionsOrNext === 'function' ? optionsOrNext : nextOrError;
+  if (typeof onNext !== 'function') {
+    throw new Error('Preview mock requires an onSnapshot callback.');
+  }
+
+  if (ref.kind === 'doc') {
+    queueMicrotask(() => onNext(createDocumentSnapshot(ref)));
+    return () => {};
+  }
+  if (ref.kind !== 'collection') {
+    throw new Error('Preview mock supports collection and document snapshots only.');
+  }
+
+  const listeners = collectionListeners.get(ref.name) || new Set();
+  let previousEntries = [];
+  let active = true;
+  const notify = () => {
+    if (!active) return;
+    const snapshot = createSnapshot(ref, previousEntries, entries => { previousEntries = entries; });
+    onNext(snapshot);
+  };
+  listeners.add(notify);
+  collectionListeners.set(ref.name, listeners);
+  queueMicrotask(notify);
+
+  return () => {
+    active = false;
+    previousEntries = [];
+    const current = collectionListeners.get(ref.name);
+    if (!current) return;
+    current.delete(notify);
+    if (current.size === 0) {
+      collectionListeners.delete(ref.name);
+    }
+  };
+}
+
+export async function getDocs(ref) {
+  if (ref.kind !== 'collection') {
+    throw new Error('Preview mock currently supports getDocs(collection) only.');
+  }
+  return createSnapshot(ref);
+}
+
+export function documentId() {
+  return '__name__';
+}
+
+export function startAfter(snapshot) {
+  return { kind: 'startAfter', snapshot };
+}
+
+export function where(field, operator, value) {
+  return { kind: 'where', field, operator, value };
+}
+
+export function orderBy(field, direction = 'asc') {
+  return { kind: 'orderBy', field, direction };
+}
+
+export function limit(count) {
+  return { kind: 'limit', count };
+}
+
+export function query(collectionRef, ...constraints) {
+  return {
+    ...collectionRef,
+    constraints
+  };
+}
+
+export function queryEqual(left, right) {
+  return left === right || Boolean(left && right && left.kind === right.kind
+    && left.name === right.name && left.path === right.path
+    && JSON.stringify(left.constraints || []) === JSON.stringify(right.constraints || []));
+}
+
+export const getDocsFromServer = getDocs;
+
+export async function getDoc(ref) {
+  return createDocumentSnapshot(ref);
+}
+
+export const getDocFromServer = getDoc;
+
+export function increment(amount) {
+  return new MockIncrementSentinel(amount);
+}
+
+export function serverTimestamp() {
+  return new Date().toISOString();
+}
+
+export async function enableNetwork() {
+  return undefined;
+}
+
+export async function runTransaction(_, updateFunction) {
+  const touchedCollections = new Set();
+  const touchedDocuments = new Map();
+  const transaction = {
+    async get(docRef) {
+      return createDocumentSnapshot(docRef);
+    },
+    set(docRef, data, options = {}) {
+      applySetDoc(docRef, data, options);
+      touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
+      return transaction;
+    },
+    update(docRef, data) {
+      applySetDoc(docRef, data, { merge: true });
+      touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
+      return transaction;
+    },
+    delete(docRef) {
+      const currentCollection = { ...(store[docRef.collectionName] || {}) };
+      delete currentCollection[docRef.id];
+      store[docRef.collectionName] = currentCollection;
+      touchedCollections.add(docRef.collectionName);
+      touchedDocuments.set(docRef.path, docRef);
+      return transaction;
+    }
+  };
+
+  const result = await updateFunction(transaction);
+  if (touchedCollections.size > 0) {
+    persistStore([...touchedDocuments.values()]);
+    touchedCollections.forEach((collectionName) => emitCollection(collectionName));
+  }
+  return result;
+}
+export function connectFirestoreEmulator() {
+  throw new Error('Preview Firestore cannot be connected to a real emulator. Use emulator mode.');
+}

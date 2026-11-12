@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Selected only by the generated Local Development manifest. -->
+    <style name="HDLocalInstantLaunch" parent="AppTheme.NoActionBarLaunch">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowBackground">@drawable/hd_local_starting_window</item>
+        <item name="android:background">@android:color/white</item>
+    </style>
+</resources>

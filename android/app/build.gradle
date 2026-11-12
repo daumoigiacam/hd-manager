@@ -6,6 +6,10 @@ def releaseKeyAlias = project.findProperty('HD_RELEASE_KEY_ALIAS') ?: System.get
 def releaseKeyPassword = project.findProperty('HD_RELEASE_KEY_PASSWORD') ?: System.getenv('HD_RELEASE_KEY_PASSWORD')
 def hasReleaseSigning = releaseStoreFilePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 def acceptanceAssets = project.findProperty('HD_ACCEPTANCE_ASSETS')
+def offlineLab = project.findProperty('HD_OFFLINE_LAB') == 'true'
+if (offlineLab && !acceptanceAssets) throw new GradleException('Offline lab requires isolated assets.')
+def localAppSuffix = project.findProperty('HD_LOCAL_APP_SUFFIX')
+if (localAppSuffix && (!offlineLab || localAppSuffix != '.localdev')) throw new GradleException('Invalid isolated local application suffix')
 def parallelRelease = project.findProperty('HD_PARALLEL_RELEASE') == 'true'
 def parallelAssets = project.findProperty('HD_PARALLEL_ASSETS')
 def parallelManifest = project.findProperty('HD_PARALLEL_MANIFEST')
@@ -33,7 +37,7 @@ android {
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         applicationId "com.hdmanager.app"
-        if (acceptanceAssets) applicationIdSuffix ".acceptance"
+        if (acceptanceAssets) applicationIdSuffix offlineLab ? (localAppSuffix ?: ".offlinelab") : ".acceptance"
         if (parallelRelease) applicationIdSuffix ".next"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
@@ -68,6 +72,10 @@ android {
     if (acceptanceAssets) {
         sourceSets.main.assets.srcDirs = [file(acceptanceAssets)]
     }
+    if (project.hasProperty('HD_OFFLINE_LAB_MANIFEST')) {
+        if (!offlineLab || !acceptanceAssets) throw new GradleException('Local manifest requires isolated Offline Lab assets')
+        sourceSets.main.manifest.srcFile file(project.property('HD_OFFLINE_LAB_MANIFEST'))
+    }
     if (parallelRelease) {
         sourceSets.main.assets.srcDirs = [file(parallelAssets)]
         sourceSets.main.manifest.srcFile file(parallelManifest)
@@ -81,6 +89,9 @@ repositories {
 }
 
 dependencies {
+    // Same Webkit artifact already used by Capacitor; expose its startup API
+    // to the Local-only debug launcher (no second provider or runtime).
+    debugImplementation "androidx.webkit:webkit:$androidxWebkitVersion"
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
@@ -93,6 +104,38 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+
+// Release-like ART behavior for the isolated Local performance APK only.
+// Keep the existing debug signing key; this is never an official release.
+if (project.findProperty('HD_LOCAL_PROFILEABLE') == 'true') {
+    if (!offlineLab || !acceptanceAssets || localAppSuffix != '.localdev') throw new GradleException('Profileable Local package required');
+    android.buildTypes.debug.debuggable = false
+    android.buildTypes.debug.jniDebuggable = false
+}
+
+// Explicit RC version overrides; defaults and Development builders remain
+// unchanged. These properties cannot change package, alias or signing key.
+if (project.hasProperty('HD_RELEASE_VERSION_CODE')) {
+    def requestedCode = project.property('HD_RELEASE_VERSION_CODE').toString()
+    if (!(requestedCode ==~ /[0-9]{1,10}/) || requestedCode.toLong() <= 26110401L || requestedCode.toLong() > 2100000000L) {
+        throw new GradleException('Invalid official release versionCode')
+    }
+    android.defaultConfig.versionCode = requestedCode.toInteger()
+}
+if (project.hasProperty('HD_RELEASE_VERSION_NAME')) {
+    def requestedName = project.property('HD_RELEASE_VERSION_NAME').toString()
+    if (!(requestedName ==~ /[0-9]+\.[0-9]+\.[0-9]+/)) throw new GradleException('Invalid official release versionName')
+    android.defaultConfig.versionName = requestedName
+}
+// Separate local package only; official package/version/signing stay untouched.
+if (project.hasProperty('HD_LOCAL_DEV_VERSION_NAME')) {
+    if (!offlineLab || !acceptanceAssets) throw new GradleException('Local version requires isolated Offline Lab assets')
+    def localVersion = project.property('HD_LOCAL_DEV_VERSION_NAME').toString()
+    def localCode = project.property('HD_LOCAL_DEV_VERSION_CODE').toString()
+    if (!(localVersion ==~ /[0-9]+\.[0-9]+\.[0-9]+-local-dev\.[0-9]+/) || !(localCode ==~ /[0-9]{1,9}/)) throw new GradleException('Invalid local Development version')
+    android.defaultConfig.versionName = localVersion
+    android.defaultConfig.versionCode = localCode.toInteger()
+}
 
 try {
     def servicesJSON = file('google-services.json')

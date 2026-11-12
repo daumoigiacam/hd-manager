@@ -1,0 +1,1576 @@
+import { HdApiClient, HdApiError, createRequestId } from './client.js';
+
+const runtimeEnv = typeof import.meta !== 'undefined' && import.meta.env
+  ? import.meta.env
+  : {};
+
+export const vpsDataMode = `${runtimeEnv.VITE_DATA_MODE || ''}`.trim();
+export const isVpsProductionMode = vpsDataMode === 'vps-production';
+// Staging is the only full API-only cutover. Production stays on the established
+// Firebase user path until an individual VPS capability has explicit parity.
+export const isVpsStagingMode = vpsDataMode === 'vps-staging';
+export const isVpsApiMode = isVpsStagingMode || isVpsProductionMode;
+export const isVpsMode = isVpsStagingMode;
+export const inventoryVpsEnabled = runtimeEnv.VITE_INVENTORY_VPS_ENABLED === 'true';
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const isUuid = (value) => UUID_PATTERN.test(`${value || ''}`.trim());
+
+const stringValue = (value) => `${value ?? ''}`.trim();
+
+const unitLabel = (value) => (
+  value && typeof value === 'object'
+    ? stringValue(value.symbol || value.name || value.code)
+    : stringValue(value)
+);
+
+const omitUndefined = (value) => Object.fromEntries(
+  Object.entries(value).filter(([, item]) => item !== undefined),
+);
+
+const toStringArray = (...values) => [...new Set(
+  values
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map(stringValue)
+    .filter(Boolean),
+)];
+
+const toFiniteNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+};
+
+const REALTIME_EVENT_DEDUPE_LIMIT = 256;
+
+const normalizeReconnectDelay = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
+const waitForReconnect = (delayMs, signal) => new Promise((resolve) => {
+  if (signal?.aborted || delayMs <= 0) {
+    resolve();
+    return;
+  }
+
+  const timer = globalThis.setTimeout(cleanup, delayMs);
+  const abort = () => cleanup();
+
+  function cleanup() {
+    globalThis.clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
+    resolve();
+  }
+
+  signal?.addEventListener?.('abort', abort, { once: true });
+});
+
+const isAbortError = (error, signal) => Boolean(
+  signal?.aborted || error?.name === 'AbortError',
+);
+
+const toTargetId = (value) => isUuid(value) ? `${value}` : undefined;
+
+const requireIdentityInput = (value, code, message) => {
+  const normalized = stringValue(value);
+  if (!normalized) {
+    throw new HdApiError(message, { code });
+  }
+  return normalized;
+};
+
+const requireEmailOtpEmail = (value) => {
+  const email = requireIdentityInput(
+    value,
+    'EMAIL_OTP_EMAIL_REQUIRED',
+    'An email address is required.',
+  ).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HdApiError('The email address is invalid.', { code: 'EMAIL_OTP_EMAIL_INVALID' });
+  }
+  return email;
+};
+
+const requireEmailOtpChallengeId = (value) => {
+  const challengeId = requireIdentityInput(
+    value,
+    'EMAIL_OTP_CHALLENGE_REQUIRED',
+    'An email verification challenge is required.',
+  );
+  if (!isUuid(challengeId)) {
+    throw new HdApiError('The email verification challenge is invalid.', {
+      code: 'EMAIL_OTP_CHALLENGE_INVALID',
+    });
+  }
+  return challengeId;
+};
+
+const requireEmailOtpCode = (value) => {
+  const code = requireIdentityInput(value, 'EMAIL_OTP_CODE_REQUIRED', 'A six-digit verification code is required.');
+  if (!/^\d{6}$/.test(code)) {
+    throw new HdApiError('The verification code must contain six digits.', {
+      code: 'EMAIL_OTP_CODE_INVALID',
+    });
+  }
+  return code;
+};
+
+const requireEmailOtpProof = (value) => {
+  const proof = requireIdentityInput(value, 'EMAIL_OTP_PROOF_REQUIRED', 'A verified email proof is required.');
+  if (proof.length < 32) {
+    throw new HdApiError('The verified email proof is invalid.', {
+      code: 'EMAIL_OTP_PROOF_INVALID',
+    });
+  }
+  return proof;
+};
+
+const requireEmailOtpPassword = (value) => {
+  const password = requireIdentityInput(value, 'EMAIL_OTP_PASSWORD_REQUIRED', 'A password is required.');
+  if (password.length < 8) {
+    throw new HdApiError('The password must contain at least 8 characters.', {
+      code: 'EMAIL_OTP_PASSWORD_INVALID',
+    });
+  }
+  return password;
+};
+
+const normalizeVpsIdentitySession = (session = {}) => ({
+  ...session,
+  id: session.id,
+  deviceId: session.id,
+  name: session.deviceName || session.platform || 'Thiết bị',
+  lastLoginAt: session.lastUsedAt || session.createdAt || '',
+});
+
+const normalizePage = (result, normalizeItem) => {
+  const source = Array.isArray(result)
+    ? result
+    : (Array.isArray(result?.items) ? result.items : []);
+
+  return {
+    items: source.map(normalizeItem),
+    pagination: result?.pagination ?? null,
+  };
+};
+
+const normalizeAttributes = (record) => (
+  record?.attributes && typeof record.attributes === 'object' && !Array.isArray(record.attributes)
+    ? record.attributes
+    : {}
+);
+
+const normalizeMetadata = (record) => (
+  record?.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+    ? record.metadata
+    : {}
+);
+
+const preservedLegacyFields = (record, allowedKeys) => Object.fromEntries(
+  allowedKeys
+    .filter((key) => record?.[key] !== undefined)
+    .map((key) => [key, record[key]]),
+);
+
+export const normalizeVpsSession = (session = {}, currentUser = null) => {
+  const sourceUser = session.user || currentUser?.user || currentUser || {};
+  const company = session.company || currentUser?.company || null;
+  const branch = session.branch || currentUser?.branch || null;
+  const roles = Array.isArray(session.roles) ? session.roles : (currentUser?.roles || []);
+  const permissions = Array.isArray(session.permissions)
+    ? session.permissions
+    : (currentUser?.permissions || []);
+  const primaryRole = stringValue(roles[0] || sourceUser.role || 'employee').toLowerCase();
+  const isCustomerAccount = roles.some((role) => stringValue(role).toUpperCase() === 'CUSTOMER_PORTAL')
+    || primaryRole === 'customer'
+    || primaryRole === 'customer_portal';
+  const requiresPasswordChange = Boolean(sourceUser.mustChangePassword || session.requiresPasswordChange);
+
+  return {
+    user: {
+      id: sourceUser.id,
+      email: sourceUser.email || '',
+      phone: sourceUser.phone || '',
+      name: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
+      displayName: sourceUser.fullName || sourceUser.name || sourceUser.email || '',
+      companyId: company?.id || sourceUser.companyId || '',
+      branchId: branch?.id || sourceUser.branchId || '',
+      role: isCustomerAccount ? 'customer' : primaryRole,
+      roles,
+      permissions,
+      accountType: isCustomerAccount ? 'customer' : 'employee',
+      isCustomerAccount,
+      mustChangePassword: requiresPasswordChange,
+      securityPinConfigured: Boolean(sourceUser.securityPinConfigured),
+      authProvider: 'hd-connect-vps',
+    },
+    company: company ? {
+      ...company,
+      id: company.id,
+      name: company.name || company.displayName || company.code || '',
+    } : null,
+    branch: branch || null,
+    roles,
+    permissions,
+    requiresPasswordChange,
+  };
+};
+
+export const normalizeVpsCustomer = (record = {}) => {
+  const attributes = normalizeAttributes(record);
+  const phones = toStringArray(record.phones);
+  const emails = toStringArray(record.emails);
+
+  return {
+    ...attributes,
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    branchId: record.branchId || '',
+    name: record.name || '',
+    phone: phones[0] || attributes.phone || '',
+    phones,
+    email: emails[0] || attributes.email || '',
+    emails,
+    empId: record.salesOwnerId || attributes.empId || '',
+    creditLimit: toFiniteNumber(record.creditLimit) ?? attributes.creditLimit ?? 0,
+    isArchived: Boolean(record.deletedAt),
+    createdAt: record.createdAt || attributes.createdAt || '',
+    updatedAt: record.updatedAt || attributes.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
+  };
+};
+
+export const normalizeVpsProduct = (record = {}) => {
+  const metadata = normalizeMetadata(record);
+  const primaryUnit = record.salesUnit || record.baseUnit || record.inventoryUnit || record.purchaseUnit;
+  const unit = unitLabel(record.unit) || unitLabel(primaryUnit);
+
+  return {
+    ...metadata,
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    name: record.name || '',
+    productName: record.name || metadata.productName || '',
+    unit,
+    unitId: record.salesUnitId || record.baseUnitId || primaryUnit?.id || metadata.unitId || '',
+    isArchived: Boolean(record.deletedAt),
+    createdAt: record.createdAt || metadata.createdAt || '',
+    updatedAt: record.updatedAt || metadata.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
+  };
+};
+
+export const normalizeVpsOrder = (record = {}) => {
+  const metadata = normalizeMetadata(record);
+  const lines = Array.isArray(record.lines) ? record.lines : [];
+
+  return {
+    ...metadata,
+    ...record,
+    id: record.id,
+    code: record.orderNumber || metadata.code || '',
+    orderNumber: record.orderNumber || '',
+    companyId: record.companyId,
+    customerId: record.customerId,
+    warehouseId: record.warehouseId,
+    salesEmpId: record.salespersonId || metadata.salesEmpId || '',
+    date: record.orderDate || metadata.date || '',
+    orderDate: record.orderDate || '',
+    items: lines.map((line) => ({
+      ...line,
+      id: line.id,
+      productId: line.productId,
+      unitId: line.unitId,
+      unit: unitLabel(line.unit) || unitLabel(line.unitName),
+      quantity: toFiniteNumber(line.quantity) ?? 0,
+      unitPrice: toFiniteNumber(line.unitPrice) ?? 0,
+    })),
+    reviewStatus: record.status || metadata.reviewStatus || '',
+    isArchived: Boolean(record.deletedAt),
+    createdAt: record.createdAt || metadata.createdAt || '',
+    updatedAt: record.updatedAt || metadata.updatedAt || '',
+    sourceSystem: 'hd-connect-vps',
+  };
+};
+
+export const normalizeVpsPayment = (record = {}) => ({
+  ...record,
+  id: record.id,
+  companyId: record.companyId,
+  reference: record.reference || record.externalPaymentId || '',
+  amount: toFiniteNumber(record.amount) ?? 0,
+  isArchived: Boolean(record.deletedAt),
+  sourceSystem: 'hd-connect-vps',
+  readOnly: true,
+});
+
+export const normalizeVpsFinanceExpense = (record = {}) => {
+  const status = stringValue(record.status).toUpperCase();
+
+  return {
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    branchId: record.branchId || '',
+    empId: record.createdBy || '',
+    amount: toFiniteNumber(record.amount) ?? 0,
+    category: record.expenseType || 'Chi phí khác',
+    note: record.description || '',
+    date: stringValue(record.expenseDate || record.createdAt).slice(0, 10),
+    approvalStatus: status === 'APPROVED' || status === 'POSTED'
+      ? 'approved'
+      : 'pending',
+    requiresApproval: status !== 'POSTED',
+    handoverStatus: status === 'POSTED' ? 'confirmed' : 'pending',
+    isArchived: Boolean(record.deletedAt),
+    sourceSystem: 'hd-connect-vps',
+  };
+};
+
+export const normalizeVpsAttendance = (record = {}) => {
+  const workDate = stringValue(record.workDate).slice(0, 10);
+  const status = stringValue(record.status).toLowerCase();
+  return {
+    ...record,
+    id: record.id,
+    companyId: record.companyId,
+    employeeId: record.employeeId,
+    empId: record.employeeId,
+    date: workDate,
+    workDate,
+    checkIn: record.checkInAt || null,
+    checkOut: record.checkOutAt || null,
+    checkInMethod: record.checkInMethod || '',
+    checkOutMethod: record.checkOutMethod || '',
+    status: status === 'present' || status === 'late' || status === 'leave' || status === 'absent'
+      ? status
+      : 'present',
+    sourceSystem: 'hd-connect-vps',
+  };
+};
+
+const toCustomerPayload = (record = {}) => {
+  const name = stringValue(record.name);
+  if (!name) {
+    throw new HdApiError('Customer name is required.', { code: 'CUSTOMER_NAME_REQUIRED' });
+  }
+
+  const legacyFields = preservedLegacyFields(record, [
+    'customerHonorific',
+    'debtLimitMode',
+    'debtLimitAmount',
+    'allowedDriverIds',
+    'legacySourceId',
+  ]);
+
+  return omitUndefined({
+    code: stringValue(record.code) || undefined,
+    name,
+    companyName: stringValue(record.companyName) || undefined,
+    taxCode: stringValue(record.taxCode || record.taxId) || undefined,
+    contactName: stringValue(record.contactName || record.contact) || undefined,
+    phones: toStringArray(record.phones, record.phone),
+    emails: toStringArray(record.emails, record.email),
+    address: stringValue(record.address) || undefined,
+    latitude: toFiniteNumber(record.latitude ?? record.lat),
+    longitude: toFiniteNumber(record.longitude ?? record.lng),
+    notes: stringValue(record.notes || record.note) || undefined,
+    branchId: toTargetId(record.branchId),
+    priceListId: toTargetId(record.priceListId),
+    routeId: toTargetId(record.routeId),
+    salesOwnerId: toTargetId(record.salesOwnerId || record.empId),
+    customerGroupId: toTargetId(record.customerGroupId),
+    paymentTerm: stringValue(record.paymentTerm) || undefined,
+    creditLimit: toFiniteNumber(record.creditLimit ?? record.debtLimitAmount),
+    status: ['ACTIVE', 'INACTIVE', 'BLOCKED'].includes(stringValue(record.status).toUpperCase())
+      ? stringValue(record.status).toUpperCase()
+      : undefined,
+    account: record.account?.password
+      ? {
+        phone: stringValue(record.account.phone || record.phone),
+        password: `${record.account.password}`,
+      }
+      : undefined,
+    attributes: {
+      ...normalizeAttributes(record),
+      legacyUi: legacyFields,
+    },
+  });
+};
+
+const toProductPayload = (record = {}) => {
+  const name = stringValue(record.name || record.productName);
+  if (!name) {
+    throw new HdApiError('Product name is required.', { code: 'PRODUCT_NAME_REQUIRED' });
+  }
+
+  const legacyFields = preservedLegacyFields(record, [
+    'unit',
+    'unitName',
+    'price',
+    'cost',
+    'imageUrl',
+    'legacySourceId',
+  ]);
+
+  return omitUndefined({
+    code: stringValue(record.code) || undefined,
+    sku: stringValue(record.sku) || undefined,
+    barcode: stringValue(record.barcode) || undefined,
+    qrCode: stringValue(record.qrCode) || undefined,
+    name,
+    shortName: stringValue(record.shortName) || undefined,
+    description: stringValue(record.description) || undefined,
+    categoryId: toTargetId(record.categoryId),
+    baseUnitId: toTargetId(record.baseUnitId || record.unitId),
+    salesUnitId: toTargetId(record.salesUnitId || record.unitId),
+    purchaseUnitId: toTargetId(record.purchaseUnitId),
+    inventoryUnitId: toTargetId(record.inventoryUnitId),
+    metadata: {
+      ...normalizeMetadata(record),
+      legacyUi: legacyFields,
+    },
+  });
+};
+
+const toSalesOrderLinePayload = (line, index, clientMutationId) => {
+  const productId = toTargetId(line?.productId || line?.id);
+  const unitId = toTargetId(line?.unitId || line?.salesUnitId || line?.baseUnitId);
+  const quantity = toFiniteNumber(line?.quantity ?? line?.qty);
+
+  if (!productId || !unitId || !quantity || quantity <= 0) {
+    throw new HdApiError(
+      `Order line ${index + 1} requires a target product, unit, and positive quantity.`,
+      { code: 'ORDER_LINE_UNRESOLVED' },
+    );
+  }
+
+  return omitUndefined({
+    productId,
+    variantId: toTargetId(line?.variantId),
+    unitId,
+    warehouseId: toTargetId(line?.warehouseId),
+    taxRateId: toTargetId(line?.taxRateId),
+    quantity,
+    unitPrice: toFiniteNumber(line?.unitPrice ?? line?.price),
+    discountType: ['PERCENTAGE', 'AMOUNT'].includes(stringValue(line?.discountType).toUpperCase())
+      ? stringValue(line.discountType).toUpperCase()
+      : undefined,
+    discountValue: toFiniteNumber(line?.discountValue),
+    note: stringValue(line?.note) || undefined,
+    metadata: {
+      ...normalizeMetadata(line),
+      clientMutationId: stringValue(clientMutationId),
+    },
+  });
+};
+
+const toSalesOrderPayload = (record = {}) => {
+  const customerId = toTargetId(record.customerId);
+  const warehouseId = toTargetId(record.warehouseId);
+  const sourceLines = Array.isArray(record.lines)
+    ? record.lines
+    : (Array.isArray(record.items) ? record.items : []);
+
+  if (!customerId) {
+    throw new HdApiError('The selected customer does not have a target VPS ID.', {
+      code: 'ORDER_CUSTOMER_UNRESOLVED',
+    });
+  }
+  if (!warehouseId) {
+    throw new HdApiError('Order creation is blocked until a target warehouse is selected.', {
+      code: 'ORDER_WAREHOUSE_UNRESOLVED',
+    });
+  }
+  if (sourceLines.length === 0) {
+    throw new HdApiError('An order requires at least one item.', {
+      code: 'ORDER_LINES_REQUIRED',
+    });
+  }
+
+  const lines = sourceLines.map((line, index) => (
+    toSalesOrderLinePayload(line, index, record.clientMutationId)
+  ));
+
+  return omitUndefined({
+    customerId,
+    warehouseId,
+    clientMutationId: stringValue(record.clientMutationId) || undefined,
+    branchId: toTargetId(record.branchId),
+    salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
+    priceListId: toTargetId(record.priceListId),
+    deliveryRouteId: toTargetId(record.deliveryRouteId),
+    orderDate: stringValue(record.orderDate || record.date) || undefined,
+    currency: stringValue(record.currency) || undefined,
+    paymentTerm: stringValue(record.paymentTerm) || undefined,
+    internalNote: stringValue(record.internalNote) || undefined,
+    customerNote: stringValue(record.customerNote) || undefined,
+    metadata: {
+      ...normalizeMetadata(record),
+      clientMutationId: stringValue(record.clientMutationId),
+      sourceEntity: 'hd-manager-ui',
+    },
+    lines,
+  });
+};
+
+const toSalesOrderUpdatePayload = (record = {}) => {
+  const sourceLines = Array.isArray(record.lines)
+    ? record.lines
+    : (Array.isArray(record.items) ? record.items : undefined);
+  if (sourceLines && sourceLines.length === 0) {
+    throw new HdApiError('An order requires at least one item.', {
+      code: 'ORDER_LINES_REQUIRED',
+    });
+  }
+
+  return omitUndefined({
+    clientMutationId: stringValue(record.clientMutationId) || undefined,
+    branchId: toTargetId(record.branchId),
+    salespersonId: toTargetId(record.salespersonId || record.salesEmpId || record.empId),
+    deliveryRouteId: toTargetId(record.deliveryRouteId),
+    paymentTerm: stringValue(record.paymentTerm) || undefined,
+    internalNote: stringValue(record.internalNote) || undefined,
+    customerNote: stringValue(record.customerNote) || undefined,
+    discountType: ['PERCENTAGE', 'AMOUNT'].includes(stringValue(record.discountType).toUpperCase())
+      ? stringValue(record.discountType).toUpperCase()
+      : undefined,
+    discountValue: toFiniteNumber(record.discountValue),
+    lines: sourceLines?.map((line, index) => (
+      toSalesOrderLinePayload(line, index, record.clientMutationId)
+    )),
+    metadata: {
+      ...normalizeMetadata(record),
+      clientMutationId: stringValue(record.clientMutationId),
+      sourceEntity: 'hd-manager-ui',
+    },
+  });
+};
+
+const toTenantSafePayload = (record = {}) => {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return {};
+  const {
+    companyId: _companyId,
+    tenantId: _tenantId,
+    organizationId: _organizationId,
+    ...payload
+  } = record;
+  return payload;
+};
+
+const toTenantSafeQuery = (query = {}) => {
+  if (!query || typeof query !== 'object' || Array.isArray(query)) return {};
+  const {
+    companyId: _companyId,
+    tenantId: _tenantId,
+    organizationId: _organizationId,
+    ...safeQuery
+  } = query;
+  return safeQuery;
+};
+
+const mutationOptions = (record = {}) => ({
+  idempotencyKey: stringValue(record.clientMutationId) || createRequestId(),
+  retry: false,
+});
+
+const normalizeUnitKey = (value) => stringValue(value)
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, '');
+
+/**
+ * Build the signed inventory transaction payload without inventing a unit,
+ * warehouse, conversion, or quantity. Legacy UI callers must provide the
+ * resolved target IDs explicitly.
+ */
+export const buildVpsInventoryTransaction = (record = {}, { referenceType = 'HD_MANAGER' } = {}) => {
+  const warehouseId = toTargetId(record.warehouseId);
+  const productId = toTargetId(record.productId);
+  const unitId = toTargetId(record.unitId);
+  const quantity = toFiniteNumber(record.quantity);
+
+  if (!warehouseId || !productId || !unitId) {
+    throw new HdApiError(
+      'Inventory mutation requires resolved warehouseId, productId, and unitId.',
+      { code: 'INVENTORY_TARGET_MAPPING_REQUIRED' },
+    );
+  }
+  if (!quantity || quantity <= 0) {
+    throw new HdApiError('Inventory mutation requires a positive quantity.', {
+      code: 'INVENTORY_QUANTITY_REQUIRED',
+    });
+  }
+
+  const requestedUnit = normalizeUnitKey(record.quantityUnit || record.unit);
+  const resolvedUnit = normalizeUnitKey(record.unitLabel || record.unitName || record.unitSymbol);
+  if (requestedUnit && resolvedUnit && requestedUnit !== resolvedUnit) {
+    throw new HdApiError(
+      'The selected quantity unit does not match the resolved VPS unit.',
+      { code: 'INVENTORY_UNIT_MAPPING_MISMATCH' },
+    );
+  }
+
+  return omitUndefined({
+    warehouseId,
+    productId,
+    unitId,
+    zoneId: toTargetId(record.zoneId),
+    binLocationId: toTargetId(record.binLocationId),
+    variantId: toTargetId(record.variantId),
+    batchId: toTargetId(record.batchId),
+    serialId: toTargetId(record.serialId),
+    quantity,
+    inventoryStatus: stringValue(record.inventoryStatus) || undefined,
+    referenceType: stringValue(record.referenceType) || referenceType,
+    referenceId: stringValue(record.referenceId || record.sourceRecordId) || undefined,
+    reason: stringValue(record.reason || record.note) || undefined,
+    actualCount: toFiniteNumber(record.actualCount ?? record.quantityCount ?? record.packedQuantity),
+    actualWeightKg: toFiniteNumber(record.actualWeightKg ?? record.weightKg ?? record.totalKg),
+    lossWeightKg: toFiniteNumber(record.lossWeightKg),
+    weightNotes: stringValue(record.weightNotes) || undefined,
+    metadata: {
+      ...normalizeMetadata(record),
+      sourceEntity: 'hd-manager-ui',
+      sourceRecordId: stringValue(record.sourceRecordId || record.id) || undefined,
+      quantityUnit: stringValue(record.quantityUnit || record.unit) || undefined,
+      packedQuantity: toFiniteNumber(record.packedQuantity),
+      billingQuantity: toFiniteNumber(record.billingQuantity),
+      billingUnit: stringValue(record.billingUnit) || undefined,
+    },
+  });
+};
+
+export const normalizeVpsStockMovement = (record = {}, legacy = {}) => {
+  const metadata = normalizeMetadata(record);
+  const unit = unitLabel(record.unit) || unitLabel(record.unitOfMeasure) || metadata.quantityUnit || legacy.quantityUnit || '';
+  return {
+    ...legacy,
+    ...record,
+    id: record.id || legacy.id || '',
+    companyId: record.companyId || legacy.companyId || '',
+    warehouseId: record.warehouseId || legacy.warehouseId || '',
+    productId: record.productId || legacy.productId || '',
+    unitId: record.unitId || legacy.unitId || '',
+    quantity: toFiniteNumber(record.quantity) ?? toFiniteNumber(legacy.quantity) ?? 0,
+    quantityUnit: unit,
+    weightKg: toFiniteNumber(record.actualWeightKg ?? metadata.weightKg ?? legacy.weightKg) ?? 0,
+    sourceSystem: 'hd-connect-vps',
+    readOnlyLedger: true,
+  };
+};
+
+export class HdConnectStagingApi {
+  constructor(client) {
+    this.client = client;
+  }
+
+  async login({ identifier, email, phone, password, deviceName } = {}) {
+    return normalizeVpsSession(await this.client.login({
+      identifier: identifier || email || phone,
+      password,
+      deviceName,
+    }));
+  }
+
+  async restoreSession() {
+    const restored = await this.client.restoreSession();
+    if (!restored) return null;
+    return normalizeVpsSession(restored.session, restored.currentUser);
+  }
+
+  async logout() {
+    return this.client.logout();
+  }
+
+  async logoutAll() {
+    return this.client.logoutAll();
+  }
+
+  async startEmailRegistration(email) {
+    const response = await this.client.post('/auth/otp/request', {
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      purpose: 'REGISTRATION',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      resendAfterSeconds: response?.resendAfterSeconds ?? response?.cooldownSeconds ?? 0,
+    };
+  }
+
+  async verifyEmailRegistration({ challengeId, code, email } = {}) {
+    const response = await this.client.post('/auth/otp/verify', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      otp: requireEmailOtpCode(code),
+      purpose: 'REGISTRATION',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      proof: response?.registrationToken,
+    };
+  }
+
+  async completeEmailRegistration({
+    challengeId,
+    proof,
+    email,
+    companyName,
+    companyCode,
+    fullName,
+    password,
+    deviceName,
+  } = {}) {
+    const response = await this.client.post('/auth/register/email', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      registrationToken: requireEmailOtpProof(proof),
+      email: requireEmailOtpEmail(email),
+      companyName: requireIdentityInput(companyName, 'EMAIL_REGISTRATION_COMPANY_REQUIRED', 'A company name is required.'),
+      ...(stringValue(companyCode) ? { companyCode: stringValue(companyCode) } : {}),
+      fullName: requireIdentityInput(fullName, 'EMAIL_REGISTRATION_NAME_REQUIRED', 'A full name is required.'),
+      password: requireEmailOtpPassword(password),
+      ...(stringValue(deviceName) ? { deviceName: stringValue(deviceName) } : {}),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    this.client.setSession(response);
+    return normalizeVpsSession(response);
+  }
+
+  async startEmailPasswordReset(email) {
+    const response = await this.client.post('/auth/otp/request', {
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      purpose: 'PASSWORD_RESET',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      resendAfterSeconds: response?.resendAfterSeconds ?? response?.cooldownSeconds ?? 0,
+    };
+  }
+
+  async verifyEmailPasswordReset({ challengeId, code, email } = {}) {
+    const response = await this.client.post('/auth/otp/verify', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      channel: 'EMAIL',
+      email: requireEmailOtpEmail(email),
+      otp: requireEmailOtpCode(code),
+      purpose: 'PASSWORD_RESET',
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      ...response,
+      proof: response?.passwordResetToken,
+    };
+  }
+
+  async completeEmailPasswordReset({ proof, newPassword } = {}) {
+    return this.client.post('/identity/password/reset', {
+      token: requireEmailOtpProof(proof),
+      newPassword: requireEmailOtpPassword(newPassword),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+  }
+
+  async startEmailChange(email) {
+    return this.sendEmailOtp('/auth/email-change/start', { email }, { authenticate: true });
+  }
+
+  async verifyEmailChange({ challengeId, code } = {}) {
+    return this.verifyEmailOtp('/auth/email-change/verify', { challengeId, code });
+  }
+
+  async completeEmailChange({ challengeId, proof } = {}) {
+    return this.client.post('/auth/email-change/complete', {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      proof: requireEmailOtpProof(proof),
+    }, { retry: false });
+  }
+
+  async sendEmailOtp(path, { email } = {}, options = {}) {
+    return this.client.post(path, {
+      email: requireEmailOtpEmail(email),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+      ...options,
+    });
+  }
+
+  async verifyEmailOtp(path, { challengeId, code } = {}) {
+    return this.client.post(path, {
+      challengeId: requireEmailOtpChallengeId(challengeId),
+      code: requireEmailOtpCode(code),
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+  }
+
+  async requestPasswordReset(email) {
+    await this.client.post('/identity/password/forgot', { email: stringValue(email) }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+    return {
+      success: true,
+      message: 'If the account exists, a password reset instruction has been requested.',
+    };
+  }
+
+  async completePasswordReset({ token, newPassword } = {}) {
+    const normalizedToken = requireIdentityInput(
+      token,
+      'PASSWORD_RESET_TOKEN_REQUIRED',
+      'A password reset token is required.',
+    );
+    if (normalizedToken.length < 20 || `${newPassword || ''}`.length < 8) {
+      throw new HdApiError('The password reset input is invalid.', {
+        code: 'PASSWORD_RESET_INPUT_INVALID',
+      });
+    }
+    return this.client.post('/identity/password/reset', {
+      token: normalizedToken,
+      newPassword,
+    }, {
+      authenticate: false,
+      retry: false,
+      allowRefresh: false,
+    });
+  }
+
+  async getIdentityProfile() {
+    return this.client.get('/identity/me');
+  }
+
+  async updateIdentityProfile(record = {}) {
+    return this.client.patch('/identity/me/profile', record, { retry: false });
+  }
+
+  async updateIdentityPreferences(record = {}) {
+    return this.client.patch('/identity/me/preferences', record, { retry: false });
+  }
+
+  async changeIdentityPassword({ currentPassword, newPassword } = {}) {
+    if (!currentPassword || `${newPassword || ''}`.length < 8) {
+      throw new HdApiError('Current password and a new password of at least 8 characters are required.', {
+        code: 'PASSWORD_CHANGE_INPUT_INVALID',
+      });
+    }
+    return this.client.post('/identity/password/change', {
+      currentPassword,
+      newPassword,
+    }, { retry: false });
+  }
+
+  async getIdentityPasswordPolicy() {
+    return this.client.get('/identity/password/policy');
+  }
+
+  async listIdentitySessions() {
+    const result = await this.client.get('/identity/sessions');
+    const items = Array.isArray(result)
+      ? result
+      : (Array.isArray(result?.items) ? result.items : []);
+    return {
+      items: items.map(normalizeVpsIdentitySession),
+      pagination: result?.pagination ?? null,
+    };
+  }
+
+  async revokeIdentitySession(sessionId) {
+    const normalizedSessionId = requireIdentityInput(
+      sessionId,
+      'IDENTITY_SESSION_ID_REQUIRED',
+      'A session id is required.',
+    );
+    if (!isUuid(normalizedSessionId)) {
+      throw new HdApiError('The session id is invalid.', {
+        code: 'IDENTITY_SESSION_ID_INVALID',
+      });
+    }
+    return this.client.delete(`/identity/sessions/${normalizedSessionId}`, { retry: false });
+  }
+
+  async listIdentityAudit(query = {}) {
+    const result = await this.client.get('/audit', { query });
+    const entries = Array.isArray(result)
+      ? result
+      : (Array.isArray(result?.items) ? result.items : []);
+    return {
+      entries,
+      pagination: result?.pagination ?? null,
+    };
+  }
+
+  async listCustomers(query = {}) {
+    const result = await this.client.get('/master-data/customers', { query });
+    return normalizePage(result, normalizeVpsCustomer);
+  }
+
+  async getCustomer(id) {
+    return normalizeVpsCustomer(await this.client.get(`/master-data/customers/${id}`));
+  }
+
+  async createCustomer(record) {
+    return normalizeVpsCustomer(await this.client.post('/master-data/customers', toCustomerPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
+  }
+
+  async updateCustomer(id, record) {
+    return normalizeVpsCustomer(await this.client.patch(`/master-data/customers/${id}`, toCustomerPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
+  }
+
+  async deleteCustomer(id) {
+    return this.client.delete(`/master-data/customers/${id}`, { retry: false });
+  }
+
+  async createCustomerPortalAccount(customerId, { phone, password } = {}) {
+    return this.client.post('/cx-suite/portal/accounts', {
+      customerId,
+      phone: stringValue(phone),
+      password: `${password || ''}`,
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
+  }
+
+  async listUnits(query = {}) {
+    return normalizePage(await this.client.get('/master-data/units', { query }), (unit) => unit);
+  }
+
+  async listProducts(query = {}) {
+    return normalizePage(await this.client.get('/products', { query }), normalizeVpsProduct);
+  }
+
+  async getProduct(id) {
+    return normalizeVpsProduct(await this.client.get(`/products/${id}`));
+  }
+
+  async createProduct(record) {
+    return normalizeVpsProduct(await this.client.post('/products', toProductPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
+  }
+
+  async updateProduct(id, record) {
+    return normalizeVpsProduct(await this.client.patch(`/products/${id}`, toProductPayload(record), {
+      idempotencyKey: record.clientMutationId || createRequestId(),
+      retry: false,
+    }));
+  }
+
+  async deleteProduct(id) {
+    return this.client.delete(`/products/${id}`, { retry: false });
+  }
+
+  async listProductPrices(id, query = {}) {
+    return normalizePage(await this.client.get(`/products/${id}/prices`, { query }), (price) => price);
+  }
+
+  async listProductUnits(id, query = {}) {
+    return normalizePage(await this.client.get(`/products/${id}/units`, { query }), (unit) => unit);
+  }
+
+  async listOrders(query = {}) {
+    return normalizePage(await this.client.get('/sales/orders', { query }), normalizeVpsOrder);
+  }
+
+  async getOrder(id) {
+    return normalizeVpsOrder(await this.client.get(`/sales/orders/${id}`));
+  }
+
+  async createOrder(record) {
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
+    const payload = toSalesOrderPayload({ ...record, clientMutationId });
+    return normalizeVpsOrder(await this.client.post('/sales/orders', payload, {
+      idempotencyKey: clientMutationId,
+      retry: false,
+    }));
+  }
+
+  async updateOrder(id, record) {
+    const clientMutationId = stringValue(record.clientMutationId) || createRequestId();
+    return normalizeVpsOrder(await this.client.patch(
+      `/sales/orders/${id}`,
+      toSalesOrderUpdatePayload({ ...record, clientMutationId }),
+      { idempotencyKey: clientMutationId, retry: false },
+    ));
+  }
+
+  async confirmOrder(id, note = '') {
+    return normalizeVpsOrder(await this.client.post(`/sales/orders/${id}/confirm`, {
+      ...(stringValue(note) ? { note: stringValue(note) } : {}),
+    }, { retry: false }));
+  }
+
+  async cancelOrder(id, reason) {
+    const normalizedReason = stringValue(reason);
+    if (!normalizedReason) {
+      throw new HdApiError('A cancellation reason is required.', {
+        code: 'ORDER_CANCEL_REASON_REQUIRED',
+      });
+    }
+    return normalizeVpsOrder(await this.client.post(`/sales/orders/${id}/cancel`, {
+      reason: normalizedReason,
+    }, { retry: false }));
+  }
+
+  async listPayments(query = {}) {
+    return normalizePage(await this.client.get('/cx-suite/payments', { query }), normalizeVpsPayment);
+  }
+
+  // These methods intentionally mirror existing VPS contracts. They do not
+  // translate legacy Firebase records or invent domain rules; callers must
+  // provide already-resolved target IDs and domain-valid DTO fields.
+  async listWarehouses(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/warehouses', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createWarehouse(record = {}) {
+    return this.client.post('/warehouse-suite/warehouses', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async updateWarehouse(id, record = {}) {
+    return this.client.patch(`/warehouse-suite/warehouses/${id}`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async deleteWarehouse(id) {
+    return this.client.delete(`/warehouse-suite/warehouses/${id}`, { retry: false });
+  }
+
+  async restoreWarehouse(id) {
+    return this.client.post(`/warehouse-suite/warehouses/${id}/restore`, undefined, { retry: false });
+  }
+
+  async listWarehouseBalances(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/balances', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listWarehouseLedger(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listWarehouseCountSessions(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/counts', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createWarehouseCountSession(record = {}) {
+    return this.client.post('/warehouse-suite/counts', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async addWarehouseCountLine(sessionId, record = {}) {
+    const safeSessionId = requireIdentityInput(sessionId, 'STOCK_COUNT_SESSION_ID_REQUIRED', 'A stock count session id is required.');
+    return this.client.post(`/warehouse-suite/counts/${safeSessionId}/lines`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postWarehouseCountSession(sessionId) {
+    const safeSessionId = requireIdentityInput(sessionId, 'STOCK_COUNT_SESSION_ID_REQUIRED', 'A stock count session id is required.');
+    return this.client.post(`/warehouse-suite/counts/${safeSessionId}/post`, undefined, { retry: false });
+  }
+
+  async postWarehouseStockIn(record = {}) {
+    return this.client.post('/warehouse-suite/stock-in', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postWarehouseStockOut(record = {}) {
+    return this.client.post('/warehouse-suite/stock-out', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listWarehouseTransfers(query = {}) {
+    return normalizePage(await this.client.get('/warehouse-suite/transfers', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createWarehouseTransfer(record = {}) {
+    return this.client.post('/warehouse-suite/transfers', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postWarehouseTransfer(transferId) {
+    const safeTransferId = requireIdentityInput(transferId, 'WAREHOUSE_TRANSFER_ID_REQUIRED', 'A warehouse transfer id is required.');
+    return this.client.post(`/warehouse-suite/transfers/${safeTransferId}/post`, undefined, { retry: false });
+  }
+
+  async createWarehouseAdjustment(record = {}, direction = 'increase') {
+    if (!['increase', 'decrease'].includes(direction)) {
+      throw new HdApiError('The warehouse adjustment direction is invalid.', {
+        code: 'WAREHOUSE_ADJUSTMENT_DIRECTION_INVALID',
+      });
+    }
+    return this.client.post(`/warehouse-suite/adjustments/${direction}`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listInventory(query = {}) {
+    return normalizePage(await this.client.get('/inventory/lookup', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listInventoryLedger(query = {}) {
+    return normalizePage(await this.client.get('/inventory/ledger', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listInventoryBalances(query = {}) {
+    return normalizePage(await this.client.get('/inventory/balances', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async postInventoryOpeningBalance(record = {}) {
+    return this.client.post('/inventory/transactions/opening-balance', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postInventoryStockIn(record = {}) {
+    return this.client.post('/inventory/transactions/stock-in', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postInventoryStockOut(record = {}) {
+    return this.client.post('/inventory/transactions/stock-out', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async postInventoryAdjustment(record = {}, direction = 'increase') {
+    if (!['increase', 'decrease'].includes(direction)) {
+      throw new HdApiError('The inventory adjustment direction is invalid.', {
+        code: 'INVENTORY_ADJUSTMENT_DIRECTION_INVALID',
+      });
+    }
+    return this.client.post(`/inventory/adjustments/${direction}`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listFinanceCashAccounts(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/cash-accounts', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceCashAccount(record = {}) {
+    return this.client.post('/finance-suite/cash-accounts', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listFinanceCashTransactions(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/cash-transactions', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceCashTransaction(record = {}) {
+    return this.client.post('/finance-suite/cash-transactions', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listFinanceReceivables(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/receivables', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceReceivable(record = {}) {
+    return this.client.post('/finance-suite/receivables', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listFinancePayables(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/payables', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinancePayable(record = {}) {
+    return this.client.post('/finance-suite/payables', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async createFinanceDebtMovement(record = {}) {
+    return this.client.post('/finance-suite/debt-movements', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async getFinanceAging() {
+    return this.client.get('/finance-suite/aging');
+  }
+
+  async listFinanceExpenses(query = {}) {
+    return normalizePage(await this.client.get('/finance-suite/expenses', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async createFinanceExpense(record = {}) {
+    return this.client.post('/finance-suite/expenses', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async approveFinanceExpense(id) {
+    return this.client.post(`/finance-suite/expenses/${id}/approve`, undefined, { retry: false });
+  }
+
+  async postFinanceExpense(id) {
+    return this.client.post(`/finance-suite/expenses/${id}/post`, undefined, { retry: false });
+  }
+
+  async listNotifications(query = {}) {
+    return normalizePage(await this.client.get('/notifications', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listUnreadNotifications() {
+    return this.client.get('/notifications/unread');
+  }
+
+  async markNotificationsRead({ notificationIds = [], all = false } = {}) {
+    return this.client.post('/notifications/read', {
+      notificationIds: toStringArray(notificationIds),
+      all: Boolean(all),
+    }, { retry: false });
+  }
+
+  async archiveNotifications({ notificationIds = [], all = false } = {}) {
+    return this.client.post('/notifications/archive', {
+      notificationIds: toStringArray(notificationIds),
+      all: Boolean(all),
+    }, { retry: false });
+  }
+
+  async sendNotification(record = {}) {
+    return this.client.post('/notifications/send', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listStorage(query = {}) {
+    return normalizePage(await this.client.get('/storage', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async getStorageMetadata(id) {
+    return this.client.get(`/storage/metadata/${id}`);
+  }
+
+  async getStorageDownload(id) {
+    return this.client.get(`/storage/download/${id}`);
+  }
+
+  async getStorageSignedUrl(record = {}) {
+    return this.client.post('/storage/signed-url', toTenantSafePayload(record), { retry: false });
+  }
+
+  async uploadStorageFile(record = {}) {
+    const payload = toTenantSafePayload(record);
+    if (!stringValue(payload.fileName) || !stringValue(payload.mimeType)) {
+      throw new HdApiError('Storage upload requires a file name and MIME type.', {
+        code: 'STORAGE_FILE_METADATA_REQUIRED',
+      });
+    }
+    if (!stringValue(payload.contentBase64) && !stringValue(payload.contentText)) {
+      throw new HdApiError('Storage upload requires base64 or text content.', {
+        code: 'STORAGE_FILE_CONTENT_REQUIRED',
+      });
+    }
+    return this.client.post('/storage/upload', payload, { retry: false });
+  }
+
+  async archiveStorageFile(record = {}) {
+    return this.client.post('/storage/archive', toTenantSafePayload(record), { retry: false });
+  }
+
+  async getExecutiveDashboard(query = {}) {
+    return this.client.get('/executive/dashboard', { query });
+  }
+
+  async getExecutiveReports(query = {}) {
+    return normalizePage(await this.client.get('/executive/reports', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async getPlatformConfig(query = {}) {
+    return this.client.get('/platform/config', { query: toTenantSafeQuery(query) });
+  }
+
+  async getPlatformFlags(query = {}) {
+    return normalizePage(await this.client.get('/platform/flags', { query: toTenantSafeQuery(query) }), (item) => item);
+  }
+
+  async listEmployees(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/employees', { query }), (item) => item);
+  }
+
+  async createEmployee(record = {}) {
+    return this.client.post('/hr-suite/employees', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async createManagerEmployee({ requestId, profile, account } = {}) {
+    const mutationId = stringValue(requestId) || createRequestId();
+    return this.client.post('/hr-suite/manager-employees', omitUndefined({
+      requestId: mutationId,
+      profile: profile || {},
+      account: account?.password ? { password: `${account.password}` } : undefined,
+    }), {
+      idempotencyKey: mutationId,
+      retry: false,
+    });
+  }
+
+  async updateManagerEmployee(id, { version, profile } = {}) {
+    return this.client.patch(`/hr-suite/manager-employees/${id}`, {
+      version,
+      profile: profile || {},
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
+  }
+
+  async enrollManagerEmployeeAccount(id, { password } = {}) {
+    return this.client.post(`/hr-suite/manager-employees/${id}/account`, {
+      password: `${password || ''}`,
+    }, {
+      idempotencyKey: createRequestId(),
+      retry: false,
+    });
+  }
+
+  async updateEmployee(id, record = {}) {
+    return this.client.patch(`/hr-suite/employees/${id}`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async terminateEmployee(id) {
+    return this.client.post(`/hr-suite/employees/${id}/terminate`, undefined, { retry: false });
+  }
+
+  async listAttendance(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/attendance', { query }), (item) => item);
+  }
+
+  async recordAttendance(record = {}) {
+    return this.client.post('/hr-suite/attendance', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async listPayrolls(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/payrolls', { query }), (item) => item);
+  }
+
+  async listPayrollPeriods(query = {}) {
+    return normalizePage(await this.client.get('/hr-suite/payroll-periods', { query }), (item) => item);
+  }
+
+  async createPayrollPeriod(record = {}) {
+    return this.client.post('/hr-suite/payroll-periods', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async generatePayroll(record = {}) {
+    return this.client.post('/hr-suite/payrolls/generate', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async approvePayroll(id) {
+    return this.client.post(`/hr-suite/payrolls/${id}/approve`, undefined, { retry: false });
+  }
+
+  async lockPayroll(id) {
+    return this.client.post(`/hr-suite/payrolls/${id}/lock`, undefined, { retry: false });
+  }
+
+  async listDocuments(query = {}) {
+    return normalizePage(await this.client.get('/documents', { query }), (item) => item);
+  }
+
+  async createDocument(record = {}) {
+    return this.client.post('/documents', toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async updateDocument(id, record = {}) {
+    return this.client.patch(`/documents/${id}`, toTenantSafePayload(record), mutationOptions(record));
+  }
+
+  async archiveDocument(id) {
+    return this.client.post(`/documents/${id}/archive`, undefined, { retry: false });
+  }
+
+  async listEvents(query = {}) {
+    return normalizePage(await this.client.get('/events', { query }), (item) => item);
+  }
+
+  async listWorkerJobs(query = {}) {
+    return normalizePage(await this.client.get('/worker/jobs', { query }), (item) => item);
+  }
+
+  async runWorkerJobs(query = {}) {
+    return this.client.post('/worker/jobs/run', undefined, { query, retry: false });
+  }
+
+  async subscribeRealtime({
+    onEvent,
+    signal,
+    onState,
+    initialReconnectDelayMs = 500,
+    maxReconnectDelayMs = 8_000,
+  } = {}) {
+    if (typeof onEvent !== 'function') {
+      throw new HdApiError('A realtime event callback is required.', {
+        code: 'REALTIME_CALLBACK_REQUIRED',
+      });
+    }
+
+    const initialDelay = normalizeReconnectDelay(initialReconnectDelayMs, 500);
+    const maximumDelay = Math.max(
+      initialDelay,
+      normalizeReconnectDelay(maxReconnectDelayMs, 8_000),
+    );
+    const recentEventIds = new Set();
+    let reconnectAttempt = 0;
+    let refreshesSinceReady = 0;
+
+    const emitState = (state, details = {}) => {
+      if (typeof onState !== 'function') return;
+      onState({ state, attempt: reconnectAttempt, ...details });
+    };
+
+    const handleEvent = (message) => {
+      if (message?.type === 'ready') {
+        reconnectAttempt = 0;
+        refreshesSinceReady = 0;
+        emitState('connected');
+      }
+
+      if (message?.type === 'heartbeat') {
+        emitState('connected', { heartbeatAt: message?.data?.at || '' });
+      }
+
+      const eventId = message?.type === 'event'
+        ? stringValue(message?.data?.eventId)
+        : '';
+      if (eventId) {
+        if (recentEventIds.has(eventId)) return;
+        recentEventIds.add(eventId);
+        if (recentEventIds.size > REALTIME_EVENT_DEDUPE_LIMIT) {
+          recentEventIds.delete(recentEventIds.values().next().value);
+        }
+      }
+
+      onEvent(message);
+    };
+
+    while (!signal?.aborted) {
+      try {
+        emitState(reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+        await this.client.stream('/realtime/stream', { onEvent: handleEvent, signal });
+
+        if (signal?.aborted) return;
+        throw new HdApiError('The realtime stream closed unexpectedly.', {
+          code: 'REALTIME_STREAM_CLOSED',
+          retryable: true,
+        });
+      } catch (error) {
+        if (isAbortError(error, signal)) return;
+
+        if (error?.status === 401 && typeof this.client.refresh === 'function') {
+          if (refreshesSinceReady >= 1) {
+            emitState('authentication-failed', { error: error.message || '' });
+            throw error;
+          }
+
+          refreshesSinceReady += 1;
+          emitState('reauthenticating');
+          await this.client.refresh();
+          continue;
+        }
+
+        const retryable = Boolean(error?.retryable || error?.status >= 500 || error?.status === 0);
+        if (!retryable) {
+          emitState('failed', { error: error?.message || '' });
+          throw error;
+        }
+
+        const delayMs = Math.min(
+          maximumDelay,
+          initialDelay * (2 ** Math.min(reconnectAttempt, 8)),
+        );
+        emitState('reconnecting', { delayMs, error: error?.message || '' });
+        reconnectAttempt += 1;
+        await waitForReconnect(delayMs, signal);
+      }
+    }
+  }
+}
+
+let vpsApi;
+
+export const getHdConnectApi = () => {
+  if (!isVpsApiMode) {
+    throw new HdApiError('The VPS API client is only available in a VPS data mode.', {
+      code: 'VPS_MODE_REQUIRED',
+    });
+  }
+
+  if (!vpsApi) {
+    vpsApi = new HdConnectStagingApi(new HdApiClient({
+      baseUrl: runtimeEnv.VITE_API_BASE_URL,
+      deviceName: runtimeEnv.VITE_HD_DEVICE_NAME || `HD Manager web ${isVpsProductionMode ? 'production' : 'staging'}`,
+      tokenStorageNamespace: isVpsProductionMode ? 'vps-production' : 'vps-staging',
+    }));
+  }
+
+  return vpsApi;
+};
+
+// Compatibility exports keep the approved staging contract stable while both
+// VPS modes share one API adapter and never fall back to Firebase core paths.
+export const getHdConnectStagingApi = getHdConnectApi;
+export const createHdConnectApi = (client) => new HdConnectStagingApi(client);
+export const createHdConnectStagingApi = (client) => new HdConnectStagingApi(client);
+
+const unsupportedVpsIdentityOperation = (code, message) => async () => {
+  throw new HdApiError(message, { status: 501, code });
+};
+
+export const createVpsIdentitySecurityApi = (api = getHdConnectApi()) => ({
+  getIdentityDevice: () => ({
+    deviceId: api.client.deviceName || '',
+    name: api.client.deviceName || 'HD Manager',
+    platform: api.client.platform || 'hd-manager-web',
+  }),
+  identityChangePassword: ({ currentPassword, newPassword } = {}) => (
+    api.changeIdentityPassword({ currentPassword, newPassword })
+  ),
+  identityStartEmailChange: (email) => api.startEmailChange(email),
+  identityVerifyEmailChange: ({ challengeId, code } = {}) => (
+    api.verifyEmailChange({ challengeId, code })
+  ),
+  identityCompleteEmailChange: ({ challengeId, proof } = {}) => (
+    api.completeEmailChange({ challengeId, proof })
+  ),
+  identityListDevices: async () => {
+    const result = await api.listIdentitySessions();
+    return { devices: result.items };
+  },
+  identityListAudit: (query = {}) => api.listIdentityAudit(query),
+  identityRevokeDevices: ({ deviceId, all = false } = {}) => (
+    all ? api.logoutAll() : api.revokeIdentitySession(deviceId)
+  ),
+  identityCompleteSetup: unsupportedVpsIdentityOperation(
+    'VPS_IDENTITY_SETUP_NOT_READY',
+    'Identity setup is managed by invitation acceptance in VPS mode.',
+  ),
+  identityDeleteAccount: unsupportedVpsIdentityOperation(
+    'VPS_IDENTITY_DELETE_NOT_READY',
+    'Account deletion is not available in VPS mode until its retention contract is approved.',
+  ),
+  identitySetBiometric: unsupportedVpsIdentityOperation(
+    'VPS_IDENTITY_BIOMETRIC_NOT_READY',
+    'Biometric settings are not available in VPS mode.',
+  ),
+  identityVerifyPin: unsupportedVpsIdentityOperation(
+    'VPS_IDENTITY_PIN_NOT_READY',
+    'PIN verification is not available in VPS mode.',
+  ),
+});

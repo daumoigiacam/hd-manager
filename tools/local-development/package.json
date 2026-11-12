@@ -1,0 +1,4 @@
+{
+  "name":"hd-manager-local-development-tools","private":true,"type":"module",
+  "dependencies":{"pg":"8.22.0","ioredis":"5.11.1"}
+}

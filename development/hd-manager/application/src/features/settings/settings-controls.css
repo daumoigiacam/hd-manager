@@ -1,0 +1,33 @@
+.loyalty-power-switch {
+  position: relative;
+  width: 88px;
+  height: 44px;
+  flex: 0 0 88px;
+  border: 1px solid #9ca3af;
+  border-radius: 22px;
+  background: linear-gradient(#cbd0d6, #e5e7eb);
+  box-shadow: inset 0 2px 4px #0003, 0 1px 0 #fff;
+  cursor: pointer;
+}
+.loyalty-power-switch[data-on="true"] {
+  border-color: #237957;
+  background: linear-gradient(#237957, #3baf7c);
+}
+.loyalty-power-switch__thumb {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  background: linear-gradient(#fff, #e5e7eb);
+  box-shadow: 0 2px 4px #0004, inset 0 -2px 2px #0001;
+  transition: transform 140ms ease-out;
+}
+.loyalty-power-switch[data-on="true"] .loyalty-power-switch__thumb { transform: translateX(44px); }
+.loyalty-power-switch__label { position: absolute; right: 12px; top: 11px; font-size: 13px; line-height: 20px; font-weight: 700; color: #374151; }
+.loyalty-power-switch[data-on="true"] .loyalty-power-switch__label { left: 12px; right: auto; color: #fff; }
+.loyalty-power-switch:focus-visible { outline: 2px solid #2563eb; outline-offset: 4px; }
+.loyalty-power-switch:disabled { opacity: .5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .loyalty-power-switch__thumb { transition: none; } }

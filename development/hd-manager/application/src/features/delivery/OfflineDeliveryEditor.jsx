@@ -1,0 +1,54 @@
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {HDButton,HDInput,HDDateInput} from '../../design-system/components.jsx';
+import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
+import {canonicalDelivery} from './deliveryCommandProtocol.js';
+import {deliveryWriteAccess,deliveryCommandStatus,deliveryDraftFromBase} from './offlineDeliveryEditorModel.js';
+
+export default function OfflineDeliveryEditor({runtime,repository,id=null,readSource='local',onClose,onSaved,closeRequestRef}){
+ const [base,setBase]=useState(null),[draft,setDraft]=useState(null),[record,setRecord]=useState(null),[conflictReview,setConflictReview]=useState(null),[error,setError]=useState(''),[saved,setSaved]=useState(null),[busy,setBusy]=useState(false),[attempted,setAttempted]=useState(false),[archiveChecked,setArchiveChecked]=useState(false),[review,setReview]=useState(null),[reload,setReload]=useState(0);
+ const [picker,setPicker]=useState({source:'warehouseDispatches',text:'',cursor:null}),[choices,setChoices]=useState(null);
+ const mutation=useRef(null),intent=useRef(null),dirty=useRef(false),inFlight=useRef(false),initial=useRef(false),baseRef=useRef(base),task=useRef(null),pickerTask=useRef(null),attached=useRef(false),alive=useRef(false);baseRef.current=base;
+ const kind=id?'deliveryReport.update':'deliveryReport.create',allowed=deliveryWriteAccess(runtime,repository,kind),target=id||saved?.entityId;
+ const close=()=>{if(inFlight.current)return true;if(!saved&&(dirty.current||attempted)&&!window.confirm('Đóng bản nháp giao hàng? Ý định đã lưu trong hàng chờ vẫn được giữ.'))return true;onClose?.();return true;};
+ useLayoutEffect(()=>{if(closeRequestRef)closeRequestRef.current=close;return()=>{if(closeRequestRef?.current===close)closeRequestRef.current=null;};});useAppScreenBack(close);
+ useEffect(()=>{alive.current=true;if(attached.current)setReload(v=>v+1);attached.current=true;const stop=runtime.subscribe?.(topic=>{if(topic==='deliveryReports')setReload(v=>v+1);});return()=>{alive.current=false;stop?.();};},[runtime,repository]);
+ useEffect(()=>{if(!target)return;let active=true;const key=JSON.stringify([target,readSource,reload]);if(task.current?.key!==key)task.current={key,promise:repository.detail(target,{preferFeed:readSource==='feed'&&!initial.current})};task.current.promise.then(value=>{
+  if(!active||!runtime.isCurrent())return;if(!value)throw Error('Không còn báo cáo trong nguồn hoàn tất.');
+  if(!initial.current){initial.current=true;setBase(value.base);setDraft(deliveryDraftFromBase(value.base));}
+  setRecord(value);setSaved(old=>old&&old.commandId===value.commandId?{...old,state:value.state,serverConfirmed:value.state==='SYNCED'}:old);
+ }).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[runtime,repository,target,readSource,reload]);
+ const pickerKey=JSON.stringify(picker);
+ useEffect(()=>{if(id&&picker.source!=='assets'||attempted||saved||base&&picker.source==='warehouseDispatches')return;let active=true;if(pickerTask.current?.key!==pickerKey)pickerTask.current={key:pickerKey,promise:repository.pick(picker.source,{text:picker.text,cursor:picker.cursor})};pickerTask.current.promise.then(value=>{if(active&&runtime.isCurrent())setChoices({key:pickerKey,...value});}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[runtime,repository,pickerKey,id,attempted,saved,base,picker.source]);
+ function change(field,value){if(attempted||inFlight.current)return;dirty.current=true;setDraft(old=>({...old,[field]:value}));setReview(null);setError('');}
+ async function select(item){if(inFlight.current||attempted)return;inFlight.current=true;setBusy(true);setError('');try{
+  let b;if(picker.source==='warehouseDispatches'){mutation.current||=globalThis.crypto.randomUUID();b=await repository.openDraft(item.id,{mutationId:mutation.current});}else b=await repository.selectAsset(baseRef.current,item.id);
+  if(!alive.current||!runtime.isCurrent())return;setBase(b);if(picker.source==='warehouseDispatches')setDraft(deliveryDraftFromBase(b));else setDraft(old=>({...old,assetId:item.id}));dirty.current=true;setReview(null);
+ }catch(e){if(alive.current)setError(e.message);}finally{inFlight.current=false;if(alive.current)setBusy(false);}}
+ const waiting=record&&!['SYNCED','SERVER_CONFIRMED'].includes(record.state)&&!conflictReview;
+ async function preview(archive=false){if(!base||inFlight.current||attempted||waiting)return;inFlight.current=true;setBusy(true);setError('');try{
+  mutation.current||=globalThis.crypto.randomUUID();const o={base:conflictReview?.base||base,mutationId:mutation.current,editedAt:new Date().toISOString(),resolvesConflictId:conflictReview?.commandId||null};const p=await repository.preview(archive?'deliveryReport.archive':kind,id||`dr_${mutation.current}_0`,archive?null:draft,o);if(alive.current)setReview({...o,planned:p.planned,archive});
+ }catch(e){if(alive.current)setError(e.message);}finally{inFlight.current=false;if(alive.current)setBusy(false);}}
+ async function submit(){if(inFlight.current||saved||!review?.planned||waiting)return;const archive=review.archive;if(!deliveryWriteAccess(runtime,repository,archive?'deliveryReport.archive':kind)||archive&&!archiveChecked)return;
+  intent.current||={...review,expectedPlan:review.planned};inFlight.current=true;setBusy(true);setAttempted(true);setError('');try{const o=intent.current;const result=o.archive?await repository.archive(id,o):id?await repository.update(id,draft,o):await repository.create(draft,o);if(alive.current&&runtime.isCurrent()){setSaved(result);onSaved?.(result);}}catch(e){if(alive.current)setError(e.message);}finally{inFlight.current=false;if(alive.current)setBusy(false);}}
+ function reviewConflict(){if(record?.receipt?.outcome!=='conflict'||!record.receipt.current?.report)return;const b=record.receipt.current;setBase(b);setDraft(deliveryDraftFromBase(b));setConflictReview({base:b,commandId:record.commandId});setReview(null);setSaved(null);setAttempted(false);mutation.current=null;intent.current=null;dirty.current=true;setError('');}
+ if(!runtime.isCurrent())return null;const locked=busy||attempted||waiting||!allowed;
+ const fields=[['actualWeight','Kg thực tế'],['actualQuantity','Số lượng thực tế'],['actualQuantityUnit','Đơn vị thực tế (snapshot)'],['actualPackageCount','Số bọc / kiện'],['actualPackageUnit','Đơn vị bọc / kiện (ghi rõ)'],['collectedAmount','Tiền thu'],['deliveryExpenseAmount','Số tiền chi giao hàng'],['deliveryExpenseCategory','Khoản chi'],['expenseNote','Ghi chú phiếu chi'],['kmAt','Số Km'],['liters','Số lít'],['fuelUnitPrice','Đơn giá nhiên liệu'],['returnWeightKg','Kg hàng trả'],['returnQuantity','Số lượng hàng trả'],['returnQuantityUnit','Đơn vị hàng trả (ghi rõ)'],['shippingAmount','Tiền gửi xe'],['shippingNote','Ghi chú gửi xe'],['note','Ghi chú báo cáo']];
+ return <section aria-label="Ghi nhận giao hàng Offline" className="space-y-3 rounded-2xl border-2 border-emerald-300 bg-white p-4">
+  <div className="flex justify-between"><h2 className="font-bold">{id?'Sửa / lưu trữ báo cáo giao hàng':'Thêm báo cáo giao hàng'}</h2><HDButton variant="secondary" disabled={busy} onClick={close}>Đóng báo cáo</HDButton></div>
+  {!allowed&&<p role="status">Chưa có đủ quyền có chữ ký hoặc giao thức nguyên tử chưa sẵn sàng.</p>}
+  <p className="text-sm">Thu / chi giữ trạng thái chờ bàn giao. Báo hàng trả chưa nhập lại kho. Lưu trữ chỉ lưu trữ báo cáo theo quy tắc gốc; không đảo tiền hoặc tồn kho. Gửi ảnh, duyệt tiền và giải quyết lệch cân chưa có lệnh Offline.</p>
+  {error&&<p role="alert">{error}</p>}{record&&<p role="status">{deliveryCommandStatus[record.state]||record.state}</p>}{record?.sourceCatchup&&<p>Nguồn đang cập nhật; giữ bản chứng từ đã xác nhận.</p>}
+  {record?.state==='CONFLICT_REQUIRES_REVIEW'&&<HDButton variant="secondary" onClick={reviewConflict}>Nạp nguồn để đối chiếu (giữ ý định cũ)</HDButton>}
+  {(!id||picker.source==='assets')&&!attempted&&!saved&&(!base||picker.source==='assets')&&<div className="space-y-2"><HDInput label={picker.source==='assets'?'Tìm tài sản':'Tìm phiếu xuất'} value={picker.text} disabled={busy} onChange={e=>setPicker(old=>({...old,text:e.target.value,cursor:null}))}/>{choices?.key===pickerKey&&choices.items.map(item=><HDButton key={item.id} disabled={busy} variant="secondary" onClick={()=>{void select(item);}}>{item.document.name||item.document.customerNameSnapshot||item.id} · {item.id}</HDButton>)}{choices?.key===pickerKey&&choices.hasMore&&<HDButton variant="secondary" onClick={()=>setPicker(old=>({...old,cursor:choices.nextCursor}))}>Trang lựa chọn tiếp theo</HDButton>}</div>}
+  {draft&&base&&!saved&&<><p>Đơn vị đặt: {(base.report||base.dispatch).orderedUnit||'Chưa có'} · Đơn vị tính giá: {(base.report||base.dispatch).billingUnit||(base.report||base.dispatch).pricingUnit||'Chưa có'} · Đơn giá: {(base.report||base.dispatch).unitPrice??'Chưa có'}</p>
+   <form onSubmit={e=>{e.preventDefault();void preview(false);}} className="grid gap-3 sm:grid-cols-2"><HDDateInput label="Ngày nghiệp vụ giao hàng" value={draft.date} disabled={locked} onChange={e=>change('date',e.target.value)}/>{fields.map(([field,label])=><HDInput key={field} label={label} value={draft[field]} disabled={locked||id&&field==='collectedAmount'||field==='actualQuantityUnit'} onChange={e=>change(field,e.target.value)}/>)}
+   <label>Hình thức thu<select value={draft.collectedMethod} disabled={locked||!!id} onChange={e=>change('collectedMethod',e.target.value)}><option>Tiền mặt</option><option>Chuyển khoản</option></select></label>
+   <p>Tài sản: {base.asset?.name||'Không chọn'} · {draft.assetId}</p><HDInput label="Mã tài sản đã có (tìm trong danh mục trước khi chọn)" value={draft.assetId} disabled onChange={()=>{}}/>
+   {<HDButton variant="secondary" disabled={locked} onClick={()=>{setChoices(null);setPicker({source:'assets',text:'',cursor:null});}}>Chọn tài sản từ nguồn hoàn tất</HDButton>}
+   <HDButton type="submit" disabled={locked}>Đối chiếu kế hoạch trước khi lưu</HDButton></form>
+   {id&&deliveryWriteAccess(runtime,repository,'deliveryReport.archive')&&<div><label><input type="checkbox" checked={archiveChecked} disabled={busy||attempted||waiting} onChange={e=>setArchiveChecked(e.target.checked)}/>Xác nhận lưu trữ báo cáo, giữ chứng từ thu / chi</label><HDButton variant="secondary" disabled={busy||attempted||waiting||!archiveChecked} onClick={()=>{void preview(true);}}>Đối chiếu lưu trữ</HDButton></div>}
+  </>}
+  {review?.planned&&!saved&&<div className="space-y-2"><p>Thành tiền theo snapshot gốc: {review.planned.document.amount} đ</p><p>Chứng từ nguyên tử: {Object.keys(review.planned.documents).map(k=>k.split('/')[0]).join(', ')}</p><HDButton disabled={busy||waiting} onClick={()=>{void submit();}}>{attempted?'Kiểm tra / thử lại đúng ý định':'Lưu ý định trên thiết bị'}</HDButton></div>}
+  {saved&&<p role="status">{deliveryCommandStatus[saved.state]||saved.state}</p>}
+ </section>;
+}

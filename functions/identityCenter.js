@@ -81,6 +81,10 @@ const timingSafeTextEqual = (left = '', right = '') => {
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 const hashOpaqueSecret = (value = '') => crypto.createHash('sha256').update(`${value || ''}`).digest('hex');
+const verifyAttendanceDevice = (saved, secret, identity) => Boolean(saved.trusted && !saved.revokedAt && secret && saved.deviceSecretHash
+          && Number(saved.credentialVersion || 0) === Number(identity.credentialVersion || 0)
+          && (!saved.expiresAtIso || Date.parse(saved.expiresAtIso) > Date.now())
+          && timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(secret)));
 const makeOpaqueSecret = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
 const isBiometricDeviceCredentialValid = ({
   identity = {},
@@ -1494,15 +1498,20 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       },
     }),
     login,
+    // Read-only original context exposure; no enrollment or alternate verifier.
+    resolveAttendanceContext: async ({ authorization, device, deviceSecret, method }) => {
+      const { identityId, identity, decoded } = await getVerifiedIdentity(authorization);
+      return { principalId: decoded.uid, identityId,
+        employeeId: identity.appUserId, companyId: identity.companyId,
+        device: sanitizeDevice(device), deviceSecret, method,
+        verifyDevice: verifyAttendanceDevice };
+    },
     attendance: async ({ authorization, device, deviceSecret, action, workRole, method }) => {
       const { identityId, identity } = await getVerifiedIdentity(authorization);
       return recordManualAttendance({ db, appId: getAppId(),
         collectionPath: (appId, collection) => `artifacts/${appId}/public/data/${collection}`,
         identity: { ...identity, id: identityId }, device: sanitizeDevice(device), deviceSecret, action, workRole, method,
-        verifyDevice: (saved, secret) => Boolean(saved.trusted && !saved.revokedAt && secret && saved.deviceSecretHash
-          && Number(saved.credentialVersion || 0) === Number(identity.credentialVersion || 0)
-          && (!saved.expiresAtIso || Date.parse(saved.expiresAtIso) > Date.now())
-          && timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(secret))),
+        verifyDevice: (saved, secret) => verifyAttendanceDevice(saved, secret, identity),
       });
     },
     biometricLogin,
