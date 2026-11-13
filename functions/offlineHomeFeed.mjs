@@ -20,7 +20,7 @@ export async function createOfflineHomeFeed({db,projectId,appId,tenantId,asOfDay
  const trusted=serverEnvironment.isTrustedOfflineServerEnvironment(environment,projectId,appId,verifiedDatabase||db);
  if((!projectId.startsWith('demo-')||!process.env.FIRESTORE_EMULATOR_HOST)&&!trusted)throw Error('Unapproved Home feed environment');
  if(trusted&&(!resolveCurrentActor||!verifiedDatabase||db===verifiedDatabase||sourceProfile))throw Error('Trusted feed requires original-role verifier and fenced journal writer');
- if(payrollSources===true&&(trusted||sourceProfile))throw Error('Payroll source extension is Local legacy-only; no implicit trusted Production activation');
+ if(payrollSources===true&&sourceProfile)throw Error('Payroll source extension requires the full original-role source contract');
  const sanitize=trusted?documentSanitizer.sanitizeOfflineDocument:clean;
  const payrollEnabled=payrollSources===true;
  const sources=payrollEnabled?PAYROLL_HOME_FEED_SOURCES:sourceProfile?homeFeedSources(sourceProfile):projector.HOME_FEED_SOURCES,base=name=>db.collection(`artifacts/${appId}/public/data/${name}`),headRef=db.doc(`offlineHomeFeeds/${tenantId}`),events=headRef.collection('changes'),versions=headRef.collection('sourceVersions');
@@ -87,7 +87,10 @@ export async function createOfflineHomeFeed({db,projectId,appId,tenantId,asOfDay
  }
  async function handle({action,token,body={}}){
   const actor=await access(token);await tail;if(failed)throw failed;
-  if(payrollEnabled){const grant=(await db.doc('offlineCustomerAccess/'+actor.uid).get()).data();if(!grant?.active||grant.tenantId!==tenantId||grant.permissionRevision!==actor.permissionRevision||!grant.capabilities?.includes('payroll.company.read'))throw denied();}
+  if(payrollEnabled){
+   if(trusted){if(!actor.capabilities.includes('payroll.company.read'))throw denied();}
+   else{const grant=(await db.doc('offlineCustomerAccess/'+actor.uid).get()).data();if(!grant?.active||grant.tenantId!==tenantId||grant.permissionRevision!==actor.permissionRevision||!grant.capabilities?.includes('payroll.company.read'))throw denied();}
+  }
   const head=(await headRef.get()).data();if(!head.ready)throw Object.assign(Error('Home sources initializing'),{code:'unavailable'});
   if(action==='home-head')return {...head,tenantId,principalId:actor.uid,permissionRevision:actor.permissionRevision,sources,...(sourceProfile?{sourceProfile,coverage,provenance}:{})};
   if(action==='home-page'){

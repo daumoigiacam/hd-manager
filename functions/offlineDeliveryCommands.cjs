@@ -1,4 +1,5 @@
-// Development-only compound sidecar. Shared server routing/grants remain Main-owned.
+const {createOfflineCommandAuthority}=require('./offlineCommandAuthority.cjs');
+// Shared compound handler. Server routing/grants remain Main-owned.
 const {createHash}=require('node:crypto');
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const fail=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
@@ -15,8 +16,9 @@ function deliveryCapabilities(subject,policy){
   ...(can('edit_asset_cost_log','asset_management')?['deliveryReports.assetCosts.update']:[]),
  ];
 }
-function createOfflineDeliveryCommandService({db,projectId,appId,hasCompanyRolePermissionAction,loadDomain=()=>import('../development/hd-manager/application/src/features/delivery/deliveryCommandProtocol.js'),loadContext=()=>import('../development/hd-manager/application/src/features/delivery/deliveryContextSnapshot.js')}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||(db?.projectId&&db.projectId!==projectId)||!db?.runTransaction||!db?.collection||!/^[A-Za-z0-9_-]{1,160}$/.test(appId||'')||typeof hasCompanyRolePermissionAction!=='function')fail('Delivery requires Development Emulator, same database and original current role policy');
+function createOfflineDeliveryCommandService({db,projectId,appId,environment,readAuthority,hasCompanyRolePermissionAction,loadDomain=()=>import('../development/hd-manager/application/src/features/delivery/deliveryCommandProtocol.js'),loadContext=()=>import('../development/hd-manager/application/src/features/delivery/deliveryContextSnapshot.js')}){
+ const authority=createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
+ if(typeof hasCompanyRolePermissionAction!=='function'||!db?.collection)throw Error('Original role policy and database required');
  return async function apply(actor,command){
   const d=await loadDomain(),ctx=await loadContext(),rule=d.DELIVERY_RULES[command?.kind];
   if(!rule||!actor?.permissionRevision||![actor.uid,actor.tenantId,command.commandId,command.entityId].every(d.deliveryId)||command.idempotencyKey!==command.commandId)fail('Invalid delivery command identity');
@@ -24,14 +26,13 @@ function createOfflineDeliveryCommandService({db,projectId,appId,hasCompanyRoleP
   if(JSON.stringify(p).length>512000||command.baseRevision!==p.baseRevision||hash(JSON.stringify(p))!==command.payloadDigest||hash(d.canonicalDelivery(p.base))!==p.baseFingerprint||command.kind==='deliveryReport.create'&&command.entityId!==`dr_${command.commandId}_0`)fail('Delivery immutable payload/CAS mismatch');
   const path=source=>`artifacts/${appId}/public/data/${source}`,ref=(source,id)=>db.doc(path(source)+'/'+id),receiptRef=id=>db.doc('offlineDeliveryReceipts/'+hash(JSON.stringify([actor.tenantId,actor.uid,id])));
   return db.runTransaction(async tx=>{
-   const binding=(await tx.get(db.doc('offlineHomeActors/'+actor.uid))).data(),access=(await tx.get(db.doc('offlineCustomerAccess/'+actor.uid))).data();
-   if(!binding?.active||binding.tenantId!==actor.tenantId||binding.sourceArchiveSha256||binding.employeeId!==p.employeeId||!d.deliveryId(binding.employeeId)||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||access.readScope!=='tenant'||access.appIdentity?.homeSourceProfile==='native-isolation-v1'||![...d.DELIVERY_READ_CAPS,rule.capability].every(c=>access.capabilities?.includes(c)))fail('Current delivery signed capability denied');
-   const cs=await tx.get(ref('companies',actor.tenantId)),es=await tx.get(ref('employees',binding.employeeId));const company=cs.data(),employee=es.data();
-   if(!cs.exists||!es.exists||company.isArchived||employee.isArchived||employee.companyId!==actor.tenantId)fail('Current delivery company/employee denied');
-   const subject={company:{...company,id:actor.tenantId},employee:{...employee,id:binding.employeeId},currentUser:{...employee,id:binding.employeeId}},roleCaps=deliveryCapabilities(subject,hasCompanyRolePermissionAction),features=d.deliveryFeatures(roleCaps.filter(c=>access.capabilities.includes(c)));
+   const {employeeId,subject,capabilities,sourceProfile}=await authority(tx,actor);
+   const {company,employee}=subject;
+   if(p.employeeId!==employeeId||sourceProfile==='native-isolation-v1'||![...d.DELIVERY_READ_CAPS,rule.capability].every(cap=>capabilities.includes(cap)))fail('Current delivery capability denied');
+   const roleCaps=deliveryCapabilities(subject,hasCompanyRolePermissionAction),features=d.deliveryFeatures(roleCaps.filter(c=>capabilities.includes(c)));
    if(!roleCaps.includes(rule.capability)||d.canonicalDelivery(features)!==d.canonicalDelivery(p.features))fail('Original current delivery role/override denied');
    const can=action=>hasCompanyRolePermissionAction(subject,'delivery_reports',action)===true;
-   const owner=report=>{if(report&&!can('view_all_delivery_reports')&&(report.empId||report.createdByEmpId)!==binding.employeeId)fail('Delivery report outside current original employee scope');};owner(p.base.report);
+   const owner=report=>{if(report&&!can('view_all_delivery_reports')&&(report.empId||report.createdByEmpId)!==employeeId)fail('Delivery report outside current original employee scope');};owner(p.base.report);
    const prior=(await tx.get(receiptRef(command.commandId))).data();if(prior){if(prior.tenantId!==actor.tenantId||prior.principalId!==actor.uid||prior.kind!==command.kind||prior.entityId!==command.entityId||prior.payloadDigest!==command.payloadDigest)fail('Immutable delivery receipt reused');return prior;}
    const cache=new Map();
    const one=async(source,id)=>{if(!id)return null;if(!d.DELIVERY_CONTEXT_SOURCES.includes(source)||!d.deliveryId(id))fail('Invalid delivery source identity');const key=source+'/'+id;if(cache.has(key))return cache.get(key);const snap=await tx.get(ref(source,id));const doc=snap.exists?d.deliveryPlain(d.deliveryFeedClean({...snap.data(),id})):null;if(doc&&(source==='companies'?doc.id!==actor.tenantId:doc.companyId!==actor.tenantId))fail('Foreign delivery relation');cache.set(key,doc);return doc;};
@@ -46,7 +47,7 @@ function createOfflineDeliveryCommandService({db,projectId,appId,hasCompanyRoleP
     }
     if(found.size>25)fail('Ambiguous/oversized delivery relations','delivery-unsupported-contract');return [...found.values()].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
    };
-   const current=await ctx.loadDeliveryContext({one,related,tenantId:actor.tenantId,employee:{id:binding.employeeId,name:employee.name||''},id:command.entityId,dispatchId:p.values?.dispatchId||p.base.report?.dispatchId,assetId:p.values?.assetId||p.base.asset?.id||''});owner(current.report);
+   const current=await ctx.loadDeliveryContext({one,related,tenantId:actor.tenantId,employee:{id:employeeId,name:employee.name||''},id:command.entityId,dispatchId:p.values?.dispatchId||p.base.report?.dispatchId,assetId:p.values?.assetId||p.base.asset?.id||''});owner(current.report);
    const targetKeys=Object.keys(p.base.targets||{});if(targetKeys.length>40||targetKeys.some(k=>!['deliveryReports','orders','payments','expenses','assetCostLogs'].includes(k.split('/')[0])||k.split('/').length!==2||!d.deliveryId(k.split('/')[1])))fail('Invalid compound delivery target');
    for(const key of targetKeys){const [source,id]=key.split('/');current.targets[key]=await one(source,id);}
    const receipt={tenantId:actor.tenantId,principalId:actor.uid,commandId:command.commandId,idempotencyKey:command.commandId,payloadDigest:command.payloadDigest,entityId:command.entityId,kind:command.kind,outcome:'conflict'};

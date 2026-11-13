@@ -8,7 +8,7 @@ const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
 const fail=(message,code='invalid-argument')=>{throw Object.assign(Error(message),{code});};
 const text=(x,max)=>typeof x==='string'&&x.trim()&&x.length<=max;
 function createAttendanceAdjustmentRequests({db,projectId,appId,authorize,now=Date.now,environment,readOnly=false}){
- const trustedRead=readOnly===true&&require('./offlineServerEnvironment.cjs').isTrustedOfflineServerEnvironment(environment,projectId,appId,db);
+ const trustedRead=require('./offlineServerEnvironment.cjs').isTrustedOfflineServerEnvironment(environment,projectId,appId,db);
  if(typeof authorize!=='function')fail('Current adjustment authority is required','permission-denied');
  if((!projectId?.startsWith('demo-')||db.projectId!==projectId||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||!id(appId))&&!trustedRead)fail('Local or verified read authority required','permission-denied');
  const ref=(tenant,request)=>db.doc('attendanceAdjustmentRequests/'+hash([appId,tenant,request]));

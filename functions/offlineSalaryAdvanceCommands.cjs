@@ -1,7 +1,8 @@
+const {assertOfflineCommandEnvironment}=require('./offlineCommandAuthority.cjs');
 const {createHash}=require('node:crypto');const hash=x=>createHash('sha256').update(x).digest('hex');
 const fail=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
-function createOfflineSalaryAdvanceCommandService({db,projectId,appId,authorize,loadDomain}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId)||!/^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||db?.projectId!==projectId)fail('Local salary advance authority required');
+function createOfflineSalaryAdvanceCommandService({db,projectId,appId,environment,authorize,loadDomain}){
+ assertOfflineCommandEnvironment({db,projectId,appId,environment,authorize});
  return async(actor,command)=>{
   const d=await loadDomain(),id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x),p=command?.payload;
   if(!d.ADVANCE_KINDS.includes(command?.kind)||![actor?.uid,actor?.tenantId,command.commandId,command.entityId].every(id)||command.idempotencyKey!==command.commandId||command.baseRevision!==0||!p||Object.keys(p).some(k=>!['version','employeeId','values','editedAt','checkpoint','inputFingerprint','plan'].includes(k))||p.version!==1||!id(p.employeeId)||!id(p.checkpoint?.generation)||!Number.isSafeInteger(p.checkpoint.seq)||p.checkpoint.seq<0||!/[a-f0-9]{64}/.test(p.inputFingerprint||'')||hash(JSON.stringify(p))!==command.payloadDigest)fail('Invalid immutable salary advance command');

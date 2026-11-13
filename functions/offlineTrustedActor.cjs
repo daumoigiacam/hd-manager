@@ -3,7 +3,7 @@ const {originalCoreCapabilities}=require('./offlineCoreAppPolicy.cjs');
 const {isTrustedOfflineServerEnvironment}=require('./offlineServerEnvironment.cjs');
 const deny=()=>Object.assign(Error('Offline identity or current role denied'),{code:'permission-denied'});
 const segment=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
-function createTrustedOfflineActorResolver({environment,db,projector,mapping,now=Date.now,deriveReadCapabilities=()=>[]}){
+function createTrustedOfflineActorResolver({environment,db,projector,mapping,now=Date.now,deriveReadCapabilities=()=>[],deriveBusinessCapabilities=()=>[]}){
  const {projectId,appId,auth}=environment||{};
  if(!isTrustedOfflineServerEnvironment(environment,projectId,appId,db)||typeof projector?.hasCompanyRolePermissionAction!=='function')throw Error('Verified original server policy required');
  async function verifyToken(token){
@@ -23,7 +23,9 @@ function createTrustedOfflineActorResolver({environment,db,projector,mapping,now
   const permissionRevision=createHash('sha256').update(JSON.stringify([company.rolePermissions,company.rolePermissionActions,company.employeeRolePermissionActions,company.employeeRolePermissions,employee.role,employee.position,employee.positions,employee.additionalPositions,employee.rolePermissions,employee.rolePermissionActions,employee.permissionOverrides,employee.isArchived])).digest('hex');
   const extra=deriveReadCapabilities(subject,projector.hasCompanyRolePermissionAction);
   if(!Array.isArray(extra)||extra.some(x=>!['attendancePeriod.read','attendanceRequest.read','salarySettlement.read'].includes(x)))throw deny();
-  return {uid:decoded.uid,tenantId:decoded.companyId,permissionRevision,subject,capabilities:[...new Set([...originalCoreCapabilities(subject,{hasAction:projector.hasCompanyRolePermissionAction,mapping}),...extra])]};
+  const business=deriveBusinessCapabilities(subject);
+  if(!Array.isArray(business)||business.some(x=>typeof x!=='string'||!/^\w[\w-]*(?:\.[\w-]+){1,3}$/.test(x)))throw deny();
+  return {uid:decoded.uid,tenantId:decoded.companyId,permissionRevision,subject,capabilities:[...new Set([...originalCoreCapabilities(subject,{hasAction:projector.hasCompanyRolePermissionAction,mapping}),...extra,...business])]};
  }
  const resolve=async token=>{const decoded=await verifyToken(token);return db.runTransaction(reader=>read(reader,decoded),{readOnly:true});};
  return {verifyToken,read,resolve};

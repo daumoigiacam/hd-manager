@@ -1,9 +1,10 @@
+const {createOfflineCommandAuthority}=require('./offlineCommandAuthority.cjs');
 const {createHash}=require('node:crypto');
 const {fingerprint}=require('./offlineCustomerCommands.cjs');
-function createOfflineOrderCommandService({db,projectId,appId,authorize,duplicateSignature,hasCompanyRolePermissionAction,loadMutationDomain=()=>import('../development/hd-manager/application/src/features/orders/orderMutationProtocol.js')}){
- if(!projectId.startsWith('demo-')||!process.env.FIRESTORE_EMULATOR_HOST)throw Error('Order writes require Development Emulator');
+function createOfflineOrderCommandService({db,projectId,appId,environment,readAuthority,authorize,duplicateSignature,hasCompanyRolePermissionAction,loadMutationDomain=()=>import('../development/hd-manager/application/src/features/orders/orderMutationProtocol.js')}){
+ const authority=createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
  return async(actor,command)=>{
-  if(['order.update','order.archive'].includes(command.kind))return applyMetadataMutation({db,projectId,appId,actor,command,hasCompanyRolePermissionAction,loadMutationDomain});
+  if(['order.update','order.archive'].includes(command.kind))return applyMetadataMutation({db,projectId,appId,actor,command,authority,hasCompanyRolePermissionAction,loadMutationDomain});
   if(command.kind!=='order.create'||command.idempotencyKey!==command.commandId||!['commandId','entityId'].every(k=>/^[a-zA-Z0-9_-]{1,160}$/.test(command[k])))throw Error('Invalid order command');
   const digest=createHash('sha256').update(JSON.stringify(command.payload)).digest('hex');if(digest!==command.payloadDigest)throw Error('Order digest mismatch');
   const {validateOfflineOrderDocument}=await import('../src/utils/offlineOrderDocument.js');
@@ -27,9 +28,9 @@ function createOfflineOrderCommandService({db,projectId,appId,authorize,duplicat
   });
  };
 }
-async function applyMetadataMutation({db,projectId,appId,actor,command,hasCompanyRolePermissionAction,loadMutationDomain}){
+async function applyMetadataMutation({db,projectId,appId,actor,command,authority,hasCompanyRolePermissionAction,loadMutationDomain}){
  const denied=message=>Object.assign(Error(message),{code:'permission-denied'});
- if(!/^demo-[a-z0-9-]+$/.test(projectId)||!process.env.FIRESTORE_EMULATOR_HOST)throw denied('Order CAS requires Development Emulator');
+
  const identifier=value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,160}$/.test(value);
  if(!actor||![actor.uid,actor.tenantId,command.commandId,command.entityId].every(identifier)||command.idempotencyKey!==command.commandId)throw denied('Invalid CAS identity');
  if(typeof hasCompanyRolePermissionAction!=='function')throw denied('CAS needs original hasCompanyRolePermissionAction; create_manual_order is not edit/archive authorization');
@@ -40,13 +41,11 @@ async function applyMetadataMutation({db,projectId,appId,actor,command,hasCompan
  const ref=(source,id)=>db.doc(`artifacts/${appId}/public/data/${source}/${id}`);
  const receiptRef=id=>db.doc('offlineOrderReceipts/'+fingerprint([actor.tenantId,actor.uid,id]));
  return db.runTransaction(async tx=>{
-  // Re-read active binding, current signed-capability policy and original role
-  // documents INSIDE the same transaction as CAS + receipt + order update.
-  const binding=(await tx.get(db.doc('offlineHomeActors/'+actor.uid))).data();
-  const access=(await tx.get(db.doc('offlineCustomerAccess/'+actor.uid))).data();
-  if(!binding?.active||binding.tenantId!==actor.tenantId||!identifier(binding.employeeId)||binding.sourceArchiveSha256||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||!access.capabilities?.includes(rule.capability)||!access.capabilities.includes('orders.read')||access.appIdentity?.homeSourceProfile==='native-isolation-v1')throw denied('Order CAS identity/capability policy denied');
-  const company=(await tx.get(ref('companies',actor.tenantId))).data(),employee=(await tx.get(ref('employees',binding.employeeId))).data();
-  if(!company||!employee||employee.companyId!==actor.tenantId||employee.isArchived||hasCompanyRolePermissionAction({company:{...company,id:actor.tenantId},employee:{...employee,id:binding.employeeId},currentUser:{...employee,id:binding.employeeId}},rule.module,rule.action)!==true)throw denied('Missing original role action '+rule.module+'/'+rule.action);
+  // Re-read current original-role authority INSIDE the same transaction as
+  // CAS + receipt + order update, including immutable receipt replay.
+  const {subject,capabilities,sourceProfile}=await authority(tx,actor);
+  if(!capabilities.includes(rule.capability)||!capabilities.includes('orders.read')||sourceProfile==='native-isolation-v1')throw denied('Order CAS capability denied');
+  if(hasCompanyRolePermissionAction(subject,rule.module,rule.action)!==true)throw denied('Missing original role action '+rule.module+'/'+rule.action);
   const prior=await tx.get(receiptRef(command.commandId));
   if(prior.exists){const value=prior.data();if(value.kind!==command.kind||value.entityId!==command.entityId||value.payloadDigest!==digest)throw Error('Immutable order mutation idempotency key reused');return value;}
   const orderRef=ref('orders',command.entityId),snapshot=await tx.get(orderRef),live=snapshot.exists?snapshot.data():null;

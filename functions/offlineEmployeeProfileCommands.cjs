@@ -1,9 +1,10 @@
-// Development-only, same business authority and transactional receipt pattern.
+const {assertOfflineCommandEnvironment}=require('./offlineCommandAuthority.cjs');
+// Shared business authority and transactional receipt pattern.
 const {createHash}=require('node:crypto');const {fingerprint}=require('./offlineCustomerCommands.cjs');
 const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
 const deny=message=>{throw Object.assign(Error(message),{code:'permission-denied'});};
-function createOfflineEmployeeProfileCommandService({db,projectId,appId,authorize,loadDomain,now=Date.now}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId)||!/^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||db.projectId!==projectId)deny('Local employee profile authority required');
+function createOfflineEmployeeProfileCommandService({db,projectId,appId,environment,authorize,loadDomain,now=Date.now}){
+ assertOfflineCommandEnvironment({db,projectId,appId,environment,authorize});
  return async(actor,command)=>{
   const d=await loadDomain(),p=command?.payload;if(!Object.hasOwn(d.employeeProfileActions,command?.kind)||![actor?.uid,actor?.tenantId,command.commandId,command.entityId].every(id)||command.idempotencyKey!==command.commandId||!p||Object.keys(p).some(k=>!['input','position','baseFingerprint','baseRevision'].includes(k))||!Number.isSafeInteger(command.baseRevision)||command.baseRevision<0||command.baseRevision>=Number.MAX_SAFE_INTEGER||command.baseRevision!==p.baseRevision)deny('Invalid employee profile command');
   const digest=createHash('sha256').update(JSON.stringify(p)).digest('hex');if(digest!==command.payloadDigest)deny('Employee profile digest mismatch');

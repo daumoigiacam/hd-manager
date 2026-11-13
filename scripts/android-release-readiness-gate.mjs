@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 const fail=code=>{throw Error(code);};
+export const RELEASE_WRITE_DOMAINS=Object.freeze(['customers','orders','cashflow','stockCounts','warehouseImports','warehouseDispatches','deliveryReports','employeeProfiles','salaryAdvances','payroll','attendance','attendanceRequests','attendancePeriods','salarySettlements']);
+export const RELEASE_COMMAND_FILES=Object.freeze(['offlineCommandAuthority.cjs','offlineTrustedCommands.mjs','offlineCustomerCommands.cjs','offlineOrderCommands.cjs','offlineCashflowCommands.cjs','offlineStockCountCommands.cjs','offlineWarehouseImportCommands.cjs','offlineWarehouseDispatchCommands.cjs','offlineDeliveryCommands.cjs','offlineEmployeeProfileCommands.cjs','offlineSalaryAdvanceCommands.cjs','offlinePayrollCommands.cjs','offlineAttendanceCommands.cjs','offlineAttendanceTrustedContext.cjs','attendanceAdjustmentRequests.cjs','attendanceAdjustmentApplication.cjs','attendancePeriodConfirmations.cjs','payrollTimesheetBinding.cjs','payrollSettlements.cjs','generated/offlineBusinessPolicy.mjs','generated/offlineCashflowPolicy.cjs'].map(file=>'functions/'+file));
 export async function verifyAndroidReadiness(report,{expectedSource,readFile=fs.readFile}={}){
   if(!/^[a-f0-9]{40}$/.test(expectedSource||'')||report.sourceCommit!==expectedSource||report.status!=='READY')fail('EXACT_COMMIT_READINESS_REQUIRED');
   const p=report.environment;
@@ -8,10 +10,11 @@ export async function verifyAndroidReadiness(report,{expectedSource,readFile=fs.
   const urls=[p.appOrigin,p.apiBaseUrl].map(x=>new URL(x));
   if(urls.some(u=>u.protocol!=='https:'||u.username||u.password||u.hostname==='localhost'||/^[\d.]+$/.test(u.hostname)||u.hostname.endsWith('.localhost')))fail('REAL_HTTPS_EVIDENCE_REQUIRED');
   for(const name of ['session','snapshot','offlineRead','offlineWrite','offlineReload','outboxPayloadRestored','reconnect','idempotency','tenantIsolation','financialReconciliation','inventoryReconciliation'])if(report.tests?.[name]?.status!=='PASS')fail('READINESS_TEST_MISSING_'+name);
+  for(const name of RELEASE_WRITE_DOMAINS)if(report.tests?.writeDomains?.[name]?.status!=='PASS')fail('WRITE_DOMAIN_EVIDENCE_MISSING_'+name);
   const sourceRoot='development/hd-manager/application';
   if(report.sourceRoot!==sourceRoot)fail('CANONICAL_SOURCE_ROOT_REQUIRED');
   const requiredFiles=[...['package.json','package-lock.json','vite.config.js','src/main.jsx','src/config/offlineRuntimeEnvironment.js','src/config/offlineRuntimeBuildConfig.js','src/data/webOfflinePlatform.js','src/data/webOfflineDatabase.js','src/data/webOfflineSqlWorker.js','src/data/webEncryptedVault.js','src/services/useNativeOfflineWorkspace.js','src/services/webOfflineShell.js'].map(file=>sourceRoot+'/'+file),'functions/offlineTrustedBackend.mjs','functions/offlineTrustedApi.cjs','functions/offlineTrustedActor.cjs','functions/offlineTrustedHttp.cjs','functions/offlineTrustedReadApi.mjs','functions/offlineScopedBusinessSource.mjs','functions/offlineServerEnvironment.cjs','android/app/build.gradle','capacitor.config.json'];
-  if(!Array.isArray(report.files)||!requiredFiles.every(file=>report.files.some(f=>f.file===file))||new Set(report.files.map(f=>f.file)).size!==report.files.length)fail('SOURCE_INVENTORY_REQUIRED');
+  if(!Array.isArray(report.files)||![...requiredFiles,...RELEASE_COMMAND_FILES].every(file=>report.files.some(f=>f.file===file))||new Set(report.files.map(f=>f.file)).size!==report.files.length)fail('SOURCE_INVENTORY_REQUIRED');
   for(const row of report.files){if(!/^(src|functions|scripts|android|development\/hd-manager\/application)\/[A-Za-z0-9_./-]+$|^(package(-lock)?\.json|vite\.config\.js|capacitor\.config\.json)$/.test(row.file)||row.file.split('/').includes('..')||! /^[a-f0-9]{64}$/.test(row.sha256))fail('INVALID_SOURCE_INVENTORY');if(createHash('sha256').update(await readFile(row.file)).digest('hex')!==row.sha256)fail('READINESS_SOURCE_DRIFT');}
   return true;
 }

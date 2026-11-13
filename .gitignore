@@ -38,6 +38,7 @@ stable-apk-web/
 /more-menu-owner.png
 
 # Local env files
+/.local-dev/
 .env
 .env.*
 !.env.example

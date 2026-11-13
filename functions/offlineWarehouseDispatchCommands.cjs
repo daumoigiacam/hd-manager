@@ -1,9 +1,11 @@
-// Development-only dispatch sidecar. Main owns transport, grants, sync routing and runtime composition.
+const {createOfflineCommandAuthority}=require('./offlineCommandAuthority.cjs');
+// Shared dispatch handler. Main owns transport, grants, sync routing and runtime composition.
 const {createHash}=require('node:crypto');
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const fail=(m,code='permission-denied')=>{throw Object.assign(Error(m),{code});};
-function createOfflineWarehouseDispatchCommandService({db,projectId,appId,hasCompanyRolePermissionAction,now=Date.now,loadDomain=()=>import('../development/hd-manager/application/src/features/warehouse/warehouseDispatchOfflineProtocol.js')}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||(db?.projectId&&db.projectId!==projectId)||!db?.runTransaction||!db?.collection||!/^[A-Za-z0-9_-]{1,160}$/.test(appId||'')||typeof hasCompanyRolePermissionAction!=='function')fail('Dispatch commands require Development Emulator, original role policy and current database');
+function createOfflineWarehouseDispatchCommandService({db,projectId,appId,environment,readAuthority,hasCompanyRolePermissionAction,now=Date.now,loadDomain=()=>import('../development/hd-manager/application/src/features/warehouse/warehouseDispatchOfflineProtocol.js')}){
+ const authority=createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
+ if(typeof hasCompanyRolePermissionAction!=='function'||!db?.collection)throw Error('Original role policy and database required');
  return async function apply(actor,command){
   const d=await loadDomain(),rule=d.DISPATCH_RULES[command?.kind];
   if(!rule||!actor?.permissionRevision||![actor.uid,actor.tenantId,command.commandId,command.entityId].every(d.dispatchIdentifier)||command.idempotencyKey!==command.commandId)fail('Invalid dispatch command identity');
@@ -14,14 +16,13 @@ function createOfflineWarehouseDispatchCommandService({db,projectId,appId,hasCom
   const path=source=>`artifacts/${appId}/public/data/${source}`,ref=(source,id)=>db.doc(`${path(source)}/${id}`);
   const receiptRef=id=>db.doc('offlineWarehouseDispatchReceipts/'+hash(JSON.stringify([actor.tenantId,actor.uid,id])));
   return db.runTransaction(async tx=>{
-   const binding=(await tx.get(db.doc('offlineHomeActors/'+actor.uid))).data(),access=(await tx.get(db.doc('offlineCustomerAccess/'+actor.uid))).data();
-   if(!binding?.active||binding.tenantId!==actor.tenantId||binding.sourceArchiveSha256||p.employeeId!==binding.employeeId||!d.dispatchIdentifier(binding.employeeId)||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||access.readScope!=='tenant'||access.appIdentity?.homeSourceProfile==='native-isolation-v1'||!['home.read','home.dispatches.read','home.stock.read','home.debt.read','customers.read',rule.capability,...(command.kind==='warehouseDispatch.archive'?[]:[d.DISPATCH_OUTSIDE_CAP])].every(cap=>access.capabilities?.includes(cap)))fail('Current dispatch binding/signed capability denied');
-   const company=(await tx.get(ref('companies',actor.tenantId))).data(),employee=(await tx.get(ref('employees',binding.employeeId))).data();
-   const subject={company:{...company,id:actor.tenantId},employee:{...employee,id:binding.employeeId},currentUser:{...employee,id:binding.employeeId}};
+   const {employeeId,subject,capabilities,sourceProfile}=await authority(tx,actor);
+   const {company,employee}=subject;
+   if(p.employeeId!==employeeId||sourceProfile==='native-isolation-v1'||!['home.read','home.dispatches.read','home.stock.read','home.debt.read','customers.read',rule.capability,...(command.kind==='warehouseDispatch.archive'?[]:[d.DISPATCH_OUTSIDE_CAP])].every(cap=>capabilities.includes(cap)))fail('Current dispatch capability denied');
    const can=action=>hasCompanyRolePermissionAction(subject,'warehouse_dispatch',action)===true;
    const actionAllowed=command.kind==='warehouseDispatch.create'?(can('create_warehouse_dispatch')||can('create_dispatch_without_order_request')):command.kind==='warehouseDispatch.archive'?true:can(rule.action);
    if(!company||company.isArchived||!employee||employee.companyId!==actor.tenantId||employee.isArchived||!can('view_warehouse_dispatch')||!actionAllowed||command.kind!=='warehouseDispatch.archive'&&!can('create_dispatch_without_order_request'))fail('Original current dispatch role action denied');
-   const archiveAuthority=document=>{if(command.kind!=='warehouseDispatch.archive')return;const historical=document?.date!==d.dispatchToday(now());if(!can(historical?'delete_dispatch_history_detail':'delete_warehouse_dispatch')||historical&&!access.capabilities.includes(d.DISPATCH_HISTORY_CAP))fail('Original current/history archive role action and signed capability required');};
+   const archiveAuthority=document=>{if(command.kind!=='warehouseDispatch.archive')return;const historical=document?.date!==d.dispatchToday(now());if(!can(historical?'delete_dispatch_history_detail':'delete_warehouse_dispatch')||historical&&!capabilities.includes(d.DISPATCH_HISTORY_CAP))fail('Original current/history archive role action and signed capability required');};
    // Replay returns before reading the current document. Its pinned original
    // base still requires the exact current/date-dependent delete authority.
    archiveAuthority(p.base);
@@ -57,7 +58,7 @@ function createOfflineWarehouseDispatchCommandService({db,projectId,appId,hasCom
     const cs=await tx.get(ref('customers',customerId));customer=cs.exists?{...cs.data(),id:customerId}:null;
     if(p.values.assignedDriverId){const ds=await tx.get(ref('employees',p.values.assignedDriverId));driver=ds.exists?{...ds.data(),id:p.values.assignedDriverId}:null;}
    }
-   const planned=await d.planDispatch(current,command.kind,p.values,{id:command.entityId,tenantId:actor.tenantId,employeeId:binding.employeeId,editedAt:p.editedAt,mutationId:command.commandId,customer,product,driver});
+   const planned=await d.planDispatch(current,command.kind,p.values,{id:command.entityId,tenantId:actor.tenantId,employeeId:employeeId,editedAt:p.editedAt,mutationId:command.commandId,customer,product,driver});
    // Repricing or renaming after review is a conflict, not an invisible rebase.
    if(d.canonicalDispatch(planned)!==d.canonicalDispatch(p.planned)){conflict('dispatch-relations-or-pricing-changed');tx.set(receiptRef(command.commandId),receipt);return receipt;}
    const stockUnit=product.stockUnit||product.inventoryUnit||product.unit;

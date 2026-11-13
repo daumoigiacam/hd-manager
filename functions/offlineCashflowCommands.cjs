@@ -1,4 +1,5 @@
-// Development sidecar only. No HTTP export, grant issuer or production entry.
+const {assertOfflineCommandEnvironment}=require('./offlineCommandAuthority.cjs');
+// Shared command handler. No HTTP export, grant issuer or production entry.
 const {createHash} = require('node:crypto');
 const {fingerprint} = require('./offlineCustomerCommands.cjs');
 const CONTRACT = Object.freeze({
@@ -46,8 +47,8 @@ function assertSimple(source, live, employeeId, domain) {
   if (!Number.isSafeInteger(revision(live)) || revision(live) < 0) fail('invalid-argument','Invalid cashflow revision');
 }
 
-function createOfflineCashflowCommandService({db,projectId,appId,authorize,policy,domain,now=Date.now}) {
-  if (!/^demo-[a-z0-9-]+$/.test(projectId || '') || !/^(?:localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST || '')) fail('permission-denied','Cashflow writes require Development Emulator');
+function createOfflineCashflowCommandService({db,projectId,appId,environment,authorize,policy,domain,now=Date.now}) {
+ assertOfflineCommandEnvironment({db,projectId,appId,environment,authorize});
   if (typeof db?.projectId === 'string' && db.projectId !== projectId) fail('permission-denied','Cashflow adapter project mismatch');
   if (!id(appId) || typeof db?.runTransaction !== 'function' || typeof authorize !== 'function'
     || typeof policy?.hasCompanyRolePermissionAction !== 'function' || typeof policy?.isOwnerAccountUser !== 'function') fail('failed-precondition','Original server role policy required');

@@ -1,8 +1,8 @@
 // Request-scoped glue ONLY. No enrollment, flag/credential generation, verifier
 // implementation, HTTP handler, grant change or database writes live here.
 const fail=(code,message)=>{throw Object.assign(Error(message),{code});};
-function createOfflineAttendanceTrustedContext({projectId,identityCenter,request}){
-  if(!/^demo-[a-z0-9-]+$/.test(projectId||''))fail('permission-denied','Development identity context required');
+function createOfflineAttendanceTrustedContext({projectId,appId,db,environment,identityCenter,request}){
+  if(!/^demo-[a-z0-9-]+$/.test(projectId||'')&&!require('./offlineServerEnvironment.cjs').isTrustedOfflineServerEnvironment(environment,projectId,appId,db))fail('permission-denied','Verified identity context required');
   if(typeof identityCenter?.resolveAttendanceContext!=='function')fail('failed-precondition','Expose the original Identity Center attendance context first; no substitute verifier is permitted');
   if(typeof request?.authorization!=='string'||!request.authorization.trim()||!request.device?.deviceId
     ||typeof request.deviceSecret!=='string'||!request.deviceSecret||!['wifi','gps'].includes(request.method?.type)){

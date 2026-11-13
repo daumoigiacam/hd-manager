@@ -1,9 +1,10 @@
-// Development-only sidecar. Main owns HTTP/grants/bootstrap/receipt dispatch.
+const {createOfflineCommandAuthority}=require('./offlineCommandAuthority.cjs');
+// Shared command handler. Main owns HTTP/grants/bootstrap/receipt dispatch.
 const {createHash}=require('node:crypto');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const deny=message=>{throw Object.assign(Error(message),{code:'permission-denied'});};
-function createOfflineWarehouseImportCommandService({db,projectId,appId,hasCompanyRolePermissionAction,loadDomain=()=>import('../development/hd-manager/application/src/features/warehouse/warehouseImportProtocol.js')}){
-  if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||(db?.projectId&&db.projectId!==projectId))deny('Warehouse import requires Development Emulator');
+function createOfflineWarehouseImportCommandService({db,projectId,appId,environment,readAuthority,hasCompanyRolePermissionAction,loadDomain=()=>import('../development/hd-manager/application/src/features/warehouse/warehouseImportProtocol.js')}){
+ const authority=createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
   if(!/^[A-Za-z0-9_-]{1,160}$/.test(appId||'')||typeof db?.runTransaction!=='function'||typeof hasCompanyRolePermissionAction!=='function')throw Error('Original role policy and database required');
   return async function apply(actor,command){
     const d=await loadDomain(),rule=d.IMPORT_RULES[command?.kind];
@@ -14,11 +15,10 @@ function createOfflineWarehouseImportCommandService({db,projectId,appId,hasCompa
     if(command.kind==='warehouseImport.create'&&command.entityId!==`wi_${command.commandId}`)throw Error('Import create identity mismatch');
     const ref=(source,id)=>db.doc(`artifacts/${appId}/public/data/${source}/${id}`),receiptRef=id=>db.doc('offlineWarehouseImportReceipts/'+hash(JSON.stringify([actor.tenantId,actor.uid,id])));
     return db.runTransaction(async tx=>{
-      const binding=(await tx.get(db.doc('offlineHomeActors/'+actor.uid))).data(),access=(await tx.get(db.doc('offlineCustomerAccess/'+actor.uid))).data();
-      if(!binding?.active||binding.tenantId!==actor.tenantId||binding.sourceArchiveSha256||!d.importIdentifier(binding.employeeId)||p.employeeId!==binding.employeeId||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||access.readScope!=='tenant'||access.appIdentity?.homeSourceProfile==='native-isolation-v1'||!['home.read','home.imports.read','home.cashflow.read',rule.capability].every(cap=>access.capabilities?.includes(cap)))deny('Current import binding/capability denied');
-      const company=(await tx.get(ref('companies',actor.tenantId))).data(),employee=(await tx.get(ref('employees',binding.employeeId))).data();
-      const subject={company:{...company,id:actor.tenantId},employee:{...employee,id:binding.employeeId},currentUser:{...employee,id:binding.employeeId}};
-      if(!company||company.isArchived||!employee||employee.companyId!==actor.tenantId||employee.isArchived||hasCompanyRolePermissionAction(subject,'warehouse_import','view_warehouse_import')!==true||hasCompanyRolePermissionAction(subject,'warehouse_import',rule.action)!==true)deny('Original current warehouse import role denied');
+      const {employeeId,subject,capabilities,sourceProfile}=await authority(tx,actor);
+      const {company,employee}=subject;
+      if(p.employeeId!==employeeId||sourceProfile==='native-isolation-v1'||!['home.read','home.imports.read','home.cashflow.read',rule.capability].every(cap=>capabilities.includes(cap)))deny('Current import capability denied');
+      if(hasCompanyRolePermissionAction(subject,'warehouse_import','view_warehouse_import')!==true||hasCompanyRolePermissionAction(subject,'warehouse_import',rule.action)!==true)deny('Original current warehouse import role denied');
       // Authorization is re-read even for exact immutable receipt replay.
       const prior=(await tx.get(receiptRef(command.commandId))).data();
       if(prior){if(prior.tenantId!==actor.tenantId||prior.principalId!==actor.uid||prior.kind!==command.kind||prior.entityId!==command.entityId||prior.payloadDigest!==command.payloadDigest)throw Error('Immutable import receipt ID reused');return prior;}
@@ -36,7 +36,7 @@ function createOfflineWarehouseImportCommandService({db,projectId,appId,hasCompa
           if(!groups.includes(p.values.groupName))throw Error('Existing group required; group registration is unsupported');
           for(const [source,id]of [['products',p.values.productId],['customers',p.values.supplierCustomerId]])if(id){const linked=(await tx.get(ref(source,id))).data();if(!linked||linked.companyId!==actor.tenantId||linked.isArchived)deny('Import product/supplier relation denied');}
         }
-        const planned=d.applyImportIntent(current,command.kind,p.values,{id:command.entityId,tenantId:actor.tenantId,employeeId:binding.employeeId,editedAt:p.editedAt,mutationId:command.commandId});
+        const planned=d.applyImportIntent(current,command.kind,p.values,{id:command.entityId,tenantId:actor.tenantId,employeeId:employeeId,editedAt:p.editedAt,mutationId:command.commandId});
         receipt.outcome='accepted';receipt.document=planned.pair.document;receipt.expense=planned.pair.expense;receipt.expenseWritten=planned.expenseWritten;receipt.fingerprint=hash(d.canonicalImport(planned.pair));
         // Both business documents and the immutable receipt commit atomically.
         tx.set(documentRef,receipt.document);if(planned.expenseWritten)tx.set(expenseRef,receipt.expense);

@@ -71,7 +71,8 @@ jobs:
       - name: Verify release adapters and canonical financial policy
         run: |
           node scripts/build-offline-cashflow-policy.mjs --check
-          node --test tests/offline-trusted-server.test.cjs tests/offline-trusted-read-parity.test.mjs tests/android-release-readiness.test.mjs tests/android-release-canonical-workflow.test.mjs
+          node scripts/build-offline-business-policy.mjs --check
+          node --test tests/offline-trusted-server.test.cjs tests/offline-trusted-read-parity.test.mjs tests/offline-trusted-commands.test.mjs tests/android-release-readiness.test.mjs tests/android-release-canonical-workflow.test.mjs
 
       - name: Verify static compression check
         run: node --test tests/static-compression.test.mjs

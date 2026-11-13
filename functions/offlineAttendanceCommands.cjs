@@ -1,4 +1,4 @@
-// Development sidecar only; not registered in index.js or any HTTP/grant map.
+// Shared attendance transaction; hosted only through explicit verified adapters.
 const {createHash}=require('node:crypto');
 const {fingerprint}=require('./offlineCustomerCommands.cjs');
 const {recordManualAttendance}=require('./attendanceManual');
@@ -33,9 +33,8 @@ function validatePayload(command){
   return p;
 }
 
-function createOfflineAttendanceCommandService({db,projectId,appId,authorize,hasCompanyRolePermissionAction,getAttendanceContext,now=Date.now}){
-  if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')
-    ||(db?.projectId&&db.projectId!==projectId))fail('permission-denied','Attendance sidecar requires Development Emulator');
+function createOfflineAttendanceCommandService({db,projectId,appId,environment,readAuthority,authorize,hasCompanyRolePermissionAction,getAttendanceContext,now=Date.now}){
+  const authority=require('./offlineCommandAuthority.cjs').createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
   if(!id(appId)||typeof db?.runTransaction!=='function'||typeof authorize!=='function'
     ||typeof hasCompanyRolePermissionAction!=='function'||typeof getAttendanceContext!=='function')fail('failed-precondition','Original attendance identity/device/role adapters required');
   const ref=(source,key)=>{if(!id(key))fail('invalid-argument','Invalid attendance relation');return db.doc(`artifacts/${appId}/public/data/${source}/${key}`);};
@@ -45,14 +44,8 @@ function createOfflineAttendanceCommandService({db,projectId,appId,authorize,has
     const p=validatePayload(command);
     return db.runTransaction(async tx=>{
       await authorize(tx,actor,command.kind,command);
-      const binding=(await tx.get(db.doc('offlineHomeActors/'+actor.uid))).data();
-      const access=(await tx.get(db.doc('offlineCustomerAccess/'+actor.uid))).data();
-      if(!binding?.active||binding.tenantId!==actor.tenantId||binding.employeeId!==p.employeeId||binding.sourceArchiveSha256
-        ||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision
-        ||access.appIdentity?.homeSourceProfile==='native-isolation-v1'
-        ||!['home.read','home.payroll.read',command.kind].every(cap=>access.capabilities?.includes(cap)))fail('permission-denied','Current self-attendance capability denied');
-      const company=(await tx.get(ref('companies',actor.tenantId))).data();
-      const employee=(await tx.get(ref('employees',binding.employeeId))).data();
+      const {employeeId,subject,capabilities,sourceProfile}=await authority(tx,actor),{company,employee}=subject;
+      if(employeeId!==p.employeeId||sourceProfile==='native-isolation-v1'||!['home.read','home.payroll.read',command.kind].every(cap=>capabilities.includes(cap)))fail('permission-denied','Current self-attendance capability denied');
       if(!company||!employee||employee.companyId!==actor.tenantId||employee.isArchived
         ||hasCompanyRolePermissionAction({company:{...company,id:actor.tenantId},employee:{...employee,id:p.employeeId},currentUser:{...employee,id:p.employeeId}},
           'company_attendance','check_in_out')!==true)fail('permission-denied','Original company_attendance/check_in_out action denied');

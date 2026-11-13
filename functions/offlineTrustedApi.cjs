@@ -13,15 +13,16 @@ const segment=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
 // Production-capable factory, NOT exported by index.js and NOT deployed.
 // Uses real Firebase Identity Center bindings and original role/calculation
 // functions. Unsupported write domains are denied, never blindly forwarded.
-function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,createHomeFeed,createReadSources,deriveReadCapabilities,now=Date.now}){
+function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,createHomeFeed,createReadSources,deriveReadCapabilities,createCommands,deriveBusinessCapabilities,identityCenter,now=Date.now}){
  const {db,projectId,appId,maxOfflineMs}=environment||{};
  if(!isTrustedOfflineServerEnvironment(environment,projectId,appId,db)||typeof getSigningKey!=='function'||typeof createHomeFeed!=='function'||!mapping||!Object.keys(mapping).length)throw Error('Trusted API dependencies are required');
- const actors=createTrustedOfflineActorResolver({environment,db,projector,mapping,now,deriveReadCapabilities}),feeds=new Map(),contexts=new WeakMap();let closed=false;
+ const actors=createTrustedOfflineActorResolver({environment,db,projector,mapping,now,deriveReadCapabilities,deriveBusinessCapabilities}),feeds=new Map(),contexts=new WeakMap();let closed=false;
  const get=(source,id)=>db.doc(`artifacts/${appId}/public/data/${source}/${id}`);
  const date=()=>{const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now());const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return p.year+'-'+p.month+'-'+p.day;};
  const capability=(actor,cap)=>{if(!actor.capabilities.includes(cap))throw denied();};
  const currentScope=(actor,scope)=>{if(scope&&((scope.principalId&&scope.principalId!==actor.uid)||(scope.tenantId&&scope.tenantId!==actor.tenantId)||(scope.permissionRevision&&scope.permissionRevision!==actor.permissionRevision)))throw denied();};
  const fresh=async(tx,actor,cap)=>{const decoded=contexts.get(actor);if(!decoded)throw denied();const value=await actors.read(tx,decoded);if(value.tenantId!==actor.tenantId||value.permissionRevision!==actor.permissionRevision)throw denied();if(cap)capability(value,cap);return value;};
+ const commands=typeof createCommands==='function'?createCommands({environment,projector,readAuthority:fresh,identityCenter}):null;
  const applyCustomer=createOfflineCustomerCommandService({db,projectId,appId,environment,authorize:async(tx,actor,kind,command)=>{
   const current=await fresh(tx,actor,customerKind[kind]);
   const employeeId=command.payload?.empId;
@@ -40,7 +41,7 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
   const value={day,used:now()};
   value.promise=(async()=>{
    let feed;const lease=await acquireOfflineFeedLease({db,tenantId:actor.tenantId,environment,now,onLost:()=>{feed?.close();if(feeds.get(actor.tenantId)===value)feeds.delete(actor.tenantId);}});
-   try{feed=await createHomeFeed({db:lease.db,verifiedDatabase:db,environment,projectId,appId,tenantId:actor.tenantId,asOfDay:day,projector,authenticate:actors.verifyToken,resolveCurrentActor:actors.resolve});await feed.ready();return {...feed,async close(){feed.close();try{await feed.settle();}finally{await lease.close();}}};}
+   try{feed=await createHomeFeed({db:lease.db,verifiedDatabase:db,environment,projectId,appId,tenantId:actor.tenantId,asOfDay:day,projector,authenticate:actors.verifyToken,resolveCurrentActor:actors.resolve,payrollSources:!!commands});await feed.ready();return {...feed,async close(){feed.close();try{await feed.settle();}finally{await lease.close();}}};}
    catch(error){await lease.close().catch(()=>{});throw error;}
   })().catch(error=>{if(feeds.get(actor.tenantId)===value)feeds.delete(actor.tenantId);throw error;});
   feeds.set(actor.tenantId,value);return value.promise;
@@ -51,7 +52,7 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
   if(action==='grant'){
    if(!segment(body.deviceId))throw Error('Invalid Offline device ID');
    const grant=await db.runTransaction(async tx=>{
-    const freshActor=await actors.read(tx,decoded),caps=freshActor.capabilities.filter(supportedWrite);
+    const freshActor=await actors.read(tx,decoded),caps=freshActor.capabilities.filter(commands?commands.supports:supportedWrite);
     if(!caps.some(cap=>['customers.read','home.read','attendancePeriod.read','attendanceRequest.read','salarySettlement.read'].includes(cap)))throw denied();
     const issuedAtMs=now(),scope={projectId,principalId:freshActor.uid,tenantId:freshActor.tenantId,permissionRevision:freshActor.permissionRevision,deviceId:body.deviceId,sessionId:randomUUID()};
     const user=freshActor.subject.employee,company=freshActor.subject.company;
@@ -65,8 +66,9 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
    return {scope,signedGrant:message+'.'+sign('RSA-SHA256',Buffer.from(message),privateKey).toString('base64url'),issuedAtMs};
   }
   if(action==='sync'){
-   if(!body.command||!customerKind[body.command.kind])throw Object.assign(Error('Write domain has not passed the trusted server release gate'),{code:'failed-precondition'});
-   return applyCustomer(actor,body.command);
+   if(body.command&&Object.hasOwn(customerKind,body.command.kind))return applyCustomer(actor,body.command);
+   if(!body.command||!commands)throw Object.assign(Error('Write domain has not passed the trusted server release gate'),{code:'failed-precondition'});
+   return commands.apply(actor,body.command,{action,token,body});
   }
   if(['business-source','attendance-period','payroll-settlement','attendance-adjustment','warehouse-import-head','warehouse-import-page'].includes(action)){
    if(typeof createReadSources!=='function')throw Object.assign(Error('Trusted business read adapter is not configured'),{code:'failed-precondition'});

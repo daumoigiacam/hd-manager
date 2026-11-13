@@ -1,9 +1,10 @@
-// Development-only, explicit composition; importing does not start a service.
+const {createOfflineCommandAuthority}=require('./offlineCommandAuthority.cjs');
+// Explicit server composition; importing does not start a service.
 const {createHash}=require('node:crypto');
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const fail=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
-function createOfflinePayrollCommandService({db,projectId,appId,verifyTimesheets,now=Date.now,serverTimestamp=()=>require('firebase-admin/firestore').FieldValue.serverTimestamp(),loadDomain=()=>import('../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js')}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||(db?.projectId&&db.projectId!==projectId)||!db?.runTransaction||!db?.collection||!/^[A-Za-z0-9_-]{1,160}$/.test(appId||''))fail('Payroll requires explicit Development Firestore and existing owner');
+function createOfflinePayrollCommandService({db,projectId,appId,environment,readAuthority,verifyTimesheets,now=Date.now,serverTimestamp=()=>require('firebase-admin/firestore').FieldValue.serverTimestamp(),loadDomain=()=>import('../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js')}){
+ const authority=createOfflineCommandAuthority({db,projectId,appId,environment,readAuthority});
  return async function apply(actor,command){
   const d=await loadDomain();if(!d.PAYROLL_COMMAND_CAPS[command?.kind]||![actor?.uid,actor?.tenantId,command.commandId,command.entityId].every(d.payrollId)||!actor.permissionRevision||command.idempotencyKey!==command.commandId)fail('Invalid payroll command identity');
   const p=d.validatePayrollPayload(command.kind,command.payload);
@@ -11,11 +12,10 @@ function createOfflinePayrollCommandService({db,projectId,appId,verifyTimesheets
   for(const w of [...p.plan.writes,...p.plan.base])if(w.body&&w.body.companyId!==actor.tenantId)fail('Cross-tenant payroll document');
   const root=`artifacts/${appId}/public/data`,ref=(s,id)=>db.doc(`${root}/${s}/${id}`),receiptRef=id=>db.doc('offlinePayrollReceipts/'+hash(JSON.stringify([appId,actor.tenantId,actor.uid,id]))),ownReceipt=receiptRef(command.commandId);
   await db.runTransaction(async tx=>{
-   const [bindingSnap,accessSnap,companySnap]=await Promise.all([tx.get(db.doc('offlineHomeActors/'+actor.uid)),tx.get(db.doc('offlineCustomerAccess/'+actor.uid)),tx.get(ref('companies',actor.tenantId))]);
-   const binding=bindingSnap.data(),access=accessSnap.data(),company=companySnap.data();
-   if(!binding?.active||binding.tenantId!==actor.tenantId||binding.sourceArchiveSha256||binding.employeeId!==p.employeeId||!access?.active||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||access.readScope!=='tenant'||access.appIdentity?.homeSourceProfile!==undefined||!['home.read','home.payroll.read',d.PAYROLL_COMPANY_READ,d.PAYROLL_COMMAND_CAPS[command.kind]].every(cap=>access.capabilities?.includes(cap)))fail('Current signed payroll binding/capability denied');
-   const employeeSnap=await tx.get(ref('employees',binding.employeeId)),employee=employeeSnap.exists?{...employeeSnap.data(),id:binding.employeeId}:null;
-   if(!company||company.isArchived||employee?.isArchived||employee?.companyId!==actor.tenantId||!d.payrollManager(employee,employee))fail('Original owner/super-admin/accounting payroll role required');
+   const {employeeId,subject,capabilities,sourceProfile}=await authority(tx,actor);
+   const {company,employee}=subject;
+   if(p.employeeId!==employeeId||sourceProfile!==undefined||!['home.read','home.payroll.read',d.PAYROLL_COMPANY_READ,d.PAYROLL_COMMAND_CAPS[command.kind]].every(cap=>capabilities.includes(cap)))fail('Current payroll capability denied');
+   if(!d.payrollManager(employee,employee))fail('Original owner/super-admin/accounting payroll role required');
    // Authorization is rechecked even for an immutable old receipt replay.
    const prior=await tx.get(ownReceipt);if(prior.exists){const r=prior.data();if(r.tenantId!==actor.tenantId||r.principalId!==actor.uid||r.entityId!==command.entityId||r.kind!==command.kind||r.payloadDigest!==command.payloadDigest)fail('Immutable payroll receipt reused');return;}
    const headSnap=await tx.get(db.doc('offlineHomeFeeds/'+actor.tenantId)),head=headSnap.data();
@@ -33,7 +33,7 @@ function createOfflinePayrollCommandService({db,projectId,appId,verifyTimesheets
    if(!head?.ready||head.generation!==p.checkpoint.generation||head.seq!==p.checkpoint.seq||d.PAYROLL_INPUT_SOURCES.some(s=>!Number.isSafeInteger(head.counts?.[s])||head.counts[s]!==data[s].length)){conflict('payroll-source-generation-or-counts-changed');return;}
    if(inputFingerprint!==p.inputFingerprint||currentFingerprint!==p.baseFingerprint){conflict('payroll-input-or-compound-base-changed');return;}
    if(command.kind==='payroll.lock'&&!d.canLockPayrollPeriodAtDate(p.values.monthKey,d.getVietnamPayrollDateKey(new Date(now()))))fail('Server date is before payroll month end','payroll-unsupported-contract');
-   const plan=d.planPayroll(data,command.kind,p.values,{tenantId:actor.tenantId,employeeId:binding.employeeId},{editedAt:p.editedAt,mutationId:command.commandId});
+   const plan=d.planPayroll(data,command.kind,p.values,{tenantId:actor.tenantId,employeeId:employeeId},{editedAt:p.editedAt,mutationId:command.commandId});
    if(d.canonicalPayroll(plan)!==d.canonicalPayroll(p.plan)){conflict('authoritative-payroll-plan-changed');return;}
    let timesheetBindings=[];
    if(command.kind==='payroll.lock'){
@@ -42,7 +42,7 @@ function createOfflinePayrollCommandService({db,projectId,appId,verifyTimesheets
    }
    // All reads precede the first write. Original salary snapshots stay frozen.
    const timestamp=serverTimestamp();
-   for(const binding of timesheetBindings)tx.set(db.doc('payrollAttendanceSourceLinks/'+hash(JSON.stringify([appId,actor.tenantId,binding.payrollSnapshotId]))),{...binding,tenantId:actor.tenantId,payrollPeriodId:command.entityId,lockCommandId:command.commandId,lockedBy:bindingSnap.data().employeeId,lockedAtServer:timestamp});
+   for(const binding of timesheetBindings)tx.set(db.doc('payrollAttendanceSourceLinks/'+hash(JSON.stringify([appId,actor.tenantId,binding.payrollSnapshotId]))),{...binding,tenantId:actor.tenantId,payrollPeriodId:command.entityId,lockCommandId:command.commandId,lockedBy:employeeId,lockedAtServer:timestamp});
    for(const w of plan.writes){const body=command.kind==='payroll.lock'&&(w.source==='payrollPeriods'||w.source==='activityLogs'&&w.body.type==='payroll_period_lock')?{...w.body,closedAtServer:timestamp}:w.body;tx.set(ref(w.source,w.id),body);}
    tx.set(fenceRef,{tenantId:actor.tenantId,monthKey:p.values.monthKey,revision:(fence?.revision||0)+1});
    tx.set(ownReceipt,{...receipt,outcome:'accepted',writes:plan.writes,fingerprint:hash(d.canonicalPayroll(plan.writes)),closedAtServer:timestamp,...(timesheetBindings.length?{timesheetBindings}:{})});
