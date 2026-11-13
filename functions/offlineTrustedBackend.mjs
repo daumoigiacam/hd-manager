@@ -10,7 +10,7 @@ import {createTrustedReadApi,trustedReadCapabilities} from './offlineTrustedRead
 import {createTrustedBusinessCommands,trustedBusinessCapabilities} from './offlineTrustedCommands.mjs';
 import identity from './identityCenter.js';
 import {FieldValue,FieldPath} from 'firebase-admin/firestore';
-export function createTrustedOfflineBackend({db,auth,configuration,getSigningKey,nativeOrigins=[]}){
+export function createTrustedOfflineBackend({db,auth,configuration,getSigningKey,nativeOrigins=['https://localhost']}){
  const environment=serverEnvironment.createOfflineServerEnvironment({...configuration,db,auth});
  const identityCenter=identity.createIdentityCenter({db,admin:{auth:()=>auth,firestore:{FieldValue,FieldPath}},getAppId:requested=>{if(requested&&requested!==environment.appId)throw Error('Identity app binding mismatch');return environment.appId;}});
  const api=trustedApi.createTrustedOfflineApi({environment,projector,mapping:HOME_PERMISSION_MAPPING,getSigningKey,createHomeFeed:createOfflineHomeFeed,createReadSources:createTrustedReadApi,deriveReadCapabilities:trustedReadCapabilities,createCommands:createTrustedBusinessCommands,deriveBusinessCapabilities:trustedBusinessCapabilities,identityCenter});

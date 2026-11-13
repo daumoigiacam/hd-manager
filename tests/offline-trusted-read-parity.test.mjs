@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync} from 'node:crypto';
 import {createTrustedOfflineBackend} from '../functions/offlineTrustedBackend.mjs';
+import {createTrustedOfflineHttp} from '../functions/offlineTrustedHttp.cjs';
 const canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;
 const hash=v=>createHash('sha256').update(JSON.stringify(canon(v))).digest('hex');
 function fixture(){
@@ -67,4 +68,15 @@ test('read routes enforce auth, current permission, tenant scope, cursor binding
   assert.equal((await f.call('attendance-adjustment',{action:'list'})).status,403);
   for(const kind of ['order.create','cashflow.expense.create','payroll.lock','salarySettlement.pay'])assert.notEqual((await f.call('sync',{command:{kind}})).status,200);
  }finally{await f.api.close();}
+});
+test('packaged Android HTTPS origin uses the same current authenticated tenant authority',async()=>{
+ const f=fixture();try{const grant=await f.call('grant',{deviceId:'android-unit-device'},'a','https://localhost');assert.equal(grant.status,200);assert.equal(grant.body.scope.tenantId,'tenant-a');assert.equal(grant.headers['Access-Control-Allow-Origin'],'https://localhost');
+  const read=await f.call('business-source',{scope:grant.body.scope,plan:[{source:'orders',options:{limit:2}}]},'a','https://localhost');assert.equal(read.status,200);assert.deepEqual(read.body.results[0].items.map(x=>x.id),['order-a']);
+  assert.equal((await f.call('grant',{deviceId:'android-unit-device'},'','https://localhost')).status,401);assert.equal((await f.call('grant',{deviceId:'android-unit-device'},'a','https://localhost.evil.example.com')).status,403);
+ }finally{await f.api.close();}
+});
+test('native preflight is limited to approved exact origins; enabling Native never enables arbitrary web origins',async()=>{
+ assert.throws(()=>createTrustedOfflineHttp({environment:{appOrigin:'https://app.example.com'},api:{},nativeOrigins:['https://attacker.example.com']}),/Unexpected packaged Native origin/);
+ const handler=createTrustedOfflineHttp({environment:{appOrigin:'https://app.example.com'},api:{handle:()=>{throw Error('Preflight must not dispatch');}},nativeOrigins:['https://localhost']});const result={headers:{}},res={set:(k,v)=>result.headers[k]=v,status(s){result.status=s;return this;},end(){return this;},json(){return this;}};
+ await handler({method:'OPTIONS',get:k=>k==='origin'?'https://localhost':''},res);assert.equal(result.status,204);assert.equal(result.headers['Access-Control-Allow-Origin'],'https://localhost');
 });

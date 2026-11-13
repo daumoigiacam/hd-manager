@@ -2,7 +2,7 @@
 // deliberately separate. HTTPS configuration never falls back to localhost.
 function createTrustedOfflineHttp({environment,api,nativeOrigins=[]}){
  const allowed=new Set([environment.appOrigin,...nativeOrigins]);
- if(nativeOrigins.some(x=>!['http://localhost','capacitor://localhost'].includes(x)))throw Error('Unexpected packaged Native origin');
+ if(nativeOrigins.some(x=>!['https://localhost','http://localhost','capacitor://localhost'].includes(x)))throw Error('Unexpected packaged Native origin');
  const actions=new Set(['grant','sync','page','detail','history','customer-delta','home-head','home-page','home-report','business-source','attendance-period','payroll-settlement','attendance-adjustment','warehouse-import-head','warehouse-import-page']);
  return async(req,res)=>{
   res.set('Cache-Control','no-store');res.set('Content-Type','application/json');res.set('Vary','Origin');
