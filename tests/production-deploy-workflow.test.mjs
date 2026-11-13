@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import {createRequire} from 'node:module';
+const {parse}=createRequire(import.meta.url)('yaml');
 
 const workflow = await readFile(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 
@@ -13,7 +15,19 @@ assert.equal((workflow.match(/VITE_WORKER_TRANSFER_PROFILE: 'balanced-64k'/g) ||
 assert.equal((workflow.match(/VITE_IDENTITY_AUTH_REGION: ''/g) || []).length, 2, 'regional endpoints remain disabled until separately deployed');
 assert.doesNotMatch(workflow, /VITE_API_BASE_URL|VITE_INVENTORY_VPS_ENABLED|VITE_DATA_MODE:\s+vps-production/);
 assert.doesNotMatch(workflow, /if:.*github\.event_name == 'push'/);
-assert.equal((workflow.match(/if: github\.event_name == 'workflow_dispatch' && inputs\.confirm_production_release == true/g) || []).length, 9);
+const guardedNames=[
+  'Require same-source HTTPS Offline readiness before deployment',
+  'Validate readiness and prepare trusted Production configuration',
+  'Create deployment package','Calculate build SHA',
+  'Preserve active frontend release before activation',
+  'Prepare VPS deployment package path','Upload frontend to VPS',
+  'Deploy frontend to VPS','Verify production static compression',
+  'Verify production serves this release','Verify production entry-point assets',
+];
+const steps=parse(workflow).jobs.deploy.steps;
+const manualGuard="github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true";
+for(const name of guardedNames)assert.equal(steps.find(step=>step.name===name)?.if,manualGuard,name+' must remain manually authorized');
+for(const step of steps.filter(step=>/appleboy\/(ssh|scp)-action/.test(step.uses||'')))if(step.name!=='Restore previous frontend if release verification fails')assert.equal(step.if,manualGuard,'Remote action cannot run on push');
 assert.match(workflow, /name: Verify production static compression\s+if: github\.event_name == 'workflow_dispatch' && inputs\.confirm_production_release == true\s+run: node scripts\/verify-static-compression\.mjs --production/);
 assert.match(workflow, /host: \$\{\{ secrets\.VPS_HOST \}\}/);
 assert.match(workflow, /\/home\/hdmanager\/deploy\.sh/);
