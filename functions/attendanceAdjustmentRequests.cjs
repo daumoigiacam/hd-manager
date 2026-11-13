@@ -7,8 +7,10 @@ const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
 const fail=(message,code='invalid-argument')=>{throw Object.assign(Error(message),{code});};
 const text=(x,max)=>typeof x==='string'&&x.trim()&&x.length<=max;
-function createAttendanceAdjustmentRequests({db,projectId,appId,authorize,now=Date.now}){
- if(!projectId?.startsWith('demo-')||db.projectId!==projectId||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||!id(appId))fail('Local authority required','permission-denied');
+function createAttendanceAdjustmentRequests({db,projectId,appId,authorize,now=Date.now,environment,readOnly=false}){
+ const trustedRead=readOnly===true&&require('./offlineServerEnvironment.cjs').isTrustedOfflineServerEnvironment(environment,projectId,appId,db);
+ if(typeof authorize!=='function')fail('Current adjustment authority is required','permission-denied');
+ if((!projectId?.startsWith('demo-')||db.projectId!==projectId||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||!id(appId))&&!trustedRead)fail('Local or verified read authority required','permission-denied');
  const ref=(tenant,request)=>db.doc('attendanceAdjustmentRequests/'+hash([appId,tenant,request]));
  const receipt=(tenant,uid,key)=>db.doc('attendanceAdjustmentReceipts/'+hash([appId,tenant,uid,key]));
  return async function handle(uid,body){
@@ -19,6 +21,7 @@ function createAttendanceAdjustmentRequests({db,projectId,appId,authorize,now=Da
    q=q.orderBy('__name__').limit(41);if(body.after){if(!/^[a-f0-9]{64}$/.test(body.after))fail('Invalid cursor');q=q.startAfter(db.doc('attendanceAdjustmentRequests/'+body.after));}
    const rows=(await tx.get(q)).docs;return{items:rows.slice(0,40).map(d=>d.data()),hasMore:rows.length>40,after:rows.length>40?rows[39].id:null};
   });
+  if(readOnly)fail('Adjustment writes have not passed the trusted release gate','failed-precondition');
   if(!id(body.commandId)||body.commandId!==body.idempotencyKey||!id(body.requestId)||Object.keys(body).some(k=>!['action','commandId','idempotencyKey','requestId','payload','expectedRevision'].includes(k)))fail('Invalid immutable adjustment command');
   const digest=hash(body.payload),kind='attendanceRequest.'+body.action;
   return db.runTransaction(async tx=>{

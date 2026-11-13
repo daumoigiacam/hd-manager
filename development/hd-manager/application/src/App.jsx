@@ -1,3 +1,8 @@
+import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
+import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
+import InstantHome,{InstantHomeNavigation} from './layout/InstantHome.jsx';
+import {getCashExpenseFinance as instantHomeFinance,getReportPeriod as instantHomePeriod} from './features/business-report/reportViewModel.js';
+import {homeSummary} from './layout/instantHomeModel.js';
 import { logLoginStep, auth, db, isFirebaseConfigured, activeFirebaseConfig, firebaseAuthPersistencePromise, appId } from './services/firebaseClientRuntime.js';
 import {
   EMPTY_MAIN_LEDGER,
@@ -10285,7 +10290,8 @@ const useAutoDismissMessage = (message, setMessage, { delay = 5200, disabled = f
 // --- APP ENTRY POINT ---
 const normalizeAppTab = (tab) => (tab === 'report' ? 'home' : tab === 'maps' ? 'more' : (tab || 'home'));
 
-const RestoredLocalWorkspace=React.lazy(()=>import('./layout/RestoredLocalWorkspace.jsx'));
+// CoreWorkspaceEntry already loads this shell. A second lazy promise here
+// introduced a ~300 ms Suspense fallback after verified Runtime publication.
 function ApplicationView({offlineWorkspace}) {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
@@ -22330,11 +22336,11 @@ function ApplicationView({offlineWorkspace}) {
   }, [recoverableSyncNotice?.id]);
 
   if (offlineWorkspace.runtime?.isCurrent() && offlineWorkspace.runtime.appSession && (offlineWorkspace.restored||(!offlineWorkspace.online&&!currentUser)||(import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true'&&offlineWorkspace.enabled&&firebaseUser?.uid===offlineWorkspace.runtime.scope.principalId&&biometricUnlockState==='unlocked'))) return <React.Suspense fallback={<WorkingHome ready={false}/>}><RestoredLocalWorkspace key={JSON.stringify(offlineWorkspace.runtime.scope)} runtime={offlineWorkspace.runtime} CustomerView={CustomerCRMView} onCustomerIntent={()=>void deferredCustomerCRMViewModule.preload().catch(()=>{})} onLogout={handleLogout}/></React.Suspense>;
-  if(offlineWorkspace.enabled&&!offlineWorkspace.online&&(!offlineWorkspace.runtime?.isCurrent()||!offlineWorkspace.runtime.appSession)) return <AppShell><main className="p-6"><h1>Quyền truy cập Offline</h1><p role="alert">{offlineWorkspace.error||'Đang khôi phục và xác minh phiên trên thiết bị.'}</p><p>Chỉ mở dữ liệu khi quyền Offline có chữ ký còn hiệu lực. Dữ liệu và giao dịch đang chờ vẫn được giữ nguyên.</p></main></AppShell>;
+  if(offlineWorkspace.enabled&&!offlineWorkspace.online&&(!offlineWorkspace.runtime?.isCurrent()||!offlineWorkspace.runtime.appSession)) return <AppShell><main className="p-6"><h1>Quyền truy cập Offline</h1><p role="alert">{offlineWorkspace.error||(offlineWorkspace.settled?'Chưa có phiên Offline hợp lệ. Kết nối mạng để xác thực lại.':'Đang khôi phục và xác minh phiên trên thiết bị.')}</p><p>Chỉ mở dữ liệu khi quyền Offline có chữ ký còn hiệu lực. Dữ liệu và giao dịch đang chờ vẫn được giữ nguyên.</p><button type="button" onClick={()=>void handleLogout()}>Đăng xuất</button></main></AppShell>;
   // Fresh online sign-in and offline restoration use the SAME signed owner UI.
   // Preserve Firebase identity and biometric unlock; don't expose a legacy
   // workspace briefly while the server-signed local grant is still installing.
-  if(import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true'&&offlineWorkspace.enabled&&firebaseUser&&currentUser&&biometricUnlockState==='unlocked'&&(!offlineWorkspace.runtime?.isCurrent()||offlineWorkspace.runtime.scope.principalId!==firebaseUser.uid)) return <AppShell><WorkingHome ready={false}/>{offlineWorkspace.error&&<p role="alert">{offlineWorkspace.error}</p>}<button type="button" onClick={()=>void handleLogout()}>Đăng xuất</button></AppShell>;
+  if(import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true'&&offlineWorkspace.enabled&&firebaseUser&&currentUser&&!isCustomerSession&&biometricUnlockState==='unlocked'&&(!offlineWorkspace.runtime?.isCurrent()||offlineWorkspace.runtime.scope.principalId!==firebaseUser.uid)) return <AppShell><WorkingHome ready={false}/>{offlineWorkspace.error&&<p role="alert">{offlineWorkspace.error}</p>}<button type="button" onClick={()=>void handleLogout()}>Đăng xuất</button></AppShell>;
   if (!isFirebaseConfigured && !isVpsStagingMode) return <MissingFirebaseError />;
   if (isFirebaseLoading || isVpsSessionLoading) return <div className="flex h-screen items-center justify-center bg-gray-50"><p className="text-emerald-600 font-medium flex items-center animate-pulse"><CalendarDays className="mr-2 animate-spin"/> Đang kết nối dữ liệu...</p></div>;
 
@@ -24763,7 +24769,7 @@ function MainAppView({
     <React.Suspense fallback={<LedgerPreparationNotice />}>
       <div key={dashboardPrivacyScope}>
       {mainLedgerProjection.error&&<p role="alert">Chưa đối chiếu được công nợ. <button type="button" onClick={retryMainCustomerLedgers}>Thử lại</button></p>}
-<MemoizedExecutiveDashboardView workingHomeProps={workingHomeProps} reportCacheReady={startupWorkspaceReady||(serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&['companies','employees'].every(name=>serverConfirmedCollectionState?.collections?.[name]===true))} privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={(homeReportRequested||activeTab==='executive_dashboard'||isPreviewDataMode)&&!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={(homeReportRequested||activeTab==='executive_dashboard'||isPreviewDataMode)&&!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?(homePrimaryMode?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.home):FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
+<MemoizedExecutiveDashboardView reportCacheReady={startupWorkspaceReady||(serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&['companies','employees'].every(name=>serverConfirmedCollectionState?.collections?.[name]===true))} privacyScope={dashboardPrivacyScope} primaryMode={homePrimaryMode&&activeTab==='home'} detailsRequested={homeDetailsRequested} onRequestDetails={onHomeDetailsRequested} onCloseDetails={onHomeDetailsClosed} primarySourceReady={(homeReportRequested||activeTab==='executive_dashboard'||isPreviewDataMode)&&!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&COMPANY_HOME_PRIMARY_COLLECTIONS.every(name=>serverConfirmedCollectionState?.collections?.[name]===true)} sourceReady={(homeReportRequested||activeTab==='executive_dashboard'||isPreviewDataMode)&&!mainLedgerProjection.pending&&!mainLedgerProjection.error&&serverConfirmedCollectionState?.tenantId === currentUser?.companyId && (activeTab==='home'?(homePrimaryMode?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.home):FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.executive_dashboard).every(name => serverConfirmedCollectionState?.collections?.[name] === true)} isActive={activeTab === 'home' || activeTab === 'executive_dashboard'} employee={employee} payrollPeriods={payrollPeriods} onLoadPayrollPeriodSnapshots={onLoadPayrollPeriodSnapshots} employeeReviews={employeeReviews} customerComplaints={customerComplaints} attendanceLoaded={attendanceLoaded} complaintsLoaded={complaintsLoaded} accountName={isCompanyAccount ? getCompanyDisplayName(currentCompany) : employee?.name || currentUser?.name || 'Bạn'} company={currentCompany} employees={employees} attendance={attendance} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} financials={financials} performance={performance} holidays={holidays} advanceRequests={advanceRequests} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} assets={assets} assetCostLogs={assetCostLogs} deliveryReports={deliveryReports} reconciledLedgerMap={reconciledLedgerMap} dashboardCache={dashboardCacheRef.current} messages={messages} notificationUnreadCount={homeUnreadNotificationCount} setActiveTab={setActiveTab} />
       </div>
     </React.Suspense>
   );
@@ -24814,14 +24820,24 @@ function MainAppView({
     </CompletedProjectionGate>)}
   </>);
 
-  const renderHomeDashboard = () => (
-    canUseCompanyHomeDashboard
-      ? renderExecutiveDashboard()
-      : renderEmployeeHomeDashboard()
-  );
-  const keepExecutiveDashboardMounted = canUseCompanyHomeDashboard
-    && (tabPermissions.home || tabPermissions.executive_dashboard);
-  const keepHomeDashboardMounted=keepExecutiveDashboardMounted||(!canUseCompanyHomeDashboard&&tabPermissions.home);
+  const [instantPeriod,setInstantPeriod]=useState('today');
+  const instantModules=useMemo(()=>Object.values(APP_NAV_ITEM_MAP).filter(item=>!['home','more','report'].includes(item.id)&&tabPermissions[item.id]).map(item=>({id:item.id,label:item.label})),[tabPermissions]);
+  const instantDay=getTodayString();
+  const restoredInstantProjection=useMemo(()=>tabPermissions.executive_dashboard?restoreHomeSessionReport({privacyScope:dashboardPrivacyScope,company:currentCompany,employee,dashboardDayKey:instantDay,dashboardClockScope:getLocalProjectionClockScope(instantDay)}):null,[dashboardPrivacyScope,tabPermissions.executive_dashboard,instantDay]);
+  const cachedInstantProjection=dashboardCacheRef.current.homePrimaryProjection||dashboardCacheRef.current.cooperativeProjection||restoredInstantProjection;
+  useEffect(()=>{if(tabPermissions.executive_dashboard&&cachedInstantProjection?.inputs?.privacyScope===dashboardPrivacyScope&&!cachedInstantProjection.restored)saveHomeSessionReport(cachedInstantProjection);},[cachedInstantProjection,dashboardPrivacyScope,tabPermissions.executive_dashboard]);
+  const instantSnapshot=tabPermissions.executive_dashboard&&cachedInstantProjection?.inputs?.privacyScope===dashboardPrivacyScope&&cachedInstantProjection?.inputs?.dashboardClockScope===getLocalProjectionClockScope(instantDay)&&cachedInstantProjection?.snapshot?.finance?.todayKey===instantDay?cachedInstantProjection.snapshot:null;
+  const instantSummary=useMemo(()=>instantSnapshot?.finance?homeSummary({periodReports:{[instantPeriod]:instantHomePeriod(instantHomeFinance(instantSnapshot.finance),instantPeriod)}},instantPeriod):[],[instantSnapshot,instantPeriod]);
+  const renderHomeDashboard=()=> <InstantHome key={dashboardPrivacyScope} active={activeTab==='home'} ready={Boolean(currentUser&&currentCompany)} scope={dashboardPrivacyScope} modules={instantModules}
+    identity={{companyName:getCompanyDisplayName(currentCompany),name:employee?.name||currentUser?.name||'',role:employee?.position,logo:getCompanyLogoUrl(currentCompany),avatar:employee?.avatarUrl}}
+    configuredModules={currentCompany?.homeShortcutIds||[]} onNavigate={id=>{if(tabPermissions[id])setActiveTab(id);}}
+    onSearch={(value,id)=>{if(!tabPermissions[id])return;if(id==='customers'){setCustomerSearchKeyword(value);setCustomerSearchOpen(true);}else if(id==='orders'){setOrderSearchKeyword(value);setOrderSearchOpen(true);}else if(id==='products'){setProductSearchKeyword(value);}setActiveTab(id);}}
+    onProfile={()=>setActiveTab('profile')} onNotifications={handleOpenNotifications} notificationCount={unreadNotificationCount}
+    tasks={notificationItems.filter(item=>item.requiresAction===true&&tabPermissions[item.tab]).slice(0,3).map(item=>({id:item.id,moduleId:item.tab,label:item.title}))}
+    summary={instantSummary} period={instantPeriod} onPeriodChange={setInstantPeriod} freshness={instantSnapshot?('Bản đã lưu · '+instantSnapshot.generatedAt+' · Đang cập nhật ở nền'):''}
+    onRequestReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} offline={!navigator.onLine}/>;
+  const keepExecutiveDashboardMounted=false;
+  const keepHomeDashboardMounted=Boolean(tabPermissions.home);
 
   const renderContent = () => {
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
@@ -24833,7 +24849,7 @@ function MainAppView({
 
     switch (activeTab) {
       case 'home': return keepHomeDashboardMounted ? null : renderHomeDashboard();
-      case 'executive_dashboard': return keepExecutiveDashboardMounted ? null : renderExecutiveDashboard();
+      case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
       case 'settings': return <SettingsView currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
@@ -25358,7 +25374,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
             >
               <React.Profiler id={keepExecutiveDashboardMounted?'ExecutiveDashboard':'EmployeePersonalHome'} onRender={recordReactRender}>
                 <RetainedReadOnlyHome privacyScope={dashboardPrivacyScope} isActive={activeTab==='home'||keepExecutiveDashboardMounted&&activeTab==='executive_dashboard'}>
-                  {keepExecutiveDashboardMounted?renderExecutiveDashboard():renderEmployeeHomeDashboard()}
+                  {renderHomeDashboard()}
                 </RetainedReadOnlyHome>
               </React.Profiler>
             </AppSectionErrorBoundary>
@@ -25568,37 +25584,8 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
         </div>
       )}
 
-      {showFloatingQuickActionButton && (
-        <FloatingQuickActionButton
-          actions={quickActionItems}
-          containerRef={appShellRef}
-          onSelect={handleQuickActionSelect}
-        />
-      )}
-
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <HDBottomNavigation
-          className="hd-bottom-navigation mobile-footer-nav"
-          style={{ '--hd-footer-item-count': displayedFooterNavItems.length }}
-        >
-          {displayedFooterNavItems.map((item) => (
-            <div key={item.id} className="hd-footer-nav-slot">
-              <NavButton
-                icon={item.icon}
-                label={item.label}
-                active={item.id === 'more' ? isMoreTabActive : activeTab === item.id}
-                onClick={() => setActiveTab(item.id)}
-                className="mobile-footer-nav__button"
-              />
-            </div>
-          ))}
-        </HDBottomNavigation>
-        {!showFloatingQuickActionButton && mobileContextualQuickActionItems.length > 0 && (
-          <ContextualQuickActionButton
-            actions={mobileContextualQuickActionItems}
-            onSelect={handleQuickActionSelect}
-          />
-        )}
+        <InstantHomeNavigation active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('profile')} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
         <DesktopSidebarGroups
           footerUsageKey={footerUsageKey} activeTab={activeTab} setActiveTab={setActiveTab}
           isAccounting={isAccounting} isDriver={isDriver} isOwnerAccount={isOwnerAccount}

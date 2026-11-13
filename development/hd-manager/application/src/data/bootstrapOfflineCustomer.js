@@ -58,8 +58,8 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
  onPhase('LOCAL_READY');
  let releaseForegroundRead=()=>{};
  const authorize=request=>readLease?readLease.authorize(request):fullAuthorize(request);
- let disposeWriter=()=>{},sync,delta,closed=false,closePromise=null;
- let businessSearchOwner=null,businessSearchOwnerPromise=null,businessSearchLoadError=null,importsReadPromise;
+ let disposeWriter=()=>{},sync,delta,closed=false,closePromise=null,authorityTimer=null,authorityAbort=null;
+ let businessSearchOwner=null,businessSearchOwnerPromise=null,businessSearchLoadError=null,importsReadPromise,scopedReadPromise;
  const businessForeground=createBusinessSearchForegroundGate({isCurrent:()=>!closed&&session.isCurrent()&&Date.now()<verifiedGrant.expiresAtMs,
   activity:()=>{const element=globalThis.document?.activeElement,counts=globalThis.performance?.eventCounts;
    // Browser-maintained scalars only: no listeners, input values or draft cache.
@@ -73,7 +73,7 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
  });
  const requireBackgroundIdle=()=>{if(businessForeground.shouldYield())throw Object.assign(Error('Business search background yielded'),{code:'busy'});};
  const listeners=new Set();
- const releaseSession=session.subscribe(()=>{if(!session.isCurrent()){businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();onPhase('ERROR');for(const listener of listeners)listener();}});
+ const releaseSession=session.subscribe(()=>{if(!session.isCurrent()){clearTimeout(authorityTimer);authorityAbort?.abort();businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();onPhase('ERROR');for(const listener of listeners)listener();}});
  const expiryTimer=setTimeout(()=>session.close(),Math.max(0,verifiedGrant.expiresAtMs-Date.now()));
  let customerRevision=0,homeRevision=0,preparedCustomerPage=null,preparingCustomerPage=null;
  const changed=(topic='customers')=>{if(topic==='home'){homeRevision++;businessSearchOwner?.invalidate();}if(topic==='customers'){customerRevision++;preparedCustomerPage=null;}if(!closed&&session.isCurrent())for(const listener of listeners){try{listener(topic);}catch{/* UI observers cannot turn a durable receipt into a failed commit. */}}};
@@ -118,8 +118,11 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   };
   const getCashflow=()=>{if(!session.isCurrent()||!verifiedGrant.capabilities.some(cap=>/^cashflow\.(income|expense)\.(create|update)$/.test(cap)))return Promise.reject(Error("Thiếu quyền ghi thu chi có chữ ký"));if(!cashflowPromise)cashflowPromise=import("./offlineCashflowRepository.js").then(({createOfflineCashflowRepository})=>createOfflineCashflowRepository({database,session,deviceId:expected.deviceId,digest,uuid,authorize,authorizeWrite:fullAuthorize,projectId,development:true,employeeId:appSession.currentUser.id})).catch(error=>{cashflowPromise=null;throw error;});return cashflowPromise;};
   let businessDirectoryPromise,businessDirectoryValue,businessDirectoryRaw,warehouseDirectoryPromise,orderProductPromise,hrReaderPromise,businessSourcesRequested=false;
-  const scopedImports=!home&&appSession?.sourceProfile===undefined&&verifiedGrant.capabilities.includes('home.imports.read');
+  const scopedModules=!home&&appSession?.sourceProfile===undefined;
+  const getScopedRead=()=>scopedReadPromise||=(import('./scopedBusinessReadSource.js').then(({createScopedBusinessReadSource})=>createScopedBusinessReadSource({database,session,authorize,digest,transport,online,foreground:businessForeground,onChange:changed,onFatal:async()=>{await secureStore.revoke(expected);session.close();}})).catch(error=>{scopedReadPromise=null;throw error;}));
   const getImportsRead=()=>importsReadPromise||=(import('./warehouseImportsReadSource.js').then(({createWarehouseImportsReadSource})=>createWarehouseImportsReadSource({database,session,authorize,digest,transport,online,foreground:businessForeground,changed,onFatal:async()=>{await secureStore.revoke(expected);session.close();}})).catch(error=>{importsReadPromise=null;throw error;}));
+  let preservedImportsDirectory;
+  const getPreservedImportsDirectory=()=>preservedImportsDirectory||=(Promise.all([getImportsRead(),import('../features/warehouse/offlineWarehouseRepository.js')]).then(async([owner,{createOfflineWarehouseRepository}])=>{const directory=await owner.directory();return Object.freeze({...directory,...createOfflineWarehouseRepository({database,session,authorize,directory})});}).catch(error=>{preservedImportsDirectory=null;throw error;}));
   const requestBusinessSearch=source=>{
    if(closed||!session.isCurrent()||Date.now()>=verifiedGrant.expiresAtMs||!home||appSession?.sourceProfile==='native-isolation-v1')return;
    if(!businessSearchOwnerPromise)businessSearchOwnerPromise=import('../services/businessSearchBackfillOwner.js').then(({createBusinessSearchBackfillOwner})=>{
@@ -140,7 +143,12 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   };
   const getHRReader=()=>{if(!session.isCurrent())return Promise.reject(Error("Phiên nhân sự đã đóng"));if(!hrReaderPromise)hrReaderPromise=import("../features/hr/offlineHRReadRepository.js").then(({createOfflineHRReadRepository})=>createOfflineHRReadRepository({database,session,authorize})).catch(error=>{hrReaderPromise=null;throw error;});return hrReaderPromise;};
   const getBusinessDirectory=()=>{
-   if(scopedImports)return getImportsRead().then(owner=>owner.directory());
+   if(scopedModules)return getScopedRead().then(owner=>{if(businessDirectoryValue)return businessDirectoryValue;const raw=owner.directory();businessDirectoryValue=Object.freeze({...raw,
+    page:async(source,...args)=>source==='warehouseImports'?(await getPreservedImportsDirectory()).page(source,...args):raw.page(source,...args),
+    lookup:async(source,...args)=>source==='warehouseImports'?(await getPreservedImportsDirectory()).lookup(source,...args):raw.lookup(source,...args),
+    verifyAccess:async(source,...args)=>source==='warehouseImports'?(await getPreservedImportsDirectory()).verifyAccess(source,...args):raw.verifyAccess(source,...args),
+    detail:async(source,...args)=>source==='warehouseImports'?(await getPreservedImportsDirectory()).detail(source,...args):raw.detail(source,...args),
+   });return businessDirectoryValue;});
    if(!home||!session.isCurrent()||appSession?.sourceProfile==='native-isolation-v1')return Promise.reject(Error('Không có nguồn nghiệp vụ được cấp quyền trong phiên này'));
    // Explicit navigation may happen Offline before a Home sync owner exists.
    // Retain that demand in this Runtime so the EXISTING reconnect listener
@@ -158,12 +166,14 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   let preparedOrdersIntent=null;
   const prepareOrdersIntent=()=>{if(preparedOrdersIntent||!session.isCurrent())return;const revision=homeRevision;const promise=getBusinessDirectory().then(directory=>directory.page('orders',{limit:25})).catch(()=>null);preparedOrdersIntent={revision,promise};};
   const takeOrdersIntent=async()=>{const slot=preparedOrdersIntent;preparedOrdersIntent=null;if(!slot)return null;const result=await slot.promise;if(!result||!session.isCurrent()||slot.revision!==homeRevision)return null;await(await getBusinessDirectory()).verifyAccess('orders',{});return session.isCurrent()&&slot.revision===homeRevision?result:null;};
-  const business=(home||scopedImports)&&appSession?.sourceProfile!=='native-isolation-v1'?Object.freeze({readSources:scopedImports?Object.freeze(['warehouseImports']):undefined,get sources(){return businessDirectoryValue?.sources;},directory:getBusinessDirectory,prepareOrdersIntent,takeOrdersIntent,hrReader:getHRReader,searchIndexStatus:()=>businessSearchOwner?.inspect()||{state:businessSearchLoadError?'UNAVAILABLE':'NOT_REQUESTED',error:businessSearchLoadError},verifyAccess:async(...args)=>(await getBusinessDirectory()).verifyAccess(...args),revision:()=>homeRevision,page:async(...args)=>(await getBusinessDirectory()).page(...args),lookup:async(...args)=>(await getBusinessDirectory()).lookup(...args)}):null;
+  const business=(home||scopedModules)&&appSession?.sourceProfile!=='native-isolation-v1'?Object.freeze({readSources:scopedModules?Object.freeze(Object.entries({orders:'home.orders.read',payments:'home.cashflow.read',expenses:'home.cashflow.read',employees:'employees.directory.read',deliveryReports:'deliveryReports.read',warehouseImports:'home.imports.read',warehouseDispatches:'home.dispatches.read',warehouseStockCounts:'home.stock.read'}).filter(([,cap])=>verifiedGrant.capabilities.includes(cap)).map(([source])=>source)):undefined,get sources(){return businessDirectoryValue?.sources;},directory:getBusinessDirectory,prepareOrdersIntent,takeOrdersIntent,hrReader:getHRReader,searchIndexStatus:()=>businessSearchOwner?.inspect()||{state:businessSearchLoadError?'UNAVAILABLE':'NOT_REQUESTED',error:businessSearchLoadError},verifyAccess:async(...args)=>(await getBusinessDirectory()).verifyAccess(...args),revision:()=>homeRevision,page:async(...args)=>(await getBusinessDirectory()).page(...args),lookup:async(...args)=>(await getBusinessDirectory()).lookup(...args)}):null;
   const getWarehouseDirectory=()=>{
    if(!business)return Promise.reject(Error('Nguồn kho chưa được cấp quyền'));
+   if(scopedModules)return getBusinessDirectory();
    if(!warehouseDirectoryPromise)warehouseDirectoryPromise=Promise.all([getBusinessDirectory(),import('../features/warehouse/offlineWarehouseRepository.js')]).then(([directory,{createOfflineWarehouseRepository}])=>{if(!session.isCurrent())throw Error('Phiên kho đã đóng');return createOfflineWarehouseRepository({database,session,authorize,directory});}).catch(error=>{warehouseDirectoryPromise=null;throw error;});return warehouseDirectoryPromise;
   };
   const getOrderProduct=()=>{
+   if(scopedModules)return getScopedRead().then(owner=>owner.orderProduct);
    if(!orders||!business)return Promise.reject(Error('Nguồn đơn hàng chưa được cấp quyền'));
    if(!orderProductPromise)orderProductPromise=Promise.all([getBusinessDirectory(),import('../features/orders/sqliteOrderDirectory.js')]).then(([directory,{createSQLiteOrderProduct}])=>{if(!session.isCurrent())throw Error('Phiên đơn hàng đã đóng');const raw=createSQLiteOrderProduct({database,session,authorize,orders,business:directory,actorEmployeeId:appSession?.currentUser?.id});return Object.freeze({...raw,localPage:(...args)=>businessForeground.run(()=>raw.localPage(...args))});}).catch(error=>{orderProductPromise=null;throw error;});return orderProductPromise;
   };
@@ -268,9 +278,35 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   };
   // Unvisited reports still do not load. Once explicitly requested, reconnect
   // resumes that SAME feed/worker even when the report screen is hidden.
-  const connectivity=()=>{if(adjustmentPromise&&online())void adjustmentPromise.then(repo=>repo.refresh()).catch(()=>{});if(importsReadPromise)void importsReadPromise.then(owner=>owner.sync()).catch(()=>{});startupMark('background.refresh-start');startupMark('background.sync-start');sync.notifyConnectivity();if(home&&(backgroundHomeSync||homeSyncPromise||businessSourcesRequested))void home.sync().catch(()=>{});void refresh().catch(()=>{}).finally(()=>startupMark('background.refresh-complete',{online:online()}));};
+  // Every signed session must revalidate on reconnect, including an employee
+  // with no CRM/Home feed and no pending commands. Business subscriptions are
+  // not an authority monitor. Keep the original grant/DB owner on unchanged
+  // rights; a changed/revoked authority fails closed without deleting Outbox.
+  let authorityPromise=null;
+  const revalidateAuthority=()=>{
+   if(closed||!session.isCurrent()||!online())return Promise.resolve(false);
+   if(authorityPromise)return authorityPromise;
+   authorityPromise=(async()=>{
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);authorityAbort=controller;
+    try{
+     const fresh=await transport.grant(expected.deviceId,controller.signal,session.scope);
+     if(closed||!session.isCurrent())return false;
+     if(!fresh?.scope||['projectId','tenantId','principalId','deviceId'].some(key=>fresh.scope[key]!==expected[key]))throw Object.assign(Error('Online permission owner mismatch'),{code:'permission-denied'});
+     const candidate={identity:fresh.scope,signedGrant:fresh.signedGrant,highWaterMs:fresh.issuedAtMs,revoked:false};
+     const verify=await createOfflineCustomerAuthorizer({publicKey,expected:fresh.scope,maxLifetimeMs,clockSkewMs:5000,secureStore:{load:async()=>candidate,advanceHighWater:async()=>{}}});
+     let checked;try{checked=await verify({scope:fresh.scope,kind:'app.session'});}catch{throw Object.assign(Error('Online permission signature rejected'),{code:'permission-denied'});}
+     if(closed||!session.isCurrent())return false;
+     const capabilities=value=>JSON.stringify([...value].sort());
+     if(checked.permissionRevision!==expected.permissionRevision||capabilities(checked.capabilities)!==capabilities(verifiedGrant.capabilities))throw Object.assign(Error('Online permission changed; reauthentication required'),{code:'permission-denied'});
+     return true;
+    }catch(error){if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
+    finally{clearTimeout(timeout);if(authorityAbort===controller)authorityAbort=null;}
+   })().finally(()=>{authorityPromise=null;});return authorityPromise;
+  };
+  const scheduleAuthority=()=>{clearTimeout(authorityTimer);if(closed||!session.isCurrent())return;authorityTimer=setTimeout(()=>{if(globalThis.document?.visibilityState==='hidden'){scheduleAuthority();return;}void revalidateAuthority().then(valid=>{if(valid&&!closed&&session.isCurrent())sync.notifyConnectivity();}).finally(scheduleAuthority).catch(()=>{});},30000);};
+  const connectivity=()=>{void revalidateAuthority().then(valid=>{if(!valid||closed||!session.isCurrent())return;if(adjustmentPromise)void adjustmentPromise.then(repo=>repo.refresh()).catch(()=>{});if(importsReadPromise)void importsReadPromise.then(owner=>owner.sync()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.sync()).catch(()=>{});startupMark('background.refresh-start');startupMark('background.sync-start');sync.notifyConnectivity();if(home&&(backgroundHomeSync||homeSyncPromise||businessSourcesRequested))void home.sync().catch(()=>{});void refresh().catch(()=>{}).finally(()=>startupMark('background.refresh-complete',{online:online()}));});};
   let networkStarted=false,timer=null;
-  const startNetwork=()=>{if(closed||networkStarted||!session.isCurrent())return;networkStarted=true;events.addEventListener('online',connectivity);timer=setTimeout(connectivity,0);};
+  const startNetwork=()=>{if(closed||networkStarted||!session.isCurrent())return;networkStarted=true;events.addEventListener('online',connectivity);timer=setTimeout(connectivity,0);scheduleAuthority();};
   if(hasCustomerRead)disposeWriter=registerOfflineCustomerWriter({projectId,session,repository,sync,environment});
   // Return local access before starting any network operation.
   if(Date.now()>=verifiedGrant.expiresAtMs)throw new Error('Offline grant expired during local bootstrap');
@@ -299,8 +335,8 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    inspectLifecycle(){return Object.freeze({closed,current:session.isCurrent(),subscribers:listeners.size,networkStarted,preparedPage:preparedCustomerPage!==null,preparingPage:preparingCustomerPage!==null,directory:repository.directoryReadState()});},
    refresh,notifySync:()=>sync.notifyConnectivity(),loadMoreServer:()=>refresh(true),isCurrent:()=>session.isCurrent(),subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
    async logout(){await secureStore.revoke(expected);session.close();await this.close();},
-   close(){if(closePromise)return closePromise;closed=true;if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});businessForeground.close();businessSearchOwner?.close();preparedOrdersIntent=null;repository.closeDirectoryMemo();releaseForegroundRead();sync?.stop();delta?.stop();readLease?.close();homeSync?.stop();closePromise=Promise.resolve().then(()=>database.close());clearTimeout(timer);clearTimeout(expiryTimer);events.removeEventListener('online',connectivity);disposeWriter();session.close();releaseSession();listeners.clear();return closePromise;},
+   close(){if(closePromise)return closePromise;closed=true;authorityAbort?.abort();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.close()).catch(()=>{});businessForeground.close();businessSearchOwner?.close();preparedOrdersIntent=null;repository.closeDirectoryMemo();releaseForegroundRead();sync?.stop();delta?.stop();readLease?.close();homeSync?.stop();closePromise=Promise.resolve(scopedReadPromise).then(owner=>owner?.close()).catch(()=>{}).then(()=>database.close());clearTimeout(timer);clearTimeout(authorityTimer);clearTimeout(expiryTimer);events.removeEventListener('online',connectivity);disposeWriter();session.close();releaseSession();listeners.clear();return closePromise;},
   });
- }catch(error){businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();clearTimeout(expiryTimer);releaseSession();disposeWriter();sync?.stop();session.close();await database.close();throw error;}
+ }catch(error){clearTimeout(authorityTimer);authorityAbort?.abort();businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();clearTimeout(expiryTimer);releaseSession();disposeWriter();sync?.stop();session.close();await database.close();throw error;}
 }
 

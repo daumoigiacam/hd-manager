@@ -2,7 +2,7 @@
 const {createHash}=require('node:crypto');
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const fail=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
-function createOfflinePayrollCommandService({db,projectId,appId,now=Date.now,serverTimestamp=()=>require('firebase-admin/firestore').FieldValue.serverTimestamp(),loadDomain=()=>import('../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js')}){
+function createOfflinePayrollCommandService({db,projectId,appId,verifyTimesheets,now=Date.now,serverTimestamp=()=>require('firebase-admin/firestore').FieldValue.serverTimestamp(),loadDomain=()=>import('../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js')}){
  if(!/^demo-[a-z0-9-]+$/.test(projectId||'')||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')||(db?.projectId&&db.projectId!==projectId)||!db?.runTransaction||!db?.collection||!/^[A-Za-z0-9_-]{1,160}$/.test(appId||''))fail('Payroll requires explicit Development Firestore and existing owner');
  return async function apply(actor,command){
   const d=await loadDomain();if(!d.PAYROLL_COMMAND_CAPS[command?.kind]||![actor?.uid,actor?.tenantId,command.commandId,command.entityId].every(d.payrollId)||!actor.permissionRevision||command.idempotencyKey!==command.commandId)fail('Invalid payroll command identity');
@@ -35,11 +35,17 @@ function createOfflinePayrollCommandService({db,projectId,appId,now=Date.now,ser
    if(command.kind==='payroll.lock'&&!d.canLockPayrollPeriodAtDate(p.values.monthKey,d.getVietnamPayrollDateKey(new Date(now()))))fail('Server date is before payroll month end','payroll-unsupported-contract');
    const plan=d.planPayroll(data,command.kind,p.values,{tenantId:actor.tenantId,employeeId:binding.employeeId},{editedAt:p.editedAt,mutationId:command.commandId});
    if(d.canonicalPayroll(plan)!==d.canonicalPayroll(p.plan)){conflict('authoritative-payroll-plan-changed');return;}
+   let timesheetBindings=[];
+   if(command.kind==='payroll.lock'){
+    if(typeof verifyTimesheets!=='function')fail('Timesheet confirmation authority is not configured','payroll-timesheet-authority-missing');
+    timesheetBindings=await verifyTimesheets(tx,actor,p.values.monthKey,plan.writes.filter(w=>w.source==='payrollSnapshots').map(w=>w.body));
+   }
    // All reads precede the first write. Original salary snapshots stay frozen.
    const timestamp=serverTimestamp();
+   for(const binding of timesheetBindings)tx.set(db.doc('payrollAttendanceSourceLinks/'+hash(JSON.stringify([appId,actor.tenantId,binding.payrollSnapshotId]))),{...binding,tenantId:actor.tenantId,payrollPeriodId:command.entityId,lockCommandId:command.commandId,lockedBy:bindingSnap.data().employeeId,lockedAtServer:timestamp});
    for(const w of plan.writes){const body=command.kind==='payroll.lock'&&(w.source==='payrollPeriods'||w.source==='activityLogs'&&w.body.type==='payroll_period_lock')?{...w.body,closedAtServer:timestamp}:w.body;tx.set(ref(w.source,w.id),body);}
    tx.set(fenceRef,{tenantId:actor.tenantId,monthKey:p.values.monthKey,revision:(fence?.revision||0)+1});
-   tx.set(ownReceipt,{...receipt,outcome:'accepted',writes:plan.writes,fingerprint:hash(d.canonicalPayroll(plan.writes)),closedAtServer:timestamp});
+   tx.set(ownReceipt,{...receipt,outcome:'accepted',writes:plan.writes,fingerprint:hash(d.canonicalPayroll(plan.writes)),closedAtServer:timestamp,...(timesheetBindings.length?{timesheetBindings}:{})});
   });
   // Server timestamps resolve once in the atomic receipt, then replay identically.
   const saved=(await ownReceipt.get()).data();if(!saved)fail('Payroll receipt not persisted');return d.plainPayroll(saved);

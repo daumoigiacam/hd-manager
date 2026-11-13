@@ -14,6 +14,10 @@ on:
         required: true
         type: boolean
         default: false
+      readiness_run_id:
+        description: Same-commit successful HTTPS Offline/RBAC readiness evidence
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('validation-{0}', github.event.pull_request.number) || 'production' }}
@@ -21,6 +25,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   deploy:
@@ -48,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install canonical application dependencies
+        run: npm ci --prefix development/hd-manager/application --ignore-scripts
+
       - name: Install Functions dependencies
         run: npm ci --prefix functions
 
@@ -59,6 +67,11 @@ jobs:
 
       - name: Check Functions syntax
         run: node --check functions/index.js
+
+      - name: Verify release adapters and canonical financial policy
+        run: |
+          node scripts/build-offline-cashflow-policy.mjs --check
+          node --test tests/offline-trusted-server.test.cjs tests/offline-trusted-read-parity.test.mjs tests/android-release-readiness.test.mjs tests/android-release-canonical-workflow.test.mjs
 
       - name: Verify static compression check
         run: node --test tests/static-compression.test.mjs
@@ -101,6 +114,25 @@ jobs:
       - name: KPI gate
         run: npm run test:kpi
 
+      - name: Require same-source HTTPS Offline readiness before deployment
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        uses: actions/download-artifact@v5
+        with:
+          name: hd-manager-production-readiness-${{ github.sha }}
+          path: owner-readiness
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.readiness_run_id }}
+
+      - name: Validate readiness and prepare trusted Production configuration
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true
+        env:
+          EXPECTED_SOURCE: ${{ github.sha }}
+          HD_READINESS_RUN_ID: ${{ inputs.readiness_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/android-release-readiness-gate.mjs
+          node scripts/android-release-build-environment.mjs
+
       - name: Build project
         env:
           VITE_DATA_MODE: cloud
@@ -109,7 +141,7 @@ jobs:
           VITE_FIRESTORE_READ_WORKER: 'true'
           VITE_WORKER_TRANSFER_PROFILE: 'balanced-64k'
           VITE_IDENTITY_AUTH_REGION: ''
-        run: npm run build
+        run: npm --prefix development/hd-manager/application run build -- --mode production --outDir ../../../dist
 
       - name: Verify Firebase-only production bundle
         env:

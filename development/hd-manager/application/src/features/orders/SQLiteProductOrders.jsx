@@ -16,7 +16,7 @@ const field='rounded-xl border bg-white p-3 text-sm text-gray-900';
 
 // Lazy route contract: default({runtime,onNavigate}). The owner provides one
 // shared business directory and an Orders-specific full-history reader/writer.
-export default function SQLiteProductOrders({runtime,onNavigate}){
+export default function SQLiteProductOrders({runtime,onNavigate,orderSearchIntent}){
  const [epoch,setEpoch]=useState(0);
  useEffect(()=>{const release=runtime?.subscribe?.(topic=>{if(!current(runtime)||ordersRelevantTopic(topic))setEpoch(n=>n+1);});
   const timer=setTimeout(()=>setEpoch(n=>n+1),Math.max(0,(runtime?.expiresAtMs||0)-Date.now())+1);
@@ -24,7 +24,7 @@ export default function SQLiteProductOrders({runtime,onNavigate}){
  if(!current(runtime)||!runtime.capabilities?.includes('orders.read'))return <section role="alert" className="p-4">Phiên đơn hàng không còn quyền truy cập.</section>;
  if(runtime.appSession?.sourceProfile==='native-isolation-v1')return <section role="alert" className="p-4">Nguồn native hiện chưa có giao thức đơn hàng sản phẩm.</section>;
  if(!runtime.business)return <section role="alert" className="p-4">Chưa nối danh mục dùng chung runtime.business. Chưa thể đọc đơn.</section>;
- return <OrdersWorkspace key={JSON.stringify(runtime.scope)} runtime={runtime} onNavigate={onNavigate} epoch={epoch}/>;
+ return <OrdersWorkspace key={JSON.stringify(runtime.scope)} runtime={runtime} onNavigate={onNavigate} epoch={epoch} orderSearchIntent={orderSearchIntent}/>;
 }
 
 // A pending query retains readable rows without dimming/repainting the page.
@@ -38,7 +38,7 @@ const OrderListItem=React.memo(function OrderListItem({order,disabled,onSelect})
  </button></li>;
 });
 
-function OrdersWorkspace({runtime,onNavigate,epoch}){
+function OrdersWorkspace({runtime,onNavigate,epoch,orderSearchIntent}){
  const searchStore=useMemo(()=>createOrderSearchState(),[]);
  const search=useSyncExternalStore(searchStore.subscribe,searchStore.getSnapshot);
  const [draftSearch,setDraftSearch]=useState(search);
@@ -48,6 +48,14 @@ function OrdersWorkspace({runtime,onNavigate,epoch}){
  const {cursors,index}=retainedPagination(savedPagination,queryKey),cursor=cursors[index];
  const [repo,setRepo]=useState(null),[page,setPage]=useState(null),[busy,setBusy]=useState(true),[error,setError]=useState('');
  const [selected,setSelected]=useState(''),[creating,setCreating]=useState(false),[refresh,setRefresh]=useState(0);
+ const consumedHomeSearch=useRef(null);
+ useEffect(()=>{
+  // A Home search uses the existing indexed SQLite query. It never closes a
+  // draft/detail or replaces its inputs; apply the latest intent after closing.
+  if(!orderSearchIntent||consumedHomeSearch.current===orderSearchIntent||creating||selected)return;
+  consumedHomeSearch.current=orderSearchIntent;
+  searchStore.set(orderSearchIntent.query);setDraftSearch(orderSearchIntent.query);
+ },[orderSearchIntent,creating,selected,searchStore]);
  const [notice,setNotice]=useState('');
  const selectOrder=useCallback(id=>setSelected(id),[]);
  const [filtersOpen,setFiltersOpen]=useState(false);

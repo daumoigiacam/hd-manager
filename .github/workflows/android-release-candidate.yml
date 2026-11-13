@@ -1,0 +1,136 @@
+name: Prepare owner-approved Android release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact approved 40-character commit; never a branch or tag
+        required: true
+        type: string
+      version_name:
+        description: Release versionName
+        required: true
+        default: '1.0.13'
+        type: string
+      version_code:
+        description: Release versionCode, greater than installed Production
+        required: true
+        default: '26111001'
+        type: string
+      readiness_run_id:
+        description: Successful same-repository run containing HTTPS/Firebase readiness proof for this exact commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: android-release-candidate
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No publishing, Play Console, Web deployment, tag, or repository write.
+    steps:
+      - name: Validate immutable reference
+        env:
+          SOURCE: ${{ inputs.source_commit }}
+          VERSION: ${{ inputs.version_name }}
+          CODE: ${{ inputs.version_code }}
+        run: |
+          [[ "$SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$CODE" =~ ^[0-9]{1,10}$ ]]
+          test "$CODE" -gt 26110401
+          test "$CODE" -le 2100000000
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/download-artifact@v5
+        with:
+          name: hd-manager-production-readiness-${{ inputs.source_commit }}
+          path: owner-readiness
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.readiness_run_id }}
+      - name: Require genuine Production readiness evidence
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_commit }}
+          HD_READINESS_RUN_ID: ${{ inputs.readiness_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/android-release-readiness-gate.mjs
+      - name: Provision exact existing encrypted keystore
+        env:
+          KEYSTORE_BYTES: ${{ secrets.HD_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';import crypto from 'node:crypto';
+          if(!process.env.KEYSTORE_BYTES)throw Error('Provision original keystore securely; never create a new key');
+          const bytes=Buffer.from(process.env.KEYSTORE_BYTES,'base64');
+          if(crypto.createHash('sha256').update(bytes).digest('hex')!=='d5d616282282ea86ac1a99247b785fdedec9b93a399a6e3f03037693b236a43d')throw Error('Official keystore mismatch');
+          fs.writeFileSync(process.env.RUNNER_TEMP+'/hdmanager-upload-key.jks',bytes,{mode:0o600,flag:'wx'});bytes.fill(0);
+          NODE
+      - name: Verify official signing credentials without disclosure
+        env:
+          HD_RELEASE_STORE_FILE: ${{ runner.temp }}/hdmanager-upload-key.jks
+          HD_RELEASE_KEY_ALIAS: hdmanager-upload
+          HD_RELEASE_STORE_PASSWORD: ${{ secrets.HD_RELEASE_STORE_PASSWORD }}
+          HD_RELEASE_KEY_PASSWORD: ${{ secrets.HD_RELEASE_KEY_PASSWORD }}
+          HD_SIGNING_REPORT_FILE: android-signing-verification.json
+        run: node scripts/android-release-signing-preflight.mjs --require-secrets
+      - run: npm ci
+      - name: Install canonical Development source dependencies
+        # Native patching is owned by the shared root postinstall above.
+        # The canonical snapshot's legacy postinstall points to root scripts.
+        run: npm ci --prefix development/hd-manager/application --ignore-scripts
+      - name: Build exact Production Web assets
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_commit }}
+          VITE_DATA_MODE: cloud
+          VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
+          VITE_HD_APP_ID: hd-manager-production
+          VITE_FIRESTORE_READ_WORKER: 'true'
+        run: |
+          node scripts/android-release-build-environment.mjs
+      - name: Build and verify configured Web assets
+        run: |
+          npm --prefix development/hd-manager/application run build -- --mode production --outDir ../../../dist
+          npm run verify:firebase-production-bundle
+          npx cap sync android
+      - name: Build officially signed APK and AAB
+        working-directory: android
+        env:
+          HD_RELEASE_STORE_FILE: ${{ runner.temp }}/hdmanager-upload-key.jks
+          HD_RELEASE_KEY_ALIAS: hdmanager-upload
+          HD_RELEASE_STORE_PASSWORD: ${{ secrets.HD_RELEASE_STORE_PASSWORD }}
+          HD_RELEASE_KEY_PASSWORD: ${{ secrets.HD_RELEASE_KEY_PASSWORD }}
+          VERSION: ${{ inputs.version_name }}
+          CODE: ${{ inputs.version_code }}
+        run: ./gradlew --no-daemon assembleRelease bundleRelease -PHD_RELEASE_VERSION_NAME="$VERSION" -PHD_RELEASE_VERSION_CODE="$CODE"
+      - name: Verify signatures, package and manifest
+        env:
+          EXPECTED_VERSION: ${{ inputs.version_name }}
+          EXPECTED_CODE: ${{ inputs.version_code }}
+          EXPECTED_SOURCE: ${{ inputs.source_commit }}
+        run: node scripts/android-release-verify.mjs
+      - uses: actions/upload-artifact@v5
+        with:
+          name: hd-manager-release-candidate-${{ inputs.source_commit }}
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+            android-release-manifest.json
+            android-signing-verification.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove only ephemeral runner keystore
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/hdmanager-upload-key.jks"

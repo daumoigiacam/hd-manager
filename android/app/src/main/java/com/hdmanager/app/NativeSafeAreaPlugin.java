@@ -13,6 +13,53 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "NativeSafeArea")
 public class NativeSafeAreaPlugin extends Plugin {
+    @PluginMethod public void inspectLocalPreferenceFootprint(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local metadata only"); return; }
+        JSObject result = new JSObject();
+        java.io.File directory = new java.io.File(getContext().getApplicationInfo().dataDir, "shared_prefs");
+        for (String name : new String[]{"NativeBiometricSharedPreferences", "HDLocalSignedSessionV1"}) {
+            java.io.File file = new java.io.File(directory, name + ".xml");
+            JSObject entry = new JSObject(); entry.put("bytes", file.length()); entry.put("exists", file.isFile());
+            result.put(name, entry);
+        }
+        // File sizes only. Never export preference keys, values or credentials.
+        call.resolve(result);
+    }
+    private LocalFrameObservation localFrames;
+    @PluginMethod public void startLocalFrameObservation(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local frames only"); return; }
+        getActivity().runOnUiThread(() -> {
+            if (localFrames != null) { call.reject("Existing frame observer is active"); return; }
+            localFrames = new LocalFrameObservation(getActivity().getWindow());
+            JSObject result = new JSObject();
+            result.put("refreshRate", getActivity().getWindowManager().getDefaultDisplay().getRefreshRate());
+            result.put("startedElapsedNs", android.os.SystemClock.elapsedRealtimeNanos());
+            call.resolve(result);
+        });
+    }
+    @PluginMethod public void drainLocalFrames(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName()) || localFrames == null) { call.reject("No active Local observer"); return; }
+        call.resolve(localFrames.drain());
+    }
+    @PluginMethod public void markLocalFramePhase(PluginCall call) {
+        String phase = call.getString("phase", "");
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName()) || localFrames == null || !phase.matches("[a-zA-Z0-9_.-]{1,64}")) { call.reject("Invalid Local frame phase"); return; }
+        localFrames.phase(phase);
+        android.os.Trace.beginSection("HDLocal." + phase); android.os.Trace.endSection();
+        JSObject result = new JSObject(); result.put("elapsedNs", android.os.SystemClock.elapsedRealtimeNanos()); result.put("monotonicNs", System.nanoTime()); call.resolve(result);
+    }
+    @PluginMethod public void stopLocalFrameObservation(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local frames only"); return; }
+        getActivity().runOnUiThread(() -> {
+            if (localFrames == null) { call.reject("No active Local observer"); return; }
+            LocalFrameObservation ending = localFrames;
+            ending.close(() -> { call.resolve(ending.drain()); localFrames = null; });
+        });
+    }
+    @Override protected void handleOnDestroy() {
+        if (localFrames != null) { localFrames.close(null); localFrames = null; }
+        super.handleOnDestroy();
+    }
     private static org.json.JSONArray copyStartupRows(org.json.JSONArray rows) {
         org.json.JSONArray copy = new org.json.JSONArray();
         synchronized (rows) {

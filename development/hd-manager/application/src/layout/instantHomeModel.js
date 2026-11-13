@@ -1,0 +1,6 @@
+// Presentation only: verified adapters own permissions, sessions and storage.
+export const HOME_PRIORITY=['orders','warehouse_import','warehouseImports','warehouse_dispatch','warehouseDispatches','finance','customers','delivery_reports','delivery','employees','hr'];
+export const normalizeHomeSearch=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase().trim();
+export function homeModules(modules=[],configured=[]){const byId=new Map(modules.filter(x=>x?.id&&!['home','modules'].includes(x.id)).map(x=>[x.id,x]));return [...new Set([...(Array.isArray(configured)?configured:[]),...HOME_PRIORITY,...byId.keys()])].filter(id=>byId.has(id)).map(id=>byId.get(id));}
+export function homeSearchOptions(modules,query){const q=normalizeHomeSearch(query);return q?modules.filter(x=>normalizeHomeSearch(x.label).includes(q)).slice(0,8):[];}
+export function homeSummary(result,period='today'){const report=result?.periodReports?.[period];if(!report)return [];return [['revenue','Doanh thu'],['profit','Lợi nhuận'],['orders','Đơn hàng']].filter(([id])=>typeof report[id]==='number'&&Number.isFinite(report[id])).map(([id,label])=>({id,label,value:report[id],previous:report.previous?.[id]}));}

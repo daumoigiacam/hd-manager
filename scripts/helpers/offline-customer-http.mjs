@@ -10,7 +10,7 @@ export function createCustomerHttpServer(handle,{origins=[]}={}){
   if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
   if(req.method!=='POST'){res.writeHead(405);res.end('{}');return;}
   const action=req.url?.slice(1);
-  if(!['grant','sync','page','history','detail','customer-delta','home-head','home-page','home-report','warehouse-import-head','warehouse-import-page','attendance-adjustment','payroll-settlement','attendance-period'].includes(action)){res.writeHead(404);res.end('{}');return;}
+  if(!['business-source','grant','sync','page','history','detail','customer-delta','home-head','home-page','home-report','warehouse-import-head','warehouse-import-page','attendance-adjustment','payroll-settlement','attendance-period'].includes(action)){res.writeHead(404);res.end('{}');return;}
   try{
    const header=req.headers.authorization||'';if(!header.startsWith('Bearer ')){res.writeHead(401);res.end('{}');return;}
    let size=0;const chunks=[];

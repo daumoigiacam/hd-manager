@@ -17,7 +17,8 @@ export function hrReadAccess(runtime,directory){
     ||user?.firebaseUid!==scope.principalId||user.companyId!==scope.tenantId||runtime.appSession.currentCompany?.id!==scope.tenantId
     ||!Number.isFinite(runtime.expiresAtMs)||Date.now()>=runtime.expiresAtMs)return 'Phiên nhân sự đã hết hạn hoặc không khớp tài khoản/công ty.';
   if(runtime.appSession.sourceProfile!==undefined)return 'Hồ sơ nguồn native chưa có ánh xạ dữ liệu nhân sự/lương của sản phẩm.';
-  if(!['home.read','home.payroll.read'].every(cap=>runtime.capabilities?.includes(cap)))return 'Thiếu quyền home.read và home.payroll.read có chữ ký.';
+  const required=directory?.sourceScope==='module-pages-v1'?['employees.directory.read']:['home.read','home.payroll.read'];
+  if(!required.every(cap=>runtime.capabilities?.includes(cap)))return 'Thiếu quyền đọc nguồn nhân sự có chữ ký.';
   if(typeof directory?.page!=='function'||typeof directory?.lookup!=='function')return 'Nguồn danh mục nhân sự SQLite chưa được kết nối.';
   return '';
 }

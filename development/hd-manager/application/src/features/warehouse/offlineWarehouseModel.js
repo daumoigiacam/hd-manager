@@ -87,7 +87,7 @@ export function warehouseImportLabel(record) {
 }
 
 export function assertWarehouseRuntime(runtime) {
-  if(!runtime?.isCurrent?.() || (!runtime.capabilities?.includes('home.read')&&!runtime.business?.readSources?.includes('warehouseImports')) ||
+  if(!runtime?.isCurrent?.() || (!runtime.capabilities?.includes('home.read')&&!runtime.business?.readSources?.some(source=>Object.hasOwn(WAREHOUSE_SOURCES,source))) ||
     !runtime.scope?.tenantId || !runtime.scope?.principalId || !runtime.scope?.permissionRevision ||
     !Number.isFinite(runtime.expiresAtMs) || Date.now() >= runtime.expiresAtMs ||
     runtime.appSession?.currentUser?.accountType !== 'employee' ||

@@ -1,3 +1,4 @@
+import InstantHome,{InstantHomeNavigation} from '../../layout/InstantHome.jsx';
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { filterCustomerVisibleProducts, isCustomerVisibleProduct } from "../../utils/customerProductVisibility.js";
 import { buildVietQrBankAppDeeplink, isVietQrBankAppSupported, launchBankPaymentAndCopyReference, resolveVietQrBankAppId } from "../../utils/bankAppDeeplink.js";
@@ -2309,7 +2310,7 @@ export function createCustomerPortalView(runtime) {
     { id: 'orders', label: 'Đơn hàng', icon: Package },
     { id: 'more', label: 'Thêm', icon: MoreHorizontal }
   ];
-  const renderHome = () => (
+  const renderCustomerOverview = () => (
     <div className="space-y-4">
       <div aria-busy={!financialReady} data-hd-customer-financial-status={financialStatus} className="rounded-[2rem] bg-gradient-to-br from-emerald-500 to-teal-600 text-white p-5 shadow-lg">
         <div className="grid grid-cols-2 gap-3">
@@ -3509,6 +3510,10 @@ export function createCustomerPortalView(runtime) {
     </div>
   );
 
+  const renderHome=()=> <InstantHome ready={Boolean(customerProfile?.id&&currentCompany?.id)} scope={JSON.stringify([currentCompany?.id,currentUser?.id,customerProfile?.id])}
+    identity={{companyName:getCompanyDisplayName(currentCompany),logo:getCompanyLogoUrl(currentCompany),name:getCustomerPlainName(customerProfile)||customerProfile.name,avatar:customerProfile.avatarUrl}}
+    modules={navItems.filter(item=>!['home','more'].includes(item.id)).map(item=>({id:item.id,label:item.label}))}
+    onNavigate={setActiveTab} onProfile={()=>setActiveTab('more')} onNotifications={()=>setActiveTab('messages')} offline={!navigator.onLine}/>;
   const renderContent = () => {
     if(!financialReady&&['orders','debt','payments','points'].includes(activeTab))return <div role="status" aria-busy="true" data-hd-customer-financial-status="loading" className="rounded-2xl border border-slate-100 bg-white p-4 text-sm text-slate-500">Đang đối chiếu đơn hàng, công nợ và thanh toán…</div>;
     if (activeTab === 'order') return renderOrder();
@@ -3518,7 +3523,8 @@ export function createCustomerPortalView(runtime) {
     if (activeTab === 'payments') return renderPayments();
     if (activeTab === 'bank') return renderBank();
     if (activeTab === 'points') return renderPoints();
-    if (activeTab === 'more') return renderMore();
+    if (activeTab === 'more') return <>{renderMore()}<button type="button" onClick={()=>setActiveTab('overview')}>Thông tin tài khoản</button></>;
+    if (activeTab === 'overview') return renderCustomerOverview();
     return renderHome();
   };
 
@@ -3527,7 +3533,7 @@ export function createCustomerPortalView(runtime) {
       {renderPaymentSheet()}
       {renderCustomerOrderDetailSheet()}
       {renderPointWithdrawSheet()}
-      <HDHeader className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-4 py-3 flex items-center justify-between">
+      <HDHeader style={{display:activeTab==='home'?'none':undefined}} className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-4 py-3 flex items-center justify-between">
         <button
           type="button"
           onClick={openCustomerProfileEditor}
@@ -3587,26 +3593,12 @@ export function createCustomerPortalView(runtime) {
           resetKey={activeTab}
           onReset={() => setActiveTab('home')}
         >
-          {catalogState.status==='ready'?renderContent():<div data-hd-customer-bootstrap-status={catalogState.status} data-hd-module-loading aria-busy="true" className="rounded-2xl border border-gray-100 bg-white p-5 text-sm text-slate-600">
+          {(activeTab==='home'||catalogState.status==='ready')?renderContent():<div data-hd-customer-bootstrap-status={catalogState.status} data-hd-module-loading aria-busy="true" className="rounded-2xl border border-gray-100 bg-white p-5 text-sm text-slate-600">
             {catalogState.status==='error'?<><p role="alert">{catalogState.error}</p><button type="button" onClick={onRetryCatalog} className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white">Thử lại</button></>:<p role="status">Đang lấy danh mục và thông tin khách hàng…</p>}
           </div>}
         </AppSectionErrorBoundary>
       </main>
-      <HDBottomNavigation
-        className="customer-portal-nav fixed left-1/2 z-30 grid -translate-x-1/2 border-t border-gray-100 bg-white"
-        style={{ '--customer-nav-count': navItems.length }}
-      >
-        {navItems.map(item => {
-          const Icon = item.icon;
-          const active = activeTab === item.id;
-          return (
-            <button key={item.id} onClick={() => setActiveTab(item.id)} className={`rounded-2xl font-bold flex flex-col items-center justify-center ${active ? 'text-emerald-600 bg-emerald-50' : 'text-gray-400'}`}>
-              <Icon className="customer-portal-nav-icon" />
-              <span className="customer-portal-nav-label">{item.label}</span>
-            </button>
-          );
-        })}
-      </HDBottomNavigation>
+      <div className="customer-portal-nav fixed left-1/2 z-30 -translate-x-1/2 bg-white"><InstantHomeNavigation active={activeTab==='more'?'profile':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('more')} onQuickCreate={onAddOrderRequest?()=>setActiveTab('order'):undefined}/></div>
     </AppShell>
   );
 }

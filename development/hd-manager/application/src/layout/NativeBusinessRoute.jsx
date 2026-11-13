@@ -15,28 +15,30 @@ export const nativeBusinessRoutes=Object.freeze([
  {id:'attendancePeriods',label:'Bảng công và xác nhận',required:['attendancePeriod.read'],module:attendancePeriods},
  {id:'salarySettlements',label:'Thanh toán và đối soát lương',required:['salarySettlement.read'],module:salarySettlements},
  {id:'attendanceRequests',label:'Yêu cầu công cá nhân',required:['attendanceRequest.read'],module:attendanceRequests},
- {id:'hr',label:'Nhân sự · Chấm công · Lương',required:['home.payroll.read'],module:hr},
- {id:'delivery',label:'Giao hàng · Phiếu cân',required:['home.quick-report.read'],module:delivery},
+ {id:'hr',label:'Nhân sự · Chấm công · Lương',required:[],any:['home.payroll.read','employees.directory.read'],readSource:'employees',module:hr},
+ {id:'delivery',label:'Giao hàng · Phiếu cân',required:[],any:['home.quick-report.read','deliveryReports.read'],readSource:'deliveryReports',module:delivery},
  {id:'orders',label:'Đơn hàng',required:['orders.read','home.orders.read'],module:orders},
  {id:'finance',label:'Thu chi',required:['home.cashflow.read'],module:finance},
  {id:'warehouseImports',label:'Mua hàng · Nhập kho',required:['home.imports.read'],module:warehouse,source:'warehouseImports'},
  {id:'warehouseDispatches',label:'Xuất kho',required:['home.dispatches.read'],module:warehouse,source:'warehouseDispatches'},
  {id:'stockCounts',label:'Kiểm kê kho',required:['home.stock.read'],module:warehouse,source:'warehouseStockCounts'},
 ]);
+const routeSource=route=>route.readSource||route.source||({orders:'orders',finance:'expenses',warehouseDispatches:'warehouseDispatches',stockCounts:'warehouseStockCounts'})[route.id];
+const routeCaps=(context,route)=>route.required.every(cap=>context.capabilities.includes(cap))&&(!route.any||route.any.some(cap=>context.capabilities.includes(cap)));
 export function permittedNativeBusinessRoutes(context){
  if(!context?.isCurrent()||context.appSession?.sourceProfile==='native-isolation-v1')return [];
- return nativeBusinessRoutes.filter(route=>context.appSession.allowedTabs.includes(route.id)&&(context.capabilities.includes('home.read')||route.id==='warehouseImports'||['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id))&&route.required.every(cap=>context.capabilities.includes(cap)));
+ return nativeBusinessRoutes.filter(route=>context.appSession.allowedTabs.includes(route.id)&&routeCaps(context,route));
 }
 export function availableNativeBusinessRoutes(runtime){
  if(!runtime?.isCurrent()||runtime.appSession?.sourceProfile==='native-isolation-v1')return[];
- return nativeBusinessRoutes.filter(route=>runtime.appSession.allowedTabs.includes(route.id)&&(['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id)||runtime.business&&(runtime.capabilities.includes('home.read')||route.id==='warehouseImports'&&runtime.business.readSources?.includes('warehouseImports')))&&route.required.every(cap=>runtime.capabilities.includes(cap)));
+ return nativeBusinessRoutes.filter(route=>runtime.appSession.allowedTabs.includes(route.id)&&(['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id)||runtime.business&&(runtime.capabilities.includes('home.read')||runtime.business.readSources?.includes(routeSource(route))))&&routeCaps(runtime,route));
 }
 export function prepareNativeBusinessRoute(runtime,route,{firstOpen=false}={}){
  if(firstOpen&&route.id==='orders')runtime.business.prepareOrdersIntent();
  void route.module.preload().catch(()=>{});
  if(!['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id))void (route.source?runtime.warehouse():runtime.business.directory()).catch(()=>{});
 }
-export default function NativeBusinessRoute({runtime,route,onNavigate,active}){
+export default function NativeBusinessRoute({runtime,route,onNavigate,active,orderSearchIntent}){
  const [cashflow,setCashflow]=useState(null),[cashflowError,setCashflowError]=useState('');
  const [employeeSlot,setEmployeeSlot]=useState(null),[employeeError,setEmployeeError]=useState('');
  const employeeProfileRepository=employeeSlot?.owner===runtime?employeeSlot.value:null;
@@ -87,5 +89,5 @@ export default function NativeBusinessRoute({runtime,route,onNavigate,active}){
  if(!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id===route.id))return <p role="alert">Phiên không còn quyền truy cập chức năng này.</p>;
  if(error)return <section role="alert"><p>{error}</p><button onClick={()=>{setError('');setAttempt(n=>n+1);}}>Thử lại</button></section>;
  if(!viewDirectory)return <section role="status" aria-busy="true">Đang mở dữ liệu đã lưu cho {route.label}…</section>;
- return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,onNavigate,initialSource:route.source,onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
+ return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,orderSearchIntent,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,onNavigate,initialSource:route.source,onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
 }

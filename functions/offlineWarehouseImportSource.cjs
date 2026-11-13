@@ -16,14 +16,15 @@ function project(row){
  for(const name of ['items','lines','products','measures','countedMeasures','extraMeasures'])if(Array.isArray(row[name])){if(row[name].length>1000)throw stale();result[name]=row[name].map(item=>{const line={};for(const key of [...fields,'actual','expected'])if(item&&scalar(item[key]))line[key]=item[key];return line;});}
  return result;
 }
-function createOfflineWarehouseImportSource({db,projectId,appId,authenticate,hasAction,Filter,loadContract=()=>import('../development/hd-manager/application/src/data/warehouseImportsReadContract.js')}){
- if(!/^demo-[a-z0-9-]+$/.test(projectId)||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||''))throw denied();
+function createOfflineWarehouseImportSource({db,projectId,appId,authenticate,hasAction,Filter,environment,resolveActor,loadContract=()=>import('../development/hd-manager/application/src/data/warehouseImportsReadContract.js')}){
+ const trusted=require('./offlineServerEnvironment.cjs').isTrustedOfflineServerEnvironment(environment,projectId,appId,db);
+ if(trusted?typeof resolveActor!=='function':(!/^demo-[a-z0-9-]+$/.test(projectId)||!/^(127\.0\.0\.1|localhost):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST||'')))throw denied();
  return async({action,token,body={}})=>{
   if(!['warehouse-import-head','warehouse-import-page'].includes(action))throw denied();
   const identity=await authenticate(token),d=await loadContract();if(identity.projectId!==projectId||!identity.uid)throw denied();
   return db.runTransaction(async tx=>{
-   const actor=await readOriginalCoreActor({db,reader:tx,appId,uid:identity.uid});
-   const access=(await tx.get(db.doc('offlineCustomerAccess/'+identity.uid))).data(),s=body.scope;
+   const actor=trusted?await resolveActor(tx,identity.uid):await readOriginalCoreActor({db,reader:tx,appId,uid:identity.uid});
+   const access=trusted?{active:true,readScope:'tenant',tenantId:actor.tenantId,permissionRevision:actor.permissionRevision,appIdentity:{id:actor.subject.employee.id,companyId:actor.tenantId},capabilities:actor.capabilities}:(await tx.get(db.doc('offlineCustomerAccess/'+identity.uid))).data(),s=body.scope;
    if(!access?.active||access.readScope!=='tenant'||access.tenantId!==actor.tenantId||access.permissionRevision!==actor.permissionRevision||access.appIdentity?.id!==actor.subject.employee.id||access.appIdentity?.companyId!==actor.tenantId||!access.capabilities?.includes('home.imports.read')||!hasAction(actor.subject,'warehouse_import','view_warehouse_import')||s?.principalId!==identity.uid||s?.tenantId!==actor.tenantId||s?.permissionRevision!==actor.permissionRevision||typeof s.sessionId!=='string'||!s.sessionId)throw denied();
    const root='offlineHomeFeeds/'+actor.tenantId,home=(await tx.get(db.doc(root))).data(),sourceSeq=home?.sourceRevisions?.[source];
    if(home?.sourceReady?.[source]!==true||typeof home.generation!=='string'||!Number.isSafeInteger(sourceSeq)||sourceSeq<0||!Number.isSafeInteger(home.counts?.[source])||home.counts[source]<0||!/^\d{4}-\d{2}-\d{2}$/.test(home.asOfDay))throw stale();

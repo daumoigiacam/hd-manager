@@ -36,6 +36,8 @@ function originalCoreCapabilities(subject,{hasAction,mapping,extra=[]}){
   if(yes('customers','view_customer_order_history'))caps.push('customers.history.orders.read');if(yes('customers','view_customer_payment_history'))caps.push('customers.history.payments.read');
   if(yes('customers','add_edit_customer'))caps.push('customers.create','customers.update');if(yes('customers','delete_customer'))caps.push('customers.archive');if(yes('customers','reassign_customer_manager'))caps.push('customers.assign');}
  if(fullHome)caps.push('home.read');
+ if(yes('employees','view_employees'))caps.push('employees.directory.read');
+ if(yes('delivery_reports','view_delivery_reports'))caps.push('deliveryReports.read');
  for(const [cap,m,a] of [['home.orders.read','orders','view_orders'],['home.cashflow.read','finance','view_all_cashflow'],['home.payroll.read','payroll','view_all_payroll'],['home.debt.read','debt','view_all_debt'],['home.imports.read','warehouse_import','view_warehouse_import'],['home.dispatches.read','warehouse_dispatch','view_warehouse_dispatch'],['home.stock.read','warehouse_import','view_actual_inventory_stock'],['home.quick-report.read','home','view_quick_report']])if(yes(m,a))caps.push(cap);
  if(yes('orders','view_orders'))caps.push('orders.read');
  if(fullHome){if(yes('orders','create_manual_order'))caps.push('orders.create');if(yes('orders','edit_order_items'))caps.push('orders.update');if(yes('orders','delete_order'))caps.push('orders.archive');caps.push(...extra);}

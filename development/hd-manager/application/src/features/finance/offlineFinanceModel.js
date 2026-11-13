@@ -76,7 +76,7 @@ export function financeReadAccess(runtime, directory) {
     || !Number.isFinite(runtime.expiresAtMs) || Date.now() >= runtime.expiresAtMs) {
     return 'Phiên Offline đã kết thúc hoặc không khớp tài khoản/công ty.';
   }
-  if (!runtime.capabilities?.includes('home.read')) return 'Phiên này chưa có quyền đọc nguồn Thu chi Offline có chữ ký.';
+  if (!runtime.capabilities?.includes('home.read')&&directory?.sourceScope!=='module-pages-v1') return 'Phiên này chưa có quyền đọc nguồn Thu chi Offline có chữ ký.';
   if (!runtime.capabilities.includes('home.cashflow.read')) return 'Phiên Offline chưa có quyền home.cashflow.read có chữ ký.';
   if (runtime.appSession.sourceProfile === 'native-isolation-v1') return 'Nguồn native hiện tại chưa có ánh xạ phiếu thu/chi của sản phẩm.';
   if (!directory || typeof directory.page !== 'function' || typeof directory.lookup !== 'function') return 'Nguồn Thu chi SQLite chưa được kết nối.';

@@ -6,6 +6,8 @@ import NativeBusinessRoute,{availableNativeBusinessRoutes,permittedNativeBusines
 import {startupMark} from '../services/offlineStartupTrace.js';
 import {AppShell} from './AppShell.jsx';
 import WorkingHome from './WorkingHome.jsx';
+import {InstantHomeNavigation} from './InstantHome.jsx';
+import {homeSummary} from './instantHomeModel.js';
 import PreloadedWorkspace from './PreloadedWorkspace.jsx';
 import {createPreloadableModule} from '../utils/preloadableModule.js';
 const homeModule=createPreloadableModule(()=>import('../features/customers/OfflineHome.jsx'));
@@ -23,13 +25,25 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
  const currentHome=context.isCurrent()&&context.capabilities.includes('home.read')&&runtime?.home;
  const restoredHome=currentHome&&homeRestore?.owner===runtime?homeRestore:verifiedLaunch?.cache?{owner:verifiedLaunch,value:verifiedLaunch.cache,error:false}:null;
  const [opened,setOpened]=useState([]);
- const [menuOpen,setMenuOpen]=useState(false),scrollPositions=useRef(new Map());
- useLayoutEffect(()=>{window.scrollTo(0,scrollPositions.current.get(tab)||0);},[tab]);
+ const [menuOpen,setMenuOpen]=useState(false),scrollPositions=useRef(new Map()),contentRef=useRef(null);
+ const [period,setPeriod]=useState('today');
+ const [orderSearchIntent,setOrderSearchIntent]=useState(null);
+ const [homeSyncState,setHomeSyncState]=useState(''),homeIntent=useRef({owner:null,at:0});
+ useEffect(()=>{
+  if(tab!=='home'||!runtime?.home||!context.isCurrent()||!context.capabilities.includes('home.read'))return;
+  const now=performance.now();if(homeIntent.current.owner===runtime&&now-homeIntent.current.at<5000)return;
+  const timer=setTimeout(()=>{if(!context.isCurrent())return;homeIntent.current={owner:runtime,at:performance.now()};void runtime.home.sync().catch(()=>{});},0);
+  return()=>clearTimeout(timer);
+ },[runtime,tab]);
+ useLayoutEffect(()=>{if(contentRef.current)contentRef.current.scrollTop=menuOpen?0:scrollPositions.current.get(tab)||0;},[tab,menuOpen]);
  const routes=runtime?availableNativeBusinessRoutes(runtime):permittedNativeBusinessRoutes(context);
  const navigate=value=>{
-  if(value==='modules'){setMenuOpen(old=>!old);return;}
-  scrollPositions.current.set(tab,window.scrollY);setMenuOpen(false);
+  if(!context.isCurrent())return;
+  if(value==='modules'){if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(old=>!old);return;}
+  if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(false);
   if(value==='home'){setTab('home');return;}
+  if(value==='profile'){setTab(value);return;}
+  if(value==='reports'){if(context.isCurrent()&&context.capabilities.includes('home.read')){setReportRequested(true);setTab(value);}return;}
   if(value==='customers'){if(!context.appSession.allowedTabs.includes('customers')||!context.capabilities.includes('customers.read'))return;onCustomerIntent?.();void adapter.preload().catch(()=>{});void runtime?.prepareCustomerNavigation().catch(()=>{});setTab(value);return;}
   const route=routes.find(item=>item.id===value);if(!route)return;if(runtime)prepareNativeBusinessRoute(runtime,route,{firstOpen:!opened.includes(value)});setOpened(old=>old.includes(value)?old:[...old,value]);setTab(value);
  };
@@ -42,33 +56,38 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
   // owner's SQLite projection is read; no source history or network is needed.
   // Home is already demanded here. Fetch its view alongside the local read,
   // without extending the read mark or importing any unvisited business view.
-  const view=homeModule.preload();
   const read=async()=>{
    try{const value=await runtime.home.read();startupMark('home.local-restore-end',{available:Boolean(value)});return value;}
    catch(error){startupMark('home.local-restore-end',{available:false,failed:true});throw error;}
   };
-  void Promise.all([view,read()]).then(([,value])=>{
-   if(active&&context.isCurrent()&&context.capabilities.includes('home.read')){setHomeRestore({owner:runtime,value,error:false});if(value)setReportRequested(true);}
-  }).catch(()=>{
-   if(active&&context.isCurrent())setHomeRestore({owner:runtime,value:null,error:true});
-  });
-  return()=>{active=false;};
+  let sequence=0;
+  const load=()=>{const ticket=++sequence;return void read().then(value=>{
+   if(active&&ticket===sequence&&context.isCurrent()&&context.capabilities.includes('home.read'))setHomeRestore({owner:runtime,value,error:false});
+  }).catch(()=>{if(active&&context.isCurrent())setHomeRestore({owner:runtime,value:null,error:true});});
+  };
+  load();
+  setHomeSyncState(runtime.home.status()?.state||'');
+  const unsubscribe=runtime.subscribe(topic=>{if(topic==='home')load();else if(topic==='home-status')setHomeSyncState(runtime.home.status()?.state||'');});
+  return()=>{active=false;unsubscribe();};
  },[runtime]);
+ if(!context.isCurrent())return <AppShell><WorkingHome ready={false}/><button onClick={onLogout}>Đăng xuất</button></AppShell>;
  const user=context.appSession.currentUser,company=context.appSession.currentCompany;
  const scope=JSON.stringify(context.scope),read=context.capabilities.includes('customers.read')&&context.appSession.allowedTabs.includes('customers');
- return <AppShell data-hd-verified-tenant={context.scope.tenantId} data-hd-verified-principal={context.scope.principalId}><header className="bg-emerald-900 text-white p-4 flex justify-between items-center"><strong>{company.name||'HD Manager'}</strong><button onClick={onLogout}>Đăng xuất</button></header>
-  <p role="status" className="p-2 text-sm bg-emerald-50">Phiên Offline đã xác minh · Dữ liệu đã lưu trên thiết bị · Quyền có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p>
-  <main className="p-3">
+ const modules=[...(read?[{id:'customers',label:'Khách hàng'}]:[]),...routes];
+ return <AppShell className="hd-instant-native flex flex-col h-full min-h-0" data-hd-verified-tenant={context.scope.tenantId} data-hd-verified-principal={context.scope.principalId}>
+  <main ref={contentRef} className="flex-1 overflow-y-auto min-h-0" data-instant-route={menuOpen?'modules':tab}>
+   {menuOpen&&<section className="p-4 grid grid-cols-2 gap-3" style={{paddingTop:'calc(16px + var(--hd-safe-top, 0px))'}} aria-label="Chức năng nghiệp vụ"><h1 className="col-span-2 text-xl font-bold">Chức năng</h1>{modules.map(route=><button key={route.id} type="button" className="rounded-xl border p-3 text-left font-semibold" onClick={()=>navigate(route.id)}>{route.label}</button>)}</section>}
+   <React.Activity mode={menuOpen?'hidden':'visible'}>
    <React.Activity mode={tab==='home'?'visible':'hidden'}>
-    <WorkingHome ready storageReady={Boolean(runtime)} active={tab==='home'} scope={scope} modules={[...(read?[{id:'customers',label:'Khách hàng'}]:[]),...(routes.length?[{id:'modules',label:'Chức năng'}]:[])]} onRequestReport={runtime?.home||verifiedLaunch?.cache?()=>setReportRequested(true):undefined} reportRequested={reportRequested} onNavigate={navigate}/>
-    {menuOpen&&<section className="p-4 grid grid-cols-2 gap-3" aria-label="Chức năng nghiệp vụ">{routes.map(route=><button key={route.id} type="button" className="rounded-xl border p-3 text-left font-semibold" onClick={()=>navigate(route.id)}>{route.label}</button>)}</section>}
+    <WorkingHome ready storageReady={Boolean(runtime)} active={tab==='home'&&!menuOpen} scope={scope} modules={modules} identity={{companyName:company.name||company.companyName,name:user.name,role:user.position,logo:company.logoUrl||company.logo,avatar:user.avatarUrl}} summary={context.capabilities.includes('home.read')?homeSummary(restoredHome?.value,period):[]} period={period} onPeriodChange={setPeriod} freshness={restoredHome?.value?`Bản đã lưu · ${restoredHome.value.dayKey} · ${homeSyncState==='SYNCING'?'Đang cập nhật ở nền':homeSyncState==='SYNC_FAILED'?'Chưa đồng bộ được thay đổi mới':'Chưa gồm giao dịch chờ xác nhận'}`:''} offline={!navigator.onLine} onProfile={()=>navigate('profile')} searchableModules={['customers','orders']} onSearch={modules.some(item=>['customers','orders'].includes(item.id))?(value,kind)=>{if(kind==='customers'){setSearch(value);setShowSearch(true);navigate('customers');}else if(kind==='orders'){setOrderSearchIntent({id:crypto.randomUUID(),query:value});navigate(kind);}}:undefined} onRequestReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onNavigate={navigate}/>
     {restoredHome?.error&&<p role="alert">Không thể mở báo cáo đã lưu trên máy. Hãy mở lại phiên để thử lại.</p>}
-    {reportRequested&&restoredHome&&!restoredHome.error&&<OfflineHome runtime={runtime} initialResult={restoredHome.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
    </React.Activity>
+   {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p><button type="button" onClick={onLogout}>Đăng xuất</button></section>}
+   {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
    {tab!=='home'&&<button className="mb-3 px-4 py-2 rounded-xl bg-slate-100" onClick={()=>navigate('home')}>Trang chủ</button>}
-   {tab!=='home'&&tab!=='customers'&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
+   {!['home','customers','profile','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
    {!runtime&&tab!=='home'&&<p role="status">Đang mở dữ liệu trên thiết bị. Thao tác đã được giữ lại.</p>}
-   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} active={tab===id} onNavigate={navigate}/></React.Activity>:null;})}
+   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
    {runtime&&tab==='customers'&&read&&<>
     <div className="flex gap-3 mb-2"><button onClick={()=>setShowSearch(value=>!value)}>Tìm kiếm</button><button onClick={()=>setShowFilter(value=>!value)}>Bộ lọc</button></div>
     <OfflineCustomerAppRoute runtime={runtime} principalId={context.scope.principalId} View={CustomerView}
@@ -81,7 +100,8 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
      searchKeyword={search} setSearchKeyword={setSearch} showSearchBox={showSearch} setShowSearchBox={setShowSearch}
      showFilterPanel={showFilter} setShowFilterPanel={setShowFilter}/>
    </>}
-   {tab==='home'&&!reportRequested&&<p className="mt-4 text-sm text-slate-600">Chỉ hiển thị chức năng nằm trong quyền Offline đã ký. Báo cáo tài chính chưa có bản local đầy đủ sẽ không hiển thị số liệu.</p>}
+   </React.Activity>
   </main>
+  <InstantHomeNavigation active={menuOpen?'modules':tab} onNavigate={navigate} onModules={()=>navigate('modules')} onReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onProfile={()=>navigate('profile')}/>
  </AppShell>;
 }

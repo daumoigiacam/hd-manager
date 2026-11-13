@@ -23,7 +23,7 @@ export function deliveryReadAccess(runtime,directory,source='deliveryReports') {
   assertDeliverySession(runtime);
   const spec=directory?.sources?.[source];
   if(typeof directory?.page !== 'function' || typeof directory?.lookup !== 'function' || !spec ||
-    !Array.isArray(spec.requiredCapabilities) || !spec.requiredCapabilities.includes('home.read')) throw fault('source-unavailable','Approved delivery directory specification missing');
+    !Array.isArray(spec.requiredCapabilities) || (!spec.requiredCapabilities.includes('home.read')&&directory.sourceScope!=='module-pages-v1')) throw fault('source-unavailable','Approved delivery directory specification missing');
   if(!spec.requiredCapabilities.every(cap=>runtime.capabilities?.includes(cap))) throw fault('permission-denied','Delivery capability denied');
 }
 function validateHead(runtime,metadata,source,checkpoint) {

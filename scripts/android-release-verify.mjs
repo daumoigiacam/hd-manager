@@ -1,0 +1,21 @@
+import fs from 'node:fs/promises';import path from 'node:path';import {execFileSync} from 'node:child_process';import{createHash}from'node:crypto';
+const run=(file,args)=>execFileSync(file,args,{encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true,timeout:30000,maxBuffer:6*1024*1024});
+const signing=JSON.parse(await fs.readFile('android-signing-verification.json','utf8'));
+if(signing.status!=='SIGNING_READY'||!signing.metadata?.privateKeyVerified||!signing.metadata?.certificateSha256)throw Error('OFFICIAL_SIGNING_PROOF_REQUIRED');
+const sdk=process.env.ANDROID_HOME||process.env.ANDROID_SDK_ROOT;if(!sdk)throw Error('ANDROID_SDK_REQUIRED');
+const versions=(await fs.readdir(path.join(sdk,'build-tools'))).filter(v=>/^\d+\.\d+\.\d+$/.test(v)).sort((a,b)=>b.localeCompare(a,undefined,{numeric:true}));if(!versions.length)throw Error('ANDROID_BUILD_TOOLS_REQUIRED');
+const tools=path.join(sdk,'build-tools',versions[0]),java=path.join(process.env.JAVA_HOME,'bin',process.platform==='win32'?'java.exe':'java');
+const apk='android/app/build/outputs/apk/release/app-release.apk',aab='android/app/build/outputs/bundle/release/app-release.aab';
+const signature=run(java,['-jar',path.join(tools,'lib/apksigner.jar'),'verify','--print-certs',apk]);
+const cert=/Signer #1 certificate SHA-256 digest:\s*([a-f0-9]+)/i.exec(signature)?.[1]?.toLowerCase();
+if(cert!==signing.metadata.certificateSha256)throw Error('APK_OFFICIAL_CERTIFICATE_MISMATCH');
+if(cert!==signing.upgradeBaselineCertificateSha256)throw Error('APK_CANNOT_UPDATE_PRESERVED_PRODUCTION_BASELINE');
+const badging=run(path.join(tools,process.platform==='win32'?'aapt2.exe':'aapt2'),['dump','badging',apk]);
+const p=/package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'/.exec(badging);
+if(!p||p[1]!=='com.hdmanager.app'||p[2]!==process.env.EXPECTED_CODE||p[3]!==process.env.EXPECTED_VERSION||/application-debuggable/.test(badging))throw Error('PRODUCTION_APK_METADATA_MISMATCH');
+run(path.join(process.env.JAVA_HOME,'bin',process.platform==='win32'?'jarsigner.exe':'jarsigner'),['-verify',aab]);
+const bundleCert=run(path.join(process.env.JAVA_HOME,'bin',process.platform==='win32'?'keytool.exe':'keytool'),['-printcert','-jarfile',aab]);
+const aabCert=/SHA256:\s*([A-F0-9:]+)/i.exec(bundleCert)?.[1]?.replaceAll(':','').toLowerCase();if(aabCert!==cert)throw Error('AAB_OFFICIAL_CERTIFICATE_MISMATCH');
+const artifacts=[];for(const file of[apk,aab]){const bytes=await fs.readFile(file);artifacts.push({file,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});}
+const report={at:new Date().toISOString(),status:'SIGNED_ARTIFACTS_VERIFIED_INSTALL_TESTS_STILL_REQUIRED',sourceCommit:process.env.EXPECTED_SOURCE,packageName:p[1],versionCode:Number(p[2]),versionName:p[3],certificateSha256:cert,officialKeystoreSha256:signing.actualKeystoreSha256,debuggable:false,artifacts,install:'NOT_RUN_BY_STATIC_VERIFIER',upgrade:'NOT_RUN_REQUIRES_APPROVED_BASELINE_APK_AND_DEVICE',googlePlaySubmitted:false};
+await fs.writeFile('android-release-manifest.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));

@@ -91,8 +91,8 @@ function HRDetail({runtime,directory,selected,onClose,onEmployee,onEditEmployee}
       </section>}
       <PayrollResult result={result.payroll}/>
       <div className="flex flex-wrap gap-2">
-        {employeeId&&<HDButton variant="secondary" onClick={()=>onEmployee(employeeId,'attendance',d.monthKey)}>Xem công nhân viên</HDButton>}
-        {employeeId&&selected.source!=='payrollSnapshots'&&<HDButton variant="secondary" onClick={()=>onEmployee(employeeId,'payrollSnapshots',d.monthKey)}>Xem lương đã chốt</HDButton>}
+        {employeeId&&(!directory.readSources||directory.readSources.includes('attendance'))&&<HDButton variant="secondary" onClick={()=>onEmployee(employeeId,'attendance',d.monthKey)}>Xem công nhân viên</HDButton>}
+        {employeeId&&selected.source!=='payrollSnapshots'&&(!directory.readSources||directory.readSources.includes('payrollSnapshots'))&&<HDButton variant="secondary" onClick={()=>onEmployee(employeeId,'payrollSnapshots',d.monthKey)}>Xem lương đã chốt</HDButton>}
         {selected.source==='payrollPeriods'&&<HDButton variant="secondary" onClick={()=>onEmployee('','payrollSnapshots',d.monthKey)}>Xem bản chốt trong kỳ</HDButton>}
       </div>
       <p className="text-xs text-slate-600">Chi tiết danh mục chỉ gồm trường nguồn được cho phép; chữ dài có thể giới hạn 1024 ký tự. Kết quả lương chỉ xuất hiện khi bản chốt gốc vượt kiểm tra toàn vẹn.</p>
@@ -214,7 +214,7 @@ export default function OfflineHRWorkspace({runtime,directory,onNavigate,initial
   if(payrollOpen)return <React.Suspense fallback={<p role="status">Đang mở bảng lương…</p>}><OfflinePayrollWorkspace runtime={runtime} onClose={()=>setPayrollOpen(false)} onOpenAdvance={()=>{setPayrollOpen(false);setAdvanceOpen(true);}}/></React.Suspense>;
   return <main className="space-y-4 p-3 pb-20" aria-label="Nhân sự, chấm công và lương Offline">
     <HDPageHeader title="Nhân sự & lương" description="Nguồn hoàn tất đã lưu trên thiết bị" onBack={()=>{if(!closeDetail())onNavigate('home');}}/>
-    <nav className="flex flex-wrap gap-2" aria-label="Nguồn nhân sự">{Object.entries(HR_SOURCES).map(([key,label])=><HDButton key={key}
+    <nav className="flex flex-wrap gap-2" aria-label="Nguồn nhân sự">{Object.entries(HR_SOURCES).filter(([key])=>!directory?.readSources||directory.readSources.includes(key)).map(([key,label])=><HDButton key={key}
       variant={source===key?'primary':'secondary'} aria-pressed={source===key} onClick={()=>{setSelected(null);setSource(key);}}>{label}</HDButton>)}</nav>
     {runtime.capabilities.includes('attendancePeriod.read')&&<HDButton onClick={()=>onNavigate('attendancePeriods')}>Bảng công và xác nhận</HDButton>}
     {runtime.capabilities.includes('salarySettlement.read')&&<HDButton onClick={()=>onNavigate('salarySettlements')}>Thanh toán và đối soát lương</HDButton>}
