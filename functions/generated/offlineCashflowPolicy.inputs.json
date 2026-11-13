@@ -4,11 +4,13 @@
   "inputs": [
     {
       "file": "development/hd-manager/application/src/features/customers/productCRMShared.jsx",
-      "sha256": "9d15a753dd6ab127331c4b5d21cdcc5d79bf5efdcc8388bd3f8c0804efdbc537"
+      "sha256": "9d15a753dd6ab127331c4b5d21cdcc5d79bf5efdcc8388bd3f8c0804efdbc537",
+      "normalization": "LF"
     },
     {
       "file": "development/hd-manager/application/src/App.jsx",
-      "sha256": "da23a581ac082345b01901f1530bc34db8ab6b2eaf914c3595c323abbee570a5"
+      "sha256": "da23a581ac082345b01901f1530bc34db8ab6b2eaf914c3595c323abbee570a5",
+      "normalization": "LF"
     }
   ],
   "sha256": "f49ae7f880d8d9d36b23160e5a3d09d0eded186a2ae55b111b6e3c741ebd8eab"
