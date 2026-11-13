@@ -16,6 +16,7 @@ Nguồn ứng dụng chuẩn: `development/hd-manager/application`. Kế thừa 
 - `offlineTrustedCommands.mjs`: dispatcher dùng lại các handler và protocol hiện hữu, không tạo ledger/database mới. Giữ CAS, receipt bất biến, idempotency, source fingerprint, stock fence, payroll fence và transaction nguyên tử.
 - `offlineBusinessPolicy.mjs` được sinh từ đúng các khai báo capability đang sử dụng trong Local. CI kiểm tra không lệch policy; không suy quyền từ tên chức danh.
 - Chấm công dùng bộ xác minh thiết bị gốc của Identity Center. Bằng chứng thiết bị chỉ tồn tại trong request; không ghi secret vào receipt.
+- Grant trusted bổ sung `identityKey` và danh mục NVKD đã ký theo tenant khi có `customers.read`, đúng contract phiên ứng dụng hiện hữu. Không trả credential hoặc directory của tài khoản khác; vượt giới hạn protocol 500 hồ sơ thì từ chối, không cắt danh sách âm thầm.
 - Feed payroll dùng quyền hiện thời của Identity Center khi chạy trusted, không đọc grant Local giả. Cơ chế checkpoint và mở rộng nguồn giữ nguyên, không reset journal.
 - Gate phát hành yêu cầu bằng chứng riêng cho mọi miền ghi và hash của các handler; một kết quả `offlineWrite: PASS` tổng quát không đủ để phát hành.
 
@@ -51,7 +52,7 @@ Các action này đã có code xử lý; **chưa có nghĩa URL Production đã 
 | Xác nhận bảng công | Đã nối | Unit: nhân viên rồi quản lý xác nhận trên fingerprint đúng kỳ, lưu lịch sử riêng |
 | Thanh toán/đối soát lương | **Chặn ghi trusted** | Chưa có liên kết nguồn sổ quỹ/ngân hàng/bút toán chính thức; không bật Local subledger thay thế |
 
-35/35 contract tests PASS. Bốn nhóm transaction trên Firebase Emulator sử dụng dữ liệu QA Local được đánh dấu `SYNTHETIC_ONLY`; không phải chứng cứ HTTPS/Firebase Production hoặc kiểm thử APK mới. Các lần chạy harness cũ không tương thích nguồn chuẩn được giữ trong bằng chứng Local, không dùng để kết luận PASS.
+36/36 contract tests PASS. Bốn nhóm transaction trên Firebase Emulator sử dụng dữ liệu QA Local được đánh dấu `SYNTHETIC_ONLY`; không phải chứng cứ HTTPS/Firebase Production hoặc kiểm thử APK mới. Các lần chạy harness cũ không tương thích nguồn chuẩn được giữ trong bằng chứng Local, không dùng để kết luận PASS.
 
 ## Signing readiness
 

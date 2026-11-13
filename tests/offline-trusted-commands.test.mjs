@@ -10,6 +10,7 @@ import * as deliveryContext from '../development/hd-manager/application/src/feat
 import * as payroll from '../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js';
 import * as advance from '../development/hd-manager/application/src/features/payroll/salaryAdvanceProtocol.js';
 import {createOfflineCommandAuthority} from '../functions/offlineCommandAuthority.cjs';
+import {restoreOfflineAppSession} from '../development/hd-manager/application/src/data/offlineAppSession.js';
 const editedAt='2026-11-13T01:00:00.000Z';
 const stockIntent=(id='stock',kind='stockCount.create',base=null)=>command(id,kind,base?.id||'wsc_'+id,{version:1,baseFingerprint:base?digestCanonical(stock.canonicalStockCount(base)):null,baseRevision:stock.stockCountRevision(base),baseDocument:base,values:kind==='stockCount.archive'?null:stock.buildStockCountValues({groupName:'Gà',quantity:'3',totalKg:'6',quantityUnit:'Con',date:'2026-11-13',reason:'',note:''}),editedAt,employeeId:'employee-a',resolvesConflictId:null},stock.stockCountRevision(base));
 import {createHash} from 'node:crypto';const digestCanonical=text=>createHash('sha256').update(text).digest('hex');
@@ -20,6 +21,14 @@ test('trusted grant contains implemented commands only; no cash/bank payroll set
  const f=fixture();try{const g=await f.call('grant',{deviceId:'unit-device'}),p=JSON.parse(Buffer.from(g.signedGrant.split('.')[1],'base64url'));
   for(const cap of ['orders.create','stockCounts.create','warehouseImports.create','attendanceRequest.approve','attendancePeriod.managerConfirm','payroll.lock'])assert(p.capabilities.includes(cap),cap);
   for(const cap of ['salarySettlement.pay','salarySettlement.reconcile','attendance.check_in','attendance.check_out'])assert(!p.capabilities.includes(cap),cap);
+ }finally{await f.close();}
+});
+test('signed CRM employee lookup matches current account/tenant, redacts credentials and refuses truncation',async()=>{
+ const f=fixture();try{f.seed('employees','lookup-a',{companyId:'tenant-a',name:'Unit manager',position:'Kinh doanh',passwordHash:'not-public'});f.seed('employees','archived-a',{companyId:'tenant-a',name:'Archived',isArchived:true});const g=await f.call('grant',{deviceId:'unit-device'}),grant=JSON.parse(Buffer.from(g.signedGrant.split('.')[1],'base64url')),session=restoreOfflineAppSession(grant,g.scope);
+  assert.deepEqual(session.employees.map(e=>e.id).sort(),['employee-a','lookup-a']);assert.equal(session.currentUser.identityKey,f.tokens.a.identityId);assert(session.employees.every(e=>e.companyId==='tenant-a'));assert(!JSON.stringify(grant).includes('passwordHash'));
+  const b=await f.call('grant',{deviceId:'unit-device'},'b'),bg=JSON.parse(Buffer.from(b.signedGrant.split('.')[1],'base64url'));assert.deepEqual(bg.appSession.employees.map(e=>e.id),['employee-b']);
+  f.account('restricted','tenant-a','restricted-a',{role:'employee',position:'Sản xuất'});const restricted=await f.call('grant',{deviceId:'unit-device'},'restricted'),rg=JSON.parse(Buffer.from(restricted.signedGrant.split('.')[1],'base64url'));assert(!rg.capabilities.includes('customers.read'));assert.equal(rg.appSession.employees,undefined);
+  for(let n=0;n<501;n++)f.seed('employees','bulk-'+n,{companyId:'tenant-a',name:'Unit capacity'});await assert.rejects(f.call('grant',{deviceId:'unit-device'}),e=>e.code==='resource-exhausted');
  }finally{await f.close();}
 });
 test('stock count writes authoritative business document and receipt atomically without synthetic access documents',async()=>{

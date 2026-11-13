@@ -56,7 +56,16 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
     if(!caps.some(cap=>['customers.read','home.read','attendancePeriod.read','attendanceRequest.read','salarySettlement.read'].includes(cap)))throw denied();
     const issuedAtMs=now(),scope={projectId,principalId:freshActor.uid,tenantId:freshActor.tenantId,permissionRevision:freshActor.permissionRevision,deviceId:body.deviceId,sessionId:randomUUID()};
     const user=freshActor.subject.employee,company=freshActor.subject.company;
-    return {...scope,issuedAtMs,expiresAtMs:issuedAtMs+maxOfflineMs,capabilities:caps,appSession:{user:{id:user.id,firebaseUid:freshActor.uid,companyId:freshActor.tenantId,accountType:'employee',role:'employee',name:String(user.name||''),position:String(user.position||'')},company:{id:freshActor.tenantId,name:String(company.name||'')}}};
+    // The existing CRM validates assignments against this signed tenant
+    // directory. Never infer it from a previous account's cache or return an
+    // unbounded/partially truncated list as if complete.
+    let employees;
+    if(caps.includes('customers.read')){
+     const directory=await tx.get(db.collection(`artifacts/${appId}/public/data/employees`).where('companyId','==',freshActor.tenantId).limit(501));
+     if(directory.docs.length>500)throw Object.assign(Error('Signed employee directory requires an approved paginated protocol'),{code:'resource-exhausted'});
+     employees=directory.docs.filter(doc=>!doc.data().isArchived).map(doc=>{const e=doc.data();return {id:doc.id,companyId:freshActor.tenantId,name:String(e.name||''),position:String(e.position||''),...(Array.isArray(e.positions)?{positions:e.positions}:{}),...(Array.isArray(e.additionalPositions)?{additionalPositions:e.additionalPositions}:{})};});
+    }
+    return {...scope,issuedAtMs,expiresAtMs:issuedAtMs+maxOfflineMs,capabilities:caps,appSession:{user:{identityKey:decoded.identityId,id:user.id,firebaseUid:freshActor.uid,companyId:freshActor.tenantId,accountType:'employee',role:'employee',name:String(user.name||''),position:String(user.position||'')},company:{id:freshActor.tenantId,name:String(company.name||'')},...(employees?{employees}:{})}};
    },{readOnly:true});
    const privateKey=createPrivateKey(await getSigningKey()),pub=createPublicKey(privateKey).export({format:'jwk'});
    if(pub.n!==environment.publicKey.n||pub.e!==environment.publicKey.e)throw Error('Offline issuer key differs from pinned verifier');

@@ -11,10 +11,10 @@ const {sanitizeOfflineDocument}=require('../functions/offlineDocumentSanitizer.c
 async function fixture(){
  const records=new Map(),projectId='hd-manager-offline-contract-test',appId='hd-manager-development';
  const snapshot=ref=>({id:ref.path.split('/').at(-1),exists:records.has(ref.path),data:()=>structuredClone(records.get(ref.path))});
- const db={projectId,doc:path=>({path,get:async()=>snapshot({path})}),async runTransaction(work){const writes=[];const result=await work({get:async ref=>snapshot(ref),set:(ref,data)=>writes.push([ref.path,structuredClone(data)]),delete:ref=>writes.push([ref.path,null])});for(const[p,v]of writes)if(v===null)records.delete(p);else records.set(p,v);return result;}};
- // This contract exercises lease/command transactions only; collection queries
- // must fail explicitly rather than silently pretending to return server data.
- db.collection=()=>{throw Error('Collection queries outside this unit contract');};
+ const db={projectId,doc:path=>({path,get:async()=>snapshot({path})}),async runTransaction(work){const writes=[];const result=await work({get:async ref=>ref.directory?{docs:[...records].filter(([path,body])=>path.startsWith(`artifacts/${appId}/public/data/employees/`)&&body.companyId===ref.tenantId).slice(0,ref.limit).map(([path])=>snapshot({path}))}:snapshot(ref),set:(ref,data)=>writes.push([ref.path,structuredClone(data)]),delete:ref=>writes.push([ref.path,null])});for(const[p,v]of writes)if(v===null)records.delete(p);else records.set(p,v);return result;}};
+ // Only the bounded signed employee lookup is supported here. Unrelated
+ // collection queries fail rather than pretending to return server data.
+ db.collection=path=>{assert.equal(path,`artifacts/${appId}/public/data/employees`);return {where(field,op,tenantId){assert.equal(field,'companyId');assert.equal(op,'==');return {limit(n){assert.equal(n,501);return {directory:true,tenantId,limit:n};}};}};};
  const at=Date.now(),tokens={};
  for(const name of ['a','b']){
   const identityId='employee_emp-'+name,uid='identity_'+identityId,tenant='tenant-'+name,employee='emp-'+name;
