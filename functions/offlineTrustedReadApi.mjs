@@ -1,14 +1,12 @@
 // Read adapters for the existing protocols. No grant persistence, business
 // mutation or Production service registration occurs here.
-import {createRequire} from 'node:module';
 import {createScopedBusinessSource} from './offlineScopedBusinessSource.mjs';
 import cashDomain from './generated/offlineCashflowPolicy.cjs';
 import {createFirestorePayrollSettlements,deriveFirestoreSalaryAccess} from './offlineFirestorePayrollSettlements.mjs';
-const require=createRequire(import.meta.url);
-const {Filter}=require('firebase-admin/firestore');
-const {createAttendancePeriods}=require('./attendancePeriodConfirmations.cjs');
-const {createAttendanceAdjustmentRequests}=require('./attendanceAdjustmentRequests.cjs');
-const {createOfflineWarehouseImportSource}=require('./offlineWarehouseImportSource.cjs');
+import {Filter} from 'firebase-admin/firestore';
+import {createAttendancePeriods} from './attendancePeriodConfirmations.cjs';
+import {createAttendanceAdjustmentRequests} from './attendanceAdjustmentRequests.cjs';
+import {createOfflineWarehouseImportSource} from './offlineWarehouseImportSource.cjs';
 const deny=()=>Object.assign(Error('Trusted read scope denied'),{code:'permission-denied'});
 export const TRUSTED_READ_ACTIONS=Object.freeze(['business-source','attendance-period','payroll-settlement','attendance-adjustment','warehouse-import-head','warehouse-import-page']);
 export function trustedReadCapabilities(subject,hasAction){

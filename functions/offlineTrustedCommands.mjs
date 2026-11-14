@@ -1,7 +1,6 @@
 // Deployment-neutral reuse of accepted command handlers. Identity Center is
 // re-read inside every command transaction, including immutable receipt replay.
 import {createHash} from 'node:crypto';
-import {createRequire} from 'node:module';
 import cashDomain from './generated/offlineCashflowPolicy.cjs';
 import order from './offlineOrderCommands.cjs';
 import cashflow from './offlineCashflowCommands.cjs';
@@ -25,7 +24,7 @@ import {createFirestorePayrollSettlements,deriveFirestoreSalaryAccess} from './o
 export function trustedBusinessCapabilities(subject){return acceptedBusinessCapabilities(subject).filter(cap=>cap!=='salarySettlement.pay'||deriveFirestoreSalaryAccess(subject,projectorPolicy).pay);}
 // The same canonical RBAC resolver used by the generated capability policy.
 import {hasCompanyRolePermissionAction as projectorPolicy} from './generated/offlineOriginalDomain.cjs';
-const require=createRequire(import.meta.url);
+import {bindPayrollTimesheets} from './payrollTimesheetBinding.cjs';
 const deny=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
 const entries={
  order:['create','update','archive'],cashflow:['income.create','income.update','expense.create','expense.update'],
@@ -76,7 +75,7 @@ export function createTrustedBusinessCommands({environment,projector,readAuthori
    const service=requests.createAttendanceAdjustmentRequests({...shared,authorize:async(tx,uid)=>{if(uid!==actor.uid)deny('Adjustment principal mismatch');const a=await current(tx,actor,cap);return {tenantId:a.tenantId,employeeId:a.employeeId,canRequest:yes(a.subject,'company_attendance','check_in_out'),canReview:yes(a.subject,'company_attendance','edit_attendance')};}});
    return service(actor.uid,{action:command.kind.slice('attendanceRequest.'.length),commandId:command.commandId,idempotencyKey:command.idempotencyKey,requestId:command.entityId,payload:command.payload,expectedRevision:command.baseRevision});
   }
-  if(prefix==='payroll')return payroll.createOfflinePayrollCommandService({...shared,loadDomain:async()=>payrollDomain,verifyTimesheets:(tx,a,monthKey,snapshots)=>require('./payrollTimesheetBinding.cjs').bindPayrollTimesheets({tx,actor:{tenantId:a.tenantId,readAll:true},monthKey,snapshots,readContext:periodFor(actor).readContext})})(actor,command);
+  if(prefix==='payroll')return payroll.createOfflinePayrollCommandService({...shared,loadDomain:async()=>payrollDomain,verifyTimesheets:(tx,a,monthKey,snapshots)=>bindPayrollTimesheets({tx,actor:{tenantId:a.tenantId,readAll:true},monthKey,snapshots,readContext:periodFor(actor).readContext})})(actor,command);
   return handlers[prefix](actor,command);
  }});
 }

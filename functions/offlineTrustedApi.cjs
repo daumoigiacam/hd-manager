@@ -86,6 +86,12 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
   }
   if(['business-source','attendance-period','payroll-settlement','attendance-adjustment','warehouse-import-head','warehouse-import-page'].includes(action)){
    if(typeof createReadSources!=='function')throw Object.assign(Error('Trusted business read adapter is not configured'),{code:'failed-precondition'});
+   // Imports-only users must not depend on somebody with full Home permission
+   // having opened Home first. Attach the existing fenced tenant journal once;
+   // the response still goes through the original Imports-only RBAC/projector.
+   if(action==='warehouse-import-head'||action==='warehouse-import-page'){
+    capability(actor,'home.imports.read');await feedFor(actor);
+   }
    const read=await createReadSources({environment,db,projectId,appId,actor,projector,readActor:tx=>fresh(tx,actor)});
    const result=await read({action,token,body});
    await db.runTransaction(tx=>fresh(tx,actor),{readOnly:true});return result;

@@ -2,8 +2,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync} from 'node:crypto';
-import {createTrustedOfflineBackend} from '../functions/offlineTrustedBackend.mjs';
 import {createTrustedOfflineHttp} from '../functions/offlineTrustedHttp.cjs';
+import {createTrustedOfflineApi} from '../functions/offlineTrustedApi.cjs';
+import {createOfflineServerEnvironment} from '../functions/offlineServerEnvironment.cjs';
+import projector from '../functions/generated/offlineOriginalDomain.cjs';
+import {HOME_PERMISSION_MAPPING} from '../functions/offlineHomeFeed.mjs';
+import {createTrustedReadApi,trustedReadCapabilities} from '../functions/offlineTrustedReadApi.mjs';
+import {createTrustedBusinessCommands,trustedBusinessCapabilities} from '../functions/offlineTrustedCommands.mjs';
 const canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;
 const hash=v=>createHash('sha256').update(JSON.stringify(canon(v))).digest('hex');
 function fixture(){
@@ -20,7 +25,7 @@ function fixture(){
   docs.sort((a,b)=>{for(const [key,direction]of ref.orders){const av=field(a,key),bv=field(b,key);if(av!==bv)return (av>bv?1:-1)*(direction==='desc'?-1:1);}return 0;});
   if(ref.after){const n=docs.findIndex(d=>ref.orders.every(([key],i)=>field(d,key)===(ref.after[i]?.id||ref.after[i])));docs=docs.slice(n+1);}
   docs=docs.slice(0,ref.limitN);return {docs,size:docs.length,empty:!docs.length};
- },set(){throw Error('Read route attempted a write');},delete(){throw Error('Read route attempted a delete');}});}};
+ },set(ref,value){if(!ref.path.startsWith('offlineHomeFeedLeases/'))throw Error('Read route attempted a business write');rows.set(ref.path,structuredClone(value));},delete(){throw Error('Read route attempted a delete');}});}};
  const tokens={};for(const x of ['a','b']){
   const identityId='employee_'+x;tokens[x]={uid:'identity_'+identityId,identityId,companyId:'tenant-'+x,appUserId:'employee-'+x,accountType:'employee',aud:projectId,iss:'https://securetoken.google.com/'+projectId,exp:Math.floor(Date.now()/1000)+3600};
   rows.set('identity_accounts/'+identityId,{status:'active',accountType:'employee',companyId:'tenant-'+x,appUserId:'employee-'+x});
@@ -35,12 +40,16 @@ function fixture(){
  }
  const {publicKey,privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
  const auth={app:{options:{projectId}},async verifyIdToken(token,revoked){assert.equal(revoked,true);if(!tokens[token])throw Object.assign(Error('invalid token'),{code:'auth/invalid-id-token'});return tokens[token];}};
- const api=createTrustedOfflineBackend({db,auth,configuration:{projectId,appId,environment:'development',appOrigin:'https://contract.example.com',publicKey:{...publicKey.export({format:'jwk'}),alg:'RS256'}},getSigningKey:async()=>privateKey.export({format:'pem',type:'pkcs8'})});
+ const environment=createOfflineServerEnvironment({db,auth,projectId,appId,environment:'development',appOrigin:'https://contract.example.com',publicKey:{...publicKey.export({format:'jwk'}),alg:'RS256'}});let feedStarts=0;
+ // DAO contract: these rows already contain a supplied source manifest. The
+ // watcher itself has separate real-Firestore/HTTPS evidence, not a fake here.
+ const service=createTrustedOfflineApi({environment,projector,mapping:HOME_PERMISSION_MAPPING,getSigningKey:async()=>privateKey.export({format:'pem',type:'pkcs8'}),createHomeFeed:async()=>{feedStarts++;return{ready:async()=>{},close(){},settle:async()=>{}};},createReadSources:createTrustedReadApi,deriveReadCapabilities:trustedReadCapabilities,createCommands:createTrustedBusinessCommands,deriveBusinessCapabilities:trustedBusinessCapabilities});
+ const api={handler:createTrustedOfflineHttp({environment,api:service,nativeOrigins:['https://localhost']}),close:()=>service.close()};
  async function call(action,body={},token='a',origin='https://contract.example.com'){
   const result={headers:{}};const res={set:(k,v)=>result.headers[k]=v,status(s){result.status=s;return this;},json(b){result.body=b;return this;},end(){return this;}};
   await api.handler({method:'POST',path:'/offline/'+action,body,get:k=>k==='origin'?origin:k==='authorization'?'Bearer '+token:''},res);return result;
  }
- return {rows,root,api,call,tokens};
+ return {rows,root,api,call,tokens,feedStarts:()=>feedStarts};
 }
 test('all six routes execute existing tenant-filtered business queries, never a placeholder 200',async()=>{
  const f=fixture();try{
@@ -51,6 +60,7 @@ test('all six routes execute existing tenant-filtered business queries, never a 
   const request=await f.call('attendance-adjustment',{action:'list'});assert.equal(request.status,200);assert.deepEqual(request.body.items.map(x=>x.id),['request-a']);
   const head=await f.call('warehouse-import-head',{scope});assert.equal(head.status,200);assert.equal(head.body.counts.warehouseImports,1);
   const page=await f.call('warehouse-import-page',{scope,query:{}});assert.equal(page.status,200);assert.deepEqual(page.body.items.map(x=>x.id),['import-a']);assert.equal(page.body.items[0].document.amount,456);assert.equal(page.body.hasMore,false);
+  assert.equal(f.feedStarts(),1,'Head/page reuse the same fenced journal owner');
   for(const cap of ['attendancePeriod.read','attendanceRequest.read','salarySettlement.read'])assert(JSON.parse(Buffer.from(grant.body.signedGrant.split('.')[1],'base64url')).capabilities.includes(cap));
  }finally{await f.api.close();}
 });
