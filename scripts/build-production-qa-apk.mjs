@@ -6,13 +6,14 @@ import {readFile, writeFile, mkdir, stat} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {buildAcceptanceApk, ACCEPTANCE_PACKAGE} from './android-acceptance-apk.mjs';
+import {productionOfflineConfiguration,verifyProductionOfflineEndpoint} from './production-offline-preflight.mjs';
 
 export const WEBSITE = 'https://app.hdconnect.net';
 export const IDENTITY_ORIGIN = 'https://us-central1-hd-manager-c5839.cloudfunctions.net';
 
 // Same canonical Firebase app as the website, with an independently installed
 // debug package. Never silently enable a signed transport that is not deployed.
-export function productionQaSettings(base, sourceCommit) {
+export function productionQaSettings(base, sourceCommit, offlineConfiguration=null) {
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
   assert.equal(base.appId, 'com.hdmanager.app');
   assert.equal(base.server?.url, undefined, 'Bundle canonical assets; do not wrap an old website');
@@ -28,8 +29,17 @@ export function productionQaSettings(base, sourceCommit) {
     VITE_OFFLINE_CUSTOMER_PILOT: 'false', VITE_OFFLINE_RUNTIME: '',
     VITE_HD_BUILD_ID: sourceCommit,
   };
+  if(offlineConfiguration) {
+    const offline=productionOfflineConfiguration(offlineConfiguration);
+    Object.assign(environment,{
+      VITE_OFFLINE_RUNTIME:'trusted-v1',VITE_OFFLINE_API_BASE_URL:offline.apiBaseUrl,
+      VITE_OFFLINE_APP_ORIGIN:offline.appOrigin,VITE_OFFLINE_ENVIRONMENT:offline.environment,
+      VITE_OFFLINE_VERIFYING_JWK:JSON.stringify(offline.publicKey),VITE_OFFLINE_MAX_MS:String(offline.maxOfflineMs),
+      VITE_CUSTOMER_DELTA_SYNC:'true',
+    });
+  }
   return {capacitor, environment, website: WEBSITE, packageId: ACCEPTANCE_PACKAGE,
-    signedOffline: 'NOT_ENABLED_PRODUCTION_TRANSPORT_NOT_READY',
+    signedOffline: offlineConfiguration?'CONFIGURED_SERVER_GRANT_AND_DEVICE_VERIFICATION_REQUIRED':'NOT_ENABLED_PRODUCTION_TRANSPORT_NOT_READY',
     offlineApi: WEBSITE + '/api/offline/'};
 }
 
@@ -41,17 +51,23 @@ function run(executable, args, cwd, env) {
   });
 }
 
-export async function buildProductionQaApk(output) {
+export async function buildProductionQaApk(output,{offlineConfigurationFile}={}) {
   const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
   assert.equal(process.cwd(), root, 'Run from the repository root');
   const destination = path.resolve(output);
   assert.ok(destination.startsWith(path.join(root, '.artifacts') + path.sep), 'Output must be a new .artifacts/ directory');
   try {await stat(destination); throw new Error('Preserve existing artifacts; choose a new output directory');}
   catch (error) {if (error.code !== 'ENOENT') throw error;}
+  let offlineConfiguration=null,offlinePreflight=null;
+  if(offlineConfigurationFile) {
+    const descriptor=JSON.parse(await readFile(offlineConfigurationFile,'utf8'));
+    offlineConfiguration=descriptor.productionConfiguration||descriptor;
+    offlinePreflight=await verifyProductionOfflineEndpoint(offlineConfiguration);
+  }
   await mkdir(destination, {recursive: true});
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8', windowsHide: true}).trim();
   assert.equal(execFileSync('git', ['diff', '--name-only', 'HEAD'], {encoding: 'utf8', windowsHide: true}).trim(), '', 'Commit reviewed source before building');
-  const settings = productionQaSettings(JSON.parse(await readFile('capacitor.config.json', 'utf8')), sourceCommit);
+  const settings = productionQaSettings(JSON.parse(await readFile('capacitor.config.json', 'utf8')), sourceCommit,offlineConfiguration);
   const env = {...process.env};
   for (const key of Object.keys(env)) {
     if (key.startsWith('VITE_') || key.startsWith('HD_RELEASE_') || key === 'GITHUB_SHA') delete env[key];
@@ -109,7 +125,7 @@ export async function buildProductionQaApk(output) {
     buildType: 'DEVELOPMENT_QA_DEBUG_NOT_OFFICIAL_RELEASE', website: WEBSITE,
     webViewOrigin: WEBSITE, bundledAssets: true, serverUrl: null,
     identityApiOrigin: IDENTITY_ORIGIN, firebaseProjectId: 'hd-manager-c5839', appId: 'hd-manager-production',
-    signedOffline: settings.signedOffline, offlineApi: settings.offlineApi,
+    signedOffline: settings.signedOffline, offlineApi: settings.offlineApi,offlinePreflight,
     releaseKeyTouched: false, debugKeyPreserved: true, fixtureInjected: false,
     productionDeployed: false, environment: settings.environment};
   await writeFile(path.join(destination, 'build-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -119,5 +135,6 @@ export async function buildProductionQaApk(output) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const output = process.argv[2] || `.artifacts/hd-manager-production-qa-${Date.now()}`;
-  await buildProductionQaApk(output);
+  assert.ok(process.argv.length===3||process.argv.length===2||(process.argv.length===5&&process.argv[3]==='--offline-config'),'Usage: node scripts/build-production-qa-apk.mjs [output] [--offline-config public-configuration.json]');
+  await buildProductionQaApk(output,{offlineConfigurationFile:process.argv[4]});
 }
