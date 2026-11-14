@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 export const ACCEPTANCE_PACKAGE = 'com.hdmanager.app.acceptance';
 
-export async function buildAcceptanceApk({ buildOutput, output, fixture, token }) {
+export async function buildAcceptanceApk({ buildOutput, output, fixture, token, buildEnvironment = globalThis.process.env }) {
   const assets = path.join(output, 'native-assets');
   await mkdir(assets, { recursive: true });
   await cp(buildOutput, path.join(assets, 'public'), { recursive: true });
@@ -30,14 +30,14 @@ export async function buildAcceptanceApk({ buildOutput, output, fixture, token }
     assert.ok(index.includes('<head>'));
     await writeFile(indexPath, index.replace('<head>', '<head><script src="/acceptance-init.js"></script>'));
   }
-  const javaHome = globalThis.process.env.JAVA_HOME || 'C:/Program Files/Android/Android Studio/jbr';
+  const javaHome = buildEnvironment.JAVA_HOME || 'C:/Program Files/Android/Android Studio/jbr';
   const args = ['-Dfile.encoding=UTF-8', '-Dsun.jnu.encoding=UTF-8', '-classpath', 'gradle/wrapper/gradle-wrapper.jar',
     'org.gradle.wrapper.GradleWrapperMain', '--offline', '--no-daemon', 'assembleDebug',
     `-PHD_ACCEPTANCE_ASSETS=${path.relative(path.resolve('android/app'), assets)}`];
   const exitCode = await new Promise((resolve, reject) => {
     const process = spawn(path.join(javaHome, 'bin/java.exe'), args, {
       cwd: path.resolve('android'),
-      env: { ...globalThis.process.env, JAVA_HOME: javaHome, GRADLE_USER_HOME: globalThis.process.env.GRADLE_USER_HOME || 'D:/HD-DEV/gradle' },
+      env: { ...buildEnvironment, JAVA_HOME: javaHome, GRADLE_USER_HOME: buildEnvironment.GRADLE_USER_HOME || 'D:/HD-DEV/gradle' },
       stdio: 'inherit',
     });
     process.on('error', reject);
