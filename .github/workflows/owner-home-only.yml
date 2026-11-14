@@ -1,0 +1,259 @@
+name: Owner approved frontend Home release only
+on:
+  push:
+    branches:
+      - codex/official-home-qa-20261114
+permissions:
+  contents: read
+concurrency:
+  group: production
+  cancel-in-progress: false
+jobs:
+  frontend_home:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      VITE_DATA_MODE: cloud
+      VITE_FIREBASE_PROJECT_ID: hd-manager-c5839
+      VITE_HD_APP_ID: hd-manager-production
+      VITE_FIREBASE_EMULATORS: "false"
+      VITE_IDENTITY_API_BASE_URL: https://app.hdconnect.net
+      VITE_IDENTITY_AUTH_REGION: ""
+      VITE_FIRESTORE_READ_WORKER: "true"
+      VITE_WORKER_TRANSFER_PROFILE: balanced-64k
+      VITE_NATIVE_MINIMAL_ENTRY: "false"
+      VITE_NATIVE_STARTUP_CORE_PRELOAD: "false"
+      VITE_OFFLINE_CUSTOMER_PILOT: "false"
+      VITE_OFFLINE_RUNTIME: ""
+      VITE_HD_BUILD_ID: 235395f8a4563b70c513a41e2f49a297a1b4fab5
+    steps:
+      - name: Checkout tested application source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Verify exact tested source and safe scope
+        run: |-
+          set -euo pipefail
+          git merge-base --is-ancestor 235395f8a4563b70c513a41e2f49a297a1b4fab5 HEAD
+          git diff --exit-code 235395f8a4563b70c513a41e2f49a297a1b4fab5 HEAD -- development/hd-manager/application scripts android tests
+          test -z "${VITE_API_BASE_URL:-}"
+          test "$VITE_OFFLINE_RUNTIME" = ""
+      - name: Install existing locked build dependencies
+        run: |-
+          npm install -g npm@10.9.9
+          npm ci
+          npm ci --prefix development/hd-manager/application --ignore-scripts
+      - name: Run relevant Identity transport and QA configuration checks
+        run: node --test tests/identity-native-http-transport.test.mjs tests/production-qa-apk-config.test.mjs
+      - name: Build canonical frontend only
+        run: node ../../../node_modules/vite/bin/vite.js build --mode production --outDir ../../../.ci-home-dist
+        working-directory: development/hd-manager/application
+      - name: Validate Firebase-only Production configuration
+        run: node scripts/verify-firebase-production-bundle.mjs .ci-home-dist
+      - name: Package verified static frontend
+        run: |-
+          set -euo pipefail
+          cd .ci-home-dist
+          zip -qr "$RUNNER_TEMP/hd-manager-home.zip" .
+      - name: Back up static frontend, activate atomically and verify; rollback on failure
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          FRONTEND_ZIP: ${{ runner.temp }}/hd-manager-home.zip
+          REPORT_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAtxDyOAxYhO2GwTV21CNx
+            IYrbN7qPjsbHpPfqe6m8+xsd9ziErcyCBJ1MCOdAIS1PZFSRefzIYa4ZiMQ/G0/4
+            6aA/M3NjokY2vz7bovLBrqbSiONPfjPhllUNgStksXhNJ9uyr23+rORcKILGGFiF
+            fcYFd8VGl6PD+UBsOp/yBEWOEQnAJOxQ5xgjqNe3S83QRogIpKqgBe9iLyjTo3ZH
+            gwa3PpAngHEnO0GT/mZs04FL+GShvqyccl1GBM2po0wSKIE0mq2VKyxVXlcMq5eg
+            0L9N9SbD1wPEsiZ/lnqwTVU6LNV0Ja+nPb6ERR/3JYXdMUMZ+XtPEq+DuX3nPGqv
+            OlWXT5xKW7bO0FemL//XdEcKXsd1pPZULmACN3WAjlRuyI5HbOdA8PGKHgj0lnM5
+            cUxQq2l77zUhDCQEreu9A96MBZJopYfg5WNWsrLBZArPjtYAspQ+4kkA/qmB0WyR
+            wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
+            -----END PUBLIC KEY-----
+          REMOTE_PROBE: |
+            import os,sys,json,pathlib,hashlib,tarfile,zipfile,stat,datetime,urllib.request,urllib.error,ssl,tempfile,shutil
+            SOURCE='235395f8a4563b70c513a41e2f49a297a1b4fab5'
+            OLD_SOURCE='577d303144421b1c0e6e822ce03912ce42d5e1f4'
+            ZIP=pathlib.Path('__FRONTEND_ZIP_PATH__')
+            EXPECTED_ZIP_SHA='__FRONTEND_ZIP_SHA__'
+            BASE=pathlib.Path('/var/www/hd-manager')
+            CURRENT=BASE/'current'
+            SHA=lambda b:hashlib.sha256(b).hexdigest()
+            result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'Owner-authorized frontend Home release only','sourceCommit':SOURCE,'activated':False,'databaseChanged':False,'backendChanged':False,'nginxReloaded':False,'servicesCreated':False}
+
+            def fetch(path,method='GET',payload=None):
+                headers={'Cache-Control':'no-cache','Origin':'https://app.hdconnect.net'}
+                if method=='OPTIONS':headers.update({'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type,authorization'})
+                if payload is not None:headers['Content-Type']='application/json'
+                req=urllib.request.Request('https://app.hdconnect.net'+path,method=method,headers=headers,data=json.dumps(payload).encode() if payload is not None else None)
+                try:response=urllib.request.urlopen(req,timeout=30,context=ssl.create_default_context())
+                except urllib.error.HTTPError as e:response=e
+                raw=response.read(4*1024*1024)
+                return response.status,response.headers,raw
+
+            def public_version():
+                status,headers,raw=fetch('/version.json?owner_home_check='+stamp)
+                assert status==200 and 'json' in headers.get('Content-Type',''), 'PUBLIC_VERSION_NOT_JSON'
+                return json.loads(raw).get('buildId')
+
+            def assert_identity():
+                checks=[]
+                for method,expected,payload in [('GET',405,None),('OPTIONS',204,None),('POST',400,{'identifier':'','password':'','appId':'hd-manager-release-qa-20261114'})]:
+                    status,headers,raw=fetch('/api/identity/login?owner_home_check='+stamp,method,payload)
+                    checks.append({'method':method,'http':status,'allowOrigin':headers.get('Access-Control-Allow-Origin')})
+                    assert status==expected, 'IDENTITY_CONTRACT_FAILED'
+                    assert headers.get('Access-Control-Allow-Origin')=='https://app.hdconnect.net', 'IDENTITY_CORS_FAILED'
+                    if method!='OPTIONS':assert json.loads(raw).get('success') is False, 'IDENTITY_JSON_FAILED'
+                return checks
+
+            def swap_link(target):
+                temp=BASE/('.current-owner-home-'+stamp)
+                assert not temp.exists() and not temp.is_symlink(), 'LINK_COLLISION'
+                os.symlink(str(target),str(temp));os.replace(str(temp),str(CURRENT))
+
+            stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            try:
+                assert str(ZIP).startswith('/var/tmp/hd-manager-home-') and ZIP.is_file() and not ZIP.is_symlink(), 'INVALID_TRANSFER_PATH'
+                assert SHA(ZIP.read_bytes())==EXPECTED_ZIP_SHA, 'ARTIFACT_HASH_MISMATCH'
+                assert CURRENT.is_symlink(), 'CURRENT_IS_NOT_SYMLINK'
+                old=CURRENT.resolve(strict=True)
+                assert str(old).startswith(str(BASE/'releases')+'/'), 'OLD_RELEASE_OUT_OF_SCOPE'
+                old_version=json.loads((old/'version.json').read_text())
+                assert old_version.get('buildId')==OLD_SOURCE, 'PRODUCTION_CHANGED_SINCE_APPROVAL'
+                assert public_version()==OLD_SOURCE, 'PUBLIC_PRODUCTION_CHANGED'
+                result['identityBefore']=assert_identity()
+                with zipfile.ZipFile(ZIP) as archive:
+                    entries=archive.infolist()
+                    assert entries and sum(e.file_size for e in entries)<160*1024*1024, 'UNEXPECTED_ARTIFACT_SIZE'
+                    for e in entries:
+                        p=pathlib.PurePosixPath(e.filename)
+                        assert not p.is_absolute() and '..' not in p.parts and '\\' not in e.filename, 'ZIP_PATH_TRAVERSAL'
+                        assert not stat.S_ISLNK(e.external_attr>>16), 'ZIP_SYMLINK_NOT_ALLOWED'
+                        assert p.name not in ['.env','hdmanager-upload-key.jks'] and not p.name.endswith(('.pem','.p12','.jks')), 'SENSITIVE_ARTIFACT_FILE'
+                    assert json.loads(archive.read('version.json')).get('buildId')==SOURCE, 'WRONG_BUNDLE_SOURCE'
+                    assert archive.read('index.html').strip(), 'MISSING_INDEX'
+                    new_index_sha=SHA(archive.read('index.html'))
+                    new=BASE/'releases'/('owner-home-'+SOURCE[:12]+'-'+stamp)
+                    assert not new.exists(), 'NEW_RELEASE_EXISTS'
+                    assert shutil.disk_usage(BASE).free>sum(e.file_size for e in entries)*3+100*1024*1024, 'INSUFFICIENT_RELEASE_DISK'
+                    backup_dir=pathlib.Path('/var/backups/hd-manager-frontend')/stamp
+                    backup_dir.mkdir(parents=True,mode=0o700);os.chmod(backup_dir,0o700)
+                    backup=backup_dir/'frontend-original.tar.gz'
+                    before_index_sha=SHA((old/'index.html').read_bytes())
+                    with tarfile.open(backup,'w:gz',dereference=False) as tar:tar.add(old,arcname='.')
+                    os.chmod(backup,0o600)
+                    with tarfile.open(backup,'r:gz') as tar:
+                        index=tar.extractfile('./index.html')
+                        assert index and SHA(index.read())==before_index_sha, 'BACKUP_INDEX_VERIFICATION_FAILED'
+                        version=tar.extractfile('./version.json')
+                        assert version and json.load(version).get('buildId')==OLD_SOURCE, 'BACKUP_VERSION_VERIFICATION_FAILED'
+                    assert CURRENT.resolve(strict=True)==old and SHA((old/'index.html').read_bytes())==before_index_sha, 'PRODUCTION_CONCURRENT_CHANGE'
+                    result.update({'oldRelease':str(old),'oldSourceCommit':OLD_SOURCE,'oldIndexSha256':before_index_sha,'backupPath':str(backup),'backupSha256':SHA(backup.read_bytes()),'newRelease':str(new),'newIndexSha256':new_index_sha,'artifactSha256':EXPECTED_ZIP_SHA})
+                    new.mkdir(mode=0o755)
+                    archive.extractall(new)
+                # Existing open tabs may still lazy-load old content-hashed chunks. Keep
+                # those static assets reachable; never replace a new asset or the new index.
+                retained=0
+                if (old/'assets').is_dir():
+                    for source in (old/'assets').rglob('*'):
+                        assert not source.is_symlink(), 'UNEXPECTED_OLD_ASSET_SYMLINK'
+                        if not source.is_file():continue
+                        destination=new/'assets'/source.relative_to(old/'assets')
+                        if destination.exists():
+                            assert SHA(destination.read_bytes())==SHA(source.read_bytes()), 'IMMUTABLE_ASSET_NAME_COLLISION'
+                        else:
+                            destination.parent.mkdir(parents=True,exist_ok=True)
+                            shutil.copyfile(source,destination);retained+=1
+                result['retainedLegacyStaticAssets']=retained
+                for root,dirs,files in os.walk(new):
+                    os.chmod(root,0o755)
+                    for name in files:os.chmod(pathlib.Path(root)/name,0o644)
+                manifest=backup_dir/'rollback-manifest.json'
+                manifest.write_text(json.dumps(result,indent=2));os.chmod(manifest,0o600)
+                assert CURRENT.resolve(strict=True)==old, 'CONCURRENT_ACTIVATION'
+                swap_link(new);result['activated']=True
+                assert CURRENT.resolve(strict=True)==new, 'ACTIVATION_LINK_MISMATCH'
+                assert public_version()==SOURCE, 'PUBLIC_NEW_VERSION_MISMATCH'
+                status,headers,index=fetch('/?owner_home_check='+stamp)
+                assert status==200 and SHA(index)==new_index_sha, 'PUBLIC_INDEX_HASH_MISMATCH'
+                result['identityAfter']=assert_identity()
+                result['publicVersion']=SOURCE
+                result['status']='FRONTEND_DEPLOYED_AWAITING_AUTHENTICATED_SMOKE'
+                result['rollbackManifest']=str(manifest)
+                (backup_dir/'deployment-result.json').write_text(json.dumps(result,indent=2));os.chmod(backup_dir/'deployment-result.json',0o600)
+            except Exception as e:
+                result['error']=str(e)[:350]
+                result['status']='BLOCKED_BEFORE_FRONTEND_CHANGE' if not result['activated'] else 'ACTIVATION_VERIFY_FAILED'
+                if result['activated']:
+                    try:
+                        assert CURRENT.resolve(strict=True)==new, 'ROLLBACK_BLOCKED_CONCURRENT_OPERATOR_CHANGE'
+                        assert old.is_dir() and SHA((old/'index.html').read_bytes())==before_index_sha, 'OLD_RELEASE_CHANGED'
+                        swap_link(old)
+                        assert public_version()==OLD_SOURCE, 'ROLLBACK_PUBLIC_VERSION_FAILED'
+                        result['status']='FRONTEND_ROLLED_BACK'
+                    except Exception as rollback_error:result['rollbackError']=str(rollback_error)[:350]
+            print(json.dumps(result))
+        run: |-
+          node --input-type=module <<'HD_HOME_NODE'
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          import dns from 'node:dns/promises';
+          import {execFileSync} from 'node:child_process';
+          import {createHash,randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
+          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd-home-frontend-'));
+          const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
+          let result,keyFormat;
+          try {
+           const host=process.env.VPS_HOST?.trim(),user=process.env.VPS_USER?.trim(),key=process.env.VPS_SSH_KEY;
+           if(!/^[a-zA-Z0-9.-]+$/.test(host||'')||!/^[a-z_][a-z0-9_-]*\$?$/i.test(user||'')||!key)throw Error('AUTHORIZED_SSH_CONFIGURATION_MISSING');
+           const configured=await dns.lookup(host,{all:true}),app=await dns.lookup('app.hdconnect.net',{all:true});
+           if(!configured.some(x=>app.some(y=>x.address===y.address)||x.address==='180.93.0.87'))throw Error('CONFIGURED_HOST_NOT_PRODUCTION_DNS_OR_APPROVED_VPS');
+           let material=key.replace(/\r\n?/g,'\n');
+           keyFormat={lines:material.split('\n').length,hasPemBoundary:/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(material),hasEscapedNewlines:material.includes('\\n'),trailingNewline:material.endsWith('\n')};
+           if(keyFormat.hasPemBoundary&&keyFormat.hasEscapedNewlines&&keyFormat.lines===1)material=material.replace(/\\r\\n/g,'\n').replace(/\\n/g,'\n');
+           if(!keyFormat.hasPemBoundary&&/^[A-Za-z0-9+/=\s]+$/.test(material)){
+            const decoded=Buffer.from(material,'base64').toString('utf8');
+            if(/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(decoded)){material=decoded.replace(/\r\n?/g,'\n');keyFormat.explicitBase64Envelope=true;}
+           }
+           if(!material.endsWith('\n'))material+='\n';
+           fs.writeFileSync(keyFile,material,{mode:0o600});material='';delete process.env.VPS_SSH_KEY;
+           try{execFileSync('ssh-keygen',['-l','-f',keyFile],{stdio:['ignore','pipe','pipe'],timeout:10000});keyFormat.localParse='PASS';}
+           catch{keyFormat.localParse='FAILED';throw Error('EXISTING_SSH_KEY_FORMAT_NOT_READABLE');}
+           const pinned=process.env.VPS_KNOWN_HOSTS;
+           if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
+           const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
+           const artifact=process.env.FRONTEND_ZIP;
+           if(!artifact||!fs.statSync(artifact).isFile())throw Error('FRONTEND_ARTIFACT_MISSING');
+           const artifactHash=createHash('sha256').update(fs.readFileSync(artifact)).digest('hex');
+           const staging=execFileSync('ssh',args,{input:"import tempfile,os; p=tempfile.mkdtemp(prefix='hd-manager-home-',dir='/var/tmp'); os.chmod(p,0o700); print(p)\n",encoding:'utf8',timeout:20000,stdio:['pipe','pipe','pipe']}).trim();
+           if(!/^\/var\/tmp\/hd-manager-home-[a-zA-Z0-9_-]+$/.test(staging))throw Error('INVALID_PRIVATE_TRANSFER_PATH');
+           execFileSync('scp',[...args.slice(0,-2),artifact,user+'@'+host+':'+staging+'/frontend.zip'],{timeout:90000,stdio:['ignore','pipe','pipe']});
+           const remote=process.env.REMOTE_PROBE.replace('__FRONTEND_ZIP_PATH__',staging+'/frontend.zip').replace('__FRONTEND_ZIP_SHA__',artifactHash);
+           const stdout=execFileSync('ssh',args,{input:remote,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
+           result={status:'SSH_SCOPE_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+          } catch(error) {
+           result={status:'FRONTEND_OPERATION_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
+          } finally {
+           for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
+           try{fs.rmdirSync(dir);}catch{}
+          }
+          const aes=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',aes,iv);
+          const ciphertext=Buffer.concat([cipher.update(JSON.stringify(result),'utf8'),cipher.final()]);
+          const meta={version:1,wrappedKey:publicEncrypt({key:process.env.REPORT_PUBLIC_KEY,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},aes).toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64')};
+          aes.fill(0);console.log('HD502_META '+JSON.stringify(meta));
+          const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
+          for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
+          console.log('HD502_STATUS '+result.status);
+          if(result.status!=='SSH_SCOPE_COMPLETED'||result.payload?.status!=='FRONTEND_DEPLOYED_AWAITING_AUTHENTICATED_SMOKE')process.exitCode=1;
+
+          HD_HOME_NODE
