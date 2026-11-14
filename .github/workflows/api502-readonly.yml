@@ -1,0 +1,174 @@
+name: Read-only Production API 502 investigation
+on:
+  push:
+    branches:
+      - codex/api502-readonly-20261114
+permissions:
+  contents: read
+concurrency:
+  group: hd-manager-api502-readonly
+  cancel-in-progress: false
+jobs:
+  investigate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Read-only gateway metadata and logs; encrypted output only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          REPORT_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAtxDyOAxYhO2GwTV21CNx
+            IYrbN7qPjsbHpPfqe6m8+xsd9ziErcyCBJ1MCOdAIS1PZFSRefzIYa4ZiMQ/G0/4
+            6aA/M3NjokY2vz7bovLBrqbSiONPfjPhllUNgStksXhNJ9uyr23+rORcKILGGFiF
+            fcYFd8VGl6PD+UBsOp/yBEWOEQnAJOxQ5xgjqNe3S83QRogIpKqgBe9iLyjTo3ZH
+            gwa3PpAngHEnO0GT/mZs04FL+GShvqyccl1GBM2po0wSKIE0mq2VKyxVXlcMq5eg
+            0L9N9SbD1wPEsiZ/lnqwTVU6LNV0Ja+nPb6ERR/3JYXdMUMZ+XtPEq+DuX3nPGqv
+            OlWXT5xKW7bO0FemL//XdEcKXsd1pPZULmACN3WAjlRuyI5HbOdA8PGKHgj0lnM5
+            cUxQq2l77zUhDCQEreu9A96MBZJopYfg5WNWsrLBZArPjtYAspQ+4kkA/qmB0WyR
+            wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
+            -----END PUBLIC KEY-----
+          REMOTE_PROBE: |
+            import json, re, subprocess, socket, datetime, pathlib
+
+            def run(args, timeout=12, limit=1048576):
+                try:
+                    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+                    return {'code': p.returncode, 'stdout': p.stdout[-limit:], 'stderr': p.stderr[-4096:]}
+                except Exception as e:
+                    return {'code': -1, 'error': type(e).__name__}
+
+            def block(text, start):
+                brace = text.find('{', start)
+                depth, quote, escaped, comment = 0, None, False, False
+                for i in range(brace, len(text)):
+                    c = text[i]
+                    if comment:
+                        if c == '\n': comment = False
+                        continue
+                    if escaped: escaped = False; continue
+                    if c == '\\': escaped = True; continue
+                    if quote:
+                        if c == quote: quote = None
+                        continue
+                    if c in ('"', "'"): quote = c; continue
+                    if c == '#': comment = True; continue
+                    if c == '{': depth += 1
+                    if c == '}':
+                        depth -= 1
+                        if depth == 0: return text[start:i+1]
+                return ''
+
+            def redact(text):
+                text = re.sub(r'(?im)^.*(?:ssl_certificate_key|proxy_set_header\s+(?:Authorization|Cookie)|(?:password|secret|api_key)\s+).*$','[SENSITIVE_DIRECTIVE_OMITTED]',text)
+                text = re.sub(r'client:\s*[^,]+', 'client: [REDACTED]', text)
+                text = re.sub(r'(request: "(?:GET|POST|OPTIONS|HEAD)\s+[^?\s"]+)\?[^\s"]+', r'\1?[QUERY_OMITTED]', text)
+                return text
+
+            result = {'at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'scope': 'app.hdconnect.net /api/identity/login only', 'readOnly': True}
+            result['nginxService'] = run(['systemctl','show','nginx','--no-pager','-p','ActiveState','-p','SubState','-p','MainPID'])
+            raw = run(['sudo','-n','nginx','-T'], timeout=15)
+            text = raw.get('stdout','')
+            result['nginxTest'] = {k:v for k,v in raw.items() if k != 'stdout'}
+            vhosts = []
+            for m in re.finditer(r'(?m)^\s*server\s*\{', text):
+                value = block(text, m.start())
+                names = re.search(r'\bserver_name\s+([^;]+);', value)
+                if names and 'app.hdconnect.net' in names.group(1).split():
+                    before = text[:m.start()]
+                    files = re.findall(r'# configuration file ([^:]+):', before)
+                    vhosts.append({'file': files[-1] if files else None, 'configuration': redact(value[:40000])})
+            result['vhosts'] = vhosts
+            selected = '\n'.join(v['configuration'] for v in vhosts)
+            proxies = re.findall(r'\bproxy_pass\s+([^;]+);', selected)
+            result['proxyPassDirectives'] = proxies
+            upstreams = []
+            for m in re.finditer(r'(?m)^\s*upstream\s+(\S+)\s*\{', text):
+                if any(re.match(r'https?://'+re.escape(m.group(1))+r'(?:/|$)', url) for url in proxies):
+                    upstreams.append(redact(block(text,m.start())[:12000]))
+            result['upstreamBlocks'] = upstreams
+            result['targetRequest'] = run(['curl','--silent','--show-error','--max-time','10','--output','/dev/null','--write-out','http=%{http_code} remote=%{remote_ip} total=%{time_total}','https://app.hdconnect.net/api/identity/login?hd_diag=readonly_20261114'],timeout=12)
+            logs = set(['/var/log/nginx/error.log'])
+            for value in re.findall(r'\berror_log\s+([^;\s]+)', selected):
+                if value.startswith('/var/log/nginx/') and '..' not in value: logs.add(value)
+            result['nginxErrors'] = []
+            for log in sorted(logs):
+                r = run(['sudo','-n','tail','-n','1600',log], limit=524288)
+                lines = [line for line in r.get('stdout','').splitlines() if '/api/identity/login' in line and 'app.hdconnect.net' in line]
+                result['nginxErrors'].append({'file':log,'code':r.get('code'),'error':r.get('error'), 'lines':[redact(x) for x in lines[-25:]]})
+            access = run(['sudo','-n','tail','-n','1400','/var/log/nginx/access.log'], limit=524288)
+            result['accessStatusCounts'] = {}
+            for line in access.get('stdout','').splitlines():
+                if re.search(r'"(?:GET|POST|OPTIONS|HEAD) /api/identity/login(?:[?\s])',line):
+                    match = re.search(r'"\s+(\d{3})\s+',line)
+                    if match:
+                        status=match.group(1); result['accessStatusCounts'][status]=result['accessStatusCounts'].get(status,0)+1
+            ports = set([80,443])
+            for url in proxies:
+                match=re.match(r'https?://(?:127\.0\.0\.1|localhost|0\.0\.0\.0):([0-9]+)',url)
+                if match: ports.add(int(match.group(1)))
+            for value in upstreams:
+                for port in re.findall(r'\bserver\s+(?:127\.0\.0\.1|localhost):([0-9]+)',value): ports.add(int(port))
+            ss = run(['sudo','-n','ss','-ltnp'])
+            result['listeners'] = {'ports':sorted(ports),'code':ss.get('code'),'lines':[line for line in ss.get('stdout','').splitlines() if any(re.search(r':'+str(p)+r'\s',line) for p in ports)]}
+            local_backend_ports = ports - {80,443}
+            result['docker'] = {'applicable':bool(local_backend_ports),'containers':[]}
+            if local_backend_ports:
+                d = run(['sudo','-n','docker','ps','-a','--format','{{json .}}'])
+                result['docker']['code'] = d.get('code')
+                result['docker']['error'] = d.get('error') or d.get('stderr')
+                for line in d.get('stdout','').splitlines():
+                    try: item = json.loads(line)
+                    except Exception: continue
+                    if not ('hd-manager' in item.get('Names','').lower() or 'hdmanager' in item.get('Names','').lower() or any(':'+str(p)+'->' in item.get('Ports','') for p in local_backend_ports)): continue
+                    keep={k:item.get(k) for k in ['ID','Names','Image','Status','Ports','Networks']}
+                    ins = run(['sudo','-n','docker','inspect','--format','{{json .State}}',item['ID']])
+                    try:
+                        state=json.loads(ins.get('stdout','{}'))
+                        keep['state']={k:state.get(k) for k in ['Status','Running','Paused','Restarting','OOMKilled','Dead','Pid','ExitCode','Error','StartedAt','FinishedAt']}
+                        keep['healthStatus']=state.get('Health',{}).get('Status')
+                    except Exception: keep['inspectCode']=ins.get('code')
+                    result['docker']['containers'].append(keep)
+            result['limitations'] = ['No configuration, service, DNS, database or secret was changed.', 'No container environment, command-line credentials or secret files were collected.', 'Backend application logs and health endpoints require a second scoped read after the exact upstream is identified.']
+            print(json.dumps(result,ensure_ascii=False))
+        run: |-
+          node --input-type=module <<'HD_READONLY_NODE'
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          import dns from 'node:dns/promises';
+          import {execFileSync} from 'node:child_process';
+          import {randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
+          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd502-readonly-'));
+          const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
+          let result;
+          try {
+           const host=process.env.VPS_HOST?.trim(),user=process.env.VPS_USER?.trim(),key=process.env.VPS_SSH_KEY;
+           if(!/^[a-zA-Z0-9.-]+$/.test(host||'')||!/^[a-z_][a-z0-9_-]*\$?$/i.test(user||'')||!key)throw Error('AUTHORIZED_SSH_CONFIGURATION_MISSING');
+           const configured=await dns.lookup(host,{all:true}),app=await dns.lookup('app.hdconnect.net',{all:true});
+           if(!configured.some(x=>app.some(y=>x.address===y.address)||x.address==='180.93.0.87'))throw Error('CONFIGURED_HOST_NOT_PRODUCTION_DNS_OR_APPROVED_VPS');
+           fs.writeFileSync(keyFile,key,{mode:0o600});delete process.env.VPS_SSH_KEY;
+           const pinned=process.env.VPS_KNOWN_HOSTS;
+           if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
+           const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
+           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
+           result={status:'SSH_READ_COMPLETED',hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+          } catch(error) {
+           result={status:'READ_DIAGNOSTIC_FAILED',code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
+          } finally {
+           for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
+           try{fs.rmdirSync(dir);}catch{}
+          }
+          const aes=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',aes,iv);
+          const ciphertext=Buffer.concat([cipher.update(JSON.stringify(result),'utf8'),cipher.final()]);
+          const meta={version:1,wrappedKey:publicEncrypt({key:process.env.REPORT_PUBLIC_KEY,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},aes).toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64')};
+          aes.fill(0);console.log('HD502_META '+JSON.stringify(meta));
+          const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
+          for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
+          console.log('HD502_STATUS '+result.status);
+          if(result.status!=='SSH_READ_COMPLETED')process.exitCode=1;
+
+          HD_READONLY_NODE
