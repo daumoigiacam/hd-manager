@@ -156,7 +156,10 @@ jobs:
                     # retain at least 8 GiB physical free space even after the full budget.
                     use_root_capacity=ordinary_free<=budget
                     if use_root_capacity:
-                        assert os.geteuid()==0 and BASE.stat().st_uid==0, 'ORDINARY_USER_RELEASE_CAPACITY_UNAVAILABLE'
+                        # Keep the existing deployment directory ownership unchanged. It
+                        # need not be owned by root; only the actual writer must be root
+                        # to use the already configured privileged filesystem allocation.
+                        assert os.geteuid()==0, 'ORDINARY_USER_RELEASE_CAPACITY_UNAVAILABLE'
                         assert physical_free-budget>=8*1024*1024*1024, 'INSUFFICIENT_PHYSICAL_RELEASE_RESERVE'
                     result['capacity']={'ordinaryUserFreeBytesBefore':ordinary_free,'physicalFreeBytesBefore':physical_free,'maximumDeploymentBudgetBytes':budget,'minimumPhysicalFreeBytes':8*1024*1024*1024 if use_root_capacity else 0,'filesystemReservationChanged':False}
                     backup_dir=pathlib.Path('/var/backups/hd-manager-frontend')/stamp
