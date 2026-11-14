@@ -1,3 +1,5 @@
+> Cập nhật cuối hai blocker: xem `HD_MANAGER_FINAL_RELEASE_REPORT.md` và checkpoint. Báo cáo dưới đây giữ mốc kiểm tra trước thay đổi CORS; không dùng trạng thái CORS cũ làm trạng thái hiện tại.
+
 # HD Manager — Release blocker closure
 
 Cập nhật 14/11/2026: **RELEASE BLOCKED**.
