@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
-      - name: Read filtered Identity-only transition error evidence
+      - name: Apply owner-authorized Identity-only change with rollback
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -32,21 +32,195 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import json,pathlib,hashlib,re,datetime
-            path=pathlib.Path('/var/log/nginx/error.log')
-            with path.open('rb') as f:
-                f.seek(max(0,path.stat().st_size-196608));raw=f.read().decode('utf-8','replace')
-            lines=[]
-            for line in raw.splitlines():
-                if 'server: app.hdconnect.net' not in line or '/api/identity/login?routing_check=identity-only' not in line: continue
-                stamp=line[:19]
-                if stamp<'2026/11/14 22:39:55': continue
-                upstream=re.search(r'upstream: "([^"]+)"',line)
-                error=re.search(r'(connect\(\) failed \([^)]*\)|SSL_do_handshake\(\) failed[^,]*|upstream[^,]*)',line)
-                lines.append({'timestamp':stamp,'workerPid':re.search(r'\[error\] (\d+)#',line).group(1) if re.search(r'\[error\] (\d+)#',line) else None,'error':error.group(1) if error else 'OTHER_IDENTITY_ERROR','upstream':upstream.group(1) if upstream else None})
-            original=pathlib.Path('/var/backups/hd-manager-identity-routing/20261114T154023052624Z/app.hdconnect.net.original').read_bytes()
-            current=pathlib.Path('/etc/nginx/sites-enabled/app.hdconnect.net').read_bytes()
-            print(json.dumps({'status':'TRANSITION_EVIDENCE_COLLECTED','at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'filteredIdentityErrors':lines[-12:],'liveVhostRestoredExactly':current==original,'liveSha256':hashlib.sha256(current).hexdigest(),'liveModified':False,'reloadPerformed':False}))
+            import os, re, sys, json, hashlib, pathlib, subprocess, datetime, urllib.request, urllib.error, ssl, glob, tempfile, stat, time
+
+            # Owner-approved scope: app.hdconnect.net /api/identity/ only.  No Docker,
+            # database, Firebase changes, credentials, business requests or frontend deploy.
+            MODE = 'apply'
+            DOMAIN = 'app.hdconnect.net'
+            ORIGIN = 'https://hd-manager-c5839.web.app'
+            VHOST = pathlib.Path('/etc/nginx/sites-enabled/app.hdconnect.net')
+            SHA = lambda b: hashlib.sha256(b).hexdigest()
+            result = {'at':datetime.datetime.now(datetime.timezone.utc).isoformat(), 'mode':MODE, 'scope':'Identity location only', 'liveModified':False, 'reloadPerformed':False}
+
+            def atomic_replace(target, data, metadata):
+                fd,name=tempfile.mkstemp(prefix='.hd-identity-',dir=str(target.parent))
+                try:
+                    os.fchmod(fd,metadata['mode']);os.fchown(fd,metadata['uid'],metadata['gid'])
+                    with os.fdopen(fd,'wb') as f:
+                        f.write(data);f.flush();os.fsync(f.fileno())
+                    os.replace(name,str(target))
+                    directory=os.open(str(target.parent),os.O_DIRECTORY)
+                    try: os.fsync(directory)
+                    finally: os.close(directory)
+                finally:
+                    if os.path.exists(name): os.unlink(name)
+
+            def command(args):
+                p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=35)
+                return {'code':p.returncode,'stdout':p.stdout[-1500:],'stderr':p.stderr[-2200:]}
+
+            def nginx_workers(master):
+                children=pathlib.Path('/proc')/str(master)/'task'/str(master)/'children'
+                workers={}
+                for pid in children.read_text().split():
+                    try:
+                        title=(pathlib.Path('/proc')/pid/'cmdline').read_bytes().replace(b'\x00',b' ').decode('utf-8','replace')
+                        if title.startswith('nginx: worker process'):
+                            workers[pid]={'draining':'shutting down' in title}
+                    except FileNotFoundError: pass
+                return workers
+
+            def request(base, route, method):
+                headers={'Origin':'https://'+DOMAIN}
+                body=None
+                if method=='OPTIONS':
+                    headers.update({'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type,authorization'})
+                if method=='POST':
+                    headers['Content-Type']='application/json'
+                    body=json.dumps({'identifier':'','password':'','appId':'hd-manager-release-qa-20261114','device':{'deviceId':'identity-routing-contract-only','platform':'web'}}).encode()
+                req=urllib.request.Request(base+'/api/identity/'+route+'?routing_check=identity-only',data=body,headers=headers,method=method)
+                try:
+                    response=urllib.request.urlopen(req,timeout=25,context=ssl.create_default_context())
+                except urllib.error.HTTPError as e:
+                    response=e
+                raw=response.read(16384)
+                try: data=json.loads(raw)
+                except Exception: data=None
+                return {'method':method,'route':route,'status':response.status,'json':isinstance(data,dict),'success':data.get('success') if isinstance(data,dict) else None,'message':str(data.get('message',''))[:150] if isinstance(data,dict) and data.get('success') is False else None,'allowOrigin':response.headers.get('Access-Control-Allow-Origin'),'contentType':response.headers.get('Content-Type')}
+
+            try:
+                assert MODE in ['prepare','apply'], 'INVALID_MODE'
+                result['originChecks']=[request(ORIGIN,r,m) for r,m in [('login','GET'),('login','OPTIONS'),('login','POST'),('logout','OPTIONS')]]
+                assert [c['status'] for c in result['originChecks']]==[405,204,400,204], 'ORIGIN_CONTRACT_FAILED'
+                assert all(c['allowOrigin']=='https://'+DOMAIN for c in result['originChecks']), 'ORIGIN_CORS_FAILED'
+                assert result['originChecks'][2]['json'] and result['originChecks'][2]['success'] is False, 'ORIGIN_BODY_FAILED'
+                result['nginxTestBefore']=command(['nginx','-t'])
+                assert result['nginxTestBefore']['code']==0, 'EXISTING_NGINX_INVALID'
+                assert command(['systemctl','is-active','nginx'])['stdout'].strip()=='active', 'NGINX_NOT_ACTIVE'
+                target=VHOST.resolve(strict=True)
+                assert str(target).startswith('/etc/nginx/'), 'UNEXPECTED_VHOST_TARGET'
+                original=target.read_bytes()
+                assert SHA(original)=='0e4945a1949686bef9e90a5ed98e24d6e13fb0da36e10919408a6b53190b1e18', 'VHOST_CHANGED_SINCE_APPROVED_PREFLIGHT'
+                config=original.decode('utf-8')
+                assert not re.search(r'(?m)^\s*location\b[^\n{]*/api/identity',config), 'IDENTITY_LOCATION_ALREADY_EXISTS'
+                anchors=list(re.finditer(r'(?m)^([ \t]*)location\s+/api/\s*\{',config))
+                assert len(anchors)==1, 'API_ANCHOR_NOT_UNIQUE'
+                anchor=anchors[0]
+                # Existing /api/ must be the known HD Platform proxy. Preserve every byte.
+                end=config.index('}',anchor.end())+1
+                existing_api=config[anchor.start():end]
+                assert 'proxy_pass http://172.19.0.2:3000;' in existing_api, 'EXISTING_API_CHANGED_SINCE_INVESTIGATION'
+                preceding=config[:anchor.start()]
+                assert 'server_name app.hdconnect.net;' in preceding and 'root /var/www/hd-manager/current;' in preceding, 'WRONG_VHOST'
+                ca=pathlib.Path('/etc/ssl/certs/ca-certificates.crt')
+                assert ca.is_file() and ca.stat().st_size>0, 'TRUSTED_CA_MISSING'
+                location='''    # HD Manager Identity only; preserve all other /api/ routes.
+                location ^~ /api/identity/ {
+                    proxy_pass https://hd-manager-c5839.web.app;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host hd-manager-c5839.web.app;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_ssl_server_name on;
+                    proxy_ssl_name hd-manager-c5839.web.app;
+                    proxy_ssl_verify on;
+                    proxy_ssl_verify_depth 3;
+                    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+                    proxy_connect_timeout 10s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+
+            '''
+                candidate=(config[:anchor.start()]+location+config[anchor.start():]).encode()
+                assert candidate.replace(location.encode(),b'',1)==original, 'OUT_OF_SCOPE_DIFF'
+                backup_dir=pathlib.Path('/var/backups/hd-manager-identity-routing')/datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+                backup_dir.mkdir(parents=True,mode=0o700)
+                os.chmod(backup_dir,0o700)
+                backup=backup_dir/'app.hdconnect.net.original'
+                with backup.open('xb') as f:
+                    os.chmod(backup,0o600);f.write(original);f.flush();os.fsync(f.fileno())
+                candidate_file=backup_dir/'app.hdconnect.net.candidate'
+                candidate_file.write_bytes(candidate);os.chmod(candidate_file,0o600)
+                assert SHA(backup.read_bytes())==SHA(original), 'BACKUP_HASH_FAILED'
+                result.update({'vhost':str(VHOST),'resolvedTarget':str(target),'backupPath':str(backup),'backupSha256':SHA(original),'candidateSha256':SHA(candidate),'symlink':VHOST.is_symlink(),'existingApiSha256':SHA(existing_api.encode()),'existingApiUnchanged':True,'identityLocation':location})
+                # Validate candidate with the actual complete config, replacing ONLY the
+                # sites-enabled include in a private test copy, without touching live files.
+                main=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+                include=list(re.finditer(r'(?m)^([ \t]*)include\s+(/etc/nginx/sites-enabled/\*);',main))
+                assert len(include)==1, 'CANNOT_STAGE_FULL_NGINX_CONFIGURATION_SAFELY'
+                matches=sorted(glob.glob('/etc/nginx/sites-enabled/*'))
+                assert str(VHOST) in matches, 'LIVE_VHOST_NOT_INCLUDED'
+                replacement='\n'.join(include[0].group(1)+'include '+(str(candidate_file) if p==str(VHOST) else p)+';' for p in matches)
+                staged_main=backup_dir/'nginx.staged.conf'
+                staged_main.write_text(main[:include[0].start()]+replacement+main[include[0].end():]);os.chmod(staged_main,0o600)
+                result['nginxCandidateTest']=command(['nginx','-t','-p','/etc/nginx/','-c',str(staged_main)])
+                assert result['nginxCandidateTest']['code']==0, 'CANDIDATE_NGINX_INVALID'
+                assert target.read_bytes()==original, 'VHOST_CONCURRENT_CHANGE'
+                metadata={'vhost':str(VHOST),'target':str(target),'backupSha256':SHA(original),'candidateSha256':SHA(candidate),'backupPath':str(backup),'candidatePath':str(candidate_file),'mode':stat.S_IMODE(target.stat().st_mode),'uid':target.stat().st_uid,'gid':target.stat().st_gid}
+                (backup_dir/'manifest.json').write_text(json.dumps(metadata,indent=2));os.chmod(backup_dir/'manifest.json',0o600)
+                if MODE=='prepare':
+                    result['status']='BACKUP_AND_STAGED_NGINX_TEST_PASS_NO_LIVE_CHANGE'
+                else:
+                    result['masterPidBefore']=command(['systemctl','show','nginx','--property=MainPID','--value'])['stdout'].strip()
+                    workers_before=nginx_workers(result['masterPidBefore'])
+                    assert workers_before, 'NO_EXISTING_NGINX_WORKERS'
+                    result['workersBefore']=workers_before
+                    result['liveModified']=True
+                    atomic_replace(target,candidate,metadata)
+                    assert SHA(target.read_bytes())==SHA(candidate), 'LIVE_CANDIDATE_HASH_FAILED'
+                    result['nginxTestAfter']=command(['nginx','-t'])
+                    assert result['nginxTestAfter']['code']==0, 'LIVE_NGINX_INVALID'
+                    result['reload']=command(['systemctl','reload','nginx'])
+                    assert result['reload']['code']==0, 'GRACEFUL_RELOAD_FAILED'
+                    result['reloadPerformed']=True
+                    result['activeAfter']=command(['systemctl','is-active','nginx'])
+                    assert result['activeAfter']['stdout'].strip()=='active', 'NGINX_NOT_ACTIVE_AFTER_RELOAD'
+                    result['masterPidAfter']=command(['systemctl','show','nginx','--property=MainPID','--value'])['stdout'].strip()
+                    assert result['masterPidBefore']==result['masterPidAfter'], 'MASTER_PID_CHANGED_UNEXPECTEDLY'
+                    # systemctl reload acknowledges SIGHUP, not that the new workers are
+                    # accepting requests. Observe the actual worker generation transition
+                    # before the first public request. Do not retry or discard HTTP failures.
+                    ready_start=time.monotonic();observations=[]
+                    while True:
+                        workers_after=nginx_workers(result['masterPidAfter'])
+                        new_workers=[p for p in workers_after if p not in workers_before and not workers_after[p]['draining']]
+                        old_accepting=[p for p in workers_before if p in workers_after and not workers_after[p]['draining']]
+                        observations.append({'elapsedMs':round((time.monotonic()-ready_start)*1000,3),'newWorkers':new_workers,'oldAccepting':old_accepting})
+                        if new_workers and not old_accepting: break
+                        assert time.monotonic()-ready_start<5, 'NEW_NGINX_WORKER_GENERATION_NOT_READY'
+                        time.sleep(0.05)
+                    result['workerTransition']=observations
+                    result['domainChecks']=[request('https://'+DOMAIN,r,m) for r,m in [('login','GET'),('login','OPTIONS'),('login','POST'),('logout','OPTIONS'),('devices','OPTIONS')]]
+                    assert [c['status'] for c in result['domainChecks']]==[405,204,400,204,204], 'PUBLIC_IDENTITY_CONTRACT_FAILED'
+                    assert all(c['allowOrigin']=='https://'+DOMAIN for c in result['domainChecks']), 'PUBLIC_CORS_FAILED'
+                    assert result['domainChecks'][2]['json'] and result['domainChecks'][2]['success'] is False, 'PUBLIC_POST_BODY_FAILED'
+                    assert result['domainChecks'][2]['message']==result['originChecks'][2]['message'], 'POST_RESPONSE_DIFFERS_FROM_ORIGIN'
+                    assert SHA(target.read_bytes().replace(location.encode(),b'',1))==SHA(original), 'OUT_OF_SCOPE_CHANGE_AFTER_RELOAD'
+                    result['successfulQaLogin']='NOT_VERIFIED_NO_RETAINED_QA_CREDENTIAL'
+                    result['refreshToken']='NOT_VERIFIED_NO_VALID_QA_SESSION'
+                    result['status']='IDENTITY_ROUTING_APPLIED_CONTRACT_VERIFIED'
+                    (backup_dir/'applied-result.json').write_text(json.dumps(result,indent=2));os.chmod(backup_dir/'applied-result.json',0o600)
+            except Exception as e:
+                result['status']='BLOCKED_BEFORE_LIVE_CHANGE' if not result['liveModified'] else 'CRITICAL_FAILURE'
+                result['error']=str(e)[:400]
+                if result['liveModified']:
+                    try:
+                        assert target.read_bytes() in [candidate,original], 'ROLLBACK_BLOCKED_CONCURRENT_CHANGE'
+                        assert SHA(backup.read_bytes())==SHA(original), 'ROLLBACK_BACKUP_MISMATCH'
+                        atomic_replace(target,original,metadata)
+                        result['rollbackNginxTest']=command(['nginx','-t'])
+                        assert result['rollbackNginxTest']['code']==0, 'ROLLBACK_SYNTAX_FAILED'
+                        result['rollbackReload']=command(['systemctl','reload','nginx'])
+                        assert result['rollbackReload']['code']==0, 'ROLLBACK_RELOAD_FAILED'
+                        assert SHA(target.read_bytes())==SHA(original), 'ROLLBACK_HASH_FAILED'
+                        assert command(['systemctl','is-active','nginx'])['stdout'].strip()=='active', 'ROLLBACK_NGINX_NOT_ACTIVE'
+                        result['status']='ROLLBACK_COMPLETED'
+                    except Exception as rollback_error:
+                        result['rollbackError']=str(rollback_error)[:400]
+            print(json.dumps(result))
         shell: bash
         run: |-
           node --input-type=module <<'HD_IDENTITY_NODE'
