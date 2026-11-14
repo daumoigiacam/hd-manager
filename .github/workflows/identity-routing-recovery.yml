@@ -1,0 +1,195 @@
+name: Owner-authorized Identity routing recovery
+on:
+  push:
+    branches:
+      - codex/identity-routing-recovery-20261114
+permissions:
+  contents: read
+concurrency:
+  group: hd-manager-identity-routing-recovery
+  cancel-in-progress: false
+jobs:
+  identity_routing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Back up vhost and validate staged Identity-only configuration
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          REPORT_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAtxDyOAxYhO2GwTV21CNx
+            IYrbN7qPjsbHpPfqe6m8+xsd9ziErcyCBJ1MCOdAIS1PZFSRefzIYa4ZiMQ/G0/4
+            6aA/M3NjokY2vz7bovLBrqbSiONPfjPhllUNgStksXhNJ9uyr23+rORcKILGGFiF
+            fcYFd8VGl6PD+UBsOp/yBEWOEQnAJOxQ5xgjqNe3S83QRogIpKqgBe9iLyjTo3ZH
+            gwa3PpAngHEnO0GT/mZs04FL+GShvqyccl1GBM2po0wSKIE0mq2VKyxVXlcMq5eg
+            0L9N9SbD1wPEsiZ/lnqwTVU6LNV0Ja+nPb6ERR/3JYXdMUMZ+XtPEq+DuX3nPGqv
+            OlWXT5xKW7bO0FemL//XdEcKXsd1pPZULmACN3WAjlRuyI5HbOdA8PGKHgj0lnM5
+            cUxQq2l77zUhDCQEreu9A96MBZJopYfg5WNWsrLBZArPjtYAspQ+4kkA/qmB0WyR
+            wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
+            -----END PUBLIC KEY-----
+          REMOTE_PROBE: |
+            import os, re, sys, json, hashlib, pathlib, subprocess, datetime, urllib.request, urllib.error, ssl, glob, tempfile, stat
+
+            # Owner-approved scope: app.hdconnect.net /api/identity/ only.  No Docker,
+            # database, Firebase changes, credentials, business requests or frontend deploy.
+            MODE = 'prepare'
+            DOMAIN = 'app.hdconnect.net'
+            ORIGIN = 'https://hd-manager-c5839.web.app'
+            VHOST = pathlib.Path('/etc/nginx/sites-enabled/app.hdconnect.net')
+            SHA = lambda b: hashlib.sha256(b).hexdigest()
+            result = {'at':datetime.datetime.now(datetime.timezone.utc).isoformat(), 'mode':MODE, 'scope':'Identity location only', 'liveModified':False, 'reloadPerformed':False}
+
+            def command(args):
+                p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=35)
+                return {'code':p.returncode,'stdout':p.stdout[-1500:],'stderr':p.stderr[-2200:]}
+
+            def request(base, route, method):
+                headers={'Origin':'https://'+DOMAIN}
+                body=None
+                if method=='OPTIONS':
+                    headers.update({'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type,authorization'})
+                if method=='POST':
+                    headers['Content-Type']='application/json'
+                    body=json.dumps({'identifier':'','password':'','appId':'hd-manager-release-qa-20261114','device':{'deviceId':'identity-routing-contract-only','platform':'web'}}).encode()
+                req=urllib.request.Request(base+'/api/identity/'+route+'?routing_check=identity-only',data=body,headers=headers,method=method)
+                try:
+                    response=urllib.request.urlopen(req,timeout=25,context=ssl.create_default_context())
+                except urllib.error.HTTPError as e:
+                    response=e
+                raw=response.read(16384)
+                try: data=json.loads(raw)
+                except Exception: data=None
+                return {'method':method,'route':route,'status':response.status,'json':isinstance(data,dict),'success':data.get('success') if isinstance(data,dict) else None,'message':str(data.get('message',''))[:150] if isinstance(data,dict) and data.get('success') is False else None,'allowOrigin':response.headers.get('Access-Control-Allow-Origin'),'contentType':response.headers.get('Content-Type')}
+
+            try:
+                assert MODE in ['prepare','apply'], 'INVALID_MODE'
+                result['originChecks']=[request(ORIGIN,r,m) for r,m in [('login','GET'),('login','OPTIONS'),('login','POST'),('logout','OPTIONS')]]
+                assert [c['status'] for c in result['originChecks']]==[405,204,400,204], 'ORIGIN_CONTRACT_FAILED'
+                assert all(c['allowOrigin']=='https://'+DOMAIN for c in result['originChecks']), 'ORIGIN_CORS_FAILED'
+                assert result['originChecks'][2]['json'] and result['originChecks'][2]['success'] is False, 'ORIGIN_BODY_FAILED'
+                result['nginxTestBefore']=command(['nginx','-t'])
+                assert result['nginxTestBefore']['code']==0, 'EXISTING_NGINX_INVALID'
+                assert command(['systemctl','is-active','nginx'])['stdout'].strip()=='active', 'NGINX_NOT_ACTIVE'
+                target=VHOST.resolve(strict=True)
+                assert str(target).startswith('/etc/nginx/'), 'UNEXPECTED_VHOST_TARGET'
+                original=target.read_bytes()
+                config=original.decode('utf-8')
+                assert not re.search(r'(?m)^\s*location\b[^\n{]*/api/identity',config), 'IDENTITY_LOCATION_ALREADY_EXISTS'
+                anchors=list(re.finditer(r'(?m)^([ \t]*)location\s+/api/\s*\{',config))
+                assert len(anchors)==1, 'API_ANCHOR_NOT_UNIQUE'
+                anchor=anchors[0]
+                # Existing /api/ must be the known HD Platform proxy. Preserve every byte.
+                end=config.index('}',anchor.end())+1
+                existing_api=config[anchor.start():end]
+                assert 'proxy_pass http://172.19.0.2:3000;' in existing_api, 'EXISTING_API_CHANGED_SINCE_INVESTIGATION'
+                preceding=config[:anchor.start()]
+                assert 'server_name app.hdconnect.net;' in preceding and 'root /var/www/hd-manager/current;' in preceding, 'WRONG_VHOST'
+                ca=pathlib.Path('/etc/ssl/certs/ca-certificates.crt')
+                assert ca.is_file() and ca.stat().st_size>0, 'TRUSTED_CA_MISSING'
+                location='''    # HD Manager Identity only; preserve all other /api/ routes.
+                location ^~ /api/identity/ {
+                    proxy_pass https://hd-manager-c5839.web.app;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host hd-manager-c5839.web.app;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_ssl_server_name on;
+                    proxy_ssl_name hd-manager-c5839.web.app;
+                    proxy_ssl_verify on;
+                    proxy_ssl_verify_depth 3;
+                    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+                    proxy_connect_timeout 10s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+
+            '''
+                candidate=(config[:anchor.start()]+location+config[anchor.start():]).encode()
+                assert candidate.replace(location.encode(),b'',1)==original, 'OUT_OF_SCOPE_DIFF'
+                backup_dir=pathlib.Path('/var/backups/hd-manager-identity-routing')/datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+                backup_dir.mkdir(parents=True,mode=0o700)
+                os.chmod(backup_dir,0o700)
+                backup=backup_dir/'app.hdconnect.net.original'
+                with backup.open('xb') as f:
+                    os.chmod(backup,0o600);f.write(original);f.flush();os.fsync(f.fileno())
+                candidate_file=backup_dir/'app.hdconnect.net.candidate'
+                candidate_file.write_bytes(candidate);os.chmod(candidate_file,0o600)
+                assert SHA(backup.read_bytes())==SHA(original), 'BACKUP_HASH_FAILED'
+                result.update({'vhost':str(VHOST),'resolvedTarget':str(target),'backupPath':str(backup),'backupSha256':SHA(original),'candidateSha256':SHA(candidate),'symlink':VHOST.is_symlink(),'existingApiSha256':SHA(existing_api.encode()),'existingApiUnchanged':True,'identityLocation':location})
+                # Validate candidate with the actual complete config, replacing ONLY the
+                # sites-enabled include in a private test copy, without touching live files.
+                main=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+                include=list(re.finditer(r'(?m)^([ \t]*)include\s+(/etc/nginx/sites-enabled/\*);',main))
+                assert len(include)==1, 'CANNOT_STAGE_FULL_NGINX_CONFIGURATION_SAFELY'
+                matches=sorted(glob.glob('/etc/nginx/sites-enabled/*'))
+                assert str(VHOST) in matches, 'LIVE_VHOST_NOT_INCLUDED'
+                replacement='\n'.join(include[0].group(1)+'include '+(str(candidate_file) if p==str(VHOST) else p)+';' for p in matches)
+                staged_main=backup_dir/'nginx.staged.conf'
+                staged_main.write_text(main[:include[0].start()]+replacement+main[include[0].end():]);os.chmod(staged_main,0o600)
+                result['nginxCandidateTest']=command(['nginx','-t','-p','/etc/nginx/','-c',str(staged_main)])
+                assert result['nginxCandidateTest']['code']==0, 'CANDIDATE_NGINX_INVALID'
+                assert target.read_bytes()==original, 'VHOST_CONCURRENT_CHANGE'
+                metadata={'vhost':str(VHOST),'target':str(target),'backupSha256':SHA(original),'candidateSha256':SHA(candidate),'backupPath':str(backup),'candidatePath':str(candidate_file),'mode':stat.S_IMODE(target.stat().st_mode),'uid':target.stat().st_uid,'gid':target.stat().st_gid}
+                (backup_dir/'manifest.json').write_text(json.dumps(metadata,indent=2));os.chmod(backup_dir/'manifest.json',0o600)
+                if MODE=='prepare':
+                    result['status']='BACKUP_AND_STAGED_NGINX_TEST_PASS_NO_LIVE_CHANGE'
+                else:
+                    raise AssertionError('APPLY_IMPLEMENTATION_NOT_ENABLED_IN_PREPARATION_RUN')
+            except Exception as e:
+                result['status']='BLOCKED_BEFORE_LIVE_CHANGE' if not result['liveModified'] else 'CRITICAL_FAILURE'
+                result['error']=str(e)[:400]
+            print(json.dumps(result))
+        shell: bash
+        run: |-
+          node --input-type=module <<'HD_IDENTITY_NODE'
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          import dns from 'node:dns/promises';
+          import {execFileSync} from 'node:child_process';
+          import {randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
+          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd-identity-authorized-'));
+          const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
+          let result,keyFormat;
+          try {
+           const host=process.env.VPS_HOST?.trim(),user=process.env.VPS_USER?.trim(),key=process.env.VPS_SSH_KEY;
+           if(!/^[a-zA-Z0-9.-]+$/.test(host||'')||!/^[a-z_][a-z0-9_-]*\$?$/i.test(user||'')||!key)throw Error('AUTHORIZED_SSH_CONFIGURATION_MISSING');
+           const configured=await dns.lookup(host,{all:true}),app=await dns.lookup('app.hdconnect.net',{all:true});
+           if(!configured.some(x=>app.some(y=>x.address===y.address)||x.address==='180.93.0.87'))throw Error('CONFIGURED_HOST_NOT_PRODUCTION_DNS_OR_APPROVED_VPS');
+           let material=key.replace(/\r\n?/g,'\n');
+           keyFormat={lines:material.split('\n').length,hasPemBoundary:/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(material),hasEscapedNewlines:material.includes('\\n'),trailingNewline:material.endsWith('\n')};
+           if(keyFormat.hasPemBoundary&&keyFormat.hasEscapedNewlines&&keyFormat.lines===1)material=material.replace(/\\r\\n/g,'\n').replace(/\\n/g,'\n');
+           if(!keyFormat.hasPemBoundary&&/^[A-Za-z0-9+/=\s]+$/.test(material)){
+            const decoded=Buffer.from(material,'base64').toString('utf8');
+            if(/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(decoded)){material=decoded.replace(/\r\n?/g,'\n');keyFormat.explicitBase64Envelope=true;}
+           }
+           if(!material.endsWith('\n'))material+='\n';
+           fs.writeFileSync(keyFile,material,{mode:0o600});material='';delete process.env.VPS_SSH_KEY;
+           try{execFileSync('ssh-keygen',['-l','-f',keyFile],{stdio:['ignore','pipe','pipe'],timeout:10000});keyFormat.localParse='PASS';}
+           catch{keyFormat.localParse='FAILED';throw Error('EXISTING_SSH_KEY_FORMAT_NOT_READABLE');}
+           const pinned=process.env.VPS_KNOWN_HOSTS;
+           if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
+           const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
+           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
+           result={status:'SSH_SCOPE_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+          } catch(error) {
+           result={status:'AUTHORIZED_OPERATION_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
+          } finally {
+           for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
+           try{fs.rmdirSync(dir);}catch{}
+          }
+          const aes=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',aes,iv);
+          const ciphertext=Buffer.concat([cipher.update(JSON.stringify(result),'utf8'),cipher.final()]);
+          const meta={version:1,wrappedKey:publicEncrypt({key:process.env.REPORT_PUBLIC_KEY,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},aes).toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64')};
+          aes.fill(0);console.log('HD502_META '+JSON.stringify(meta));
+          const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
+          for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
+          console.log('HD502_STATUS '+result.status);
+          if(result.status!=='SSH_SCOPE_COMPLETED'||!['BACKUP_AND_STAGED_NGINX_TEST_PASS_NO_LIVE_CHANGE','IDENTITY_ROUTING_APPLIED_CONTRACT_VERIFIED','ROLLBACK_COMPLETED'].includes(result.payload?.status))process.exitCode=1;
+
+          HD_IDENTITY_NODE
