@@ -17,6 +17,7 @@ Bằng chứng HTTPS QA: chuỗi công mới → chốt lương → chi/đối s
 | Android signing | BLOCKED: thiếu `HD_RELEASE_STORE_PASSWORD`, `HD_RELEASE_KEY_PASSWORD`. Keystore gốc và alias giữ nguyên; chưa APK/AAB Release hoặc upgrade proof. |
 | Imports page HTTPS | PASS trang cơ bản 28 phiếu, hai trang 25 + 3; ngày/từ khóa/ngày + từ khóa đúng, cursor và tenant đúng. BLOCKED ba bộ lọc nhân viên/trạng thái/khách hàng cần bốn index bổ sung đã chuẩn bị, chưa được duyệt. |
 | Issuer Production | PREPARED: secret `HD_OFFLINE_SIGNING_KEY_PEM` version 1 ENABLED, nonce và checksum PASS, public JWK đã chuẩn bị. Khóa riêng không lưu file/log/Git; chưa deploy. Provisioning nằm trong mức miễn phí đã kiểm tra, chưa đánh giá lưu lượng sau kích hoạt. |
+| Full UI HTTPS QA | BLOCKED: giao diện App canonical đã mở nhưng Identity API live không trả CORS cho origin QA; OPTIONS với origin Production vẫn được phép. Không thay CORS, không bypass login. Component/API proof giữ đúng phạm vi. |
 | Production activation | NOT PERFORMED: chỉ thực hiện sau readiness, Rules guard hẹp được áp dụng trong đợt phát hành được duyệt, signing và kiểm thử bắt buộc. |
 
 Checkpoint: `.local-dev/final-blocker-20261114/release-checkpoint.json`.
