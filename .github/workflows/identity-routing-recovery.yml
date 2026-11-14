@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
-      - name: Back up vhost and validate staged Identity-only configuration
+      - name: Apply owner-authorized Identity-only change with rollback
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -36,12 +36,25 @@ jobs:
 
             # Owner-approved scope: app.hdconnect.net /api/identity/ only.  No Docker,
             # database, Firebase changes, credentials, business requests or frontend deploy.
-            MODE = 'prepare'
+            MODE = 'apply'
             DOMAIN = 'app.hdconnect.net'
             ORIGIN = 'https://hd-manager-c5839.web.app'
             VHOST = pathlib.Path('/etc/nginx/sites-enabled/app.hdconnect.net')
             SHA = lambda b: hashlib.sha256(b).hexdigest()
             result = {'at':datetime.datetime.now(datetime.timezone.utc).isoformat(), 'mode':MODE, 'scope':'Identity location only', 'liveModified':False, 'reloadPerformed':False}
+
+            def atomic_replace(target, data, metadata):
+                fd,name=tempfile.mkstemp(prefix='.hd-identity-',dir=str(target.parent))
+                try:
+                    os.fchmod(fd,metadata['mode']);os.fchown(fd,metadata['uid'],metadata['gid'])
+                    with os.fdopen(fd,'wb') as f:
+                        f.write(data);f.flush();os.fsync(f.fileno())
+                    os.replace(name,str(target))
+                    directory=os.open(str(target.parent),os.O_DIRECTORY)
+                    try: os.fsync(directory)
+                    finally: os.close(directory)
+                finally:
+                    if os.path.exists(name): os.unlink(name)
 
             def command(args):
                 p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=35)
@@ -77,6 +90,7 @@ jobs:
                 target=VHOST.resolve(strict=True)
                 assert str(target).startswith('/etc/nginx/'), 'UNEXPECTED_VHOST_TARGET'
                 original=target.read_bytes()
+                assert SHA(original)=='0e4945a1949686bef9e90a5ed98e24d6e13fb0da36e10919408a6b53190b1e18', 'VHOST_CHANGED_SINCE_APPROVED_PREFLIGHT'
                 config=original.decode('utf-8')
                 assert not re.search(r'(?m)^\s*location\b[^\n{]*/api/identity',config), 'IDENTITY_LOCATION_ALREADY_EXISTS'
                 anchors=list(re.finditer(r'(?m)^([ \t]*)location\s+/api/\s*\{',config))
@@ -139,10 +153,46 @@ jobs:
                 if MODE=='prepare':
                     result['status']='BACKUP_AND_STAGED_NGINX_TEST_PASS_NO_LIVE_CHANGE'
                 else:
-                    raise AssertionError('APPLY_IMPLEMENTATION_NOT_ENABLED_IN_PREPARATION_RUN')
+                    result['masterPidBefore']=command(['systemctl','show','nginx','--property=MainPID','--value'])['stdout'].strip()
+                    result['liveModified']=True
+                    atomic_replace(target,candidate,metadata)
+                    assert SHA(target.read_bytes())==SHA(candidate), 'LIVE_CANDIDATE_HASH_FAILED'
+                    result['nginxTestAfter']=command(['nginx','-t'])
+                    assert result['nginxTestAfter']['code']==0, 'LIVE_NGINX_INVALID'
+                    result['reload']=command(['systemctl','reload','nginx'])
+                    assert result['reload']['code']==0, 'GRACEFUL_RELOAD_FAILED'
+                    result['reloadPerformed']=True
+                    result['activeAfter']=command(['systemctl','is-active','nginx'])
+                    assert result['activeAfter']['stdout'].strip()=='active', 'NGINX_NOT_ACTIVE_AFTER_RELOAD'
+                    result['masterPidAfter']=command(['systemctl','show','nginx','--property=MainPID','--value'])['stdout'].strip()
+                    assert result['masterPidBefore']==result['masterPidAfter'], 'MASTER_PID_CHANGED_UNEXPECTEDLY'
+                    result['domainChecks']=[request('https://'+DOMAIN,r,m) for r,m in [('login','GET'),('login','OPTIONS'),('login','POST'),('logout','OPTIONS'),('devices','OPTIONS')]]
+                    assert [c['status'] for c in result['domainChecks']]==[405,204,400,204,204], 'PUBLIC_IDENTITY_CONTRACT_FAILED'
+                    assert all(c['allowOrigin']=='https://'+DOMAIN for c in result['domainChecks']), 'PUBLIC_CORS_FAILED'
+                    assert result['domainChecks'][2]['json'] and result['domainChecks'][2]['success'] is False, 'PUBLIC_POST_BODY_FAILED'
+                    assert result['domainChecks'][2]['message']==result['originChecks'][2]['message'], 'POST_RESPONSE_DIFFERS_FROM_ORIGIN'
+                    assert SHA(target.read_bytes().replace(location.encode(),b'',1))==SHA(original), 'OUT_OF_SCOPE_CHANGE_AFTER_RELOAD'
+                    result['successfulQaLogin']='NOT_VERIFIED_NO_RETAINED_QA_CREDENTIAL'
+                    result['refreshToken']='NOT_VERIFIED_NO_VALID_QA_SESSION'
+                    result['status']='IDENTITY_ROUTING_APPLIED_CONTRACT_VERIFIED'
+                    (backup_dir/'applied-result.json').write_text(json.dumps(result,indent=2));os.chmod(backup_dir/'applied-result.json',0o600)
             except Exception as e:
                 result['status']='BLOCKED_BEFORE_LIVE_CHANGE' if not result['liveModified'] else 'CRITICAL_FAILURE'
                 result['error']=str(e)[:400]
+                if result['liveModified']:
+                    try:
+                        assert target.read_bytes() in [candidate,original], 'ROLLBACK_BLOCKED_CONCURRENT_CHANGE'
+                        assert SHA(backup.read_bytes())==SHA(original), 'ROLLBACK_BACKUP_MISMATCH'
+                        atomic_replace(target,original,metadata)
+                        result['rollbackNginxTest']=command(['nginx','-t'])
+                        assert result['rollbackNginxTest']['code']==0, 'ROLLBACK_SYNTAX_FAILED'
+                        result['rollbackReload']=command(['systemctl','reload','nginx'])
+                        assert result['rollbackReload']['code']==0, 'ROLLBACK_RELOAD_FAILED'
+                        assert SHA(target.read_bytes())==SHA(original), 'ROLLBACK_HASH_FAILED'
+                        assert command(['systemctl','is-active','nginx'])['stdout'].strip()=='active', 'ROLLBACK_NGINX_NOT_ACTIVE'
+                        result['status']='ROLLBACK_COMPLETED'
+                    except Exception as rollback_error:
+                        result['rollbackError']=str(rollback_error)[:400]
             print(json.dumps(result))
         shell: bash
         run: |-
