@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 export const ACCEPTANCE_PACKAGE = 'com.hdmanager.app.acceptance';
 
-export async function buildAcceptanceApk({ buildOutput, output, fixture, token, buildEnvironment = globalThis.process.env }) {
+export async function buildAcceptanceApk({ buildOutput, output, fixture, token, buildEnvironment = globalThis.process.env, inProcessKotlin = false }) {
   const assets = path.join(output, 'native-assets');
   await mkdir(assets, { recursive: true });
   await cp(buildOutput, path.join(assets, 'public'), { recursive: true });
@@ -33,6 +33,7 @@ export async function buildAcceptanceApk({ buildOutput, output, fixture, token, 
   const javaHome = buildEnvironment.JAVA_HOME || 'C:/Program Files/Android/Android Studio/jbr';
   const args = ['-Dfile.encoding=UTF-8', '-Dsun.jnu.encoding=UTF-8', '-classpath', 'gradle/wrapper/gradle-wrapper.jar',
     'org.gradle.wrapper.GradleWrapperMain', '--offline', '--no-daemon', 'assembleDebug',
+    ...(inProcessKotlin ? ['-Pkotlin.compiler.execution.strategy=in-process'] : []),
     `-PHD_ACCEPTANCE_ASSETS=${path.relative(path.resolve('android/app'), assets)}`];
   const exitCode = await new Promise((resolve, reject) => {
     const process = spawn(path.join(javaHome, 'bin/java.exe'), args, {

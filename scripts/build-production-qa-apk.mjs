@@ -94,7 +94,9 @@ export async function buildProductionQaApk(output) {
     config.app.extConfig = {...settings.capacitor, webDir: web};
     await copy(config, 'android');
     await updateAndroid(config);
-    apk = await buildAcceptanceApk({buildOutput: web, output: destination, buildEnvironment: env});
+    // Kotlin's separate compiler process misdecodes Vietnamese Windows paths.
+    // Keep the existing SDK/plugins and compile in the UTF-8 Gradle process.
+    apk = await buildAcceptanceApk({buildOutput: web, output: destination, buildEnvironment: env, inProcessKotlin: true});
   } finally {
     for (const [file, bytes] of originals) await writeFile(file, bytes);
   }
