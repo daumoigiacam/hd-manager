@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
-import { createIdentityFetch } from './identityHttpTransport.js';
+import { createIdentityFetch, resolveIdentityApiBaseForPath } from './identityHttpTransport.js';
 import { NativeBiometric, AccessControl } from '@capgo/capacitor-native-biometric';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { getFirebaseFunctionsOrigin } from '../config/firebase-endpoints.js';
@@ -263,7 +263,10 @@ const getIdentityApiUrl = (path) => {
   }
   const regionalUrl = getRegionalIdentityAuthUrl(path, import.meta.env || {});
   if (regionalUrl) return regionalUrl;
-  const baseUrl = getIdentityApiBaseUrl();
+  // The approved proxy change covers Identity only. Customer/payment and AI
+  // functions retain their existing Firebase routes, not the HD Platform /api/.
+  const baseUrl = resolveIdentityApiBaseForPath(path, getIdentityApiBaseUrl(),
+    getFirebaseFunctionsOrigin(import.meta.env.VITE_FIREBASE_PROJECT_ID || 'hd-manager-c5839'));
   if (/cloudfunctions\.net\/?$/i.test(baseUrl)) {
     const functionName = IDENTITY_FUNCTION_NAMES[path];
     if (!functionName) throw new Error('Không xác định được dịch vụ xác thực.');

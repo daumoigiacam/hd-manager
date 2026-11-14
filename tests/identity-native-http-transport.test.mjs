@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createIdentityFetch} from '../development/hd-manager/application/src/services/identityHttpTransport.js';
+import {createIdentityFetch,resolveIdentityApiBaseForPath} from '../development/hd-manager/application/src/services/identityHttpTransport.js';
 const origin='https://app.hdconnect.net';
 const fixture=(overrides={})=>createIdentityFetch({isNative:()=>true,appOrigin:()=>origin,nativeRequest:async()=>{throw Error('Unexpected native call');},fetchImpl:async()=>{throw Error('Unexpected browser call');},...overrides});
+test('Identity-only gateway never redirects existing customer, debt-payment or AI functions to the unrelated API',()=>{
+ const firebase='https://us-central1-hd-manager-c5839.cloudfunctions.net';
+ assert.equal(resolveIdentityApiBaseForPath('/api/identity/login',origin,firebase),origin);
+ for(const route of ['/api/customer/bootstrap','/api/customer/create-debt-payment','/api/customer/redeem-points','/api/ai/generate-content'])assert.equal(resolveIdentityApiBaseForPath(route,origin,firebase),firebase);
+ assert.equal(resolveIdentityApiBaseForPath('/api/customer/bootstrap',firebase,firebase),firebase);
+ assert.equal(resolveIdentityApiBaseForPath('/api/customer/bootstrap','https://approved-dev.invalid','https://dev-project.cloudfunctions.net'),'https://approved-dev.invalid');
+});
 test('bundled same-origin Identity reaches native HTTPS with original method, query, JSON and auth',async()=>{
  let options;
  const request=fixture({nativeRequest:async value=>{options=value;return {status:401,headers:{'content-type':'application/json'},data:{success:false,message:'Denied'}};}});

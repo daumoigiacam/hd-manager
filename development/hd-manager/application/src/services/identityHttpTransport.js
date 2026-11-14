@@ -1,6 +1,11 @@
 // A bundled Capacitor server can own the same hostname as the real Identity
 // endpoint. Browser fetch would then receive index.html from the asset server.
 // Use native HTTP only for that exact origin/path; all other fetches are intact.
+export const resolveIdentityApiBaseForPath = (path, identityBase, firebaseBase) => (
+  identityBase === 'https://app.hdconnect.net' && !path.startsWith('/api/identity/')
+    ? firebaseBase : identityBase
+);
+
 export const createIdentityFetch = ({ isNative, appOrigin, nativeRequest, fetchImpl = globalThis.fetch }) => async (input, init = {}) => {
   const url = new URL(input, appOrigin());
   if (!isNative() || url.origin !== appOrigin() || !url.pathname.startsWith('/api/identity/')) {
