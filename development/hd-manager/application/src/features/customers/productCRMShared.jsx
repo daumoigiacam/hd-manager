@@ -1,6 +1,7 @@
 // Shared original App CRM bindings. Declaration order and singleton identities are preserved.
 // Factory/controller imports run only through the existing intent preloader.
 import PreloadedWorkspace from "../../layout/PreloadedWorkspace.jsx";
+import {customerReadiness} from './customerReadiness.js';
 import React from "react";
 import { useCallback, useSyncExternalStore } from "react";
 import { calculateLoyaltyPoints } from "../../../functions/loyaltyRewards.mjs";
@@ -2572,8 +2573,12 @@ function CustomerCRMView(props) {
   const readSearch = useCallback(() => props.searchStore ? props.searchStore.getSnapshot() : props.searchKeyword,
     [props.searchStore, props.searchKeyword]);
   const keyword = useSyncExternalStore(props.searchStore?.subscribe || noCustomerSearchSubscription, readSearch, readSearch);
-  if(props.localFirstRequired&&!props.supplementsRequested){
-    if(!props.localRuntime?.isCurrent())return <section role="status" aria-busy="true" data-hd-module-loading>Đang mở dữ liệu local đã được cấp quyền…</section>;
+  const readiness=customerReadiness({localFirstRequired:props.localFirstRequired,runtimeCurrent:Boolean(props.localRuntime?.isCurrent()),
+    supplementsRequested:props.supplementsRequested,online:props.localOnline,setupError:props.localSetupError});
+  if(readiness==='offline-not-configured')return <section role="alert" className="p-4">Chưa thiết lập truy cập Khách hàng khi mất mạng trên thiết bị này. Hãy kết nối mạng để tiếp tục. Các giao dịch đang chờ trên máy được giữ nguyên.</section>;
+  if(readiness==='authorization-unavailable')return <section role="alert" className="p-4">Chưa xác minh được quyền truy cập Khách hàng Offline. Hãy kết nối mạng để xác thực lại. Dữ liệu cục bộ không bị xóa.</section>;
+  if(readiness==='restoring')return <section role="status" aria-busy="true" data-hd-module-loading>Đang mở dữ liệu local đã được cấp quyền…</section>;
+  if(readiness==='sqlite'){
     return <PreloadedWorkspace module={deferredSQLiteCRMModule} viewProps={{...props,searchKeyword:keyword}} label="Khách hàng"/>;
   }
   return <PreloadedWorkspace module={deferredCustomerCRMViewModule} viewProps={{...props, searchKeyword:keyword}} label={"Khách hàng"} />;

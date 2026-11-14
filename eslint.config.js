@@ -1,5 +1,10 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/features/customers/productCRMShared.jsx'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
+    rules: {'no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['development/hd-manager/application/src/layout/CoreWorkspaceEntry.jsx', 'development/hd-manager/application/src/layout/RestoredLocalWorkspace.jsx', 'development/hd-manager/application/src/layout/NativeBusinessRoute.jsx'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
     rules: {'no-unreachable':'error','no-dupe-keys':'error'}

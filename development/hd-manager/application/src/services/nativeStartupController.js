@@ -20,9 +20,15 @@ export function getNativeStartupController(authSource=defaultAuth){
  const updateOnline=()=>emit({online:navigator.onLine});
  const store={getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},attachUI(){uiAttached=true;startUiNetwork();},inspect(){return{owners:enabled?1:0,subscribers:subscribers.size,uiAttached};}};
  singleton=store;
- if(!enabled)return store;
- startupMark('controller.created',{instances:1});
+ // Connectivity also belongs to cloud-only builds. Otherwise their snapshot
+ // stays at the launch value and CRM can wait on Firebase forever while offline.
  window.addEventListener('online',updateOnline);window.addEventListener('offline',updateOnline);
+ if(!enabled){
+  const pagehide=event=>{if(event.persisted)return;window.removeEventListener('pagehide',pagehide);window.removeEventListener('online',updateOnline);window.removeEventListener('offline',updateOnline);};
+  window.addEventListener('pagehide',pagehide);
+  return store;
+ }
+ startupMark('controller.created',{instances:1});
  function initialize(){
   let disposed=false,owner,off=()=>{},release=()=>{},platform,transport,current=null,generation=0,desiredPrincipal=null,networkTimer=null,removeAuthOnline=()=>{},removeIdentity=()=>{};
   let auth=typeof authSource==='function'?null:authSource,authClientPromise=null;
@@ -51,7 +57,7 @@ export function getNativeStartupController(authSource=defaultAuth){
     const {auth:client}=await authClient(),user=client.currentUser;
     if(!uid||!user||user.isAnonymous||user.uid!==uid)throw Error('Firebase identity confirmation mismatch');
     desiredPrincipal=uid;
-    void install(user).catch(error=>{if(!disposed)setState(previous=>({...previous,error:previous.error||error.message}));});
+    void installObserved(user);
    },
   });
   const projectId=import.meta.env.VITE_FIREBASE_PROJECT_ID;
@@ -78,6 +84,12 @@ export function getNativeStartupController(authSource=defaultAuth){
     if(disposed||ticket!==generation||auth.currentUser!==user){await owner.close(runtime);return;}
     publish(runtime,false);runtime.startNetwork();
    })().finally(()=>{installing=null;});return installing;
+  }
+  async function installObserved(user){
+   const ticket=generation;
+   try{await install(user);}catch(error){
+    if(!disposed&&ticket===generation&&auth?.currentUser===user)setState(previous=>({...previous,error:previous.error||error.message}));
+   }
   }
   const environment=trustedOfflineEnvironment;
   const publicKey=environment?.publicKey||JSON.parse(import.meta.env.VITE_OFFLINE_CUSTOMER_PUBLIC_KEY||'null');
@@ -109,17 +121,20 @@ export function getNativeStartupController(authSource=defaultAuth){
     if(!user&&sawAuthenticatedUser){release();const previous=current;current=null;setState({runtime:null,verifiedLaunch:null,restored:false,error:''});void previous?.logout();return;}
     if(user)sawAuthenticatedUser=true;
     if(user&&current&&user.uid!==current.scope.principalId){setState({runtime:null,verifiedLaunch:null,restored:false,error:''});}
-    if(user)void install(user).catch(error=>{if(!disposed)setState(previous=>({...previous,error:previous.error||error.message}));});
+    if(user)void installObserved(user);
    });
    };
    // Local access is already published. Firebase loading/restoration is a
    // background concern and cannot gate the signed offline permission path.
    let observingAuth=false;
    const scheduleAuth=()=>{
-    if(!uiAttached||disposed||observingAuth||networkTimer!==null)return;
+    if(!uiAttached||disposed||networkTimer!==null)return;
     if(!navigator.onLine){recordStartupEvent('offline.auth.network_loading_deferred');return;}
     networkTimer=setTimeout(()=>{
      networkTimer=null;if(disposed||!navigator.onLine)return;
+     // An initial grant can fail while Auth itself stays signed in. Reconnect
+     // must retry that SAME identity; Auth need not emit another state change.
+     if(observingAuth){if(auth?.currentUser&&!current?.isCurrent())void installObserved(auth.currentUser);return;}
      observingAuth=true;
      void observeAuth().catch(error=>{observingAuth=false;if(!disposed)setState(previous=>({...previous,error:previous.error||error.message}));});
     },current?1000:0);
