@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: 235395f8a4563b70c513a41e2f49a297a1b4fab5
       - name: Set up Node 22
         uses: actions/setup-node@v5
         with:
@@ -50,7 +51,7 @@ jobs:
       - name: Run relevant Identity transport and QA configuration checks
         run: node --test tests/identity-native-http-transport.test.mjs tests/production-qa-apk-config.test.mjs
       - name: Build canonical frontend only
-        run: node ../../../node_modules/vite/bin/vite.js build --mode production --outDir ../../../.ci-home-dist
+        run: env -u GITHUB_SHA node ../../../node_modules/vite/bin/vite.js build --mode production --outDir ../../../.ci-home-dist
         working-directory: development/hd-manager/application
       - name: Validate Firebase-only Production configuration
         run: node scripts/verify-firebase-production-bundle.mjs .ci-home-dist
