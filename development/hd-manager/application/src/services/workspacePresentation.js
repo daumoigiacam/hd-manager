@@ -11,6 +11,10 @@ export function localWorkspaceTab(tab,available) {
 export function localWorkspaceInitialSource(tab) {
   return ({employees:'employees',company_attendance:'attendance',payroll:'payrollSnapshots'})[tab];
 }
+export function restoredWorkspaceEntryTab({requested,requestedPrincipalId,principalId,accountType,fallback}) {
+  return accountType !== 'customer' && requestedPrincipalId && requestedPrincipalId === principalId
+    && ['home','more'].includes(requested) ? requested : fallback;
+}
 export function showRestoredWorkspace({native,localMode,restored,online,hasCurrentUser,minimalEntry,enabled,firebaseUid,principalId,biometricUnlocked}) {
   if (!native) return localMode && (!firebaseUid || firebaseUid === principalId);
   return restored || (!online && !hasCurrentUser)

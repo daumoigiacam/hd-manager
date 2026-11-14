@@ -2,7 +2,7 @@ import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSes
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
 import {hasCommittedServerSnapshot} from './services/realtimeReadFreshness.js';
-import {initialLocalWorkspace,showRestoredWorkspace,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
+import {initialLocalWorkspace,showRestoredWorkspace,restoredWorkspaceEntryTab,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
 import InstantHome,{InstantHomeNavigation} from './layout/InstantHome.jsx';
 import {getCashExpenseFinance as instantHomeFinance,getReportPeriod as instantHomePeriod} from './features/business-report/reportViewModel.js';
 import {homeSummary} from './layout/instantHomeModel.js';
@@ -10330,6 +10330,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
   const [localWorkspaceMode,setLocalWorkspaceMode]=useState(()=>initialLocalWorkspace({native:isNativeRuntime(),online:navigator.onLine}));
   const [localWorkspaceTab,setLocalWorkspaceTab]=useState('home');
+  const [initialNavigationPrincipalId]=useState(()=>offlineWorkspace.runtime?.scope.principalId||offlineWorkspace.verifiedLaunch?.scope.principalId||null);
   const offlineNavigationRef=useRef(offlineWorkspace);offlineNavigationRef.current=offlineWorkspace;
   const [moduleNavigation] = useState(() => createModuleNavigation(
     normalizeAppTab(['home','more'].includes(initialWorkspaceTab)?initialWorkspaceTab:persistedSession.activeTab),
@@ -11739,7 +11740,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
         const restoredTab = restoredUser.accountType === 'customer' ? 'customer_home' : 'home';
         setCurrentUser(restoredUser);
         setCurrentCompany(restoredCompany);
-        setActiveTab(restoredTab);
+        setActiveTab(restoredWorkspaceEntryTab({requested:initialWorkspaceTab,requestedPrincipalId:initialNavigationPrincipalId,principalId:u.uid,accountType:restoredUser.accountType,fallback:restoredTab}));
         saveAppSession({ currentUser: restoredUser, currentCompany: restoredCompany, activeTab: restoredTab });
       } catch (error) {
         if (!cancelled) console.warn('Khong the khoi phuc phien Identity Center:', error);
@@ -11831,7 +11832,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
         const cachedUser = { ...persistedSession.currentUser, firebaseUid: u.uid };
         setCurrentUser(cachedUser);
         setCurrentCompany(persistedSession.currentCompany || { id: cachedUser.companyId, name: '' });
-        setActiveTab(normalizeAppTab(persistedSession.activeTab || (cachedUser.accountType === 'customer' ? 'customer_home' : 'home')));
+        setActiveTab(restoredWorkspaceEntryTab({requested:initialWorkspaceTab,requestedPrincipalId:initialNavigationPrincipalId,principalId:u.uid,accountType:cachedUser.accountType,fallback:normalizeAppTab(persistedSession.activeTab || (cachedUser.accountType === 'customer' ? 'customer_home' : 'home'))}));
         setIsFirebaseLoading(false);
         recordStartupEvent('auth.identity_cache_released', { bound: true });
       }

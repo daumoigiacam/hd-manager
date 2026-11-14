@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {initialLocalWorkspace,showRestoredWorkspace,localWorkspaceTab,localWorkspaceInitialSource} from '../development/hd-manager/application/src/services/workspacePresentation.js';
+import {initialLocalWorkspace,showRestoredWorkspace,localWorkspaceTab,localWorkspaceInitialSource,restoredWorkspaceEntryTab} from '../development/hd-manager/application/src/services/workspacePresentation.js';
 
 test('online Web opens the complete product; an Offline launch retains local presentation',()=>{
   assert.equal(initialLocalWorkspace({native:false,online:true}),false);
@@ -13,6 +13,16 @@ test('online Web opens the complete product; an Offline launch retains local pre
   assert.equal(showRestoredWorkspace({...view,localMode:true,online:false}),true);
   assert.equal(showRestoredWorkspace({...view,localMode:true,online:true}),true);
   assert.equal(showRestoredWorkspace({...view,localMode:true,firebaseUid:'b'}),false);
+});
+
+test('Auth restoration preserves an explicit menu intent only for its original principal',()=>{
+  const intent={requested:'more',requestedPrincipalId:'a',principalId:'a',accountType:'employee',fallback:'home'};
+  assert.equal(restoredWorkspaceEntryTab(intent),'more');
+  assert.equal(restoredWorkspaceEntryTab({...intent,principalId:'b'}),'home');
+  assert.equal(restoredWorkspaceEntryTab({...intent,requestedPrincipalId:null}),'home');
+  assert.equal(restoredWorkspaceEntryTab({...intent,accountType:'customer',fallback:'customer_home'}),'customer_home');
+  assert.equal(restoredWorkspaceEntryTab({...intent,requested:'salarySettlements'}),'home');
+  assert.equal(restoredWorkspaceEntryTab({...intent,requested:undefined,fallback:'orders'}),'orders');
 });
 
 test('Android presentation is identical to the accepted native condition',()=>{

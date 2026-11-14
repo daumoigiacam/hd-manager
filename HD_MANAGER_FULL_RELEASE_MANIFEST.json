@@ -4,7 +4,7 @@
   "source": {
     "canonical": "development/hd-manager/application",
     "baseCommit": "a84e597d650b3f81283e69493e1751d2bf0c234c",
-    "appSha256": "d04e371099e3b388bbf8cf486ebbcb0e64cec392a0d48ae52c7a60582a8baf3b",
+    "appSha256": "1f55bf279a417eb834f4053f6fb8b6f13f6bd89a6171095e45788a0ce2bb7d33",
     "localObserved": {
       "url": "http://127.0.0.1:5219",
       "buildId": "local-real-account-import-fix",
@@ -824,6 +824,12 @@
     "uiGoogleRefreshAndSignedGrantVerified": true,
     "allOperationsCrudAcceptanceClaimed": false,
     "physicalDeviceTestedThisTask": false,
-    "oldFailureSamplesRetained": true
+    "oldFailureSamplesRetained": true,
+    "authorizedModulesEvidenceSourceCommit": "4f08c72b0d9ecbf87ca20a3696774b598acd06a3",
+    "laterSourceChange": "Account-bound Home/More entry intent during Auth restoration only; business components unchanged.",
+    "actualUiLogoutAAndLoginB": "PASS",
+    "oldWorkspaceAfterLogout": 0,
+    "priorTenantVisibleAfterBLogin": 0,
+    "bOfflineReload": true
   }
 }
