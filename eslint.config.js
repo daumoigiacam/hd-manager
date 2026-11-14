@@ -1,5 +1,20 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/layout/CoreWorkspaceEntry.jsx', 'development/hd-manager/application/src/layout/RestoredLocalWorkspace.jsx', 'development/hd-manager/application/src/layout/NativeBusinessRoute.jsx'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
+    rules: {'no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
+    // The canonical legacy App uses the same syntax-only policy as src/App.jsx.
+    files: ['development/hd-manager/application/src/App.jsx'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}}
+  },
+  {
+    files: ['development/hd-manager/application/src/services/workspacePresentation.js','development/hd-manager/application/src/services/realtimeReadFreshness.js','tests/workspace-presentation.test.mjs','tests/web-workspace-order-readiness.test.mjs','development/hd-manager/application/src/features/orders/orderProductAdapter.js'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module'},
+    rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['src/features/legacy/*.jsx', 'src/layout/PreloadedWorkspace.jsx'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
     rules: { 'no-unreachable': 'error', 'no-dupe-keys': 'error' }

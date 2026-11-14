@@ -80,7 +80,7 @@ jobs:
         run: node --test tests/static-compression.test.mjs
 
       - name: Lint
-        run: npm run lint && npx eslint src/services/backupReadScheduler.js src/services/collationCompareCache.js src/services/customerProductBilling.js src/services/productPricingUnits.js tests/warehouse-dispatch-performance.test.mjs scripts/master-emulator-session-regression.mjs scripts/master-session-regression.mjs scripts/helpers/master-emulator-ui-crud.mjs
+        run: npm run lint && npm run lint:workspace-release && npx eslint src/services/backupReadScheduler.js src/services/collationCompareCache.js src/services/customerProductBilling.js src/services/productPricingUnits.js tests/warehouse-dispatch-performance.test.mjs scripts/master-emulator-session-regression.mjs scripts/master-session-regression.mjs scripts/helpers/master-emulator-ui-crud.mjs
 
       - name: Typecheck
         run: npm run typecheck

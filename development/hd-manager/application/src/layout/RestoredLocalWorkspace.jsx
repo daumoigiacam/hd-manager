@@ -8,6 +8,7 @@ import {AppShell} from './AppShell.jsx';
 import WorkingHome from './WorkingHome.jsx';
 import {InstantHomeNavigation} from './InstantHome.jsx';
 import {homeSummary} from './instantHomeModel.js';
+import {localWorkspaceTab,localWorkspaceInitialSource} from '../services/workspacePresentation.js';
 import PreloadedWorkspace from './PreloadedWorkspace.jsx';
 import {createPreloadableModule} from '../utils/preloadableModule.js';
 const homeModule=createPreloadableModule(()=>import('../features/customers/OfflineHome.jsx'));
@@ -18,14 +19,21 @@ function OfflineHome(props){return <PreloadedWorkspace module={homeModule} viewP
 
 // Same application entry and product CRM view; the existing signed owner is
 // supplied by App. No Firebase user, role, financial total or grant is invented.
-export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerView,onLogout,onCustomerIntent}){
+export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerView,onLogout,onCustomerIntent,initialTab='home',onOpenFullWorkspace}){
  const context=runtime||verifiedLaunch;
- const [tab,setTab]=useState('home'),[search,setSearch]=useState(''),[showSearch,setShowSearch]=useState(false),[showFilter,setShowFilter]=useState(false),[reportRequested,setReportRequested]=useState(Boolean(verifiedLaunch?.cache));
+ const [initialNavigation]=useState(()=>{
+  if(initialTab==='home')return {route:null,customer:false};
+  const candidates=runtime?availableNativeBusinessRoutes(runtime):permittedNativeBusinessRoutes(context);
+  return {route:candidates.find(route=>route.id===localWorkspaceTab(initialTab,candidates)),source:localWorkspaceInitialSource(initialTab),customer:initialTab==='customers'&&context.capabilities.includes('customers.read')&&context.appSession.allowedTabs.includes('customers')};
+ });
+ const initialRoute=initialNavigation.route,initialCustomer=initialNavigation.customer;
+ const [tab,setTab]=useState(initialRoute?initialRoute.id:initialCustomer?'customers':'home'),[search,setSearch]=useState(''),[showSearch,setShowSearch]=useState(false),[showFilter,setShowFilter]=useState(false),[reportRequested,setReportRequested]=useState(Boolean(verifiedLaunch?.cache));
  const [homeRestore,setHomeRestore]=useState(null);
  const currentHome=context.isCurrent()&&context.capabilities.includes('home.read')&&runtime?.home;
  const restoredHome=currentHome&&homeRestore?.owner===runtime?homeRestore:verifiedLaunch?.cache?{owner:verifiedLaunch,value:verifiedLaunch.cache,error:false}:null;
- const [opened,setOpened]=useState([]);
- const [menuOpen,setMenuOpen]=useState(false),scrollPositions=useRef(new Map()),contentRef=useRef(null);
+ const [opened,setOpened]=useState(initialRoute?[initialRoute.id]:[]);
+ const [menuOpen,setMenuOpen]=useState(initialTab==='more'),scrollPositions=useRef(new Map()),contentRef=useRef(null);
+ useEffect(()=>{if(!runtime)return;if(initialRoute)prepareNativeBusinessRoute(runtime,initialRoute,{firstOpen:true});else if(initialCustomer){onCustomerIntent?.();void runtime.prepareCustomerNavigation().catch(()=>{});}},[runtime,initialRoute?.id,initialCustomer]);
  const [period,setPeriod]=useState('today');
  const [orderSearchIntent,setOrderSearchIntent]=useState(null);
  const [homeSyncState,setHomeSyncState]=useState(''),homeIntent=useRef({owner:null,at:0});
@@ -39,9 +47,9 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
  const routes=runtime?availableNativeBusinessRoutes(runtime):permittedNativeBusinessRoutes(context);
  const navigate=value=>{
   if(!context.isCurrent())return;
-  if(value==='modules'){if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(old=>!old);return;}
+  if(value==='modules'){if(onOpenFullWorkspace&&navigator.onLine){onOpenFullWorkspace('more');return;}if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(old=>!old);return;}
   if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(false);
-  if(value==='home'){setTab('home');return;}
+  if(value==='home'){if(onOpenFullWorkspace&&navigator.onLine){onOpenFullWorkspace('home');return;}setTab('home');return;}
   if(value==='profile'){setTab(value);return;}
   if(value==='reports'){if(context.isCurrent()&&context.capabilities.includes('home.read')){setReportRequested(true);setTab(value);}return;}
   if(value==='customers'){if(!context.appSession.allowedTabs.includes('customers')||!context.capabilities.includes('customers.read'))return;onCustomerIntent?.();void adapter.preload().catch(()=>{});void runtime?.prepareCustomerNavigation().catch(()=>{});setTab(value);return;}
@@ -87,7 +95,7 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    {tab!=='home'&&<button className="mb-3 px-4 py-2 rounded-xl bg-slate-100" onClick={()=>navigate('home')}>Trang chủ</button>}
    {!['home','customers','profile','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
    {!runtime&&tab!=='home'&&<p role="status">Đang mở dữ liệu trên thiết bị. Thao tác đã được giữ lại.</p>}
-   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
+   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} initialSource={id===initialRoute?.id?initialNavigation.source:undefined} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
    {runtime&&tab==='customers'&&read&&<>
     <div className="flex gap-3 mb-2"><button onClick={()=>setShowSearch(value=>!value)}>Tìm kiếm</button><button onClick={()=>setShowFilter(value=>!value)}>Bộ lọc</button></div>
     <OfflineCustomerAppRoute runtime={runtime} principalId={context.scope.principalId} View={CustomerView}

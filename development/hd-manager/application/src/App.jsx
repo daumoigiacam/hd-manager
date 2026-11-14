@@ -1,5 +1,8 @@
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
+import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
+import {hasCommittedServerSnapshot} from './services/realtimeReadFreshness.js';
+import {initialLocalWorkspace,showRestoredWorkspace,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
 import InstantHome,{InstantHomeNavigation} from './layout/InstantHome.jsx';
 import {getCashExpenseFinance as instantHomeFinance,getReportPeriod as instantHomePeriod} from './features/business-report/reportViewModel.js';
 import {homeSummary} from './layout/instantHomeModel.js';
@@ -1101,7 +1104,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   home: ['customers', 'payrollPeriods', 'employeeReviews', 'products', 'orders', 'payments', 'expenses', 'financials', 'attendance', 'performance', 'warehouseImports', 'warehouseDispatches', 'customerComplaints', 'holidays', 'deliveryReports'],
   executive_dashboard: ['customers', 'products', 'orders', 'orderRequests', 'payments', 'expenses', 'financials', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'assets', 'assetCostLogs', 'deliveryReports', 'attendance', 'performance', 'payrollPeriods', 'employeeReviews', 'customerComplaints', 'holidays'],
   order_requests: ['customers', 'products', 'orderRequests', 'warehouseDispatches', 'employees'],
-  orders: ['customers', 'products', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'zalo_send_queue'],
+  orders: ['customers', 'products', 'orders', 'orderRequests', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'warehouseImports', 'zalo_send_queue'],
   warehouse_import: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts'],
   warehouse_dispatch: ['customers', 'products', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'employees'],
   delivery_reports: ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'deliveryReports', 'payments', 'expenses', 'assets', 'assetCostLogs'],
@@ -10292,7 +10295,7 @@ const normalizeAppTab = (tab) => (tab === 'report' ? 'home' : tab === 'maps' ? '
 
 // CoreWorkspaceEntry already loads this shell. A second lazy promise here
 // introduced a ~300 ms Suspense fallback after verified Runtime publication.
-function ApplicationView({offlineWorkspace}) {
+function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
   const persistedSession = useMemo(() => (
@@ -10325,8 +10328,30 @@ function ApplicationView({offlineWorkspace}) {
   },[startupWorkspace]);
   const isCustomerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
+  const [localWorkspaceMode,setLocalWorkspaceMode]=useState(()=>initialLocalWorkspace({native:isNativeRuntime(),online:navigator.onLine}));
+  const [localWorkspaceTab,setLocalWorkspaceTab]=useState('home');
   const offlineNavigationRef=useRef(offlineWorkspace);offlineNavigationRef.current=offlineWorkspace;
-  const [moduleNavigation] = useState(() => createModuleNavigation(normalizeAppTab(persistedSession.activeTab),tab=>{const access=offlineNavigationRef.current;if(access.enabled&&!access.online&&!['home','customers','more'].includes(tab)){window.dispatchEvent(new CustomEvent('hd-manager:recoverable-sync-notice',{detail:{message:'Chức năng này cần kết nối. Khách hàng vẫn dùng dữ liệu Offline.'}}));return false;}if(tab==='customers'){const local=offlineNavigationRef.current;if(local.enabled){void deferredSQLiteCRMModule.preload().catch(()=>{});void local.runtime?.prepareCustomerNavigation().catch(()=>{});}else void deferredCustomerCRMViewModule.preload().catch(()=>{});}}));
+  const [moduleNavigation] = useState(() => createModuleNavigation(
+    normalizeAppTab(['home','more'].includes(initialWorkspaceTab)?initialWorkspaceTab:persistedSession.activeTab),
+    tab=>{
+      const access=offlineNavigationRef.current;
+      const explicitWorkflow=['attendanceRequests','attendancePeriods','salarySettlements'].includes(tab);
+      // Keep the complete existing Web UI online. Only the already shipped
+      // local workflows, or an explicit Offline navigation, use the shared
+      // signed Runtime. No permission is inferred from a role/menu label.
+      if(access.enabled&&!isNativeRuntime()&&access.runtime?.isCurrent()
+        &&(!access.online||explicitWorkflow)
+        &&resolveLocalWorkspaceTab(tab,availableNativeBusinessRoutes(access.runtime))){
+        setLocalWorkspaceTab(tab);setLocalWorkspaceMode(true);return false;
+      }
+      if(access.enabled&&!access.online&&!['home','customers','more'].includes(tab)){
+        window.dispatchEvent(new CustomEvent('hd-manager:recoverable-sync-notice',{detail:{message:'Chức năng này cần kết nối. Các chức năng Offline đã được cấp quyền vẫn giữ dữ liệu trên máy.'}}));return false;
+      }
+      if(tab==='customers'){
+        if(access.enabled){void deferredSQLiteCRMModule.preload().catch(()=>{});void access.runtime?.prepareCustomerNavigation().catch(()=>{});}
+        else void deferredCustomerCRMViewModule.preload().catch(()=>{});
+      }
+    }));
   // VPS read-model effects currently render from the root; Firebase's shell
   // subscribes independently and activates its data sources without a root render.
   const activeTab = useModuleNavigationSnapshot(moduleNavigation, moduleNavigation.getSnapshot(), isVpsStagingMode);
@@ -12932,8 +12957,15 @@ function ApplicationView({offlineWorkspace}) {
         return;
       }
       const lastServerSnapshotAt = lastRealtimeServerSnapshotAtRef.current.get(colName) || 0;
-      if (!force && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
-        // Realtime is active for this collection; avoid REST fallback overwriting fresher local/listener state.
+      const committedServerSnapshot=hasCommittedServerSnapshot({
+        readiness:collectionReadinessCommittedRef.current,principalId:firebaseUser.uid,
+        tenantId:tenantCompanyId,ownerKey:readOwnerKey,collection:colName,
+        pending:serverPendingCollectionNames.has(colName),
+      });
+      if (!force && committedServerSnapshot && isServerSnapshotFresh(lastServerSnapshotAt, { maxAgeMs: 45000 })) {
+        // Reuse only the exact owner's committed server state. A response may
+        // be recent even when navigation cancelled its publication; skipping
+        // that overflow read would leave the report permanently pending.
         return;
       }
       const revision = (collectionReadRevisions.get(colName) || 0) + 1;
@@ -13617,7 +13649,7 @@ function ApplicationView({offlineWorkspace}) {
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
     if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded || startupWorkspaceReady)) return undefined;
-    const collectionNames = activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
+    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     firebaseUser?.uid,
@@ -13625,7 +13657,7 @@ function ApplicationView({offlineWorkspace}) {
     currentUser?.companyId,
     currentUser?.customerId,
     isCoreDataLoaded,startupWorkspaceReady,
-    homeReadinessCollections,customerSupplementsRequested,homeSourceEmployee,offlineWorkspace.enabled,
+    homeReadinessCollections,customerSupplementsRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
   ]);
 
   useEffect(() => {
@@ -22335,7 +22367,7 @@ function ApplicationView({offlineWorkspace}) {
     return () => window.clearTimeout(timerId);
   }, [recoverableSyncNotice?.id]);
 
-  if (offlineWorkspace.runtime?.isCurrent() && offlineWorkspace.runtime.appSession && (offlineWorkspace.restored||(!offlineWorkspace.online&&!currentUser)||(import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true'&&offlineWorkspace.enabled&&firebaseUser?.uid===offlineWorkspace.runtime.scope.principalId&&biometricUnlockState==='unlocked'))) return <React.Suspense fallback={<WorkingHome ready={false}/>}><RestoredLocalWorkspace key={JSON.stringify(offlineWorkspace.runtime.scope)} runtime={offlineWorkspace.runtime} CustomerView={CustomerCRMView} onCustomerIntent={()=>void deferredCustomerCRMViewModule.preload().catch(()=>{})} onLogout={handleLogout}/></React.Suspense>;
+  if (offlineWorkspace.runtime?.isCurrent() && offlineWorkspace.runtime.appSession && showRestoredWorkspace({native:isNativeRuntime(),localMode:localWorkspaceMode,restored:offlineWorkspace.restored,online:offlineWorkspace.online,hasCurrentUser:Boolean(currentUser),minimalEntry:import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true',enabled:offlineWorkspace.enabled,firebaseUid:firebaseUser?.uid,principalId:offlineWorkspace.runtime.scope.principalId,biometricUnlocked:biometricUnlockState==='unlocked'})) return <React.Suspense fallback={<WorkingHome ready={false}/>}><RestoredLocalWorkspace key={JSON.stringify(offlineWorkspace.runtime.scope)} runtime={offlineWorkspace.runtime} CustomerView={CustomerCRMView} initialTab={localWorkspaceTab} onCustomerIntent={()=>void deferredCustomerCRMViewModule.preload().catch(()=>{})} onLogout={handleLogout} onOpenFullWorkspace={isNativeRuntime()?undefined:(tab='more')=>{if(!offlineWorkspace.online||firebaseUser?.uid!==offlineWorkspace.runtime.scope.principalId)return;setLocalWorkspaceMode(false);setActiveTab(tab==='home'?'home':'more');}}/></React.Suspense>;
   if(offlineWorkspace.enabled&&!offlineWorkspace.online&&(!offlineWorkspace.runtime?.isCurrent()||!offlineWorkspace.runtime.appSession)) return <AppShell><main className="p-6"><h1>Quyền truy cập Offline</h1><p role="alert">{offlineWorkspace.error||(offlineWorkspace.settled?'Chưa có phiên Offline hợp lệ. Kết nối mạng để xác thực lại.':'Đang khôi phục và xác minh phiên trên thiết bị.')}</p><p>Chỉ mở dữ liệu khi quyền Offline có chữ ký còn hiệu lực. Dữ liệu và giao dịch đang chờ vẫn được giữ nguyên.</p><button type="button" onClick={()=>void handleLogout()}>Đăng xuất</button></main></AppShell>;
   // Fresh online sign-in and offline restoration use the SAME signed owner UI.
   // Preserve Firebase identity and biometric unlock; don't expose a legacy
@@ -22862,6 +22894,9 @@ const APP_NAV_ITEM_MAP = {
   employee_reviews: { id: 'employee_reviews', label: 'Đánh giá', icon: <Star /> },
   asset_management: { id: 'asset_management', label: 'Tài sản', icon: <Building /> },
   payroll: { id: 'payroll', label: 'Bảng lương', icon: <Wallet /> },
+  attendanceRequests: { id: 'attendanceRequests', label: 'Yêu cầu điều chỉnh công', icon: <Clock /> },
+  attendancePeriods: { id: 'attendancePeriods', label: 'Xác nhận bảng công', icon: <ClipboardList /> },
+  salarySettlements: { id: 'salarySettlements', label: 'Thanh toán và đối soát lương', icon: <Wallet /> },
   employees: { id: 'employees', label: 'Nhân sự', icon: <Users /> },
   products: { id: 'products', label: 'Sản phẩm', icon: <Package /> },
   price_quotes: { id: 'price_quotes', label: 'Báo giá', icon: <Receipt /> },
@@ -23103,7 +23138,10 @@ function MainAppView({
     proxyByName: employee?.name || currentUser?.name || 'Kế toán',
     proxyByRole: position || currentUser?.role || ''
   };
-  const canAccess = (permissionId) => (
+  const localWorkflowRoutes=useMemo(()=>localCustomerRuntime?.isCurrent()&&localCustomerRuntime.scope.principalId===localCustomerPrincipalId
+    ?availableNativeBusinessRoutes(localCustomerRuntime).filter(route=>['attendanceRequests','attendancePeriods','salarySettlements'].includes(route.id)):[],[localCustomerRuntime,localCustomerPrincipalId]);
+  const canAccess = (permissionId) => ['attendanceRequests','attendancePeriods','salarySettlements'].includes(permissionId)
+    ?localWorkflowRoutes.some(route=>route.id===permissionId):(
     permissionId === 'profile' ||
     permissionId === 'more' ||
     permissionId === 'home' ||
@@ -23142,6 +23180,9 @@ function MainAppView({
     price_quotes: canAccess('price_quotes'),
     company_attendance: canAccess('company_attendance'),
     payroll: canAccess('payroll'),
+    attendanceRequests: canAccess('attendanceRequests'),
+    attendancePeriods: canAccess('attendancePeriods'),
+    salarySettlements: canAccess('salarySettlements'),
     employees: canAccess('employees'),
     employee_reviews: canAccess('employee_reviews') && (
       canRoleAction('employee_reviews', 'view_employee_reviews') ||
@@ -23162,7 +23203,7 @@ function MainAppView({
     role_permissions: canAccess('role_permissions'),
     billing: canAccess('billing'),
     messages: canAccess('messages')
-  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions]);
+  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions,localWorkflowRoutes]);
 
   // Workspaces load only when opened. The More menu is navigation, not
   // permission to preload payroll, assets or attendance on a weak device.
@@ -49832,7 +49873,7 @@ function LegacyOwnedApplication(){
 }
 export default function App(props){
  return props?.offlineWorkspace
-  ? <ApplicationView offlineWorkspace={props.offlineWorkspace}/>
+  ? <ApplicationView offlineWorkspace={props.offlineWorkspace} initialWorkspaceTab={props.initialWorkspaceTab}/>
   : <LegacyOwnedApplication/>;
 }
 // Same logout side effects as handleLogout, for the restored workspace where

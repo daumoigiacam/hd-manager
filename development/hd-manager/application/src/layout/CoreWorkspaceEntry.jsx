@@ -6,6 +6,7 @@ import WorkingHome from'./WorkingHome.jsx';
 import RestoredLocalWorkspace from'./RestoredLocalWorkspace.jsx';
 import PreloadedWorkspace from'./PreloadedWorkspace.jsx';
 import{createPreloadableModule}from'../utils/preloadableModule.js';
+import{Capacitor}from'@capacitor/core';
 
 const loadAuth=()=>import('../services/firebaseClientRuntime.js').then(value=>value.auth);
 const productCRM=createPreloadableModule(()=>import('../features/customers/productCRMShared.jsx').then(value=>({default:value.CustomerCRMView})));
@@ -17,7 +18,10 @@ function ProductCRM(props){return <PreloadedWorkspace module={productCRM} viewPr
 export default function CoreWorkspaceEntry(){
  const offlineWorkspace=useNativeOfflineWorkspace(loadAuth);
  const [fullRequested,setFullRequested]=useState(false),[loggingOut,setLoggingOut]=useState(false),[error,setError]=useState('');
- useEffect(()=>{if(offlineWorkspace.settled&&(!offlineWorkspace.enabled||(!offlineWorkspace.runtime&&offlineWorkspace.online)))setFullRequested(true);},[offlineWorkspace.settled,offlineWorkspace.enabled,offlineWorkspace.runtime,offlineWorkspace.online]);
+ const [onlineWebLaunch]=useState(()=>Capacitor.getPlatform()==='web'&&navigator.onLine);
+ const [initialWorkspaceTab,setInitialWorkspaceTab]=useState();
+ useEffect(()=>{if(offlineWorkspace.settled&&(!offlineWorkspace.enabled||(!offlineWorkspace.runtime&&offlineWorkspace.online)||onlineWebLaunch))setFullRequested(true);},[offlineWorkspace.settled,offlineWorkspace.enabled,offlineWorkspace.runtime,offlineWorkspace.online,onlineWebLaunch]);
+ const openFullWorkspace=Capacitor.getPlatform()==='web'?(tab='more')=>{if(!navigator.onLine)return;setInitialWorkspaceTab(tab==='home'?'home':'more');setFullRequested(true);}:undefined;
  const logout=useCallback(async()=>{
   setLoggingOut(true);setError('');
   try{
@@ -28,8 +32,8 @@ export default function CoreWorkspaceEntry(){
   }catch(failure){setError(failure.message);}finally{setLoggingOut(false);}
  },[offlineWorkspace.controller]);
  if(loggingOut)return <AppShell><main className="p-4" role="status">Đang đăng xuất an toàn…</main></AppShell>;
- if(fullRequested)return <React.Suspense fallback={<AppShell><WorkingHome ready={false}/></AppShell>}><FullApplication offlineWorkspace={offlineWorkspace}/></React.Suspense>;
+ if(fullRequested)return <React.Suspense fallback={<AppShell><WorkingHome ready={false}/></AppShell>}><FullApplication offlineWorkspace={offlineWorkspace} initialWorkspaceTab={initialWorkspaceTab}/></React.Suspense>;
  const verifiedContext=offlineWorkspace.runtime?.isCurrent()?offlineWorkspace.runtime:offlineWorkspace.verifiedLaunch?.isCurrent()?offlineWorkspace.verifiedLaunch:null;
- if(verifiedContext)return <RestoredLocalWorkspace key={JSON.stringify(verifiedContext.scope)} runtime={offlineWorkspace.runtime} verifiedLaunch={offlineWorkspace.verifiedLaunch} CustomerView={ProductCRM} onCustomerIntent={()=>void productCRM.preload().catch(()=>{})} onLogout={logout}/>;
+ if(verifiedContext)return <RestoredLocalWorkspace key={JSON.stringify(verifiedContext.scope)} runtime={offlineWorkspace.runtime} verifiedLaunch={offlineWorkspace.verifiedLaunch} CustomerView={ProductCRM} onCustomerIntent={()=>void productCRM.preload().catch(()=>{})} onLogout={logout} onOpenFullWorkspace={openFullWorkspace}/>;
  return <AppShell><StartupWorkspaceShell onLogout={offlineWorkspace.controller?logout:undefined} error={error||offlineWorkspace.error}/></AppShell>;
 }

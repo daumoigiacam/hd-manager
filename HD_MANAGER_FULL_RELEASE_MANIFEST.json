@@ -1,0 +1,829 @@
+{
+  "at": "2026-11-14T10:25:43.755Z",
+  "status": "SOURCE_MANIFEST_NOT_RUNTIME_ACCEPTANCE",
+  "source": {
+    "canonical": "development/hd-manager/application",
+    "baseCommit": "a84e597d650b3f81283e69493e1751d2bf0c234c",
+    "appSha256": "d04e371099e3b388bbf8cf486ebbcb0e64cec392a0d48ae52c7a60582a8baf3b",
+    "localObserved": {
+      "url": "http://127.0.0.1:5219",
+      "buildId": "local-real-account-import-fix",
+      "buildDate": "2026-11-12T17:42:59.424Z",
+      "developmentProject": "hd-manager-c5839",
+      "canonicalNormalizedComparison": {
+        "comparedFiles": 551,
+        "same": 539,
+        "different": 12,
+        "missingFromRelease": 0,
+        "releaseAddedHelpers": 2
+      },
+      "dirtyOwnerTreePreserved": true,
+      "localSourceCommit": "47b1629ecfadc12360970ba8a379de0609fa6434",
+      "localSourceBranch": "codex/instant-local-first-implementation"
+    },
+    "preparedFromWorkingTree": true,
+    "releaseCommitBinding": "Use the release build manifest and version.json buildId; this inventory does not embed its own Git SHA."
+  },
+  "modules": [
+    {
+      "id": "home",
+      "label": "Trang chủ",
+      "components": [],
+      "existingHandlers": [],
+      "firestoreCollections": [
+        "customers",
+        "payrollPeriods",
+        "employeeReviews",
+        "products",
+        "orders",
+        "payments",
+        "expenses",
+        "financials",
+        "attendance",
+        "performance",
+        "warehouseImports",
+        "warehouseDispatches",
+        "customerComplaints",
+        "holidays",
+        "deliveryReports"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "executive_dashboard",
+      "label": "Điều hành",
+      "components": [],
+      "existingHandlers": [],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orders",
+        "orderRequests",
+        "payments",
+        "expenses",
+        "financials",
+        "warehouseImports",
+        "warehouseDispatches",
+        "warehouseStockCounts",
+        "assets",
+        "assetCostLogs",
+        "deliveryReports",
+        "attendance",
+        "performance",
+        "payrollPeriods",
+        "employeeReviews",
+        "customerComplaints",
+        "holidays"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "order_requests",
+      "label": "Đơn đặt",
+      "components": [
+        "OrderRequestView"
+      ],
+      "existingHandlers": [
+        "onAddOrderRequest",
+        "onEditOrderRequest",
+        "onDeleteOrderRequest",
+        "onEditCustomer",
+        "onGetCustomerProductPreference",
+        "onSaveCustomerProductPreference",
+        "onSyncCustomerFixedProductDefaults",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orderRequests",
+        "warehouseDispatches",
+        "employees"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "orders",
+      "label": "Đơn hàng",
+      "components": [
+        "OrderManagementView"
+      ],
+      "existingHandlers": [
+        "onAddOrder",
+        "onEditOrder",
+        "onUpdateOrderInvoiceTemplate",
+        "onApproveOrderZaloSend",
+        "onUpdateOrderZaloMessage",
+        "onSyncPayosPaymentStatus",
+        "onEnsureOrderPayosPayment",
+        "onToggleArchiveOrder",
+        "onDeleteOrder",
+        "onAddPayment",
+        "onAddCustomer",
+        "onAddExpense",
+        "onResolveDeliveryReportIssue",
+        "onOpenCustomerZaloLink",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orders",
+        "orderRequests",
+        "warehouseDispatches",
+        "deliveryReports",
+        "payments",
+        "expenses",
+        "warehouseImports",
+        "zalo_send_queue"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "warehouse_dispatch",
+      "label": "Xuất kho",
+      "components": [
+        "WarehouseDispatchView"
+      ],
+      "existingHandlers": [
+        "onAddWarehouseDispatch",
+        "onEditWarehouseDispatch",
+        "onDeleteWarehouseDispatch",
+        "onEditOrderRequest",
+        "onDeleteOrderRequest",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orderRequests",
+        "warehouseImports",
+        "warehouseDispatches",
+        "warehouseStockCounts",
+        "employees"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "delivery_reports",
+      "label": "Giao hàng",
+      "components": [
+        "DeliveryReportView"
+      ],
+      "existingHandlers": [
+        "onAddDeliveryReport",
+        "onUpdateDeliveryReport",
+        "onSaveDeliveryCommand",
+        "onEditOrder",
+        "onAddPayment",
+        "onAddExpense",
+        "onAddAssetCostLog",
+        "onEditAssetCostLog"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orders",
+        "orderRequests",
+        "warehouseImports",
+        "warehouseDispatches",
+        "deliveryReports",
+        "payments",
+        "expenses",
+        "assets",
+        "assetCostLogs"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "warehouse_import",
+      "label": "Nhập Xuất Tồn",
+      "components": [
+        "Package",
+        "WarehouseImportView"
+      ],
+      "existingHandlers": [
+        "onAddWarehouseImport",
+        "onEditWarehouseImport",
+        "onDeleteWarehouseImport",
+        "onAddWarehouseStockCount",
+        "onPostInventoryOpeningBalance",
+        "onEditWarehouseStockCount",
+        "onDeleteWarehouseStockCount",
+        "onUpdateCompanySettings",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orders",
+        "orderRequests",
+        "warehouseImports",
+        "warehouseDispatches",
+        "warehouseStockCounts"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "customers",
+      "label": "Khách hàng",
+      "components": [
+        "CustomerCRMView"
+      ],
+      "existingHandlers": [
+        "onDirectoryReady",
+        "onRequestSupplements",
+        "onAddCustomer",
+        "onEditCustomer",
+        "onDeleteCustomer",
+        "onAddCustomerLoan",
+        "onEditCustomerLoan",
+        "onDeleteCustomerLoan",
+        "onOpenCustomerDebt",
+        "onOpenOrder",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "orders",
+        "payments",
+        "expenses",
+        "payment_reconciliations",
+        "customer_points",
+        "customerLoans",
+        "products",
+        "warehouseImports",
+        "warehouseDispatches"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "debt",
+      "label": "Sổ nợ",
+      "components": [
+        "DebtManagementView"
+      ],
+      "existingHandlers": [
+        "onAddRepayment",
+        "onAddPayment",
+        "onDeletePayment",
+        "onFocusCustomerHandled"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "orders",
+        "payments",
+        "expenses",
+        "bankTransactions",
+        "warehouseImports",
+        "employees"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "finance",
+      "label": "Thu chi",
+      "components": [
+        "FinanceView"
+      ],
+      "existingHandlers": [
+        "onAddExpense",
+        "onEditExpense",
+        "onAddPayment",
+        "onEditPayment",
+        "onToggleArchiveExpense",
+        "onToggleArchivePayment",
+        "onDeleteExpense",
+        "onDeletePayment",
+        "onSearchFocusHandled",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "expenses",
+        "payments",
+        "orders",
+        "assets",
+        "deliveryReports",
+        "employees",
+        "customers"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "bank_payments",
+      "label": "Ngân hàng",
+      "components": [
+        "CreditCard",
+        "BankPaymentCenterView"
+      ],
+      "existingHandlers": [],
+      "firestoreCollections": [
+        "customers",
+        "orders",
+        "payments",
+        "bankAccounts",
+        "bankTransactions",
+        "payment_reconciliations"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "messages",
+      "label": "Tin nhắn",
+      "components": [
+        "MessageCenterView"
+      ],
+      "existingHandlers": [
+        "onAddMessage",
+        "onOpenNotification",
+        "onGoBack",
+        "onUpdateCompanySettings",
+        "onProcessZaloInboxMessage",
+        "onSendAiZaloReply",
+        "onIgnoreZaloInboxMessage",
+        "onMarkNeedHumanZaloInboxMessage",
+        "onToggleCustomerAiReply",
+        "onSaveAiReplyRule",
+        "onArchiveAiReplyRule"
+      ],
+      "firestoreCollections": [
+        "employees",
+        "customers",
+        "orders",
+        "orderRequests",
+        "payments",
+        "expenses",
+        "products",
+        "messages",
+        "zalo_inbox_messages",
+        "zalo_inbox_bridge_logs",
+        "zalo_send_queue",
+        "zalo_campaigns",
+        "zalo_campaign_queue",
+        "order_requests",
+        "ai_reply_rules"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "pricing",
+      "label": "Giá cả",
+      "components": [
+        "SimplePricingEngineView"
+      ],
+      "existingHandlers": [
+        "onAddPricingInput",
+        "onDeletePricingInput",
+        "onSavePricingRules"
+      ],
+      "firestoreCollections": [
+        "products",
+        "orders",
+        "orderRequests",
+        "warehouseImports",
+        "warehouseDispatches",
+        "warehouseStockCounts",
+        "pricingInputs",
+        "pricingRules",
+        "pricingScenarios"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "company_attendance",
+      "label": "Chấm công",
+      "components": [
+        "Clock",
+        "AttendanceView"
+      ],
+      "existingHandlers": [
+        "onChangeDate",
+        "onCheckIn",
+        "onCheckOut",
+        "onLeave",
+        "onEditAttendance",
+        "onOverrideCheckIn",
+        "onOverrideCheckOut",
+        "onUpdateCompanySettings",
+        "onEditEmployee",
+        "onGoBack",
+        "onOpenNotifications"
+      ],
+      "firestoreCollections": [
+        "employees",
+        "attendance",
+        "holidays"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "employee_reviews",
+      "label": "Đánh giá",
+      "components": [
+        "EmployeeReviewModuleView"
+      ],
+      "existingHandlers": [
+        "onAddEmployeeReview",
+        "onUpdateCompanySettings",
+        "onLockPayrollPeriod",
+        "onLoadPayrollPeriodSnapshots"
+      ],
+      "firestoreCollections": [
+        "employees",
+        "employeeReviews",
+        "attendance",
+        "customerComplaints",
+        "performance"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "asset_management",
+      "label": "Tài sản",
+      "components": [
+        "AssetManagementView"
+      ],
+      "existingHandlers": [
+        "onAddAsset",
+        "onEditAsset",
+        "onDeleteAsset",
+        "onAddAssetCostLog",
+        "onEditAssetCostLog",
+        "onDeleteAssetCostLog"
+      ],
+      "firestoreCollections": [
+        "assets",
+        "assetCostLogs",
+        "expenses",
+        "employees"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "payroll",
+      "label": "Bảng lương",
+      "components": [
+        "Users",
+        "SalaryView"
+      ],
+      "existingHandlers": [
+        "onAddFinancial",
+        "onEditFinancial",
+        "onDeleteFinancial",
+        "onUpdatePerformance",
+        "onAddAdvanceRequest",
+        "onApproveAdvance",
+        "onRejectAdvance",
+        "onDeleteAdvance",
+        "onUpdateCompanySettings",
+        "onLockPayrollPeriod",
+        "onAdjustLockedPayroll",
+        "onPreparePayrollAutoLockPlan",
+        "onLoadPayrollPeriodSnapshots"
+      ],
+      "firestoreCollections": [
+        "employeeReviews",
+        "payrollPeriods",
+        "payrollDebtCarryovers",
+        "payrollAutoLockPlans",
+        "attendance",
+        "customerComplaints",
+        "financials",
+        "performance",
+        "customers",
+        "orders",
+        "payments",
+        "holidays",
+        "deliveryReports",
+        "advances"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "attendanceRequests",
+      "label": "Yêu cầu điều chỉnh công",
+      "components": [],
+      "existingHandlers": [],
+      "firestoreCollections": [],
+      "localRuntime": "signed-route"
+    },
+    {
+      "id": "attendancePeriods",
+      "label": "Xác nhận bảng công",
+      "components": [],
+      "existingHandlers": [],
+      "firestoreCollections": [],
+      "localRuntime": "signed-route"
+    },
+    {
+      "id": "salarySettlements",
+      "label": "Thanh toán và đối soát lương",
+      "components": [],
+      "existingHandlers": [],
+      "firestoreCollections": [],
+      "localRuntime": "signed-route"
+    },
+    {
+      "id": "employees",
+      "label": "Nhân sự",
+      "components": [
+        "EmployeeView"
+      ],
+      "existingHandlers": [
+        "onCloseDepartmentFilter",
+        "onAddEmployee",
+        "onEditEmployee",
+        "onDeleteEmployee",
+        "onAddEmployeeReview",
+        "onAddHoliday",
+        "onDeleteHoliday",
+        "onUpdateCompanySettings",
+        "onQuickActionHandled",
+        "onResetEmployeePassword"
+      ],
+      "firestoreCollections": [
+        "employeeReviews",
+        "attendance",
+        "customerComplaints",
+        "payrollPeriods",
+        "payrollDebtCarryovers",
+        "payrollAutoLockPlans",
+        "performance",
+        "advances"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "products",
+      "label": "Sản phẩm",
+      "components": [
+        "ProductManagementView"
+      ],
+      "existingHandlers": [
+        "onAddProduct",
+        "onEditProduct",
+        "onToggleArchiveProduct",
+        "onDeleteProduct",
+        "onUpdateCompanySettings",
+        "onQuickActionHandled"
+      ],
+      "firestoreCollections": [
+        "products",
+        "orders",
+        "warehouseImports",
+        "warehouseDispatches"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "price_quotes",
+      "label": "Báo giá",
+      "components": [
+        "PriceQuoteBroadcastView"
+      ],
+      "existingHandlers": [
+        "onEditCustomer"
+      ],
+      "firestoreCollections": [
+        "customers",
+        "products",
+        "orders",
+        "orderRequests"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "settings",
+      "label": "Cài đặt",
+      "components": [
+        "SettingsView"
+      ],
+      "existingHandlers": [
+        "onGetIdentityToken",
+        "onLogout",
+        "onUpdateCompanySettings",
+        "onResetCompanyDemoData",
+        "onCreateCompanyBackup",
+        "onRestoreCompanyBackup",
+        "onCreateZaloCampaign",
+        "onCancelZaloCampaign",
+        "onRetryZaloCampaignQueueItem",
+        "onProcessZaloInboxMessage",
+        "onSendAiZaloReply",
+        "onIgnoreZaloInboxMessage",
+        "onMarkNeedHumanZaloInboxMessage",
+        "onToggleCustomerAiReply",
+        "onSaveAiReplyRule",
+        "onArchiveAiReplyRule",
+        "onUpdateZaloOrderRequest",
+        "onConvertZaloOrderRequest"
+      ],
+      "firestoreCollections": [
+        "reward_catalog",
+        "promotions",
+        "zalo_send_queue",
+        "zalo_campaigns",
+        "zalo_campaign_queue",
+        "zalo_inbox_messages",
+        "zalo_inbox_bridge_logs",
+        "ai_reply_rules"
+      ],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "role_permissions",
+      "label": "Vai trò",
+      "components": [
+        "RolePermissionView"
+      ],
+      "existingHandlers": [
+        "onUpdateCompanySettings"
+      ],
+      "firestoreCollections": [],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "billing",
+      "label": "Gói dịch vụ",
+      "components": [
+        "BillingView"
+      ],
+      "existingHandlers": [],
+      "firestoreCollections": [],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    },
+    {
+      "id": "more",
+      "label": "Thêm",
+      "components": [
+        "MoreMenu"
+      ],
+      "existingHandlers": [
+        "onLogout",
+        "onSwitchToCustomerLogin"
+      ],
+      "firestoreCollections": [],
+      "localRuntime": "existing-web-view-and-offline-route-if-available"
+    }
+  ],
+  "nativeRoutes": [
+    {
+      "id": "attendancePeriods",
+      "label": "Bảng công và xác nhận",
+      "required": [
+        "attendancePeriod.read"
+      ],
+      "any": null,
+      "module": "attendancePeriods",
+      "source": null
+    },
+    {
+      "id": "salarySettlements",
+      "label": "Thanh toán và đối soát lương",
+      "required": [
+        "salarySettlement.read"
+      ],
+      "any": null,
+      "module": "salarySettlements",
+      "source": null
+    },
+    {
+      "id": "attendanceRequests",
+      "label": "Yêu cầu công cá nhân",
+      "required": [
+        "attendanceRequest.read"
+      ],
+      "any": null,
+      "module": "attendanceRequests",
+      "source": null
+    },
+    {
+      "id": "hr",
+      "label": "Nhân sự · Chấm công · Lương",
+      "required": [],
+      "any": [
+        "home.payroll.read",
+        "employees.directory.read"
+      ],
+      "module": "hr",
+      "source": "employees"
+    },
+    {
+      "id": "delivery",
+      "label": "Giao hàng · Phiếu cân",
+      "required": [],
+      "any": [
+        "home.quick-report.read",
+        "deliveryReports.read"
+      ],
+      "module": "delivery",
+      "source": "deliveryReports"
+    },
+    {
+      "id": "orders",
+      "label": "Đơn hàng",
+      "required": [
+        "orders.read",
+        "home.orders.read"
+      ],
+      "any": null,
+      "module": "orders",
+      "source": null
+    },
+    {
+      "id": "finance",
+      "label": "Thu chi",
+      "required": [
+        "home.cashflow.read"
+      ],
+      "any": null,
+      "module": "finance",
+      "source": null
+    },
+    {
+      "id": "warehouseImports",
+      "label": "Mua hàng · Nhập kho",
+      "required": [
+        "home.imports.read"
+      ],
+      "any": null,
+      "module": "warehouse",
+      "source": "warehouseImports"
+    },
+    {
+      "id": "warehouseDispatches",
+      "label": "Xuất kho",
+      "required": [
+        "home.dispatches.read"
+      ],
+      "any": null,
+      "module": "warehouse",
+      "source": "warehouseDispatches"
+    },
+    {
+      "id": "stockCounts",
+      "label": "Kiểm kê kho",
+      "required": [
+        "home.stock.read"
+      ],
+      "any": null,
+      "module": "warehouse",
+      "source": "warehouseStockCounts"
+    }
+  ],
+  "api": {
+    "project": "hd-manager-c5839",
+    "identityFunctions": [
+      "identityLogin",
+      "identityCompleteSetup",
+      "identityLogout"
+    ],
+    "offlineBasePath": "/api/offline/",
+    "postActions": [
+      "business-source",
+      "grant",
+      "sync",
+      "page",
+      "history",
+      "detail",
+      "customer-delta",
+      "home-head",
+      "home-page",
+      "home-report",
+      "warehouse-import-head",
+      "warehouse-import-page",
+      "attendance-adjustment",
+      "payroll-settlement",
+      "attendance-period"
+    ],
+    "publicGet": "/.well-known/jwks.json",
+    "productionAvailability": "BLOCKED_OFFLINE_API_NOT_DEPLOYED",
+    "source": "functions/offlineTrustedBackend.mjs"
+  },
+  "buildGraph": {
+    "file": ".local-dev/full-local-release-20261114/actual-web-build-graph.json",
+    "chunks": 150,
+    "hasSourceModules": true
+  },
+  "scope": {
+    "noNewBusinessModules": true,
+    "sourceNotFromTestResults": true,
+    "existingOnlineViewsPreserved": true,
+    "noNewDatabase": true,
+    "apiWriteEvidenceInheritedFromSameBackendSource": true,
+    "financialFormulaChanged": false
+  },
+  "verification": {
+    "scope": "QA_HTTPS_BROWSER_SMOKE_NOT_PRODUCTION_DEPLOYMENT",
+    "authorizedModulesOpened": 25,
+    "visibleContentWithoutActiveBusyOrAlert": true,
+    "uiRuntimeErrors": 0,
+    "offlineReload": true,
+    "offlineBrowserReopen": true,
+    "tenantScopeMismatchHttp": 403,
+    "uiGoogleRefreshAndSignedGrantVerified": true,
+    "allOperationsCrudAcceptanceClaimed": false,
+    "physicalDeviceTestedThisTask": false,
+    "oldFailureSamplesRetained": true
+  }
+}

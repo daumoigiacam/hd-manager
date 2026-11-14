@@ -38,7 +38,7 @@ export function prepareNativeBusinessRoute(runtime,route,{firstOpen=false}={}){
  void route.module.preload().catch(()=>{});
  if(!['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id))void (route.source?runtime.warehouse():runtime.business.directory()).catch(()=>{});
 }
-export default function NativeBusinessRoute({runtime,route,onNavigate,active,orderSearchIntent}){
+export default function NativeBusinessRoute({runtime,route,onNavigate,active,orderSearchIntent,initialSource}){
  const [cashflow,setCashflow]=useState(null),[cashflowError,setCashflowError]=useState('');
  const [employeeSlot,setEmployeeSlot]=useState(null),[employeeError,setEmployeeError]=useState('');
  const employeeProfileRepository=employeeSlot?.owner===runtime?employeeSlot.value:null;
@@ -89,5 +89,5 @@ export default function NativeBusinessRoute({runtime,route,onNavigate,active,ord
  if(!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id===route.id))return <p role="alert">Phiên không còn quyền truy cập chức năng này.</p>;
  if(error)return <section role="alert"><p>{error}</p><button onClick={()=>{setError('');setAttempt(n=>n+1);}}>Thử lại</button></section>;
  if(!viewDirectory)return <section role="status" aria-busy="true">Đang mở dữ liệu đã lưu cho {route.label}…</section>;
- return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,orderSearchIntent,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,onNavigate,initialSource:route.source,onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
+ return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,orderSearchIntent,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,onNavigate,initialSource:route.source||(route.id==='hr'?initialSource:undefined),onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
 }

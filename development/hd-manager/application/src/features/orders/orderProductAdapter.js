@@ -22,8 +22,18 @@ export function createOrderProductAdapter({business,product,capabilities}){
   async page({search='',from='',to='',state='',after=null,limit=25}={}){
    if(state&&state!=='SERVER_CONFIRMED')return product?.localPage?product.localPage({search,from,to,state,after,limit}):unavailable();
    permitted('orders',search);
-   const prepared=!search&&!from&&!to&&!after&&limit===25?await business.takeOrdersIntent?.():null;
-   const result=prepared||await business.page('orders',{text:search,from:from||null,to:to?nextDay(to):null,cursor:after,limit});
+   const read=async()=>{
+    const prepared=!search&&!from&&!to&&!after&&limit===25?await business.takeOrdersIntent?.():null;
+    return prepared||await business.page('orders',{text:search,from:from||null,to:to?nextDay(to):null,cursor:after,limit});
+   };
+   let result;
+   try{result=await read();}catch(error){
+    // A completed background feed may publish between the first page's head
+    // and row reads. Retry the unpinned first page once, reauthorizing in the
+    // same directory. Never reuse a stale cursor or hide a permission/error.
+    if(after||error.code!=='stale-checkpoint')throw error;
+    result=await read();
+   }
    return {rows:result.items.map(summary),nextCursor:result.nextCursor??result.cursor??null,metadata:result.metadata};
   },
   async lookup(source,{search='',after='',limit=25}={}){
