@@ -144,20 +144,30 @@ jobs:
           import {randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
           const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd502-readonly-'));
           const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
-          let result;
+          let result,keyFormat;
           try {
            const host=process.env.VPS_HOST?.trim(),user=process.env.VPS_USER?.trim(),key=process.env.VPS_SSH_KEY;
            if(!/^[a-zA-Z0-9.-]+$/.test(host||'')||!/^[a-z_][a-z0-9_-]*\$?$/i.test(user||'')||!key)throw Error('AUTHORIZED_SSH_CONFIGURATION_MISSING');
            const configured=await dns.lookup(host,{all:true}),app=await dns.lookup('app.hdconnect.net',{all:true});
            if(!configured.some(x=>app.some(y=>x.address===y.address)||x.address==='180.93.0.87'))throw Error('CONFIGURED_HOST_NOT_PRODUCTION_DNS_OR_APPROVED_VPS');
-           fs.writeFileSync(keyFile,key,{mode:0o600});delete process.env.VPS_SSH_KEY;
+           let material=key.replace(/\r\n?/g,'\n');
+           keyFormat={lines:material.split('\n').length,hasPemBoundary:/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(material),hasEscapedNewlines:material.includes('\\n'),trailingNewline:material.endsWith('\n')};
+           if(keyFormat.hasPemBoundary&&keyFormat.hasEscapedNewlines&&keyFormat.lines===1)material=material.replace(/\\r\\n/g,'\n').replace(/\\n/g,'\n');
+           if(!keyFormat.hasPemBoundary&&/^[A-Za-z0-9+/=\s]+$/.test(material)){
+            const decoded=Buffer.from(material,'base64').toString('utf8');
+            if(/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(decoded)){material=decoded.replace(/\r\n?/g,'\n');keyFormat.explicitBase64Envelope=true;}
+           }
+           if(!material.endsWith('\n'))material+='\n';
+           fs.writeFileSync(keyFile,material,{mode:0o600});material='';delete process.env.VPS_SSH_KEY;
+           try{execFileSync('ssh-keygen',['-l','-f',keyFile],{stdio:['ignore','pipe','pipe'],timeout:10000});keyFormat.localParse='PASS';}
+           catch{keyFormat.localParse='FAILED';throw Error('EXISTING_SSH_KEY_FORMAT_NOT_READABLE');}
            const pinned=process.env.VPS_KNOWN_HOSTS;
            if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
            const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
            const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
-           result={status:'SSH_READ_COMPLETED',hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+           result={status:'SSH_READ_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
           } catch(error) {
-           result={status:'READ_DIAGNOSTIC_FAILED',code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
+           result={status:'READ_DIAGNOSTIC_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
           } finally {
            for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
            try{fs.rmdirSync(dir);}catch{}
