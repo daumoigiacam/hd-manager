@@ -20,15 +20,18 @@ import attendance from './offlineAttendanceCommands.cjs';
 import attendanceContext from './offlineAttendanceTrustedContext.cjs';
 import * as advanceDomain from '../development/hd-manager/application/src/features/payroll/salaryAdvanceProtocol.js';
 import * as payrollDomain from '../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js';
-import {trustedBusinessCapabilities} from './generated/offlineBusinessPolicy.mjs';
-export {trustedBusinessCapabilities};
+import {trustedBusinessCapabilities as acceptedBusinessCapabilities} from './generated/offlineBusinessPolicy.mjs';
+import {createFirestorePayrollSettlements,deriveFirestoreSalaryAccess} from './offlineFirestorePayrollSettlements.mjs';
+export function trustedBusinessCapabilities(subject){return acceptedBusinessCapabilities(subject).filter(cap=>cap!=='salarySettlement.pay'||deriveFirestoreSalaryAccess(subject,projectorPolicy).pay);}
+// The same canonical RBAC resolver used by the generated capability policy.
+import {hasCompanyRolePermissionAction as projectorPolicy} from './generated/offlineOriginalDomain.cjs';
 const require=createRequire(import.meta.url);
 const deny=(message,code='permission-denied')=>{throw Object.assign(Error(message),{code});};
 const entries={
  order:['create','update','archive'],cashflow:['income.create','income.update','expense.create','expense.update'],
  stockCount:['create','update','archive'],warehouseImport:['create','update','archive'],warehouseDispatch:['create','update','archive'],
  deliveryReport:['create','update','archive'],employeeProfile:['create','update','archive'],salaryAdvance:['create','approve','reject','archive'],
- payroll:['lock','adjust'],attendance:['check_in','check_out'],attendanceRequest:['create','approve','reject'],attendancePeriod:['assignWorkRole','employeeConfirm','managerConfirm']
+ payroll:['lock','adjust'],attendance:['check_in','check_out'],attendanceRequest:['create','approve','reject'],attendancePeriod:['assignWorkRole','employeeConfirm','managerConfirm'],salarySettlement:['pay','acknowledge','reconcile']
 };
 const capPrefix={order:'orders',stockCount:'stockCounts',warehouseImport:'warehouseImports',warehouseDispatch:'warehouseDispatches',deliveryReport:'deliveryReports'};
 export const TRUSTED_COMMAND_CAPABILITIES=Object.freeze(Object.fromEntries(Object.entries(entries).flatMap(([prefix,actions])=>actions.map(action=>[prefix+'.'+action,(capPrefix[prefix]||prefix)+'.'+action]))));
@@ -64,6 +67,10 @@ export function createTrustedBusinessCommands({environment,projector,readAuthori
    return attendance.createOfflineAttendanceCommandService({...shared,authorize:(tx,a,kind)=>current(tx,a,kind),getAttendanceContext})(actor,command);
   }
   if(prefix==='attendancePeriod')return periodFor(actor).handle(actor.uid,{command});
+  if(prefix==='salarySettlement')return createFirestorePayrollSettlements({...shared,authorize:async(tx,uid)=>{
+   if(uid!==actor.uid)deny('Salary principal mismatch');const a=await current(tx,actor,cap);
+   return {tenantId:a.tenantId,employeeId:a.employeeId,...deriveFirestoreSalaryAccess(a.subject,hasAction)};
+  }})(actor.uid,{command});
   if(prefix==='attendanceRequest'){
    if(createHash('sha256').update(JSON.stringify(command.payload)).digest('hex')!==command.payloadDigest)deny('Adjustment digest mismatch','invalid-argument');
    const service=requests.createAttendanceAdjustmentRequests({...shared,authorize:async(tx,uid)=>{if(uid!==actor.uid)deny('Adjustment principal mismatch');const a=await current(tx,actor,cap);return {tenantId:a.tenantId,employeeId:a.employeeId,canRequest:yes(a.subject,'company_attendance','check_in_out'),canReview:yes(a.subject,'company_attendance','edit_attendance')};}});

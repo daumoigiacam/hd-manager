@@ -75,6 +75,11 @@ function createTrustedOfflineApi({environment,projector,mapping,getSigningKey,cr
    return {scope,signedGrant:message+'.'+sign('RSA-SHA256',Buffer.from(message),privateKey).toString('base64url'),issuedAtMs};
   }
   if(action==='sync'){
+   // The persisted intent belongs to the verified client session, not whichever
+   // account happens to supply a token later. Never infer a missing owner from
+   // the current token (some request payloads contain no company/employee ID).
+   const scope=body.scope;
+   if(!scope||scope.projectId!==projectId||scope.principalId!==actor.uid||scope.tenantId!==actor.tenantId||scope.permissionRevision!==actor.permissionRevision||!segment(scope.sessionId)||!segment(scope.deviceId))throw denied();
    if(body.command&&Object.hasOwn(customerKind,body.command.kind))return applyCustomer(actor,body.command);
    if(!body.command||!commands)throw Object.assign(Error('Write domain has not passed the trusted server release gate'),{code:'failed-precondition'});
    return commands.apply(actor,body.command,{action,token,body});

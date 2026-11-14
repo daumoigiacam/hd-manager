@@ -6,12 +6,16 @@ const segment=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(x);
 function createTrustedOfflineActorResolver({environment,db,projector,mapping,now=Date.now,deriveReadCapabilities=()=>[],deriveBusinessCapabilities=()=>[]}){
  const {projectId,appId,auth}=environment||{};
  if(!isTrustedOfflineServerEnvironment(environment,projectId,appId,db)||typeof projector?.hasCompanyRolePermissionAction!=='function')throw Error('Verified original server policy required');
+ const assertQaScope=decoded=>{if(environment.environment==='isolated-qa'&&![decoded?.identityId,decoded?.companyId,decoded?.appUserId].every(value=>typeof value==='string'&&value.startsWith('qa_release_20261114_')))throw deny();};
  async function verifyToken(token){
   const decoded=await auth.verifyIdToken(token,true);
   if(decoded.aud!==projectId||decoded.iss!=='https://securetoken.google.com/'+projectId||!segment(decoded.uid)||!segment(decoded.identityId)||!segment(decoded.companyId)||!segment(decoded.appUserId)||decoded.accountType!=='employee'||!Number.isSafeInteger(decoded.exp)||now()>=decoded.exp*1000||decoded.uid!=='identity_'+decoded.identityId.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,120))throw deny();
+  // Reject a real-tenant token BEFORE reading its identity/company documents.
+  assertQaScope(decoded);
   return decoded;
  }
  async function read(reader,decoded){
+  assertQaScope(decoded);
   if(now()>=decoded.exp*1000)throw Object.assign(Error('Firebase token expired'),{code:'unauthenticated'});
   const identity=(await reader.get(db.doc('identity_accounts/'+decoded.identityId))).data();
   if(!identity||identity.status!=='active'||identity.lockedAt||identity.accountType!=='employee'||identity.companyId!==decoded.companyId||identity.appUserId!==decoded.appUserId)throw deny();

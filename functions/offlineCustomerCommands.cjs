@@ -36,11 +36,12 @@ function createOfflineCustomerCommandService({db,projectId,appId,authorize,envir
     if(!base.exists||base.data().outcome!=='accepted'||base.data().entityId!==command.entityId)throw new Error('Dependency is not confirmed');
     expectedFingerprint=base.data().fingerprint;
    }
-   if(live&&live.companyId!==actor.tenantId)throw new Error('Tenant denied');
+   if(live&&live.companyId!==actor.tenantId)throw Object.assign(new Error('Tenant denied'),{code:'permission-denied'});
    if(command.kind==='customer.create'){
     if(live){outcome='conflict';reason='customer-exists';}
     else {
-     if(body.companyId!==actor.tenantId||body.id!==command.entityId||typeof body.name!=='string'||!body.name.trim()||typeof body.phone!=='string'||!body.phone.trim())throw new Error('Invalid new customer');
+     if(body.companyId!==actor.tenantId)throw Object.assign(new Error('Tenant denied'),{code:'permission-denied'});
+     if(body.id!==command.entityId||typeof body.name!=='string'||!body.name.trim()||typeof body.phone!=='string'||!body.phone.trim())throw new Error('Invalid new customer');
      // Accept only profile fields. A blacklist left other opening-balance and
      // debt-limit names writable by a crafted client despite the UI guard.
      const allowedCreate=new Set(['id','companyId','empId','name','phone','address','customerHonorific','note','notes','customerGroup','zaloContact','zaloGroupLink','location','locationUrl','locationInput','locationLat','locationLng','mapLocation','locationUpdatedAt','locationSource']);

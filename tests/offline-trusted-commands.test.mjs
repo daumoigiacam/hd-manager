@@ -17,10 +17,10 @@ import {createHash} from 'node:crypto';const digestCanonical=text=>createHash('s
 function importIntent(id='import'){
  const base={document:null,expense:null};const payload={version:1,base,baseFingerprint:digestCanonical(imports.canonicalImport(base)),baseRevision:0,values:imports.buildImportValues({groupName:'Gà',quantity:'2',totalKg:'4',quantityUnit:'Con',purchaseUnit:'Kg',unitPrice:'12.345',sourceType:'purchase_resale',date:'2026-11-13',supplier:'Contract supplier',supplierCustomerId:'',supplierPhone:'',note:'',extraMeasures:[]}),editedAt,employeeId:'employee-a',resolvesConflictId:null};return command(id,'warehouseImport.create','wi_'+id,payload);
 }
-test('trusted grant contains implemented commands only; no cash/bank payroll settlement or unenrolled attendance grant',async()=>{
+test('trusted grant contains implemented commands, including confirmed Firestore salary vouchers, but no unenrolled attendance grant',async()=>{
  const f=fixture();try{const g=await f.call('grant',{deviceId:'unit-device'}),p=JSON.parse(Buffer.from(g.signedGrant.split('.')[1],'base64url'));
-  for(const cap of ['orders.create','stockCounts.create','warehouseImports.create','attendanceRequest.approve','attendancePeriod.managerConfirm','payroll.lock'])assert(p.capabilities.includes(cap),cap);
-  for(const cap of ['salarySettlement.pay','salarySettlement.reconcile','attendance.check_in','attendance.check_out'])assert(!p.capabilities.includes(cap),cap);
+  for(const cap of ['orders.create','stockCounts.create','warehouseImports.create','attendanceRequest.approve','attendancePeriod.managerConfirm','payroll.lock','salarySettlement.pay','salarySettlement.reconcile'])assert(p.capabilities.includes(cap),cap);
+  for(const cap of ['attendance.check_in','attendance.check_out'])assert(!p.capabilities.includes(cap),cap);
  }finally{await f.close();}
 });
 test('signed CRM employee lookup matches current account/tenant, redacts credentials and refuses truncation',async()=>{
@@ -60,8 +60,16 @@ test('attendance request has a durable audit and immutable receipt; review permi
   await assert.rejects(f.call('sync',{command:reject},'b'));assert.deepEqual(await f.call('sync',{command:reject}),result);
  }finally{await f.close();}
 });
-test('unknown domains and payroll cash/bank settlement remain fail-closed, never fake successful acknowledgments',async()=>{
+test('unknown domains and malformed payroll requests fail closed, never fake successful acknowledgments',async()=>{
  const f=fixture();try{for(const kind of ['salarySettlement.pay','salarySettlement.reconcile','unknown.create','toString'])await assert.rejects(f.call('sync',{command:{kind}}));assert.equal(f.writes.length,0);}finally{await f.close();}
+});
+
+test('customer tenant denials retain an explicit permission code for the HTTP/Outbox contract',async()=>{
+ const f=fixture();try{const id='customer-tenant-check',payload={id,companyId:'tenant-a',name:'QA contract',phone:'0000000199'},c=command('customer-tenant-create','customer.create',id,payload);await f.call('sync',{command:c});await assert.rejects(f.call('sync',{command:c},'b'),{code:'permission-denied'});const another={...payload,id:'not-yet-existing'};await assert.rejects(f.call('sync',{command:command('wrong-new-tenant','customer.create',another.id,another)},'b'),{code:'permission-denied'});}finally{await f.close();}
+});
+
+test('all trusted writes require a complete session owner envelope; request payloads cannot be rebound to token B',async()=>{
+ const f=fixture();try{const c=command('bound-request','attendanceRequest.create','bound-request',{workDate:'2026-11-14',workRole:'Sản xuất',adjustmentType:'Ghi chú',reason:'Bound account proof',proposedDetail:'Do not reinterpret in another account'});await assert.rejects(f.raw('sync',{command:c}),{code:'permission-denied'});const grant=await f.call('grant',{deviceId:'bound-unit-device'});await f.raw('sync',{command:c,scope:grant.scope});const before=structuredClone([...f.rows]);await assert.rejects(f.raw('sync',{command:c,scope:grant.scope},'b'),{code:'permission-denied'});await assert.rejects(f.raw('sync',{command:c,scope:{principalId:f.tokens.a.uid}}),{code:'permission-denied'});assert.deepEqual([...f.rows],before);}finally{await f.close();}
 });
 test('order create retains independent units and one immutable receipt; metadata changes retain financial fields',async()=>{
  const f=fixture();try{

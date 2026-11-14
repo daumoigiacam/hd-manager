@@ -21,7 +21,8 @@ import {
   writeBatch
 } from 'firebase/firestore';
 
-const projectId = 'hd-manager-payroll-rules-test';
+const projectId = process.env.HD_PAYROLL_RULES_TEST_PROJECT_ID || 'hd-manager-payroll-rules-test';
+if(!/^hd-manager-payroll-rules-test(?:-[0-9]+)?$/.test(projectId))throw Error('Dedicated payroll Rules test project required');
 const appId = 'test-app';
 const companyId = 'company-01';
 const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
@@ -214,6 +215,27 @@ try {
   }).firestore();
   const anonymousDb = testEnvironment.authenticatedContext('firebase-anonymous', {}).firestore();
   const lock = buildLockDocuments();
+
+  await test('linked salary financial vouchers cannot be forged, changed or deleted directly, even by an owner', async () => {
+    const financialRef = doc(ownerDb, pathFor(appId, 'expenses', 'server-salary-voucher'));
+    const voucher = {companyId, sourceType:'payroll_settlement', amount:1000, payrollSnapshotId:'source-salary', payrollPaymentId:'server-command', payrollSettlement:{expenseId:'server-salary-voucher'}};
+    await assertFails(setDoc(financialRef, voucher));
+    await assertFails(setDoc(doc(employeeDb, pathFor(appId, 'expenses', 'forged-salary-link')), {...voucher, sourceType:'manual_accounting_expense'}));
+    await testEnvironment.withSecurityRulesDisabled(context => setDoc(doc(context.firestore(), pathFor(appId, 'expenses', 'server-salary-voucher')), voucher));
+    await assertSucceeds(getDoc(financialRef));
+    await assertFails(getDoc(doc(otherCompanyDb, pathFor(appId, 'expenses', 'server-salary-voucher'))));
+    await assertFails(updateDoc(financialRef, {amount:1}));
+    await assertFails(updateDoc(financialRef, {sourceType:'manual_accounting_expense', payrollSettlement:null}));
+    await assertFails(deleteDoc(financialRef));
+  });
+
+  await test('ordinary existing expense documents keep their original write contract', async () => {
+    const ordinaryRef=doc(ownerDb,pathFor(appId,'expenses','ordinary-expense-compatibility'));
+    await assertSucceeds(setDoc(ordinaryRef,{companyId,sourceType:'manual_accounting_expense',amount:1000}));
+    await assertSucceeds(updateDoc(ordinaryRef,{amount:1100}));
+    await assertFails(updateDoc(ordinaryRef,{payrollSnapshotId:'forged-source'}));
+    await assertSucceeds(deleteDoc(ordinaryRef));
+  });
 
   await test('normal authenticated application data remains readable and writable', async () => {
     const customerRef = doc(ownerDb, pathFor(appId, 'customers', 'rules-smoke-customer'));
@@ -541,8 +563,8 @@ try {
     });
   });
 
-  assert.equal(passed, 19);
-  console.log(`\nFirestore payroll rules: ${passed}/19 integration cases PASS`);
+  assert.equal(passed, 21);
+  console.log(`\nFirestore payroll rules: ${passed}/21 integration cases PASS`);
 } finally {
   await testEnvironment.cleanup();
 }

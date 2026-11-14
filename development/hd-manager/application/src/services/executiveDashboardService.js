@@ -1,5 +1,5 @@
 import { resolveTransactionBillingSnapshot } from './customerProductBilling.js';
-import { isCustomerDebtRepayment } from '../utils/expenseClassification.js';
+import { isCustomerDebtRepayment, isPayrollLiabilitySettlement } from '../utils/expenseClassification.js';
 import { sortProjection } from './cooperativeProjection.js';
 import {BusinessDate as Date} from '../utils/businessDate.js';
 import {createTransactionUnitEvidence} from './transactionUnitEvidence.js';
@@ -2322,7 +2322,7 @@ const makeKpi = ({ id, title, value, kind = 'money', current = value, previousDa
 // Share the exact voucher and daily payroll DTOs with the full report. Payroll
 // earning-day allocation/rounding is already performed by the App payroll builder.
 const buildCashExpenseRows = records => Array.isArray(records) ? records
-  .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense))
+  .filter(expense => !expense.isArchived && !isCustomerDebtRepayment(expense) && !isPayrollLiabilitySettlement(expense))
   .map(expense => ({
     date: expense.date, value: Number(expense.amount) || 0,
     category: classifyExpense(expense),
@@ -2435,7 +2435,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
     const payrollByMonth = new Map();
     payrollCostByDate.forEach((amount, key) => payrollByMonth.set(key.slice(0, 7), (payrollByMonth.get(key.slice(0, 7)) || 0) + amount));
     const salaryDisbursementByMonth = new Map();
-    source.expenses.filter(expense => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense)).forEach(expense => {
+    source.expenses.filter(expense => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense) && !isPayrollLiabilitySettlement(expense)).forEach(expense => {
       const day = dateKey(getDateValue(expense));
       if (!day || day > finance.todayKey) return;
       const key = day.slice(0, 7);
@@ -2444,7 +2444,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
     const operatingExpenses = source.expenses
       .filter(expense => {
         const day = dateKey(getDateValue(expense));
-        return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense);
+        return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense) && !isPayrollLiabilitySettlement(expense);
       })
       .map(expense => {
         const key = monthKey(getDateValue(expense));

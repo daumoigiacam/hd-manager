@@ -254,7 +254,11 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   startupMark('repository.initialize.end');
   onPhase('OUTBOX_READY');
   const synchronizedTransport={async send(command,options){
-   try{if(!hasCustomerRead){await fullAuthorize({scope:session.scope,kind:command.kind});if(!session.isCurrent())throw Error('Core command owner closed');}onPhase('SYNCING');if(['attendance.check_in','attendance.check_out'].includes(command.kind)){const provider=await attendanceProviders(),context=await provider.captureContext(command);if(!session.isCurrent())throw Error('Attendance owner closed');return await transport.send(command,{...options,attendanceContext:{device:context.device,deviceSecret:context.deviceSecret,method:context.method}});}return await transport.send(command,options);}
+   // React's shared session deliberately contains only lifecycle identity.
+   // Recover project/device binding from this verified grant, never the UI or
+   // whichever account is currently logged in when an old command retries.
+   const sendOptions={...options,scope:{...expected,...options.scope}};
+   try{if(!hasCustomerRead){await fullAuthorize({scope:session.scope,kind:command.kind});if(!session.isCurrent())throw Error('Core command owner closed');}onPhase('SYNCING');if(['attendance.check_in','attendance.check_out'].includes(command.kind)){const provider=await attendanceProviders(),context=await provider.captureContext(command);if(!session.isCurrent())throw Error('Attendance owner closed');return await transport.send(command,{...sendOptions,attendanceContext:{device:context.device,deviceSecret:context.deviceSecret,method:context.method}});}return await transport.send(command,sendOptions);}
    catch(error){
     if(error.code==='permission-denied'||error.code==='unauthenticated'){await secureStore.revoke(expected);session.close();}
     throw error;

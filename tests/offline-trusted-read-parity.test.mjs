@@ -80,3 +80,10 @@ test('native preflight is limited to approved exact origins; enabling Native nev
  const handler=createTrustedOfflineHttp({environment:{appOrigin:'https://app.example.com'},api:{handle:()=>{throw Error('Preflight must not dispatch');}},nativeOrigins:['https://localhost']});const result={headers:{}},res={set:(k,v)=>result.headers[k]=v,status(s){result.status=s;return this;},end(){return this;},json(){return this;}};
  await handler({method:'OPTIONS',get:k=>k==='origin'?'https://localhost':''},res);assert.equal(result.status,204);assert.equal(result.headers['Access-Control-Allow-Origin'],'https://localhost');
 });
+
+test('missing Firestore index is an infrastructure outage, never a malformed client payload or fake successful page',async()=>{
+ const handler=createTrustedOfflineHttp({environment:{appOrigin:'https://qa.example.com'},api:{handle:async()=>{throw Object.assign(Error('The query requires an index. Internal administration URL must not be exposed'),{code:9});}}}),response={headers:{}};
+ const res={set:(k,v)=>response.headers[k]=v,status(s){response.status=s;return this;},json(body){response.body=body;return this;}};
+ await handler({method:'POST',path:'/offline/warehouse-import-page',body:{query:{}},get:key=>key==='origin'?'https://qa.example.com':key==='authorization'?'Bearer unit-test-token':''},res);
+ assert.equal(response.status,503);assert.deepEqual(response.body,{code:'unavailable'});
+});

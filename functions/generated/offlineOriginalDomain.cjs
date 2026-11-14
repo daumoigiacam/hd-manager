@@ -1860,7 +1860,7 @@ var summarizeEmployeeSalesRevenueForMonth = ({
 };
 var calculateEmployeeSalesRevenueForMonth = (options = {}) => summarizeEmployeeSalesRevenueForMonth(options).revenue;
 
-// app-domain:domain
+// hd-domain:company-home
 var DEFAULT_SHIFT_POLICY = {
   shiftName: "Ca h\xE0nh ch\xEDnh",
   shiftStart: "08:00",
@@ -3799,6 +3799,7 @@ var resolveTransactionBillingSnapshot = ({
 
 // development/hd-manager/application/src/utils/expenseClassification.js
 var isCustomerDebtRepayment = (expense) => expense?.sourceType === "customer_debt_repayment";
+var isPayrollLiabilitySettlement = (expense) => expense?.sourceType === "payroll_settlement" && typeof expense.payrollSnapshotId === "string" && expense.payrollSnapshotId.length > 0 && typeof expense.payrollPaymentId === "string" && expense.payrollPaymentId.length > 0;
 
 // development/hd-manager/application/src/services/transactionUnitEvidence.js
 var text2 = (value) => `${value ?? ""}`.trim();
@@ -5820,7 +5821,7 @@ var makeKpi = ({ id, title, value, kind = "money", current = value, previousDay 
   const tone = ["profitToday", "profitMonth", "cashBalance", "cashflowMonth"].includes(id) ? toNumber(value) >= 0 ? "good" : "bad" : ["receivables", "payables", "undeliveredOrders", "openAlerts"].includes(id) ? toNumber(value) > 0 ? "warn" : "good" : positive ? "good" : "bad";
   return { id, title, label: title, value, kind, vsYesterday, vsPreviousMonth, dayDeltaPct: vsYesterday, monthDeltaPct: vsPreviousMonth, tone, isPositive: positive };
 };
-var buildCashExpenseRows = (records) => Array.isArray(records) ? records.filter((expense) => !expense.isArchived && !isCustomerDebtRepayment(expense)).map((expense) => ({
+var buildCashExpenseRows = (records) => Array.isArray(records) ? records.filter((expense) => !expense.isArchived && !isCustomerDebtRepayment(expense) && !isPayrollLiabilitySettlement(expense)).map((expense) => ({
   date: expense.date,
   value: Number(expense.amount) || 0,
   category: classifyExpense(expense),
@@ -5865,7 +5866,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
   const payrollByMonth = /* @__PURE__ */ new Map();
   payrollCostByDate.forEach((amount, key) => payrollByMonth.set(key.slice(0, 7), (payrollByMonth.get(key.slice(0, 7)) || 0) + amount));
   const salaryDisbursementByMonth = /* @__PURE__ */ new Map();
-  source.expenses.filter((expense) => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense)).forEach((expense) => {
+  source.expenses.filter((expense) => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense) && !isPayrollLiabilitySettlement(expense)).forEach((expense) => {
     const day = dateKey2(getDateValue(expense));
     if (!day || day > finance.todayKey) return;
     const key = day.slice(0, 7);
@@ -5873,7 +5874,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
   });
   const operatingExpenses = source.expenses.filter((expense) => {
     const day = dateKey2(getDateValue(expense));
-    return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense);
+    return day && day <= finance.todayKey && !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense) && !isPayrollLiabilitySettlement(expense);
   }).map((expense) => {
     const key = monthKey(getDateValue(expense));
     const recordedSalary = salaryDisbursementByMonth.get(key) || 0;
@@ -6320,6 +6321,8 @@ function getReportPeriod(finance = {}, period = "today", customRange = null) {
 // development/hd-manager/application/src/data/homeFeedContract.js
 var HOME_FEED_SOURCES = Object.freeze(["companies", "employees", "customers", "orders", "payments", "expenses", "financials", "attendance", "performance", "payrollPeriods", "payrollSnapshots", "products", "warehouseImports", "warehouseDispatches", "warehouseStockCounts", "holidays", "deliveryReports", "employeeReviews", "customerComplaints", "assets", "assetCostLogs", "advances", "orderRequests"]);
 var NATIVE_HOME_SOURCES = Object.freeze(["companies", "nativeUsers", "nativeCustomers", "nativeProducts", "nativeOrders", "nativeOrderLines", "nativeCashTransactions", "nativeStockLedger", "nativeStockBalances", "nativeOrderRequests", "nativeOrderRequestLines", "nativeAuthorizations"]);
+var PAYROLL_FEED_ADDITIONS = Object.freeze(["payrollDebtCarryovers", "payrollAdjustments"]);
+var PAYROLL_HOME_FEED_SOURCES = Object.freeze([...HOME_FEED_SOURCES, ...PAYROLL_FEED_ADDITIONS]);
 var HOME_REQUEST_CALCULATION_FIELDS = Object.freeze(["id", "companyId", "archived", "isArchived", "deleted", "isDeleted", "status", "customerId", "customerName", "name", "productId", "productName", "product", "itemName", "date", "orderDate", "requestDate", "dispatchDate", "importDate", "paymentDate", "expenseDate", "createdAt", "updatedAt", "timestamp"]);
 
 // development/hd-manager/application/src/data/offlineHomeOverview.js

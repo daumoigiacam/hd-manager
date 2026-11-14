@@ -11,7 +11,8 @@
   },
   "functions": {
     "source": "functions",
-    "runtime": "nodejs22"
+    "runtime": "nodejs22",
+    "predeploy": ["node scripts/build-offline-trusted-backend.mjs"]
   },
   "hosting": {
     "public": "dist",
@@ -21,6 +22,10 @@
       "**/node_modules/**"
     ],
     "rewrites": [
+      {
+        "source": "/api/offline/**",
+        "function": {"functionId": "offlineApi", "region": "us-central1"}
+      },
       {
         "source": "/api/identity/passkey",
         "function": "identityPasskey"

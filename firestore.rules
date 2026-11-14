@@ -1000,6 +1000,16 @@ service cloud.firestore {
         ]);
     }
 
+    // Salary cash-out vouchers are written only by the verified server
+    // transaction. Clients may read them under the existing company/RBAC scope,
+    // but cannot forge, archive or change the linked money movement directly.
+    function isServerManagedSalaryVoucher(collectionId, data) {
+      return collectionId == 'expenses' && (
+        data.get('sourceType', '') == 'payroll_settlement'
+        || data.keys().hasAny(['payrollSnapshotId', 'payrollPaymentId', 'payrollSettlement'])
+      );
+    }
+
     match /artifacts/{appId}/public/data/{collectionId}/{docId} {
       allow get: if hasIdentitySession()
         && (
@@ -1018,6 +1028,7 @@ service cloud.firestore {
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
+        && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'employees' || isPayrollManager(appId))
@@ -1045,6 +1056,8 @@ service cloud.firestore {
         );
 
       allow update: if hasIdentitySession()
+        && !isServerManagedSalaryVoucher(collectionId, resource.data)
+        && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'customers'
           || !request.resource.data.diff(resource.data).affectedKeys().hasAny(customerProductKeys())
@@ -1088,6 +1101,7 @@ service cloud.firestore {
         );
 
       allow delete: if hasIdentitySession()
+        && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'employees' || isPayrollManager(appId))

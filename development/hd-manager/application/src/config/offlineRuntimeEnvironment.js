@@ -14,12 +14,13 @@ function https(value) {
 }
 export function resolveOfflineRuntimeEnvironment({projectId, appId, apiBaseUrl, appOrigin, publicKey, environment, maxOfflineMs = 3600000}) {
   if (!/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(projectId || '') || projectId.startsWith('demo-')
-    || !/^[a-zA-Z0-9_-]{1,160}$/.test(appId || '') || !['development','production'].includes(environment)
+    || !/^[a-zA-Z0-9_-]{1,160}$/.test(appId || '') || !['development','production','isolated-qa'].includes(environment)
     || !Number.isSafeInteger(maxOfflineMs) || maxOfflineMs < 60000 || maxOfflineMs > 86400000) fail();
   const api = https(apiBaseUrl), app = https(appOrigin);
   if (app.pathname !== '/' || (environment === 'development' && projectId === 'hd-manager-c5839')
     || (environment === 'production' && (projectId !== 'hd-manager-c5839' || appId !== 'hd-manager-production'
       || app.origin !== 'https://app.hdconnect.net'))) fail();
+  if(environment==='isolated-qa'&&(projectId!=='hd-manager-c5839'||appId!=='hd-manager-release-qa-20261114'||app.origin==='https://app.hdconnect.net'))fail();
   if (!publicKey || publicKey.kty !== 'RSA' || publicKey.e !== 'AQAB' || publicKey.alg !== 'RS256'
     || typeof publicKey.n !== 'string' || !/^[A-Za-z0-9_-]{342,}$/.test(publicKey.n)
     || Object.keys(publicKey).some(k => ['d','p','q','dp','dq','qi','oth'].includes(k))) fail();

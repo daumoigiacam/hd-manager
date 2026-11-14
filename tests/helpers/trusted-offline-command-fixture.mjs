@@ -9,6 +9,7 @@ import {HOME_PERMISSION_MAPPING} from '../../functions/offlineHomeFeed.mjs';
 import {createTrustedReadApi,trustedReadCapabilities} from '../../functions/offlineTrustedReadApi.mjs';
 import {createTrustedBusinessCommands,trustedBusinessCapabilities} from '../../functions/offlineTrustedCommands.mjs';
 import identity from '../../functions/identityCenter.js';
+import {bindTestEnvelopes} from './trusted-api-envelope.cjs';
 import {createRequire} from 'node:module';
 const {FieldValue,FieldPath}=createRequire(new URL('../../functions/package.json',import.meta.url))('firebase-admin/firestore');
 export const digest=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -46,6 +47,7 @@ export function trustedCommandFixture({native=false}={}){
  const environment=createOfflineServerEnvironment({db,auth,projectId,appId,environment:'development',appOrigin:'https://unit-contract.example.com',publicKey:{...publicKey.export({format:'jwk'}),alg:'RS256'}});
  const identityCenter=native?identity.createIdentityCenter({db,admin:{auth:()=>auth,firestore:{FieldValue,FieldPath}},getAppId:()=>appId}):undefined;
  const api=createTrustedOfflineApi({environment,projector,mapping:HOME_PERMISSION_MAPPING,getSigningKey:async()=>privateKey.export({format:'pem',type:'pkcs8'}),createHomeFeed:async()=>{throw Error('Home watcher outside this unit contract');},createReadSources:createTrustedReadApi,deriveReadCapabilities:trustedReadCapabilities,createCommands:createTrustedBusinessCommands,deriveBusinessCapabilities:trustedBusinessCapabilities,identityCenter});
- return {db,root,rows,writes,tokens,environment,account,beforeWrite:fn=>{beforeWrite=fn;},failWrite:x=>{failWrite=x;},call:(action,body={},token='a')=>api.handle({action,body,token}),close:()=>api.close(),seed:(source,id,body)=>rows.set(root+source+'/'+id,structuredClone(body))};
+ const envelope=bindTestEnvelopes(api);
+ return {db,root,rows,writes,tokens,environment,account,beforeWrite:fn=>{beforeWrite=fn;},failWrite:x=>{failWrite=x;},call:(action,body={},token='a')=>envelope.handle({action,body,token}),raw:(action,body={},token='a')=>envelope.raw({action,body,token}),close:()=>api.close(),seed:(source,id,body)=>rows.set(root+source+'/'+id,structuredClone(body))};
 }
 export function command(id,kind,entityId,payload,baseRevision=0){return {commandId:id,idempotencyKey:id,kind,entityId,payload,baseRevision,payloadDigest:digest(payload)};}

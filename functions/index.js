@@ -106,6 +106,29 @@ admin.initializeApp();
 const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
 
+// Prepared endpoint only; adding this export does not deploy or activate it.
+// Never use a Local/QA issuer key as a fallback for the official Offline key.
+const offlineVerifyingJwk = defineString('HD_OFFLINE_VERIFYING_JWK', {default:''});
+const offlineHost = require('./offlineHostedApi.cjs').createHostedOfflineApi({
+  db, auth: admin.auth(),
+  createBackend: options => require('./offlineTrustedBackend.bundle.cjs').createTrustedOfflineBackend(options),
+  configuration: () => ({
+    projectId: admin.app().options.projectId || process.env.GCLOUD_PROJECT,
+    appId: 'hd-manager-production', environment: 'production',
+    appOrigin: 'https://app.hdconnect.net',
+    publicKey: JSON.parse(offlineVerifyingJwk.value()), maxOfflineMs: 3600000,
+  }),
+  getSigningKey: async () => {
+    const value = process.env.HD_OFFLINE_SIGNING_KEY_PEM;
+    if (!value) throw Error('Official Offline issuer secret required');
+    return value;
+  },
+});
+exports.offlineApi = require('firebase-functions/v2/https').onRequest({
+  region: 'us-central1', timeoutSeconds: 120, memory: '512MiB',
+  maxInstances: 2, secrets: ['HD_OFFLINE_SIGNING_KEY_PEM'],
+}, offlineHost.handler);
+
 const DEFAULT_APP_ID = 'hd-manager-production';
 
 const getEnv = (key, fallback = '') => process.env[key] || fallback;

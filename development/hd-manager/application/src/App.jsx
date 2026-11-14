@@ -163,7 +163,7 @@ import DebtBalanceShareButton from './features/customers/DebtBalanceShareButton.
 import { changeExpenseCategory, isFuelExpenseCategory } from './features/assets/expenseCategory.js';
 import { useCallback, useDeferredValue, useSyncExternalStore } from 'react';
 import { createOrderSearchState } from './services/orderSearchState.js';
-import { isCustomerDebtRepayment } from './utils/expenseClassification.js';
+import { isCustomerDebtRepayment, isPayrollLiabilitySettlement } from './utils/expenseClassification.js';
 import { withSalesRevenueIndex } from './utils/salesRevenuePeriod.js';
 import { buildEmployeeReviewSourceIndexes } from './utils/employeeReviewSourceIndex.js';
 import { getGroupedRowPage } from './services/groupedRowPage.js';
@@ -42063,7 +42063,7 @@ const buildOperatingCostSummaryForDate = ({
     .filter(expense => isInventoryPurchaseExpense(expense))
     .reduce((sum, expense) => sum + (expense.amount || 0), 0);
   const directExpense = Math.max(0, datedExpenses
-    .filter(expense => !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense))
+    .filter(expense => !isInventoryPurchaseExpense(expense) && !isCustomerDebtRepayment(expense) && !isPayrollLiabilitySettlement(expense))
     .reduce((sum, expense) => sum + (expense.amount || 0), 0));
   const payrollExpense = calculatePositiveDailyPayrollExpenseFromSalary({
     employees,

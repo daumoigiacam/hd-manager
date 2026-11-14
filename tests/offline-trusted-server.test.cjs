@@ -28,6 +28,7 @@ async function fixture(){
  const environment=createOfflineServerEnvironment({db,auth,projectId,appId,environment:'development',appOrigin:'https://offline-contract.example.com',publicKey:{...publicKey.export({format:'jwk'}),alg:'RS256'}});
  const {HOME_PERMISSION_MAPPING:mapping}=await import('../functions/offlineHomeFeed.mjs');
  const api=createTrustedOfflineApi({environment,projector,mapping,getSigningKey:async()=>privateKey.export({type:'pkcs8',format:'pem'}),createHomeFeed:async()=>{throw Error('Home source integration not under this unit contract');}});
+ const envelope=require('./helpers/trusted-api-envelope.cjs').bindTestEnvelopes(api);api.handle=envelope.handle;
  return {db,records,projectId,appId,tokens,environment,api,publicKey,revocationChecks};
 }
 test('trusted grant signs current original role and pins real Firebase project, not caller tenant',async()=>{

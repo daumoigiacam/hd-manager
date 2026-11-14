@@ -132,6 +132,10 @@ hd-connect-platform/
 /hdconnect-g13-e2e-a16a791.tar
 /hdconnect-website-release-20260918.zip
 
+# Reproducible Functions package inputs, generated before deploy; no credentials.
+/functions/offlineTrustedBackend.bundle.cjs
+/functions/offlineTrustedBackend.bundle.manifest.json
+
 # Expo local state
 ios-expo/.expo/
 

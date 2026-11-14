@@ -3,12 +3,11 @@
 import {createRequire} from 'node:module';
 import {createScopedBusinessSource} from './offlineScopedBusinessSource.mjs';
 import cashDomain from './generated/offlineCashflowPolicy.cjs';
-import {deriveSalarySettlementAccess} from '../development/hd-manager/application/src/features/payroll/payrollSettlementPolicy.js';
+import {createFirestorePayrollSettlements,deriveFirestoreSalaryAccess} from './offlineFirestorePayrollSettlements.mjs';
 const require=createRequire(import.meta.url);
 const {Filter}=require('firebase-admin/firestore');
 const {createAttendancePeriods}=require('./attendancePeriodConfirmations.cjs');
 const {createAttendanceAdjustmentRequests}=require('./attendanceAdjustmentRequests.cjs');
-const {createPayrollSettlements}=require('./payrollSettlements.cjs');
 const {createOfflineWarehouseImportSource}=require('./offlineWarehouseImportSource.cjs');
 const deny=()=>Object.assign(Error('Trusted read scope denied'),{code:'permission-denied'});
 export const TRUSTED_READ_ACTIONS=Object.freeze(['business-source','attendance-period','payroll-settlement','attendance-adjustment','warehouse-import-head','warehouse-import-page']);
@@ -35,9 +34,9 @@ export function createTrustedReadApi({environment,db,projectId,appId,actor,readA
   const a=await currentCore(tx,uid),s=a.subject;
   return {tenantId:a.tenantId,employeeId:s.employee.id,canRequest:yes(s,'company_attendance','check_in_out'),canReview:yes(s,'company_attendance','edit_attendance')};
  }});
- const settlements=createPayrollSettlements({...shared,authorize:async(tx,uid)=>{
-  const a=await currentCore(tx,uid);return {tenantId:a.tenantId,employeeId:a.subject.employee.id,...deriveSalarySettlementAccess(a.subject,hasAction)};
- },loadDomain:()=>Promise.all([import('../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js'),import('../development/hd-manager/application/src/utils/payrollAdjustment.js'),import('../development/hd-manager/application/src/utils/payrollSnapshotIntegrity.js')]).then(([p,a,i])=>({plainPayroll:p.plainPayroll,applyPayrollAdjustmentsToSnapshots:a.applyPayrollAdjustmentsToSnapshots,inspectPayrollSnapshot:i.inspectPayrollSnapshot}))});
+ const settlements=createFirestorePayrollSettlements({...shared,authorize:async(tx,uid)=>{
+  const a=await currentCore(tx,uid);return {tenantId:a.tenantId,employeeId:a.subject.employee.id,...deriveFirestoreSalaryAccess(a.subject,hasAction)};
+ }});
  return async request=>{
   if(request.action==='business-source')return source(request);
   if(request.action==='attendance-period'){if(!['catalog','read'].includes(request.body?.action))throw deny();return periods.handle(actor.uid,request.body);}
