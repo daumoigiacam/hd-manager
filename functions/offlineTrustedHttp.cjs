@@ -14,7 +14,7 @@ function createTrustedOfflineHttp({environment,api,nativeOrigins=[]}){
   const auth=req.get('authorization')||'';if(!/^Bearer [^\s]+$/.test(auth)){res.status(401).json({code:'unauthenticated'});return;}
   if(!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Buffer.byteLength(JSON.stringify(req.body))>524288){res.status(413).json({code:'invalid-argument'});return;}
   try{res.status(200).json(await api.handle({action,token:auth.slice(7),body:req.body}));}
-  catch(error){const code=String(error.code||'');const missingIndex=code==='9'&&/requires an index/i.test(String(error.message||''));const authentication=code.startsWith('auth/')||code==='unauthenticated',permission=code==='permission-denied',transient=missingIndex||['unavailable','deadline-exceeded','resource-exhausted'].includes(code);res.status(authentication?401:permission?403:transient?503:400).json({code:authentication?'unauthenticated':permission?'permission-denied':transient?'unavailable':code==='failed-precondition'?'failed-precondition':'invalid-argument'});}
+  catch(error){const code=String(error.code||'');const missingIndex=code==='9'&&/requires (?:an index|multiple indexes)/i.test(String(error.message||''));const authentication=code.startsWith('auth/')||code==='unauthenticated',permission=code==='permission-denied',transient=missingIndex||['unavailable','deadline-exceeded','resource-exhausted'].includes(code);res.status(authentication?401:permission?403:transient?503:400).json({code:authentication?'unauthenticated':permission?'permission-denied':transient?'unavailable':code==='failed-precondition'?'failed-precondition':'invalid-argument'});}
  };
 }
 module.exports={createTrustedOfflineHttp};

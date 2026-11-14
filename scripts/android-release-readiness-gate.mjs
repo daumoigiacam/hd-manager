@@ -6,9 +6,21 @@ export const RELEASE_COMMAND_FILES=Object.freeze(['offlineCommandAuthority.cjs',
 export async function verifyAndroidReadiness(report,{expectedSource,readFile=fs.readFile}={}){
   if(!/^[a-f0-9]{40}$/.test(expectedSource||'')||report.sourceCommit!==expectedSource||report.status!=='READY')fail('EXACT_COMMIT_READINESS_REQUIRED');
   const p=report.environment;
-  if(!p||p.projectId?.startsWith('demo-')||p.projectId==='hd-manager-c5839'||p.mock===true||p.localhost===true||p.firebaseAuthVerified!==true)fail('REAL_NONPRODUCTION_FIREBASE_EVIDENCE_REQUIRED');
+  // Owner approved one isolated QA namespace in the existing Firebase project.
+  // This is NOT permission to accept tests against business tenants. Runtime
+  // enforces the same app/identity boundary before reading identity documents.
+  const qa=report.qaIsolation;
+  const isolatedQa=p?.projectId==='hd-manager-c5839'&&p.environment==='isolated-qa'
+    &&p.appId==='hd-manager-release-qa-20261114'&&qa?.ownerApproved===true
+    &&qa.appId===p.appId&&/^qa_release_20261114_\d{13}$/.test(qa.recordPrefix||'')
+    &&Array.isArray(qa.tenantIds)&&qa.tenantIds.length===2
+    &&['a','b'].every(label=>qa.tenantIds.includes(qa.recordPrefix+'_tenant_'+label))
+    &&qa.productionTenantDataRead===false&&qa.productionTenantDataChanged===false
+    &&report.tests?.tenantIsolation?.namespaceBoundaryVerified===true;
+  if(!p||p.projectId?.startsWith('demo-')||(p.projectId==='hd-manager-c5839'&&!isolatedQa)||p.mock===true||p.localhost===true||p.firebaseAuthVerified!==true)fail('REAL_NONPRODUCTION_FIREBASE_EVIDENCE_REQUIRED');
   const urls=[p.appOrigin,p.apiBaseUrl].map(x=>new URL(x));
   if(urls.some(u=>u.protocol!=='https:'||u.username||u.password||u.hostname==='localhost'||/^[\d.]+$/.test(u.hostname)||u.hostname.endsWith('.localhost')))fail('REAL_HTTPS_EVIDENCE_REQUIRED');
+  if(isolatedQa&&urls.some(u=>u.origin==='https://app.hdconnect.net'))fail('ISOLATED_QA_HOST_REQUIRED');
   for(const name of ['session','snapshot','offlineRead','offlineWrite','offlineReload','outboxPayloadRestored','reconnect','idempotency','tenantIsolation','financialReconciliation','inventoryReconciliation'])if(report.tests?.[name]?.status!=='PASS')fail('READINESS_TEST_MISSING_'+name);
   for(const name of RELEASE_WRITE_DOMAINS)if(report.tests?.writeDomains?.[name]?.status!=='PASS')fail('WRITE_DOMAIN_EVIDENCE_MISSING_'+name);
   const sourceRoot='development/hd-manager/application';

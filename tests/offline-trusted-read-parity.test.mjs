@@ -92,8 +92,10 @@ test('native preflight is limited to approved exact origins; enabling Native nev
 });
 
 test('missing Firestore index is an infrastructure outage, never a malformed client payload or fake successful page',async()=>{
- const handler=createTrustedOfflineHttp({environment:{appOrigin:'https://qa.example.com'},api:{handle:async()=>{throw Object.assign(Error('The query requires an index. Internal administration URL must not be exposed'),{code:9});}}}),response={headers:{}};
+ for(const message of ['The query requires an index.','The query requires multiple indexes.']){
+ const handler=createTrustedOfflineHttp({environment:{appOrigin:'https://qa.example.com'},api:{handle:async()=>{throw Object.assign(Error(message+' Internal administration URL must not be exposed'),{code:9});}}}),response={headers:{}};
  const res={set:(k,v)=>response.headers[k]=v,status(s){response.status=s;return this;},json(body){response.body=body;return this;}};
  await handler({method:'POST',path:'/offline/warehouse-import-page',body:{query:{}},get:key=>key==='origin'?'https://qa.example.com':key==='authorization'?'Bearer unit-test-token':''},res);
  assert.equal(response.status,503);assert.deepEqual(response.body,{code:'unavailable'});
+ }
 });
