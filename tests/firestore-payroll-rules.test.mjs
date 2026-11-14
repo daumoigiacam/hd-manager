@@ -229,6 +229,19 @@ try {
     await assertFails(deleteDoc(financialRef));
   });
 
+  await test('customer debt payment intents remain server-owned alongside salary voucher guards', async () => {
+    for (const collectionName of ['customer_payment_intents', 'customer_payment_intent_lookup', 'customer_payment_intent_transactions']) {
+      const record = {companyId, customerId:'customer-01', amount:1000};
+      const ref = doc(ownerDb, pathFor(appId, collectionName, 'server-managed-payment'));
+      await assertFails(setDoc(ref, record));
+      await testEnvironment.withSecurityRulesDisabled(context => setDoc(
+        doc(context.firestore(), pathFor(appId, collectionName, 'server-managed-payment')), record
+      ));
+      await assertFails(updateDoc(ref, {amount:2000}));
+      await assertFails(deleteDoc(ref));
+    }
+  });
+
   await test('ordinary existing expense documents keep their original write contract', async () => {
     const ordinaryRef=doc(ownerDb,pathFor(appId,'expenses','ordinary-expense-compatibility'));
     await assertSucceeds(setDoc(ordinaryRef,{companyId,sourceType:'manual_accounting_expense',amount:1000}));
@@ -563,8 +576,8 @@ try {
     });
   });
 
-  assert.equal(passed, 21);
-  console.log(`\nFirestore payroll rules: ${passed}/21 integration cases PASS`);
+  assert.equal(passed, 22);
+  console.log(`\nFirestore payroll rules: ${passed}/22 integration cases PASS`);
 } finally {
   await testEnvironment.cleanup();
 }

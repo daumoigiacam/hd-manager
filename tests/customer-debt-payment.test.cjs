@@ -319,20 +319,39 @@ for (const collectionName of [
     `${collectionName} must be protected as a server-managed collection.`
   );
 }
-assert.match(
-  firestoreRules,
-  /allow create: if hasIdentitySession\(\)\s*&& !isServerManagedCustomerPaymentCollection\(collectionId\)/,
-  'Clients must not create customer debt payment intents.'
-);
-assert.match(
-  firestoreRules,
-  /allow update: if hasIdentitySession\(\)\s*&& !isServerManagedCustomerPaymentCollection\(collectionId\)/,
-  'Clients must not update customer debt payment intents.'
-);
-assert.match(
-  firestoreRules,
-  /allow delete: if hasIdentitySession\(\)\s*&& !isServerManagedCustomerPaymentCollection\(collectionId\)/,
-  'Clients must not delete customer debt payment intents.'
-);
+// Other mandatory guards may precede this one. Check top-level AND terms,
+// rather than requiring the payment guard to be adjacent to session validation.
+const companyDocumentRules = firestoreRules.slice(firestoreRules.indexOf(
+  'match /artifacts/{appId}/public/data/{collectionId}/{docId}'
+));
+for (const action of ['create', 'update', 'delete']) {
+  const expression = companyDocumentRules.match(new RegExp(`allow ${action}: if ([^;]+);`))?.[1];
+  assert.ok(expression, `Missing company document ${action} rule.`);
+  const terms = [];
+  let depth = 0, start = 0, quote = '';
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (quote) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '(') depth += 1;
+    else if (character === ')') depth -= 1;
+    else if (depth === 0 && expression.slice(index, index + 2) === '||') {
+      assert.fail(`Top-level OR must not bypass the ${action} payment guard.`);
+    } else if (depth === 0 && expression.slice(index, index + 2) === '&&') {
+      terms.push(expression.slice(start, index));
+      start = index + 2;
+      index += 1;
+    }
+  }
+  assert.equal(depth, 0);
+  assert.equal(quote, '');
+  terms.push(expression.slice(start));
+  const required = terms.map(term => term.replace(/\s/g, ''));
+  assert.ok(required.includes('hasIdentitySession()'), 'An identity session remains mandatory.');
+  assert.ok(required.includes('!isServerManagedCustomerPaymentCollection(collectionId)'),
+    `Clients must not ${action} customer debt payment intents.`);
+}
 
 console.log('customer debt payment tests: PASS');

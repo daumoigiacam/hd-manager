@@ -190,4 +190,6 @@ Website `https://app.hdconnect.net` đọc lại lúc 16:08 ngày 14/11/2026 (gi
 
 Đợt đóng hai blocker chạy thêm **13/13 kiểm thử liên quan PASS**, không skip: host/API, signing configuration và workflow/readiness guards. Đây là regression chọn lọc, không chạy lại benchmark dev.83/dev.42.
 
+CI #245 của main `11634cb0` dừng ở test source-contract công nợ cũ, vì regex yêu cầu guard công nợ đứng ngay sau xác thực. Guard lương được thêm trước bằng AND nên không khớp regex, trong khi bảo vệ vẫn còn. Đã sửa test để kiểm tra các điều kiện AND cấp ngoài bắt buộc và chặn OR bypass; không sửa Rules/runtime để chiều test. Bổ sung 9 thao tác tạo/sửa/xóa bị từ chối trên ba collection server-managed. Test công nợ PASS và **22/22 Rules integration cases PASS trên Emulator**. Giữ lỗi CI #245, không đổi kết quả cũ thành PASS; kết quả pipeline sau sửa nằm trong checkpoint.
+
 Checkpoint tiếp tục: `.local-dev/final-blocker-20261114/release-checkpoint.json`. Không chạy lại các phần PASS khi xử lý secret/index/issuer, trừ kiểm thử bị ảnh hưởng.
