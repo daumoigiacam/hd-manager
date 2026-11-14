@@ -32,107 +32,113 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import json, re, subprocess, socket, datetime, pathlib
-
+            import json, re, subprocess, datetime, ipaddress, urllib.request, urllib.error
+            TARGET='172.19.0.2'
+            PORT=3000
+            OPENER=urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def run(args, timeout=12, limit=1048576):
                 try:
-                    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-                    return {'code': p.returncode, 'stdout': p.stdout[-limit:], 'stderr': p.stderr[-4096:]}
-                except Exception as e:
-                    return {'code': -1, 'error': type(e).__name__}
-
-            def block(text, start):
-                brace = text.find('{', start)
-                depth, quote, escaped, comment = 0, None, False, False
-                for i in range(brace, len(text)):
-                    c = text[i]
-                    if comment:
-                        if c == '\n': comment = False
-                        continue
-                    if escaped: escaped = False; continue
-                    if c == '\\': escaped = True; continue
-                    if quote:
-                        if c == quote: quote = None
-                        continue
-                    if c in ('"', "'"): quote = c; continue
-                    if c == '#': comment = True; continue
-                    if c == '{': depth += 1
-                    if c == '}':
-                        depth -= 1
-                        if depth == 0: return text[start:i+1]
-                return ''
-
-            def redact(text):
-                text = re.sub(r'(?im)^.*(?:ssl_certificate_key|proxy_set_header\s+(?:Authorization|Cookie)|(?:password|secret|api_key)\s+).*$','[SENSITIVE_DIRECTIVE_OMITTED]',text)
-                text = re.sub(r'client:\s*[^,]+', 'client: [REDACTED]', text)
-                text = re.sub(r'(request: "(?:GET|POST|OPTIONS|HEAD)\s+[^?\s"]+)\?[^\s"]+', r'\1?[QUERY_OMITTED]', text)
-                return text
-
-            result = {'at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'scope': 'app.hdconnect.net /api/identity/login only', 'readOnly': True}
-            result['nginxService'] = run(['systemctl','show','nginx','--no-pager','-p','ActiveState','-p','SubState','-p','MainPID'])
-            raw = run(['sudo','-n','nginx','-T'], timeout=15)
-            text = raw.get('stdout','')
-            result['nginxTest'] = {k:v for k,v in raw.items() if k != 'stdout'}
-            vhosts = []
-            for m in re.finditer(r'(?m)^\s*server\s*\{', text):
-                value = block(text, m.start())
-                names = re.search(r'\bserver_name\s+([^;]+);', value)
-                if names and 'app.hdconnect.net' in names.group(1).split():
-                    before = text[:m.start()]
-                    files = re.findall(r'# configuration file ([^:]+):', before)
-                    vhosts.append({'file': files[-1] if files else None, 'configuration': redact(value[:40000])})
-            result['vhosts'] = vhosts
-            selected = '\n'.join(v['configuration'] for v in vhosts)
-            proxies = re.findall(r'\bproxy_pass\s+([^;]+);', selected)
-            result['proxyPassDirectives'] = proxies
-            upstreams = []
-            for m in re.finditer(r'(?m)^\s*upstream\s+(\S+)\s*\{', text):
-                if any(re.match(r'https?://'+re.escape(m.group(1))+r'(?:/|$)', url) for url in proxies):
-                    upstreams.append(redact(block(text,m.start())[:12000]))
-            result['upstreamBlocks'] = upstreams
-            result['targetRequest'] = run(['curl','--silent','--show-error','--max-time','10','--output','/dev/null','--write-out','http=%{http_code} remote=%{remote_ip} total=%{time_total}','https://app.hdconnect.net/api/identity/login?hd_diag=readonly_20261114'],timeout=12)
-            logs = set(['/var/log/nginx/error.log'])
-            for value in re.findall(r'\berror_log\s+([^;\s]+)', selected):
-                if value.startswith('/var/log/nginx/') and '..' not in value: logs.add(value)
-            result['nginxErrors'] = []
-            for log in sorted(logs):
-                r = run(['sudo','-n','tail','-n','1600',log], limit=524288)
-                lines = [line for line in r.get('stdout','').splitlines() if '/api/identity/login' in line and 'app.hdconnect.net' in line]
-                result['nginxErrors'].append({'file':log,'code':r.get('code'),'error':r.get('error'), 'lines':[redact(x) for x in lines[-25:]]})
-            access = run(['sudo','-n','tail','-n','1400','/var/log/nginx/access.log'], limit=524288)
-            result['accessStatusCounts'] = {}
-            for line in access.get('stdout','').splitlines():
-                if re.search(r'"(?:GET|POST|OPTIONS|HEAD) /api/identity/login(?:[?\s])',line):
-                    match = re.search(r'"\s+(\d{3})\s+',line)
-                    if match:
-                        status=match.group(1); result['accessStatusCounts'][status]=result['accessStatusCounts'].get(status,0)+1
-            ports = set([80,443])
-            for url in proxies:
-                match=re.match(r'https?://(?:127\.0\.0\.1|localhost|0\.0\.0\.0):([0-9]+)',url)
-                if match: ports.add(int(match.group(1)))
-            for value in upstreams:
-                for port in re.findall(r'\bserver\s+(?:127\.0\.0\.1|localhost):([0-9]+)',value): ports.add(int(port))
-            ss = run(['sudo','-n','ss','-ltnp'])
-            result['listeners'] = {'ports':sorted(ports),'code':ss.get('code'),'lines':[line for line in ss.get('stdout','').splitlines() if any(re.search(r':'+str(p)+r'\s',line) for p in ports)]}
-            local_backend_ports = ports - {80,443}
-            result['docker'] = {'applicable':bool(local_backend_ports),'containers':[]}
-            if local_backend_ports:
-                d = run(['sudo','-n','docker','ps','-a','--format','{{json .}}'])
-                result['docker']['code'] = d.get('code')
-                result['docker']['error'] = d.get('error') or d.get('stderr')
-                for line in d.get('stdout','').splitlines():
-                    try: item = json.loads(line)
-                    except Exception: continue
-                    if not ('hd-manager' in item.get('Names','').lower() or 'hdmanager' in item.get('Names','').lower() or any(':'+str(p)+'->' in item.get('Ports','') for p in local_backend_ports)): continue
-                    keep={k:item.get(k) for k in ['ID','Names','Image','Status','Ports','Networks']}
-                    ins = run(['sudo','-n','docker','inspect','--format','{{json .State}}',item['ID']])
-                    try:
-                        state=json.loads(ins.get('stdout','{}'))
-                        keep['state']={k:state.get(k) for k in ['Status','Running','Paused','Restarting','OOMKilled','Dead','Pid','ExitCode','Error','StartedAt','FinishedAt']}
-                        keep['healthStatus']=state.get('Health',{}).get('Status')
-                    except Exception: keep['inspectCode']=ins.get('code')
-                    result['docker']['containers'].append(keep)
-            result['limitations'] = ['No configuration, service, DNS, database or secret was changed.', 'No container environment, command-line credentials or secret files were collected.', 'Backend application logs and health endpoints require a second scoped read after the exact upstream is identified.']
+                    p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',timeout=timeout)
+                    return {'code':p.returncode,'stdout':p.stdout[-limit:],'stderr':p.stderr[-4096:]}
+                except Exception as e:return {'code':-1,'error':type(e).__name__}
+            def redact(s):
+                s=re.sub(r'client:\s*[^,]+','client: [REDACTED]',s)
+                s=re.sub(r'(request: "(?:GET|POST|OPTIONS|HEAD)\s+[^?\s"]+)\?[^\s"]+',r'\1?[QUERY_OMITTED]',s)
+                s=re.sub(r'referrer:\s*"[^"]*"','referrer: [REDACTED]',s)
+                s=re.sub(r'(?i)("(?:password|passwordHash|token|access_token|refresh_token|authorization|cookie|secret|database_url)"\s*:\s*)"[^"\n]*"',r'\1"[REDACTED]"',s)
+                s=re.sub(r'(?i)Bearer\s+[A-Za-z0-9_.-]+','Bearer [REDACTED]',s)
+                s=re.sub(r'(\w+://)[^\s/@]+:[^\s/@]+@',r'\1[REDACTED]@',s)
+                return s
+            def technical_log(line):
+                try:
+                    item=json.loads(line)
+                    message=str(item.get('msg',''))
+                    error=item.get('err') if isinstance(item.get('err'),dict) else {}
+                    request=item.get('req') if isinstance(item.get('req'),dict) else {}
+                    route=str(request.get('url','')).split('?')[0]
+                    text=message+' '+str(error.get('message',''))
+                    if not (route in ['/health','/healthz','/api/identity/login'] or re.search(r'listen|server.*start|bootstrap|fatal|unhandled|ECONN|EADDR|ENOTFOUND',text,re.I)):return None
+                    if re.search(r'password|payload|request body|username|customer|order|invoice',message,re.I):message='[NON_TECHNICAL_MESSAGE_OMITTED]'
+                    value={k:item.get(k) for k in ['level','time'] if k in item}
+                    value['message']=redact(message)[:600]
+                    if route:value['route']=route
+                    if error:value['error']={k:redact(str(error.get(k,'')))[:1200] for k in ['type','code','message','stack'] if k in error}
+                    return json.dumps(value,ensure_ascii=False)
+                except Exception:
+                    if not re.search(r'listen|server.*start|bootstrap|fatal|unhandled|ECONN|EADDR|ENOTFOUND|/health|/api/identity/login',line,re.I):return None
+                    if re.search(r'password|payload|request body|username|customer|invoice|INSERT INTO|UPDATE |SELECT ',line,re.I):return '[NON_TECHNICAL_LOG_LINE_OMITTED]'
+                    return redact(line)[:1200]
+            def probe(url):
+                try:
+                    with OPENER.open(urllib.request.Request(url,method='GET'),timeout=4) as r:code=r.status;body=r.read(2048).decode('utf-8','replace')
+                except urllib.error.HTTPError as e:code=e.code;body=e.read(2048).decode('utf-8','replace')
+                except Exception as e:return {'url':url,'error':type(e).__name__,'reason':redact(str(e))[:180]}
+                try:
+                    j=json.loads(body)
+                    keep={k:j[k] for k in ['status','success','service','version','message','code'] if k in j and isinstance(j[k],(str,bool,int,float))}
+                    if isinstance(j.get('error'),dict):keep['error']={k:j['error'][k] for k in ['code','message'] if k in j['error']}
+                except Exception:keep={'bodyKind':'html' if '<html' in body.lower() else 'non-json'}
+                return {'url':url,'status':code,'response':keep}
+            result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'readOnly':True,'target':TARGET+':'+str(PORT)}
+            result['route']=run(['ip','route','get',TARGET])
+            result['neighbor']=run(['ip','neigh','show',TARGET])
+            result['listeners']=run(['sudo','-n','ss','-ltnp'])
+            result['listeners']['stdout']='\n'.join(x for x in result['listeners'].get('stdout','').splitlines() if re.search(r':(?:3000|80|443)\s',x))
+            result['nginxErrors']=[]
+            for file in ['/var/log/nginx/error.log']:
+                logs=run(['sudo','-n','tail','-n','2500',file],limit=1048576)
+                lines=[redact(x) for x in logs.get('stdout','').splitlines() if '/api/identity/login' in x and 'app.hdconnect.net' in x]
+                result['nginxErrors'].append({'file':file,'code':logs.get('code'),'lines':lines[-22:]})
+            ps=run(['sudo','-n','docker','ps','-a','--format','{{json .}}'])
+            result['dockerQuery']={k:v for k,v in ps.items() if k!='stdout'}
+            containers=[];networks={};candidates=[]
+            for line in ps.get('stdout','').splitlines():
+                try:item=json.loads(line)
+                except Exception:continue
+                ins=run(['sudo','-n','docker','inspect','--format','{{json .NetworkSettings.Networks}}',item['ID']])
+                try:nets=json.loads(ins.get('stdout','{}')) or {}
+                except Exception:nets={}
+                for name,net in nets.items():networks[name]=net.get('NetworkID')
+                ipmatch=any(net.get('IPAddress')==TARGET for net in nets.values())
+                api=bool(re.search(r'api|backend|hd-manager|hdmanager',item.get('Names',''),re.I))
+                if not (ipmatch or api or ':3000->' in item.get('Ports','')):continue
+                entry={k:item.get(k) for k in ['ID','Names','Image','Status','Ports','Networks']}
+                entry['targetIpMatch']=ipmatch
+                entry['addresses']={name:{k:net.get(k) for k in ['IPAddress','Gateway','Aliases']} for name,net in nets.items()}
+                state=run(['sudo','-n','docker','inspect','--format','{{json .State}}',item['ID']])
+                try:
+                    st=json.loads(state.get('stdout','{}'));entry['state']={k:st.get(k) for k in ['Status','Running','Restarting','OOMKilled','ExitCode','Error','Pid','StartedAt','FinishedAt']};entry['health']=st.get('Health',{}).get('Status')
+                except Exception:entry['inspectFailed']=True
+                if api:
+                    logs=run(['sudo','-n','docker','logs','--since','2h','--tail','120',item['ID']],limit=131072)
+                    lines=(logs.get('stdout','')+'\n'+logs.get('stderr','')).splitlines()
+                    entry['applicationLogEvidence']=[value for value in (technical_log(x) for x in lines) if value][-22:]
+                    for net in nets.values():
+                        ip=net.get('IPAddress')
+                        if ip and re.match(r'^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)',ip):candidates.append(ip)
+                containers.append(entry)
+            result['containers']=containers
+            result['networksContainingTarget']=[]
+            for name,identifier in networks.items():
+                if not identifier:continue
+                r=run(['sudo','-n','docker','network','inspect','--format','{{json .IPAM.Config}}',identifier])
+                try:cfg=json.loads(r.get('stdout','[]')) or []
+                except Exception:continue
+                matches=False
+                for item in cfg:
+                    try:matches=matches or ipaddress.ip_address(TARGET) in ipaddress.ip_network(item.get('Subnet',''),strict=False)
+                    except Exception:pass
+                if not matches:continue
+                peers=run(['sudo','-n','docker','network','inspect','--format','{{json .Containers}}',identifier])
+                try:peers=json.loads(peers.get('stdout','{}')) or {}
+                except Exception:peers={}
+                result['networksContainingTarget'].append({'name':name,'ipam':cfg,'peers':[{k:p.get(k) for k in ['Name','IPv4Address']} for p in peers.values()]})
+            urls=['http://'+TARGET+':3000/health','http://'+TARGET+':3000/api/identity/login','http://127.0.0.1:3000/health']
+            for ip in sorted(set(candidates))[:5]:
+                if ip!=TARGET:urls+=['http://'+ip+':3000/health','http://'+ip+':3000/api/identity/login']
+            result['httpProbes']=[probe(url) for url in urls]
+            result['identityFunction']=probe('https://us-central1-hd-manager-c5839.cloudfunctions.net/identityLogin')
+            result['safety']='Read-only config/log/metadata and GET only. No restart, deployment, environment read, secret change or database request.'
             print(json.dumps(result,ensure_ascii=False))
         run: |-
           node --input-type=module <<'HD_READONLY_NODE'
