@@ -1,4 +1,5 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
+import { createIdentityFetch } from './identityHttpTransport.js';
 import { NativeBiometric, AccessControl } from '@capgo/capacitor-native-biometric';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { getFirebaseFunctionsOrigin } from '../config/firebase-endpoints.js';
@@ -45,6 +46,11 @@ const IDENTITY_FUNCTION_NAMES = {
 let identityLoginWarmupPromise = null;
 let identityLoginWarmupStartedAt = 0;
 let biometricLoginInFlight = null;
+const identityFetch = createIdentityFetch({
+  isNative: () => Capacitor.isNativePlatform(),
+  appOrigin: () => typeof window === 'undefined' ? 'https://app.hdconnect.net' : window.location.origin,
+  nativeRequest: options => CapacitorHttp.request(options),
+});
 
 const getRuntimePlatform = () => {
   try {
@@ -274,7 +280,7 @@ export const warmIdentityLoginService = () => {
     identityLoginWarmupPromise = fetchWithTimeout(getIdentityApiUrl('/api/identity/login'), {
       method: 'OPTIONS',
       cache: 'no-store',
-    }, IDENTITY_WARMUP_TIMEOUT_MS)
+    }, IDENTITY_WARMUP_TIMEOUT_MS, identityFetch)
       .then(response => response.ok)
       .catch(() => false);
   }
@@ -418,7 +424,7 @@ const requestIdentityApi = async (path, payload = {}, { idToken = '' } = {}) => 
         ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       },
       body: JSON.stringify(payload),
-    }, IDENTITY_REQUEST_TIMEOUT_MS);
+    }, IDENTITY_REQUEST_TIMEOUT_MS, identityFetch);
   } catch (error) {
     const friendlyMessage = getIdentityNetworkErrorMessage(error, path);
     if (!friendlyMessage) throw error;

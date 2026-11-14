@@ -9,7 +9,9 @@ import {buildAcceptanceApk, ACCEPTANCE_PACKAGE} from './android-acceptance-apk.m
 import {productionOfflineConfiguration,verifyProductionOfflineEndpoint} from './production-offline-preflight.mjs';
 
 export const WEBSITE = 'https://app.hdconnect.net';
-export const IDENTITY_ORIGIN = 'https://us-central1-hd-manager-c5839.cloudfunctions.net';
+// The owner-approved Identity-only Nginx route now reaches Firebase Hosting.
+// Native same-origin requests use identityHttpTransport to avoid asset fallback.
+export const IDENTITY_ORIGIN = WEBSITE;
 
 // Same canonical Firebase app as the website, with an independently installed
 // debug package. Never silently enable a signed transport that is not deployed.
@@ -73,6 +75,9 @@ export async function buildProductionQaApk(output,{offlineConfigurationFile}={})
     if (key.startsWith('VITE_') || key.startsWith('HD_RELEASE_') || key === 'GITHUB_SHA') delete env[key];
   }
   Object.assign(env, settings.environment);
+  const qaVersionCode = Number(process.env.HD_QA_VERSION_CODE || 26111406);
+  assert.ok(Number.isSafeInteger(qaVersionCode) && qaVersionCode > 26110401 && qaVersionCode <= 2100000000, 'QA versionCode must safely upgrade the prior Acceptance APK');
+  env.ORG_GRADLE_PROJECT_HD_RELEASE_VERSION_CODE = String(qaVersionCode);
   env.JAVA_HOME ||= 'C:/Program Files/Android/Android Studio/jbr';
   env.ANDROID_HOME ||= 'D:/HD-DEV/android/sdk';
   env.ANDROID_SDK_ROOT ||= env.ANDROID_HOME;
@@ -121,6 +126,7 @@ export async function buildProductionQaApk(output,{offlineConfigurationFile}={})
   const bytes = await readFile(apk);
   const manifest = {at: new Date().toISOString(), status: 'BUILT_DEVICE_VERIFICATION_REQUIRED',
     sourceCommit, canonicalSource: 'development/hd-manager/application', apk, bytes: bytes.length,
+    versionName: '1.0.12', versionCode: qaVersionCode,
     sha256: createHash('sha256').update(bytes).digest('hex'), packageId: settings.packageId,
     buildType: 'DEVELOPMENT_QA_DEBUG_NOT_OFFICIAL_RELEASE', website: WEBSITE,
     webViewOrigin: WEBSITE, bundledAssets: true, serverUrl: null,

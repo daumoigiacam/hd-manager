@@ -13,6 +13,7 @@ test('Production QA packages canonical assets in the existing separate debug pac
   assert.equal(result.environment.VITE_FIREBASE_PROJECT_ID, 'hd-manager-c5839');
   assert.equal(result.environment.VITE_HD_APP_ID, 'hd-manager-production');
   assert.equal(result.environment.VITE_IDENTITY_API_BASE_URL, IDENTITY_ORIGIN);
+  assert.equal(IDENTITY_ORIGIN, WEBSITE, 'Identity uses the verified app-domain route, not an unrelated API');
   assert.equal(base.server, undefined);
 });
 test('An undeployed signed transport never becomes a fake Offline readiness claim', () => {
