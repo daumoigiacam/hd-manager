@@ -25627,7 +25627,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
       )}
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <InstantHomeNavigation active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('profile')} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
+        <InstantHomeNavigation className="mobile-footer-nav" active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('profile')} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
         <DesktopSidebarGroups
           footerUsageKey={footerUsageKey} activeTab={activeTab} setActiveTab={setActiveTab}
           isAccounting={isAccounting} isDriver={isDriver} isOwnerAccount={isOwnerAccount}
