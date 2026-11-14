@@ -2,7 +2,7 @@
 
 **RELEASE BLOCKED. Không phải RELEASE COMPLETE.**
 
-Source ứng viên: `25b1b22237a3f652a2aeaf7bc84ece21e1f58955`, branch Local `codex/dev83-release-closure`. Ba mốc Local: `696a91318c0a3f876c632bb3cdb48cd19d0003fc`, `a2179c2169af417b211c61b2ec1752f2a5cd864d` và `25b1b22237a3f652a2aeaf7bc84ece21e1f58955`. GitHub main được đọc lại lúc 04:27 UTC và vẫn là `226dfcd28cd0989d63514eeada46db576dc8fa53`; chưa push.
+Source runtime ứng viên: `25b1b22237a3f652a2aeaf7bc84ece21e1f58955`, branch Local `codex/dev83-release-closure`. Ba mốc sửa runtime Local: `696a91318c0a3f876c632bb3cdb48cd19d0003fc`, `a2179c2169af417b211c61b2ec1752f2a5cd864d` và `25b1b22237a3f652a2aeaf7bc84ece21e1f58955`. Cấu hình bốn index được Owner duyệt nằm trong commit Local `5287ff6e0aa0742101207ecebc597e404a3db884`; 94 đầu vào package API và mã ứng dụng Web không đổi. GitHub main được đọc lại lúc 14:55 ngày 14/11/2026 (giờ Việt Nam) và vẫn là `226dfcd28cd0989d63514eeada46db576dc8fa53`; chưa push.
 
 Nguồn ứng dụng chuẩn là `development/hd-manager/application`. Backend nghiệp vụ là **Firebase Auth + Firestore của HD Manager**; SQLite/IndexedDB nằm ở client. Không tích hợp HD Platform, PostgreSQL hoặc một ledger tài chính khác. Giữ nguyên nghiệm thu dev.83, ngoại lệ dev.42 và các mẫu đo cũ; không chạy lại benchmark dài.
 
@@ -10,7 +10,7 @@ Nguồn ứng dụng chuẩn là `development/hd-manager/application`. Backend n
 
 Owner đã cho phép namespace QA cách ly trong project hiện hữu `hd-manager-c5839`. App ID QA: `hd-manager-release-qa-20261114`; identity, employee và tenant đều dùng prefix `qa_release_20261114_`. Dữ liệu là **SYNTHETIC QA**, không phải dữ liệu tài chính của doanh nghiệp.
 
-Các bằng chứng HTTPS bên dưới dùng Firebase Auth/Firestore thật và HTTPS tunnel có kiểm soát; không dùng Emulator để thay thế HTTPS. Chỉ cổng ứng dụng được expose. Không đọc/ghi tenant thật; không đổi website hoặc Rules; không tạo project hoặc liên kết Billing. Theo phê duyệt riêng của Owner, đã tạo đúng một index cơ bản và một secret khóa quyền Offline trên cloud. Các thay đổi này là metadata toàn project, không chỉ document QA. Các tunnel đã đóng và phiên QA được thu hồi sau kiểm thử.
+Các bằng chứng HTTPS bên dưới dùng Firebase Auth/Firestore thật và HTTPS tunnel có kiểm soát; không dùng Emulator để thay thế HTTPS. Chỉ cổng ứng dụng được expose. Không đọc/ghi tenant thật; không đổi website hoặc Rules; không tạo project hoặc liên kết Billing. Theo các phê duyệt riêng của Owner, đã tạo đúng năm index (một cơ bản, bốn bộ lọc) và một secret khóa quyền Offline trên cloud. Các thay đổi này là metadata toàn project, không chỉ document QA. Các tunnel đã đóng và phiên QA được thu hồi sau kiểm thử.
 
 Kiểm thử trình duyệt dùng các module canonical: bootstrap, authorizer, encrypted vault, SQLite worker, repository, Outbox, Sync Engine và Service Worker. Đây là **component integration trên trình duyệt thật**, không được đổi tên thành nghiệm thu toàn bộ giao diện ứng dụng hoặc APK Release.
 
@@ -39,13 +39,31 @@ Các path nằm dưới `/api/offline/`; host Functions cũng nhận cùng actio
 | `payroll-settlement` | PASS HTTPS QA, đọc chứng từ chi liên kết | Cùng file và báo cáo HR bên dưới |
 | `attendance-adjustment` | PASS package HTTPS QA, trả yêu cầu đã lưu | `real-firebase-https-auth-revocation-pass.json` |
 | `warehouse-import-head` | PASS package HTTPS QA; tài khoản thiếu Home cũng đọc được đúng phạm vi | `real-firebase-https-packaged-readiness-final.json` |
-| `warehouse-import-page` | **PASS** trang cơ bản, ngày, từ khóa và ngày + từ khóa; **BLOCKED** nhân viên/trạng thái/khách hàng vì cần thêm index | `real-firebase-https-import-final-package-partial.json` |
+| `warehouse-import-page` | **PASS** 12 truy vấn liên quan sau bốn index; nhân viên có kết quả thật, trạng thái/khách hàng mới kiểm tra kết quả rỗng | `real-firebase-https-approved-import-filters.json`; kết quả trước index vẫn giữ riêng |
 
 Owner đã duyệt và index `warehouseImports`, scope `COLLECTION`, `companyId ASC`, `date DESC`, `__name__ DESC` đã **READY** lúc 04:14:13 UTC. Resource: `projects/hd-manager-c5839/databases/(default)/collectionGroups/warehouseImports/indexes/CICAgJjFx5sK`.
 
 Kiểm thử package qua HTTPS sau index: **28 phiếu QA**, 27 phiếu mới tạo bằng chính API nghiệp vụ, trang **25 + 3**, không thiếu/trùng; lọc ngày 15 phiếu, từ khóa 9 phiếu, ngày + từ khóa 5 phiếu. Retry trả cùng trang; cursor sai tenant bị 403; đổi bộ lọc với cursor cũ trả reset; tenant B không nhận phiếu của A. Không trực tiếp chèn dữ liệu SQLite để làm bằng chứng.
 
-Firestore thực tế yêu cầu thêm **4 index**: `companyId + empId + date DESC + __name__ DESC`, `companyId + createdByEmpId + date DESC + __name__ DESC`, `companyId + status + date DESC + __name__ DESC`, `companyId + customerId + date DESC + __name__ DESC` (các trường trước date là ASC). Cấu hình cụ thể ở `requested-firestore-filter-indexes.json`; chưa tạo vì không nằm trong phê duyệt index cơ bản. Các bộ lọc này trả HTTP 503, không đánh dấu PASS. Các tổ hợp chưa chạy cũng không được coi là đã kiểm chứng.
+Owner tiếp tục duyệt đúng **4 index**: `companyId + empId + date DESC + __name__ DESC`, `companyId + createdByEmpId + date DESC + __name__ DESC`, `companyId + status + date DESC + __name__ DESC`, `companyId + customerId + date DESC + __name__ DESC` (các trường trước date là ASC). Cả bốn đã **READY lúc 14:57:54 ngày 14/11/2026, giờ Việt Nam**, định nghĩa khớp hoàn toàn bản đã duyệt. Không tạo index nào khác, không sửa/xóa index cũ. Source `firestore.indexes.json` chỉ thêm bốn mục; 15 mục cũ và field overrides giữ nguyên.
+
+`real-firebase-https-approved-import-filters.json`: **12/12 truy vấn HTTPS PASS**, không có lỗi index trong lượt chạy mới. Chỉ đọc lại 28 phiếu QA đã có, không tạo thêm phiếu:
+
+| Truy vấn | Kết quả đối chiếu |
+|---|---:|
+| Nhân viên | 28 phiếu, trang 25 + 3, không trùng |
+| Nhân viên + ngày | 15 phiếu |
+| Nhân viên + từ khóa | 9 phiếu |
+| Nhân viên + ngày + từ khóa | 5 phiếu |
+| Trạng thái, trạng thái + ngày | 0 và 0, đúng tập nguồn |
+| Khách hàng, khách hàng + ngày | 0 và 0, đúng tập nguồn |
+| Nhân viên + trạng thái; nhân viên + khách hàng; khách hàng + trạng thái; tất cả điều kiện | Mỗi truy vấn 0, đúng tập nguồn |
+
+Retry trả cùng trang; cursor sai scope/tenant bị 403; dùng scope B hợp lệ với cursor A chỉ trả reset và metadata B, không có dữ liệu A; đổi bộ lọc trả reset. Fingerprint chứng từ trước và sau cùng là `d4bb658686467610ffc92cf4c14852515f8bc0d7a1ecc1e907d728a364929c35`. **Không có giao dịch nghiệp vụ mới hoặc thay đổi số tiền trong lượt đóng index này.**
+
+Giới hạn bằng chứng: 28 phiếu QA không có giá trị ở `status` hoặc `customerId`. Tám ca có các điều kiện này chỉ chứng minh truy vấn hợp lệ và kết quả rỗng đúng, **chưa kiểm chứng trường hợp có bản ghi phù hợp**. Không chèn trường giả vào SQLite/Firestore hoặc đổi công thức để làm PASS. Bốn ca nhân viên là kết quả không rỗng được đối chiếu ID đầy đủ. Các lỗi 503 và lỗi pagination metadata của harness trước đó được giữ nguyên trong hồ sơ, không đổi trạng thái lịch sử.
+
+Resources bốn index: `CICAgJjFx5sJ`, `CICAgNi4o4sK`, `CICAgNiav4AK`, `CICAgJil0IYK`, cùng thuộc `projects/hd-manager-c5839/databases/(default)/collectionGroups/warehouseImports/indexes/`. Bằng chứng triển khai và cấu hình: `approved-filter-indexes-operations.json`, `approved-filter-indexes-status.json`, `approved-filter-index-config-verification.json`.
 
 ## Miền ghi, quyền và đồng bộ
 
@@ -57,7 +75,7 @@ Mỗi PASS dưới đây chỉ là phạm vi case đã chạy, không có nghĩa
 | Đơn hàng | Tạo hai dòng cùng sản phẩm khác ĐVT, receipt/retry và tenant denial |
 | Thu chi | Tạo phiếu chi và retry; delta 100đ đến Home SQLite |
 | Kiểm kê | Tạo kiểm kê theo planner hiện hữu, retry, tenant denial |
-| Nhập kho | Tạo nghiệp vụ và chi phí theo planner, retry, tenant denial; đọc trang và bốn truy vấn đã PASS; ba bộ lọc phụ thuộc index còn BLOCKED như trên |
+| Nhập kho | Tạo nghiệp vụ và chi phí theo planner, retry, tenant denial; đọc trang và 12 truy vấn sau index PASS đúng phạm vi trong bảng trên; trạng thái/khách hàng chưa có case dương tính |
 | Xuất kho | Tạo theo planner/stock fence, retry, tenant denial |
 | Giao hàng | Tạo chứng từ compound, retry, tenant denial |
 | Hồ sơ nhân viên | Tạo theo whitelist, retry, tenant denial |
@@ -114,6 +132,7 @@ Kỳ khóa vẫn khóa; không tự hạch toán điều chỉnh công sau khóa
 - Functions export load PASS. Artifact build/factory load PASS; JWK/auth và business reads đã kiểm tra trên chính package HTTPS.
 - Web build PASS từ source chuẩn; `buildId=25b1b22237a3f652a2aeaf7bc84ece21e1f58955`; validator kiểm tra 163 tệp HTML/JS/JSON, 0 Platform runtime markers; manifest chứa tổng 179 tệp build.
 - Web ZIP đã cấu hình `trusted-v1`, public JWK Production đã xác minh và endpoint `https://app.hdconnect.net/api/offline/`. Đây là **compile candidate chưa deploy**; endpoint live còn 404, không được xem build thành công là Production Offline PASS. Bản compile trước không bật Offline được giữ lại để truy vết.
+- Lượt duyệt bốn index chỉ thay metadata và cấu hình index trong source. Đã xác minh 94 runtime input hashes không đổi và không có diff mã Web/Android/Functions; không tạo lại APK/Web build hoặc chạy lại benchmark đã PASS. Runtime artifact vẫn truy vết tới `25b1b222`, cấu hình index tới `5287ff6e`; đây là hai mốc khác nhau, không tự đổi build ID cũ thành commit mới.
 - Hash/path chính xác nằm trong `.local-dev/final-blocker-20261114/release-build-manifest.json`.
 - Keystore, mật khẩu, token, profile browser và dữ liệu thật không nằm trong commit hoặc gói bàn giao. Một lỗi harness từng ghi header QA vào log Local; đã redact và thu hồi các phiên QA, giữ lại thông tin lỗi. Không có token QA đó trong artifact bàn giao.
 
@@ -131,13 +150,13 @@ Người giữ khóa phải cung cấp hai secret hiện hữu qua GitHub Action
 ## Blocker và trạng thái triển khai
 
 1. **Android:** hai mật khẩu ký chính thức thiếu, nên signing/upgrade/Release APK-AAB chưa thể chạy.
-2. **Bộ lọc nhập kho:** index cơ bản đã READY và phân trang đã PASS. Cần Owner duyệt đúng bốn index bổ sung đã chuẩn bị, sau đó kiểm thử lại ba bộ lọc đang trả 503 và các tổ hợp liên quan. Không mở rộng thay đổi metadata khi chưa có quyền.
+2. **Index nhập kho — đã đóng trong phạm vi xác minh:** cả năm index đã READY; 12 ca liên quan PASS, không còn 503 do thiếu index trong các ca này. Ca có bản ghi khớp trạng thái/khách hàng vẫn NOT VERIFIED vì tập nguồn không có các trường đó; không biến giới hạn dữ liệu thành PASS toàn nghiệp vụ.
 3. **Issuer Production — đã chuẩn bị:** `HD_OFFLINE_SIGNING_KEY_PEM`, version 1 **ENABLED**; public key SPKI SHA-256 `7be5bd3ec53770959551a69d181b767bfb78beedf6c4b703ed8f8fa9269a3f6b`. Kiểm tra nonce và checksum upload PASS. Private PEM chỉ tồn tại trong RAM và Secret Manager, không lưu ra file/log/Git. Public config `HD_OFFLINE_VERIFYING_JWK` đã được chuẩn bị nhưng chưa áp dụng lên service live. Đây không phải khóa Android.
 4. **Các bước phát hành phụ thuộc:** Rules guard hẹp, host/issuer live, signing và smoke/upgrade APK, readiness artifact cùng commit và smoke sau deploy chưa được thực hiện. Component/API proof không thay thế APK Release UI hoặc smoke ứng dụng sau triển khai. Chỉ làm sau khi các chốt trên được giải quyết; không bỏ gate.
 5. **Full UI HTTPS QA:** Identity live chưa cho phép origin QA. Cần cấu hình origin kiểm thử ổn định với quyền triển khai hợp lệ, hoặc môi trường Identity QA được phép, rồi kiểm thử giao diện đầu-cuối. Không dùng origin giả, tắt CORS hoặc token chèn sẵn làm bằng chứng đăng nhập UI. Production origin hiện được cho phép; không có thay đổi CORS trên cloud trong lượt này.
 
 Trước khi tạo secret, đã kiểm tra một billing account chỉ liên kết project này, một active location-version toàn cục, 43 vùng không có secret bổ sung, không có destroy/delete trong tháng. Sau tạo có 2/6 active versions trong mức miễn phí. Provisioning không gọi `AccessSecretVersion`; management operation miễn phí theo [Google Cloud Secret Manager pricing](https://cloud.google.com/secret-manager/pricing). Điều kiện không phát sinh phí được kiểm tra cho thao tác provisioning này; không cam kết lưu lượng truy cập sau deploy luôn miễn phí. Chưa kích hoạt hoặc liên kết Billing mới. Bằng chứng: `production-offline-issuer-verification.json` và các báo cáo `offline-issuer-*`.
 
-Website `https://app.hdconnect.net` đọc lại lúc 04:26 UTC vẫn có build `577d303144421b1c0e6e822ce03912ce42d5e1f4`; API grant/JWK public còn 404. Không push main, không tạo tag, không deploy website/Functions/Rules, không phát hành Google Play. Đã tạo riêng index và Offline secret được Owner phê duyệt; dữ liệu tenant thật không thay đổi. Backup/rollback cũ được giữ nguyên; rollout chưa bắt đầu nên không có rollback activation trong lượt này.
+Website `https://app.hdconnect.net` đọc lại lúc 15:03 ngày 14/11/2026 (giờ Việt Nam) vẫn có build `577d303144421b1c0e6e822ce03912ce42d5e1f4`; API grant/JWK public còn 404. Không push main, không tạo tag, không deploy website/Functions/Rules, không phát hành Google Play. Đã tạo riêng năm index và Offline secret được Owner phê duyệt; dữ liệu tenant thật không thay đổi. Backup/rollback cũ được giữ nguyên; rollout chưa bắt đầu nên không có rollback activation trong lượt này.
 
 Checkpoint tiếp tục: `.local-dev/final-blocker-20261114/release-checkpoint.json`. Không chạy lại các phần PASS khi xử lý secret/index/issuer, trừ kiểm thử bị ảnh hưởng.
