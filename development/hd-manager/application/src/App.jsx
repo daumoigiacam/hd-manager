@@ -23659,7 +23659,11 @@ function MainAppView({
   const orderLedgerEntry=useMemo(()=>orderSalesLedgerCache([customers,orders,payments],orderLedgerScope),[customers,orders,payments,orderLedgerScope]);
   const prepareOrderSalesLedger=useCallback(function*(){void orderLedgerAttempt;void orderLedgerScope;return yield* buildCustomerLedgerMap(customers,orders,payments,{cooperative:true});},[customers,orders,payments,orderLedgerAttempt,orderLedgerScope]);
   const orderLedgerSourcesReady=areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['customers','orders','payments','products']});
-  const orderSalesProjection=useCooperativeProjection(prepareOrderSalesLedger,orderLedgerEntry,{enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesReady});
+  // A refresh invalidates server freshness, not this read owner's already
+  // committed rows. Retained availability is presentation-only; mutation
+  // admission below still requires the complete fresh reconciliation.
+  const orderLedgerSourcesAvailable=orderLedgerSourcesReady||hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['customers','orders','payments','products']});
+  const orderSalesProjection=useCooperativeProjection(prepareOrderSalesLedger,orderLedgerEntry,{enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesAvailable});
   const orderLedgerProjection=mainLedgerReady?mainLedgerProjection:orderSalesProjection;
   const orderLedgerMap=!orderLedgerProjection.pending&&!orderLedgerProjection.error?orderLedgerProjection.value:EMPTY_MAIN_LEDGER;
   const retryOrderSalesLedger=()=>setOrderLedgerAttempt(value=>value+1);

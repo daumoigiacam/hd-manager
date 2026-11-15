@@ -26,5 +26,5 @@ test('Orders waits for committed sales/catalog data and calls the original build
  assert.match(text,/customerLedgerMap=\{orderLedgerMap\}/);
  assert.match(text,/collections:\['customers','orders','payments','warehouseImports','expenses'\]/);
  assert.match(text,/orderLedgerScope=JSON.stringify\(\[dashboardPrivacyScope,notificationDateKey\]\)/);
- assert.match(text,/enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesReady/);
+ assert.match(text,/enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesAvailable/);
 });
