@@ -54,6 +54,12 @@ public class NativeSafeAreaPlugin extends Plugin {
             || !Double.isFinite(origin) || !Double.isFinite(start) || !Double.isFinite(shell) || !Double.isFinite(ready) || !Double.isFinite(essential)
             || origin<=0 || start<0 || shell<start || ready<shell || essential<0 || essential>ready-start || ready>86400000) { call.reject("Invalid module timing metadata"); return; }
         JSObject result=new JSObject();result.put("module",module);result.put("surface",surface);result.put("documentTraceId",document);result.put("origin",origin);result.put("start",start);result.put("shellCommitted",shell);result.put("sourceAndDomReady",ready);result.put("essentialDataMs",essential);result.put("readyMs",ready-start);
+        JSObject provided=call.getObject("phases"),phases=new JSObject();
+        if(provided!=null)for(String key:new String[]{"module-loaded","directory-ready","cashflow-ready","payments-read-start","payments-read-end","expenses-read-start","expenses-read-end"}){
+            if(!provided.has(key))continue;double value=provided.optDouble(key,Double.NaN);
+            if(!Double.isFinite(value)||value<0||value>ready-start){call.reject("Invalid phase duration");return;}phases.put(key,value);
+        }
+        result.put("phases",phases);
         result.put("receivedElapsedNs",android.os.SystemClock.elapsedRealtimeNanos());result.put("receivedWallMs",System.currentTimeMillis());result.put("stage","source-dom-ready-not-frame");
         android.util.Log.i("HDModule",result.toString());
         getActivity().runOnUiThread(()->{

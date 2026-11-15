@@ -93,7 +93,7 @@ function TransactionDetail({runtime, directory, selected, employees, onClose, on
   </HDCard>;
 }
 
-function FinanceSourceList({runtime, directory, directoryOwner=directory, fetchDirectory = directory, source, filters, employees, onSelect, inputTrace, onChooseDay, onInitialCommit, pageSize=FINANCE_PAGE_SIZE}) {
+function FinanceSourceList({runtime, directory, directoryOwner=directory, fetchDirectory = directory, source, filters, employees, onSelect, inputTrace, onChooseDay, onInitialCommit, onReadPhase, pageSize=FINANCE_PAGE_SIZE}) {
   const queryKey = JSON.stringify(filters);
   const owner = useRef(null), completed = useRef(null);
   owner.current=financeReadIdentity(owner.current,runtime,directoryOwner,queryKey);
@@ -113,7 +113,9 @@ function FinanceSourceList({runtime, directory, directoryOwner=directory, fetchD
     busy.current = true;
     setPage(previous => previous.identity === identity ? {...previous,loading:true,error:''}
       : {identity, rows: [], head: null, nextCursor: null, loading: true, error: ''});
+    onReadPhase?.(source+'-read-start');
     readFinancePage({runtime, directory: fetchDirectory, source, filters: JSON.parse(queryKey),limit:pageSize}).then(result => {
+      onReadPhase?.(source+'-read-end');
       settled = true;
       if (active && ticket === operation.current) {completed.current={identity,directory,reload};setPage({identity, rows: result.rows, head: result.head, nextCursor: result.nextCursor, loading: false, error: '', inputTrace: trace});}
     }).catch(error => {
@@ -194,7 +196,7 @@ function FinanceSourceList({runtime, directory, directoryOwner=directory, fetchD
 
 // Navigation/lifecycle stay with the native host. This route consumes its
 // existing signed runtime and directory; it owns only filters and loaded pages.
-export default function OfflineFinanceWorkspace({runtime, onNavigate, directory, directoryOwner=directory, cashflow, onInitialContentReady}) {
+export default function OfflineFinanceWorkspace({runtime, onNavigate, directory, directoryOwner=directory, cashflow, onInitialContentReady,onReadPhase}) {
   const [filters, setFilters] = useState(initialFilters);
   const [type, setType] = useState('all');
   const [pageSize]=useState(()=>getDefaultListPageSize()===15?15:FINANCE_PAGE_SIZE);
@@ -308,7 +310,7 @@ export default function OfflineFinanceWorkspace({runtime, onNavigate, directory,
       </HDFilterBar></details>
       {!approvalFilterReady && <p id="offline-finance-status-reason" className="text-sm text-slate-600">Nguồn SQLite chưa hỗ trợ lọc phê duyệt thu chi trước khi phân trang. Không dùng trạng thái nguồn thay cho Chờ xác nhận / Đã xác nhận / Không duyệt.</p>}
       {invalidDates ? <p role="alert">Ngày kết thúc phải từ ngày bắt đầu trở đi.</p> : <div className="grid gap-4 lg:grid-cols-2">
-        {['payments', 'expenses'].filter(source => type === 'all' || type === source).map(source => <FinanceSourceList key={`${scopeKey}:${source}`} runtime={runtime} directory={directory} directoryOwner={directoryOwner} fetchDirectory={visibleDirectory} source={source} filters={filters} employees={employees} pageSize={pageSize} inputTrace={inputTrace.current} onChooseDay={chooseDay} onInitialCommit={onListInitialCommit} onSelect={value => setSelected({runtime, directory, scopeKey, value})}/>)}
+        {['payments', 'expenses'].filter(source => type === 'all' || type === source).map(source => <FinanceSourceList key={`${scopeKey}:${source}`} runtime={runtime} directory={directory} directoryOwner={directoryOwner} fetchDirectory={visibleDirectory} source={source} filters={filters} employees={employees} pageSize={pageSize} inputTrace={inputTrace.current} onChooseDay={chooseDay} onInitialCommit={onListInitialCommit} onReadPhase={onReadPhase} onSelect={value => setSelected({runtime, directory, scopeKey, value})}/>)}
       </div>}
       </React.Activity>
     </>}

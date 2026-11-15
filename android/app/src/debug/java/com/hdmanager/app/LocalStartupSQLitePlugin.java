@@ -88,7 +88,9 @@ public final class LocalStartupSQLitePlugin extends CapacitorSQLitePlugin {
     @Override @PluginMethod public void execute(PluginCall call) { ensureSdkLoaded(); super.execute(call); }
     @Override @PluginMethod public void executeSet(PluginCall call) throws Exception { ensureSdkLoaded(); super.executeSet(call); }
     @Override @PluginMethod public void run(PluginCall call) { ensureSdkLoaded(); super.run(call); }
-    @Override @PluginMethod public void query(PluginCall call) { ensureSdkLoaded(); super.query(call); }
+    // Fixed label only: never put SQL, parameters, credentials or rows in traces.
+    // This wraps the SAME synchronous SDK query and connection owner.
+    @Override @PluginMethod public void query(PluginCall call) { ensureSdkLoaded(); Trace.beginSection("HDSQLite.query"); try { super.query(call); } finally { Trace.endSection(); } }
     @Override @PluginMethod public void getTableList(PluginCall call) { ensureSdkLoaded(); super.getTableList(call); }
     @Override @PluginMethod public void isDBExists(PluginCall call) { ensureSdkLoaded(); super.isDBExists(call); }
     @Override @PluginMethod public void isDBOpen(PluginCall call) { ensureSdkLoaded(); super.isDBOpen(call); }

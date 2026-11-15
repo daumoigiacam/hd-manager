@@ -43,7 +43,7 @@ const missingSearchSchema=failure=>/no such table:\s*(?:\w+\.)?offline_business_
 const missingOrderProjection=failure=>/no such (?:table|index):\s*(?:\w+\.)?(?:offline_business_search_order_v2|offline_home_feed_keys_seq_v2|offline_business_order_sort_v2)\b/i.test(String(failure?.message||failure));
 const j = path => `json_extract(r.body,'$.${path}')`;
 const first = fields => `COALESCE(${fields.map(f => `NULLIF(${j(f)},'')`).join(',')},'')`;
-import {entityDates,dateSql,ordersStrictIsoDateSql} from './businessDirectoryDateSql.js';
+import {entityDates,dateSql,strictBusinessDaySql,ordersStrictIsoDateSql} from './businessDirectoryDateSql.js';
 const cashDates = ['cashflowDate','paymentDate','paidDate','transactionDate','transactionDateTime','bankTransactionDate',
   'paidAt','transactionAt','transactedAt','transactionTime','bankTransactionTime','paymentTime','completedTime','completedAt',
   'date','approvedAt','createdAt','updatedAt','timestamp'];
@@ -220,12 +220,12 @@ function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = t
   if (s.dates === entityDates) dates.splice(0,7,first(entityDates.slice(0,7)));
   if (s.dates === cashDates) dates.splice(0,dates.length,first(cashDates));
   if (s.attendance) dates.unshift(keyed);
-  let date = s.precision ? "''" : dateSql(dates);
+  let date = s.precision ? "''" : s.payment ? strictBusinessDaySql(dates) : dateSql(dates);
   if (source === 'orders') date = ordersStrictIsoDateSql(dates);
   if (s.payment) {
     const provider = `lower(${first(['paymentProvider','sourceType','method','paymentMethod','sourceLabel'])})`;
     date = `CASE WHEN instr(${provider},'sepay')>0 OR instr(${provider},'payos')>0
-      THEN COALESCE(${dateSql(paymentExpressions())},${date}) ELSE ${date} END`;
+      THEN COALESCE(${strictBusinessDaySql(paymentExpressions())},${date}) ELSE ${date} END`;
   }
   const sort = s.precision === 'month' ? `COALESCE(${source==='advances'?salaryAdvanceMonthSql(j):j('monthKey')},'')` : `COALESCE(${date},'')`;
   let employee = s.employee ? first(s.employee) : "''";

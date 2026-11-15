@@ -23,3 +23,15 @@ test('actions readiness cannot be substituted with committed data; both keep the
  assert.equal(actions[0].readyMs,590);assert.equal(actions[0].essentialDataMs,190);
  assert.equal(actions[0].surface,'restored-local-actions');
 });
+test('phase metadata is numeric and bounded to its navigation token; late work cannot enter the next navigation',()=>{
+ let now=10;const rows=[],trace=createModuleReadinessTrace({active:true,clock:()=>now,emit:value=>rows.push(value)});
+ const first=trace.start('finance','owner');now=30;trace.phase({id:first,tab:'finance',scope:'owner',stage:'module-loaded'});
+ trace.close();const second=trace.start('finance','owner');now=50;
+ trace.phase({id:first,tab:'finance',scope:'owner',stage:'expenses-read-end'});
+ trace.phase({id:second,tab:'finance',scope:'other',stage:'cashflow-ready'});
+ trace.phase({id:second,tab:'finance',scope:'owner',stage:'arbitrary-record-or-token'});
+ trace.phase({id:second,tab:'finance',scope:'owner',stage:'module-loaded'});
+ now=60;trace.phase({id:second,tab:'finance',scope:'owner',stage:'module-loaded'});
+ trace.observe({tab:'finance',scope:'owner',sourcesReady:true,pendingUi:false});
+ assert.deepEqual(rows[0].phases,{'module-loaded':20});
+});

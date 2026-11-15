@@ -14,7 +14,11 @@ export function createModuleReadinessTrace({clock=()=>performance.now(),origin=(
   start(tab,scope,eventAt){
    if(!active||!tab||!scope)return;
    if(pending?.tab===tab&&pending.scope===scope)return;
-   const at=clock();pending={id:++seq,tab,scope,at:Number.isFinite(eventAt)&&eventAt>0&&eventAt<=at&&at-eventAt<60000?eventAt:at,origin:origin(),shell:null,essential:null};
+   const at=clock();pending={id:++seq,tab,scope,at:Number.isFinite(eventAt)&&eventAt>0&&eventAt<=at&&at-eventAt<60000?eventAt:at,origin:origin(),shell:null,essential:null,phases:{}};return pending.id;
+  },
+  phase({id,tab,scope,stage}){
+   if(!pending||pending.id!==id||pending.tab!==tab||pending.scope!==scope||!['module-loaded','directory-ready','cashflow-ready','payments-read-start','payments-read-end','expenses-read-start','expenses-read-end'].includes(stage))return;
+   if(!Object.prototype.hasOwnProperty.call(pending.phases,stage))pending.phases[stage]=Math.max(0,clock()-pending.at);
   },
   observe({tab,scope,sourcesReady,pendingUi,essentialReady=false}){
    if(!pending)return true;
@@ -23,7 +27,7 @@ export function createModuleReadinessTrace({clock=()=>performance.now(),origin=(
    const at=clock();if(pending.shell===null)pending.shell=at;
    if(essentialReady&&pending.essential===null)pending.essential=at;
    if(!sourcesReady||pendingUi)return;
-   const result={id:pending.id,module:tab,surface,origin:pending.origin,start:pending.at,shellCommitted:pending.shell,sourceAndDomReady:at,shellMs:pending.shell-pending.at,essentialDataMs:(pending.essential??at)-pending.at,readyMs:at-pending.at,witness:'committed-sources-and-visible-dom-not-android-frame'};
+   const result={id:pending.id,module:tab,surface,origin:pending.origin,start:pending.at,shellCommitted:pending.shell,sourceAndDomReady:at,shellMs:pending.shell-pending.at,essentialDataMs:(pending.essential??at)-pending.at,readyMs:at-pending.at,phases:{...pending.phases},witness:'committed-sources-and-visible-dom-not-android-frame'};
    emit(result);pending=null;return result;
   },
   close(){pending=null;},

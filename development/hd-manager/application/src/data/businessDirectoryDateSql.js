@@ -41,6 +41,21 @@ export function dateSql(candidates) {
     SELECT d FROM parsed WHERE d IS NOT NULL ORDER BY key,depth DESC LIMIT 1)`;
 }
 
+// The original parser returns its first candidate immediately when it is an
+// exact valid ISO business day. Preserve that result without constructing a
+// recursive row parser for this common case. All other types/formats, invalid
+// dates, whitespace, embedded NULs and later-candidate rules keep dateSql.
+export function strictBusinessDaySql(candidates){
+  if(!candidates.length)return dateSql(candidates);
+  const first=candidates[0];
+  // Finance's first candidate is a long COALESCE of stored date fields. Bind it
+  // once; repeating that expression in each guard costs more than parsing it.
+  return `(WITH quick_business_day(v) AS MATERIALIZED (SELECT ${first}) SELECT COALESCE(
+    (SELECT CASE WHEN typeof(v)='text' AND length(v)=10
+      AND instr(v,char(0))=0 AND v GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+      AND date(v,'+0 days')=v THEN v END FROM quick_business_day),${dateSql(candidates)}))`;
+}
+
 // Orders only: accelerate the original first candidate for exact ISO19 local
 // and ISO24 UTC strings. Calendar/time/type/NUL guards retain the original
 // recursive parser for every other value and for any NULL fast-path result.
