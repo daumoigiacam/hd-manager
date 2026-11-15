@@ -3,10 +3,10 @@ import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
 import {getOrderRequestWorkspaceReadCollections} from './services/orderRequestWorkspaceReadPlan.js';
-import {getOrderWorkspaceReadCollections,runReadyOrderMutation} from './services/orderWorkspaceReadPlan.js';
+import {getOrderWorkspaceReadCollections,runReadyOrderMutation,runReadyFinancialMutation} from './services/orderWorkspaceReadPlan.js';
 import {getBankWorkspaceReadCollections,BANK_PRIMARY_COLLECTIONS} from './services/bankWorkspaceReadPlan.js';
 import {getMessageWorkspaceReadCollections,getMessageAttachmentReadCollections,MESSAGE_PRIMARY_COLLECTIONS} from './services/messageWorkspaceReadPlan.js';
-import {rememberCommittedReadSources,hasRetainedModuleSources} from './services/moduleReadAvailability.js';
+import {rememberCommittedReadSources,hasRetainedModuleSources,reconciledProjectionAvailability} from './services/moduleReadAvailability.js';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
 import {hasCommittedServerSnapshot} from './services/realtimeReadFreshness.js';
 import {initialLocalWorkspace,showRestoredWorkspace,canPresentFullWorkspace,restoredWorkspaceEntryTab,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
@@ -23652,8 +23652,12 @@ function MainAppView({
   }, [customers, orders, payments, warehouseImports, expenses, ledgerProjectionScope, ledgerPreparationAttempt]);
   const mainLedgerSourcesReady = areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,
     collections:['customers','orders','payments','warehouseImports','expenses']});
-  const mainLedgerProjection = useCooperativeProjection(prepareMainCustomerLedgers, ledgerProjectionEntry,{enabled:isPreviewDataMode||mainLedgerSourcesReady});
-  const mainLedgerReady = !mainLedgerProjection.pending && !mainLedgerProjection.error;
+  const retainedDebtLedgerSources=activeTab==='debt'&&hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['customers','orders','payments','warehouseImports','expenses']});
+  const mainLedgerProjection = useCooperativeProjection(prepareMainCustomerLedgers, ledgerProjectionEntry,{enabled:isPreviewDataMode||mainLedgerSourcesReady||retainedDebtLedgerSources});
+  const mainLedgerAvailability=reconciledProjectionAvailability({...mainLedgerProjection,fresh:mainLedgerSourcesReady,retained:retainedDebtLedgerSources,preview:isPreviewDataMode});
+  const mainLedgerReady = mainLedgerAvailability.transactionsReady;
+  const debtReadLedgerMap=mainLedgerAvailability.readReady?mainLedgerProjection.value:EMPTY_MAIN_LEDGER;
+  const runDebtMutation=useCommittedCallback((callback,args)=>runReadyFinancialMutation(mainLedgerReady,callback,args));
   const reconciledLedgerMap = mainLedgerReady ? mainLedgerProjection.value : EMPTY_MAIN_LEDGER;
   const retryMainCustomerLedgers = () => setLedgerPreparationAttempt(value => value + 1);
   // Invoice rows consume only the original sales ledger's orders/payments.
@@ -25175,7 +25179,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
       case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView warehouseSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['orderRequests','warehouseDispatches','deliveryReports']})} onPrimaryReady={onOrderPrimaryReady} supplementalSourcesReady={orderMutationsReady&&areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.orders})} isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={orderLedgerMap} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={(...args)=>runOrderMutation(onAddOrder,args)} onEditOrder={(...args)=>runOrderMutation(onEditOrder,args)} onUpdateOrderInvoiceTemplate={(...args)=>runOrderMutation(onUpdateOrderInvoiceTemplate,args)} onApproveOrderZaloSend={(...args)=>runOrderMutation(onApproveOrderZaloSend,args)} onUpdateOrderZaloMessage={(...args)=>runOrderMutation(onUpdateOrderZaloMessage,args)} onSyncPayosPaymentStatus={(...args)=>runOrderMutation(onSyncPayosPaymentStatus,args)} onEnsureOrderPayosPayment={(...args)=>runOrderMutation(onEnsureOrderPayosPayment,args)} onToggleArchiveOrder={(...args)=>runOrderMutation(onToggleArchiveOrder,args)} onDeleteOrder={(...args)=>runOrderMutation(onDeleteOrder,args)} onAddPayment={(...args)=>runOrderMutation(onAddPayment,args)} onAddCustomer={(...args)=>runOrderMutation(onAddCustomer,args)} onAddExpense={(data) => runOrderMutation(onAddExpense,[employee?.id || 'admin',data])} onResolveDeliveryReportIssue={(...args)=>runOrderMutation(onResolveDeliveryReportIssue,args)} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'debt': return <DebtManagementView searchStore={debtSearchStore} isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} expenses={expenses} onAddRepayment={(data) => onAddExpense(employee.id, data)} canRecordRepayment={isOwnerAccount || canRoleAction('finance', 'create_expense')} warehouseImports={warehouseImports} employees={employees} onAddPayment={onAddPayment} onDeletePayment={onDeletePayment} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
+      case 'debt': return <DebtManagementView sourceFresh={mainLedgerReady} searchStore={debtSearchStore} isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} expenses={expenses} onAddRepayment={(data) => runDebtMutation(onAddExpense,[employee.id,data])} canRecordRepayment={isOwnerAccount || canRoleAction('finance', 'create_expense')} warehouseImports={warehouseImports} employees={employees} onAddPayment={(...args)=>runDebtMutation(onAddPayment,args)} onDeletePayment={(...args)=>runDebtMutation(onDeletePayment,args)} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
           return renderWorkflowGuide({
@@ -25586,8 +25590,8 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
               <ReconciledLedgerContext.Provider value={reconciledLedgerMap}>
                 {['orders', 'debt'].includes(activeTab) ? (
                   <React.Suspense fallback={<LedgerPreparationNotice />}>
-                    <CompletedProjectionGate key={ledgerActorScope} projection={activeTab==='orders'?orderLedgerProjection:mainLedgerProjection} onRetry={activeTab==='orders'?retryOrderSalesLedger:retryMainCustomerLedgers}>
-                      <ReconciledLedgerContext.Provider value={reconciledLedgerMap}>{renderContent()}</ReconciledLedgerContext.Provider>
+                    <CompletedProjectionGate key={ledgerActorScope} retainWhilePending={activeTab==='debt'} retainIdentity={dashboardPrivacyScope} disableRetainedInteraction projection={activeTab==='orders'?orderLedgerProjection:mainLedgerProjection} onRetry={activeTab==='orders'?retryOrderSalesLedger:retryMainCustomerLedgers}>
+                      <ReconciledLedgerContext.Provider value={activeTab==='debt'?debtReadLedgerMap:reconciledLedgerMap}>{renderContent()}</ReconciledLedgerContext.Provider>
                     </CompletedProjectionGate>
                   </React.Suspense>
                 ) : renderContent()}
@@ -48130,7 +48134,7 @@ function DebtManagementViewLegacy({ isAccounting, isDriver, employee, customers,
 }
 
 const EMPTY_DEBT_SEARCH_STORE=Object.freeze({subscribe:()=>()=>{},getSnapshot:()=>''});
-function DebtManagementView({ searchStore = null, isAccounting, isDriver, employee, customers, orders, payments, expenses = [], onAddRepayment, canRecordRepayment = false, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
+function DebtManagementView({ sourceFresh=true, searchStore = null, isAccounting, isDriver, employee, customers, orders, payments, expenses = [], onAddRepayment, canRecordRepayment = false, warehouseImports = [], employees, onAddPayment, onDeletePayment, canViewAllDebt = false, canViewAssignedDebt = false, canRecordPayment = false, canEditDebt = false, canDeleteDebt = false, focusCustomerId = '', onFocusCustomerHandled, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [isSavingDebtPayment, setIsSavingDebtPayment] = useState(false);
@@ -48467,6 +48471,7 @@ function DebtManagementView({ searchStore = null, isAccounting, isDriver, employ
 
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
+    if(!sourceFresh){setDebtPaymentStatus('Đang xác minh đối chiếu. Bản nhập được giữ; vui lòng xác nhận lại khi hoàn tất.');return;}
     if (debtPaymentSubmitRef.current) return;
     const repayment = newPayment.kind === 'repayment';
     if (!selectedCustomer || (repayment ? !canRecordRepayment : !canRecordCustomerPayment)) return;
@@ -48721,7 +48726,8 @@ function DebtManagementView({ searchStore = null, isAccounting, isDriver, employ
       : null;
 
     return (
-      <div className="premium-data-module premium-debt-module premium-debt-detail space-y-4 animate-in fade-in pb-16">
+      <div className="premium-data-module premium-debt-module premium-debt-detail space-y-4 animate-in fade-in pb-16" data-hd-essential-data-ready="true">
+        {!sourceFresh&&<p role="status" className="text-xs text-slate-600">Bản đã đối chiếu · Đang xác minh cập nhật ở nền. Chỉ đọc cho đến khi đối chiếu hoàn tất.</p>}
         {debtPaymentStatus && !showPaymentModal && <p role="status" className="text-sm text-slate-600">{debtPaymentStatus}</p>}
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
           <div className="flex items-start justify-between gap-3">
@@ -48910,7 +48916,7 @@ function DebtManagementView({ searchStore = null, isAccounting, isDriver, employ
             {ledger.payments.map(payment => (
               <div key={payment.id} className="p-4 relative">
                 {canDeleteDebtRecord && onDeletePayment && (
-                  <button onClick={() => { if (window.confirm('Xóa phiếu thu này?')) onDeletePayment(payment.id); }} className="absolute top-3 right-3 text-gray-300 hover:text-red-500">
+                  <button disabled={!sourceFresh} onClick={async() => { if (!sourceFresh||!window.confirm('Xóa phiếu thu này?')) return;try{await onDeletePayment(payment.id);}catch(error){setDebtPaymentStatus(getFriendlyFirebaseErrorMessage(error,'Không thể xóa phiếu thu.'));} }} className="absolute top-3 right-3 text-gray-300 hover:text-red-500">
                     <Trash2 size={14} />
                   </button>
                 )}
@@ -48970,7 +48976,7 @@ function DebtManagementView({ searchStore = null, isAccounting, isDriver, employ
                 </div>
                 <div className="hd-modal-actions flex gap-2 mt-4">
                   <button type="button" disabled={isSavingDebtPayment} onClick={resetPaymentDraft} className="flex-1 bg-gray-100 py-3 rounded-xl text-gray-700 font-bold">Hủy</button>
-                  <button type="submit" disabled={isSavingDebtPayment} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{isSavingDebtPayment ? 'Đang lưu...' : newPayment.kind === 'repayment' ? 'Xác nhận chi trả nợ' : 'Xác nhận thu'}</button>
+                  <button type="submit" disabled={isSavingDebtPayment||!sourceFresh} className="flex-1 bg-emerald-500 text-white py-3 rounded-xl font-bold">{!sourceFresh?'Đang xác minh đối chiếu…':isSavingDebtPayment ? 'Đang lưu...' : newPayment.kind === 'repayment' ? 'Xác nhận chi trả nợ' : 'Xác nhận thu'}</button>
                 </div>
               </form>
             </div>
@@ -48981,7 +48987,8 @@ function DebtManagementView({ searchStore = null, isAccounting, isDriver, employ
   }
 
   return (
-    <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16">
+    <div className="premium-data-module premium-debt-module space-y-4 animate-in fade-in pb-16" data-hd-essential-data-ready={!preparedDebtSearch.pending&&!preparedDebtSearch.error?'true':undefined}>
+      {!sourceFresh&&<p role="status" className="text-xs text-slate-600">Bản đã đối chiếu · Đang xác minh cập nhật ở nền. Chỉ đọc cho đến khi đối chiếu hoàn tất.</p>}
       {(canViewAllDebtRecords || accessibleCustomers.length > 0) && (
         <div className="-mt-4 -mx-4 grid grid-cols-2 overflow-hidden border-y border-slate-100 shadow-sm">
           <button type="button" onClick={() => { setDebtViewFilter('debt'); setSearchKeyword(''); setDebtDateFilterMode('all'); }} aria-pressed={debtViewFilter === 'debt'} className="flex min-h-[96px] flex-col justify-center bg-gradient-to-r from-rose-600 to-orange-500 px-4 py-3 text-left text-white">

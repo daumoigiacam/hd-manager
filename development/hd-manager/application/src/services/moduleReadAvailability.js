@@ -16,3 +16,9 @@ export function requestReadiness({baseFresh,dispatchFresh,baseRetained=false,dis
  const projectionReady=Boolean(rowsReady&&(dispatchFresh||dispatchRetained)&&statusesComplete);
  return {rowsReady,projectionReady,writesReady:Boolean(projectionReady&&baseFresh&&dispatchFresh),retained:!baseFresh||!dispatchFresh};
 }
+// Presentation only. Retained must come from the exact authenticated read owner.
+// A complete retained report cannot authorize a financial write during refresh.
+export function reconciledProjectionAvailability({pending,error,fresh,retained=false,preview=false}) {
+ const complete=!pending&&!error;
+ return {readReady:Boolean(complete&&(preview||fresh||retained)),transactionsReady:Boolean(complete&&(preview||fresh))};
+}

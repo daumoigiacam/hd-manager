@@ -8,3 +8,4 @@ export function runReadyOrderMutation(ready,callback,args){
  if(!ready) return Promise.reject(Object.assign(Error('Dữ liệu đối chiếu đang cập nhật. Bản nhập vẫn được giữ; vui lòng lưu lại khi đối chiếu hoàn tất.'),{code:'source-not-ready'}));
  return callback?.(...args);
 }
+export const runReadyFinancialMutation=runReadyOrderMutation;
