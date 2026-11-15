@@ -178,7 +178,7 @@ export function MessageComposer({ draft, onChange, onSend, onAttach, onMic, disa
 const attachmentIcons = { image: ImageIcon, camera: Camera, video: Video, document: FileText, location: MapPin, contact: Contact, order: Package, weighing: FileText };
 
 export function AttachmentPanel({ actions, onSelect, onClose }) {
-  return <div className="hd-chat-attachment-panel" role="dialog" aria-label="Đính kèm" data-chat-attachment-panel="true">
+  return <div className="hd-chat-attachment-panel" role="dialog" aria-label="Đính kèm" data-chat-attachment-panel="true" data-search-zone="true">
     <div className="hd-chat-attachment-handle" />
     <button type="button" className="hd-chat-attachment-close" onClick={onClose} aria-label="Đóng bảng đính kèm"><X size={18} /></button>
     <div className="hd-chat-attachment-grid">{actions.map((action) => { const Icon = attachmentIcons[action.id] || action.icon || FileText; return <button key={action.id} type="button" onClick={() => onSelect(action)} disabled={!action.allowed} title={!action.allowed ? 'Chưa hỗ trợ cho tài khoản này' : action.label}><span className={`hd-chat-attachment-icon hd-chat-attachment-icon--${action.id}`}><Icon size={24} /></span><span>{action.label}</span></button>; })}</div>

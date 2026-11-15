@@ -1,5 +1,7 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useDeferredValue } from "react";
+import {getMessageAttachmentReadCollections,pendingAttachmentDecision} from "../../services/messageWorkspaceReadPlan.js";
+import {createMessageAttachmentSelection} from "../../services/messageAttachmentSelection.js";
 import { buildCustomerSupportConversationId, getCustomerMessagingEmployeeId, isEmployeeScopedCustomerMessage } from "../../utils/employeeScopedCustomerMessaging.js";
 import { CHAT_LIST_TABS, CHAT_SEARCH_TABS, filterChatConversations, getChatCategory, getChatSearchResult } from "../messaging/messagingUiModel.js";
 import { usePagedList } from "../../services/renderOptimization";
@@ -13,6 +15,9 @@ import { ListPagination } from "../../design-system/ListPagination.jsx";
 export function createMessageCenterView(runtime) {
   const {APP_SCREEN_BACK_EVENT,buildCompanyMonogram,chatListMonthDayFormatter,chatListTimeFormatter,collapseLookupText,formatCurrency,formatDateLabel,formatDateTimeLabel,formatNumber,getCompanyDisplayName,getCompanyLogoUrl,getCustomerDisplayName,getEmployeeAvatarUrl,getEmployeePositionLabel,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getProductShortName,getTodayString,isSameLoginPhone,markAppBackHandled,normalizeCustomerPhone,parseLooseQuantityValue,useDismissSearchOnOutsideClick,vietnamDateFormatter} = runtime;
   function MessageCenterView({
+  onPrimaryReady,primarySourcesReady=true,backgroundSourcesReady=true,
+  onAttachmentSourceDemandChange,
+  attachmentSourcesReady = {order:true,order_request:true,report:true},
   employee,
   currentCompany,
   employees = [],
@@ -53,6 +58,7 @@ export function createMessageCenterView(runtime) {
   canSendReportAttachment = false,
   canCallFromMessage = true
 }) {
+  useEffect(()=>{if(primarySourcesReady)onPrimaryReady?.();},[primarySourcesReady,onPrimaryReady]);
   const currentEmployeeId = employee?.id || '';
   const readConversationStorageKey = `hd_message_read_watermarks_${currentCompany?.id || 'company'}_${currentEmployeeId || 'anonymous'}`;
   const [activeType, setActiveType] = useState('internal');
@@ -73,8 +79,14 @@ export function createMessageCenterView(runtime) {
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('');
   const [localReplies, setLocalReplies] = useState({});
+  const [pendingAttachment,setPendingAttachment]=useState(null);
+  const attachmentSequence=useRef(0),executedAttachment=useRef(0);
+  useEffect(()=>{onAttachmentSourceDemandChange?.(pendingAttachment?.action.id||'');return()=>onAttachmentSourceDemandChange?.('');},[pendingAttachment,onAttachmentSourceDemandChange]);
   const [attachmentPickerConfig, setAttachmentPickerConfig] = useState(null);
   const [attachmentPickerType, setAttachmentPickerType] = useState('');
+  const attachmentViewActive=useRef(false),attachmentSelectionContext=useRef(null),attachmentSelector=useRef(null);
+  if(!attachmentSelector.current)attachmentSelector.current=createMessageAttachmentSelection({isCurrent:scope=>attachmentViewActive.current&&attachmentSelectionContext.current?.scope===scope});
+  useLayoutEffect(()=>{attachmentViewActive.current=true;return()=>{attachmentViewActive.current=false;attachmentSelector.current.cancel();};},[]);
   const [attachmentPickerSearch, setAttachmentPickerSearch] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showCreateConversationPanel, setShowCreateConversationPanel] = useState(false);
@@ -872,7 +884,9 @@ export function createMessageCenterView(runtime) {
       attachmentPickerConfig.getSubtitle?.(item)
     ].filter(Boolean).join(' ')).includes(keyword));
   }, [attachmentPickerConfig, attachmentPickerSearch]);
+  const attachmentPickerPage=usePagedList(attachmentPickerItems,JSON.stringify([attachmentPickerType,attachmentPickerSearch]),20);
   const closeAttachmentPicker = () => {
+    attachmentSelector.current.cancel();
     setAttachmentPickerConfig(null);
     setAttachmentPickerType('');
     setAttachmentPickerSearch('');
@@ -1101,6 +1115,7 @@ export function createMessageCenterView(runtime) {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const handleScreenBack = (event) => {
+      if(attachmentPickerConfig){closeAttachmentPicker();markAppBackHandled(event);return;}
       if (showAttachMenu) {
         setShowAttachMenu(false);
         markAppBackHandled(event);
@@ -1139,7 +1154,7 @@ export function createMessageCenterView(runtime) {
     };
     window.addEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
     return () => window.removeEventListener(APP_SCREEN_BACK_EVENT, handleScreenBack);
-  }, [selectedConversationId, showAddFriendPanel, showAttachMenu, showChatSearch, showCodeScanner, showCreateConversationPanel, showMessageFilterMenu]);
+  }, [selectedConversationId, showAddFriendPanel, showAttachMenu, showChatSearch, showCodeScanner, showCreateConversationPanel, showMessageFilterMenu,attachmentPickerConfig]);
 
   const typeOptions = [
     { id: 'support', label: 'H\u1ed7 tr\u1ee3', icon: Headphones, color: 'from-amber-400 to-orange-500' },
@@ -1421,21 +1436,27 @@ export function createMessageCenterView(runtime) {
     setStatus('Chưa có kết nối lưu thông tin cho hội thoại này.');
   };
 
-  const pickChatItemByPrompt = (items = [], title = 'Chọn thông tin', getLabel = (item) => item?.name || '') => {
-    const availableItems = (items || []).filter(Boolean).slice(0, 20);
-    if (!availableItems.length) {
-      setStatus(`Chưa có dữ liệu để gửi ${title.toLowerCase()}.`);
-      return null;
-    }
-    const optionText = availableItems.map((item, index) => `${index + 1}. ${getLabel(item)}`).join('\n');
-    const answer = window.prompt(`${title}\nNhập số thứ tự hoặc gõ tên cần tìm:\n\n${optionText}`, '1');
-    if (!answer) return null;
-    const numericIndex = parseInt(answer, 10);
-    if (Number.isFinite(numericIndex) && numericIndex >= 1 && numericIndex <= availableItems.length) {
-      return availableItems[numericIndex - 1];
-    }
-    const keyword = normalizeKeyword(answer);
-    return availableItems.find(item => normalizeKeyword(getLabel(item)).includes(keyword)) || null;
+  const selectionScope=JSON.stringify([currentCompany?.id||'',currentEmployeeId,selectedConversationId]);
+  useLayoutEffect(()=>{
+    attachmentSelectionContext.current={scope:selectionScope,allowed:canSendInSelectedConversation,
+      actions:new Set(attachActions.map(action=>action.id)),sources:{order:orders,order_request:orderRequests,customer:customers,contact:[...employees,...customers]}};
+  },[selectionScope,canSendInSelectedConversation,canSendOrderAttachment,canSendOrderRequestAttachment,canSendContactAttachment,orders,orderRequests,customers,employees]);
+  useLayoutEffect(()=>{
+    attachmentSelector.current.cancel();setAttachmentPickerConfig(null);
+    return()=>attachmentSelector.current.cancel();
+  },[selectionScope,canSendInSelectedConversation,canSendOrderAttachment,canSendOrderRequestAttachment,canSendContactAttachment]);
+  const pickChatItem = async (items = [], title = 'Chọn thông tin', getLabel = item => item?.name || '', type='') => {
+    const availableItems=items.filter(Boolean),context=attachmentSelectionContext.current;
+    if(!availableItems.length){setStatus(`Chưa có dữ liệu để gửi ${title.toLowerCase()}.`);return null;}
+    if(!context?.allowed||!context.actions.has(type))return null;
+    const scope=context.scope,promise=attachmentSelector.current.open(scope,availableItems);
+    setAttachmentPickerType(type);setAttachmentPickerSearch('');
+    setAttachmentPickerConfig({items:availableItems,title,placeholder:'Tìm chứng từ...',emptyText:'Không có dữ liệu phù hợp.',
+      getTitle:getLabel,getSubtitle:item=>item.code||item.id||'',onSelect:item=>attachmentSelector.current.choose(scope,item)});
+    const selected=await promise,current=attachmentSelectionContext.current;
+    if(!selected||!attachmentViewActive.current||current?.scope!==scope||!current.allowed||!current.actions.has(type))return null;
+    if(!current.sources[type]?.includes(selected)){setStatus('Chứng từ vừa thay đổi. Vui lòng mở lại và chọn dữ liệu mới.');return null;}
+    return selected;
   };
 
   const buildChatCustomerText = (customer = {}) => [
@@ -1531,9 +1552,14 @@ export function createMessageCenterView(runtime) {
     reader.readAsDataURL(file);
   });
 
-  const handleRealAttachAction = async (action) => {
+  const handleRealAttachAction = async (action, sourcesConfirmed=false) => {
     setShowAttachMenu(false);
-    if (!selectedConversation) return;
+    if (!selectedConversation || !attachActions.some(item=>item.id===(action.id==='camera'?'image':action.id))) return;
+    if(!sourcesConfirmed&&getMessageAttachmentReadCollections(action.id).length&&attachmentSourcesReady[action.id]!==true){
+      setPendingAttachment({id:++attachmentSequence.current,conversationId:selectedConversation.id,action});
+      setStatus('Đang tải dữ liệu chứng từ đã chọn; bạn vẫn có thể nhắn tin.');
+      return;
+    }
 
     if (action.id === 'camera') {
       cameraInputRef.current?.click?.();
@@ -1579,28 +1605,28 @@ export function createMessageCenterView(runtime) {
     }
 
     if (action.id === 'contact') {
-      const item = pickChatItemByPrompt([...(employees || []), ...(customers || [])], 'Chọn danh bạ', entry => `${entry.name || entry.fullName || 'Liên hệ'}${entry.phone ? ` - ${entry.phone}` : ''}`);
+      const item = await pickChatItem([...(employees || []), ...(customers || [])], 'Chọn danh bạ', entry => `${entry.name || entry.fullName || 'Liên hệ'}${entry.phone ? ` - ${entry.phone}` : ''}`, 'contact');
       if (!item) return;
       await sendAttachmentPayload({ text: 'G\u1eedi danh b\u1ea1', attachmentType: 'contact', attachmentLabel: 'Danh b\u1ea1', attachmentText: buildCleanChatCustomerText(item) });
       return;
     }
 
     if (action.id === 'customer') {
-      const item = pickChatItemByPrompt(customers, 'Chọn khách hàng', customer => `${customer.name || 'Khách hàng'}${customer.phone ? ` - ${customer.phone}` : ''}`);
+      const item = await pickChatItem(customers, 'Chọn khách hàng', customer => `${customer.name || 'Khách hàng'}${customer.phone ? ` - ${customer.phone}` : ''}`, 'customer');
       if (!item) return;
       await sendAttachmentPayload({ text: 'G\u1eedi th\u00f4ng tin kh\u00e1ch h\u00e0ng', attachmentType: 'customer', attachmentLabel: 'Kh\u00e1ch h\u00e0ng', attachmentText: buildCleanChatCustomerText(item) });
       return;
     }
 
     if (action.id === 'order') {
-      const item = pickChatItemByPrompt(orders, 'Chọn đơn hàng', order => `${order.code || order.id || 'Đơn hàng'} - ${customerById.get(order.customerId)?.name || order.customerName || ''}`);
+      const item = await pickChatItem(orders, 'Chọn đơn hàng', order => `${order.code || order.id || 'Đơn hàng'} - ${customerById.get(order.customerId)?.name || order.customerName || ''}`, 'order');
       if (!item) return;
       await sendAttachmentPayload({ text: 'Gửi đơn hàng', attachmentType: 'order', attachmentLabel: 'Đơn hàng', attachmentText: buildChatOrderText(item) });
       return;
     }
 
     if (action.id === 'order_request') {
-      const item = pickChatItemByPrompt(orderRequests, 'Chọn đơn đặt', request => `${customerById.get(request.customerId)?.name || request.customerName || 'Đơn đặt'} - ${formatDateLabel(request.date || request.createdAt || getEntityTimestamp(request))}`);
+      const item = await pickChatItem(orderRequests, 'Chọn đơn đặt', request => `${customerById.get(request.customerId)?.name || request.customerName || 'Đơn đặt'} - ${formatDateLabel(request.date || request.createdAt || getEntityTimestamp(request))}`, 'order_request');
       if (!item) return;
       await sendAttachmentPayload({ text: 'Gửi đơn đặt', attachmentType: 'order_request', attachmentLabel: 'Đơn đặt', attachmentText: buildChatOrderRequestText(item) });
       return;
@@ -1610,6 +1636,19 @@ export function createMessageCenterView(runtime) {
       await sendAttachmentPayload({ text: 'Gửi báo cáo nhanh', attachmentType: 'report', attachmentLabel: 'Báo cáo', attachmentText: buildChatReportText() });
     }
   };
+
+  useEffect(()=>{
+    const decision=pendingAttachmentDecision({request:pendingAttachment,conversationId:selectedConversation?.id,
+      allowed:Boolean(pendingAttachment&&canSendInSelectedConversation&&attachActions.some(action=>action.id===pendingAttachment.action.id)),
+      ready:attachmentSourcesReady[pendingAttachment?.action.id]});
+    if(decision==='none'||decision==='wait')return;
+    setPendingAttachment(null);
+    if(decision==='cancel'){setStatus('Đã hủy tải chứng từ do hội thoại hoặc quyền truy cập thay đổi.');return;}
+    if(executedAttachment.current===pendingAttachment.id)return;
+    executedAttachment.current=pendingAttachment.id;
+    setStatus('');
+    void handleRealAttachAction(pendingAttachment.action,true);
+  },[pendingAttachment,selectedConversation?.id,canSendInSelectedConversation,attachmentSourcesReady.order,attachmentSourcesReady.order_request,attachmentSourcesReady.report,canSendOrderAttachment,canSendOrderRequestAttachment,canSendReportAttachment]);
 
   const handleImageAttachmentChange = async (event) => {
     const file = event.target.files?.[0];
@@ -1644,11 +1683,12 @@ export function createMessageCenterView(runtime) {
         {showChatSearch && <div className="hd-chat-inline-search" data-search-zone="true"><Search size={18} /><input data-hd-search-input="true" autoFocus value={chatSearchKeyword} onChange={(event) => setChatSearchKeyword(event.target.value)} placeholder="Tìm trong cuộc trò chuyện..." /></div>}
         <OfflineBanner online={isOnline} />
         {showExtraAttachMenu && <div className="hd-chat-extra-actions" data-search-zone="true">{attachActions.filter((action) => !visualAttachActions.some((primary) => primary.id === action.id)).map((action) => <button type="button" key={action.id} onClick={() => { setShowExtraAttachMenu(false); handleRealAttachAction(action); }}>{action.label}</button>)}</div>}
+        {pendingAttachment&&<button type="button" className="px-3 py-2 text-xs text-slate-600" onClick={()=>{setPendingAttachment(null);setStatus('Đã hủy tải chứng từ.');}}>Hủy tải chứng từ</button>}
         <MessageList conversation={selectedConversation} messages={visibleMessages} status={status} onOpenNotice={() => onOpenNotification(selectedConversation.sourceItem)} />
 
         {attachmentPickerConfig && (
-          <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4">
-            <div className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]">
+          <div role="dialog" aria-modal="true" aria-label="Chọn chứng từ đính kèm" data-search-zone="true" className="hd-chat-document-picker fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4">
+            <div className="hd-chat-document-picker-panel w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]">
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
                 <div>
                   <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-600">Gửi thông tin</p>
@@ -1677,8 +1717,9 @@ export function createMessageCenterView(runtime) {
                   />
                 </div>
               </div>
-              <div className="max-h-[56vh] space-y-2 overflow-y-auto px-4 pb-5">
-                {attachmentPickerItems.length > 0 ? attachmentPickerItems.map((item, index) => (
+              <ListPagination pagination={attachmentPickerPage} label="Trang chứng từ đính kèm" />
+              <div className="hd-chat-document-picker-list max-h-[56vh] space-y-2 overflow-y-auto px-4 pb-5">
+                {attachmentPickerItems.length > 0 ? attachmentPickerPage.items.map((item, index) => (
                   <button
                     key={item.id || `${attachmentPickerType}-${index}`}
                     type="button"
@@ -1716,7 +1757,7 @@ export function createMessageCenterView(runtime) {
   }
 
   return (
-    <div className="hd-messaging" data-hd-module="messaging" data-chat-screen={searchKeyword.trim() ? 'search' : 'list'}>
+    <div className="hd-messaging" data-hd-module="messaging" data-hd-message-background-ready={backgroundSourcesReady?'true':'false'} data-chat-screen={searchKeyword.trim() ? 'search' : 'list'}>
       <div className="hd-chat-list-head" data-search-zone="true">
         <ChatSearchBar
           value={searchKeyword}
@@ -1741,6 +1782,7 @@ export function createMessageCenterView(runtime) {
           onChange={searchKeyword.trim() ? setActiveSearchTab : setActiveChatTab}
           label={searchKeyword.trim() ? 'Loại kết quả tìm kiếm' : 'Loại cuộc trò chuyện'}
         />
+        {!backgroundSourcesReady&&<p role="status" className="px-4 py-1 text-xs text-slate-500">Đang cập nhật thông báo nghiệp vụ ở nền.</p>}
         {showCreateConversationPanel && canUseCreateConversation && (
           <div data-search-zone="true" className="hd-chat-create-menu">
             <div>
