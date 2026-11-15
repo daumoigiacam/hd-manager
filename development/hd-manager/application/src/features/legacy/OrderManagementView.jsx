@@ -22,7 +22,7 @@ import { HDHeader } from "../../layout/index.js";
 // Generated binding contract is checked against the real source AST.
 export function createOrderManagementView(runtime) {
   const {EMPTY_ORDER_VIEW_PROJECTION,GEMINI_PROXY_ENABLED,PAYMENT_QR_IMAGE_FETCH_TIMEOUT_MS,PremiumStatusBadge,RETURN_GOODS_STATUS_LABELS,areLooseQuantityValuesClose,buildCustomerLedger,buildCustomerLedgerMap,buildLineItemProductSearchText,buildOrderTransferMemo,buildOrderViewModel,buildOrderViewProjectionSteps,buildPayosPaymentQrImageSource,buildSalesOrderShareFilename,capitalizeFirst,collapseLookupText,debugShareImageCache,findBestEntityMatch,formatCompactDateLabel,formatCurrency,formatDateLabel,formatDateTimeLabel,formatInputCurrency,formatNumber,formatOrderCode,formatReturnGoodsQty,getCachedOrderShareAsset,getCustomerBranchProductConfigSource,getDeliveryReportWeightStatus,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getOrderLineQuantityValue,getOrderLineSizeLabel,getOrderLineUnitPriceValue,getOrderLineWeightKgValue,getOrderOutstandingBalance,getOrderPayosPaymentSource,getOrderReturnGoodsRecords,getOrderReturnProductSummary,getOrderSalesEmpId,getPaymentDateKey,getPaymentMethodLabel,getProductShortName,getShareChannelLabel,getTodayString,getTransactionBillingPresentation,isEmployeeSalesPosition,isTimeoutLikeError,normalizeAiOrderDate,normalizeLookupText,normalizeOrderPaymentSnapshot,parseDateInputValue,parseInputCurrency,parseLooseMoneyValue,parseLooseQuantityValue,requestNotebookOrderDraftsFromGemini,resolveCustomerProductBillingConfiguration,resolveEntityDateKey,scheduleOrderShareWarmup,shareBlobFile,summarizeOrderReturnGoods,toDateInputString,toTitleCase,toTitleCasePreservingSpacing,useAutoDismissMessage,useDismissSearchOnOutsideClick,warmLocalPaymentQrDataUrlCache,warmOrderShareAssetCache,warmPaymentQrImageDataUrlCache} = runtime;
-  function OrderManagementView({ isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, customerLedgerMap: prefetchedCustomerLedgerMap = null, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchStore = null, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+  function OrderManagementView({ warehouseSourcesReady=true,onPrimaryReady,supplementalSourcesReady=true,isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, customerLedgerMap: prefetchedCustomerLedgerMap = null, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchStore = null, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showAddOrder, setShowAddOrder] = useState(false); 
   const [showOrderSourcePicker, setShowOrderSourcePicker] = useState(false);
   const [orderCreationSource, setOrderCreationSource] = useState('');
@@ -297,6 +297,7 @@ export function createOrderManagementView(runtime) {
     orderProjectionScope);
   const orderViewProjection = useCooperativeProjection(prepareOrderViews,orderProjectionEntry);
   const orderViewsReady = !orderViewProjection.pending && !orderViewProjection.error;
+  useEffect(()=>{if(orderViewsReady)onPrimaryReady?.();},[orderViewsReady,onPrimaryReady]);
   const normalizedOrderSnapshots = (orderViewProjection.value || EMPTY_ORDER_VIEW_PROJECTION).snapshots || EMPTY_ORDER_VIEW_PROJECTION.snapshots;
   const getLiveOrderViewModel = useCallback(id=>{
     const order=activeOrderById.get(String(id));return order?buildOrderViewModel(order,orderViewContext):null;
@@ -2386,7 +2387,7 @@ export function createOrderManagementView(runtime) {
   };
 
   const handleChooseOrderCreationSource = (source) => {
-    if (source === 'warehouse' && !canUseWarehouseOrderSource) return;
+    if (source === 'warehouse' && (!canUseWarehouseOrderSource||!warehouseSourcesReady)) return;
     if (source === 'image' && !canUseImageOrderSource) return;
     if (source === 'manual' && !canUseManualOrderSource) return;
 
@@ -2449,7 +2450,8 @@ export function createOrderManagementView(runtime) {
   ]);
 
   return (
-    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16" aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
+    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16" data-hd-essential-data-ready={orderViewsReady&&!preparedOrderSearch.pending?'true':undefined} aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
+      {!supplementalSourcesReady&&<p role="status" className="px-4 py-2 text-xs text-slate-600">Đang cập nhật phiếu xuất, trạng thái giao hàng và đối chiếu công nợ ở nền. Chức năng đọc và tìm kiếm vẫn sử dụng được.</p>}
       {showFilterPanel && (
         <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">
@@ -3420,6 +3422,7 @@ export function createOrderManagementView(runtime) {
                 <button
                   type="button"
                   onClick={() => handleChooseOrderCreationSource('warehouse')}
+                  disabled={!warehouseSourcesReady}
                   className="flex w-full items-center gap-3 rounded-3xl border border-violet-100 bg-violet-50 p-4 text-left transition active:scale-[0.99]"
                 >
                   <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white shadow-lg shadow-violet-200">
@@ -3427,7 +3430,7 @@ export function createOrderManagementView(runtime) {
                   </span>
                   <span>
                     <span className="block text-sm font-black text-slate-900">Phiếu xuất kho</span>
-                    <span className="mt-0.5 block text-xs leading-5 text-slate-500">Chọn ngày phiếu xuất rồi rà soát đơn nháp trước khi tạo.</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-slate-500">{warehouseSourcesReady?'Chọn ngày phiếu xuất rồi rà soát đơn nháp trước khi tạo.':'Đang tải và xác minh phiếu xuất kho…'}</span>
                   </span>
                 </button>
               )}
