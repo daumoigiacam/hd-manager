@@ -31,7 +31,7 @@ export function getNativeStartupController(authSource=defaultAuth){
  }
  startupMark('controller.created',{instances:1});
  function initialize(){
-  let disposed=false,owner,off=()=>{},release=()=>{},platform,transport,current=null,generation=0,desiredPrincipal=null,networkTimer=null,removeAuthOnline=()=>{},removeIdentity=()=>{};
+  let disposed=false,owner,off=()=>{},release=()=>{},platform,transport,current=null,generation=0,desiredPrincipal=null,networkTimer=null,removeAuthOnline=()=>{},removeIdentity=()=>{},recoverClosedAuthority=()=>{};
   let auth=typeof authSource==='function'?null:authSource,authClientPromise=null;
   const authClient=()=>authClientPromise||(authClientPromise=Promise.all([auth?Promise.resolve(auth):authSource(),import('firebase/auth')]).then(([value,fa])=>{if(!value)throw Error('Firebase Auth unavailable');auth=value;return{auth,fa};}));
   let setupResolve;const setupReady=new Promise(resolve=>{setupResolve=resolve;});
@@ -65,7 +65,7 @@ export function getNativeStartupController(authSource=defaultAuth){
   const uuid=()=>crypto.randomUUID?.()||Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');
   const publish=(runtime,restored)=>{
    if(disposed)return;release();current=runtime;
-   release=runtime.subscribe(()=>{if(!runtime.isCurrent()&&!disposed)setState({runtime:null,verifiedLaunch:null,restored:false,error:'Phiên hoặc quyền Offline đã kết thúc. Giao dịch đang chờ vẫn được giữ trên máy.'});});
+   release=runtime.subscribe(()=>{if(!runtime.isCurrent()&&!disposed){setState({runtime:null,verifiedLaunch:null,restored:false,error:'Phiên hoặc quyền Offline đã kết thúc. Giao dịch đang chờ vẫn được giữ trên máy.'});recoverClosedAuthority(runtime);}});
    clearLaunch();setState(previous=>({...previous,runtime,verifiedLaunch:previous.verifiedLaunch&&JSON.stringify(previous.verifiedLaunch.scope)===JSON.stringify(runtime.scope)?previous.verifiedLaunch:null,restored,error:''}));
    console.info('WORKSPACE_LOCAL_READY '+JSON.stringify({restored,tenant:runtime.scope.tenantId,expiresAtMs:runtime.expiresAtMs}));
   };
@@ -138,7 +138,17 @@ export function getNativeStartupController(authSource=defaultAuth){
      if(observingAuth){if(auth?.currentUser&&!current?.isCurrent())void installObserved(auth.currentUser);return;}
      observingAuth=true;
      void observeAuth().catch(error=>{observingAuth=false;if(!disposed)setState(previous=>({...previous,error:previous.error||error.message}));});
-    },current?1000:0);
+    },current?.isCurrent()?1000:0);
+   };
+   // Renewal deliberately rejects a changed signed appSession (for example a
+   // new employee in the authorized directory). Hide the old authority first,
+   // then obtain and verify a NEW server grant through the existing install
+   // path. A failed grant gets one attempt, never an endless permission loop.
+   // No Offline fallback, old-grant extension or data access is allowed here.
+   let recoveredRuntime=null;
+   recoverClosedAuthority=runtime=>{
+    if(disposed||runtime!==current||recoveredRuntime===runtime||!uiAttached||!runtimeOnline())return;
+    recoveredRuntime=runtime;scheduleAuth();
    };
    window.addEventListener('online',scheduleAuth);removeAuthOnline=()=>window.removeEventListener('online',scheduleAuth);
    startUiNetwork=scheduleAuth;if(uiAttached)scheduleAuth();
