@@ -73,6 +73,16 @@ public class NativeSafeAreaPlugin extends Plugin {
         });
         call.resolve();
     }
+    @PluginMethod public void recordLocalInteraction(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local interaction metadata only"); return; }
+        String module=call.getString("module",""),action=call.getString("action",""),status=call.getString("status","");
+        Double duration=call.getDouble("durationMs");Integer count=call.getInt("count"),id=call.getInt("id");
+        if (!"asset_management".equals(module)||!"search".equals(action)||!status.matches("(committed|superseded|cancelled)")
+            ||duration==null||!Double.isFinite(duration)||duration<0||duration>86400000||count==null||count<0||id==null||id<1) {call.reject("Invalid Local interaction metadata");return;}
+        JSObject result=new JSObject();result.put("id",id);result.put("module",module);result.put("action",action);result.put("status",status);result.put("durationMs",duration);result.put("count",count);
+        result.put("scope","handler-to-react-commit-not-frame");result.put("receivedElapsedNs",android.os.SystemClock.elapsedRealtimeNanos());
+        android.util.Log.i("HDInteraction",result.toString());call.resolve();
+    }
     @PluginMethod public void recordLocalSyncStage(PluginCall call) {
         String stage=call.getString("stage",""),code=call.getString("code","none");
         if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName()) || !stage.matches("(authority-start|authority-valid|authority-failed|claimed|claim-failed|idle|sending|send-failed|receipt-failed|receipt-applied)")) {call.reject("Local sync metadata only");return;}

@@ -1,4 +1,5 @@
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {createLocalCommitTiming} from '../../services/localCommitTiming.js';
 import { useAppScreenBack } from '../../hooks/useAppScreenBack.js';
 import {
   Bike,
@@ -190,20 +191,17 @@ function AssetListScreen({
   onOpenAsset
 }) {
   const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const deferredQuery = useDeferredValue(query);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(deferredQuery), 180);
-    return () => window.clearTimeout(timer);
-  }, [deferredQuery]);
+  const searchTiming=useRef(null);
+  if(!searchTiming.current)searchTiming.current=createLocalCommitTiming();
+  useEffect(()=>()=>searchTiming.current.close(),[]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [activeFilter, debouncedQuery]);
+  }, [activeFilter, deferredQuery]);
 
   const summary = useMemo(() => {
     const activeAssets = assets.filter(asset => getAssetStatusMeta(asset.status).key === 'active').length;
@@ -211,14 +209,17 @@ function AssetListScreen({
     return { total: assets.length, active: activeAssets, attention: attentionAssets };
   }, [assets, metricsByAsset]);
 
-  const filteredAssets = useMemo(() => assets
+  // Sorting and attention classification depend on source/filter changes,
+  // not each keystroke. Filtering a sorted list preserves the same ordering.
+  const sortedAssets = useMemo(() => assets
     .filter(asset => assetMatchesFilter(asset, activeFilter, metricsByAsset[asset.id] || {}))
-    .filter(asset => assetMatchesSearch(asset, debouncedQuery, getAssigneeName(asset)))
     .sort((left, right) => {
       const attentionDiff = Number(isAssetAttentionRequired(right, metricsByAsset[right.id] || {})) - Number(isAssetAttentionRequired(left, metricsByAsset[left.id] || {}));
       if (attentionDiff) return attentionDiff;
       return getAssetName(left).localeCompare(getAssetName(right), 'vi');
-    }), [activeFilter, assets, debouncedQuery, getAssigneeName, metricsByAsset]);
+    }), [activeFilter, assets, metricsByAsset]);
+  const filteredAssets=useMemo(()=>sortedAssets.filter(asset=>assetMatchesSearch(asset,deferredQuery,getAssigneeName(asset))),[sortedAssets,deferredQuery,getAssigneeName]);
+  useLayoutEffect(()=>{if(deferredQuery===query)searchTiming.current.commit(filteredAssets.length);},[query,deferredQuery,filteredAssets]);
 
   const visibleAssets = filteredAssets.slice(0, visibleCount);
   const visibleFilters = showMoreFilters ? [...ASSET_FILTERS, ...EXTRA_ASSET_FILTERS] : ASSET_FILTERS;
@@ -235,14 +236,14 @@ function AssetListScreen({
           <Search size={19} aria-hidden="true" />
           <input
             value={query}
-            onChange={event => setQuery(event.target.value)}
+            onChange={event => {searchTiming.current.start();setQuery(event.target.value);}}
             className="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-900 outline-none placeholder:text-slate-400"
             placeholder="Tìm kiếm tài sản, biển số, mã, người phụ trách..."
             aria-label="Tìm kiếm tài sản"
             data-hd-search-input="true"
           />
           {query && (
-            <button type="button" onClick={() => setQuery('')} className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-white hover:text-slate-700" aria-label="Xóa tìm kiếm">
+            <button type="button" onClick={() => {searchTiming.current.start();setQuery('');}} className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-white hover:text-slate-700" aria-label="Xóa tìm kiếm">
               <X size={17} />
             </button>
           )}
@@ -498,7 +499,7 @@ export default function AssetManagementWorkspace({
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState('');
   const selectedAsset = assets.find(asset => `${asset.id}` === `${selectedAssetId}`) || null;
-  const getAssigneeName = (asset) => getEmployeeNames(employees, asset);
+  const getAssigneeName = useCallback(asset=>getEmployeeNames(employees,asset),[employees,getEmployeeNames]);
 
   useEffect(() => {
     if (selectedAssetId && !selectedAsset) setSelectedAssetId('');
