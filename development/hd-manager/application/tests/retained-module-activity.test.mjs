@@ -24,6 +24,13 @@ test('actual App retains one original Pricing view under the permission owner an
  const matches=[];function walk(n){if(!n||typeof n!=='object')return;if(n.type==='JSXOpeningElement'&&['SimplePricingEngineView','RetainedModuleActivity'].includes(n.name?.name))matches.push(n);for(const[k,v]of Object.entries(n))if(!['loc','start','end'].includes(k)){if(Array.isArray(v))for(const x of v)walk(x);else if(v&&typeof v==='object')walk(v);}}walk(ast);
  assert.equal(matches.filter(n=>n.name.name==='SimplePricingEngineView').length,1,'no duplicate pricing instance');const activity=matches.find(n=>n.name.name==='RetainedModuleActivity');
  const attr=name=>text.slice(activity.attributes.find(n=>n.name?.name===name).start,activity.attributes.find(n=>n.name?.name===name).end);
- assert.equal(attr('key'),'key={dashboardPrivacyScope}');assert.match(attr('allowed'),/tabPermissions\.pricing&&canAccess\('pricing'\)/);
+ assert.equal(attr('key'),'key={`pricing:${dashboardPrivacyScope}`}');assert.match(attr('allowed'),/tabPermissions\.pricing&&canAccess\('pricing'\)/);
+ // Home is an adjacent keyed sibling. Equal owner scopes must NEVER produce
+ // equal sibling keys, or React can duplicate the old Home tree on updates.
+ const pricingKey=activity.attributes.find(n=>n.name?.name==='key').value.expression;
+ for(const dashboardPrivacyScope of ['owner-a','owner-b','["tenant-a","session-a"]']){
+  const key=Function('dashboardPrivacyScope','return '+text.slice(pricingKey.start,pricingKey.end))(dashboardPrivacyScope);
+  assert.notEqual(key,dashboardPrivacyScope);assert(key.endsWith(dashboardPrivacyScope));
+ }
  assert.match(text,/case 'pricing': return null;/);assert.match(text,/\{renderPricingWorkspace\(\)\}/);
 });

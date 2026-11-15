@@ -25525,7 +25525,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
             </AppSectionErrorBoundary>
           </div>
         )}
-        <RetainedModuleActivity key={dashboardPrivacyScope} active={activeTab==='pricing'} allowed={Boolean(tabPermissions.pricing&&canAccess('pricing'))}>
+        <RetainedModuleActivity key={`pricing:${dashboardPrivacyScope}`} active={activeTab==='pricing'} allowed={Boolean(tabPermissions.pricing&&canAccess('pricing'))}>
           <AppSectionErrorBoundary name="staff_pricing" resetKey={dashboardPrivacyScope} onReset={()=>setRootActiveTab(primaryWorkTab||'home')}>
             <React.Profiler id="Module:pricing-retained" onRender={recordReactRender}>
               <React.Suspense fallback={<div data-hd-module-loading role="status" aria-busy="true" className="p-4">Đang mở Giá cả…</div>}>
