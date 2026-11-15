@@ -48,6 +48,16 @@ export function createOfflineSecureSessionStore({key, read, write, readReserved,
       await write({...record, databaseBinding: {...binding}});
     }),
     replace: record => {revision++;return exclusive(() => write(record));},
+    // Only the verified renewal callback may return a replacement signature.
+    // Keep the same owner and DB binding. Existing read leases remain bounded
+    // by their original expiry; authority/identity changes still use replace.
+    renewGrant: (expected, renew) => exclusive(async () => {
+      const record=await read();
+      if(!ownsStoredOfflineSession(record,expected)||record.revoked)throw Error('Grant renewal owner changed');
+      const next=await renew(record);
+      if(!ownsStoredOfflineSession(next,expected)||next.revoked||next.databaseBinding!==record.databaseBinding)throw Error('Grant renewal changed ownership');
+      await write(next);return next;
+    }),
     revoke: expected => {revision++;return exclusive(async () => {
       const record = await read();
       if (!ownsStoredOfflineSession(record, expected)) return false;

@@ -14,7 +14,7 @@ export async function createWebCustomerPlatform({projectId,publicKey,environment
   const digest=async text=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))),n=>n.toString(16).padStart(2,'0')).join('');
   const base=createOfflineSecureSessionStore({key,read:()=>vault.readJSON(key),write:value=>vault.writeJSON(key,value)});
   const locked=(method,...args)=>vault.exclusive(key,()=>base[method](...args));
-  const secureStore=Object.freeze({...base,withRecord:(...a)=>locked('withRecord',...a),replace:(...a)=>locked('replace',...a),revoke:(...a)=>locked('revoke',...a),advanceHighWater:(...a)=>locked('advanceHighWater',...a),attachDatabaseBinding:(...a)=>locked('attachDatabaseBinding',...a)});
+  const secureStore=Object.freeze({...base,withRecord:(...a)=>locked('withRecord',...a),replace:(...a)=>locked('replace',...a),renewGrant:(...a)=>locked('renewGrant',...a),revoke:(...a)=>locked('revoke',...a),advanceHighWater:(...a)=>locked('advanceHighWater',...a),attachDatabaseBinding:(...a)=>locked('attachDatabaseBinding',...a)});
   return Object.freeze({secureStore,digest,
     subscribeIdentityChanges(listener){listeners.add(listener);return()=>listeners.delete(listener);},
     async discardPreparedDatabase(){},

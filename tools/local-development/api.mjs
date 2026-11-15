@@ -43,12 +43,16 @@ async function currentCore(reader,uid){
 }
 async function refreshAccess(uid){return db.runTransaction(async tx=>{
  const fresh=await currentCore(tx,uid),s=fresh.subject,caps=capabilities(s);
+ const previous=(await tx.get(db.doc('offlineCustomerAccess/'+uid))).data();
  // The existing grant protocol authorizes assignment against a SIGNED tenant
  // directory. Never invent an NVKD or infer assignment rights from a cache.
  const directory=caps.includes('customers.read')?await tx.get(db.collection(`artifacts/${c.appId}/public/data/employees`).where('companyId','==',fresh.tenantId).limit(501)):null;
  if(directory?.docs.length>500)throw Error('Signed manager directory requires pagination beyond this protocol limit');
  const managers=(directory?.docs||[]).filter(d=>!d.data().isArchived).map(d=>{const e=d.data();return{id:d.id,companyId:fresh.tenantId,name:String(e.name||''),position:String(e.position||''),...(Array.isArray(e.positions)?{positions:e.positions}:{}),...(Array.isArray(e.additionalPositions)?{additionalPositions:e.additionalPositions}:{})};});
  const access={active:true,tenantId:fresh.tenantId,permissionRevision:fresh.permissionRevision,readScope:'tenant',capabilities:caps,localAuthority:localFinanceAuthority({actor:fresh,subject:s,projectId:c.projectId,appId:c.appId,hasAction:projector.hasCompanyRolePermissionAction}),appIdentity:{identityKey:fresh.identityId,id:s.employee.id,companyId:fresh.tenantId,name:String(s.employee.name||''),position:String(s.employee.position||''),companyName:String(s.company.name||''),managers}};
+ // Preserve only an explicitly shorter Local policy for this unchanged owner.
+ // Reprojecting RBAC must not silently lengthen its configured Offline limit.
+ if(previous?.tenantId===fresh.tenantId&&previous.permissionRevision===fresh.permissionRevision&&Number.isInteger(previous.offlineLifetimeMs)&&previous.offlineLifetimeMs>=1000&&previous.offlineLifetimeMs<=3600000)access.offlineLifetimeMs=previous.offlineLifetimeMs;
  tx.set(db.doc('offlineCustomerAccess/'+uid),access);return {...fresh,capabilities:access.capabilities};
 });}
 async function authenticate(token){

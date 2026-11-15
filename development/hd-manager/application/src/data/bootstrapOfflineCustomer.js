@@ -6,6 +6,7 @@ import {createOfflineReadLease} from './offlineReadLease.js';
 import {CUSTOMER_DIRECTORY_PAGE_SIZE} from './offlineCustomerQuery.js';
 import {createBusinessSearchForegroundGate} from '../services/businessSearchForegroundGate.js';
 import {assertOfflineProject} from '../config/offlineRuntimeEnvironment.js';
+import {renewOfflineGrant} from './offlineGrantRenewal.js';
 // secureStore is a platform-encrypted store. readIdentity returns the identity
 // last saved after online token verification, never a UI/localStorage profile.
 export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,openDatabase,transport,digest,uuid,environment,online=()=>navigator.onLine,events=globalThis,onPhase=()=>{},beforeReceiptCommit,deferNetwork=false,backgroundHomeSync=true,loadHomeSync=null,loadAttendanceProviders=null,launchCache=null,onVerifiedLaunch=()=>{}}){
@@ -41,6 +42,10 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   verifiedGrant=await verify({scope:expected,kind:'app.session'});
  }
  session ||=createVerifiedDataSession(expected);
+ // Repositories retain this object. Only the verified signed lifetime may
+ // advance; identity, capabilities and database owner remain unchanged.
+ let activeGrant=verifiedGrant;
+ verifiedGrant=Object.freeze({...verifiedGrant,get issuedAtMs(){return activeGrant.issuedAtMs;},get expiresAtMs(){return activeGrant.expiresAtMs;}});
  fullAuthorize=await createOfflineCustomerAuthorizer({publicKey,secureStore,expected,maxLifetimeMs,clockSkewMs:5000});
  onPhase('PERMISSION_VERIFIED');
  const appSession=restoreOfflineAppSession(verifiedGrant,expected);
@@ -74,7 +79,9 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
  const requireBackgroundIdle=()=>{if(businessForeground.shouldYield())throw Object.assign(Error('Business search background yielded'),{code:'busy'});};
  const listeners=new Set();
  const releaseSession=session.subscribe(()=>{if(!session.isCurrent()){clearTimeout(authorityTimer);authorityAbort?.abort();businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();onPhase('ERROR');for(const listener of listeners)listener();}});
- const expiryTimer=setTimeout(()=>session.close(),Math.max(0,verifiedGrant.expiresAtMs-Date.now()));
+ let expiryTimer;
+ const scheduleExpiry=()=>{clearTimeout(expiryTimer);expiryTimer=setTimeout(()=>session.close(),Math.max(0,verifiedGrant.expiresAtMs-Date.now()));};
+ scheduleExpiry();
  let customerRevision=0,homeRevision=0,preparedCustomerPage=null,preparingCustomerPage=null;
  const changed=(topic='customers')=>{if(topic==='home'){homeRevision++;businessSearchOwner?.invalidate();}if(topic==='customers'){customerRevision++;preparedCustomerPage=null;}if(!closed&&session.isCurrent())for(const listener of listeners){try{listener(topic);}catch{/* UI observers cannot turn a durable receipt into a failed commit. */}}};
  try{
@@ -293,7 +300,7 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    authorityPromise=(async()=>{
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);authorityAbort=controller;
     try{
-     const fresh=await transport.grant(expected.deviceId,controller.signal,session.scope);
+     const fresh=await (transport.renewGrant?transport.renewGrant(expected,controller.signal):transport.grant(expected.deviceId,controller.signal,session.scope));
      if(closed||!session.isCurrent())return false;
      if(!fresh?.scope||['projectId','tenantId','principalId','deviceId'].some(key=>fresh.scope[key]!==expected[key]))throw Object.assign(Error('Online permission owner mismatch'),{code:'permission-denied'});
      const candidate={identity:fresh.scope,signedGrant:fresh.signedGrant,highWaterMs:fresh.issuedAtMs,revoked:false};
@@ -302,12 +309,17 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
      if(closed||!session.isCurrent())return false;
      const capabilities=value=>JSON.stringify([...value].sort());
      if(checked.permissionRevision!==expected.permissionRevision||capabilities(checked.capabilities)!==capabilities(verifiedGrant.capabilities))throw Object.assign(Error('Online permission changed; reauthentication required'),{code:'permission-denied'});
+     if(fresh.scope.sessionId===expected.sessionId&&secureStore.renewGrant){
+      const renewed=await renewOfflineGrant({publicKey,secureStore,expected,currentGrant:activeGrant,fresh,maxLifetimeMs,isCurrent:()=>!closed&&session.isCurrent()});
+      if(closed||!session.isCurrent())return false;
+      activeGrant=renewed;scheduleExpiry();startupMark('permission.online-renewed');
+     }
      return true;
     }catch(error){if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
     finally{clearTimeout(timeout);if(authorityAbort===controller)authorityAbort=null;}
    })().finally(()=>{authorityPromise=null;});return authorityPromise;
   };
-  const scheduleAuthority=()=>{clearTimeout(authorityTimer);if(closed||!session.isCurrent())return;authorityTimer=setTimeout(()=>{if(globalThis.document?.visibilityState==='hidden'){scheduleAuthority();return;}void revalidateAuthority().then(valid=>{if(valid&&!closed&&session.isCurrent())sync.notifyConnectivity();}).finally(scheduleAuthority).catch(()=>{});},30000);};
+  const scheduleAuthority=()=>{clearTimeout(authorityTimer);if(closed||!session.isCurrent())return;authorityTimer=setTimeout(()=>{if(globalThis.document?.visibilityState==='hidden'){scheduleAuthority();return;}void revalidateAuthority().then(valid=>{if(valid&&!closed&&session.isCurrent())sync.notifyConnectivity();}).finally(scheduleAuthority).catch(()=>{});},Math.min(30000,Math.max(250,Math.floor((verifiedGrant.expiresAtMs-Date.now())/2))));};
   const connectivity=()=>{void revalidateAuthority().then(valid=>{if(!valid||closed||!session.isCurrent())return;if(adjustmentPromise)void adjustmentPromise.then(repo=>repo.refresh()).catch(()=>{});if(importsReadPromise)void importsReadPromise.then(owner=>owner.sync()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.sync()).catch(()=>{});startupMark('background.refresh-start');startupMark('background.sync-start');sync.notifyConnectivity();if(home&&(backgroundHomeSync||homeSyncPromise||businessSourcesRequested))void home.sync().catch(()=>{});void refresh().catch(()=>{}).finally(()=>startupMark('background.refresh-complete',{online:online()}));});};
   let networkStarted=false,timer=null;
   const startNetwork=()=>{if(closed||networkStarted||!session.isCurrent())return;networkStarted=true;events.addEventListener('online',connectivity);timer=setTimeout(connectivity,0);scheduleAuthority();};
@@ -325,7 +337,7 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    releaseForegroundRead=()=>{release();globalThis.document?.removeEventListener('visibilitychange',visibility);};
   }
   onPhase('READY');
-  return Object.freeze({scope:session.scope,appSession,expiresAtMs:verifiedGrant.expiresAtMs,startNetwork,activateReads:()=>{const a=readLease?.activate(),b=delta?.activate(),c=repository.activateDirectory();return()=>{a?.();b?.();c();};},noteCustomerDirectoryVisible:()=>repository.noteDirectoryVisible(),capabilities:Object.freeze([...verifiedGrant.capabilities]),repository,history,home,orders,business,cashflowRepository:getCashflow,stockCountRepository:getStockCount,warehouseImportRepository:getWarehouseImport,warehouseDispatchRepository:getWarehouseDispatch,deliveryRepository:getDelivery,payrollRepository:getPayroll,attendancePeriodRepository:getAttendancePeriods,salarySettlementRepository:getSalarySettlements,attendanceRequestRepository:getAttendanceRequests,attendanceRepository:getAttendance,employeeProfileRepository:getEmployeeProfiles,salaryAdvanceRepository:getSalaryAdvances,warehouse:getWarehouseDirectory,orderProduct:getOrderProduct,
+  return Object.freeze({scope:session.scope,appSession,get expiresAtMs(){return verifiedGrant.expiresAtMs;},startNetwork,activateReads:()=>{const a=readLease?.activate(),b=delta?.activate(),c=repository.activateDirectory();return()=>{a?.();b?.();c();};},noteCustomerDirectoryVisible:()=>repository.noteDirectoryVisible(),capabilities:Object.freeze([...verifiedGrant.capabilities]),repository,history,home,orders,business,cashflowRepository:getCashflow,stockCountRepository:getStockCount,warehouseImportRepository:getWarehouseImport,warehouseDispatchRepository:getWarehouseDispatch,deliveryRepository:getDelivery,payrollRepository:getPayroll,attendancePeriodRepository:getAttendancePeriods,salarySettlementRepository:getSalarySettlements,attendanceRequestRepository:getAttendanceRequests,attendanceRepository:getAttendance,employeeProfileRepository:getEmployeeProfiles,salaryAdvanceRepository:getSalaryAdvances,warehouse:getWarehouseDirectory,orderProduct:getOrderProduct,
    prepareCustomerNavigation(){
     if(preparingCustomerPage)return preparingCustomerPage;
     const version=customerRevision;startupMark('crm.intent-read-start');
