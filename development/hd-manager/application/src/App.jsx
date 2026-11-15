@@ -14789,10 +14789,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     }
     const persistenceMode = await firebaseAuthPersistencePromise;
     recordStartupEvent('auth.identity_login.persistence_ready', { mode: persistenceMode });
-    await offlineWorkspace.controller?.beforeIdentityChange(session.identity.firebaseUid);
+    // Do not let the background Auth observer activate an Offline grant while
+    // the Identity response still requires account/security setup.
+    await offlineWorkspace.controller?.beforeIdentityChange(session.requiresSetup?'':session.identity.firebaseUid);
     const customTokenStartedAt = Date.now();
     const credential = await runFirebaseAuthMutation(() => signInWithCustomToken(auth, session.customToken));
-    await offlineWorkspace.controller?.acceptFirebaseIdentity?.(credential.user.uid);
+    if(activate&&!session.requiresSetup)await offlineWorkspace.controller?.acceptFirebaseIdentity?.(credential.user.uid);
     recordStartupEvent('auth.identity_login.custom_token_completed', {
       durationMs: Date.now() - customTokenStartedAt,
     });

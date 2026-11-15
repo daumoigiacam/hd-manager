@@ -9,6 +9,7 @@ import * as advanceDomain from'../../development/hd-manager/application/src/feat
 import * as payrollDomain from'../../development/hd-manager/application/src/features/payroll/offlinePayrollProtocol.js';
 import {deriveSalarySettlementAccess,salarySettlementCapabilities} from'../../development/hd-manager/application/src/features/payroll/payrollSettlementPolicy.js';
 const c=await localEnvironment(),require=createRequire(import.meta.url),sdkRequire=createRequire(path.join(workspace,'functions/package.json')),admin=sdkRequire('firebase-admin');
+const {requiresIdentitySetup}=require('../../functions/identitySetupPolicy.cjs');
 Object.assign(process.env,{FIRESTORE_EMULATOR_HOST:c.firestore.host+':'+c.firestore.port,FIREBASE_AUTH_EMULATOR_HOST:c.auth.host+':'+c.auth.port,GCLOUD_PROJECT:c.projectId,GOOGLE_CLOUD_PROJECT:c.projectId,GOOGLE_APPLICATION_CREDENTIALS:'',FIREBASE_TOKEN:'',TZ:'Asia/Ho_Chi_Minh'});
 const app=admin.initializeApp({projectId:c.projectId}),db=admin.firestore(app),auth=admin.auth(app);db.settings({ignoreUndefinedProperties:true});
 const control=await openLocalControlPlane(c),leaseKey='hdmanager:'+c.name+':api-owner',leaseOwner=randomUUID();
@@ -38,7 +39,7 @@ async function registerBinding(identityId){
 async function currentCore(reader,uid){
  const binding=(await reader.get(db.doc('offlineHomeActors/'+uid))).data();if(!binding?.identityId||binding.localEnvironment!==c.name)throw deny();
  const identity=(await reader.get(db.doc('identity_accounts/'+binding.identityId))).data();if(!identity||identity.status!=='active'||identity.lockedAt||identity.companyId!==binding.tenantId||identity.appUserId!==binding.employeeId)throw deny();
- return {...await readOriginalCoreActor({db,reader,appId:c.appId,uid}),identityId:binding.identityId};
+ return {...await readOriginalCoreActor({db,reader,appId:c.appId,uid}),identityId:binding.identityId,setupComplete:!requiresIdentitySetup(identity)};
 }
 async function refreshAccess(uid){return db.runTransaction(async tx=>{
  const fresh=await currentCore(tx,uid),s=fresh.subject,caps=capabilities(s);
@@ -53,7 +54,7 @@ async function refreshAccess(uid){return db.runTransaction(async tx=>{
 async function authenticate(token){
  let decoded;try{decoded=await auth.verifyIdToken(token,true);}catch(error){console.warn(JSON.stringify({event:'LOCAL_AUTH_VERIFY_REJECTED',code:typeof error.code==='string'?error.code:'unclassified'}));throw error;}if(decoded.aud!==c.projectId||decoded.iss!=='https://securetoken.google.com/'+c.projectId||!decoded.identityId||decoded.accountType!=='employee'||decoded.exp*1000<=Date.now())throw deny();
  const row=(await control.pool.query('SELECT * FROM local_tenant_binding WHERE environment=$1 AND firebase_uid=$2',[c.name,decoded.uid])).rows[0];if(!row||row.identity_id!==decoded.identityId||row.tenant_id!==decoded.companyId||row.employee_id!==decoded.appUserId)throw deny();
- await db.runTransaction(tx=>currentCore(tx,decoded.uid),{readOnly:true});return {uid:decoded.uid,projectId:c.projectId};
+ await db.runTransaction(async tx=>{const actor=await currentCore(tx,decoded.uid);if(!actor.setupComplete)throw deny();},{readOnly:true});return {uid:decoded.uid,projectId:c.projectId};
 }
 async function seedQa(){
  let credentials=await loadLocalQaCredentials();if(!credentials){credentials=['A','B'].map((label,i)=>({label,phone:'000000010'+(i+1),password:'Local!'+randomBytes(24).toString('base64url')}));await saveLocalQaCredentials(credentials);}

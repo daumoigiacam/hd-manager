@@ -3,6 +3,7 @@ const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const {setImmediate:turn}=require('node:timers/promises');
 const {parse}=require('@babel/parser');
+const {requiresIdentitySetup}=require('../functions/identitySetupPolicy.cjs');
 const source=readFileSync('functions/identityCenter.js','utf8');
 const tree=parse(source,{sourceType:'script'});
 const center=tree.program.body.find(n=>n.type==='VariableDeclaration'&&n.declarations.some(d=>d.id.name==='createIdentityCenter')).declarations[0].init;
@@ -14,8 +15,8 @@ function harness({claimsImpl}={}){
   createUser:async()=>{events.push('create-user')},createCustomToken:()=>{events.push('token-start');return token.promise}};
  const getIdentityRef=id=>({id,collection:()=>({doc:()=>({get:()=>{events.push('device-start');return device.promise}})})});
  const db={collection:()=>({doc:()=>({audit:true})}),batch:()=>({set:(ref,value)=>writes.push({ref,value}),commit:()=>{events.push('commit-start');return commit.promise}})};
- const issue=new Function('db','admin','getIdentityRef','sanitizeDevice','safeIdPart','buildPublicIdentity','IDENTITY_AUDIT_COLLECTION',`return (${source.slice(node.start,node.end)})`)(
-  db,{auth:()=>auth},getIdentityRef,v=>v,v=>v,v=>({companyId:v.companyId,accountType:v.accountType}),'audit-fixture');
+ const issue=new Function('db','admin','getIdentityRef','sanitizeDevice','safeIdPart','buildPublicIdentity','IDENTITY_AUDIT_COLLECTION','requiresIdentitySetup',`return (${source.slice(node.start,node.end)})`)(
+  db,{auth:()=>auth},getIdentityRef,v=>v,v=>v,v=>({companyId:v.companyId,accountType:v.accountType}),'audit-fixture',requiresIdentitySetup);
  const input={identityId:'employee-a',identity:{companyId:'company-a',appUserId:'employee-a',role:'employee',accountType:'employee',setup:{pinSet:true,trustedDevice:true}},
   device:{deviceId:'device-a',platform:'android'},loginRateRef:{rate:true}};
  return {claims,token,device,commit,events,writes,auth,run:()=>issue(input)};
