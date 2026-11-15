@@ -8,7 +8,9 @@ export interface DefaultsPorts extends Pick<BillingPorts, 'products' | 'getCusto
   formatDispatchNumberInput: (value: number) => string;
 }
 export interface OrderRow {
-  id?: string; customerId?: string; productId?: string; productName?: string; productUnit?: string;
+  id?: string; companyId?: string; customerId?: string; productId?: string; productName?: string; productUnit?: string;
+  itemIndex?: number; productAttribute?: string; branchName?: string; branchAddress?: string;
+  customerBranchName?: string; customerBranchAddress?: string;
   rowKey?: string; lineId?: string; itemId?: string; requestId?: string; requestDate?: string;
   requestDateKey?: string; requestTimestamp?: number; timestamp?: number; createdAt?: string; updatedAt?: string;
   configurationId?: string; sizeLabel?: string; attributeLabel?: string; quantityUnit?: string; unit?: string;

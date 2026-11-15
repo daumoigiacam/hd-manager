@@ -177,7 +177,7 @@ import DispatchQuantityFields from './features/warehouse/DispatchQuantityFields.
 import DispatchHistoryDialog from './features/warehouse/DispatchHistoryDialog.jsx';
 import DispatchHistoryCalendar from './features/warehouse/DispatchHistoryCalendar.jsx';
 import DispatchShortageList from './features/warehouse/DispatchShortageList.jsx';
-import { matchDispatchOrder } from './features/warehouse/matchDispatchOrder.js';
+import { matchDispatchOrder, selectPreferredDispatchOrderRow } from './features/warehouse/matchDispatchOrder.js';
 import { buildDispatchOrderDefaults } from './features/warehouse/buildDispatchOrderDefaults.js';
 import { coordinateDispatchBilling } from './features/warehouse/coordinateDispatchBilling.js';
 import { submitDispatchForm } from './features/warehouse/submitDispatchForm.js';
@@ -44232,9 +44232,11 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       const itemRowKey = `${item?.rowKey || item?.id || item?.lineId || item?.itemId || index}`.trim();
       return {
         rowKey: `${request.id || 'request'}_${itemRowKey || item?.productId || index}`,
+        itemIndex: index,
         requestId: request.id || '',
         requestDate,
         customerId: request.customerId || requestCustomer?.id || '',
+        requestTimestamp: getEntityTimestamp(request),
         customerName,
         branchId: branchRef.branchId,
         branchName: branchRef.branchName,
@@ -44347,8 +44349,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const getPreferredOrderRowForDispatchCustomer = (customerId = '') => {
     if (!customerId) return null;
     const missingRows = getMissingDispatchOrderRowsForCustomer(customerId);
-    if (missingRows.length > 0) return missingRows[0];
-    return dispatchOrderRows.find(row => row.customerId === customerId && row.productId) || null;
+    return selectPreferredDispatchOrderRow([
+      ...missingRows,
+      ...dispatchOrderRows.filter(row => row.customerId === customerId && row.productId),
+    ], getEntityTimestamp);
   };
   const buildDispatchDefaultsFromOrderRow = (orderRow = null) => buildDispatchOrderDefaults(orderRow, {
     productLookup,
@@ -44385,7 +44389,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const missingRows = getMissingDispatchOrderRowsForCustomer(selectedDispatchCustomer.id);
     const allOrderRows = dispatchOrderRows.filter(row => row.customerId === selectedDispatchCustomer.id && row.productId);
     const grouped = new Map();
-    [...missingRows, ...allOrderRows].forEach((row) => {
+    [...missingRows, ...allOrderRows].sort((a, b) =>
+      String(b.requestDate || '').localeCompare(String(a.requestDate || ''))
+      || (b.requestTimestamp || b.item?.requestTimestamp || 0) - (a.requestTimestamp || a.item?.requestTimestamp || 0)
+    ).forEach((row) => {
       const key = row.productId || normalizeLookupText(row.productName || '');
       if (key && !grouped.has(key)) grouped.set(key, row);
     });
@@ -44963,7 +44970,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const handleDispatchProductChange = (productId) => {
     const selectedProduct = productLookup.get(productId);
     const matchedOrderRow = dispatchDraft.customerId
-      ? findMatchingOrderRequestRowForDispatch(dispatchDraft.customerId, productId, { ...dispatchDraft, productId })
+      ? findMatchingOrderRequestRowForDispatch(dispatchDraft.customerId, productId, dispatchDraft.productId === productId
+        ? { ...dispatchDraft, productId } : { quantityUnit: dispatchDraft.quantityUnit, productId })
       : null;
     const customer = customerLookup.get(dispatchDraft.customerId) || null;
     const configSource = getCustomerBranchProductConfigSource(customer, '', products);
@@ -44979,7 +44987,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     };
     const orderDefaults = matchedOrderRow
       ? buildDispatchDefaultsFromOrderRow(matchedOrderRow)
-      : fixedProductDefaults;
+      : { ...buildDispatchDefaultsFromOrderRow(), ...fixedProductDefaults };
     const fallbackUnit = normalizeDispatchQuantityUnit(
       resolveCustomerProductActualUnit(configuration, selectedProduct)
       || selectedProduct?.unit
@@ -45019,7 +45027,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const customer = customerLookup.get(inlineEditingDispatchDraft.customerId) || null;
     const product = productLookup.get(productId) || null;
     const matchedOrderRow = customer && product
-      ? findMatchingOrderRequestRowForDispatch(customer.id, product.id, { ...inlineEditingDispatchDraft, productId })
+      ? findMatchingOrderRequestRowForDispatch(customer.id, product.id, inlineEditingDispatchDraft.productId === productId
+        ? { ...inlineEditingDispatchDraft, productId } : { quantityUnit: inlineEditingDispatchDraft.quantityUnit, productId })
       : null;
     const configuration = resolveCustomerProductBillingConfiguration(
       getCustomerBranchProductConfigSource(customer, '', products),
@@ -45028,6 +45037,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     const defaults = matchedOrderRow
       ? buildDispatchDefaultsFromOrderRow(matchedOrderRow)
       : {
+          ...buildDispatchDefaultsFromOrderRow(),
           productId,
           productSearch: product?.name || '',
           pieceCount: '',
@@ -45088,6 +45098,10 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       quantityUnit
     };
     const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
+    if ((dispatchLikeForOrderMatch.sourceOrderRequestId || dispatchLikeForOrderMatch.sourceOrderRequestRowKey) && !matchedOrderRow) {
+      setDispatchError('Không tìm thấy đúng dòng đơn đặt nguồn. Vui lòng tải lại và chọn lại đơn trước khi lưu.');
+      return false;
+    }
     const isOutsideOrderRequest = !matchedOrderRow;
     const baseSourceType = `${row.sourceType || 'manual'}`.includes('voice') ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || row, row);

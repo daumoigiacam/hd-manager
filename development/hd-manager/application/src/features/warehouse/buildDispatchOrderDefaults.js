@@ -17,6 +17,14 @@ export function buildDispatchOrderDefaults(orderRow, ports) {
     amount: 0,
     billingSnapshotVersion: 0,
     billingSnapshotSource: '',
+    sourceOrderRequestId: '',
+    sourceOrderRequestRowKey: '',
+    sourceOrderRequestDate: '',
+    branchId: '',
+    branchName: '',
+    branchAddress: '',
+    sizeLabel: '',
+    attributeLabel: '',
   };
   const product = (orderRow.productId && productLookup.get(orderRow.productId)) || orderRow.product || null;
   const productName = product?.name || orderRow.productName || orderRow.item?.productName || orderRow.item?.description || '';
@@ -80,6 +88,14 @@ export function buildDispatchOrderDefaults(orderRow, ports) {
     amount: sourceSnapshot.amount || 0,
     billingSnapshotVersion: sourceSnapshot.hasFrozenPricing ? 1 : 0,
     billingSnapshotSource: sourceSnapshot.hasFrozenPricing ? 'order_request_snapshot' : configuration.source,
+    sourceOrderRequestId: orderRow.requestId || '',
+    sourceOrderRequestRowKey: orderRow.rowKey || '',
+    sourceOrderRequestDate: orderRow.requestDate || '',
+    branchId: orderRow.branchId || orderRow.customerBranchId || '',
+    branchName: orderRow.branchName || orderRow.customerBranchName || '',
+    branchAddress: orderRow.branchAddress || orderRow.customerBranchAddress || '',
+    sizeLabel: orderRow.sizeLabel || orderRow.item?.sizeLabel || '',
+    attributeLabel: orderRow.attributeLabel || orderRow.item?.attributeLabel || '',
   };
 
 }

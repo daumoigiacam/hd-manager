@@ -31,6 +31,10 @@ export async function submitDispatchForm(e, {canCreate, employee, customerLookup
       quantityUnit
     };
     const matchedOrderRow = findMatchingOrderRequestRowForDispatch(customer.id, product.id, dispatchLikeForOrderMatch);
+    if ((dispatchDraft.sourceOrderRequestId || dispatchDraft.sourceOrderRequestRowKey) && !matchedOrderRow) {
+      setDispatchError('Không tìm thấy đúng dòng đơn đặt nguồn. Vui lòng tải lại và chọn lại đơn trước khi lưu.');
+      return;
+    }
     const isOutsideOrderRequest = !matchedOrderRow;
     const baseSourceType = dispatchDraft.transcript ? 'voice' : 'manual';
     const branchRef = getDispatchOrderBranchRef(customer, matchedOrderRow || dispatchDraft, dispatchDraft);
@@ -43,6 +47,11 @@ export async function submitDispatchForm(e, {canCreate, employee, customerLookup
       actualWeightKg: weightKg,
       branchId: branchRef.branchId,
     });
+    if (dispatchDraft.sourceOrderRequestId && dispatchDraft.unitPrice > 0
+      && billingSnapshot.unitPrice !== dispatchDraft.unitPrice) {
+      setDispatchError('Đơn giá đơn đặt nguồn đã thay đổi. Vui lòng chọn lại đơn để kiểm tra giá trước khi lưu.');
+      return;
+    }
     const assignedDriverId = effectiveDispatchDriverId;
     const assignedDriver = assignedDriverId ? employeeLookup.get(assignedDriverId) : null;
     const assignedDriverName = assignedDriver?.name || '';

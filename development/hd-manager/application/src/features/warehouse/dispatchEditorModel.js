@@ -1,6 +1,6 @@
 /** @typedef {{id: string, name: string}} NamedOption */
 /** @typedef {'assignedDriverId' | 'customerId' | 'productId' | 'pieceCount' | 'weightKg'} DispatchField */
-/** @typedef {{customerId?: string, customerName?: string, productId?: string, productName?: string, pieceCount?: number | string, quantityUnit?: string, weightKg?: number | string, weightEntries?: (string | number)[], assignedDriverId?: string, driverId?: string, note?: string, configurationId?: string, billingUnit?: string, pricingUnit?: string, billingQuantity?: number, pricingQuantity?: number, unitPrice?: number, price?: number, amount?: number, pricingAmount?: number, billingSnapshotVersion?: number, billingSnapshotSource?: string}} EditableDispatch */
+/** @typedef {import('./dispatchWorkflowContracts.js').OrderRow & {customerName?: string, productName?: string, weightEntries?: (string | number)[], assignedDriverId?: string, driverId?: string, note?: string, billingUnit?: string, pricingUnit?: string, billingQuantity?: number, pricingQuantity?: number, unitPrice?: number, price?: number, amount?: number, pricingAmount?: number, billingSnapshotVersion?: number, billingSnapshotSource?: string}} EditableDispatch */
 /** @param {EditableDispatch} row */
 export function buildDispatchEditorDraft(row) {
   return {
@@ -12,7 +12,14 @@ export function buildDispatchEditorDraft(row) {
     configurationId: row.configurationId || '', billingUnit: row.billingUnit || row.pricingUnit || '',
     billingQuantity: row.billingQuantity ?? row.pricingQuantity ?? 0, unitPrice: row.unitPrice ?? row.price ?? 0,
     amount: row.amount ?? row.pricingAmount ?? 0, billingSnapshotVersion: row.billingSnapshotVersion || 0,
-    billingSnapshotSource: row.billingSnapshotSource || ''
+    billingSnapshotSource: row.billingSnapshotSource || '',
+    sourceOrderRequestId: row.sourceOrderRequestId || '',
+    sourceOrderRequestRowKey: row.sourceOrderRequestRowKey || '',
+    sourceOrderRequestDate: row.sourceOrderRequestDate || '',
+    branchId: row.branchId || row.customerBranchId || '',
+    branchName: row.branchName || row.customerBranchName || '',
+    branchAddress: row.branchAddress || row.customerBranchAddress || '',
+    sizeLabel: row.sizeLabel || '', attributeLabel: row.attributeLabel || '',
   };
 }
 /** @param {string} field @param {boolean} canEdit @param {boolean} canAssignDriver */
