@@ -25,13 +25,13 @@ jobs:
       VITE_NATIVE_STARTUP_CORE_PRELOAD: "false"
       VITE_OFFLINE_CUSTOMER_PILOT: "false"
       VITE_OFFLINE_RUNTIME: ""
-      VITE_HD_BUILD_ID: dd8019d676d227b925b79151e7de055ad785e83d
+      VITE_HD_BUILD_ID: a550fc5922d024694703992e82eff05e50a7a005
     steps:
       - name: Checkout tested application source
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: f155c659773bc53829963fbb9a5b32f6c1bbfd22
+          ref: a550fc5922d024694703992e82eff05e50a7a005
       - name: Set up Node 22
         uses: actions/setup-node@v5
         with:
@@ -39,8 +39,8 @@ jobs:
       - name: Verify exact tested source and safe scope
         run: |-
           set -euo pipefail
-          git merge-base --is-ancestor dd8019d676d227b925b79151e7de055ad785e83d HEAD
-          git diff --exit-code dd8019d676d227b925b79151e7de055ad785e83d HEAD -- development/hd-manager/application scripts android
+          git merge-base --is-ancestor a550fc5922d024694703992e82eff05e50a7a005 HEAD
+          git diff --exit-code a550fc5922d024694703992e82eff05e50a7a005 HEAD -- development/hd-manager/application scripts android
           test -z "${VITE_API_BASE_URL:-}"
           test "$VITE_OFFLINE_RUNTIME" = ""
       - name: Install existing locked build dependencies
@@ -86,8 +86,8 @@ jobs:
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
             import os,sys,json,pathlib,hashlib,tarfile,zipfile,stat,datetime,urllib.request,urllib.error,ssl,tempfile,shutil
-            SOURCE='dd8019d676d227b925b79151e7de055ad785e83d'
-            OLD_SOURCE='f60a7eb312f53c5ad2415621f0f4bc2ba3b59508'
+            SOURCE='a550fc5922d024694703992e82eff05e50a7a005'
+            OLD_SOURCE='dd8019d676d227b925b79151e7de055ad785e83d'
             ZIP=pathlib.Path('__FRONTEND_ZIP_PATH__')
             EXPECTED_ZIP_SHA='__FRONTEND_ZIP_SHA__'
             BASE=pathlib.Path('/var/www/hd-manager')
