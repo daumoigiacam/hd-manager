@@ -4,6 +4,7 @@ import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
 import {getOrderRequestWorkspaceReadCollections} from './services/orderRequestWorkspaceReadPlan.js';
 import {getOrderWorkspaceReadCollections,runReadyOrderMutation} from './services/orderWorkspaceReadPlan.js';
+import {getBankWorkspaceReadCollections,BANK_PRIMARY_COLLECTIONS} from './services/bankWorkspaceReadPlan.js';
 import {getMessageWorkspaceReadCollections,getMessageAttachmentReadCollections,MESSAGE_PRIMARY_COLLECTIONS} from './services/messageWorkspaceReadPlan.js';
 import {rememberCommittedReadSources,hasRetainedModuleSources} from './services/moduleReadAvailability.js';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
@@ -13688,6 +13689,9 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     setProductInventoryDemand(previous=>enabled?readOwnerKey:previous===readOwnerKey?null:previous);
   },[readOwnerKey]);
   const [messageListCommittedOwner,setMessageListCommittedOwner]=useState(null);
+  const [bankListCommittedOwner,setBankListCommittedOwner]=useState(null);
+  const bankBackgroundRequested=bankListCommittedOwner===readOwnerKey;
+  const onBankPrimaryReady=useCallback(()=>{if(readOwnerRef.current===readOwnerKey)setBankListCommittedOwner(readOwnerKey);},[readOwnerKey]);
   const [orderListCommittedOwner,setOrderListCommittedOwner]=useState(null);
   const orderBackgroundRequested=orderListCommittedOwner===readOwnerKey;
   const onOrderPrimaryReady=useCallback(()=>{if(readOwnerRef.current===readOwnerKey)setOrderListCommittedOwner(readOwnerKey);},[readOwnerKey]);
@@ -13721,7 +13725,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
     if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded || startupWorkspaceReady)) return undefined;
-    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):activeTab==='order_requests'?getOrderRequestWorkspaceReadCollections(requestDispatchRequested):activeTab==='orders'?getOrderWorkspaceReadCollections(orderBackgroundRequested):activeTab==='messages'?getMessageWorkspaceReadCollections(messageAttachmentRequested,messageBackgroundRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
+    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):activeTab==='order_requests'?getOrderRequestWorkspaceReadCollections(requestDispatchRequested):activeTab==='orders'?getOrderWorkspaceReadCollections(orderBackgroundRequested):activeTab==='bank_payments'?getBankWorkspaceReadCollections(bankBackgroundRequested):activeTab==='messages'?getMessageWorkspaceReadCollections(messageAttachmentRequested,messageBackgroundRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     firebaseUser?.uid,
@@ -13729,7 +13733,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     currentUser?.companyId,
     currentUser?.customerId,
     isCoreDataLoaded,startupWorkspaceReady,
-    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,requestDispatchRequested,orderBackgroundRequested,messageAttachmentRequested,messageBackgroundRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
+    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,requestDispatchRequested,orderBackgroundRequested,bankBackgroundRequested,messageAttachmentRequested,messageBackgroundRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
   ]);
 
   useEffect(() => {
@@ -22624,7 +22628,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
       <RetainedFullWorkspace native={isNativeRuntime()} scope={fullWorkspaceOwnerScope} local={wantsRestoredWorkspace} localView={restoredWorkspaceView} onVisible={markFullWorkspaceVisible}>
-      <MainAppView onOrderPrimaryReady={onOrderPrimaryReady} onMessagePrimaryReady={onMessagePrimaryReady} onMessageAttachmentDemandChange={onMessageAttachmentDemandChange} currentReadOwnerKey={readOwnerKey} localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onRequestDispatchDemandChange={onRequestDispatchDemandChange} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
+      <MainAppView onBankPrimaryReady={onBankPrimaryReady} onOrderPrimaryReady={onOrderPrimaryReady} onMessagePrimaryReady={onMessagePrimaryReady} onMessageAttachmentDemandChange={onMessageAttachmentDemandChange} currentReadOwnerKey={readOwnerKey} localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onRequestDispatchDemandChange={onRequestDispatchDemandChange} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
         onPersonalHomeProjectionStateChange={onPersonalHomeProjectionStateChange}
         onNotificationsRequested={onNotificationsRequested}
         readWorkerActivityStore={readWorkerActivityStore}
@@ -23176,6 +23180,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
+  onBankPrimaryReady,
   onOrderPrimaryReady,
   onMessagePrimaryReady,onMessageAttachmentDemandChange,
   currentReadOwnerKey='',
@@ -25189,7 +25194,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
             note: OnboardingHintService.bankNeedsSetup
           });
         }
-        return <BankPaymentCenterView currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} bankAccounts={bankAccounts} bankTransactions={bankTransactions} />;
+        return <BankPaymentCenterView onPrimaryReady={onBankPrimaryReady} transactionDataAvailable={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:BANK_PRIMARY_COLLECTIONS})} paymentDataAvailable={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['customers','orders','payments']})} accountDataAvailable={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['customers','bankAccounts']})} sourceFresh={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.bank_payments})} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} bankAccounts={bankAccounts} bankTransactions={bankTransactions} />;
       case 'finance': return <FinanceView isAccounting={isAccounting} isDriver={isDriver} employee={employee} expenses={expenses} payments={payments} orders={orders} assets={assets} deliveryReports={deliveryReports} onAddExpense={(data) => onAddExpense(employee.id, data)} onEditExpense={onEditExpense} onAddPayment={onAddPayment} onEditPayment={onEditPayment} onToggleArchiveExpense={onToggleArchiveExpense} onToggleArchivePayment={onToggleArchivePayment} onDeleteExpense={onDeleteExpense} onDeletePayment={onDeletePayment} employees={employees} customers={customers} canViewAllTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'view_all_cashflow')} canEditTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_cashflow')} canEditIncomeVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_income_voucher')} canEditExpenseVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'edit_expense_voucher')} canDeleteTransactions={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_cashflow')} canDeleteIncomeVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_income_voucher')} canDeleteExpenseVoucher={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'delete_expense_voucher')} canCreateIncome={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'create_income')} canCreateExpense={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'create_expense')} canApproveCashflow={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'finance', 'approve_driver_cashflow')} searchKeyword={financeSearchKeyword} setSearchKeyword={setFinanceSearchKeyword} showSearchBox={financeSearchOpen} setShowSearchBox={setFinanceSearchOpen} showFilterPanel={financeFilterOpen} setShowFilterPanel={setFinanceFilterOpen} searchFocusDate={financeSearchFocusDate} onSearchFocusHandled={() => setFinanceSearchFocusDate('')} quickActionIntent={activeTab === 'finance' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'payroll':
         if (!hasWorkflowEmployeeData) {
@@ -33975,6 +33980,11 @@ function AssetManagementView({
 }
 
 function BankPaymentCenterView({
+  onPrimaryReady,
+  transactionDataAvailable=false,
+  paymentDataAvailable=false,
+  accountDataAvailable=false,
+  sourceFresh=false,
   currentCompany = {},
   customers = [],
   orders = [],
@@ -33996,6 +34006,7 @@ function BankPaymentCenterView({
   const safeBankAccounts = useMemo(() => (Array.isArray(bankAccounts) ? bankAccounts.filter(Boolean) : []), [bankAccounts]);
   const safeBankTransactions = useMemo(() => (Array.isArray(bankTransactions) ? bankTransactions.filter(Boolean) : []), [bankTransactions]);
   const [bankSettingsView, setBankSettingsView] = useState(null);
+  useEffect(()=>{if(transactionDataAvailable)onPrimaryReady?.();},[transactionDataAvailable,onPrimaryReady]);
   useEffect(() => {
     const openCustomers = () => setBankSettingsView('customers');
     window.addEventListener('hd-bank-customer-accounts', openCustomers);
@@ -34102,7 +34113,7 @@ function BankPaymentCenterView({
           <div className="mt-4 border-t border-sky-100 pt-4">
             <h3 className="text-sm font-black text-slate-900">TK Khách hàng</h3>
             <div className="mt-2 space-y-2">
-              {linkedAccounts.length === 0 ? (
+              {!accountDataAvailable ? <p role="status">Đang tải tài khoản khách hàng đã liên kết…</p> : linkedAccounts.length === 0 ? (
                 <div className="rounded-xl bg-white/80 px-3 py-3 text-sm font-semibold text-slate-500">
                   Chưa có tài khoản khách hàng liên kết ngân hàng.
                 </div>
@@ -34129,12 +34140,13 @@ function BankPaymentCenterView({
   );
 
   return (
-    <div className="space-y-4 pb-[calc(96px+env(safe-area-inset-bottom))] animate-in fade-in">
+    <div className="space-y-4 pb-[calc(96px+env(safe-area-inset-bottom))] animate-in fade-in" data-hd-essential-data-ready={transactionDataAvailable?'true':undefined}>
+      {!sourceFresh&&<p role="status" className="text-xs text-slate-600">{transactionDataAvailable?'Dữ liệu đã tải · Đang cập nhật lịch sử thanh toán và đối soát ở nền.':'Đang mở giao dịch ngân hàng. Có thể tiếp tục điều hướng.'}</p>}
 
       <section className="grid grid-cols-2 gap-2">
         {[
-          { label: 'Đã đối soát', value: stats.matchedTransactionCount, suffix: 'GD', toneClass: 'border-sky-100 bg-sky-50 text-sky-700' },
-          { label: 'Thu QR hôm nay', value: `${formatCurrency(stats.todayQrAmount)} đ`, suffix: '', toneClass: 'border-rose-100 bg-rose-50 text-rose-700' }
+          { label: 'Đã đối soát', value: transactionDataAvailable?stats.matchedTransactionCount:'—', suffix: transactionDataAvailable?'GD':'', toneClass: 'border-sky-100 bg-sky-50 text-sky-700' },
+          { label: 'Thu QR hôm nay', value: paymentDataAvailable?`${formatCurrency(stats.todayQrAmount)} đ`:'—', suffix: '', toneClass: 'border-rose-100 bg-rose-50 text-rose-700' }
         ].map(item => (
           <button
             key={item.label}
@@ -34157,7 +34169,7 @@ function BankPaymentCenterView({
         </div>
         <ListPagination pagination={bankTransactionPage} label="Trang giao dịch ngân hàng" />
         <div className="mt-4 space-y-3">
-          {sortedTransactions.length === 0 ? (
+          {!transactionDataAvailable ? <p role="status">Đang tải giao dịch ngân hàng…</p> : sortedTransactions.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">
               Chưa có giao dịch ngân hàng được đồng bộ.
             </div>
@@ -34188,7 +34200,7 @@ function BankPaymentCenterView({
           <h3 className="text-lg font-black text-slate-900">Thanh toán đã ghi nhận</h3>
         </div>
         <div className="mt-4 space-y-3">
-          {bankPaymentRows.length === 0 ? (
+          {!paymentDataAvailable ? <p role="status">Đang tải lịch sử thanh toán…</p> : bankPaymentRows.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">
               Chưa có khoản thanh toán QR/chuyển khoản nào được ghi nhận.
             </div>
