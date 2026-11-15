@@ -32,6 +32,7 @@ import{salaryAdvanceMonthSql}from'./salaryAdvanceDirectorySql.js';
 import {normalizeSearchText} from '../services/searchEngine.js';
 import {BUSINESS_SEARCH_VERSION,BUSINESS_SEARCH_FIELDS,ORDER_SEARCH_TABLE,ORDER_FEED_KEYS_INDEX,orderFeedScopeSql} from './offlineBusinessSearchProjection.js';
 import {currentSearchTrace,searchMark} from './crmSearchTrace.js';
+import {CASHFLOW_SORT_TABLE,cashflowSortSource} from './cashflowSortProjection.js';
 
 const LIMIT = 100, LOOKUP_LIMIT = 25, TEXT_LIMIT = 1024;
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -41,22 +42,11 @@ const stale = () => { throw error('stale-checkpoint', 'Completed Home checkpoint
 const deny = () => { throw error('permission-denied', 'Business directory permission or session changed'); };
 const missingSearchSchema=failure=>/no such table:\s*(?:\w+\.)?offline_business_search(?:_coverage)?_v1\b/i.test(String(failure?.message||failure));
 const missingOrderProjection=failure=>/no such (?:table|index):\s*(?:\w+\.)?(?:offline_business_search_order_v2|offline_home_feed_keys_seq_v2|offline_business_order_sort_v2)\b/i.test(String(failure?.message||failure));
+const missingCashflowProjection=failure=>/no such (?:table|index):\s*(?:\w+\.)?(?:offline_business_cashflow_sort_v1|offline_home_feed_keys_seq_v2)\b/i.test(String(failure?.message||failure));
 const j = path => `json_extract(r.body,'$.${path}')`;
 const first = fields => `COALESCE(${fields.map(f => `NULLIF(${j(f)},'')`).join(',')},'')`;
 import {entityDates,dateSql,strictBusinessDaySql,ordersStrictIsoDateSql} from './businessDirectoryDateSql.js';
-const cashDates = ['cashflowDate','paymentDate','paidDate','transactionDate','transactionDateTime','bankTransactionDate',
-  'paidAt','transactionAt','transactedAt','transactionTime','bankTransactionTime','paymentTime','completedTime','completedAt',
-  'date','approvedAt','createdAt','updatedAt','timestamp'];
-const paymentDates = [
-  'paymentDate','transactionDate','transactionDateTime','bankTransactionDate',
-  ...['transactionDateTime','transactionDate','paymentTime','completedTime','paidAt'].map(f => 'webData.' + f),
-  ...['transactionDateTime','transactionDate','paymentTime','completedTime','paidAt','createdAt'].map(f => 'webLatest.' + f),
-  ...['transactionDateTime','transactionDate','paymentTime','completedTime','paidAt','createdAt'].map(f => 'webLinked.' + f),
-  ...['transactionDateTime','transactionDate','paymentTime','completedTime','paidAt','createdAt'].map(f => 'webLink.' + f),
-  ...['transactionDateTime','transactionDate','paymentTime','completedTime','paidAt'].map(f => 'webhook.' + f),
-  'paidAt','transactionAt','transactedAt','paymentTime','completedTime','completedAt','webData.createdAt','webhook.createdAt',
-  'date','createdAt','updatedAt','timestamp',
-];
+import {cashDates,paymentDates,cashflowBusinessDaySql} from './cashflowDirectoryDateSql.js';
 const needsCustomers = (source, o) => source === 'orders' && (o.employeeId !== null || o.tokens.length > 0);
 const common = ['companyId','date','status','customerId','customerName','empId','createdByEmpId','isArchived'];
 const approvalFields = ['requiresApproval','approvalStatus','handoverStatus','sourceType','createdByRole',
@@ -177,20 +167,6 @@ function searchMatchSql(expression,token,params) {
     THEN instr(${foldSql(expression)},?)>0 ELSE ${expression} GLOB ? END)`;
 }
 
-function paymentExpressions() {
-  const webhook = `COALESCE(${j('rawWebhook')},${j('rawPayload')},'{}')`;
-  const data = `COALESCE(json_extract(${webhook},'$.data'),'{}')`;
-  const link = `COALESCE(json_extract(${webhook},'$.paymentLink'),json_extract(${data},'$.paymentLink'),'{}')`;
-  const latest = `COALESCE(json_extract(${webhook},'$.latestTransaction'),json_extract(${data},'$.latestTransaction'),'{}')`;
-  const linked = `(SELECT value FROM json_each(${link},'$.transactions') ORDER BY
-    COALESCE(json_extract(value,'$.transactionDateTime'),json_extract(value,'$.transactionDate'),json_extract(value,'$.createdAt'),'') COLLATE BINARY DESC,key ASC LIMIT 1)`;
-  const objects = {webhook,webData:data,webLink:link,webLatest:latest,webLinked:linked};
-  return paymentDates.map(path => {
-    const [prefix,field] = path.split('.');
-    return field ? `json_extract(${objects[prefix]},'$.${field}')` : j(path);
-  });
-}
-
 function approvalSql() {
   // Exact requiresCashflowApproval/getCashflowApprovalMeta predicates from
   // productCRMShared/App. Approval is distinct from payment completion: raw
@@ -209,7 +185,7 @@ function approvalSql() {
     WHEN ${j('approvalStatus')}='rejected' THEN 'rejected' ELSE 'pending' END`;
 }
 
-function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = true) {
+function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = true, projectedCashflowSort = false) {
   const s = specs[source];
   const projected=atomic&&useSearchProjection&&o.tokens.length>0;
   const keyed = "CASE WHEN substr(r.id,1,11) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_' AND length(r.id)>11 THEN substr(r.id,1,10) END";
@@ -220,13 +196,9 @@ function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = t
   if (s.dates === entityDates) dates.splice(0,7,first(entityDates.slice(0,7)));
   if (s.dates === cashDates) dates.splice(0,dates.length,first(cashDates));
   if (s.attendance) dates.unshift(keyed);
-  let date = s.precision ? "''" : s.payment ? strictBusinessDaySql(dates) : dateSql(dates);
+  let date = s.precision||projectedCashflowSort ? "''" : s.payment ? strictBusinessDaySql(dates) : dateSql(dates);
   if (source === 'orders') date = ordersStrictIsoDateSql(dates);
-  if (s.payment) {
-    const provider = `lower(${first(['paymentProvider','sourceType','method','paymentMethod','sourceLabel'])})`;
-    date = `CASE WHEN instr(${provider},'sepay')>0 OR instr(${provider},'payos')>0
-      THEN COALESCE(${strictBusinessDaySql(paymentExpressions())},${date}) ELSE ${date} END`;
-  }
+  if (s.payment&&!projectedCashflowSort) date = cashflowBusinessDaySql();
   const sort = s.precision === 'month' ? `COALESCE(${source==='advances'?salaryAdvanceMonthSql(j):j('monthKey')},'')` : `COALESCE(${date},'')`;
   let employee = s.employee ? first(s.employee) : "''";
   if (s.attendance) employee = `COALESCE(NULLIF(${first(s.employee)},''),CASE WHEN ${keyed} IS NOT NULL THEN substr(r.id,12) END,'')`;
@@ -362,6 +334,27 @@ function boundedProjection(query, where) {
       SELECT substr(k.id,1,257) AS id,k.seq,substr(k.sort_key,1,11) AS sort_key,${query.projection} AS document
       FROM directory_keys k CROSS JOIN offline_home_feed_records_v1 r
       WHERE ${query.rowScope} AND r.id=k.id AND r.seq=k.seq AND json_extract(r.body,'$.id')=r.id)`;
+}
+
+function cashflowProjectionCte(source,scope,cp,o){
+ const raw=recordCte(source,scope,cp,{...o,from:null,to:null},true,true,true),params=[...raw.params];
+ // Only the unchanged default/date-filtered list is accelerated. Search,
+ // approval, employee/customer filters and exact details retain original SQL.
+ const predicates=[];const bind=value=>{params.push(value);return '?'+params.length;};
+ if(o.from)predicates.push('sort_key>='+bind(o.from));
+ if(o.to)predicates.push("sort_key<>'' AND sort_key<"+bind(o.to));
+ return{...raw,params,cashflowProjection:true,cte:`WITH cashflow_feed_keys AS MATERIALIZED (
+  SELECT r.id,r.seq,${orderFeedScopeSql()} AS company_id,${orderFeedScopeSql('r.body','id')} AS body_id
+  FROM offline_home_feed_records_v1 r INDEXED BY ${ORDER_FEED_KEYS_INDEX}
+  WHERE r.tenant_id=?1 AND r.principal_id=?2 AND r.generation=(SELECT generation FROM directory_ready) AND r.source=?4 AND r.seq<=(SELECT seq FROM directory_ready)),
+ cashflow_valid AS MATERIALIZED (SELECT p.id,p.seq,p.sort_key FROM cashflow_feed_keys k CROSS JOIN ${CASHFLOW_SORT_TABLE} p
+  WHERE p.tenant_id=?1 AND p.principal_id=?2 AND p.generation=(SELECT generation FROM directory_ready) AND p.source=?4
+   AND p.id=k.id AND p.seq=k.seq AND p.version=1 AND k.company_id=?5 AND k.body_id=k.id),
+ cashflow_uncovered_keys AS MATERIALIZED (SELECT k.id,k.seq FROM cashflow_feed_keys k WHERE NOT EXISTS (
+  SELECT 1 FROM ${CASHFLOW_SORT_TABLE} p WHERE p.tenant_id=?1 AND p.principal_id=?2 AND p.generation=(SELECT generation FROM directory_ready)
+   AND p.source=?4 AND p.id=k.id AND p.seq=k.seq AND p.version=1 AND k.company_id=?5 AND k.body_id=k.id)),
+ records AS MATERIALIZED (SELECT id,seq,sort_key FROM cashflow_valid WHERE NOT EXISTS(SELECT 1 FROM cashflow_uncovered_keys)),
+ filtered AS (SELECT id,seq,sort_key FROM records WHERE ${predicates.join(' AND ')||'1=1'})`};
 }
 
 // Exact same completed feed and original SQL fallback, with derived v2 keys.
@@ -509,6 +502,9 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
   const scope = Object.freeze({...session.scope});
   // A constant-size read proof, never a row/result cache or an access grant.
   let verifiedOrderProjection=null;
+  // Missing optional schema never gates data. Briefly use original SQL while
+  // the existing bounded backfill creates it; this is not an authority cache.
+  let cashflowProjectionRetryAt=0;
   const current = () => {
     if (!session.isCurrent(scope) || !['tenantId','principalId','permissionRevision','sessionId'].every(k => session.scope[k] === scope[k])) deny();
   };
@@ -557,7 +553,7 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
     return {tenantId:scope.tenantId,principalId:scope.principalId,permissionRevision:scope.permissionRevision,sessionId:scope.sessionId,
       generation:h.generation,seq:h.seq,capturedAt:h.captured_at,dayKey:h.day_key,sourceProfile:h.profile};
   }
-  function atomicPlan(source, o, useSearchProjection = true,useOrderProjection = true,readProof=null,proveSearch=false) {
+  function atomicPlan(source, o, useSearchProjection = true,useOrderProjection = true,readProof=null,proveSearch=false,useCashflowProjection=true) {
     const key = fingerprint(scope,source,o);
     let after = null;
     if (o.cursor) {
@@ -573,7 +569,8 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
       AND json_extract(counts,'$.${name}') BETWEEN 0 AND 9007199254740991
       AND json_extract(counts,'$.${name}')=CAST(json_extract(counts,'$.${name}') AS INTEGER)`).join(' AND ');
     const cp={seq:'(SELECT seq FROM directory_ready)'};
-    const query = source==='orders'&&useOrderProjection?orderProjectionCte(scope,cp,o,after,readProof,proveSearch):recordCte(source,scope,cp,o,true,useSearchProjection);
+    const query = source==='orders'&&useOrderProjection?orderProjectionCte(scope,cp,o,after,readProof,proveSearch)
+      :useCashflowProjection&&clock()>=cashflowProjectionRetryAt&&cashflowSortSource(source)&&!o.tokens.length&&!o.customerId&&!o.employeeId&&!o.status&&!o.exactIds?cashflowProjectionCte(source,scope,cp,o):recordCte(source,scope,cp,o,true,useSearchProjection);
     const params = [...query.params];
     let where = '';
     if (after) {where = ' WHERE (sort_key COLLATE BINARY,id COLLATE BINARY)<(?,?)';params.push(after.sort,after.id);}
@@ -611,7 +608,7 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
       ${o.includeCount ? '(SELECT COUNT(*) FROM filtered)' : 'NULL'} AS matching_count${query.readProof?`,${query.readProof.orders} AS order_key_count,${query.readProof.customers} AS order_customer_key_count,NULL AS order_complete_count`:query.orderProjection?`,(SELECT COUNT(*) FROM order_feed_keys) AS order_key_count,(SELECT COUNT(*) FROM order_projection_valid) AS order_complete_count${needsCustomers(source,o)||proveSearch?`,
        (SELECT COUNT(*) FROM offline_home_feed_records_v1 r INDEXED BY ${ORDER_FEED_KEYS_INDEX} WHERE r.tenant_id=?1 AND r.principal_id=?2
         AND r.generation=(SELECT generation FROM directory_ready) AND r.source='customers' AND r.seq<=(SELECT seq FROM directory_ready)) AS order_customer_key_count`:',NULL AS order_customer_key_count'}`:''},
-      (SELECT data_version FROM pragma_data_version) AS native_data_version`;
+      (SELECT data_version FROM pragma_data_version) AS native_data_version${query.cashflowProjection?',(SELECT COUNT(*) FROM cashflow_uncovered_keys) AS cashflow_uncovered_count':''}`;
     if(query.readProof){
       // The verified snapshot is >2 MB on the current corpus. Reuse ONLY its
       // small metadata under the queue revision, never its rows or results.
@@ -635,7 +632,7 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
           AND h.generation=${generation} AND h.captured_at=${captured} AND h.day_key=${dayKey}
           AND (SELECT data_version FROM pragma_data_version)=${dataVersion} LIMIT 1), `+numbered.slice(readyAt);
     }
-    return {statement,params,key,after,limit,orderProjection:query.orderProjection,readProof:query.readProof,validatesOrderSearch:query.validatesOrderSearch};
+    return {statement,params,key,after,limit,orderProjection:query.orderProjection,cashflowProjection:query.cashflowProjection,readProof:query.readProof,validatesOrderSearch:query.validatesOrderSearch};
   }
   function decodeEnvelope(source, o, plan, envelope) {
     const {key,after,limit}=plan;
@@ -694,6 +691,9 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
         }:undefined,
         observed:canLease?revision=>{readRevision=revision;}:undefined,
       });
+      if(plan.cashflowProjection&&result?.[0]?.cashflow_uncovered_count!==0){
+        unexpired([grant]);await permission(source,o);plan=atomicPlan(source,o,true,true,null,false,false);continue;
+      }
       if(plan.readProof){
         let matched=false;
         try{
@@ -710,6 +710,10 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
       }
       break;
     }catch(failure){
+      if(plan.cashflowProjection&&missingCashflowProjection(failure)){
+        cashflowProjectionRetryAt=clock()+5000;
+        unexpired([grant]);await permission(source,o);plan=atomicPlan(source,o,true,true,null,false,false);continue;
+      }
       verifiedOrderProjection=null;
       if(mode===2&&missingOrderProjection(failure))mode=1;
       else if(mode>0&&(o.tokens.length||mode===2)&&missingSearchSchema(failure))mode=0;
@@ -818,20 +822,41 @@ export function createOfflineBusinessDirectory({database,session,authorize,clock
     unexpired(grants);
     let pages;
     if(typeof database.readQuery==='function'){
-      const build=(useSearchProjection,useOrderProjection=true)=>{
+      const build=(useSearchProjection,useOrderProjection=true,useCashflowProjection=true)=>{
         const params=[],arms=[];
+        let sharedHead=null;
         for(const [index,entry] of plans.entries()){
-          entry.query=atomicPlan(entry.source,entry.o,useSearchProjection,useOrderProjection);
-          const sql=rebaseParameters(entry.query.statement,params.length,entry.query.params.length);
+          entry.query=atomicPlan(entry.source,entry.o,useSearchProjection,useOrderProjection,null,false,useCashflowProjection);
+          let sql=rebaseParameters(entry.query.statement,params.length,entry.query.params.length);
+          if(plans.length===2){
+            // Both authorized arms use the same live head in this ONE SQLite
+            // snapshot. Parse its large snapshot_json once, not once per arm.
+            // Source-specific readiness/RBAC, cursors and reauthorization stay
+            // separate; this is neither cached metadata nor a reused grant.
+            const prefix='WITH directory_head AS MATERIALIZED (',end=sql.indexOf('),\n    directory_ready AS MATERIALIZED');
+            if(!sql.startsWith(prefix)||end<0)throw error('invalid-data','Missing compound directory head');
+            if(sharedHead===null)sharedHead=sql.slice(prefix.length,end);
+            sql=prefix+'SELECT * FROM batch_directory_head'+sql.slice(end);
+          }
           arms.push(`SELECT ${index} AS request_index,request.source,request.head_json,request.rows_json,request.matching_count,
-            ${entry.query.orderProjection?'request.order_key_count,request.order_customer_key_count':'NULL AS order_key_count,NULL AS order_customer_key_count'} FROM (${sql}) AS request`);params.push(...entry.query.params);
+            ${entry.query.orderProjection?'request.order_key_count,request.order_customer_key_count':'NULL AS order_key_count,NULL AS order_customer_key_count'},
+            ${entry.query.cashflowProjection?'request.cashflow_uncovered_count':'NULL AS cashflow_uncovered_count'} FROM (${sql}) AS request`);params.push(...entry.query.params);
         }
-        return {statement:arms.join(' UNION ALL ')+' ORDER BY request_index',params};
+        return {statement:(sharedHead===null?'':`WITH batch_directory_head AS MATERIALIZED (${sharedHead}) `)+arms.join(' UNION ALL ')+' ORDER BY request_index',params};
       };
       // Compound SELECT arms share the ONE SQLite statement snapshot. Each
       // arm returns one envelope and at most its declared limit+1 JSON rows.
       let query=build(true),result,mode=plans.some(entry=>entry.source==='orders')?2:1;
-      for(;;){try{result=await database.readQuery(query.statement,query.params);break;}catch(failure){
+      for(;;){try{result=await database.readQuery(query.statement,query.params);
+        if(plans.some((entry,index)=>entry.query.cashflowProjection&&result?.[index]?.cashflow_uncovered_count!==0)){
+          unexpired(grants);for(const {source,o} of plans)grants.push(await permission(source,o));
+          query=build(mode>0,mode===2,false);continue;
+        }break;}catch(failure){
+        if(plans.some(entry=>entry.query.cashflowProjection)&&missingCashflowProjection(failure)){
+          cashflowProjectionRetryAt=clock()+5000;
+          unexpired(grants);for(const {source,o} of plans)grants.push(await permission(source,o));
+          query=build(mode>0,mode===2,false);continue;
+        }
         if(mode===2&&missingOrderProjection(failure))mode=1;
         else if(mode>0&&(plans.some(entry=>entry.o.tokens.length)||mode===2)&&missingSearchSchema(failure))mode=0;
         else throw failure;

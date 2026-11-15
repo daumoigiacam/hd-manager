@@ -36,6 +36,7 @@ test('native atomic pages match the existing transaction reader with a 2MiB repo
   const before=f.statements.length;
   const batch=await f.native.pageBatch([{source:'payments',options:{limit:15}},{source:'expenses',options:{limit:15}}]);
   assert.equal(f.statements.length-before,1,'visible pair remains one SQLite snapshot');
+  assert.equal((f.statements.at(-1).match(/FROM offline_home_head_v1 h/g)||[]).length,1,'compound page reads/parses its one live report head once');
   assert.deepEqual(batch,await f.fallback.pageBatch([{source:'payments',options:{limit:15}},{source:'expenses',options:{limit:15}}]));
   assert.deepEqual(batch[0].items.map(row=>row.document.amount),[0,67000]);
   assert.equal(batch[1].items[0].document.amount,-1000);
