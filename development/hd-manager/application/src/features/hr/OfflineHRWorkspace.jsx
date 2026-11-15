@@ -105,7 +105,7 @@ function HRDetail({runtime,directory,selected,onClose,onEmployee,onEditEmployee}
   </HDCard>;
 }
 
-export default function OfflineHRWorkspace({runtime,directory,onNavigate,initialSource='employees',attendanceRepository=null,employeeProfileRepository=null}){
+export default function OfflineHRWorkspace({runtime,directory,onNavigate,initialSource='employees',attendanceRepository=null,employeeProfileRepository=null,onInitialContentReady}){
   const [requestsOpen,setRequestsOpen]=useState(false);
   const [advanceOpen,setAdvanceOpen]=useState(false);
   const [employeeSelection,setEmployeeSelection]=useState(null);
@@ -153,6 +153,7 @@ export default function OfflineHRWorkspace({runtime,directory,onNavigate,initial
   const change=(key,value)=>{setSelected(null);setFilters(previous=>({...previous,[key]:value}));};
   const denied=hrReadAccess(runtime,directory),ready=page.identity===identity&&!denied;
   const rows=ready?page.items:[],loading=!ready&&!denied||ready&&page.loading,head=ready?page.metadata?.checkpoint:null;
+  useLayoutEffect(()=>{if(ready&&!loading&&!page.error&&head&&runtime.isCurrent())onInitialContentReady?.();},[runtime,ready,loading,page.error,head,onInitialContentReady]);
   const selectEmployee=(employeeId,nextSource,monthKey)=>{
     setSelected(null);setSource(nextSource);setFilters(previous=>({...previous,employeeId,text:'',status:'',type:'',monthKey:monthKey||previous.monthKey}));
   };

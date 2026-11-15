@@ -197,6 +197,10 @@ function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = t
   if (s.dates === cashDates) dates.splice(0,dates.length,first(cashDates));
   if (s.attendance) dates.unshift(keyed);
   let date = s.precision||projectedCashflowSort ? "''" : s.payment ? strictBusinessDaySql(dates) : dateSql(dates);
+  // These original warehouse writers normally persist an exact ISO business
+  // day. Avoid recursively parsing every historical row for that exact case;
+  // retain the original parser for legacy formats, timestamps and fallbacks.
+  if(['warehouseImports','warehouseDispatches','warehouseStockCounts'].includes(source))date=strictBusinessDaySql(dates);
   if (source === 'orders') date = ordersStrictIsoDateSql(dates);
   if (s.payment&&!projectedCashflowSort) date = cashflowBusinessDaySql();
   const sort = s.precision === 'month' ? `COALESCE(${source==='advances'?salaryAdvanceMonthSql(j):j('monthKey')},'')` : `COALESCE(${date},'')`;

@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {dateSql,strictBusinessDaySql} from '../src/data/businessDirectoryDateSql.js';
+import {dateSql,strictBusinessDaySql,entityDates} from '../src/data/businessDirectoryDateSql.js';
 
 test('canonical-day shortcut is exactly equal to original SQL across calendar/timezone/type/legacy and fallback boundaries',()=>{
  const db=new DatabaseSync(':memory:');
@@ -16,5 +16,24 @@ test('canonical-day shortcut is exactly equal to original SQL across calendar/ti
    const row=query.get(JSON.stringify({a,b}));assert.equal(row.candidate,row.original,JSON.stringify({a,b}));comparisons++;
   }
   assert.equal(comparisons,364);
+ }finally{db.close();}
+});
+
+test('warehouse candidate precedence, malformed dates and Vietnam midnight boundaries retain the original result and row order',()=>{
+ const db=new DatabaseSync(':memory:');
+ try{
+  const j=key=>`json_extract(r.body,'$.${key}')`;
+  const candidates=[`COALESCE(${entityDates.slice(0,7).map(k=>`NULLIF(${j(k)},'')`).join(',')},'')`,...entityDates.slice(7).map(j)];
+  db.exec('CREATE TABLE r(id INTEGER PRIMARY KEY,body TEXT)');
+  const insert=db.prepare('INSERT INTO r(body) VALUES(?)');
+  const values=['2026-11-15','2026-02-29','2028-02-29',' 2026-11-15 ','2026-11-15\0hidden','bad','15/11/2026',null,'',0,false,{seconds:1794675600},'2026-11-14T16:59:59Z','2026-11-14T17:00:00Z','2026-12-31T17:00:00Z'];
+  for(const field of entityDates)for(const value of values)insert.run(JSON.stringify({[field]:value,createdAt:'2026-11-15T00:00:00+07:00',updatedAt:'2027-01-01'}));
+  insert.run(JSON.stringify({date:'invalid',requestDate:'2028-01-01',createdAt:'2026-11-14T17:00:00Z'}));
+  const rows=db.prepare(`SELECT id,${dateSql(candidates)} original,${strictBusinessDaySql(candidates)} candidate FROM r`).all();
+  for(const row of rows)assert.equal(row.candidate,row.original,`stored row ${row.id}`);
+  for(const expression of [dateSql(candidates),strictBusinessDaySql(candidates)]){
+   const ids=db.prepare(`SELECT id FROM r WHERE ${expression}>='2026-11-15' AND ${expression}<'2027-01-01' ORDER BY ${expression} DESC,id DESC LIMIT 25`).all();
+   if(expression===dateSql(candidates))rows.expected=ids;else assert.deepEqual(ids,rows.expected);
+  }
  }finally{db.close();}
 });
