@@ -1,4 +1,5 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
 import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 import {HDButton,HDBadge,HDInput,HDDateInput,HDEmptyState} from '../../design-system/components.jsx';
@@ -37,7 +38,14 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
   currentQuery.current=queryKey;currentRequest.current=requestKey;loadedRef.current=loaded;
   useAppScreenBack(()=>{if(!runtime?.isCurrent?.())return false;if(editor){editorClose.current?.();return true;}if(detail?.key!==queryKey)return false;detailTicket.current++;setDetail(null);return true;});
   useEffect(()=>{let active=true;const stop=runtime.subscribe?.(topic=>{if(active&&topic==='deliveryReports')setRefresh(v=>v+1);});return()=>{active=false;stop?.();};},[runtime]);
-  useEffect(()=>{if(detail?.key===queryKey)detailPanel.current?.focus();},[detail,queryKey]);
+  const detailHeading=useRef(null),focusedDetail=useRef(null);
+  useLayoutEffect(()=>{
+    const selected=detail?.key===queryKey?detail.item:null;
+    if(!selected){focusedDetail.current=null;return;}
+    if(focusedDetail.current===selected)return;
+    focusWorkspacePanel(detailPanel.current,detailHeading.current);
+    focusedDetail.current=selected;
+  },[detail?.item,queryKey]);
   useEffect(()=>{
     let active=true;
     if(lastQuery.current!==queryKey){lastQuery.current=queryKey;detailTicket.current++;setDetail(null);}
@@ -78,6 +86,21 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
     {!deliveryRepository?.ready&&<p className="rounded-xl bg-amber-50 p-3 text-sm">Chỉ xem. Giao thức giao hàng nguyên tử chưa sẵn sàng trong phiên này.</p>}
     {deliveryRepository?.ready&&<><HDButton disabled={!!editor||!deliveryWriteAccess(runtime,deliveryRepository,'deliveryReport.create')} onClick={()=>setEditor({id:null,readSource:'local'})}>Thêm báo cáo giao hàng</HDButton><OfflineDeliveryPending runtime={runtime} repository={deliveryRepository} disabled={!!editor} onOpen={id=>{if(!editor)setEditor({id,readSource:'local'});}}/></>}
     {editor&&deliveryRepository&&<OfflineDeliveryEditor key={JSON.stringify([scopeKey,editor])} runtime={runtime} repository={deliveryRepository} id={editor.id} readSource={editor.readSource} closeRequestRef={editorClose} onClose={()=>setEditor(null)} onSaved={()=>setRefresh(v=>v+1)}/>}
+    {activeDetail&&<section ref={detailPanel} tabIndex={-1} className="space-y-3 rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết giao hàng">
+      <div className="flex justify-between gap-2"><h2 ref={detailHeading} tabIndex={-1} className="font-bold">Chi tiết báo cáo giao hàng</h2><HDButton variant="secondary" onClick={()=>{detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
+      {activeDetail.pending&&<p role="status">Đang đối chiếu chứng từ liên quan…</p>}{activeDetail.error&&<p role="alert">{activeDetail.error}</p>}
+      {activeDetail.value&&!activeDetail.value.report&&<p role="status">Không còn báo cáo này trong nguồn hoàn tất. Hãy tải lại danh sách.</p>}
+      {activeDetail.value?.report&&<><ReportFields record={activeDetail.value.report.document}/><p className="text-xs text-slate-500">Đối chiếu cân không phải trạng thái hoàn tất giao hàng. Không tính lại giá, công nợ hoặc tổng giao hàng từ các trang này.</p>
+        {deliveryRepository?.ready&&<HDButton variant="secondary" disabled={!!editor} onClick={()=>{if(!editor)setEditor({id:activeDetail.item.id,readSource:'feed'});}}>Mở bản nguồn để sửa / lưu trữ</HDButton>}
+        <h3 className="font-bold">Phiếu xuất liên quan</h3>{activeDetail.value.dispatch?<Fields values={[
+          ['Mã phiếu xuất',activeDetail.value.dispatch.id],['Ngày nghiệp vụ',activeDetail.value.dispatch.businessDate],['Sản phẩm',activeDetail.value.dispatch.document.productNameSnapshot??activeDetail.value.dispatch.document.productName],['Tài xế',deliveryDriverLabel(activeDetail.value.dispatch.document,employees)],['Trạng thái trên phiếu xuất',deliveryMovementStatus(activeDetail.value.dispatch.document)],
+        ]}/>:<p>{activeDetail.value.dispatchState==='not-linked'?'Báo cáo không ghi mã phiếu xuất.':activeDetail.value.dispatchState==='missing'?'Không tìm thấy phiếu xuất trong bản nguồn hoàn tất.':'Chưa được cấp nguồn/quyền đối chiếu phiếu xuất.'}</p>}
+        <h3 className="font-bold">Đơn hàng liên quan</h3>{activeDetail.value.orders.map(order=><div key={order.id} className="rounded-xl border p-3"><Fields values={[
+          ['Mã đơn',order.document.orderCode??order.document.code??order.id],['Khách hàng',order.document.customerName],['Ngày nghiệp vụ',order.businessDate],['Trạng thái đã lưu',order.document.status],
+        ]}/></div>)}{activeDetail.value.ordersState!=='found'&&<p>{activeDetail.value.ordersState==='missing'?'Không tìm thấy đơn hàng theo liên kết đã ghi trong nguồn hoàn tất.':'Chưa có bộ đọc/liên kết được cấp quyền để đối chiếu đơn hàng theo phiếu xuất; chưa thể kết luận không có đơn hàng.'}</p>}
+        {activeDetail.value.nextOrderCursor&&<HDButton variant="secondary" onClick={()=>{void openDetail(activeDetail.item,activeDetail.value.nextOrderCursor);}}>Trang đơn liên quan tiếp theo</HDButton>}
+      </>}
+    </section>}
     <form onSubmit={apply} className="grid gap-3 rounded-2xl border p-3 sm:grid-cols-2" aria-label="Lọc báo cáo giao hàng">
       <div className="flex items-end gap-2 sm:col-span-2"><HDInput className="min-w-0 flex-1" label="Tìm báo cáo" maxLength={128} value={draft.text} onChange={event=>setDraft({...draft,text:event.target.value})}/><HDButton type="submit">Tìm kiếm</HDButton></div>
       <details className="sm:col-span-2"><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc giao hàng{filters.from||filters.to?' · Đang lọc ngày':''}{filters.employeeId?' · Nhân viên':''}{filters.status?' · Trạng thái':''}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -93,20 +116,6 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
     {result?.items.length===0&&<HDEmptyState title="Không có báo cáo phù hợp" description="Hãy kiểm tra lại bộ lọc."/>}
     {result?.items.map(item=><article key={item.id} className="space-y-2 rounded-2xl border bg-white p-4"><h2 className="font-bold">{item.document.customerNameSnapshot||item.document.customerName||'Báo cáo giao hàng'}</h2><p className="break-all text-xs text-slate-500">{item.id} · {item.businessDate||'Chưa có ngày nghiệp vụ'}</p><p>{item.document.productNameSnapshot||item.document.productName||'Chưa ghi sản phẩm'}</p><div className="flex flex-wrap gap-2"><HDBadge>{deliveryWeightStatus(item.document)}</HDBadge><HDBadge>{deliveryMovementStatus(item.document)}</HDBadge></div><p className="text-sm">Người báo cáo: {reporter(item.document.empId||item.document.createdByEmpId)}</p><p className="text-sm">Tài xế trên phiếu: {deliveryDriverLabel(item.document,employees)}</p><HDButton variant="secondary" disabled={!listFresh} onClick={()=>{void openDetail(item);}}>Mở chi tiết</HDButton></article>)}
     {result&&<nav className="flex items-center justify-between gap-2" aria-label="Trang báo cáo giao hàng"><HDButton variant="secondary" disabled={page===0||!listFresh} onClick={()=>setPage(value=>value-1)}>Trang trước</HDButton><span>Trang {page+1} · {result.items.length} báo cáo</span><HDButton variant="secondary" disabled={!result.hasMore||!listFresh} onClick={()=>{setCursors(old=>[...old.slice(0,page+1),result.nextCursor]);setPage(value=>value+1);}}>Trang sau</HDButton></nav>}
-    {activeDetail&&<section ref={detailPanel} tabIndex={-1} className="space-y-3 rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết giao hàng">
-      <div className="flex justify-between gap-2"><h2 className="font-bold">Chi tiết báo cáo giao hàng</h2><HDButton variant="secondary" onClick={()=>{detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
-      {activeDetail.pending&&<p role="status">Đang đối chiếu chứng từ liên quan…</p>}{activeDetail.error&&<p role="alert">{activeDetail.error}</p>}
-      {activeDetail.value&&!activeDetail.value.report&&<p role="status">Không còn báo cáo này trong nguồn hoàn tất. Hãy tải lại danh sách.</p>}
-      {activeDetail.value?.report&&<><ReportFields record={activeDetail.value.report.document}/><p className="text-xs text-slate-500">Đối chiếu cân không phải trạng thái hoàn tất giao hàng. Không tính lại giá, công nợ hoặc tổng giao hàng từ các trang này.</p>
-        {deliveryRepository?.ready&&<HDButton variant="secondary" disabled={!!editor} onClick={()=>{if(!editor)setEditor({id:activeDetail.item.id,readSource:'feed'});}}>Mở bản nguồn để sửa / lưu trữ</HDButton>}
-        <h3 className="font-bold">Phiếu xuất liên quan</h3>{activeDetail.value.dispatch?<Fields values={[
-          ['Mã phiếu xuất',activeDetail.value.dispatch.id],['Ngày nghiệp vụ',activeDetail.value.dispatch.businessDate],['Sản phẩm',activeDetail.value.dispatch.document.productNameSnapshot??activeDetail.value.dispatch.document.productName],['Tài xế',deliveryDriverLabel(activeDetail.value.dispatch.document,employees)],['Trạng thái trên phiếu xuất',deliveryMovementStatus(activeDetail.value.dispatch.document)],
-        ]}/>:<p>{activeDetail.value.dispatchState==='not-linked'?'Báo cáo không ghi mã phiếu xuất.':activeDetail.value.dispatchState==='missing'?'Không tìm thấy phiếu xuất trong bản nguồn hoàn tất.':'Chưa được cấp nguồn/quyền đối chiếu phiếu xuất.'}</p>}
-        <h3 className="font-bold">Đơn hàng liên quan</h3>{activeDetail.value.orders.map(order=><div key={order.id} className="rounded-xl border p-3"><Fields values={[
-          ['Mã đơn',order.document.orderCode??order.document.code??order.id],['Khách hàng',order.document.customerName],['Ngày nghiệp vụ',order.businessDate],['Trạng thái đã lưu',order.document.status],
-        ]}/></div>)}{activeDetail.value.ordersState!=='found'&&<p>{activeDetail.value.ordersState==='missing'?'Không tìm thấy đơn hàng theo liên kết đã ghi trong nguồn hoàn tất.':'Chưa có bộ đọc/liên kết được cấp quyền để đối chiếu đơn hàng theo phiếu xuất; chưa thể kết luận không có đơn hàng.'}</p>}
-        {activeDetail.value.nextOrderCursor&&<HDButton variant="secondary" onClick={()=>{void openDetail(activeDetail.item,activeDetail.value.nextOrderCursor);}}>Trang đơn liên quan tiếp theo</HDButton>}
-      </>}
-    </section>}
+
   </section>;
 }

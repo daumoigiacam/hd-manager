@@ -6,6 +6,8 @@ import {parse} from '@babel/parser';
 import traverseModule from '@babel/traverse';
 import * as delivery from './offlineDeliveryModel.js';
 import * as messages from '../messages/offlineMessageModel.js';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
+import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 const traverse=traverseModule.default||traverseModule;
 const backHook=fs.readFileSync(new URL('../../hooks/useAppScreenBack.js',import.meta.url),'utf8').replace(/^import[^;]+;/,'').replace('export function','function');
 function extract(file,name,inspect) {
@@ -29,7 +31,7 @@ function harness(kind='delivery') {
  const useState=initial=>{const i=index++;if(!slots[i])slots[i]={value:typeof initial==='function'?initial():initial};return [slots[i].value,value=>{const next=typeof value==='function'?value(slots[i].value):value;if(!Object.is(next,slots[i].value)){slots[i].value=next;dirty=true;}}];};
  const useRef=initial=>{const i=index++;if(!slots[i])slots[i]={current:initial};return slots[i];};
  const useEffect=(work,deps)=>{const i=index++,old=slots[i],changed=reattach||!old||deps.some((d,n)=>!Object.is(d,old.deps[n]));slots[i]={...old,deps};if(changed)effects.push(()=>{old?.cleanup?.();slots[i].cleanup=work();});};
- const context=vm.createContext({...delivery,...messages,useState,useRef,useEffect,window:{addEventListener(_event,fn){listeners.add(fn);},removeEventListener(_event,fn){listeners.delete(fn);}}});
+ const context=vm.createContext({...delivery,...messages,focusWorkspacePanel,retainedScopedPage,useState,useRef,useEffect,useLayoutEffect:useEffect,window:{addEventListener(_event,fn){listeners.add(fn);},removeEventListener(_event,fn){listeners.delete(fn);}}});
  const component=vm.runInContext(backHook+'\n'+(kind==='delivery'?deliveryCode:messageCode),context);
  async function settle(){for(let n=0;n<15;n++){if(dirty){dirty=false;index=0;effects=[];view=component(props);reattach=false;for(const effect of effects)effect();}await new Promise(resolve=>setImmediate(resolve));}return view;}
  return {settle,get view(){return view;},get pageCalls(){return pageCalls;},get listenerCount(){return listeners.size;},response,row,hide(){for(const slot of slots)slot.cleanup?.();},show(){reattach=true;dirty=true;},setPending(value){pending=value;},setProps(value){props={...props,...value};dirty=true;},setSync(value){sync=value;dirty=true;},close(){current=false;dirty=true;},back(){const e={detail:{},defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};for(const fn of listeners)fn(e);return e;}};

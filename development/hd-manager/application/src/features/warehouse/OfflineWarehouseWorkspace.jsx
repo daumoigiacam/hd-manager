@@ -1,4 +1,5 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
 import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 import OfflineStockCountEditor,{OfflineStockCountPending,stockCountWriteAccess} from './OfflineStockCountEditor.jsx';
@@ -77,6 +78,7 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
   loadedRef.current = loaded;
   const detailTicket = useRef(0);
   const detailPanel = useRef(null);
+  const detailHeading = useRef(null),focusedDetail = useRef(null);
   useAppScreenBack(() => {
     // Editors own draft confirmation. Navigation cannot silently discard them.
     if(runtime.isCurrent() && dispatchEditor) {dispatchClose.current?.();return true;}
@@ -85,7 +87,13 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
     if(!runtime.isCurrent() || detail?.key !== queryKey) return false;
     detailTicket.current++;setDetail(null);return true;
   });
-  useEffect(() => {if(detail?.key === queryKey) detailPanel.current?.focus();},[detail,queryKey]);
+  useLayoutEffect(() => {
+    const selected=detail?.key===queryKey?detail.item:null;
+    if(!selected){focusedDetail.current=null;return;}
+    if(focusedDetail.current===selected)return;
+    focusWorkspacePanel(detailPanel.current,detailHeading.current);
+    focusedDetail.current=selected;
+  },[detail?.item,queryKey]);
   useEffect(() => {
     if(initialSourceRef.current === initialSource) return;
     initialSourceRef.current = initialSource;
@@ -192,6 +200,34 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
     {importRepositoryReady&&<OfflineWarehouseImportQueue runtime={runtime} repository={warehouseImportRepository} disabled={Boolean(importEditor)} refreshToken={importRefresh} onEdit={id=>{if(!importEditor)setImportEditor({id,readSource:'local'});}}/>}
     {dispatchRepositoryReady&&dispatchEditor&&<React.Suspense fallback={<p role="status">Đang mở trình sửa xuất kho…</p>}><OfflineWarehouseDispatchEditor key={JSON.stringify([scopeIdentity(runtime),dispatchEditor.id,dispatchEditor.readSource||'local'])} runtime={runtime} repository={warehouseDispatchRepository} id={dispatchEditor.id} readSource={dispatchEditor.readSource||'local'} closeRequestRef={dispatchClose} onClose={()=>setDispatchEditor(null)} onSaved={()=>setDispatchRefresh(value=>value+1)}/></React.Suspense>}
     {dispatchRepositoryReady&&<React.Suspense fallback={<p role="status">Đang mở hàng chờ xuất kho…</p>}><OfflineWarehouseDispatchQueue runtime={runtime} repository={warehouseDispatchRepository} disabled={Boolean(dispatchEditor)} refreshToken={dispatchRefresh} onOpen={id=>{if(!dispatchEditor)setDispatchEditor({id,readSource:'local'});}}/></React.Suspense>}
+    {activeDetail && <section ref={detailPanel} tabIndex={-1} className="rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết chứng từ kho" aria-busy={activeDetail.pending || undefined}>
+      <div className="mb-4 flex items-center justify-between gap-2"><h2 ref={detailHeading} tabIndex={-1} className="font-black">{descriptor.singular}</h2><HDButton variant="secondary" onClick={() => {detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
+      {activeDetail.pending && <p role="status">Đang đọc chi tiết đã lưu…</p>}
+      {activeDetail.error && <p role="alert">{activeDetail.error}</p>}
+      {activeDetail.unavailable && <p role="status">Chi tiết sản phẩm chưa được gắn vào bộ đọc kho của phiên này. Chưa có dữ liệu để hiển thị đơn vị hoặc đơn giá lịch sử.</p>}
+      {activeDetail.value && !activeDetail.value.document && <p role="status">Không còn chứng từ này trong nguồn hoàn tất. Hãy tải lại danh sách.</p>}
+      {activeDetail.value?.document && <>
+        {stockRepositoryReady&&<HDButton variant="secondary" onClick={()=>setStockEditor({id:activeDetail.item.id})}>Mở phiếu để sửa / lưu trữ / đối chiếu</HDButton>}
+        {dispatchRepositoryReady&&<HDButton variant="secondary" disabled={Boolean(dispatchEditor)} onClick={()=>setDispatchEditor({id:activeDetail.item.id,readSource:'feed'})}>Mở xuất kho để đối chiếu / sửa / lưu trữ trong phạm vi hỗ trợ</HDButton>}
+        {importRepositoryReady&&<HDButton variant="secondary" disabled={Boolean(importEditor)} onClick={()=>setImportEditor({id:activeDetail.item.id,readSource:'feed'})}>Mở nhập kho để sửa / lưu trữ / đối chiếu chi phí</HDButton>}
+        <StoredFields fields={[
+          ['Mã phiếu',activeDetail.item.id],['Ngày nghiệp vụ',activeDetail.item.businessDate],
+          ['Nhóm hàng',activeDetail.value.document.groupName ?? activeDetail.value.document.productGroup],
+          ['Nhân viên lập',employeeName(activeDetail.value.document.empId || activeDetail.value.document.createdByEmpId)],
+          ['Nhà cung cấp',activeDetail.value.document.supplier ?? activeDetail.value.document.supplierName],
+          ['Khách hàng',activeDetail.value.document.customerName ?? activeDetail.value.document.customerNameSnapshot],
+          ['Kho',activeDetail.value.document.warehouseName ?? activeDetail.value.document.warehouseId],
+          ['Nguồn nhập',source === 'warehouseImports' ? warehouseImportLabel(activeDetail.value.document) : undefined],
+          ['Lý do kiểm tồn',activeDetail.value.document.reason],['Ghi chú',activeDetail.value.document.note],
+        ]}/>
+        <p className="my-3 rounded-xl bg-slate-50 p-3 text-xs">Các số lượng, đơn vị và giá dưới đây là giá trị đã lưu. “Chưa ghi nhận” không được coi là 0. Không suy đơn vị lịch sử, không tính lại thành tiền hay tồn kho từ trang đang xem.</p>
+        {activeDetail.value.items.map(line => <section key={line.ordinal} className="my-3 rounded-xl border p-3"><h3 className="mb-2 font-bold">Dòng sản phẩm {line.ordinal+1}</h3><StoredFields fields={warehouseLineFields(line.document)}/></section>)}
+        {activeDetail.value.hasMore && <HDButton variant="secondary" onClick={() => {void openDetail(activeDetail.item,activeDetail.value.nextCursor);}}>Trang dòng sản phẩm tiếp theo</HDButton>}
+        {activeDetail.value.items[0]?.ordinal > 0 && <HDButton variant="secondary" onClick={() => {void openDetail(activeDetail.item);}}>Về dòng sản phẩm đầu</HDButton>}
+        <StoredMeasures measures={activeDetail.value.measures}/>
+        <p className="mt-3 text-xs text-slate-500">Văn bản dài hiển thị tối đa {activeDetail.value.metadata.stringLimit} ký tự mỗi trường. Chứng từ gốc và các dòng khác không bị sửa.</p>
+      </>}
+    </section>}
     <form onSubmit={applyFilters} className="grid gap-3 rounded-2xl border bg-white p-3 sm:grid-cols-2" aria-label="Lọc chứng từ kho">
       <div className="flex items-end gap-2 sm:col-span-2"><HDInput className="min-w-0 flex-1" label="Tìm chứng từ" maxLength={128} value={draft.text} placeholder="Mã phiếu, tên sản phẩm, ghi chú" onChange={event => setDraft({...draft,text:event.target.value})}/><HDButton type="submit">Tìm kiếm</HDButton></div>
       <details className="sm:col-span-2"><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc chứng từ{filters.from||filters.to?' · Đang lọc ngày':''}{filters.employeeId?' · Nhân viên':''}{filters.status?' · Trạng thái':''}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -225,34 +261,7 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
         <HDButton variant="secondary" disabled={!result.hasMore||!listFresh} onClick={() => {setCursors(previous => [...previous.slice(0,page+1),result.nextCursor]);setPage(value => value+1);}}>Trang sau</HDButton>
       </nav>
     </div>}
-    {activeDetail && <section ref={detailPanel} tabIndex={-1} className="rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết chứng từ kho" aria-busy={activeDetail.pending || undefined}>
-      <div className="mb-4 flex items-center justify-between gap-2"><h2 className="font-black">{descriptor.singular}</h2><HDButton variant="secondary" onClick={() => {detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
-      {activeDetail.pending && <p role="status">Đang đọc chi tiết đã lưu…</p>}
-      {activeDetail.error && <p role="alert">{activeDetail.error}</p>}
-      {activeDetail.unavailable && <p role="status">Chi tiết sản phẩm chưa được gắn vào bộ đọc kho của phiên này. Chưa có dữ liệu để hiển thị đơn vị hoặc đơn giá lịch sử.</p>}
-      {activeDetail.value && !activeDetail.value.document && <p role="status">Không còn chứng từ này trong nguồn hoàn tất. Hãy tải lại danh sách.</p>}
-      {activeDetail.value?.document && <>
-        {stockRepositoryReady&&<HDButton variant="secondary" onClick={()=>setStockEditor({id:activeDetail.item.id})}>Mở phiếu để sửa / lưu trữ / đối chiếu</HDButton>}
-        {dispatchRepositoryReady&&<HDButton variant="secondary" disabled={Boolean(dispatchEditor)} onClick={()=>setDispatchEditor({id:activeDetail.item.id,readSource:'feed'})}>Mở xuất kho để đối chiếu / sửa / lưu trữ trong phạm vi hỗ trợ</HDButton>}
-        {importRepositoryReady&&<HDButton variant="secondary" disabled={Boolean(importEditor)} onClick={()=>setImportEditor({id:activeDetail.item.id,readSource:'feed'})}>Mở nhập kho để sửa / lưu trữ / đối chiếu chi phí</HDButton>}
-        <StoredFields fields={[
-          ['Mã phiếu',activeDetail.item.id],['Ngày nghiệp vụ',activeDetail.item.businessDate],
-          ['Nhóm hàng',activeDetail.value.document.groupName ?? activeDetail.value.document.productGroup],
-          ['Nhân viên lập',employeeName(activeDetail.value.document.empId || activeDetail.value.document.createdByEmpId)],
-          ['Nhà cung cấp',activeDetail.value.document.supplier ?? activeDetail.value.document.supplierName],
-          ['Khách hàng',activeDetail.value.document.customerName ?? activeDetail.value.document.customerNameSnapshot],
-          ['Kho',activeDetail.value.document.warehouseName ?? activeDetail.value.document.warehouseId],
-          ['Nguồn nhập',source === 'warehouseImports' ? warehouseImportLabel(activeDetail.value.document) : undefined],
-          ['Lý do kiểm tồn',activeDetail.value.document.reason],['Ghi chú',activeDetail.value.document.note],
-        ]}/>
-        <p className="my-3 rounded-xl bg-slate-50 p-3 text-xs">Các số lượng, đơn vị và giá dưới đây là giá trị đã lưu. “Chưa ghi nhận” không được coi là 0. Không suy đơn vị lịch sử, không tính lại thành tiền hay tồn kho từ trang đang xem.</p>
-        {activeDetail.value.items.map(line => <section key={line.ordinal} className="my-3 rounded-xl border p-3"><h3 className="mb-2 font-bold">Dòng sản phẩm {line.ordinal+1}</h3><StoredFields fields={warehouseLineFields(line.document)}/></section>)}
-        {activeDetail.value.hasMore && <HDButton variant="secondary" onClick={() => {void openDetail(activeDetail.item,activeDetail.value.nextCursor);}}>Trang dòng sản phẩm tiếp theo</HDButton>}
-        {activeDetail.value.items[0]?.ordinal > 0 && <HDButton variant="secondary" onClick={() => {void openDetail(activeDetail.item);}}>Về dòng sản phẩm đầu</HDButton>}
-        <StoredMeasures measures={activeDetail.value.measures}/>
-        <p className="mt-3 text-xs text-slate-500">Văn bản dài hiển thị tối đa {activeDetail.value.metadata.stringLimit} ký tự mỗi trường. Chứng từ gốc và các dòng khác không bị sửa.</p>
-      </>}
-    </section>}
+
   </section>;
 }
 
