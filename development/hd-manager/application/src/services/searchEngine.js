@@ -42,7 +42,8 @@ const buildFieldIndex = (field = {}) => {
     tokenSet,
     tokens: [...tokenSet],
     digits: normalizeDigits(values.join(' ')),
-    numericMatch: field?.numericMatch === 'tokens' ? 'tokens' : 'substring',
+    digitValues: field?.numericMatch === 'values' ? values.map(normalizeDigits).filter(Boolean) : null,
+    numericMatch: ['tokens','values'].includes(field?.numericMatch) ? field.numericMatch : 'substring',
   };
 };
 
@@ -69,7 +70,7 @@ const getBestTokenMatch = (token, fields) => {
           const score = (exact ? 100 : 20) + field.priority;
           if (!best || score > best.score) best = { field, kind: exact ? 'exact' : 'prefix', score };
         }
-      } else if (field.digits.includes(token)) {
+      } else if (field.numericMatch==='values' ? field.digitValues.some(value=>value.includes(token)) : field.digits.includes(token)) {
         const score = 55 + field.priority;
         if (!best || score > best.score) best = { field, kind: 'digits', score };
       }
@@ -207,10 +208,12 @@ const createSearchIndexBuilder = (getFields) => {
       }
       // Only 10 + 100 + 1000 distinct gram keys can exist, with one posting per
       // source position/key. Long numeric queries use their first trigram.
-      for (let length = 1; length <= 3; length++) {
-        for (let start = 0; start + length <= field.digits.length; start++) {
-          addSearchPosting(digitPostings, field.digits.slice(start, start + length), entry.index);
+      for (const digits of field.numericMatch==='values'?field.digitValues:[field.digits]) {
+       for (let length = 1; length <= 3; length++) {
+        for (let start = 0; start + length <= digits.length; start++) {
+          addSearchPosting(digitPostings, digits.slice(start, start + length), entry.index);
         }
+       }
       }
     });
   };
@@ -525,9 +528,11 @@ export const searchCustomers = (customers = [], query = '') => searchRecords(cus
 export const rankCustomerSearchResults = (customers = [], query = '') => rankSearchRecords(customers, query, getCustomerSearchFields);
 
 export const getProductSearchFields = (product = {}) => [
-  { key: 'primary', priority: 100, values: [product?.name, product?.productName, product?.shortName, product?.productShortName, product?.alias, product?.abbreviation, buildInitials(product?.name || product?.productName || '')] },
-  { key: 'code', priority: 82, values: [product?.code, product?.sku, product?.barcode, product?.id] },
-  { key: 'other', priority: 35, values: [product?.category, product?.mainGroup, product?.unit, product?.attributes, product?.productAttributes, product?.variants, product?.attributeOptions] },
+  // Names, initials and codes are distinct values. Joining their digits makes
+  // "Product 99" + initials "sp9" incorrectly match the query "999".
+  { key: 'primary', priority: 100, numericMatch:'values', values: [product?.name, product?.productName, product?.shortName, product?.productShortName, product?.alias, product?.abbreviation, buildInitials(product?.name || product?.productName || '')] },
+  { key: 'code', priority: 82, numericMatch:'values', values: [product?.code, product?.sku, product?.barcode, product?.id] },
+  { key: 'other', priority: 35, numericMatch:'values', values: [product?.category, product?.mainGroup, product?.unit, product?.attributes, product?.productAttributes, product?.variants, product?.attributeOptions] },
 ];
 
 export const searchProducts = (products = [], query = '') => searchRecords(products, query, getProductSearchFields);

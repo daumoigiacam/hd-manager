@@ -522,6 +522,8 @@ import { getDefaultListPageSize, useChunkedList, useDebouncedValue, usePagedList
 import { usePreparedSearch } from './hooks/usePreparedSearch.js';
 import {getAdaptivePerformancePolicy} from './services/adaptivePerformance.js';
 import SearchableProductPicker from './features/products/SearchableProductPicker.jsx';
+import PricingProductMarginList from './features/pricing/PricingProductMarginList.jsx';
+import RetainedModuleActivity from './layout/RetainedModuleActivity.jsx';
 import { useCooperativeProjection } from './hooks/useCooperativeProjection.js';
 import { CompletedProjectionGate, LedgerPreparationNotice } from './hooks/CompletedProjectionGate.jsx';
 import { createProjectionCache, sortProjection,createProjectionScheduler } from './services/cooperativeProjection.js';
@@ -1129,7 +1131,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   company_attendance: ['employees', 'attendance', 'holidays'],
   payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'customerComplaints', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
   asset_management: ['assets', 'assetCostLogs', 'expenses', 'employees'],
-  pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules', 'pricingScenarios'],
+  pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules'],
   price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
   products: ['products', 'orders', 'warehouseImports', 'warehouseDispatches'],
   messages: ['employees', 'customers', 'orders', 'orderRequests', 'payments', 'expenses', 'products', 'messages', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'order_requests', 'ai_reply_rules'],
@@ -24980,6 +24982,8 @@ function MainAppView({
   const keepExecutiveDashboardMounted=false;
   const keepHomeDashboardMounted=Boolean(tabPermissions.home);
 
+  const renderPricingWorkspace = () => <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
+
   const renderContent = () => {
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
@@ -25014,7 +25018,7 @@ function MainAppView({
         }
 return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id, role)=>onOverrideCheckIn(id, attendanceProxyMethod, role)} onOverrideCheckOut={(id, role)=>onOverrideCheckOut(id, attendanceProxyMethod, role)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
       case 'products': return <ProductManagementView onInventoryDemandChange={onProductInventoryDemandChange} catalogDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(false)})} inventoryDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(true)})} key={dashboardPrivacyScope} searchStore={productSearchStore} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
+      case 'pricing': return null; // Retained below under the same authenticated owner.
       case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
       case 'employee_reviews': return (
         <EmployeeReviewModuleView
@@ -25521,6 +25525,15 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
             </AppSectionErrorBoundary>
           </div>
         )}
+        <RetainedModuleActivity key={dashboardPrivacyScope} active={activeTab==='pricing'} allowed={Boolean(tabPermissions.pricing&&canAccess('pricing'))}>
+          <AppSectionErrorBoundary name="staff_pricing" resetKey={dashboardPrivacyScope} onReset={()=>setRootActiveTab(primaryWorkTab||'home')}>
+            <React.Profiler id="Module:pricing-retained" onRender={recordReactRender}>
+              <React.Suspense fallback={<div data-hd-module-loading role="status" aria-busy="true" className="p-4">Đang mở Giá cả…</div>}>
+                {renderPricingWorkspace()}
+              </React.Suspense>
+            </React.Profiler>
+          </AppSectionErrorBoundary>
+        </RetainedModuleActivity>
         <AppSectionErrorBoundary
           name={`staff_${activeTab}`}
           resetKey={activeTab}
@@ -36258,6 +36271,10 @@ function SimplePricingEngineView({
     warehouseStockCounts,
     pricingInputs,
     pricingRules: [parsedRules],
+    // These scoped source arrays are immutable App projections. A draft margin
+    // edit must not rescan unchanged sales history; the existing calculator's
+    // cache still invalidates on source identity, company or reporting day.
+    reuseImmutableSales: true,
   }), [
     currentCompany,
     products,
@@ -36387,6 +36404,9 @@ function SimplePricingEngineView({
     () => (Array.isArray(products) ? products : []).filter(product => !product?.isArchived),
     [products],
   );
+  const pricingPickerProducts=useMemo(()=>activePricingProducts.map(product=>({
+    ...product,id:getPricingProductId(product),name:getPricingProductName(product),
+  })),[activePricingProducts]);
   const pricingProductMarginRows = useMemo(() => buildPricingProductMarginRows({
     products: activePricingProducts,
     getGroupKey: getPricingProductGroupKey,
@@ -37346,28 +37366,7 @@ function SimplePricingEngineView({
                   </button>
                   {isOpen && (
                     <div className="space-y-2 border-t border-emerald-100 bg-white/70 p-2">
-                      {productRows.length ? productRows.map(row => (
-                        <div key={`margin-product-${row.productKey}`} className="flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-black text-gray-900">{row.productName}</p>
-                            {row.inheritedFromGroup && <p className="mt-0.5 text-[10px] font-semibold text-gray-400">Đang dùng biên độ nhóm cũ, hãy lưu để chuyển sang sản phẩm</p>}
-                          </div>
-                          <label className="flex w-24 shrink-0 items-center justify-center gap-1 rounded-xl bg-emerald-50 px-2 py-2 text-center">
-                            <input
-                              inputMode="decimal"
-                              value={row.targetMargin || ''}
-                              onChange={e => updateProductMarginDraft(row.productKey, 'targetMargin', e.target.value)}
-                              disabled={!canEditMarginRules}
-                              className="w-12 bg-transparent text-center text-base font-black text-emerald-700 outline-none disabled:text-gray-400"
-                              placeholder="0"
-                              aria-label={`Biên lợi nhuận ${row.productName}`}
-                            />
-                            <span className="text-xs font-black text-emerald-700">%</span>
-                          </label>
-                        </div>
-                      )) : (
-                        <p className="px-2 py-2 text-xs font-bold text-gray-400">Nhóm này chưa có sản phẩm trong catalog.</p>
-                      )}
+                      <PricingProductMarginList rows={productRows} groupLabel={group.label} canEdit={canEditMarginRules} onChange={updateProductMarginDraft}/>
                     </div>
                   )}
                 </div>
@@ -37425,22 +37424,9 @@ function SimplePricingEngineView({
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <label className="block text-[10px] font-black uppercase tracking-[0.16em] text-sky-700">Sản phẩm gốc</label>
-                      <select
-                        value={formula.rootProductId || ''}
-                        onChange={e => updateProductFormulaRoot(formulaId, e.target.value)}
-                        disabled={!canManageProductFormulas}
-                        className="mt-1 w-full rounded-2xl border border-sky-100 bg-white px-3 py-3 text-sm font-black text-gray-900 outline-none disabled:bg-gray-50 disabled:text-gray-400"
-                      >
-                        <option value="">Chọn sản phẩm gốc</option>
-                        {activePricingProducts.map(product => {
-                          const productId = getPricingProductId(product);
-                          return (
-                            <option key={`formula-root-${formulaId}-${productId}`} value={productId}>
-                              {getPricingProductName(product)}
-                            </option>
-                          );
-                        })}
-                      </select>
+                      <SearchableProductPicker products={pricingPickerProducts} value={formula.rootProductId||''}
+                        label="Sản phẩm gốc" disabled={!canManageProductFormulas} allowClear
+                        onChange={value=>updateProductFormulaRoot(formulaId,value)}/>
                     </div>
                     <button
                       type="button"
@@ -37489,22 +37475,9 @@ function SimplePricingEngineView({
                         return (
                           <div key={`${formulaId}-${childId}`} className="rounded-2xl border border-sky-50 bg-white p-2 shadow-sm">
                             <div className="grid grid-cols-[minmax(0,1.25fr)_72px_72px_52px_38px] items-center gap-2">
-                              <select
-                                value={child.productId || ''}
-                                onChange={e => updateProductFormulaChildProduct(formulaId, childId, e.target.value)}
-                                disabled={!canManageProductFormulas}
-                                className="min-w-0 rounded-xl border border-sky-100 bg-white px-2 py-2 text-xs font-black text-gray-900 outline-none disabled:bg-gray-50 disabled:text-gray-400"
-                              >
-                                <option value="">SP phụ</option>
-                                {activePricingProducts.map(product => {
-                                  const productId = getPricingProductId(product);
-                                  return (
-                                    <option key={`formula-child-${formulaId}-${childId}-${productId}`} value={productId}>
-                                      {getPricingProductName(product)}
-                                    </option>
-                                  );
-                                })}
-                              </select>
+                              <SearchableProductPicker products={pricingPickerProducts} value={child.productId||''}
+                                label={`Sản phẩm phụ ${childIndex+1}`} disabled={!canManageProductFormulas} allowClear
+                                onChange={value=>updateProductFormulaChildProduct(formulaId,childId,value)}/>
                               <input
                                 inputMode="decimal"
                                 value={child.outputRatioPercent ?? ''}
