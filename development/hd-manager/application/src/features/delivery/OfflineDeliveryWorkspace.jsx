@@ -3,7 +3,7 @@ import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
 import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 import {HDButton,HDBadge,HDInput,HDDateInput,HDEmptyState} from '../../design-system/components.jsx';
-import OfflineDeliveryEditor from './OfflineDeliveryEditor.jsx';
+const OfflineDeliveryEditor=React.lazy(()=>import('./OfflineDeliveryEditor.jsx'));
 import OfflineDeliveryPending from './OfflineDeliveryPending.jsx';
 import {deliveryWriteAccess} from './offlineDeliveryEditorModel.js';
 import {
@@ -85,7 +85,7 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
     <header className="flex flex-wrap justify-between gap-3"><div><p className="text-xs text-slate-500">Giao hàng · Chứng từ đã lưu trên thiết bị</p><h1 className="text-xl font-black">Báo cáo giao hàng</h1></div>{onNavigate&&<HDButton variant="secondary" disabled={!!editor} onClick={()=>onNavigate('home')}>Trang chủ</HDButton>}</header>
     {!deliveryRepository?.ready&&<p className="rounded-xl bg-amber-50 p-3 text-sm">Chỉ xem. Giao thức giao hàng nguyên tử chưa sẵn sàng trong phiên này.</p>}
     {deliveryRepository?.ready&&<><HDButton disabled={!!editor||!deliveryWriteAccess(runtime,deliveryRepository,'deliveryReport.create')} onClick={()=>setEditor({id:null,readSource:'local'})}>Thêm báo cáo giao hàng</HDButton><OfflineDeliveryPending runtime={runtime} repository={deliveryRepository} disabled={!!editor} onOpen={id=>{if(!editor)setEditor({id,readSource:'local'});}}/></>}
-    {editor&&deliveryRepository&&<OfflineDeliveryEditor key={JSON.stringify([scopeKey,editor])} runtime={runtime} repository={deliveryRepository} id={editor.id} readSource={editor.readSource} closeRequestRef={editorClose} onClose={()=>setEditor(null)} onSaved={()=>setRefresh(v=>v+1)}/>}
+    {editor&&deliveryRepository&&<React.Suspense fallback={<p role="status">Đang mở trình sửa giao hàng…</p>}><OfflineDeliveryEditor key={JSON.stringify([scopeKey,editor])} runtime={runtime} repository={deliveryRepository} id={editor.id} readSource={editor.readSource} closeRequestRef={editorClose} onClose={()=>setEditor(null)} onSaved={()=>setRefresh(v=>v+1)}/></React.Suspense>}
     {activeDetail&&<section ref={detailPanel} tabIndex={-1} className="space-y-3 rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết giao hàng">
       <div className="flex justify-between gap-2"><h2 ref={detailHeading} tabIndex={-1} className="font-bold">Chi tiết báo cáo giao hàng</h2><HDButton variant="secondary" onClick={()=>{detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
       {activeDetail.pending&&<p role="status">Đang đối chiếu chứng từ liên quan…</p>}{activeDetail.error&&<p role="alert">{activeDetail.error}</p>}

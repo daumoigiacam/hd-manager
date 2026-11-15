@@ -5,13 +5,9 @@ import {originalDeliveryForm} from './deliveryOriginalForm.js';
 import {originalDeliveryFinancialOperations} from './deliveryOriginalFinancialForm.js';
 import {parseInputCurrency,parseLooseQuantityValue} from './deliveryOriginalRules.js';
 
-export const DELIVERY_RULES=Object.freeze({
- 'deliveryReport.create':{capability:'deliveryReports.create',action:'create_delivery_report'},
- 'deliveryReport.update':{capability:'deliveryReports.update',action:'edit_delivery_report'},
- 'deliveryReport.archive':{capability:'deliveryReports.archive',action:'delete_delivery_report'},
-});
+import {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryAccessContract.js';
+export {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryAccessContract.js';
 export const DELIVERY_FEATURE_CAPS=Object.freeze({income:'deliveryReports.income',expense:'deliveryReports.expense',returns:'deliveryReports.returns',addCost:'deliveryReports.assetCosts.create',editCost:'deliveryReports.assetCosts.update'});
-export const DELIVERY_READ_CAPS=Object.freeze(['home.read','home.quick-report.read','home.cashflow.read','home.orders.read','orders.read','home.dispatches.read','home.stock.read','home.debt.read','customers.read']);
 export const DELIVERY_CONTEXT_SOURCES=Object.freeze(['companies','customers','products','warehouseDispatches','deliveryReports','orders','payments','expenses','assets','assetCostLogs']);
 export const DELIVERY_SLOTS=Object.freeze({report:'deliveryReports',dispatch:'warehouseDispatches',customer:'customers',product:'products',company:'companies',order:'orders',expense:'expenses',orderExpense:'expenses',costExpense:'expenses',asset:'assets',cost:'assetCostLogs'});
 export const deliveryId=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(v);
