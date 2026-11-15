@@ -5,6 +5,7 @@ import {getProductWorkspaceReadCollections} from './services/productWorkspaceRea
 import {getOrderRequestWorkspaceReadCollections} from './services/orderRequestWorkspaceReadPlan.js';
 import {getOrderWorkspaceReadCollections,runReadyOrderMutation,runReadyFinancialMutation} from './services/orderWorkspaceReadPlan.js';
 import {getBankWorkspaceReadCollections,BANK_PRIMARY_COLLECTIONS} from './services/bankWorkspaceReadPlan.js';
+import {getQuoteWorkspaceReadCollections,QUOTE_PRIMARY_COLLECTIONS,QUOTE_SHARE_COLLECTIONS,admitQuoteShare} from './services/quoteWorkspaceReadPlan.js';
 import {getMessageWorkspaceReadCollections,getMessageAttachmentReadCollections,MESSAGE_PRIMARY_COLLECTIONS} from './services/messageWorkspaceReadPlan.js';
 import {rememberCommittedReadSources,hasRetainedModuleSources,reconciledProjectionAvailability} from './services/moduleReadAvailability.js';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
@@ -1136,7 +1137,7 @@ const FOREGROUND_REALTIME_COLLECTIONS_BY_TAB = Object.freeze({
   payroll: ['employeeReviews', 'payrollPeriods', 'payrollDebtCarryovers', 'payrollAutoLockPlans', 'attendance', 'customerComplaints', 'financials', 'performance', 'customers', 'orders', 'payments', 'holidays', 'deliveryReports', 'advances'],
   asset_management: ['assets', 'assetCostLogs', 'expenses', 'employees'],
   pricing: ['products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'warehouseStockCounts', 'pricingInputs', 'pricingRules'],
-  price_quotes: ['customers', 'products', 'orders', 'orderRequests'],
+  price_quotes: QUOTE_PRIMARY_COLLECTIONS,
   products: ['products', 'orders', 'warehouseImports', 'warehouseDispatches'],
   messages: getMessageWorkspaceReadCollections(),
   settings: ['reward_catalog', 'promotions', 'zalo_send_queue', 'zalo_campaigns', 'zalo_campaign_queue', 'zalo_inbox_messages', 'zalo_inbox_bridge_logs', 'ai_reply_rules'],
@@ -13693,6 +13694,9 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   const bankBackgroundRequested=bankListCommittedOwner===readOwnerKey;
   const onBankPrimaryReady=useCallback(()=>{if(readOwnerRef.current===readOwnerKey)setBankListCommittedOwner(readOwnerKey);},[readOwnerKey]);
   const [orderListCommittedOwner,setOrderListCommittedOwner]=useState(null);
+  const [quoteHistoryOwner,setQuoteHistoryOwner]=useState(null);
+  const quoteHistoryRequested=quoteHistoryOwner===readOwnerKey;
+  const onQuoteHistoryRequested=useCallback(()=>{if(readOwnerRef.current===readOwnerKey)setQuoteHistoryOwner(readOwnerKey);},[readOwnerKey]);
   const orderBackgroundRequested=orderListCommittedOwner===readOwnerKey;
   const onOrderPrimaryReady=useCallback(()=>{if(readOwnerRef.current===readOwnerKey)setOrderListCommittedOwner(readOwnerKey);},[readOwnerKey]);
   const messageBackgroundRequested=messageListCommittedOwner===readOwnerKey;
@@ -13725,7 +13729,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
     if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded || startupWorkspaceReady)) return undefined;
-    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):activeTab==='order_requests'?getOrderRequestWorkspaceReadCollections(requestDispatchRequested):activeTab==='orders'?getOrderWorkspaceReadCollections(orderBackgroundRequested):activeTab==='bank_payments'?getBankWorkspaceReadCollections(bankBackgroundRequested):activeTab==='messages'?getMessageWorkspaceReadCollections(messageAttachmentRequested,messageBackgroundRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
+    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):activeTab==='order_requests'?getOrderRequestWorkspaceReadCollections(requestDispatchRequested):activeTab==='orders'?getOrderWorkspaceReadCollections(orderBackgroundRequested):activeTab==='bank_payments'?getBankWorkspaceReadCollections(bankBackgroundRequested):activeTab==='price_quotes'?getQuoteWorkspaceReadCollections(quoteHistoryRequested):activeTab==='messages'?getMessageWorkspaceReadCollections(messageAttachmentRequested,messageBackgroundRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     firebaseUser?.uid,
@@ -13733,7 +13737,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     currentUser?.companyId,
     currentUser?.customerId,
     isCoreDataLoaded,startupWorkspaceReady,
-    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,requestDispatchRequested,orderBackgroundRequested,bankBackgroundRequested,messageAttachmentRequested,messageBackgroundRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
+    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,requestDispatchRequested,orderBackgroundRequested,bankBackgroundRequested,quoteHistoryRequested,messageAttachmentRequested,messageBackgroundRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
   ]);
 
   useEffect(() => {
@@ -22628,7 +22632,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
       <RetainedFullWorkspace native={isNativeRuntime()} scope={fullWorkspaceOwnerScope} local={wantsRestoredWorkspace} localView={restoredWorkspaceView} onVisible={markFullWorkspaceVisible}>
-      <MainAppView onBankPrimaryReady={onBankPrimaryReady} onOrderPrimaryReady={onOrderPrimaryReady} onMessagePrimaryReady={onMessagePrimaryReady} onMessageAttachmentDemandChange={onMessageAttachmentDemandChange} currentReadOwnerKey={readOwnerKey} localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onRequestDispatchDemandChange={onRequestDispatchDemandChange} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
+      <MainAppView onQuoteHistoryRequested={onQuoteHistoryRequested} onBankPrimaryReady={onBankPrimaryReady} onOrderPrimaryReady={onOrderPrimaryReady} onMessagePrimaryReady={onMessagePrimaryReady} onMessageAttachmentDemandChange={onMessageAttachmentDemandChange} currentReadOwnerKey={readOwnerKey} localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onRequestDispatchDemandChange={onRequestDispatchDemandChange} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
         onPersonalHomeProjectionStateChange={onPersonalHomeProjectionStateChange}
         onNotificationsRequested={onNotificationsRequested}
         readWorkerActivityStore={readWorkerActivityStore}
@@ -23180,6 +23184,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
+  onQuoteHistoryRequested,
   onBankPrimaryReady,
   onOrderPrimaryReady,
   onMessagePrimaryReady,onMessageAttachmentDemandChange,
@@ -24874,6 +24879,7 @@ function MainAppView({
                activeTab === 'orders' ? 'Đơn hàng' :
                activeTab === 'products' ? 'Kho SP' :
                activeTab === 'pricing' ? 'Giá cả' :
+               activeTab === 'price_quotes' ? 'Báo giá' :
                activeTab === 'debt' ? 'Sổ nợ' :
                activeTab === 'bank_payments' ? 'TT giao dịch' :
                activeTab === 'finance' ? 'Tổng kết ngày' :
@@ -25030,6 +25036,8 @@ function MainAppView({
 
   const renderPricingWorkspace = () => <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
 
+  const renderQuoteWorkspace = () => <PriceQuoteBroadcastView onHistoryRequested={onQuoteHistoryRequested} dataReady={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} dataFresh={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} shareReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_SHARE_COLLECTIONS})} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} payments={payments} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
+
   const renderContent = () => {
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
@@ -25065,7 +25073,7 @@ function MainAppView({
 return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id, role)=>onOverrideCheckIn(id, attendanceProxyMethod, role)} onOverrideCheckOut={(id, role)=>onOverrideCheckOut(id, attendanceProxyMethod, role)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
       case 'products': return <ProductManagementView onInventoryDemandChange={onProductInventoryDemandChange} catalogDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(false)})} inventoryDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(true)})} key={dashboardPrivacyScope} searchStore={productSearchStore} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return null; // Retained below under the same authenticated owner.
-      case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
+      case 'price_quotes': return null; // Retained below for the same authenticated owner.
       case 'employee_reviews': return (
         <EmployeeReviewModuleView
           currentEmployee={employee}
@@ -25578,6 +25586,11 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
                 {renderPricingWorkspace()}
               </React.Suspense>
             </React.Profiler>
+          </AppSectionErrorBoundary>
+        </RetainedModuleActivity>
+        <RetainedModuleActivity key={`quotes:${dashboardPrivacyScope}`} active={activeTab==='price_quotes'} allowed={Boolean(tabPermissions.price_quotes&&canAccess('price_quotes'))}>
+          <AppSectionErrorBoundary name="staff_price_quotes" resetKey={dashboardPrivacyScope} onReset={()=>setRootActiveTab(primaryWorkTab||'home')}>
+            {renderQuoteWorkspace()}
           </AppSectionErrorBoundary>
         </RetainedModuleActivity>
         <AppSectionErrorBoundary
@@ -37885,7 +37898,8 @@ function SimplePricingEngineView({
   );
 }
 
-function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, customers = [], products = [], orders = [], payments = [], isAccounting = false, isOwnerAccount = false, onEditCustomer }) {
+function PriceQuoteBroadcastView({ dataReady=false, dataFresh=false, shareReady=false, onHistoryRequested, employee, employees = [], currentCompany, customers = [], products = [], orders = [], payments = [], isAccounting = false, isOwnerAccount = false, onEditCustomer }) {
+  const shareWaitMessage='Đang tải và đối chiếu công nợ. Giá và khách đã chọn được giữ nguyên; bấm Gửi thông báo Zalo lại khi dữ liệu sẵn sàng.';
   const activeProducts = useMemo(() => products.filter(product => !product.isArchived), [products]);
   const salesVisibleEmployeeIdSet = useMemo(() => {
     const ids = new Set();
@@ -37903,6 +37917,7 @@ function PriceQuoteBroadcastView({ employee, employees = [], currentCompany, cus
     }), [customers, employee?.id, isAccounting, isOwnerAccount, salesVisibleEmployeeIdSet]);
 
 const [quoteStatus, setQuoteStatus] = useState('');
+  useEffect(()=>{if(shareReady)setQuoteStatus(previous=>previous===shareWaitMessage?'Đã đối chiếu công nợ. Kiểm tra giá và khách đã chọn rồi bấm Gửi thông báo Zalo.':previous);},[shareReady]);
   const [isSharing, setIsSharing] = useState(false);
   const [showBatchPricePanel, setShowBatchPricePanel] = useState(true);
   const [batchPriceProductId, setBatchPriceProductId] = useState(() => activeProducts[0]?.id || '');
@@ -37988,6 +38003,7 @@ const toggleBatchCustomer = (customerId) => {
   );
 
   const handleApplyBatchCustomerPrice = async () => {
+    if(!dataFresh){setQuoteStatus('Danh sách đang được xác minh lại. Giá bạn nhập và lựa chọn vẫn được giữ nguyên.');return;}
     if (applyingBatchPriceRef.current) return;
     if (!onEditCustomer) {
       setQuoteStatus('Tài khoản hiện tại chưa có quyền cập nhật giá riêng cho khách hàng.');
@@ -38063,6 +38079,11 @@ const toggleBatchCustomer = (customerId) => {
       return;
     }
 
+    // The original text includes debt. Never calculate it from a partial
+    // invoice source or omit already received payments. Do not auto-share a
+    // delayed intent after the user changes the draft, account or selection.
+    if(!admitQuoteShare({ready:shareReady,requestHistory:onHistoryRequested,onWaiting:()=>setQuoteStatus(shareWaitMessage)}))return;
+
     const message = targetCustomers.map(customer => {
       const currentConfig = getCustomerProductConfig(customer, product) || {};
       return buildCustomerQuoteShareText({
@@ -38111,7 +38132,10 @@ const toggleBatchCustomer = (customerId) => {
   };
 
 return (
-    <div className="space-y-4 animate-in fade-in pb-20">
+    <div className="space-y-4 animate-in fade-in pb-20" data-hd-essential-data-ready={dataReady?'true':undefined}>
+      {!dataReady&&<p role="status" aria-busy="true">Đang mở khách hàng và sản phẩm đã được cấp quyền…</p>}
+      {dataReady&&!dataFresh&&<p role="status">Đang cập nhật ở nền. Có thể xem danh sách và nhập bản nháp; lưu giá sau khi xác minh lại nguồn.</p>}
+      <fieldset disabled={!dataReady} className="min-w-0 space-y-4">
 
 <div className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-start justify-between gap-3">
@@ -38225,7 +38249,7 @@ return (
                     <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-black ${
                       isSelected ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-300 bg-white text-transparent'
                     }`}>
-                      âœ“
+                      ✓
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-black text-slate-800">{customer.name}</span>
@@ -38236,7 +38260,7 @@ return (
                   </button>
                 );
               })}
-              {fixedBatchProductCustomers.length === 0 && (
+              {dataReady && fixedBatchProductCustomers.length === 0 && (
                 <p className="rounded-2xl border border-dashed border-slate-200 px-3 py-4 text-center text-xs font-semibold text-slate-400">
                   Chưa có khách nào được gắn sản phẩm cố định này. Hãy vào chi tiết khách hàng để gắn sản phẩm cố định trước.
                 </p>
@@ -38253,7 +38277,7 @@ return (
             <button
               type="button"
               onClick={handleApplyBatchCustomerPrice}
-              disabled={isApplyingBatchPrice || !batchPriceProductId || selectedBatchCustomerIds.length === 0}
+              disabled={!dataFresh || isApplyingBatchPrice || !batchPriceProductId || selectedBatchCustomerIds.length === 0}
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isApplyingBatchPrice ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle size={18} />}
@@ -38272,7 +38296,7 @@ return (
         )}
       </div>
 
-</div>
+</fieldset></div>
   );
 }
 
