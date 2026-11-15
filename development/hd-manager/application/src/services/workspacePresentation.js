@@ -15,8 +15,18 @@ export function restoredWorkspaceEntryTab({requested,requestedPrincipalId,princi
   return accountType !== 'customer' && requestedPrincipalId && requestedPrincipalId === principalId
     && ['home','more'].includes(requested) ? requested : fallback;
 }
-export function showRestoredWorkspace({native,localMode,restored,online,hasCurrentUser,minimalEntry,enabled,firebaseUid,principalId,biometricUnlocked}) {
+// A request changes presentation only. The full product still uses its normal
+// authenticated read-owner gate and per-module RBAC. A menu intent is never a
+// signed Offline permission or a way to open another actor's cached data.
+export function canPresentFullWorkspace({intent,runtime,firebaseUid,tenantId,companyId,biometricUnlocked,online}) {
+  return Boolean(online&&biometricUnlocked&&runtime?.isCurrent?.()
+    &&intent&&['home','more'].includes(intent.tab)
+    &&intent.principalId===runtime.scope.principalId&&firebaseUid===runtime.scope.principalId
+    &&intent.tenantId===runtime.scope.tenantId&&tenantId===runtime.scope.tenantId&&companyId===tenantId);
+}
+export function showRestoredWorkspace({native,localMode,restored,online,hasCurrentUser,minimalEntry,enabled,firebaseUid,principalId,biometricUnlocked,fullWorkspaceAuthorized=false}) {
   if (!native) return localMode && (!firebaseUid || firebaseUid === principalId);
+  if(fullWorkspaceAuthorized&&!localMode)return false;
   return restored || (!online && !hasCurrentUser)
     || (minimalEntry && enabled && firebaseUid === principalId && biometricUnlocked);
 }

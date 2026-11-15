@@ -19,7 +19,7 @@ function OfflineHome(props){return <PreloadedWorkspace module={homeModule} viewP
 
 // Same application entry and product CRM view; the existing signed owner is
 // supplied by App. No Firebase user, role, financial total or grant is invented.
-export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerView,onLogout,onCustomerIntent,initialTab='home',onOpenFullWorkspace}){
+export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerView,onLogout,onCustomerIntent,initialTab='home',onOpenFullWorkspace,onResumeFullWorkspace,navigationNotice=''}){
  const context=runtime||verifiedLaunch;
  const [initialNavigation]=useState(()=>{
   if(initialTab==='home')return {route:null,customer:false};
@@ -84,6 +84,8 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
  const modules=[...(read?[{id:'customers',label:'Khách hàng'}]:[]),...routes];
  return <AppShell className="hd-instant-native flex flex-col h-full min-h-0" data-hd-verified-tenant={context.scope.tenantId} data-hd-verified-principal={context.scope.principalId}>
   <main ref={contentRef} className="flex-1 overflow-y-auto min-h-0" data-instant-route={menuOpen?'modules':tab}>
+   {onResumeFullWorkspace&&<div className="p-3" style={{paddingTop:'calc(12px + var(--hd-safe-top, 0px))'}}><button type="button" className="rounded-xl border px-3 py-2 text-sm text-blue-700" onClick={onResumeFullWorkspace}>Tiếp tục màn hình đang mở</button></div>}
+   {navigationNotice&&<p role="status" className="p-3 text-sm text-slate-600">{navigationNotice}</p>}
    {menuOpen&&<section className="p-4 grid grid-cols-2 gap-3" style={{paddingTop:'calc(16px + var(--hd-safe-top, 0px))'}} aria-label="Chức năng nghiệp vụ"><h1 className="col-span-2 text-xl font-bold">Chức năng</h1>{modules.map(route=><button key={route.id} type="button" className="rounded-xl border p-3 text-left font-semibold" onClick={()=>navigate(route.id)}>{route.label}</button>)}</section>}
    <React.Activity mode={menuOpen?'hidden':'visible'}>
    <React.Activity mode={tab==='home'?'visible':'hidden'}>

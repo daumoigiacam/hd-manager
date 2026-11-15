@@ -19,9 +19,9 @@ export default function CoreWorkspaceEntry(){
  const offlineWorkspace=useNativeOfflineWorkspace(loadAuth);
  const [fullRequested,setFullRequested]=useState(false),[loggingOut,setLoggingOut]=useState(false),[error,setError]=useState('');
  const [onlineWebLaunch]=useState(()=>Capacitor.getPlatform()==='web'&&navigator.onLine);
- const [initialWorkspaceTab,setInitialWorkspaceTab]=useState();
+ const [initialWorkspaceTab,setInitialWorkspaceTab]=useState(),[initialWorkspaceIntent,setInitialWorkspaceIntent]=useState(null);
  useEffect(()=>{if(offlineWorkspace.settled&&(!offlineWorkspace.enabled||(!offlineWorkspace.runtime&&offlineWorkspace.online)||onlineWebLaunch))setFullRequested(true);},[offlineWorkspace.settled,offlineWorkspace.enabled,offlineWorkspace.runtime,offlineWorkspace.online,onlineWebLaunch]);
- const openFullWorkspace=Capacitor.getPlatform()==='web'?(tab='more')=>{if(!navigator.onLine)return;setInitialWorkspaceTab(tab==='home'?'home':'more');setFullRequested(true);}:undefined;
+ const openFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;if(!navigator.onLine||!owner?.isCurrent())return;const target=tab==='home'?'home':'more';setInitialWorkspaceTab(target);setInitialWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setFullRequested(true);};
  const logout=useCallback(async()=>{
   setLoggingOut(true);setError('');
   try{
@@ -32,7 +32,7 @@ export default function CoreWorkspaceEntry(){
   }catch(failure){setError(failure.message);}finally{setLoggingOut(false);}
  },[offlineWorkspace.controller]);
  if(loggingOut)return <AppShell><main className="p-4" role="status">Đang đăng xuất an toàn…</main></AppShell>;
- if(fullRequested)return <React.Suspense fallback={<AppShell><WorkingHome ready={false}/></AppShell>}><FullApplication offlineWorkspace={offlineWorkspace} initialWorkspaceTab={initialWorkspaceTab}/></React.Suspense>;
+ if(fullRequested)return <React.Suspense fallback={<AppShell><WorkingHome ready={false}/></AppShell>}><FullApplication offlineWorkspace={offlineWorkspace} initialWorkspaceTab={initialWorkspaceTab} initialWorkspaceIntent={initialWorkspaceIntent}/></React.Suspense>;
  const verifiedContext=offlineWorkspace.runtime?.isCurrent()?offlineWorkspace.runtime:offlineWorkspace.verifiedLaunch?.isCurrent()?offlineWorkspace.verifiedLaunch:null;
  if(verifiedContext)return <RestoredLocalWorkspace key={JSON.stringify(verifiedContext.scope)} runtime={offlineWorkspace.runtime} verifiedLaunch={offlineWorkspace.verifiedLaunch} CustomerView={ProductCRM} onCustomerIntent={()=>void productCRM.preload().catch(()=>{})} onLogout={logout} onOpenFullWorkspace={openFullWorkspace}/>;
  return <AppShell><StartupWorkspaceShell onLogout={offlineWorkspace.controller?logout:undefined} error={error||offlineWorkspace.error}/></AppShell>;

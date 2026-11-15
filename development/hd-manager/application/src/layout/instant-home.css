@@ -13,5 +13,9 @@
 .hd-instant-native>main:not([data-instant-route="home"]):not([data-instant-route="modules"]){padding-top:var(--hd-safe-top,0px)}
 /* Percentage height inherited a taller ancestor on edge-to-edge Android.
    Bound the shared shell to the actual viewport and retain keyboard resizing. */
-.hd-instant-native.hd-enterprise-app-shell{height:100vh!important;height:min(100dvh,var(--hd-viewport-height,100dvh))!important;min-height:0!important;min-block-size:0!important;max-height:100dvh;overflow:hidden}
+.hd-instant-native.hd-enterprise-app-shell{height:min(100vh,var(--hd-viewport-height,100vh))!important;min-height:0!important;min-block-size:0!important;max-height:100vh;overflow:hidden}
+/* WebView before 108 cannot resolve dvh inside min(), even when the other
+   argument is a measured px value. Keep the valid viewport constraint there;
+   otherwise the shell becomes content-sized and pushes navigation off-screen. */
+@supports(height:100dvh){.hd-instant-native.hd-enterprise-app-shell{height:min(100dvh,var(--hd-viewport-height,100dvh))!important;max-height:100dvh}}
 .hd-instant-nav{position:relative}.hd-instant-quick-menu{position:absolute;bottom:calc(100% + 12px);left:12px;right:12px;border:1px solid #dce6f4;border-radius:18px;background:white;box-shadow:0 8px 30px #12295526;padding:10px;z-index:3;text-align:left}.hd-instant-quick-menu header{display:flex;align-items:center;justify-content:space-between;padding:5px 10px 9px;color:#0c1c49}.hd-instant-quick-menu header button{flex:0;padding:3px}.hd-instant-quick-menu>button{flex-direction:row;justify-content:space-between;align-items:center;width:100%;min-height:43px;padding:10px;color:#17447d;border-radius:10px;text-align:left;font-size:13px}.hd-instant-quick-menu>button:hover{background:#edf5ff}

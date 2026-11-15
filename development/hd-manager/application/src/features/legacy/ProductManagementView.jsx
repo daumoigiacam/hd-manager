@@ -4,6 +4,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { createIncrementalProductStockIndex } from "../../utils/incrementalProductStock.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
+import {shouldPrepareProductInventory} from "../../services/productWorkspaceReadPlan.js";
 import { usePreparedSearch } from "../../hooks/usePreparedSearch.js";
 import { hasSearchQuery as hasTokenSearchQuery, getProductSearchFields } from "../../services/searchEngine.js";
 import { usePagedList } from "../../services/renderOptimization";
@@ -87,7 +88,7 @@ export function createProductManagementView(runtime) {
           );
 
   });
-  function ProductManagementView({ searchStore=null, warehouseImports = [], warehouseDispatches = [], isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+  function ProductManagementView({ catalogDataReady=true, inventoryDataReady=true, onInventoryDemandChange, searchStore=null, warehouseImports = [], warehouseDispatches = [], isAccounting, currentCompany = {}, products, orders = [], onAddProduct, onEditProduct, onToggleArchiveProduct, onDeleteProduct, onUpdateCompanySettings, canCreateProduct = false, canEditProduct = false, canDeleteProduct = false, canViewArchivedProducts = false, canManageProductInventory = false, canManageProductAttributes = false, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showForm, setShowForm] = useState(false);
   useModalScrollLock(showForm);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
@@ -99,6 +100,7 @@ export function createProductManagementView(runtime) {
   const [localProductSearch, setLocalProductSearch] = useState('');
   const [localShowFilterPanel, setLocalShowFilterPanel] = useState(false);
   const [productTab, setProductTab] = useState('products');
+  useEffect(()=>{onInventoryDemandChange?.(productTab==='inventory');return()=>onInventoryDemandChange?.(false);},[productTab,onInventoryDemandChange]);
   const [selectedUnit, setSelectedUnit] = useState('Tất cả');
   const [discountFilter, setDiscountFilter] = useState('Tất cả');
   const [isProductGroupCreateOpen, setIsProductGroupCreateOpen] = useState(false);
@@ -168,8 +170,8 @@ export function createProductManagementView(runtime) {
   const inventoryScope=[currentCompany?.id,inventoryDateKey].join('|');
   const inventoryEntry=useMemo(()=>productCatalogMetricsCache([products,orders,warehouseImports,warehouseDispatches],inventoryScope),[products,orders,warehouseImports,warehouseDispatches,inventoryScope]);
   const prepareInventoryMetrics=useMemo(()=>()=>buildInventoryMetrics(products,orders,{untilDate:inventoryDateKey,warehouseImports,warehouseDispatches,stockBalanceResolver:stockIndex.build,cooperative:true}),[products,orders,warehouseImports,warehouseDispatches,stockIndex,inventoryDateKey,inventoryCalculationAttempt]);
-  const inventoryProjection=useCooperativeProjection(prepareInventoryMetrics,inventoryEntry);
-  const inventoryReady=!inventoryProjection.pending && !inventoryProjection.error;
+  const inventoryProjection=useCooperativeProjection(prepareInventoryMetrics,inventoryEntry,{enabled:shouldPrepareProductInventory({tab:productTab,sourceReady:inventoryDataReady,cacheComplete:inventoryEntry?.complete})});
+  const inventoryReady=inventoryDataReady&&!inventoryProjection.pending && !inventoryProjection.error;
   const inventoryMetrics=inventoryReady ? inventoryProjection.value : EMPTY_CATALOG_INVENTORY;
   const inventoryByProductId = useMemo(
     () => new Map(inventoryMetrics.productRows.map(row => [row.id, row])),
@@ -522,6 +524,7 @@ export function createProductManagementView(runtime) {
 
   return (
     <div className="premium-data-module premium-products-module space-y-4 animate-in fade-in pb-16" aria-busy={productTab === 'inventory' && !inventoryReady}>
+      {!catalogDataReady&&<p role="status" className="p-3 text-sm text-slate-500">{products.length?'Đang cập nhật danh mục; đang hiển thị dữ liệu đã tải.':'Đang tải danh mục sản phẩm…'}</p>}
       {productTab === 'inventory' && inventoryProjection.pending && <p role="status" className="p-3 text-sm text-slate-500">Đang đối chiếu số lượng và giá trị tồn kho…</p>}
       {productTab === 'inventory' && inventoryProjection.error && <p role="alert" className="p-3 text-sm text-amber-800">Chưa tính xong tồn kho.
         <button type="button" onClick={()=>setInventoryCalculationAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
@@ -715,7 +718,7 @@ export function createProductManagementView(runtime) {
         {retainedPage ? <span role="status" className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-emerald-300"><span className="sr-only">Đang lọc; danh sách trước chưa phải kết quả mới.</span></span> : null}
         {preparedProductSearch.pending && !retainedPage ? <p role="status" aria-busy="true" className="p-4 text-sm text-slate-500">Đang tìm sản phẩm…</p> : preparedProductSearch.error ? <p role="alert" className="p-4 text-sm text-amber-700">Không thể tìm sản phẩm. Hãy thử lại từ khóa.</p> : productTab === 'inventory' && !inventoryReady ? <p role="status" className="p-4 text-sm text-slate-500">Chưa có kết quả tồn kho hoàn tất để hiển thị.</p> : <>
         {displayedPage.items.map(p => <ProductCatalogRow key={p.id} p={p} inventoryRow={inventoryByProductId.get(p.id) || EMPTY_PRODUCT_INVENTORY_ROW} productTab={productTab} showArchived={showArchived} canEdit={canEdit} canDelete={canDelete} onEdit={handleOpenEdit} onDelete={onDeleteProduct} />)}
-        {displayedPage.items.length === 0 && !preparedProductSearch.pending && (
+        {displayedPage.items.length === 0 && !preparedProductSearch.pending && catalogDataReady && (
           <HDEmptyState
             icon={<Package size={24} aria-hidden="true" />}
             title={hasProductFilters

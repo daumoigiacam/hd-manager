@@ -12,6 +12,7 @@ export const planForegroundRealtimeActivation = ({
   baselineNames = [],
   limit = 0,
   retainRecent = true,
+  retainedActiveNames = [],
 } = {}) => {
   const available = new Set(uniqueNames(availableNames));
   const baseline = new Set(uniqueNames(baselineNames));
@@ -28,6 +29,13 @@ export const planForegroundRealtimeActivation = ({
     ...active,
   ]).filter(isEligible);
   const liveNames = requested.slice(0, maxListeners);
+
+  // Explicit short-lived retention cannot revive a closed/cold subscription.
+  // Current demand always owns the budget before any retained source.
+  for(const name of uniqueNames(retainedActiveNames).filter(isEligible)){
+    if(liveNames.length>=maxListeners)break;
+    if(active.includes(name)&&!liveNames.includes(name))liveNames.push(name);
+  }
 
   for (const name of retainRecent ? recency : []) {
     if (liveNames.length >= maxListeners) break;

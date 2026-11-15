@@ -1,11 +1,15 @@
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
+import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
+import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
 import {hasCommittedServerSnapshot} from './services/realtimeReadFreshness.js';
-import {initialLocalWorkspace,showRestoredWorkspace,restoredWorkspaceEntryTab,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
+import {initialLocalWorkspace,showRestoredWorkspace,canPresentFullWorkspace,restoredWorkspaceEntryTab,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
 import InstantHome,{InstantHomeNavigation} from './layout/InstantHome.jsx';
 import {getCashExpenseFinance as instantHomeFinance,getReportPeriod as instantHomePeriod} from './features/business-report/reportViewModel.js';
 import {homeSummary} from './layout/instantHomeModel.js';
+import {prepareNavigationModule,navigationIntentTab} from './utils/navigationModuleIntent.js';
+import {useCommittedCallback} from './utils/useCommittedCallback.js';
 import { logLoginStep, auth, db, isFirebaseConfigured, activeFirebaseConfig, firebaseAuthPersistencePromise, appId } from './services/firebaseClientRuntime.js';
 import {
   EMPTY_MAIN_LEDGER,
@@ -538,6 +542,7 @@ import DispatchTableBody from './features/warehouse/DispatchTableBody.jsx';
 import { buildDispatchListSearchFields } from './features/warehouse/dispatchListSearchFields.js';
 import { ListPagination } from './design-system/ListPagination.jsx';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
+import {createActiveSourceRetention} from './services/activeSourceRetention.js';
 import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
 import {
   hasSearchQuery as hasTokenSearchQuery,
@@ -10298,7 +10303,7 @@ const normalizeAppTab = (tab) => (tab === 'report' ? 'home' : tab === 'maps' ? '
 
 // CoreWorkspaceEntry already loads this shell. A second lazy promise here
 // introduced a ~300 ms Suspense fallback after verified Runtime publication.
-function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
+function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceIntent}) {
   useMobileKeyboardViewportGuard();
   useDismissModalOnBackdropClick();
   const persistedSession = useMemo(() => (
@@ -10331,7 +10336,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
   },[startupWorkspace]);
   const isCustomerSession = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
   const [currentCompany, setCurrentCompany] = useState(persistedSession.currentCompany);
-  const [localWorkspaceMode,setLocalWorkspaceMode]=useState(()=>initialLocalWorkspace({native:isNativeRuntime(),online:navigator.onLine}));
+  const [fullWorkspaceIntent,setFullWorkspaceIntent]=useState(initialWorkspaceIntent||null);
+  const [fullWorkspaceNotice,setFullWorkspaceNotice]=useState('');
+  const retainedFullScope=useRef(null);
+  const markFullWorkspaceVisible=useCallback(scope=>{retainedFullScope.current=scope;setFullWorkspaceNotice('');},[]);
+  const [localWorkspaceMode,setLocalWorkspaceMode]=useState(()=>initialWorkspaceIntent?false:initialLocalWorkspace({native:isNativeRuntime(),online:navigator.onLine}));
+  useEffect(()=>{if(isNativeRuntime()&&fullWorkspaceIntent&&!offlineWorkspace.online)setLocalWorkspaceMode(true);},[fullWorkspaceIntent,offlineWorkspace.online]);
   const [localWorkspaceTab,setLocalWorkspaceTab]=useState('home');
   const [initialNavigationPrincipalId]=useState(()=>offlineWorkspace.runtime?.scope.principalId||offlineWorkspace.verifiedLaunch?.scope.principalId||null);
   const offlineNavigationRef=useRef(offlineWorkspace);offlineNavigationRef.current=offlineWorkspace;
@@ -10340,10 +10350,10 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     tab=>{
       const access=offlineNavigationRef.current;
       const explicitWorkflow=['attendanceRequests','attendancePeriods','salarySettlements'].includes(tab);
-      // Keep the complete existing Web UI online. Only the already shipped
+      // Keep the complete existing UI online. Only the already shipped
       // local workflows, or an explicit Offline navigation, use the shared
       // signed Runtime. No permission is inferred from a role/menu label.
-      if(access.enabled&&!isNativeRuntime()&&access.runtime?.isCurrent()
+      if(access.enabled&&access.runtime?.isCurrent()
         &&(!access.online||explicitWorkflow)
         &&resolveLocalWorkspaceTab(tab,availableNativeBusinessRoutes(access.runtime))){
         setLocalWorkspaceTab(tab);setLocalWorkspaceMode(true);return false;
@@ -13429,6 +13439,14 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
       ? NATIVE_FOREGROUND_REALTIME_LISTENER_LIMIT
       : WEB_FOREGROUND_REALTIME_LISTENER_LIMIT;
     const foregroundRealtimeCollectionNames = new Set();
+    const foregroundRetention=createActiveSourceRetention({ttlMs:customerSession?0:10000,isCurrent:isReadAccessCurrent});
+    let foregroundRetentionTimer=null,lastForegroundCollectionNames=[];
+    const canRetainForegroundSource=colName=>{
+      const committed=collectionReadinessCommittedRef.current;
+      return activeRealtimeCollectionListeners.has(colName)&&!serverPendingCollectionNames.has(colName)
+        &&committed?.actorUid===firebaseUser.uid&&committed.serverConfirmed?.ownerKey===readOwnerKey
+        &&committed.serverConfirmed?.tenantId===tenantCompanyId&&committed.serverConfirmed.collections?.[colName]===true;
+    };
     let foregroundCollectionRecency = [];
     const foregroundReadOnlyTimers = new Map();
     const foregroundReadOnlyControllers = new Map();
@@ -13490,6 +13508,11 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     };
 
     const activateForegroundRealtimeCollections = (collectionNames = []) => {
+      if(!isReadAccessCurrent())return()=>{};
+      lastForegroundCollectionNames=[...collectionNames];
+      if(foregroundRetentionTimer!==null){window.clearTimeout(foregroundRetentionTimer);foregroundRetentionTimer=null;}
+      const retainedActiveNames=foregroundRetention.update(collectionNames,
+        Array.from(foregroundRealtimeCollectionNames).filter(name=>activeRealtimeCollectionListeners.has(name)),canRetainForegroundSource);
       const activationPlan = planForegroundRealtimeActivation({
         requestedNames: persistentReadCache&&!isCompanyPrimaryHomeReadPlan(collectionNames) ? prioritizePersistentReadSources(collectionNames,canPersistReadCollection) : collectionNames,
         activeNames: Array.from(foregroundRealtimeCollectionNames),
@@ -13501,6 +13524,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
         // initial worker queue and delay otherwise-ready financial cards.
         limit: nativeRealtimeStartup&&isCompanyPrimaryHomeReadPlan(collectionNames)?Math.min(foregroundListenerLimit,7):foregroundListenerLimit,
         retainRecent: false,
+        retainedActiveNames,
       });
       foregroundCollectionRecency = activationPlan.recentNames;
       const notificationPrerequisites=collectionNames.filter(name=>collectionBindingMap.has(name)&&!baselineCollectionNames.has(name));
@@ -13534,8 +13558,15 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
         if (binding) scheduleForegroundReadOnlyCollection(binding, index);
       });
 
-      // The next route plan evicts every no-longer-requested listener. Shared
-      // sources keep one owner; final session cleanup tears down the remainder.
+      // Reuse already committed live sources briefly within the SAME budget.
+      // A single timer evicts them after ten seconds; this never starts cold
+      // history, extends authorization, or retains another account's owner.
+      const retentionDeadline=foregroundRetention.nextDeadline();
+      if(retentionDeadline!==null)foregroundRetentionTimer=window.setTimeout(()=>{
+        foregroundRetentionTimer=null;
+        if(isReadAccessCurrent())activateForegroundRealtimeCollections(lastForegroundCollectionNames);
+        else {foregroundRetention.close();for(const name of [...foregroundRealtimeCollectionNames])stopCollectionListener(name);}
+      },Math.max(0,retentionDeadline-Date.now()));
       return () => {};
     };
     activateForegroundRealtimeRef.current = activateForegroundRealtimeCollections;
@@ -13562,6 +13593,9 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
       if(cancelled)return;
       cancelled = true;
       if(customerSession){retryCustomerBootstrapRef.current=null;customerBootstrapCommitRef.current=null}
+      foregroundRetention.close();
+      if(foregroundRetentionTimer!==null)window.clearTimeout(foregroundRetentionTimer);
+      foregroundRetentionTimer=null;lastForegroundCollectionNames=[];
       startupNotificationBarrier?.dispose();
       startupUiAdmission.close();
       if(startupUiAdmissionRef.current===startupUiAdmission)startupUiAdmissionRef.current=null;
@@ -13633,6 +13667,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     currentUser?.role,
   ]);
 
+  const [productInventoryDemand,setProductInventoryDemand]=useState(null);
+  const productInventoryRequested=productInventoryDemand===readOwnerKey;
+  const onProductInventoryDemandChange=useCallback(enabled=>{
+    if(readOwnerRef.current!==readOwnerKey)return;
+    setProductInventoryDemand(previous=>enabled?readOwnerKey:previous===readOwnerKey?null:previous);
+  },[readOwnerKey]);
   const [customerSupplementDemand,setCustomerSupplementDemand]=useState(null);
   const customerSupplementsRequested=customerSupplementDemand===readOwnerKey;
   const onCustomerSupplementsRequested=useCallback(()=>setCustomerSupplementDemand(readOwnerKey),[readOwnerKey]);
@@ -13653,7 +13693,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
     if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded || startupWorkspaceReady)) return undefined;
-    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
+    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     firebaseUser?.uid,
@@ -13661,7 +13701,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     currentUser?.companyId,
     currentUser?.customerId,
     isCoreDataLoaded,startupWorkspaceReady,
-    homeReadinessCollections,customerSupplementsRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
+    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
   ]);
 
   useEffect(() => {
@@ -22373,7 +22413,22 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     return () => window.clearTimeout(timerId);
   }, [recoverableSyncNotice?.id]);
 
-  if (offlineWorkspace.runtime?.isCurrent() && offlineWorkspace.runtime.appSession && showRestoredWorkspace({native:isNativeRuntime(),localMode:localWorkspaceMode,restored:offlineWorkspace.restored,online:offlineWorkspace.online,hasCurrentUser:Boolean(currentUser),minimalEntry:import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true',enabled:offlineWorkspace.enabled,firebaseUid:firebaseUser?.uid,principalId:offlineWorkspace.runtime.scope.principalId,biometricUnlocked:biometricUnlockState==='unlocked'})) return <React.Suspense fallback={<WorkingHome ready={false}/>}><RestoredLocalWorkspace key={JSON.stringify(offlineWorkspace.runtime.scope)} runtime={offlineWorkspace.runtime} CustomerView={CustomerCRMView} initialTab={localWorkspaceTab} onCustomerIntent={()=>void deferredCustomerCRMViewModule.preload().catch(()=>{})} onLogout={handleLogout} onOpenFullWorkspace={isNativeRuntime()?undefined:(tab='more')=>{if(!offlineWorkspace.online||firebaseUser?.uid!==offlineWorkspace.runtime.scope.principalId)return;setLocalWorkspaceMode(false);setActiveTab(tab==='home'?'home':'more');}}/></React.Suspense>;
+  const fullWorkspaceOwnerScope=JSON.stringify([firebaseUser?.uid||'',currentUser?.companyId||'']);
+  const fullWorkspaceAuthorized=canPresentFullWorkspace({intent:fullWorkspaceIntent,runtime:offlineWorkspace.runtime,
+    firebaseUid:firebaseUser?.uid,tenantId:currentUser?.companyId,companyId:companyInfo?.id,
+    biometricUnlocked:biometricUnlockState==='unlocked',online:offlineWorkspace.online});
+  const wantsRestoredWorkspace=Boolean(offlineWorkspace.runtime?.isCurrent()&&offlineWorkspace.runtime.appSession&&showRestoredWorkspace({native:isNativeRuntime(),localMode:localWorkspaceMode,restored:offlineWorkspace.restored,online:offlineWorkspace.online,hasCurrentUser:Boolean(currentUser),minimalEntry:import.meta.env.VITE_NATIVE_MINIMAL_ENTRY==='true',enabled:offlineWorkspace.enabled,firebaseUid:firebaseUser?.uid,principalId:offlineWorkspace.runtime.scope.principalId,biometricUnlocked:biometricUnlockState==='unlocked',fullWorkspaceAuthorized}));
+  const openExistingFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;
+    if(!offlineWorkspace.online||!owner?.isCurrent()){setFullWorkspaceNotice('Cần kết nối và phiên hợp lệ để mở đầy đủ chức năng. Dữ liệu đã lưu vẫn được giữ nguyên.');return;}
+    // Requesting the catalog does not grant access. The presentation guard
+    // separately waits for the real Firebase user, tenant and biometric state.
+    setFullWorkspaceNotice('Đang xác minh phiên để mở đầy đủ chức năng. Các dữ liệu đã lưu vẫn sử dụng được.');
+    const target=tab==='home'?'home':'more';setFullWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setLocalWorkspaceMode(false);setActiveTab(target);
+  };
+  const resumeFullWorkspace=fullWorkspaceAuthorized&&retainedFullScope.current===fullWorkspaceOwnerScope
+    ?()=>{setLocalWorkspaceMode(false);setFullWorkspaceNotice('');}:undefined;
+  const restoredWorkspaceView=wantsRestoredWorkspace?<React.Suspense fallback={<WorkingHome ready={false}/>}><RestoredLocalWorkspace key={JSON.stringify(offlineWorkspace.runtime.scope)} runtime={offlineWorkspace.runtime} CustomerView={CustomerCRMView} initialTab={localWorkspaceTab} onCustomerIntent={()=>void deferredCustomerCRMViewModule.preload().catch(()=>{})} onLogout={handleLogout} onOpenFullWorkspace={openExistingFullWorkspace} onResumeFullWorkspace={resumeFullWorkspace} navigationNotice={fullWorkspaceNotice}/></React.Suspense>:null;
+  if(wantsRestoredWorkspace&&(!isNativeRuntime()||retainedFullScope.current!==fullWorkspaceOwnerScope))return restoredWorkspaceView;
   if(offlineWorkspace.enabled&&!offlineWorkspace.online&&(!offlineWorkspace.runtime?.isCurrent()||!offlineWorkspace.runtime.appSession)) return <AppShell><main className="p-6"><h1>Quyền truy cập Offline</h1><p role="alert">{offlineWorkspace.error||(offlineWorkspace.settled?'Chưa có phiên Offline hợp lệ. Kết nối mạng để xác thực lại.':'Đang khôi phục và xác minh phiên trên thiết bị.')}</p><p>Chỉ mở dữ liệu khi quyền Offline có chữ ký còn hiệu lực. Dữ liệu và giao dịch đang chờ vẫn được giữ nguyên.</p><button type="button" onClick={()=>void handleLogout()}>Đăng xuất</button></main></AppShell>;
   // Fresh online sign-in and offline restoration use the SAME signed owner UI.
   // Preserve Firebase identity and biometric unlock; don't expose a legacy
@@ -22433,6 +22488,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
       <>
         <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
         <LoginRegisterView
+          offlineRestoreError={import.meta.env.MODE==='emulator'?offlineWorkspace.error:''}
           onLogin={handleIdentityLogin}
           onBiometricLogin={handleIdentityBiometricLogin}
           onRegister={handleRegisterCompany}
@@ -22539,7 +22595,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
     <ReadAccessFailureGate key={readOwnerKey} access={readAccess} onLogout={()=>void handleLogout()}>
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
-      <MainAppView localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
+      <RetainedFullWorkspace native={isNativeRuntime()} scope={fullWorkspaceOwnerScope} local={wantsRestoredWorkspace} localView={restoredWorkspaceView} onVisible={markFullWorkspaceVisible}>
+      <MainAppView localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
         onPersonalHomeProjectionStateChange={onPersonalHomeProjectionStateChange}
         onNotificationsRequested={onNotificationsRequested}
         readWorkerActivityStore={readWorkerActivityStore}
@@ -22604,6 +22661,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab}) {
         onToggleArchiveExpense={(id, status) => handleToggleArchive('expenses', id, status)}
         onToggleArchiveProduct={(id, status) => handleToggleArchive('products', id, status)}
       />
+      </RetainedFullWorkspace>
       </SyncQueueContext.Provider>
     </ReadAccessFailureGate>
   );
@@ -23090,7 +23148,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
-  localCustomerRuntime=null,localCustomerRequired=false,localCustomerOnline=true,localCustomerSetupError='',localCustomerPrincipalId='',onWorkingModuleReady,startupWorkspaceReady=false,dataSessionId='',customerSupplementsRequested=false,onCustomerSupplementsRequested,homeReportRequested=false,onHomeReportRequested,homePrimaryMode=false,homeDetailsRequested=false,onHomeDetailsRequested,onHomeDetailsClosed,
+  localCustomerRuntime=null,localCustomerRequired=false,localCustomerOnline=true,localCustomerSetupError='',localCustomerPrincipalId='',onProductInventoryDemandChange,onWorkingModuleReady,startupWorkspaceReady=false,dataSessionId='',customerSupplementsRequested=false,onCustomerSupplementsRequested,homeReportRequested=false,onHomeReportRequested,homePrimaryMode=false,homeDetailsRequested=false,onHomeDetailsRequested,onHomeDetailsClosed,
   onPersonalHomeProjectionStateChange,
   onNotificationsRequested,
   readWorkerActivityStore = null,
@@ -24250,10 +24308,23 @@ function MainAppView({
     };
   }, []);
 
+  const prepareWorkspaceIntent = useCommittedCallback(tab => prepareNavigationModule(tab, {
+    modules: STAFF_NAVIGATION_MODULES, canAccess
+  }));
+  const handleWorkspacePointerIntent = useCommittedCallback(event => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    prepareWorkspaceIntent(navigationIntentTab(event.target));
+  });
+  const handleWorkspaceKeyboardIntent = useCommittedCallback(event => {
+    if (event.key === 'Enter' || event.key === ' ') prepareWorkspaceIntent(navigationIntentTab(event.target));
+  });
   const setActiveTab = useCallback((nextTab, options = {}) => {
     const { preserveHistory = true } = options;
     const currentTab = activeTabRef.current;
     if (!nextTab || nextTab === 'report' || nextTab === currentTab) return;
+    // Start the requested chunk before React schedules/commits the new view.
+    // Pointer/keyboard intents can start earlier; this covers programmatic links.
+    prepareWorkspaceIntent(nextTab);
     if (preserveHistory) {
       setTabHistory((prev) => [...prev, currentTab]);
       if (typeof window !== 'undefined' && window.history?.pushState) {
@@ -24266,7 +24337,7 @@ function MainAppView({
     }
     activeTabRef.current = nextTab;
     setRootActiveTab(nextTab);
-  }, [setRootActiveTab]);
+  }, [setRootActiveTab, prepareWorkspaceIntent]);
   useEffect(() => {
     const openPayroll = event => {
       if (!tabPermissions.payroll || !event.detail?.employeeId) return;
@@ -24919,7 +24990,7 @@ function MainAppView({
           });
         }
 return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAccount} isAccounting={isAccounting} canOverrideAttendance={canOverrideAttendanceForCompany} currentCompany={currentCompany} employees={employees} attendance={attendance} date={date} onChangeDate={onChangeDate} onCheckIn={onCheckIn} onCheckOut={onCheckOut} onLeave={onLeave} onEditAttendance={onEditAttendance} onOverrideCheckIn={(id, role)=>onOverrideCheckIn(id, attendanceProxyMethod, role)} onOverrideCheckOut={(id, role)=>onOverrideCheckOut(id, attendanceProxyMethod, role)} onUpdateCompanySettings={onUpdateCompanySettings} onEditEmployee={onEditEmployee} autoWifiCheckInStatus={autoWifiCheckInStatus} onGoBack={handleGoBack} onOpenNotifications={() => setShowNotificationCenter(true)} />;
-      case 'products': return <ProductManagementView key={dashboardPrivacyScope} searchStore={productSearchStore} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'products': return <ProductManagementView onInventoryDemandChange={onProductInventoryDemandChange} catalogDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(false)})} inventoryDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getProductWorkspaceReadCollections(true)})} key={dashboardPrivacyScope} searchStore={productSearchStore} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} isAccounting={isAccounting} currentCompany={currentCompany} products={products} orders={orders} onAddProduct={onAddProduct} onEditProduct={onEditProduct} onToggleArchiveProduct={onToggleArchiveProduct} onDeleteProduct={onDeleteProduct} onUpdateCompanySettings={onUpdateCompanySettings} canCreateProduct={canRoleAction('products', 'create_product')} canEditProduct={canRoleAction('products', 'edit_product')} canDeleteProduct={canRoleAction('products', 'delete_product')} canViewArchivedProducts={canRoleAction('products', 'view_archived_products')} canManageProductInventory={canRoleAction('products', 'manage_product_inventory')} canManageProductAttributes={canRoleAction('products', 'product_attributes')} searchKeyword={productSearchKeyword} setSearchKeyword={setProductSearchKeyword} showFilterPanel={productFilterOpen} setShowFilterPanel={setProductFilterOpen} quickActionIntent={activeTab === 'products' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'pricing': return <SimplePricingEngineView employee={employee} currentCompany={currentCompany} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} pricingInputs={pricingInputs} pricingRules={pricingRules} onAddPricingInput={(data) => onAddPricingInput?.(employee?.id || currentUser?.id || 'pricing', data)} onDeletePricingInput={onDeletePricingInput} onSavePricingRules={onSavePricingRules} canViewTodayPriceTable={canRoleAction('pricing', 'view_today_price_table') || canRoleAction('pricing', 'view_pricing')} canEditTodayPriceTable={canRoleAction('pricing', 'edit_today_price_table')} canHideTodayPriceGroup={canRoleAction('pricing', 'hide_today_price_group')} canDeletePricingData={canRoleAction('pricing', 'delete_pricing_data')} canManageInputCosts={canRoleAction('pricing', 'manage_input_costs')} canManageLossStandards={canRoleAction('pricing', 'manage_loss_standards')} canManageCuttingStandards={canRoleAction('pricing', 'manage_cutting_standards')} canManageProductFormulas={canRoleAction('pricing', 'manage_product_formulas')} canManageMarginRules={canRoleAction('pricing', 'manage_margin_rules')} canViewAiPriceSuggestions={canRoleAction('pricing', 'view_ai_price_suggestions')} />;
       case 'price_quotes': return <PriceQuoteBroadcastView employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
       case 'employee_reviews': return (
@@ -25393,7 +25464,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
   };
 
   return (
-    <AppShell ref={appShellRef} data-hd-instant-shell="staff" data-active-tab={activeTab} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
+    <AppShell ref={appShellRef} onPointerDownCapture={handleWorkspacePointerIntent} onKeyDownCapture={handleWorkspaceKeyboardIntent} data-hd-instant-shell="staff" data-active-tab={activeTab} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
@@ -25773,6 +25844,7 @@ function DesktopSidebarGroups({ footerUsageKey, activeTab, setActiveTab, isAccou
           {desktopSidebarItems.map((item) => (
             <NavButton
               key={item.id}
+              navigationTab={item.id}
               icon={item.icon}
               label={item.label}
               active={activeTab === item.id}
@@ -25820,6 +25892,7 @@ function DesktopSidebarGroups({ footerUsageKey, activeTab, setActiveTab, isAccou
                   {group.items.map((item) => (
                     <NavButton
                       key={item.id}
+                      navigationTab={item.id}
                       icon={item.icon}
                       label={item.label}
                       active={activeTab === item.id}
@@ -34091,6 +34164,9 @@ function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, is
     { id: 'payroll', group: 'people', label: 'Bảng lương', icon: <DollarSign className="text-yellow-600" />, show: tabPermissions.payroll },
     { id: 'employee_reviews', group: 'people', label: 'Đánh giá', icon: <Star className="text-amber-500" />, show: tabPermissions.employee_reviews },
     { id: 'employees', group: 'people', label: 'Nhân sự', icon: <Settings className="text-gray-500" />, show: tabPermissions.employees },
+    { ...APP_NAV_ITEM_MAP.attendanceRequests, group: 'people', show: tabPermissions.attendanceRequests },
+    { ...APP_NAV_ITEM_MAP.attendancePeriods, group: 'people', show: tabPermissions.attendancePeriods },
+    { ...APP_NAV_ITEM_MAP.salarySettlements, group: 'people', show: tabPermissions.salarySettlements },
     { id: 'settings', group: 'system', label: 'Cài đặt', icon: <Gift className="text-pink-500" />, show: tabPermissions.settings },
     { id: 'role_permissions', group: 'system', label: 'Vai trò', icon: <Lock className="text-emerald-500" />, show: tabPermissions.role_permissions },
     { id: 'billing', group: 'system', label: 'Gói cước', icon: <Crown className="text-yellow-500" />, show: tabPermissions.billing },
@@ -42543,12 +42619,12 @@ function MessageCenterView(props) {
   return <PreloadedWorkspace module={deferredMessageCenterViewModule} viewProps={props} label={"Tin nhắn"} />;
 }
 
-function NavButton({ icon, label, active, onClick, ariaLabel, badge = 0, collapsed = false, className = '' }) {
+function NavButton({ icon, label, active, onClick, ariaLabel, badge = 0, collapsed = false, className = '', navigationTab }) {
   const visibleLabel = `${label || ''}`.trim();
   const displayLabel = collapsed ? '' : visibleLabel;
   const iconClassName = `${icon?.props?.className || ''} ${active ? 'stroke-2' : 'stroke-[1.5px]'}`.trim();
   return (
-    <button type="button" data-nav-collapsed={collapsed ? 'true' : 'false'} aria-label={ariaLabel || visibleLabel || 'Mở mục'} onClick={onClick} className={`hd-nav-button relative flex flex-col items-center justify-center ${displayLabel ? 'space-y-1' : ''} w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'} ${className}`.trim()}>
+    <button type="button" data-hd-navigation-tab={navigationTab} data-nav-collapsed={collapsed ? 'true' : 'false'} aria-label={ariaLabel || visibleLabel || 'Mở mục'} onClick={onClick} className={`hd-nav-button relative flex flex-col items-center justify-center ${displayLabel ? 'space-y-1' : ''} w-16 shrink-0 transition-colors ${active ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'} ${className}`.trim()}>
       {React.cloneElement(icon, { size: displayLabel ? 22 : 25, className: iconClassName })}
       {displayLabel ? (
         <span data-nav-label="true" className={`text-[length:var(--hd-type-caption)] whitespace-nowrap ${active ? 'font-bold' : 'font-medium'}`}>{displayLabel}</span>
@@ -49469,7 +49545,7 @@ function VpsEmailAuthView({
   );
 }
 
-function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, onVpsInitialPasswordChange, vpsStagingMode = false }) {
+function LoginRegisterView({ offlineRestoreError='', onLogin, onBiometricLogin, onRegister, onForgotPassword, onRequestOwnerReset, onCompleteRecovery, onCompleteIdentitySetup, onVpsEmailRegistrationStart, onVpsEmailRegistrationVerify, onVpsEmailRegistrationComplete, onVpsEmailPasswordResetStart, onVpsEmailPasswordResetVerify, onVpsEmailPasswordResetComplete, onVpsInitialPasswordChange, vpsStagingMode = false }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -49739,6 +49815,7 @@ function LoginRegisterView({ onLogin, onBiometricLogin, onRegister, onForgotPass
         
         {isLogin ? (
           <div>
+            {!showForgotPassword && offlineRestoreError && <p role="alert" className="mb-4 text-xs text-amber-900 bg-amber-50 p-3 rounded-xl">Không thể khôi phục Offline: {offlineRestoreError}</p>}
             {!showForgotPassword && loginMessage && <div className="mb-4 text-xs text-emerald-700 bg-emerald-50 p-3 rounded-xl text-center font-semibold" role="status">{loginMessage}</div>}
             {!showForgotPassword && loginError && <div className="mb-4 text-xs text-red-500 bg-red-50/50 p-3 rounded-xl text-center font-semibold">{loginError}</div>}
             <form onSubmit={handleAuthFormSubmit} className="space-y-4">
@@ -49893,7 +49970,7 @@ function LegacyOwnedApplication(){
 }
 export default function App(props){
  return props?.offlineWorkspace
-  ? <ApplicationView offlineWorkspace={props.offlineWorkspace} initialWorkspaceTab={props.initialWorkspaceTab}/>
+  ? <ApplicationView offlineWorkspace={props.offlineWorkspace} initialWorkspaceTab={props.initialWorkspaceTab} initialWorkspaceIntent={props.initialWorkspaceIntent}/>
   : <LegacyOwnedApplication/>;
 }
 // Same logout side effects as handleLogout, for the restored workspace where
@@ -49905,3 +49982,17 @@ export async function logoutRestoredWorkspace(){
  await signOutPromise;clearAppSession();
  void Promise.allSettled([signOutPromise,logoutAuditPromise]);
 }
+
+// Import factories are existing singletons. Do not preload the catalog at
+// startup, create services here, or import the already accepted CRM earlier.
+const STAFF_NAVIGATION_MODULES = Object.freeze({
+  order_requests: deferredOrderRequestViewModule,
+  orders: deferredOrderManagementViewModule,
+  warehouse_import: deferredWarehouseImportViewModule,
+  delivery_reports: deferredDeliveryReportViewModule,
+  employees: deferredEmployeeViewModule,
+  payroll: deferredSalaryViewModule,
+  products: deferredProductManagementViewModule,
+  messages: deferredMessageCenterViewModule,
+  settings: deferredSettingsViewModule
+});
