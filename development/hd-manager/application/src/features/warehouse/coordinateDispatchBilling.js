@@ -1,3 +1,5 @@
+import {getDispatchOrderSourceRowKeys} from './matchDispatchOrder.js';
+
 /**
  * @param {import('./dispatchWorkflowContracts.js').BillingInput} input
  * @param {import('./dispatchWorkflowContracts.js').BillingPorts} ports
@@ -25,7 +27,14 @@ export function coordinateDispatchBilling({customer = null, product = null, matc
       configuration: currentConfiguration,
       product,
     });
-    const frozenSource = existingSnapshot.hasFrozenPricing
+    const existingSourceId = existingRecord?.sourceOrderRequestId || existingRecord?.orderRequestId || '';
+    const existingSourceRow = existingRecord?.sourceOrderRequestRowKey || existingRecord?.orderRequestRowKey || '';
+    const canReuseExisting = existingSnapshot.hasFrozenPricing
+      && (!existingRecord?.customerId || existingRecord.customerId === customer?.id)
+      && (!existingRecord?.productId || existingRecord.productId === product?.id)
+      && (!matchedOrderRow || ((!existingSourceId || existingSourceId === matchedOrderRow.requestId)
+        && (!existingSourceRow || getDispatchOrderSourceRowKeys(matchedOrderRow, product?.id).includes(existingSourceRow))));
+    const frozenSource = canReuseExisting
       ? existingSnapshot
       : (orderSnapshot.hasFrozenPricing ? orderSnapshot : null);
     const billingConfiguration = frozenSource
@@ -35,12 +44,12 @@ export function coordinateDispatchBilling({customer = null, product = null, matc
           billingUnit: frozenSource.billingUnit,
           pricingUnit: frozenSource.billingUnit,
           unitPrice: frozenSource.unitPrice,
-          source: existingSnapshot.hasFrozenPricing ? 'warehouse_snapshot' : 'order_request_snapshot',
+          source: canReuseExisting ? 'warehouse_snapshot' : 'order_request_snapshot',
       }
       : currentConfiguration;
     const configuredActualUnit = resolveCustomerProductActualUnit(billingConfiguration, product);
     const orderActualUnit = orderSnapshot.actualUnit;
-    const expectedActualUnit = existingSnapshot.hasFrozenPricing
+    const expectedActualUnit = canReuseExisting
       ? existingSnapshot.actualUnit
       : (orderSnapshot.hasFrozenPricing
         ? (isSameBillingUnit(orderSnapshot.billingUnit, 'Kg')

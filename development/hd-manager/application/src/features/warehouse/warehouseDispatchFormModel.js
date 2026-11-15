@@ -20,6 +20,14 @@
  * @property {number} amount
  * @property {number} billingSnapshotVersion
  * @property {string} billingSnapshotSource
+ * @property {string} sourceOrderRequestId
+ * @property {string} sourceOrderRequestRowKey
+ * @property {string} sourceOrderRequestDate
+ * @property {string} branchId
+ * @property {string} branchName
+ * @property {string} branchAddress
+ * @property {string} sizeLabel
+ * @property {string} attributeLabel
  */
 
 /** @param {string} [assignedDriverId] @returns {DispatchFormDraft} */
@@ -30,5 +38,7 @@ export function createEmptyDispatchDraft(assignedDriverId = '') {
     weightKg: '', weightEntries: [], assignedDriverId, note: '', transcript: '',
     configurationId: '', billingUnit: '', billingQuantity: 0, unitPrice: 0,
     amount: 0, billingSnapshotVersion: 0, billingSnapshotSource: '',
+    sourceOrderRequestId: '', sourceOrderRequestRowKey: '', sourceOrderRequestDate: '',
+    branchId: '', branchName: '', branchAddress: '', sizeLabel: '', attributeLabel: '',
   };
 }
