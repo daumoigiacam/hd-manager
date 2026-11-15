@@ -168,6 +168,13 @@ public class NativeSafeAreaPlugin extends Plugin {
         if (!stage.matches("(html.initial-script|react.entry|workspace.interactive|home.report-commit|background.auth-start|background.sync-start)") ||
             !document.matches("[a-f0-9-]{36}") || at == null || origin == null || !Double.isFinite(at) || !Double.isFinite(origin)) { call.reject("Invalid startup metadata"); return; }
         AndroidStartupTimeline.js(stage, document, at, origin);
+        if (stage.equals("workspace.interactive")) {
+            // Local test coordination only: this existing DOM milestone is NOT
+            // a presented Android frame or a new startup acceptance metric.
+            JSObject metadata = new JSObject(); metadata.put("stage", stage);
+            metadata.put("documentTraceId", document); metadata.put("elapsedNs", android.os.SystemClock.elapsedRealtimeNanos());
+            android.util.Log.i("HDStartupPhase", metadata.toString());
+        }
         if (stage.equals("workspace.interactive") || stage.equals("home.report-commit")) {
             android.webkit.WebView view = getBridge().getWebView();
             if (view != null) view.post(() -> view.postVisualStateCallback(0, new android.webkit.WebView.VisualStateCallback() {

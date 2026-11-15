@@ -98,12 +98,12 @@ test('server rejects compound authority, wrong relations and income auto-matchin
   await assert.rejects(f.apply(f.actor,f.command('editapproved','cashflow.income.update','p1',income,{baseRevision:1,baseFingerprint:fingerprint(approved)})),/pending manual income/);
 });
 
-test('server rolls back business mutation with receipt and refuses non-Development construction',async t=>{
+test('server rolls back business mutation with receipt and refuses an unverified environment',async t=>{
   const f=serverFixture(t),before=f.records.size;f.failCommit(true);
   await assert.rejects(f.apply(f.actor,f.command('atomic','cashflow.expense.create','exp1',input)),/atomic commit failure/);
   assert.equal(f.records.size,before);f.failCommit(false);
   assert.equal((await f.apply(f.actor,f.command('atomic','cashflow.expense.create','exp1',input))).outcome,'accepted');
-  assert.throws(()=>createOfflineCashflowCommandService({db:f.db,projectId:'real-project',appId:'dev',authorize:f.authorize,policy:f.policy,domain}),/Development Emulator/);
+  assert.throws(()=>createOfflineCashflowCommandService({db:f.db,projectId:'real-project',appId:'dev',authorize:f.authorize,policy:f.policy,domain}),{code:'permission-denied'});
   assert.throws(()=>createOfflineCashflowCommandService({db:f.db,projectId:'demo-cashflow',appId:'dev',authorize:f.authorize,policy:f.policy,domain:{}}),/Original cashflow domain/);
 });
 

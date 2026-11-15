@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import initSqlJs from 'sql.js';
 import {parse} from '@babel/parser';
 import traverseModule from '@babel/traverse';
+import {fileURLToPath} from 'node:url';
+import {extractEmployeeHomeDomain} from '../../../scripts/helpers/employee-home-domain-extraction.mjs';
 import {createOfflineBusinessDirectory} from '../../data/offlineBusinessDirectory.js';
 import {
   createFinancePresentation, createFinanceFilters, financeSearchInputTime, financeDirectoryOptions, financeReadAccess, FINANCE_APPROVAL_FIELDS,
@@ -19,7 +21,8 @@ const traverse = traverseModule.default || traverseModule;
 let program;
 traverse(ast, {Program(p) {program = p;p.stop();}});
 const roots = ['getDateKeyFromAnyValue', 'getEntityTimestamp', 'getPaymentDateSource',
-  'isPayosPaymentRecord', 'requiresCashflowApproval', 'isCashflowOfficial', 'CASHFLOW_APPROVAL_STATUS'];
+  'isPayosPaymentRecord', 'requiresCashflowApproval', 'isCashflowOfficial', 'CASHFLOW_APPROVAL_STATUS',
+  'getPaymentMethodLabel','getPaymentSourceLabel','parseInputCurrency'];
 const declarations = new Map();
 function collect(name) {
   if (declarations.has(name)) return;
@@ -36,7 +39,14 @@ const rules = vm.runInNewContext(
   [...declarations.values()].sort((a, b) => a.start - b.start).map(n => `const ${product.slice(n.start, n.end)};`).join('\n')
   + `\n({${roots.join(',')}})`, {Date},
 );
-const presentation = createFinancePresentation(rules);
+const extracted=extractEmployeeHomeDomain(product,fileURLToPath(new URL('../customers/',import.meta.url)),roots);
+const packagedRules=await import('data:text/javascript;base64,'+Buffer.from(extracted).toString('base64'));
+const presentation = createFinancePresentation(packagedRules);
+test('Finance packaging uses the exact original pure declarations without CRM UI or plugin dependencies',()=>{
+ for(const name of roots){if(typeof rules[name]==='function')assert.equal(packagedRules[name].toString(),rules[name].toString(),name);
+  else assert.equal(JSON.stringify(packagedRules[name]),JSON.stringify(rules[name]),name);}
+ assert(!parse(extracted,{sourceType:'module'}).program.body.some(node=>node.type==='ImportDeclaration'));
+});
 const scope = {tenantId: 'tenant-a', principalId: 'principal-a', permissionRevision: 'r1', sessionId: 's1'};
 const checkpoint = {generation: 'g1', seq: 13, capturedAt: Date.now() - 5000, dayKey: '2026-11-09', sourceProfile: 'legacy-v1'};
 const approvedFields = Object.fromEntries(FINANCE_APPROVAL_FIELDS.map(field => [field, null]));

@@ -35,12 +35,13 @@ export function extractEmployeeHomeDomain(source,sourceDirectory,exportedRoots=r
  return [...imports.values(),...Array.from(declarations.values()).sort((a,b)=>a.start-b.start).map(n=>(n.type==='VariableDeclarator'?'const ':'')+source.slice(n.start,n.end)+(n.type==='VariableDeclarator'?';':'')),`export {${exportedRoots.join(',')}};`].join('\n\n');
 }
 
-export function employeeHomeDomainPlugin(moduleName='@hd/employee-home-domain',exportedRoots=roots) {
+export function employeeHomeDomainPlugin(moduleName='@hd/employee-home-domain',exportedRoots=roots,sourceRelative='src/App.jsx') {
+ if(!['src/App.jsx','src/features/customers/productCRMShared.jsx'].includes(sourceRelative))throw new TypeError('Unapproved original domain source');
  const id=moduleName==='@hd/employee-home-domain'?'\0hd-employee-home-domain':'\0'+moduleName;
  return {name:moduleName==='@hd/employee-home-domain'?'hd-employee-home-domain':'hd-employee-home-domain:'+moduleName,resolveId(name){if(name===moduleName)return id},
   async load(name){
    if(name!==id)return;
-   const sourceFile=path.resolve('src/App.jsx');this.addWatchFile(sourceFile);
+   const sourceFile=path.resolve(sourceRelative);this.addWatchFile(sourceFile);
    return extractEmployeeHomeDomain(await readFile(sourceFile,'utf8'),path.dirname(sourceFile),exportedRoots);
   }};
 }

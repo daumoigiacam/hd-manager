@@ -12,7 +12,7 @@ import {
   CASHFLOW_APPROVAL_STATUS, getDateKeyFromAnyValue, getEntityTimestamp, getPaymentDateSource,
   getPaymentMethodLabel, getPaymentSourceLabel, parseInputCurrency, isCashflowOfficial,
   isPayosPaymentRecord, requiresCashflowApproval,
-} from '../customers/productCRMShared.jsx';
+} from '@hd/cashflow-presentation';
 import {
   createFinancePresentation, createFinanceFilters, financeSearchInputTime, financeReadAccess, financeReadIdentity, FINANCE_WRITE_UNAVAILABLE,
   readFinanceDetail, readFinancePage, supportsFinanceApprovalFilter, financeDirectoryOptions, FINANCE_PAGE_SIZE,
