@@ -32,7 +32,7 @@ function createOfflineWarehouseImportCommandService({db,projectId,appId,environm
       if(currentFingerprint!==p.baseFingerprint){receipt.reason='import-or-expense-changed';receipt.current=current;receipt.currentFingerprint=currentFingerprint;receipt.currentRevision=d.importRevision(current.document);}
       else{
         if(command.kind!=='warehouseImport.archive'){
-          const groups=(Array.isArray(company.productGroups)?company.productGroups:[]).filter(x=>typeof x==='string').map(d.normalizeLeadingLabel);
+          const groups=d.existingImportGroups(company);
           if(!groups.includes(p.values.groupName))throw Error('Existing group required; group registration is unsupported');
           for(const [source,id]of [['products',p.values.productId],['customers',p.values.supplierCustomerId]])if(id){const linked=(await tx.get(ref(source,id))).data();if(!linked||linked.companyId!==actor.tenantId||linked.isArchived)deny('Import product/supplier relation denied');}
         }

@@ -1,5 +1,6 @@
 import {createOfflineCommandRepository} from './offlineCommandRepository.js';
 import {IMPORT_RULES,canonicalImport,plainImport,importIdentifier,importRevision,assertImportPair,buildImportValues,validateImportPayload,applyImportIntent,normalizeLeadingLabel} from '../features/warehouse/warehouseImportProtocol.js';
+import {existingImportGroups} from '../features/warehouse/warehouseImportProtocol.js';
 const deny=message=>{throw Object.assign(Error(message),{code:'permission-denied'});};
 export async function createOfflineWarehouseImportRepository(options){
   const {database,session,deviceId,employeeId,authorize,digest,protocol,projectId}=options,now=options.now||Date.now;
@@ -90,7 +91,7 @@ export async function createOfflineWarehouseImportRepository(options){
   }
   return Object.freeze({scope,employeeId,projectId,ready,protocolVersion:ready?1:0,applyReceipt:commands.applyReceipt,
     create:(draft,o)=>submit('warehouseImport.create',`wi_${o?.mutationId}`,draft,o),update:(id,draft,o)=>submit('warehouseImport.update',id,draft,o),archive:(id,o)=>submit('warehouseImport.archive',id,null,o),
-    async groups(){return tx(async db=>{const h=await head(db);if(!h.sources.includes('companies')||!Number.isSafeInteger(h.company_count)||h.company_count<1)throw Error('Nguồn cấu hình công ty chưa được cấp quyền.');const company=await source(db,h,'companies',scope.tenantId);if(!company||company.id!==scope.tenantId||!Array.isArray(company.productGroups)||company.productGroups.length>100)throw Error('Cần danh mục nhóm công ty đã đồng bộ (tối đa 100).');return {items:[...new Set(company.productGroups.filter(x=>typeof x==='string').map(normalizeLeadingLabel).filter(Boolean))]};});},
+    async groups(){return tx(async db=>{const h=await head(db);if(!h.sources.includes('companies')||!Number.isSafeInteger(h.company_count)||h.company_count<1)throw Error('Nguồn cấu hình công ty chưa được cấp quyền.');const company=await source(db,h,'companies',scope.tenantId);if(!company||company.id!==scope.tenantId||Array.isArray(company.productGroups)&&company.productGroups.length>100)throw Error('Cần danh mục nhóm công ty đã đồng bộ (tối đa 100).');return {items:existingImportGroups(company)};});},
     async detail(id,{preferFeed=false}={}){
       if(!importIdentifier(id)||typeof preferFeed!=='boolean')throw Error('Mã phiếu nhập hoặc nguồn đọc không hợp lệ.');
       return tx(async db=>{

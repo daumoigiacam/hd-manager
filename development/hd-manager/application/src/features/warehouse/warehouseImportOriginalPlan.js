@@ -4,6 +4,13 @@
 import {purchaseAmount} from '../../utils/productMeasures.js';
 import {normalizeLeadingLabel,parseLooseQuantityValue,buildWarehouseImportMeasureEntries} from './stockCountProtocol.js';
 export {purchaseAmount,normalizeLeadingLabel,parseLooseQuantityValue,buildWarehouseImportMeasureEntries};
+// Same existing defaults used by App/WarehouseImportView. Missing optional
+// company productGroups must not disable the original standard-group workflow.
+export const DEFAULT_PROCESSING_INVENTORY_GROUPS=Object.freeze(['Vịt','Gà','Heo','Vật tư']);
+export function existingImportGroups(company){
+ const custom=Array.isArray(company?.productGroups)?company.productGroups:[];
+ return [...new Set([...DEFAULT_PROCESSING_INVENTORY_GROUPS,...custom.filter(x=>typeof x==='string').map(normalizeLeadingLabel).filter(Boolean)])];
+}
 export const parseLooseMoneyValue = (value) => {
   if (value === undefined || value === null || value === '') return 0;
   if (typeof value === 'number') return Math.max(0, Math.round(value));

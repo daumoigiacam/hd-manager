@@ -1,6 +1,7 @@
 import {businessDayKey} from '../../utils/businessDate.js';
 import {canonicalStockCount} from './stockCountProtocol.js';
 import {originalImportCreate,originalImportUpdate,originalImportArchive,parseLooseQuantityValue,parseLooseMoneyValue,normalizeLeadingLabel,buildWarehouseImportMeasureEntries,purchaseAmount,normalizeWarehouseImportSourceType} from './warehouseImportOriginalPlan.js';
+export {existingImportGroups} from './warehouseImportOriginalPlan.js';
 export {normalizeLeadingLabel};
 export const IMPORT_RULES=Object.freeze({
   'warehouseImport.create':{capability:'warehouseImports.create',action:'create_warehouse_import'},
