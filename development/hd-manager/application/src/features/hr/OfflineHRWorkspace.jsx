@@ -214,13 +214,15 @@ export default function OfflineHRWorkspace({runtime,directory,onNavigate,initial
   if(payrollOpen)return <React.Suspense fallback={<p role="status">Đang mở bảng lương…</p>}><OfflinePayrollWorkspace runtime={runtime} onClose={()=>setPayrollOpen(false)} onOpenAdvance={()=>{setPayrollOpen(false);setAdvanceOpen(true);}}/></React.Suspense>;
   return <main className="space-y-4 p-3 pb-20" aria-label="Nhân sự, chấm công và lương Offline">
     <HDPageHeader title="Nhân sự & lương" description="Nguồn hoàn tất đã lưu trên thiết bị" onBack={()=>{if(!closeDetail())onNavigate('home');}}/>
-    <nav className="flex flex-wrap gap-2" aria-label="Nguồn nhân sự">{Object.entries(HR_SOURCES).filter(([key])=>!directory?.readSources||directory.readSources.includes(key)).map(([key,label])=><HDButton key={key}
+    <nav className="flex flex-nowrap gap-2 overflow-x-auto pb-1 [&>*]:shrink-0" aria-label="Nguồn nhân sự">{Object.entries(HR_SOURCES).filter(([key])=>!directory?.readSources||directory.readSources.includes(key)).map(([key,label])=><HDButton key={key}
       variant={source===key?'primary':'secondary'} aria-pressed={source===key} onClick={()=>{setSelected(null);setSource(key);}}>{label}</HDButton>)}</nav>
+    <nav className="flex flex-nowrap gap-2 overflow-x-auto pb-1 [&>*]:shrink-0" aria-label="Quy trình công và lương">
     {runtime.capabilities.includes('attendancePeriod.read')&&<HDButton onClick={()=>onNavigate('attendancePeriods')}>Bảng công và xác nhận</HDButton>}
     {runtime.capabilities.includes('salarySettlement.read')&&<HDButton onClick={()=>onNavigate('salarySettlements')}>Thanh toán và đối soát lương</HDButton>}
     {runtime.capabilities.includes('attendanceRequest.read')&&<HDButton onClick={()=>setRequestsOpen(true)}>Yêu cầu điều chỉnh công</HDButton>}
     {runtime.capabilities.includes('payroll.company.read')&&<HDButton onClick={()=>setPayrollOpen(true)}>Bảng lương · Chốt và điều chỉnh</HDButton>}
     {runtime.capabilities.some(cap=>cap.startsWith('salaryAdvance.'))&&<HDButton onClick={()=>setAdvanceOpen(true)}>Ứng lương · Lập và duyệt</HDButton>}
+    </nav>
     {source==='attendance'&&(canIn||canOut)&&<HDCard className="space-y-2 p-3">
       {attendanceRepository?.registerDevice&&<HDButton variant="secondary" disabled={deviceSetup.busy} onClick={registerDevice}>{deviceSetup.busy?'Đang đăng ký thiết bị…':'Đăng ký thiết bị chấm công'}</HDButton>}
       {deviceSetup.message&&<p role="status">{deviceSetup.message}</p>}
@@ -232,24 +234,23 @@ export default function OfflineHRWorkspace({runtime,directory,onNavigate,initial
     <HDCard className="space-y-3 p-3">
       <HDSearchBar value={filters.text} maxLength={128} label="Tìm trong nguồn nhân sự" placeholder={source==='employees'?'Tên, mã nhân viên, điện thoại…':'Tìm trong nguồn đã chọn…'}
         onChange={event=>change('text',event.target.value)} onClear={()=>change('text','')}/>
-      <HDFilterBar label="Bộ lọc nhân sự">
+      <details><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc nhân sự</summary><HDFilterBar label="Bộ lọc nhân sự">
         {source!=='employees'&&<HDInput label="Tháng" type="month" value={filters.monthKey} onChange={event=>change('monthKey',event.target.value)}/>}
         {source!=='payrollPeriods'&&<HDInput label="Mã nhân viên" value={filters.employeeId} maxLength={256} placeholder="Tất cả trong quyền đã cấp" onChange={event=>change('employeeId',event.target.value)}/>}
         {source==='financials'&&<HDSelect label="Loại khoản" value={filters.type} onChange={event=>change('type',event.target.value)}><option value="">Tất cả loại khoản</option>{Object.entries(HR_FINANCIAL_TYPES).map(([key,label])=><option key={key} value={key}>{label}</option>)}</HDSelect>}
         {source==='attendance'&&<HDSelect label="Trạng thái công" value={filters.status} onChange={event=>change('status',event.target.value)}><option value="">Tất cả trạng thái</option><option value="late">Đi muộn</option><option value="leave">Báo nghỉ</option></HDSelect>}
-      </HDFilterBar>
+      </HDFilterBar></details>
       {source==='attendance'&&filters.status&&<p className="text-xs text-slate-600">Bộ lọc khớp trạng thái của ít nhất một công việc. Mở chi tiết để xem riêng từng công việc; mỗi ngày công chỉ xuất hiện một lần.</p>}
     </HDCard>
     {selected?<HRDetail key={`${scopeKey}:${selected.source}:${selected.id}`} runtime={runtime} directory={directory} selected={selected} onClose={()=>setSelected(null)} onEmployee={selectEmployee} onEditEmployee={employeeProfileRepository&&runtime.capabilities.includes('employeeProfile.update')?setEmployeeSelection:null}/>:<HDCard className="space-y-3 p-3">
       <div className="flex items-center justify-between"><h2 className="font-bold">{HR_SOURCES[source]}</h2><HDButton variant="secondary" disabled={loading} onClick={()=>setReload(value=>value+1)}>Tải lại</HDButton></div>
       {(denied||ready&&page.error)&&<p role="alert" className="text-sm text-rose-700">{denied||page.error}</p>}
       {loading&&<p role="status">Đang đọc trang nhân sự từ SQLite…</p>}
-      {head&&<div className="space-y-1 text-xs text-slate-600">
+      {head&&<><p className="text-xs text-slate-600">Bản đã lưu · Chưa kiểm tra thay đổi mới.</p><details className="text-xs text-slate-600"><summary className="cursor-pointer">Phạm vi bản đã lưu</summary><div className="space-y-1">
         <p>Checkpoint {head.generation} · seq {head.seq} · lưu {time(head.capturedAt)}.</p>
         <p>Ngày nguồn {head.dayKey} · hôm nay {today}. {source!=='employees'&&head.dayKey.slice(0,7)!==filters.monthKey?'Tháng đang chọn có thể chưa có dữ liệu trong bản đã lưu.':''}</p>
         {source!=='employees'&&head.dayKey.slice(0,7)!==filters.monthKey&&<HDButton variant="secondary" size="sm" onClick={()=>change('monthKey',head.dayKey.slice(0,7))}>Chọn tháng dữ liệu {head.dayKey.slice(0,7)}</HDButton>}
-      </div>}
-      <p className="text-xs text-slate-600">Mỗi trang tối đa 40 dòng. Không cộng lương, ngày công hay số dư từ các trang xem trước. Thay đổi cục bộ chưa vào checkpoint không được gộp vào bản nguồn này.</p>
+      <p>Mỗi trang tối đa 40 dòng; không dùng danh mục xem trước để cộng lương, ngày công hoặc số dư. Thay đổi cục bộ chưa vào checkpoint vẫn được hiển thị riêng.</p></div></details></>}
       {ready&&!loading&&!page.error&&rows.length===0&&<p className="py-5 text-sm text-slate-500">Không có bản nguồn phù hợp tháng/bộ lọc trong checkpoint đã lưu.</p>}
       <ul className="space-y-2" aria-busy={loading}>{rows.map(row=><li key={row.id}>
         <button type="button" className="w-full space-y-2 rounded-xl border border-slate-100 p-3 text-left" onClick={()=>setSelected({source,id:row.id,checkpoint:head})}>

@@ -97,7 +97,7 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    </React.Activity>
    {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p><button type="button" onClick={onLogout}>Đăng xuất</button></section>}
    {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
-   {tab!=='home'&&tab!=='finance'&&<button className="mb-3 px-4 py-2 rounded-xl bg-slate-100" onClick={()=>navigate('home')}>Trang chủ</button>}
+
    {!['home','customers','profile','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
    {!runtime&&tab!=='home'&&<p role="status">Đang mở dữ liệu trên thiết bị. Thao tác đã được giữ lại.</p>}
    {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} initialSource={id===initialRoute?.id?initialNavigation.source:undefined} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
