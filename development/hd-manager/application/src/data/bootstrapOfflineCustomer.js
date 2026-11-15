@@ -278,7 +278,10 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    async applyReceipt(...args){const command=args[1];if(command.kind.startsWith('attendancePeriod.')){await(await getAttendancePeriods()).applyReceipt(...args);changed('attendancePeriods');}else if(command.kind.startsWith('salarySettlement.')){await(await getSalarySettlements()).applyReceipt(...args);changed('salarySettlements');}else if(command.kind.startsWith('attendanceRequest.')){await(await getAttendanceRequests()).applyReceipt(...args);changed('attendanceRequests');}else if(command.kind.startsWith('salaryAdvance.')){await(await getSalaryAdvances()).applyReceipt(...args);changed('salaryAdvances');}else if(command.kind.startsWith('employeeProfile.')){await(await getEmployeeProfiles()).applyReceipt(...args);changed('employeeProfiles');}else if(['order.create','order.update','order.archive'].includes(command.kind)){await(await getOrders()).applyReceipt(...args);changed('orders');}else if(/^cashflow\.(income|expense)\.(create|update)$/.test(command.kind)){await(await getCashflow()).applyReceipt(...args);changed('cashflow');}else if(['stockCount.create','stockCount.update','stockCount.archive'].includes(command.kind)){await(await getStockCount()).applyReceipt(...args);changed('stockCounts');}else if(['warehouseImport.create','warehouseImport.update','warehouseImport.archive'].includes(command.kind)){await(await getWarehouseImport()).applyReceipt(...args);changed('warehouseImports');}else if(['warehouseDispatch.create','warehouseDispatch.update','warehouseDispatch.archive'].includes(command.kind)){await(await getWarehouseDispatch()).applyReceipt(...args);changed('warehouseDispatches');}else if(['deliveryReport.create','deliveryReport.update','deliveryReport.archive'].includes(command.kind)){await(await getDelivery()).applyReceipt(...args);changed('deliveryReports');}else if(['attendance.check_in','attendance.check_out'].includes(command.kind)){await(await getAttendance()).applyReceipt(...args);changed('attendance');}else if(command.kind.startsWith('payroll.')){await(await getPayroll()).applyReceipt(...args);changed('payroll');}else{await repository.applyReceipt(...args);changed();}if((!command.kind.startsWith('attendancePeriod.')||command.kind==='attendancePeriod.assignWorkRole')&&!command.kind.startsWith('salarySettlement.')&&(!command.kind.startsWith('attendanceRequest.')||args[2]?.document?.applied===true)&&args[2]?.outcome==='accepted'&&home&&(homeSyncPromise||businessSourcesRequested))home.sourceChanged();},
    async failLease(...args){await repository.failLease(...args);changed(args[1]?.kind?.startsWith('attendancePeriod.')?'attendancePeriods':args[1]?.kind?.startsWith('salarySettlement.')?'salarySettlements':args[1]?.kind?.startsWith('attendanceRequest.')?'attendanceRequests':args[1]?.kind?.startsWith('salaryAdvance.')?'salaryAdvances':args[1]?.kind?.startsWith('employeeProfile.')?'employeeProfiles':args[1]?.kind?.startsWith('order.')?'orders':args[1]?.kind?.startsWith('cashflow.')?'cashflow':args[1]?.kind?.startsWith('stockCount.')?'stockCounts':args[1]?.kind?.startsWith('warehouseImport.')?'warehouseImports':args[1]?.kind?.startsWith('warehouseDispatch.')?'warehouseDispatches':['deliveryReport.create','deliveryReport.update','deliveryReport.archive'].includes(args[1]?.kind)?'deliveryReports':args[1]?.kind?.startsWith('payroll.')?'payroll':args[1]?.kind?.startsWith('attendance.')?'attendance':'customers');},
   };
-  sync=createOfflineSyncEngine({repository:syncRepository,transport:synchronizedTransport,session,online});
+  const localSyncStage=(stage,code='none')=>{
+   if(import.meta.env.MODE==='emulator'&&/^demo-/.test(projectId)&&globalThis.Capacitor?.getPlatform?.()==='android')void globalThis.Capacitor.nativePromise('NativeSafeArea','recordLocalSyncStage',{stage,code}).catch(()=>{});
+  };
+  sync=createOfflineSyncEngine({repository:syncRepository,transport:synchronizedTransport,session,online,onStatus:({stage,code})=>localSyncStage(stage,code)});
   const pages=hasCustomerRead?createCustomerPageCoordinator({repository,fetchPage:page=>transport.page(page,undefined,session.scope),isCurrent:()=>session.isCurrent()}):null;
   if(hasCustomerRead&&import.meta.env.VITE_CUSTOMER_DELTA_SYNC==='true')delta=createCustomerDeltaCoordinator({repository,transport,scope:session.scope,isCurrent:()=>session.isCurrent(),online,onChange:()=>changed(),uuid,onFatal:async()=>{await secureStore.revoke(expected);session.close();}});
   const refresh=async(more=false)=>{
@@ -298,6 +301,7 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    if(closed||!session.isCurrent()||!online())return Promise.resolve(false);
    if(authorityPromise)return authorityPromise;
    authorityPromise=(async()=>{
+    localSyncStage('authority-start');
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);authorityAbort=controller;
     try{
      const fresh=await (transport.renewGrant?transport.renewGrant(expected,controller.signal):transport.grant(expected.deviceId,controller.signal,session.scope));
@@ -314,8 +318,8 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
       if(closed||!session.isCurrent())return false;
       activeGrant=renewed;scheduleExpiry();startupMark('permission.online-renewed');
      }
-     return true;
-    }catch(error){if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
+     localSyncStage('authority-valid');return true;
+    }catch(error){localSyncStage('authority-failed',error?.code||'unknown');if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
     finally{clearTimeout(timeout);if(authorityAbort===controller)authorityAbort=null;}
    })().finally(()=>{authorityPromise=null;});return authorityPromise;
   };

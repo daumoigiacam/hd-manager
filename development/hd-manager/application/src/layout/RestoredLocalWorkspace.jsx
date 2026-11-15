@@ -1,3 +1,4 @@
+import {runtimeOnline} from '../services/nativeConnectivity.js';
 import React,{useEffect,useState,useRef,useLayoutEffect} from 'react';
 import {Capacitor,registerPlugin} from '@capacitor/core';
 import {App as CapacitorApp} from '@capacitor/app';
@@ -49,9 +50,9 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
  const routes=runtime?availableNativeBusinessRoutes(runtime):permittedNativeBusinessRoutes(context);
  const navigate=value=>{
   if(!context.isCurrent())return;
-  if(value==='modules'){if(onOpenFullWorkspace&&navigator.onLine){onOpenFullWorkspace('more');return;}if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(old=>!old);return;}
+  if(value==='modules'){if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('more');return;}if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(old=>!old);return;}
   if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(false);
-  if(value==='home'){if(onOpenFullWorkspace&&navigator.onLine){onOpenFullWorkspace('home');return;}setTab('home');return;}
+  if(value==='home'){if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('home');return;}setTab('home');return;}
   if(value==='profile'){setTab(value);return;}
   if(value==='reports'){if(context.isCurrent()&&context.capabilities.includes('home.read')){setReportRequested(true);setTab(value);}return;}
   if(value==='customers'){if(!context.appSession.allowedTabs.includes('customers')||!context.capabilities.includes('customers.read'))return;onCustomerIntent?.();void adapter.preload().catch(()=>{});void runtime?.prepareCustomerNavigation().catch(()=>{});setTab(value);return;}
@@ -91,7 +92,7 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    {menuOpen&&<section className="p-4 grid grid-cols-2 gap-3" style={{paddingTop:'calc(16px + var(--hd-safe-top, 0px))'}} aria-label="Chức năng nghiệp vụ"><h1 className="col-span-2 text-xl font-bold">Chức năng</h1>{modules.map(route=><button key={route.id} type="button" className="rounded-xl border p-3 text-left font-semibold" onClick={()=>navigate(route.id)}>{route.label}</button>)}</section>}
    <React.Activity mode={menuOpen?'hidden':'visible'}>
    <React.Activity mode={tab==='home'?'visible':'hidden'}>
-    <WorkingHome ready storageReady={Boolean(runtime)} active={tab==='home'&&!menuOpen} scope={scope} modules={modules} identity={{companyName:company.name||company.companyName,name:user.name,role:user.position,logo:company.logoUrl||company.logo,avatar:user.avatarUrl}} summary={context.capabilities.includes('home.read')?homeSummary(restoredHome?.value,period):[]} period={period} onPeriodChange={setPeriod} freshness={restoredHome?.value?`Bản đã lưu · ${restoredHome.value.dayKey} · ${homeSyncState==='SYNCING'?'Đang cập nhật ở nền':homeSyncState==='SYNC_FAILED'?'Chưa đồng bộ được thay đổi mới':'Chưa gồm giao dịch chờ xác nhận'}`:''} offline={!navigator.onLine} onProfile={()=>navigate('profile')} searchableModules={['customers','orders']} onSearch={modules.some(item=>['customers','orders'].includes(item.id))?(value,kind)=>{if(kind==='customers'){setSearch(value);setShowSearch(true);navigate('customers');}else if(kind==='orders'){setOrderSearchIntent({id:crypto.randomUUID(),query:value});navigate(kind);}}:undefined} onRequestReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onNavigate={navigate}/>
+    <WorkingHome ready storageReady={Boolean(runtime)} active={tab==='home'&&!menuOpen} scope={scope} modules={modules} identity={{companyName:company.name||company.companyName,name:user.name,role:user.position,logo:company.logoUrl||company.logo,avatar:user.avatarUrl}} summary={context.capabilities.includes('home.read')?homeSummary(restoredHome?.value,period):[]} period={period} onPeriodChange={setPeriod} freshness={restoredHome?.value?`Bản đã lưu · ${restoredHome.value.dayKey} · ${homeSyncState==='SYNCING'?'Đang cập nhật ở nền':homeSyncState==='SYNC_FAILED'?'Chưa đồng bộ được thay đổi mới':'Chưa gồm giao dịch chờ xác nhận'}`:''} offline={!runtimeOnline()} onProfile={()=>navigate('profile')} searchableModules={['customers','orders']} onSearch={modules.some(item=>['customers','orders'].includes(item.id))?(value,kind)=>{if(kind==='customers'){setSearch(value);setShowSearch(true);navigate('customers');}else if(kind==='orders'){setOrderSearchIntent({id:crypto.randomUUID(),query:value});navigate(kind);}}:undefined} onRequestReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onNavigate={navigate}/>
     {restoredHome?.error&&<p role="alert">Không thể mở báo cáo đã lưu trên máy. Hãy mở lại phiên để thử lại.</p>}
    </React.Activity>
    {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p><button type="button" onClick={onLogout}>Đăng xuất</button></section>}

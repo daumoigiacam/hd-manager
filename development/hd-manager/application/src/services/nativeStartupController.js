@@ -1,6 +1,7 @@
 import {preloadedNativeCore} from '@hd/native-bootstrap-core';
 import {startupMark} from './offlineStartupTrace.js';
-import {Capacitor} from '@capacitor/core';
+import {Capacitor,registerPlugin} from '@capacitor/core';
+import {runtimeOnline,createNativeConnectivityObserver} from './nativeConnectivity.js';
 import {recordStartupEvent} from './startupTelemetry.js';
 import {trustedOfflineEnabled,trustedOfflineEnvironment} from '../config/offlineRuntimeBuildConfig.js';
 
@@ -12,19 +13,19 @@ let singleton;
 const defaultAuth=()=>import('./firebaseClientRuntime.js').then(value=>value.auth);
 export function getNativeStartupController(authSource=defaultAuth){
  if(singleton)return singleton;
- let snapshot={runtime:null,verifiedLaunch:null,restored:false,error:'',settled:!enabled,controller:null,enabled,online:navigator.onLine};
- const subscribers=new Set();let uiAttached=false,startUiNetwork=()=>{};
+ let snapshot={runtime:null,verifiedLaunch:null,restored:false,error:'',settled:!enabled,controller:null,enabled,online:runtimeOnline()};
+ const subscribers=new Set();let uiAttached=false,startUiNetwork=()=>{},nativeConnectivity=null;
  const emit=patch=>{snapshot={...snapshot,...patch};for(const listener of subscribers)listener();};
  const setState=value=>emit(typeof value==='function'?value(snapshot):value);
  const setController=controller=>emit({controller});const setSettled=settled=>emit({settled});
- const updateOnline=()=>emit({online:navigator.onLine});
- const store={getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},attachUI(){uiAttached=true;startUiNetwork();},inspect(){return{owners:enabled?1:0,subscribers:subscribers.size,uiAttached};}};
+ const updateOnline=()=>emit({online:runtimeOnline()});
+ const store={getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},attachUI(){uiAttached=true;if(Capacitor.getPlatform()==='android'&&!nativeConnectivity){nativeConnectivity=createNativeConnectivityObserver({plugin:registerPlugin('NativeSafeArea'),onError:()=>console.warn('Android network observation unavailable; browser connectivity retained')});nativeConnectivity.start();}startUiNetwork();},inspect(){return{owners:enabled?1:0,subscribers:subscribers.size,uiAttached};}};
  singleton=store;
  // Connectivity also belongs to cloud-only builds. Otherwise their snapshot
  // stays at the launch value and CRM can wait on Firebase forever while offline.
  window.addEventListener('online',updateOnline);window.addEventListener('offline',updateOnline);
  if(!enabled){
-  const pagehide=event=>{if(event.persisted)return;window.removeEventListener('pagehide',pagehide);window.removeEventListener('online',updateOnline);window.removeEventListener('offline',updateOnline);};
+  const pagehide=event=>{if(event.persisted)return;window.removeEventListener('pagehide',pagehide);window.removeEventListener('online',updateOnline);window.removeEventListener('offline',updateOnline);nativeConnectivity?.close();};
   window.addEventListener('pagehide',pagehide);
   return store;
  }
@@ -101,7 +102,7 @@ export function getNativeStartupController(authSource=defaultAuth){
   let attendanceProviders;
   const loadAttendanceProviders=()=>attendanceProviders||=import('../features/hr/nativeAttendanceProviders.js').then(({createNativeAttendanceProviders})=>createNativeAttendanceProviders({getRuntime:()=>current,getIdToken:verifiedIdToken})).catch(error=>{attendanceProviders=null;throw error;});
   let bootstrap;
-  const restore=()=>owner.replace(()=>bootstrap({projectId,publicKey,environment,secureStore:platform.secureStore,openDatabase:platform.openDatabase,transport,digest:platform.digest,uuid,deferNetwork:true,backgroundHomeSync:false,launchCache:platform.launchCache,onVerifiedLaunch:launch=>{if(disposed||restoreTicket!==generation||!launch.isCurrent())return;setState({runtime:null,verifiedLaunch:launch,restored:true,error:''});clearLaunch();launchExpiry=setTimeout(()=>{if(!disposed)setState(previous=>({...previous,verifiedLaunch:null}));},Math.max(0,launch.expiresAtMs-Date.now()));},loadAttendanceProviders,loadHomeSync:()=>import('./offlineHomeSync.js'),onPhase:phase=>{startupMark('bootstrap.'+phase);recordStartupEvent('offline.bootstrap.phase',{phase});console.info('WORKSPACE_LOCAL_PHASE '+phase);}}).catch(async error=>{await platform.discardPreparedDatabase();throw error;}));
+  const restore=()=>owner.replace(()=>bootstrap({projectId,publicKey,environment,secureStore:platform.secureStore,openDatabase:platform.openDatabase,transport,digest:platform.digest,uuid,online:runtimeOnline,deferNetwork:true,backgroundHomeSync:false,launchCache:platform.launchCache,onVerifiedLaunch:launch=>{if(disposed||restoreTicket!==generation||!launch.isCurrent())return;setState({runtime:null,verifiedLaunch:launch,restored:true,error:''});clearLaunch();launchExpiry=setTimeout(()=>{if(!disposed)setState(previous=>({...previous,verifiedLaunch:null}));},Math.max(0,launch.expiresAtMs-Date.now()));},loadAttendanceProviders,loadHomeSync:()=>import('./offlineHomeSync.js'),onPhase:phase=>{startupMark('bootstrap.'+phase);recordStartupEvent('offline.bootstrap.phase',{phase});console.info('WORKSPACE_LOCAL_PHASE '+phase);}}).catch(async error=>{await platform.discardPreparedDatabase();throw error;}));
   const restoreTicket=generation;
   void (preloadedNativeCore&&Capacitor.getPlatform()==='android'?Promise.resolve(preloadedNativeCore):Promise.all([trustedOfflineEnabled&&Capacitor.getPlatform()==='web'?import('../data/webOfflinePlatform.js'):import('../data/nativeOfflineCustomerPlatform.js'),import('../data/bootstrapOfflineCustomer.js'),import('../data/offlineAppSession.js'),import('../data/offlineCustomerTransport.js')])).then(async([native,boot,session,http])=>{
    if(disposed)return;owner=session.createOfflineRuntimeOwner();bootstrap=boot.bootstrapOfflineCustomer;
@@ -129,9 +130,9 @@ export function getNativeStartupController(authSource=defaultAuth){
    let observingAuth=false;
    const scheduleAuth=()=>{
     if(!uiAttached||disposed||networkTimer!==null)return;
-    if(!navigator.onLine){recordStartupEvent('offline.auth.network_loading_deferred');return;}
+    if(!runtimeOnline()){recordStartupEvent('offline.auth.network_loading_deferred');return;}
     networkTimer=setTimeout(()=>{
-     networkTimer=null;if(disposed||!navigator.onLine)return;
+     networkTimer=null;if(disposed||!runtimeOnline())return;
      // An initial grant can fail while Auth itself stays signed in. Reconnect
      // must retry that SAME identity; Auth need not emit another state change.
      if(observingAuth){if(auth?.currentUser&&!current?.isCurrent())void installObserved(auth.currentUser);return;}
@@ -146,7 +147,7 @@ export function getNativeStartupController(authSource=defaultAuth){
   return dispose;
  }
  const dispose=initialize();
- const pagehide=event=>{if(event.persisted)return;window.removeEventListener('pagehide',pagehide);window.removeEventListener('online',updateOnline);window.removeEventListener('offline',updateOnline);dispose();};
+ const pagehide=event=>{if(event.persisted)return;window.removeEventListener('pagehide',pagehide);window.removeEventListener('online',updateOnline);window.removeEventListener('offline',updateOnline);nativeConnectivity?.close();dispose();};
  window.addEventListener('pagehide',pagehide);
  return store;
 }

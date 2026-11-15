@@ -1,3 +1,4 @@
+import {runtimeOnline} from '../services/nativeConnectivity.js';
 import StartupWorkspaceShell from './StartupWorkspaceShell.jsx';
 import React,{useCallback,useEffect,useState}from'react';
 import{useNativeOfflineWorkspace}from'../services/useNativeOfflineWorkspace.js';
@@ -18,10 +19,10 @@ function ProductCRM(props){return <PreloadedWorkspace module={productCRM} viewPr
 export default function CoreWorkspaceEntry(){
  const offlineWorkspace=useNativeOfflineWorkspace(loadAuth);
  const [fullRequested,setFullRequested]=useState(false),[loggingOut,setLoggingOut]=useState(false),[error,setError]=useState('');
- const [onlineWebLaunch]=useState(()=>Capacitor.getPlatform()==='web'&&navigator.onLine);
+ const [onlineWebLaunch]=useState(()=>Capacitor.getPlatform()==='web'&&runtimeOnline());
  const [initialWorkspaceTab,setInitialWorkspaceTab]=useState(),[initialWorkspaceIntent,setInitialWorkspaceIntent]=useState(null);
  useEffect(()=>{if(offlineWorkspace.settled&&(!offlineWorkspace.enabled||(!offlineWorkspace.runtime&&offlineWorkspace.online)||onlineWebLaunch))setFullRequested(true);},[offlineWorkspace.settled,offlineWorkspace.enabled,offlineWorkspace.runtime,offlineWorkspace.online,onlineWebLaunch]);
- const openFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;if(!navigator.onLine||!owner?.isCurrent())return;const target=tab==='home'?'home':'more';setInitialWorkspaceTab(target);setInitialWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setFullRequested(true);};
+ const openFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;if(!runtimeOnline()||!owner?.isCurrent())return;const target=tab==='home'?'home':'more';setInitialWorkspaceTab(target);setInitialWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setFullRequested(true);};
  const logout=useCallback(async()=>{
   setLoggingOut(true);setError('');
   try{

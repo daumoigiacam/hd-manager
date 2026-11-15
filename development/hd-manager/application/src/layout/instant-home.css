@@ -8,6 +8,12 @@
 @media(min-width:768px){.hd-instant-home{padding:26px 28px}.hd-instant-identity h1{font-size:22px}.hd-instant-grid{gap:15px}.hd-instant-tile{min-height:115px}.hd-instant-tile span{font-size:15px}.hd-instant-brand{min-height:130px}.hd-instant-brand strong{font-size:27px}.hd-instant-brand span{font-size:16px}.hd-instant-metric strong{font-size:30px}.hd-instant-panel{padding:20px}.hd-instant-nav small{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.hd-instant-home *{animation:none!important;transition:none!important}}
 .hd-instant-native .hd-instant-home{padding-top:calc(20px + var(--hd-safe-top,0px))}.hd-instant-native>.hd-instant-nav{padding-bottom:calc(8px + var(--hd-safe-bottom,0px))}
+/* The full workspace hides its module header on Home. Its own Home header
+   must then consume the native status inset, just as the restored view does. */
+html[data-hd-android-native="true"] [data-hd-instant-shell="staff"][data-active-tab="home"] .hd-instant-home{padding-top:calc(20px + var(--hd-safe-top,0px))}
+/* Keep scrolled Local lists below the system status icons. Insets still belong
+   to the content above; this opaque strip adds no layout or input obstruction. */
+html[data-hd-android-native="true"] .hd-instant-native::before{content:"";position:fixed;top:0;left:0;right:0;height:var(--hd-safe-top,0px);background:var(--hd-color-canvas,#f8fafc);pointer-events:none;z-index:50}
 /* Home and the module picker own their top inset. Other existing routes share
    the native safe area so their Back/search controls stay below the status bar. */
 .hd-instant-native>main:not([data-instant-route="home"]):not([data-instant-route="modules"]){padding-top:var(--hd-safe-top,0px)}

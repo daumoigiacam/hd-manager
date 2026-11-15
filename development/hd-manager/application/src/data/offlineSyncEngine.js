@@ -2,12 +2,13 @@
 // use an authenticated, server-idempotent endpoint, never direct blind writes.
 export function createOfflineSyncEngine({ repository, transport, session, online,
   now = Date.now, random = Math.random, maxAttempts = 8, leaseMs = 60000,
-  requestTimeoutMs = 20000, schedule = setTimeout, cancel = clearTimeout }) {
+  requestTimeoutMs = 20000, schedule = setTimeout, cancel = clearTimeout, onStatus = () => {} }) {
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20
     || requestTimeoutMs <= 0 || leaseMs <= requestTimeoutMs) throw new TypeError('Invalid sync limits');
   let stopped = false, running = null, timer = null, controller = null, notified=false;
   const scope = Object.freeze({ ...session.scope });
   const usable = () => !stopped && session.isCurrent(scope) && online();
+  const report=(stage,code='none')=>{try{onStatus({stage,code});}catch{/* Observers never own a durable transaction. */}};
   const wake = (delay = 0) => {
     if (stopped) return;
     if (timer !== null) cancel(timer);
@@ -19,7 +20,7 @@ export function createOfflineSyncEngine({ repository, transport, session, online
     let timeout;
     try {
       return await Promise.race([
-        transport.send(command, { scope, signal }),
+        (report('sending'),transport.send(command, { scope, signal })),
         new Promise((_, reject) => {
           timeout = schedule(() => {
             controller?.abort();
@@ -33,7 +34,10 @@ export function createOfflineSyncEngine({ repository, transport, session, online
     while (usable()) {
       // claimDue must atomically lease one command whose dependencies are SYNCED.
       // It also recovers expired leases without changing the idempotency key.
-      const command = await repository.claimDue(scope, {now:now(),leaseMs,maxAttempts});
+      let command;
+      try{command=await repository.claimDue(scope, {now:now(),leaseMs,maxAttempts});}
+      catch(error){report('claim-failed',error?.code||'storage-error');throw error;}
+      report(command?'claimed':'idle');
       if (!command) { if (usable()&&(!repository.countRetryable||await repository.countRetryable())) wake(5000); return; }
       if (!usable()) return; // lease is recoverable; never switch it to another user.
       if (!['commandId','idempotencyKey','payloadDigest'].every(key => typeof command[key] === 'string' && command[key].length > 0)
@@ -43,6 +47,7 @@ export function createOfflineSyncEngine({ repository, transport, session, online
       let result;
       try { result = await send(command); }
       catch (error) {
+        report('send-failed',error?.code||'unknown');
         if (!session.isCurrent(scope) || stopped) return;
         const transient = new Set(['unavailable','deadline-exceeded','resource-exhausted','network-error']);
         const retry = transient.has(error?.code) && command.attempts < maxAttempts;
@@ -65,6 +70,7 @@ export function createOfflineSyncEngine({ repository, transport, session, online
       } else {
         try { await repository.applyReceipt(scope, command, result); }
         catch (_error) {
+          report('receipt-failed',_error?.code||'storage-error');
           if (!session.isCurrent(scope) || stopped) return;
           // A failed local receipt transaction must leave the original intent
           // intact. Replay that same key; the server already owns its receipt.
@@ -81,6 +87,7 @@ export function createOfflineSyncEngine({ repository, transport, session, online
           if (usable()) wake(5000);
           return;
         }
+        report('receipt-applied',result.outcome);
       }
       // Yield between commands; no eager full-queue materialization.
       await new Promise(resolve => schedule(resolve, 0));

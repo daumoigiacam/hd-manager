@@ -1,7 +1,7 @@
 import React from 'react';
 import { Check, X } from 'lucide-react';
 
-export default React.memo(function OrderRequestTableRows({ visibleRequestSalesGroups, isOwnerAccount, selectedRowKey, canEditGeneral, canEditQuantity, canEditSizePrice, canDelete, openOrderCellEditor, updateCustomerPortalOrderApproval, formatOrderRequestBranchLabel, getOrderRequestRowProductLabel, formatDateLabel, getOrderRequestRowNoteText, formatSheetQuantity, formatOrderRequestSizeCell, formatCurrency }) {
+export default React.memo(function OrderRequestTableRows({ mutationsReady = true, visibleRequestSalesGroups, isOwnerAccount, selectedRowKey, canEditGeneral, canEditQuantity, canEditSizePrice, canDelete, openOrderCellEditor, updateCustomerPortalOrderApproval, formatOrderRequestBranchLabel, getOrderRequestRowProductLabel, formatDateLabel, getOrderRequestRowNoteText, formatSheetQuantity, formatOrderRequestSizeCell, formatCurrency }) {
   return <>
 {visibleRequestSalesGroups.map((salesGroup) => (
                   <React.Fragment key={salesGroup.key}>
@@ -70,6 +70,7 @@ export default React.memo(function OrderRequestTableRows({ visibleRequestSalesGr
                                     <button
                                       type="button"
                                       aria-label="Duyệt đơn khách gửi"
+                                      disabled={!mutationsReady}
                                       title="Duyệt"
                                       onClick={(event) => {
                                         event.stopPropagation();
@@ -82,6 +83,7 @@ export default React.memo(function OrderRequestTableRows({ visibleRequestSalesGr
                                     <button
                                       type="button"
                                       aria-label="Hủy đơn khách gửi"
+                                      disabled={!mutationsReady}
                                       title="Hủy"
                                       onClick={(event) => {
                                         event.stopPropagation();

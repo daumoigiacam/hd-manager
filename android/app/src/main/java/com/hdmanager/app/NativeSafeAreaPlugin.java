@@ -13,6 +13,38 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "NativeSafeArea")
 public class NativeSafeAreaPlugin extends Plugin {
+    private android.net.ConnectivityManager networkManager;
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
+    private long networkSequence=0;
+    private JSObject currentNetwork() {
+        android.net.Network network=networkManager.getActiveNetwork();
+        android.net.NetworkCapabilities caps=network==null?null:networkManager.getNetworkCapabilities(network);
+        JSObject result=new JSObject();
+        result.put("online",caps!=null&&caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET));
+        result.put("sequence",++networkSequence);
+        return result;
+    }
+    @PluginMethod public void startNetworkObservation(PluginCall call) {
+        getActivity().runOnUiThread(()->{
+            try {
+                if(networkManager==null)networkManager=(android.net.ConnectivityManager)getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+                if(networkCallback==null){
+                    networkCallback=new android.net.ConnectivityManager.NetworkCallback(){
+                        private void publish(){getActivity().runOnUiThread(()->{if(networkCallback==this)notifyListeners("nativeNetworkChange",currentNetwork());});}
+                        @Override public void onAvailable(android.net.Network network){publish();}
+                        @Override public void onLost(android.net.Network network){publish();}
+                        @Override public void onCapabilitiesChanged(android.net.Network network,android.net.NetworkCapabilities caps){publish();}
+                    };
+                    networkManager.registerDefaultNetworkCallback(networkCallback);
+                }
+                call.resolve(currentNetwork());
+            } catch(RuntimeException error){stopNetworkObservation();call.reject("Unable to observe Android network",error);}
+        });
+    }
+    private void stopNetworkObservation(){
+        if(networkCallback!=null){try{networkManager.unregisterNetworkCallback(networkCallback);}catch(RuntimeException ignored){}networkCallback=null;}
+    }
+    @PluginMethod public void stopNetworkObservation(PluginCall call){getActivity().runOnUiThread(()->{stopNetworkObservation();call.resolve();});}
     @PluginMethod public void recordModuleReadiness(PluginCall call) {
         if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local module metadata only"); return; }
         String module=call.getString("module", ""), document=call.getString("documentTraceId", "");
@@ -32,6 +64,15 @@ public class NativeSafeAreaPlugin extends Plugin {
                 }
             });
         });
+        call.resolve();
+    }
+    @PluginMethod public void recordLocalSyncStage(PluginCall call) {
+        String stage=call.getString("stage",""),code=call.getString("code","none");
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName()) || !stage.matches("(authority-start|authority-valid|authority-failed|claimed|claim-failed|idle|sending|send-failed|receipt-failed|receipt-applied)")) {call.reject("Local sync metadata only");return;}
+        if(!code.matches("(none|accepted|conflict|rejected|unknown|storage-error|permission-denied|unauthenticated|unavailable|deadline-exceeded|network-error|invalid-argument|resource-exhausted|SQLITE_BUSY|SQLITE_LOCKED|SQLITE_IOERR)"))code="other";
+        // Fixed stage and error category only. No IDs, payloads, SQL, identity,
+        // request URL, input text or exception messages may enter Android logs.
+        android.util.Log.i("HDLocalSync",stage+" "+code);
         call.resolve();
     }
     @PluginMethod public void inspectLocalPreferenceFootprint(PluginCall call) {
@@ -78,6 +119,7 @@ public class NativeSafeAreaPlugin extends Plugin {
         });
     }
     @Override protected void handleOnDestroy() {
+        stopNetworkObservation();
         if (localFrames != null) { localFrames.close(null); localFrames = null; }
         super.handleOnDestroy();
     }
