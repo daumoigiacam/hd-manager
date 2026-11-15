@@ -1,4 +1,5 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {focusHRPanel} from './focusHRPanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
 import {HDButton,HDCard,HDFilterBar,HDInput,HDPageHeader,HDSearchBar,HDSelect} from '../../design-system/index.js';
 import {businessDayKey} from '../../utils/businessDate.js';
@@ -55,6 +56,8 @@ function PayrollResult({result}){
 }
 
 function HRDetail({runtime,directory,selected,onClose,onEmployee,onEditEmployee}){
+  const panel=useRef(null),heading=useRef(null),opened=useRef(false);
+  useLayoutEffect(()=>{if(opened.current===selected)return;opened.current=selected;focusHRPanel(panel.current,heading.current);},[selected]);
   const owner=useRef(null),completed=useRef(null);
   if(!owner.current||owner.current.runtime!==runtime||owner.current.directory!==directory||owner.current.selected!==selected)owner.current={runtime,directory,selected};
   const identity=owner.current;
@@ -69,8 +72,8 @@ function HRDetail({runtime,directory,selected,onClose,onEmployee,onEditEmployee}
   },[runtime,directory,selected,identity]);
   const denied=hrReadAccess(runtime,directory),ready=state.identity===identity,result=!denied&&ready?state.result:null,row=result?.row,d=row?.document;
   const employeeId=selected.source==='employees'?selected.id:d?.employeeId||d?.empId||d?.targetEmployeeId;
-  return <HDCard className="space-y-4 p-4" aria-label="Chi tiết nhân sự">
-    <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">Chi tiết {HR_SOURCES[selected.source].toLowerCase()}</h2><HDButton variant="secondary" onClick={onClose}>Danh sách</HDButton></div>
+  return <HDCard ref={panel} className="space-y-4 p-4" aria-label="Chi tiết nhân sự">
+    <div className="flex items-center justify-between gap-3"><h2 ref={heading} tabIndex={-1} className="text-lg font-bold">Chi tiết {HR_SOURCES[selected.source].toLowerCase()}</h2><HDButton variant="secondary" onClick={onClose}>Danh sách</HDButton></div>
     {(!ready||state.loading)&&!denied&&<p role="status">Đang đọc chi tiết từ SQLite…</p>}
     {(denied||ready&&state.error)&&<p role="alert" className="text-sm text-rose-700">{denied||state.error}</p>}
     {row&&<>
