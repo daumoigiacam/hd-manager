@@ -81,3 +81,11 @@ export function orderBusinessSortSql(body='r.body'){
  const first=`COALESCE(${entityDates.slice(0,7).map(field=>`NULLIF(${j(field)},'')`).join(',')},'')`;
  return `COALESCE(${ordersStrictIsoDateSql([first,...entityDates.slice(7).map(j)])},'')`;
 }
+
+// Same Dispatch expression for reads and derived date-key writes. No change to
+// first-nonempty business-field or historical timestamp/timezone precedence.
+export function warehouseDispatchBusinessSortSql(body='r.body'){
+ const j=field=>`json_extract(${body},'$.${field}')`;
+ const first=`COALESCE(${entityDates.slice(0,7).map(field=>`NULLIF(${j(field)},'')`).join(',')},'')`;
+ return `COALESCE(${strictBusinessDaySql([first,...entityDates.slice(7).map(j)])},'')`;
+}

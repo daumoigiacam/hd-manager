@@ -45,7 +45,7 @@ const missingOrderProjection=failure=>/no such (?:table|index):\s*(?:\w+\.)?(?:o
 const missingCashflowProjection=failure=>/no such (?:table|index):\s*(?:\w+\.)?(?:offline_business_cashflow_sort_v1|offline_home_feed_keys_seq_v2)\b/i.test(String(failure?.message||failure));
 const j = path => `json_extract(r.body,'$.${path}')`;
 const first = fields => `COALESCE(${fields.map(f => `NULLIF(${j(f)},'')`).join(',')},'')`;
-import {entityDates,dateSql,strictBusinessDaySql,ordersStrictIsoDateSql} from './businessDirectoryDateSql.js';
+import {entityDates,dateSql,strictBusinessDaySql,ordersStrictIsoDateSql,warehouseDispatchBusinessSortSql} from './businessDirectoryDateSql.js';
 import {cashDates,paymentDates,cashflowBusinessDaySql} from './cashflowDirectoryDateSql.js';
 const needsCustomers = (source, o) => source === 'orders' && (o.employeeId !== null || o.tokens.length > 0);
 const common = ['companyId','date','status','customerId','customerName','empId','createdByEmpId','isArchived'];
@@ -201,6 +201,7 @@ function recordCte(source, scope, cp, o, atomic = false, useSearchProjection = t
   // day. Avoid recursively parsing every historical row for that exact case;
   // retain the original parser for legacy formats, timestamps and fallbacks.
   if(['warehouseImports','warehouseDispatches','warehouseStockCounts'].includes(source))date=strictBusinessDaySql(dates);
+  if(source==='warehouseDispatches')date=warehouseDispatchBusinessSortSql();
   if (source === 'orders') date = ordersStrictIsoDateSql(dates);
   if (s.payment&&!projectedCashflowSort) date = cashflowBusinessDaySql();
   const sort = s.precision === 'month' ? `COALESCE(${source==='advances'?salaryAdvanceMonthSql(j):j('monthKey')},'')` : `COALESCE(${date},'')`;
@@ -347,16 +348,26 @@ function cashflowProjectionCte(source,scope,cp,o){
  const predicates=[];const bind=value=>{params.push(value);return '?'+params.length;};
  if(o.from)predicates.push('sort_key>='+bind(o.from));
  if(o.to)predicates.push("sort_key<>'' AND sort_key<"+bind(o.to));
- return{...raw,params,cashflowProjection:true,cte:`WITH cashflow_feed_keys AS MATERIALIZED (
-  SELECT r.id,r.seq,${orderFeedScopeSql()} AS company_id,${orderFeedScopeSql('r.body','id')} AS body_id
-  FROM offline_home_feed_records_v1 r INDEXED BY ${ORDER_FEED_KEYS_INDEX}
-  WHERE r.tenant_id=?1 AND r.principal_id=?2 AND r.generation=(SELECT generation FROM directory_ready) AND r.source=?4 AND r.seq<=(SELECT seq FROM directory_ready)),
- cashflow_valid AS MATERIALIZED (SELECT p.id,p.seq,p.sort_key FROM cashflow_feed_keys k CROSS JOIN ${CASHFLOW_SORT_TABLE} p
+ // Dispatch proves coverage and collects date keys with one PK join for each
+ // live feed key. NULL/mismatched scope or seq retains the whole raw fallback.
+ const coverage=source==='warehouseDispatches'?`cashflow_coverage AS MATERIALIZED (
+  SELECT k.id,k.seq,p.sort_key,CASE WHEN p.id IS NOT NULL AND k.company_id=?5 AND k.body_id=k.id THEN 1 ELSE 0 END AS valid
+  FROM cashflow_feed_keys k LEFT JOIN ${CASHFLOW_SORT_TABLE} p
+   ON p.tenant_id=?1 AND p.principal_id=?2 AND p.generation=(SELECT generation FROM directory_ready)
+    AND p.source=?4 AND p.id=k.id AND p.seq=k.seq AND p.version=1),
+ cashflow_valid AS MATERIALIZED (SELECT id,seq,sort_key FROM cashflow_coverage WHERE valid=1),
+ cashflow_uncovered_keys AS MATERIALIZED (SELECT id,seq FROM cashflow_coverage WHERE valid=0)`:
+ `cashflow_valid AS MATERIALIZED (SELECT p.id,p.seq,p.sort_key FROM cashflow_feed_keys k CROSS JOIN ${CASHFLOW_SORT_TABLE} p
   WHERE p.tenant_id=?1 AND p.principal_id=?2 AND p.generation=(SELECT generation FROM directory_ready) AND p.source=?4
    AND p.id=k.id AND p.seq=k.seq AND p.version=1 AND k.company_id=?5 AND k.body_id=k.id),
  cashflow_uncovered_keys AS MATERIALIZED (SELECT k.id,k.seq FROM cashflow_feed_keys k WHERE NOT EXISTS (
   SELECT 1 FROM ${CASHFLOW_SORT_TABLE} p WHERE p.tenant_id=?1 AND p.principal_id=?2 AND p.generation=(SELECT generation FROM directory_ready)
-   AND p.source=?4 AND p.id=k.id AND p.seq=k.seq AND p.version=1 AND k.company_id=?5 AND k.body_id=k.id)),
+   AND p.source=?4 AND p.id=k.id AND p.seq=k.seq AND p.version=1 AND k.company_id=?5 AND k.body_id=k.id))`;
+ return{...raw,params,cashflowProjection:true,cte:`WITH cashflow_feed_keys AS MATERIALIZED (
+  SELECT r.id,r.seq,${orderFeedScopeSql()} AS company_id,${orderFeedScopeSql('r.body','id')} AS body_id
+  FROM offline_home_feed_records_v1 r INDEXED BY ${ORDER_FEED_KEYS_INDEX}
+  WHERE r.tenant_id=?1 AND r.principal_id=?2 AND r.generation=(SELECT generation FROM directory_ready) AND r.source=?4 AND r.seq<=(SELECT seq FROM directory_ready)),
+ ${coverage},
  records AS MATERIALIZED (SELECT id,seq,sort_key FROM cashflow_valid WHERE NOT EXISTS(SELECT 1 FROM cashflow_uncovered_keys)),
  filtered AS (SELECT id,seq,sort_key FROM records WHERE ${predicates.join(' AND ')||'1=1'})`};
 }

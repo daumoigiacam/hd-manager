@@ -1,6 +1,17 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {dateSql,strictBusinessDaySql,entityDates} from '../src/data/businessDirectoryDateSql.js';
+import {dateSql,strictBusinessDaySql,entityDates,warehouseDispatchBusinessSortSql} from '../src/data/businessDirectoryDateSql.js';
+
+test('shared dispatch read/projection date is identical to the original parser for all field precedences and historical dates',()=>{
+ const db=new DatabaseSync(':memory:');try{
+  const j=k=>`json_extract(r.body,'$.${k}')`,first=`COALESCE(${entityDates.slice(0,7).map(k=>`NULLIF(${j(k)},'')`).join(',')},'')`;
+  const statement=db.prepare(`WITH r(body) AS(VALUES(?)) SELECT COALESCE(${dateSql([first,...entityDates.slice(7).map(j)])},'') original,${warehouseDispatchBusinessSortSql()} candidate FROM r`);
+  const values=[null,'',false,0,{},[],{seconds:1794675600},{timestampValue:'2026-11-14T17:00:00Z'},'2026-11-15','2026-02-29','2028-02-29',' 2026-11-15 ','2026-11-15\0junk','bad','15/11/2026','2026-11-14T16:59:59Z','2026-11-14T17:00:00Z','2026-12-31T17:00:00Z'];
+  for(const field of entityDates)for(const value of values)for(const date of [undefined,'2026-11-15','invalid']){
+   const row=statement.get(JSON.stringify({createdAt:'2026-11-13T17:00:00Z',date,[field]:value}));assert.equal(row.candidate,row.original,JSON.stringify({field,value,date}));
+  }
+ }finally{db.close();}
+});
 
 test('canonical-day shortcut is exactly equal to original SQL across calendar/timezone/type/legacy and fallback boundaries',()=>{
  const db=new DatabaseSync(':memory:');
