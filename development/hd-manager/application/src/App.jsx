@@ -2,6 +2,7 @@ import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSes
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
+import {getOrderRequestWorkspaceReadCollections} from './services/orderRequestWorkspaceReadPlan.js';
 import {availableNativeBusinessRoutes} from './layout/NativeBusinessRoute.jsx';
 import {hasCommittedServerSnapshot} from './services/realtimeReadFreshness.js';
 import {initialLocalWorkspace,showRestoredWorkspace,canPresentFullWorkspace,restoredWorkspaceEntryTab,localWorkspaceTab as resolveLocalWorkspaceTab} from './services/workspacePresentation.js';
@@ -543,6 +544,7 @@ import { buildDispatchListSearchFields } from './features/warehouse/dispatchList
 import { ListPagination } from './design-system/ListPagination.jsx';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
 import {createActiveSourceRetention} from './services/activeSourceRetention.js';
+import {createModuleReadinessTrace,observeModuleReadiness} from './services/moduleReadinessTrace.js';
 import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
 import {
   hasSearchQuery as hasTokenSearchQuery,
@@ -13667,6 +13669,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     currentUser?.role,
   ]);
 
+  const [requestDispatchDemand,setRequestDispatchDemand]=useState(null);
+  const requestDispatchRequested=requestDispatchDemand===readOwnerKey;
+  const onRequestDispatchDemandChange=useCallback(enabled=>{
+    if(readOwnerRef.current!==readOwnerKey)return;
+    setRequestDispatchDemand(previous=>enabled?readOwnerKey:previous===readOwnerKey?null:previous);
+  },[readOwnerKey]);
   const [productInventoryDemand,setProductInventoryDemand]=useState(null);
   const productInventoryRequested=productInventoryDemand===readOwnerKey;
   const onProductInventoryDemandChange=useCallback(enabled=>{
@@ -13693,7 +13701,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   useModuleNavigationEffect(moduleNavigation, (activeTab) => {
     if (!firebaseUser || !isFirebaseConfigured || !currentUser?.companyId) return undefined;
     if (!canStartBusinessSubscriptions(currentUser?.accountType, isCoreDataLoaded || startupWorkspaceReady)) return undefined;
-    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
+    const collectionNames = !isNativeRuntime()&&localWorkspaceMode&&offlineWorkspace.enabled?[]:activeTab==='home'?homeReadinessCollections:activeTab==='customers'&&!customerSupplementsRequested&&!isEmployeeDeliveryParticipant(homeSourceEmployee)?(offlineWorkspace.enabled?[]:CUSTOMER_DIRECTORY_COLLECTIONS):activeTab==='products'?getProductWorkspaceReadCollections(productInventoryRequested):activeTab==='order_requests'?getOrderRequestWorkspaceReadCollections(requestDispatchRequested):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab] || []);
     return activateForegroundRealtimeRef.current(collectionNames);
   }, [
     firebaseUser?.uid,
@@ -13701,7 +13709,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     currentUser?.companyId,
     currentUser?.customerId,
     isCoreDataLoaded,startupWorkspaceReady,
-    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
+    homeReadinessCollections,customerSupplementsRequested,productInventoryRequested,requestDispatchRequested,homeSourceEmployee,offlineWorkspace.enabled,localWorkspaceMode,
   ]);
 
   useEffect(() => {
@@ -22596,7 +22604,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       <RecoverableSyncNotice notice={recoverableSyncNotice} onClose={() => setRecoverableSyncNotice(null)} />
       <SyncQueueContext.Provider value={{ writes: pendingFirebaseWritesRef.current, onRetry: retryPendingFirebaseWrite }}>
       <RetainedFullWorkspace native={isNativeRuntime()} scope={fullWorkspaceOwnerScope} local={wantsRestoredWorkspace} localView={restoredWorkspaceView} onVisible={markFullWorkspaceVisible}>
-      <MainAppView localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
+      <MainAppView localCustomerRuntime={offlineWorkspace.runtime} localCustomerRequired={offlineWorkspace.enabled} localCustomerOnline={offlineWorkspace.online} localCustomerSetupError={offlineWorkspace.error} localCustomerPrincipalId={firebaseUser?.uid} key={readOwnerKey} onRequestDispatchDemandChange={onRequestDispatchDemandChange} onProductInventoryDemandChange={onProductInventoryDemandChange} onWorkingModuleReady={onWorkingModuleReady} startupWorkspaceReady={startupWorkspaceReady} dataSessionId={dataSessionId} customerSupplementsRequested={customerSupplementsRequested} onCustomerSupplementsRequested={onCustomerSupplementsRequested} homeReportRequested={homeReportRequested} onHomeReportRequested={onHomeReportRequested} homePrimaryMode={homePrimaryMode} homeDetailsRequested={homeDetailsRequested} onHomeDetailsRequested={onHomeDetailsRequested} onHomeDetailsClosed={onHomeDetailsClosed}
         onPersonalHomeProjectionStateChange={onPersonalHomeProjectionStateChange}
         onNotificationsRequested={onNotificationsRequested}
         readWorkerActivityStore={readWorkerActivityStore}
@@ -23148,7 +23156,7 @@ function VpsModuleReadPanel({ moduleKey, model }) {
 
 // --- MAIN LAYOUT ---
 function MainAppView({ 
-  localCustomerRuntime=null,localCustomerRequired=false,localCustomerOnline=true,localCustomerSetupError='',localCustomerPrincipalId='',onProductInventoryDemandChange,onWorkingModuleReady,startupWorkspaceReady=false,dataSessionId='',customerSupplementsRequested=false,onCustomerSupplementsRequested,homeReportRequested=false,onHomeReportRequested,homePrimaryMode=false,homeDetailsRequested=false,onHomeDetailsRequested,onHomeDetailsClosed,
+  localCustomerRuntime=null,localCustomerRequired=false,localCustomerOnline=true,localCustomerSetupError='',localCustomerPrincipalId='',onRequestDispatchDemandChange,onProductInventoryDemandChange,onWorkingModuleReady,startupWorkspaceReady=false,dataSessionId='',customerSupplementsRequested=false,onCustomerSupplementsRequested,homeReportRequested=false,onHomeReportRequested,homePrimaryMode=false,homeDetailsRequested=false,onHomeDetailsRequested,onHomeDetailsClosed,
   onPersonalHomeProjectionStateChange,
   onNotificationsRequested,
   readWorkerActivityStore = null,
@@ -24076,7 +24084,7 @@ function MainAppView({
     };
     updateStatusBar();
     window.addEventListener('hd-modal-visibility', updateStatusBar);
-    return () => window.removeEventListener('hd-modal-visibility', updateStatusBar);
+    return () => {nativeStatusBarRequestRef.current=null;window.removeEventListener('hd-modal-visibility', updateStatusBar);};
   }, [activeTab]);
 
   useEffect(() => {
@@ -24308,23 +24316,37 @@ function MainAppView({
     };
   }, []);
 
+  const moduleReadinessTrace=useMemo(()=>createModuleReadinessTrace(),[dashboardPrivacyScope]);
+  const canOpenWorkspace=useCommittedCallback(tab=>Boolean(tab)&&canAccess(tab)===true);
+  useEffect(()=>()=>moduleReadinessTrace.close(),[moduleReadinessTrace]);
+  const moduleReadinessCollections=activeTab==='products'?getProductWorkspaceReadCollections(false):(FOREGROUND_REALTIME_COLLECTIONS_BY_TAB[activeTab]||[]);
+  const moduleSourcesReady=areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:moduleReadinessCollections});
+  React.useLayoutEffect(()=>observeModuleReadiness({trace:moduleReadinessTrace,element:mainContentRef.current,tab:activeTab,scope:dashboardPrivacyScope,sourcesReady:moduleSourcesReady}),[moduleReadinessTrace,activeTab,dashboardPrivacyScope,moduleSourcesReady]);
   const prepareWorkspaceIntent = useCommittedCallback(tab => prepareNavigationModule(tab, {
     modules: STAFF_NAVIGATION_MODULES, canAccess
   }));
   const handleWorkspacePointerIntent = useCommittedCallback(event => {
     if (event.button !== 0 || event.isPrimary === false) return;
-    prepareWorkspaceIntent(navigationIntentTab(event.target));
+    const tab=navigationIntentTab(event.target);
+    if(tab!==activeTabRef.current&&canOpenWorkspace(tab))moduleReadinessTrace.start(tab,dashboardPrivacyScope,event.timeStamp);
+    prepareWorkspaceIntent(tab);
   });
   const handleWorkspaceKeyboardIntent = useCommittedCallback(event => {
-    if (event.key === 'Enter' || event.key === ' ') prepareWorkspaceIntent(navigationIntentTab(event.target));
+    if (event.key === 'Enter' || event.key === ' ') {
+      const tab=navigationIntentTab(event.target);if(tab!==activeTabRef.current&&canOpenWorkspace(tab))moduleReadinessTrace.start(tab,dashboardPrivacyScope,event.timeStamp);prepareWorkspaceIntent(tab);
+    }
   });
   const setActiveTab = useCallback((nextTab, options = {}) => {
     const { preserveHistory = true } = options;
     const currentTab = activeTabRef.current;
     if (!nextTab || nextTab === 'report' || nextTab === currentTab) return;
+    if(canOpenWorkspace(nextTab))moduleReadinessTrace.start(nextTab,dashboardPrivacyScope);
     // Start the requested chunk before React schedules/commits the new view.
     // Pointer/keyboard intents can start earlier; this covers programmatic links.
     prepareWorkspaceIntent(nextTab);
+    // A signed Local workflow consumes this intent without changing the full
+    // workspace route. Do not manufacture a history entry/ref for that case.
+    if(setRootActiveTab(nextTab)===false)return;
     if (preserveHistory) {
       setTabHistory((prev) => [...prev, currentTab]);
       if (typeof window !== 'undefined' && window.history?.pushState) {
@@ -24336,8 +24358,7 @@ function MainAppView({
       }
     }
     activeTabRef.current = nextTab;
-    setRootActiveTab(nextTab);
-  }, [setRootActiveTab, prepareWorkspaceIntent]);
+  }, [setRootActiveTab, prepareWorkspaceIntent,moduleReadinessTrace,dashboardPrivacyScope,canOpenWorkspace]);
   useEffect(() => {
     const openPayroll = event => {
       if (!tabPermissions.payroll || !event.detail?.employeeId) return;
@@ -25079,7 +25100,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
         />
       );
       case 'customers': return <CustomerCRMView localRuntime={localCustomerRuntime} localFirstRequired={localCustomerRequired} localOnline={localCustomerOnline} localSetupError={localCustomerSetupError} localPrincipalId={localCustomerPrincipalId} key={dashboardPrivacyScope} onDirectoryReady={()=>onWorkingModuleReady?.('customers')} lookupDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['products']})} directoryDataReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&serverConfirmedCollectionState?.collections?.customers===true} financialDataReady={mainLedgerReady&&areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.customers})} supplementsRequested={customerSupplementsRequested} onRequestSupplements={onCustomerSupplementsRequested} privacyScope={dashboardPrivacyScope} employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} expenses={expenses} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewSupplierImports={Boolean(tabPermissions.warehouse_import && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import')))} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchStore={customerSearchStore} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
-      case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView onDispatchDemandChange={onRequestDispatchDemandChange} requestDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['customers','products','orderRequests','employees']})} dispatchDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['warehouseDispatches']})} employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (shouldShowMissingWorkflowSetup({ canCreate: isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'), dataReady: workflowDataReadiness.products, hasProducts: hasWorkflowProductData, requiresCustomers: false })) {
           return renderWorkflowGuide({

@@ -13,6 +13,27 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "NativeSafeArea")
 public class NativeSafeAreaPlugin extends Plugin {
+    @PluginMethod public void recordModuleReadiness(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local module metadata only"); return; }
+        String module=call.getString("module", ""), document=call.getString("documentTraceId", "");
+        Double origin=call.getDouble("origin"), start=call.getDouble("start"), shell=call.getDouble("shellCommitted"), ready=call.getDouble("sourceAndDomReady"), essential=call.getDouble("essentialDataMs");
+        if (!module.matches("(home|more|orders|order_requests|products|customers|finance|debt|warehouse_import|warehouse_dispatch|delivery_reports|employees|payroll|company_attendance|executive_dashboard|messages|pricing|price_quotes|asset_management|bank_payments|employee_reviews|settings|role_permissions|billing|attendanceRequests|attendancePeriods|salarySettlements)") || !document.matches("[a-f0-9-]{36}") || origin==null || start==null || shell==null || ready==null || essential==null
+            || !Double.isFinite(origin) || !Double.isFinite(start) || !Double.isFinite(shell) || !Double.isFinite(ready) || !Double.isFinite(essential)
+            || origin<=0 || start<0 || shell<start || ready<shell || essential<0 || essential>ready-start || ready>86400000) { call.reject("Invalid module timing metadata"); return; }
+        JSObject result=new JSObject();result.put("module",module);result.put("documentTraceId",document);result.put("origin",origin);result.put("start",start);result.put("shellCommitted",shell);result.put("sourceAndDomReady",ready);result.put("essentialDataMs",essential);result.put("readyMs",ready-start);
+        result.put("receivedElapsedNs",android.os.SystemClock.elapsedRealtimeNanos());result.put("receivedWallMs",System.currentTimeMillis());result.put("stage","source-dom-ready-not-frame");
+        android.util.Log.i("HDModule",result.toString());
+        getActivity().runOnUiThread(()->{
+            android.webkit.WebView view=getBridge().getWebView();
+            if(view!=null)view.postVisualStateCallback(0,new android.webkit.WebView.VisualStateCallback(){
+                @Override public void onComplete(long requestId){
+                    JSObject visual=new JSObject();visual.put("module",module);visual.put("documentTraceId",document);visual.put("stage","webview-visual-state-not-surface-present");visual.put("elapsedNs",android.os.SystemClock.elapsedRealtimeNanos());visual.put("wallMs",System.currentTimeMillis());
+                    android.util.Log.i("HDModule",visual.toString());android.os.Trace.beginSection("HDModuleVisual."+module);android.os.Trace.endSection();
+                }
+            });
+        });
+        call.resolve();
+    }
     @PluginMethod public void inspectLocalPreferenceFootprint(PluginCall call) {
         if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local metadata only"); return; }
         JSObject result = new JSObject();
