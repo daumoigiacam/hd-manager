@@ -1,4 +1,7 @@
-import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
+import {createModuleReadinessTrace} from '../services/moduleReadinessTrace.js';
+const localReadiness=createModuleReadinessTrace({surface:'restored-local'});
+const localActionReadiness=createModuleReadinessTrace({surface:'restored-local-actions'});
 import PreloadedWorkspace from './PreloadedWorkspace.jsx';
 import {createPreloadableModule} from '../utils/preloadableModule.js';
 const orders=createPreloadableModule(()=>import('../features/orders/SQLiteProductOrders.jsx'));
@@ -34,6 +37,7 @@ export function availableNativeBusinessRoutes(runtime){
  return nativeBusinessRoutes.filter(route=>runtime.appSession.allowedTabs.includes(route.id)&&(['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id)||runtime.business&&(runtime.capabilities.includes('home.read')||runtime.business.readSources?.includes(routeSource(route))))&&routeCaps(runtime,route));
 }
 export function prepareNativeBusinessRoute(runtime,route,{firstOpen=false}={}){
+ localReadiness.close();localActionReadiness.close();if(route.id==='finance'){localReadiness.start(route.id,JSON.stringify(runtime.scope));localActionReadiness.start(route.id,JSON.stringify(runtime.scope));}
  if(firstOpen&&route.id==='orders')runtime.business.prepareOrdersIntent();
  void route.module.preload().catch(()=>{});
  if(!['attendanceRequests','salarySettlements','attendancePeriods'].includes(route.id))void (route.source?runtime.warehouse():runtime.business.directory()).catch(()=>{});
@@ -53,6 +57,8 @@ export default function NativeBusinessRoute({runtime,route,onNavigate,active,ord
   return()=>{current=false;};
  },[runtime,route.id,active,attendanceRepository]);
  const [financeInitialContentOwner,setFinanceInitialContentOwner]=useState(null);
+ useLayoutEffect(()=>{if(active&&route.id==='finance')localReadiness.observe({tab:'finance',scope:JSON.stringify(runtime.scope),sourcesReady:financeInitialContentOwner===runtime,essentialReady:financeInitialContentOwner===runtime,pendingUi:false});},[active,runtime,route.id,financeInitialContentOwner]);
+ useLayoutEffect(()=>{if(active&&route.id==='finance')localActionReadiness.observe({tab:'finance',scope:JSON.stringify(runtime.scope),sourcesReady:financeInitialContentOwner===runtime,essentialReady:financeInitialContentOwner===runtime,pendingUi:runtime.capabilities.some(cap=>/^cashflow\.(income|expense)\.(create|update)$/.test(cap))&&!cashflow});},[active,runtime,route.id,financeInitialContentOwner,cashflow]);
  const [deliverySlot,setDeliverySlot]=useState(null),[deliveryError,setDeliveryError]=useState(''),[deliveryContentOwner,setDeliveryContentOwner]=useState(null);
  const deliveryRepository=deliverySlot?.owner===runtime?deliverySlot.value:null;
  const onDeliveryInitialContentReady=useCallback(()=>{if(route.id==='delivery'&&runtime.isCurrent())setDeliveryContentOwner(runtime);},[runtime,route.id]);
@@ -77,7 +83,7 @@ export default function NativeBusinessRoute({runtime,route,onNavigate,active,ord
   void open.then(value=>{if(current&&runtime.isCurrent()){setDeliverySlot({owner:runtime,value});setDeliveryError('');}}).catch(failure=>{if(current)setDeliveryError(failure.message);});
   return()=>{current=false;};
  },[runtime,route.id,active,deliveryContentOwner,deliveryRepository]);
- useEffect(()=>{if(route.id!=='finance'||!active||financeInitialContentOwner!==runtime||cashflow||!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id==='finance')||!runtime.capabilities.some(cap=>/^cashflow\.(income|expense)\.(create|update)$/.test(cap)))return;let current=true;void runtime.cashflowRepository().then(value=>{if(current&&runtime.isCurrent())setCashflow(value);}).catch(failure=>{if(current)setCashflowError(failure.message);});return()=>{current=false;};},[runtime,route,cashflow,active,financeInitialContentOwner]);
+ useEffect(()=>{if(route.id!=='finance'||!active||cashflow||!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id==='finance')||!runtime.capabilities.some(cap=>/^cashflow\.(income|expense)\.(create|update)$/.test(cap)))return;let current=true;void runtime.cashflowRepository().then(value=>{if(current&&runtime.isCurrent())setCashflow(value);}).catch(failure=>{if(current)setCashflowError(failure.message);});return()=>{current=false;};},[runtime,route,cashflow,active]);
  useEffect(()=>{if(route.id!=='stockCounts'||stockCountRepository||!runtime.capabilities.some(cap=>/^stockCounts\.(create|update|archive)$/.test(cap)))return;let current=true;void runtime.stockCountRepository().then(value=>{if(current&&runtime.isCurrent())setStockCountRepository(value);}).catch(failure=>{if(current)setStockCountError(failure.message);});return()=>{current=false;};},[runtime,route,stockCountRepository]);
  useEffect(()=>{if(!route.source||!active||warehouseImportContentOwner!==runtime||warehouseImportRepository||!runtime.isCurrent()||!runtime.capabilities.some(cap=>/^warehouseImports\.(create|update|archive)$/.test(cap)))return;let current=true;void runtime.warehouseImportRepository().then(value=>{if(current&&runtime.isCurrent())setWarehouseImportRepository(value);}).catch(failure=>{if(current)setWarehouseImportError(failure.message);});return()=>{current=false;};},[runtime,route,active,warehouseImportContentOwner,warehouseImportRepository]);
  useEffect(()=>{if(!route.source||!active||warehouseDispatchContentOwner!==runtime||warehouseDispatchRepository||!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id==='warehouseDispatches')||!runtime.capabilities.some(cap=>/^warehouseDispatches\.(create|update|archive)$/.test(cap)))return;let current=true;
@@ -89,5 +95,5 @@ export default function NativeBusinessRoute({runtime,route,onNavigate,active,ord
  if(!runtime.isCurrent()||!availableNativeBusinessRoutes(runtime).some(item=>item.id===route.id))return <p role="alert">Phiên không còn quyền truy cập chức năng này.</p>;
  if(error)return <section role="alert"><p>{error}</p><button onClick={()=>{setError('');setAttempt(n=>n+1);}}>Thử lại</button></section>;
  if(!viewDirectory)return <section role="status" aria-busy="true">Đang mở dữ liệu đã lưu cho {route.label}…</section>;
- return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,orderSearchIntent,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,onNavigate,initialSource:route.source||(route.id==='hr'?initialSource:undefined),onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
+ return <div data-native-business-module={route.id}>{(employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError)&&<p role="alert">Không mở được luồng ghi cục bộ: {employeeError||cashflowError||stockCountError||warehouseImportError||warehouseDispatchError||deliveryError||attendanceError}. Danh sách đã lưu vẫn sử dụng được.</p>}<PreloadedWorkspace module={route.module} label={route.label} viewProps={{runtime,orderSearchIntent,cashflow,stockCountRepository,warehouseImportRepository,warehouseDispatchRepository,deliveryRepository,attendanceRepository,employeeProfileRepository,directory:viewDirectory,directoryOwner:directory,onNavigate,initialSource:route.source||(route.id==='hr'?initialSource:undefined),onInitialContentReady:route.id==='finance'?onFinanceInitialContentReady:route.id==='delivery'?onDeliveryInitialContentReady:route.source?onWarehouseContentReady:undefined}}/></div>;
 }

@@ -11,3 +11,15 @@ test('an account change discards previous measurements; close does not report an
  trace.start('orders','a');trace.observe({tab:'orders',scope:'b',sourcesReady:true,pendingUi:false});assert.equal(rows.length,0);
  trace.start('products','b');trace.close();trace.observe({tab:'products',scope:'b',sourcesReady:true,pendingUi:false});assert.equal(rows.length,0);
 });
+test('actions readiness cannot be substituted with committed data; both keep the original navigation timestamp',()=>{
+ let now=10;const data=[],actions=[];
+ const dataTrace=createModuleReadinessTrace({active:true,surface:'restored-local',clock:()=>now,emit:value=>data.push(value)});
+ const actionTrace=createModuleReadinessTrace({active:true,surface:'restored-local-actions',clock:()=>now,emit:value=>actions.push(value)});
+ dataTrace.start('finance','owner');actionTrace.start('finance','owner');
+ now=200;const state={tab:'finance',scope:'owner',sourcesReady:true,essentialReady:true};
+ dataTrace.observe({...state,pendingUi:false});actionTrace.observe({...state,pendingUi:true});
+ assert.equal(data[0].readyMs,190);assert.equal(actions.length,0);
+ now=600;actionTrace.observe({...state,pendingUi:false});
+ assert.equal(actions[0].readyMs,590);assert.equal(actions[0].essentialDataMs,190);
+ assert.equal(actions[0].surface,'restored-local-actions');
+});

@@ -8,7 +8,7 @@ function emitLocalModuleTiming(value){
  const cap=globalThis.Capacitor,documentTraceId=globalThis.__hdStartupDocument?.traceId;
  if(enabled&&cap?.getPlatform?.()==='android'&&cap.nativePromise&&documentTraceId)void cap.nativePromise('NativeSafeArea','recordModuleReadiness',{...value,documentTraceId}).catch(()=>{});
 }
-export function createModuleReadinessTrace({clock=()=>performance.now(),origin=()=>performance.timeOrigin,emit=emitLocalModuleTiming,active=enabled}={}){
+export function createModuleReadinessTrace({clock=()=>performance.now(),origin=()=>performance.timeOrigin,emit=emitLocalModuleTiming,active=enabled,surface='full'}={}){
  let pending=null,seq=0;
  return Object.freeze({
   start(tab,scope,eventAt){
@@ -23,7 +23,7 @@ export function createModuleReadinessTrace({clock=()=>performance.now(),origin=(
    const at=clock();if(pending.shell===null)pending.shell=at;
    if(essentialReady&&pending.essential===null)pending.essential=at;
    if(!sourcesReady||pendingUi)return;
-   const result={id:pending.id,module:tab,origin:pending.origin,start:pending.at,shellCommitted:pending.shell,sourceAndDomReady:at,shellMs:pending.shell-pending.at,essentialDataMs:(pending.essential??at)-pending.at,readyMs:at-pending.at,witness:'committed-sources-and-visible-dom-not-android-frame'};
+   const result={id:pending.id,module:tab,surface,origin:pending.origin,start:pending.at,shellCommitted:pending.shell,sourceAndDomReady:at,shellMs:pending.shell-pending.at,essentialDataMs:(pending.essential??at)-pending.at,readyMs:at-pending.at,witness:'committed-sources-and-visible-dom-not-android-frame'};
    emit(result);pending=null;return result;
   },
   close(){pending=null;},

@@ -208,6 +208,16 @@ test('actual scoped SQL directory supports cursor continuation, search, employee
     assert.equal(next.rows.length, 2);
     assert.equal(next.nextCursor, null);
     assert.equal(new Set([...first.rows, ...next.rows].map(item => item.id)).size, 41);
+    // Low-power pages change only LIMIT, not the source, filters or money.
+    const compact=[];let after=null;
+    do{
+      const page=await readFinancePage({runtime:f.runtime,directory,source:'payments',filters:noSearch,after,limit:15});
+      assert(page.rows.length<=15);compact.push(...page.rows);after=page.nextCursor;
+    }while(after);
+    assert.deepEqual(compact.map(item=>item.id),[...first.rows,...next.rows].map(item=>item.id));
+    assert.deepEqual(compact.map(item=>item.document.amount),[...first.rows,...next.rows].map(item=>item.document.amount));
+    await assert.rejects(readFinancePage({runtime:f.runtime,directory,source:'payments',filters:noSearch,limit:0}),/trên trang/);
+    await assert.rejects(readFinancePage({runtime:f.runtime,directory,source:'payments',filters:noSearch,limit:41}),/trên trang/);
     const match = await readFinancePage({runtime: f.runtime, directory, source: 'payments', filters: {...noSearch, search: 'tim dung', employeeId: 'e2'}});
     assert.deepEqual(match.rows.map(item => item.id), ['p021']);
     const detail = await readFinanceDetail({runtime: f.runtime, directory, source: 'payments', id: 'p021', head: match.head});

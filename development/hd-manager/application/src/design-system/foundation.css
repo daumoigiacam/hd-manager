@@ -661,6 +661,32 @@ body {
 }
 
 .hd-ds-input::placeholder { color: var(--hd-neutral-400); }
+/* Android WebView 83 rejects :where(), leaving editable fields invisible.
+   Keep the existing field design on those engines only. Modern specificity
+   and all component overrides remain unchanged. */
+@supports not selector(:where(input)) {
+  .hd-ds-field input,
+  .hd-ds-field select,
+  .hd-ds-field textarea {
+    width: 100%;
+    min-height: var(--hd-control-height);
+    border: 1px solid var(--hd-color-border-strong);
+    border-radius: var(--hd-radius-control);
+    background: var(--hd-color-surface);
+    color: var(--hd-color-ink);
+    padding: var(--hd-space-3) var(--hd-space-4);
+  }
+  .hd-ds-field input:focus,
+  .hd-ds-field select:focus,
+  .hd-ds-field textarea:focus {
+    border-color: var(--hd-primary-600);
+    box-shadow: 0 0 0 3px rgba(59,130,246,.16);
+    outline: 0;
+  }
+  .hd-ds-field--error input,
+  .hd-ds-field--error select,
+  .hd-ds-field--error textarea { border-color: var(--hd-danger); }
+}
 .hd-ds-input:disabled,
 .hd-ds-select:disabled { cursor: not-allowed; opacity: 0.62; background: var(--hd-color-surface-muted); }
 .hd-ds-field__hint { color: var(--hd-color-muted); }
