@@ -28,7 +28,7 @@ function fixture(){
 
 test('dispatch bounded read matches transaction reader on 6000 rows, pagination and filters without exposing the large report',async()=>{
  const f=fixture();try{
-  for(const options of [{limit:25},{limit:25,from:'2026-11-15',to:'2026-11-16'},{limit:25,status:'completed'},{limit:25,employeeId:'e1'},{limit:25,customerId:'c1'}]){
+  for(const options of [{limit:10},{limit:25},{limit:25,from:'2026-11-15',to:'2026-11-16'},{limit:25,status:'completed'},{limit:25,employeeId:'e1'},{limit:25,customerId:'c1'}]){
    const first=await f.native.page('warehouseDispatches',options),expected=await f.fallback.page('warehouseDispatches',options);assert.deepEqual(first,expected);
    if(first.hasMore)assert.deepEqual(await f.native.page('warehouseDispatches',{...options,cursor:first.nextCursor}),await f.fallback.page('warehouseDispatches',{...options,cursor:expected.nextCursor}));
    assert(first.items.every(row=>row.document.companyId==='tenant-a'&&!['foreign','other-principal'].includes(row.id)));
