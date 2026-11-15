@@ -25,13 +25,13 @@ jobs:
       VITE_NATIVE_STARTUP_CORE_PRELOAD: "false"
       VITE_OFFLINE_CUSTOMER_PILOT: "false"
       VITE_OFFLINE_RUNTIME: ""
-      VITE_HD_BUILD_ID: f60a7eb312f53c5ad2415621f0f4bc2ba3b59508
+      VITE_HD_BUILD_ID: dd8019d676d227b925b79151e7de055ad785e83d
     steps:
       - name: Checkout tested application source
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: f60a7eb312f53c5ad2415621f0f4bc2ba3b59508
+          ref: dd8019d676d227b925b79151e7de055ad785e83d
       - name: Set up Node 22
         uses: actions/setup-node@v5
         with:
@@ -39,8 +39,8 @@ jobs:
       - name: Verify exact tested source and safe scope
         run: |-
           set -euo pipefail
-          git merge-base --is-ancestor f60a7eb312f53c5ad2415621f0f4bc2ba3b59508 HEAD
-          git diff --exit-code f60a7eb312f53c5ad2415621f0f4bc2ba3b59508 HEAD -- development/hd-manager/application scripts android tests
+          git merge-base --is-ancestor dd8019d676d227b925b79151e7de055ad785e83d HEAD
+          git diff --exit-code dd8019d676d227b925b79151e7de055ad785e83d HEAD -- development/hd-manager/application scripts android tests
           test -z "${VITE_API_BASE_URL:-}"
           test "$VITE_OFFLINE_RUNTIME" = ""
       - name: Install existing locked build dependencies
@@ -50,6 +50,10 @@ jobs:
           npm ci --prefix development/hd-manager/application --ignore-scripts
       - name: Run relevant Identity transport and QA configuration checks
         run: node --test tests/identity-native-http-transport.test.mjs tests/production-qa-apk-config.test.mjs
+      - name: Check responsive footer geometry
+        env:
+          HD_TEST_CHROME: /usr/bin/google-chrome
+        run: node --test tests/instant-navigation-mobile-layout.test.mjs tests/instant-home-navigation-responsive.test.mjs
       - name: Build canonical frontend only
         run: env -u GITHUB_SHA node ../../../node_modules/vite/bin/vite.js build --mode production --outDir ../../../.ci-home-dist
         working-directory: development/hd-manager/application
@@ -82,8 +86,8 @@ jobs:
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
             import os,sys,json,pathlib,hashlib,tarfile,zipfile,stat,datetime,urllib.request,urllib.error,ssl,tempfile,shutil
-            SOURCE='f60a7eb312f53c5ad2415621f0f4bc2ba3b59508'
-            OLD_SOURCE='235395f8a4563b70c513a41e2f49a297a1b4fab5'
+            SOURCE='dd8019d676d227b925b79151e7de055ad785e83d'
+            OLD_SOURCE='f60a7eb312f53c5ad2415621f0f4bc2ba3b59508'
             ZIP=pathlib.Path('__FRONTEND_ZIP_PATH__')
             EXPECTED_ZIP_SHA='__FRONTEND_ZIP_SHA__'
             BASE=pathlib.Path('/var/www/hd-manager')

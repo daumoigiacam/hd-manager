@@ -1,0 +1,114 @@
+/* Load after the legacy shell rules. Only the shared Instant Home navigation
+   owns these lanes; permissions, callbacks and module state are unchanged. */
+.hd-instant-nav {
+  display: grid;
+  grid-template-columns: repeat(var(--hd-footer-item-count, 5), minmax(0, 1fr));
+  align-items: end;
+  gap: 0;
+  overflow: visible;
+  padding: 8px 6px calc(6px + var(--hd-safe-bottom, env(safe-area-inset-bottom, 0px)));
+}
+.hd-instant-nav > button {
+  width: 100%;
+  height: 58px;
+  min-height: 58px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  gap: 2px;
+  justify-content: flex-end;
+  overflow: visible;
+}
+.hd-instant-nav > button > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+}
+.hd-instant-nav > button > small {
+  height: 16px;
+  line-height: 16px;
+  margin: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.hd-instant-nav > button.is-create > span {
+  margin: 0;
+  padding: 0;
+}
+.hd-instant-nav > button.is-create > small { margin: 0; }
+
+/* The stable keyboard baseline intentionally remembers the larger height.
+   The application frame must instead fit the current visible browser area. */
+html:has([data-hd-instant-shell]),
+body:has([data-hd-instant-shell]),
+#root:has([data-hd-instant-shell]) {
+  height: var(--hd-visible-viewport-height, 100vh);
+  height: min(100dvh, var(--hd-visible-viewport-height, 100dvh));
+  min-height: 0;
+  overflow: hidden;
+}
+.hd-enterprise-app-shell[data-hd-instant-shell] {
+  height: var(--hd-visible-viewport-height, 100vh) !important;
+  height: min(100dvh, var(--hd-visible-viewport-height, 100dvh)) !important;
+  min-height: 0 !important;
+  min-block-size: 0 !important;
+  max-height: var(--hd-visible-viewport-height, 100dvh) !important;
+}
+
+/* Customer navigation used to be fixed inside a layout-containing block.
+   Keep it in the same viewport-bounded flex frame as the scrollable content. */
+.customer-portal-shell[data-hd-instant-shell] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.customer-portal-shell[data-hd-instant-shell] > .customer-portal-main {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 20px !important;
+}
+.customer-portal-shell[data-hd-instant-shell] > .customer-portal-nav {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  border-radius: 0;
+  padding: 0 !important;
+  overflow: visible;
+}
+.customer-portal-nav > .hd-instant-nav > button { padding: 0; min-height: 58px; }
+
+@media (max-width: 767px) {
+  .mobile-app-shell.hd-app-shell[data-hd-instant-shell] > main {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: 20px !important;
+  }
+  .mobile-app-shell.hd-app-shell[data-hd-instant-shell] > nav.hd-app-navigation {
+    position: relative !important;
+    inset: auto !important;
+    flex: 0 0 auto;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0;
+    padding: 0 !important;
+    border-top: 0;
+    overflow: visible;
+  }
+  .mobile-app-shell.hd-app-shell[data-hd-instant-shell] > nav.hd-app-navigation > .hd-instant-nav {
+    display: grid !important;
+    padding: 8px 6px calc(6px + var(--hd-safe-bottom, 0px)) !important;
+  }
+  html.hd-keyboard-open [data-hd-instant-shell] > :is(nav.hd-app-navigation, .customer-portal-nav) {
+    display: none !important;
+  }
+}

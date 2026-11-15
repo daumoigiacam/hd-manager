@@ -3529,7 +3529,7 @@ export function createCustomerPortalView(runtime) {
   };
 
   return (
-    <AppShell data-hd-customer-financial-source={financialStatus} className="customer-portal-shell hd-shell--customer min-h-screen">
+    <AppShell data-hd-instant-shell="customer" data-hd-customer-financial-source={financialStatus} className="customer-portal-shell hd-shell--customer min-h-screen">
       {renderPaymentSheet()}
       {renderCustomerOrderDetailSheet()}
       {renderPointWithdrawSheet()}

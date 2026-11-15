@@ -7,6 +7,7 @@ import App from './App.jsx';
 import { HDThemeProvider } from './design-system/ThemeProvider.jsx';
 import './index.css';
 import './design-system/foundation.css';
+import './layout/instant-navigation.css';
 import { initPerformanceMonitor, recordPerformanceEvent, recordReactRender } from './services/performanceMonitor.js';
 import { flushStartupEvents, recordStartupEvent } from './services/startupTelemetry.js';
 import { installReleaseFreshnessMonitor } from './services/releaseFreshness.js';
@@ -143,11 +144,15 @@ function installResponsiveViewportVars() {
       focusedEditable, smallTouchScreen: isSmallTouchScreen,
     });
     const { keyboardHeight, keyboardVisible: keyboardVisibleByViewport } = viewportState;
-    const isIosWeb = !isNativePlatform() && isIosWebRuntime();
-    const shouldHideBottomNav = Boolean(focusedEditable && (keyboardVisibleByViewport || (isSmallTouchScreen && isIosWeb)));
+    // Focus can remain on an iOS input after its keyboard is dismissed. Hide
+    // navigation only while the viewport actually indicates an open keyboard.
+    const shouldHideBottomNav = Boolean(focusedEditable && keyboardVisibleByViewport);
 
     setViewportProperty('--hd-keyboard-height', `${keyboardHeight}px`);
     setViewportProperty('--hd-modal-viewport-height', `${viewportState.modalHeight}px`);
+    // Preserve the stable IME baseline, but never position navigation below
+    // Safari's currently visible viewport when browser chrome expands again.
+    setViewportProperty('--hd-visible-viewport-height', `${viewportState.modalHeight}px`);
     setViewportProperty('--hd-modal-viewport-top', `${viewportState.modalTop}px`);
     setViewportProperty('--hd-modal-safe-bottom', keyboardVisibleByViewport ? '0px' : 'var(--hd-safe-bottom)');
     root.classList.toggle('hd-keyboard-open', shouldHideBottomNav);
