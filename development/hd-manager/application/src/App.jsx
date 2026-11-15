@@ -857,6 +857,9 @@ const buildActivityAuditLogPayload = ({ documentRef, action, payload = {}, optio
   return {
     id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
     companyId,
+    // Rules distinguish immutable payroll audits from ordinary document
+    // writes by this discriminator. An absent type makes both branches fail.
+    type: 'document_write',
     action: resolvedAction,
     collectionName,
     documentId: documentRef?.id || '',
