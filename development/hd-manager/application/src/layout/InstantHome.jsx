@@ -11,8 +11,9 @@ export function InstantHomeNavigation({active='home',onNavigate,onModules,onQuic
  const [quickOpen,setQuickOpen]=useState(false);
  const choose=quickActions.length&&onQuickAction?()=>setQuickOpen(value=>!value):onQuickCreate;
  const items=[[House,'Trang chủ',()=>onNavigate?.('home'),active==='home'],[LayoutGrid,'Chức năng',onModules,active==='modules'],[Plus,'Tạo nhanh',choose,false],[ChartNoAxesCombined,'Báo cáo',onReport,active==='reports'],[UserRound,'Cá nhân',onProfile,active==='profile']];
- return <nav className={`hd-instant-nav ${className}`.trim()} aria-label="Điều hướng chính">
-  {items.filter(([, ,action])=>action).map(([Icon,label,action,selected])=><button type="button" key={label} className={`${selected?'is-active':''} ${label==='Tạo nhanh'?'is-create':''}`} onClick={()=>{if(label!=='Tạo nhanh')setQuickOpen(false);action();}} aria-current={selected?'page':undefined} aria-expanded={label==='Tạo nhanh'&&quickActions.length?quickOpen:undefined}><span><Icon size={25}/></span><small>{label}</small></button>)}
+ const visibleItems=items.filter(([, ,action])=>action);
+ return <nav className={`hd-instant-nav ${className}`.trim()} style={{'--hd-footer-item-count':visibleItems.length}} aria-label="Điều hướng chính">
+  {visibleItems.map(([Icon,label,action,selected])=><button type="button" key={label} className={`${selected?'is-active':''} ${label==='Tạo nhanh'?'is-create':''}`} onClick={()=>{if(label!=='Tạo nhanh')setQuickOpen(false);action();}} aria-current={selected?'page':undefined} aria-expanded={label==='Tạo nhanh'&&quickActions.length?quickOpen:undefined}><span><Icon size={25}/></span><small>{label}</small></button>)}
   {quickOpen&&quickActions.length>0&&<section className="hd-instant-quick-menu" role="dialog" aria-label="Tạo nhanh" onKeyDown={event=>{if(event.key==='Escape')setQuickOpen(false);}}><header><strong>Tạo nhanh</strong><button type="button" aria-label="Đóng tạo nhanh" onClick={()=>setQuickOpen(false)} autoFocus><X size={18}/></button></header>{quickActions.map(item=><button type="button" key={item.id} onClick={()=>{setQuickOpen(false);onQuickAction?.(item);}}>{item.label}<ChevronRight size={16}/></button>)}</section>}
  </nav>;
 }

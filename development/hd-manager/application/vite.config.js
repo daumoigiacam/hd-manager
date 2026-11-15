@@ -54,6 +54,7 @@ const CORE_SOURCE_MODULES = new Set([
   'src/layout/RestoredLocalWorkspace.jsx',
   'src/layout/WorkingHome.jsx',
   'src/layout/working-home.css',
+  'src/layout/instant-navigation.css',
   'src/services/adaptivePerformance.js',
   'src/services/businessSearchForegroundGate.js', // Import-free factory, static bootstrap dependency.
   'src/services/detachedEditorCleanup.js',

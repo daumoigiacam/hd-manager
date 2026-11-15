@@ -25388,7 +25388,7 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
   };
 
   return (
-    <AppShell ref={appShellRef} data-active-tab={activeTab} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
+    <AppShell ref={appShellRef} data-hd-instant-shell="staff" data-active-tab={activeTab} className={`mobile-app-shell hd-app-shell hd-shell--staff flex h-screen w-full flex-col overflow-hidden ${isSidebarCollapsed ? 'hd-navigation-collapsed' : ''}`}>
       <ZaloDispatcherRuntime
         currentCompany={currentCompany}
         customers={customers}
