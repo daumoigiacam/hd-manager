@@ -1145,10 +1145,10 @@ service cloud.firestore {
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, {}, request.resource.data, true) : (
           employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
-        && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
@@ -1175,11 +1175,11 @@ service cloud.firestore {
         )));
 
       allow update: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false) : (
           employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
-        && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'customers'
           || !request.resource.data.diff(resource.data).affectedKeys().hasAny(customerProductKeys())
           || canManageCustomerProductConfig(appId, resource.data))
