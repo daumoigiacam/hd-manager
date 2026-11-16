@@ -1,5 +1,12 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/features/warehouse/dispatchEditableRows.js',
+      'development/hd-manager/application/src/features/warehouse/dispatchWeightModel.js',
+      'development/hd-manager/application/tests/dispatch-weight-consistency.test.mjs'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module'},
+    rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['development/hd-manager/application/src/features/legacy/EmployeeView.jsx','development/hd-manager/application/src/features/legacy/SalaryView.jsx'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
     rules: {'no-unreachable':'error','no-dupe-keys':'error'}

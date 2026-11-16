@@ -94,6 +94,7 @@ export default React.memo(/** @param {DispatchTableBodyProps} props */ function 
                           title={canEditDispatchCellField('productId') || canDelete ? 'Bấm để sửa loại hàng' : undefined}
                         >
                           <span className="block font-medium tracking-tight">{row.productShortName || getCompactProductName(null, row.productName || '')}</span>
+                          <span className="hd-dispatch-table__note" title={row.id}>Phiếu {row.id.slice(-8)}</span>
                           {row.note && <span className="hd-dispatch-table__note">{row.note}</span>}
                           {isPendingSync && <span className="hd-dispatch-table__pending-label">Chờ máy chủ xác nhận</span>}
                         </button>

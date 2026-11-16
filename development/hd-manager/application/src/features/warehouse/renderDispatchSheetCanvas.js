@@ -1,4 +1,5 @@
 import { buildDispatchPreviewRows } from './dispatchPreviewRows.js';
+import { parseWarehouseWeightEntryNumber } from '../../utils/warehouseWeightEntries.js';
 /** @typedef {{customerName?: string, productName?: string, productShortName?: string, pieceCount?: number | string, quantityUnit?: string, weightKg?: number | string}} ExportRow */
 /**
  * @param {readonly ExportRow[]} sourceRows
@@ -84,7 +85,8 @@ export async function renderDispatchSheetCanvas(sourceRows, targetDate, {company
       const rowTop = tableY + headerHeight + rowIndex * rowHeight;
       const centerY = rowTop + 34;
       const quantityLabel = row.pieceCount !== undefined && Number(row.pieceCount) > 0 ? `${formatNumber(row.pieceCount)} ${row.quantityUnit || 'Con'}` : '';
-      const weightLabel = row.weightKg ? formatNumber(row.weightKg) : '';
+      const weightKg = parseWarehouseWeightEntryNumber(row.weightKg);
+      const weightLabel = weightKg ? formatNumber(weightKg) : '';
       const values = [row.customerName || '', row.productShortName || compactProductName(row.productName || ''), quantityLabel, weightLabel];
       let valueX = tableX;
       values.forEach((value, index) => {

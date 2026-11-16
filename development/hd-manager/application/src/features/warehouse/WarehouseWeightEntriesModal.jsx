@@ -14,6 +14,7 @@ import {
  * @property {ReadonlyArray<string | number>} [initialEntries]
  * @property {string} [customerName]
  * @property {string} [productName]
+ * @property {string} [documentId]
  * @property {number} [previousWeightKg]
  * @property {boolean} [appendEmptyRowWhenFull]
  * @property {boolean} [isSaving]
@@ -28,6 +29,7 @@ function WarehouseWeightEntriesModal({
   initialEntries = [],
   customerName = '',
   productName = '',
+  documentId = '',
   previousWeightKg = 0,
   appendEmptyRowWhenFull = false,
   isSaving = false,
@@ -99,7 +101,7 @@ function WarehouseWeightEntriesModal({
     const normalizedEntries = normalizeWarehouseWeightEntries(entries);
     onSave?.({
       entries: normalizedEntries,
-      totalWeight: normalizedEntries.reduce((sum, value) => sum + value, 0)
+      totalWeight: getWarehouseWeightEntryTotal(normalizedEntries)
     });
   }, [entries, onSave]);
 
@@ -141,7 +143,7 @@ function WarehouseWeightEntriesModal({
             <div>
               <p className="hd-dispatch-weight__label">Số kg</p>
               <h3 className="hd-dispatch-weight__title">Sửa các lần cân</h3>
-              <p className="hd-dispatch-weight__hint">{customerName} • {productName}</p>
+              <p className="hd-dispatch-weight__hint">{customerName} • {productName}{documentId ? ` • Phiếu ${documentId.slice(-8)}` : ''}</p>
             </div>
             <button type="button" onClick={onCancel} className="hd-dispatch-weight__close" aria-label="Đóng nhập kg">
               <X size={20} />

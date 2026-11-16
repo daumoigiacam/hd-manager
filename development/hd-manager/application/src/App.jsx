@@ -185,6 +185,7 @@ import { buildEmployeeReviewSourceIndexes } from './utils/employeeReviewSourceIn
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
 import WarehouseWeightEntriesModal from './features/warehouse/WarehouseWeightEntriesModal.jsx';
+import { buildDispatchEditableRows, requireSingleDispatchSource } from './features/warehouse/dispatchEditableRows.js';
 import DispatchFormActions from './features/warehouse/DispatchFormActions.jsx';
 import DispatchQuantityFields from './features/warehouse/DispatchQuantityFields.jsx';
 import DispatchHistoryDialog from './features/warehouse/DispatchHistoryDialog.jsx';
@@ -279,6 +280,7 @@ import {
 } from 'lucide-react';
 import {
   ensureWarehouseWeightEntryRows,
+  getWarehouseWeightEntryTotal,
   normalizeWarehouseWeightEntries
 } from './utils/warehouseWeightEntries.js';
 import {
@@ -44827,68 +44829,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       driverNameSnapshot: item.driverNameSnapshot || assignedDriverName
     };
   }), [todayDispatchRows, customerLookup, productLookup, employeeLookup, deliveryReportByDispatchId]);
-  const compactEditableDispatchRows = useMemo(() => {
-    const groups = new Map();
-    editableDispatchRows.forEach((row, rowIndex) => {
-      const customerName = row.customerName || row.customerNameSnapshot || 'Khách hàng';
-      const productName = row.productName || row.productNameSnapshot || 'Hàng hóa';
-      const quantityUnit = getDispatchRowQuantityUnit(row);
-      const customerKey = row.customerId || normalizeLookupText(customerName) || `customer_${rowIndex}`;
-      const branchKey = row.branchId || row.customerBranchId || normalizeLookupText(row.branchName || row.customerBranchName || '');
-      const productKey = row.productId || normalizeLookupText(productName) || `product_${rowIndex}`;
-      const driverKey = row.assignedDriverId || row.driverId || normalizeLookupText(row.assignedDriverName || row.assignedDriverNameSnapshot || row.driverNameSnapshot || '');
-      const mergeKey = [
-        row.dispatchPresentationGroupId || getWarehouseDispatchPresentationGroupId(row),
-        customerKey,
-        branchKey,
-        productKey,
-        normalizeLookupText(quantityUnit || ''),
-        driverKey,
-        row.deliveryStatusKey || 'pending',
-      ].join('__');
-      const weightKg = getDispatchRowWeight(row);
-      const quantity = getDispatchRowQuantity(row);
-      const existing = groups.get(mergeKey);
-
-      if (existing) {
-        existing.sourceRows.push(row);
-        existing.sourceIds.push(row.id);
-        existing.weightKg = Number((existing.weightKg + weightKg).toFixed(3));
-        existing.pieceCount = Number((existing.pieceCount + quantity).toFixed(3));
-        existing.quantity = existing.pieceCount;
-        existing.quantityCount = existing.pieceCount;
-        existing.note = [
-          ...new Set([
-            ...(existing.note ? [`${existing.note}`] : []),
-            ...(row.note ? [`${row.note}`] : [])
-          ])
-        ].join(' • ');
-        existing.updatedAt = getEntityTimestamp(row) > getEntityTimestamp(existing) ? row.updatedAt : existing.updatedAt;
-        existing.createdAt = getEntityTimestamp(row) > getEntityTimestamp(existing) ? row.createdAt : existing.createdAt;
-        return;
-      }
-
-      groups.set(mergeKey, {
-        ...row,
-        id: row.id || `dispatch_${rowIndex}`,
-        sourceRows: [row],
-        sourceIds: row.id ? [row.id] : [],
-        weightKg,
-        pieceCount: quantity,
-        quantity,
-        quantityCount: quantity,
-        quantityUnit,
-        mergeKey,
-        isMergedDispatchRow: false
-      });
-    });
-
-    return Array.from(groups.values()).map((row) => ({
-      ...row,
-      id: row.sourceRows.length > 1 ? `merged_${row.mergeKey}` : row.id,
-      isMergedDispatchRow: row.sourceRows.length > 1
-    }));
-  }, [editableDispatchRows]);
+  const compactEditableDispatchRows = useMemo(() => buildDispatchEditableRows(editableDispatchRows, {
+    weight: getDispatchRowWeight, quantity: getDispatchRowQuantity, unit: getDispatchRowQuantityUnit,
+  }), [editableDispatchRows]);
   const getDispatchListSearchFields = useCallback(row => buildDispatchListSearchFields(row, {
     customers: customerLookup, products: productLookup, employees: employeeLookup,
     customerName: getCustomerDisplayName, driverId: getDispatchDriverId, driverName: getDispatchDriverName,
@@ -44933,7 +44876,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           const driverName = getDispatchDriverName(item);
           const driverKey = driverId || normalizeLookupText(driverName || '');
           const mergeKey = `${item.customerId || customerName}__${item.productId || productName}__${normalizeLookupText(quantityUnit)}__${driverKey}`;
-          const weightKg = parseFloat(item.weightKg) || 0;
+          const weightKg = getDispatchRowWeight(item);
           const pieceCount = getDispatchRowQuantity(item);
           const current = mergedRows.get(mergeKey);
           if (current) {
@@ -45103,7 +45046,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const openDispatchListWeightEditor = useCurrentCallback((row, event) => {
     event?.stopPropagation?.();
     if (!row || !canEdit) return;
-    const sourceRow = Array.isArray(row.sourceRows) && row.sourceRows.length > 0 ? row.sourceRows[0] : row;
+    let sourceRow;
+    try { sourceRow = requireSingleDispatchSource(row); }
+    catch (error) { setDispatchError(error.message); return; }
     if (!sourceRow?.id) {
       setDispatchError('Không tìm thấy phiếu gốc để cập nhật số kg.');
       return;
@@ -45120,6 +45065,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       displayBaseWeightKg: sourceBaseWeightKg,
       sourceBaseWeightKg,
       sourceWeightEntries,
+      sourceUpdatedAt: sourceRow.updatedAt || sourceRow.createdAt || '',
       sourceDate: sourceRow.date || workingDate,
       initialEntries: ensureWarehouseWeightEntryRows(editableWeightEntries.map(entry => formatDispatchNumberInput(entry)))
     });
@@ -45131,7 +45077,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const saveDispatchListWeightEntries = async ({ entries = [] } = {}) => {
     if (!dispatchListWeightEditor?.rowId || !canEdit || !employee?.id || dispatchListWeightSaveLockRef.current) return;
     const normalizedEntries = normalizeWarehouseWeightEntries(entries);
-    const nextSourceWeight = normalizedEntries.reduce((sum, value) => sum + value, 0);
+    const nextSourceWeight = getWarehouseWeightEntryTotal(normalizedEntries);
     if (nextSourceWeight <= 0) {
       setDispatchError('Vui lòng nhập ít nhất một số cân hợp lệ.');
       return;
@@ -45139,6 +45085,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     dispatchListWeightSaveLockRef.current = true;
     setIsSavingDispatchListWeight(true);
     try {
+      const latest = editableDispatchRows.find(row => row.id === dispatchListWeightEditor.rowId);
+      if (!latest || getDispatchRowWeight(latest) !== dispatchListWeightEditor.sourceBaseWeightKg
+        || JSON.stringify(normalizeWarehouseWeightEntries(latest.weightEntries || [])) !== JSON.stringify(dispatchListWeightEditor.sourceWeightEntries)
+        || (latest.updatedAt || latest.createdAt || '') !== dispatchListWeightEditor.sourceUpdatedAt) {
+        throw new Error('Phiếu xuất đã thay đổi trong lúc nhập. Đóng và mở lại các lần cân để đối chiếu; chưa ghi đè dữ liệu mới.');
+      }
       await onEditWarehouseDispatch(dispatchListWeightEditor.rowId, {
         weightKg: formatDispatchNumberInput(nextSourceWeight),
         weightEntries: normalizedEntries,
@@ -45372,9 +45324,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const openDispatchCellEditor = useCurrentCallback((displayRow, field, event) => {
     event?.stopPropagation?.();
     if (!displayRow || (!canEditDispatchCellField(field) && !canDelete)) return;
-    const sourceRow = displayRow.isMergedDispatchRow && Array.isArray(displayRow.sourceRows) && displayRow.sourceRows.length > 0
-      ? displayRow.sourceRows[0]
-      : displayRow;
+    let sourceRow;
+    try { sourceRow = requireSingleDispatchSource(displayRow); }
+    catch (error) { setDispatchError(error.message); return; }
     if (!sourceRow?.id) {
       setDispatchError('Không tìm thấy phiếu gốc để chỉnh sửa.');
       return;
@@ -45480,6 +45432,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           initialEntries={dispatchListWeightEditor.initialEntries}
           customerName={dispatchListWeightEditor.customerName}
           productName={dispatchListWeightEditor.productName}
+          documentId={dispatchListWeightEditor.rowId}
           previousWeightKg={dispatchListWeightEditor.displayBaseWeightKg}
           isSaving={isSavingDispatchListWeight}
           onCancel={() => {

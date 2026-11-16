@@ -1,8 +1,10 @@
 // Original use-case statements; only clocks are injected. Protocol supplies pure write-capture ports, never SDK/network ports.
+import { resolveDispatchWeightWrite } from './dispatchWeightModel.js';
 /** @param {string} empId @param {import("./warehouseDispatchContracts.js").DispatchDraft} dispatchData
  * @param {import("./warehouseDispatchContracts.js").DispatchCreateContext} context
  */
 export async function originalDispatchCreate(empId, dispatchData, context) {
+  dispatchData = { ...dispatchData, ...resolveDispatchWeightWrite(dispatchData) };
   const { myCompanyId, customers, products, rawWarehouseDispatches, parseLooseQuantityValue, normalizeLeadingLabel, normalizeLookupText, getTodayString, getEntityTimestamp, pendingFirebaseWritesRef, enqueuePendingFirebaseWrite, setRawWarehouseDispatches, rememberRecentLocalWrite, requireSharedWriteConfirmation } = context;
   const nowMs = Date.parse(context.editedAt);
   const createdAtIso = dispatchData.createdAt || new Date(nowMs).toISOString();
@@ -99,6 +101,9 @@ export async function originalDispatchCreate(empId, dispatchData, context) {
 export async function originalDispatchUpdate(dispatchId, updatedData, empId, context) {
   const { rawWarehouseDispatches, customers, products, parseLooseQuantityValue, normalizeLeadingLabel, normalizeProductPricingUnit, parseLooseMoneyValue, isSameBillingUnit, getTodayString, myCompanyId, saveDataDocument, requireSharedWriteConfirmation } = context;
   const previousDispatch = rawWarehouseDispatches.find(item => item.id === dispatchId);
+  if (['weightKg', 'totalKg', 'weightEntries'].some(field => Object.hasOwn(updatedData, field))) {
+    updatedData = { ...updatedData, ...resolveDispatchWeightWrite(updatedData, previousDispatch || null) };
+  }
   const mergedData = { ...(previousDispatch || {}), ...(updatedData || {}) };
   const customer = customers.find(c => c.id === mergedData.customerId);
   const product = products.find(p => p.id === mergedData.productId);

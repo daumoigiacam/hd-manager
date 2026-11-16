@@ -36,6 +36,7 @@ export interface DispatchDraft {
   pieceCount?: NumericInput;
   quantityCount?: NumericInput;
   weightKg?: NumericInput;
+  weightEntries?: ReadonlyArray<NumericInput | undefined>;
   totalKg?: NumericInput;
   actualWeightKg?: NumericInput;
   quantityUnit?: string;
