@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS, normalizeLoyaltyEligibilityConditions } from "../../utils/customerLoyaltyEligibility.js";
-import { Check, ChevronRight, ChevronDown, ChevronUp, Lock, CreditCard, Wallet, Banknote, Archive, ArchiveRestore, Database, Bell, PlusCircle, Download, Gift } from "lucide-react";
+import { Check, ChevronRight, ChevronDown, ChevronUp, Lock, CreditCard, Wallet, Banknote, Archive, ArchiveRestore, Database, Bell, PlusCircle, Download, Gift, Star } from "lucide-react";
 import CustomerCareSettings, { CARE_RULES } from "../settings/CustomerCareSettings.jsx";
 import SyncQueueStatus from "../../layout/SyncQueueStatus.jsx";
 import { isVpsMode } from "@hd/hd-connect-runtime";
 import CompanyBankAccounts from "../settings/CompanyBankAccounts.jsx";
+import EmployeeReviewSettings from "../settings/EmployeeReviewSettings.jsx";
+import {isEmployeeReviewEnabled} from "../../utils/companyEmployeeReviews.js";
 // Transitional bundle boundary. Only stable local module bindings are injected;
 // all actor/company/business data continues to arrive through current props.
 // Generated binding contract is checked against the real source AST.
@@ -48,6 +50,7 @@ export function createSettingsView(runtime) {
   setActiveTab,
   canViewBankPayments = false,
   canEditCompanyProfile = false,
+  canManageEmployeeReviewSettings = false,
   canManageBankAccounts = false,
   canManagePaymentQr = false,
   canManageLoyaltySettings = false,
@@ -222,6 +225,7 @@ export function createSettingsView(runtime) {
     currentUser ||
     isAccounting ||
     canEditCompanyProfile ||
+    canManageEmployeeReviewSettings ||
     canManageBankTransferSettings ||
     canOpenBankPaymentCenter ||
     canManageLoyaltySettings ||
@@ -234,6 +238,7 @@ export function createSettingsView(runtime) {
   );
   const settingsPanels = [
     { id: 'security', label: 'Bảo mật tài khoản', description: 'Mật khẩu, PIN và thiết bị tin cậy', icon: Lock, enabled: Boolean(currentUser) },
+    { id: 'employee_reviews', label: 'Đánh giá nhân sự', description: isEmployeeReviewEnabled(currentCompany) ? 'Đang bật' : 'Đang tắt', icon: Star, enabled: canManageEmployeeReviewSettings },
     { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
     { id: 'bank_payments', label: 'Ngân hàng', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
     { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
@@ -550,6 +555,7 @@ export function createSettingsView(runtime) {
 
   return (
     <div data-settings-page={safeActiveSettingsPanel} className="space-y-4 pb-20 [&>section]:rounded-none [&>section]:border-0 [&>section]:shadow-none">
+      {safeActiveSettingsPanel === 'employee_reviews' && <EmployeeReviewSettings key={currentCompany?.id || currentCompany?.companyId || ''} company={currentCompany} canManage={canManageEmployeeReviewSettings} onSave={onUpdateCompanySettings} />}
 
       {safeActiveSettingsPanel === 'security' && <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyIdentitySecurityCenter standalone identityApi={identitySecurityApi} identityUser={currentUser} vpsMode={isVpsMode} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} /></React.Suspense>}
       {safeActiveSettingsPanel === 'account' && <CompanyBankAccounts company={currentCompany} banks={BANK_ID_OPTIONS} canEdit={canManageBankTransferSettings} onSave={onUpdateCompanySettings} draft={bankAccountDraft} setDraft={setBankAccountDraft} />}

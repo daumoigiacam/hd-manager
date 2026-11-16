@@ -70,6 +70,24 @@ service cloud.firestore {
       return ['rolePermissions', 'rolePermissionActions', 'employeeRolePermissions', 'employeeRolePermissionActions'];
     }
 
+    function companyEmployeeReviewKeys() {
+      return ['employeeReviewsEnabled', 'employeeReviewsUpdatedByEmpId', 'employeeReviewsUpdatedAt'];
+    }
+
+    function canChangeCompanyEmployeeReviews(appId) {
+      return canManageCompanyPermissions(appId)
+        && request.resource.data.get('employeeReviewsEnabled', true) is bool
+        && request.resource.data.get('employeeReviewsUpdatedByEmpId', '') == request.auth.token.appUserId
+        && request.resource.data.get('employeeReviewsUpdatedAt', null) == request.time;
+    }
+
+    // History stays readable for payroll and audit. Only review mutations stop.
+    function employeeReviewWritesEnabled(appId, collectionId) {
+      return collectionId != 'employeeReviews'
+        || (exists(dispatchCompanyPath(appId))
+          && get(dispatchCompanyPath(appId)).data.get('employeeReviewsEnabled', true) != false);
+    }
+
     function dispatchEmployeePath(appId) {
       return /databases/$(database)/documents/artifacts/$(appId)/public/data/employees/$(request.auth.token.appUserId);
     }
@@ -1028,12 +1046,14 @@ service cloud.firestore {
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'employees' || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
+        && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyEmployeeReviewKeys()) || canChangeCompanyEmployeeReviews(appId))
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (collectionId != 'warehouseDispatches' || canCreateWarehouseDispatch(appId, docId, request.resource.data))
         && (
@@ -1056,6 +1076,7 @@ service cloud.firestore {
         );
 
       allow update: if hasIdentitySession()
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
@@ -1066,6 +1087,7 @@ service cloud.firestore {
         && (collectionId != 'employees' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(employeeAttendanceSecurityKeys()) || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
+        && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyEmployeeReviewKeys()) || canChangeCompanyEmployeeReviews(appId))
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (collectionId != 'warehouseDispatches' || canUpdateWarehouseDispatch(appId, docId, resource.data, request.resource.data))
@@ -1101,6 +1123,7 @@ service cloud.firestore {
         );
 
       allow delete: if hasIdentitySession()
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))

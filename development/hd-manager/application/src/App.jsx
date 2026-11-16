@@ -1,4 +1,5 @@
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
+import {isEmployeeReviewEnabled,employeeReviewFeaturePatch} from './utils/companyEmployeeReviews.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
@@ -16070,6 +16071,24 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleUpdateCompanySettings = async (settingsData) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    if (Object.prototype.hasOwnProperty.call(settingsData || {}, 'employeeReviewsEnabled')) {
+      if (!isOwnerAccountUser(appCurrentEmployee, currentUser) && currentUser?.role !== 'super_admin') return {success:false,message:'Chỉ Chủ doanh nghiệp được bật/tắt Đánh giá.'};
+      if (Object.keys(settingsData).some(key => key !== 'employeeReviewsEnabled')) return {success:false,message:'Vui lòng lưu riêng cấu hình Đánh giá.'};
+      const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
+      const patch = employeeReviewFeaturePatch(settingsData.employeeReviewsEnabled, actorId, serverTimestamp());
+      const companyRef = doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId);
+      // A company feature switch needs a server-confirmed transaction. It must
+      // not report success or change another account's UI while offline.
+      await withTimeout(runTransaction(db, async transaction => {
+        const companySnapshot = await transaction.get(companyRef);
+        if (!companySnapshot.exists()) throw new Error('Không tìm thấy công ty.');
+        transaction.update(companyRef, patch);
+      }), 12000, 'Máy chủ chưa xác nhận cấu hình Đánh giá. Vui lòng kiểm tra kết nối mạng.');
+      const confirmed = {employeeReviewsEnabled:patch.employeeReviewsEnabled,employeeReviewsUpdatedByEmpId:actorId};
+      setCurrentCompany(previous => previous?.id === myCompanyId ? {...previous,...confirmed} : previous);
+      setRawCompanies(previous => previous.map(company => company.id === myCompanyId ? {...company,...confirmed} : company));
+      return {success:true};
+    }
     const wifiKeys = ['attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt'];
     if (settingsData?.attendanceWifiSsid !== undefined && Object.keys(settingsData).every(key => wifiKeys.includes(key))) {
       if (!canManageCompanyWifi(employee)) return { success: false, message: 'Chỉ Chủ/Admin được đặt WiFi công ty.' };
@@ -18319,6 +18338,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleAddEmployeeReview = async (reviewData = {}) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    if (!isEmployeeReviewEnabled(currentCompany)) return {success:false,message:'Công ty đã tắt tính năng Đánh giá.'};
     const targetEmployeeId = `${reviewData.targetEmployeeId || ''}`.trim();
     if (!targetEmployeeId) return { success: false, message: 'Vui lòng chọn nhân sự cần đánh giá.' };
     const targetEmployee = rawEmployees.find(emp => emp.id === targetEmployeeId && emp.companyId === myCompanyId && !emp.isArchived);
@@ -23245,7 +23265,7 @@ function MainAppView({
   };
   const localWorkflowRoutes=useMemo(()=>localCustomerRuntime?.isCurrent()&&localCustomerRuntime.scope.principalId===localCustomerPrincipalId
     ?availableNativeBusinessRoutes(localCustomerRuntime).filter(route=>['attendanceRequests','attendancePeriods','salarySettlements'].includes(route.id)):[],[localCustomerRuntime,localCustomerPrincipalId]);
-  const canAccess = (permissionId) => ['attendanceRequests','attendancePeriods','salarySettlements'].includes(permissionId)
+  const canAccess = (permissionId) => permissionId === 'employee_reviews' && !isEmployeeReviewEnabled(currentCompany) ? false : ['attendanceRequests','attendancePeriods','salarySettlements'].includes(permissionId)
     ?localWorkflowRoutes.some(route=>route.id===permissionId):(
     permissionId === 'profile' ||
     permissionId === 'more' ||
@@ -23308,7 +23328,7 @@ function MainAppView({
     role_permissions: canAccess('role_permissions'),
     billing: canAccess('billing'),
     messages: canAccess('messages')
-  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions,localWorkflowRoutes]);
+  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions,localWorkflowRoutes,currentCompany?.employeeReviewsEnabled]);
 
   // Workspaces load only when opened. The More menu is navigation, not
   // permission to preload payroll, assets or attendance on a weak device.
@@ -25039,6 +25059,9 @@ function MainAppView({
   const renderQuoteWorkspace = () => <PriceQuoteBroadcastView onHistoryRequested={onQuoteHistoryRequested} dataReady={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} dataFresh={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} shareReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_SHARE_COLLECTIONS})} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} payments={payments} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
 
   const renderContent = () => {
+    if (activeTab === 'employee_reviews' && !isEmployeeReviewEnabled(currentCompany)) {
+      return <div role="status" className="space-y-3 p-5 text-sm text-slate-700"><p>Công ty đã tắt tính năng Đánh giá. Lương và dữ liệu lịch sử được giữ nguyên.</p>{(isOwnerAccount || currentUser?.role === 'super_admin') && <button type="button" onClick={() => setActiveTab('settings')} className="font-bold text-emerald-700">Mở cài đặt công ty</button>}</div>;
+    }
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
     }
@@ -25051,7 +25074,7 @@ function MainAppView({
       case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView onPrimaryReady={onMessagePrimaryReady} primarySourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:MESSAGE_PRIMARY_COLLECTIONS})} backgroundSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageWorkspaceReadCollections('',true)})} onAttachmentSourceDemandChange={onMessageAttachmentDemandChange} attachmentSourcesReady={Object.fromEntries(['order','order_request','report'].map(action=>[action,areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageAttachmentReadCollections(action)})]))} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
-      case 'settings': return <SettingsView currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
+      case 'settings': return <SettingsView canManageEmployeeReviewSettings={isOwnerAccount || currentUser?.role === 'super_admin'} currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
       case 'company_attendance':
@@ -25107,6 +25130,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
             canRoleAction('employees', 'view_all_employee_reviews')
           }
           canManageReviewCriteria={isOwnerAccount || canRoleAction('employee_reviews', 'manage_employee_review_criteria')}
+          canManageReviewFeature={isOwnerAccount || currentUser?.role === 'super_admin'}
         />
       );
       case 'employees': return (
@@ -25151,9 +25175,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           canEditEmployeeEarlyOvertimePolicy={canRoleAction('employees', 'edit_employee_early_overtime_policy')}
           canCreateSalesCollaborator={canRoleAction('employees', 'create_sales_collaborator')}
           canAssignSalesLeader={canRoleAction('employees', 'assign_sales_leader')}
-          canViewEmployeeReviews={canRoleAction('employees', 'view_employee_evaluations') || canRoleAction('employees', 'view_employees')}
-          canCreateEmployeeReview={canRoleAction('employees', 'create_employee_review')}
-          canViewAllEmployeeReviews={isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews')}
+          canViewEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (canRoleAction('employees', 'view_employee_evaluations') || canRoleAction('employees', 'view_employees'))}
+          canCreateEmployeeReview={isEmployeeReviewEnabled(currentCompany) && canRoleAction('employees', 'create_employee_review')}
+          canViewAllEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews'))}
           canManageHolidayConfig={isOwnerAccount || canRoleAction('employees', 'edit_employee_salary_policy') || canRoleAction('payroll', 'configure_salary_advance_limit')}
           canResetEmployeePassword={isOwnerAccount}
           onResetEmployeePassword={onResetEmployeePassword}
@@ -40183,6 +40207,7 @@ const handleCreatePayrollPdf = async () => {
     }
   };
 const handleOpenReviewSection = () => {
+    if (!isEmployeeReviewEnabled(currentCompany)) return;
     setActiveTab?.('employee_reviews');
   };
  return (
@@ -40195,7 +40220,7 @@ const handleOpenReviewSection = () => {
             </button>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-emerald-50">
               <span>{positionLabel} • {formatMonthYearLabel(monthKey)}</span>
-              <button
+              {isEmployeeReviewEnabled(currentCompany) && <button
                 type="button"
                 onClick={handleOpenReviewSection}
                 className="inline-flex items-center gap-1 rounded-full bg-white/18 px-2.5 py-1 text-xs font-black text-white ring-1 ring-white/25"
@@ -40203,7 +40228,7 @@ const handleOpenReviewSection = () => {
               >
                 <Star size={13} fill="currentColor" className="text-amber-200" />
                 {reviewSummary ? `${reviewSummary.stars} sao` : 'Chưa có đánh giá'}
-              </button>
+              </button>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -47061,6 +47086,8 @@ function EmployeeReviewRadarChart({
   );
 }
 
+const LazyEmployeeReviewFeatureSettings = React.lazy(() => import('./features/settings/EmployeeReviewSettings.jsx'));
+
 function EmployeeReviewModuleView({
   currentEmployee = null,
   currentCompany = {},
@@ -47078,7 +47105,8 @@ function EmployeeReviewModuleView({
   canViewEmployeeReviews = false,
   canCreateEmployeeReview = false,
   canViewAllEmployeeReviews = false,
-  canManageReviewCriteria = false
+  canManageReviewCriteria = false,
+  canManageReviewFeature = false
 }) {
   const activeEmployees = useMemo(() => (employees || []).filter(emp => emp && !emp.isArchived), [employees]);
   const visibleEmployees = useMemo(() => {
@@ -47113,7 +47141,7 @@ function EmployeeReviewModuleView({
     }, {}));
   }, [criteriaList]);
 
-  if (!canViewEmployeeReviews && !canCreateEmployeeReview) {
+  if (!isEmployeeReviewEnabled(currentCompany) || (!canViewEmployeeReviews && !canCreateEmployeeReview)) {
     return <AccessDeniedView onGoHome={() => {}} />;
   }
 
@@ -47293,6 +47321,7 @@ function EmployeeReviewModuleView({
 
   return (
     <div className="space-y-5 pb-24">
+      {canManageReviewFeature && <details className="rounded-2xl bg-white p-4 ring-1 ring-slate-100"><summary className="cursor-pointer text-sm font-bold text-slate-800">Bật/tắt Đánh giá cho công ty</summary><React.Suspense fallback={<p className="p-4 text-sm text-slate-500">Đang mở cài đặt…</p>}><LazyEmployeeReviewFeatureSettings key={currentCompany?.id || currentCompany?.companyId || ''} company={currentCompany} canManage={canManageReviewFeature} onSave={onUpdateCompanySettings} /></React.Suspense></details>}
       <section className="rounded-[2rem] bg-white p-3 shadow-sm ring-1 ring-slate-100">
         <div className="grid grid-cols-2 items-end gap-3">
           <label className="min-w-0 space-y-1 text-center">

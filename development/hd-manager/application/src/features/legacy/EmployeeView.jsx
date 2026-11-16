@@ -1158,7 +1158,7 @@ export function createEmployeeView(runtime) {
       </div>
       )}
 
-      {reviewTargetEmp && (
+      {reviewTargetEmp && canCreateEmployeeReview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
           <form onSubmit={handleSubmitEmployeeReview} className="my-auto w-full max-w-md animate-in zoom-in-95 rounded-3xl bg-white p-5 shadow-2xl">
             <div className="mb-4 flex items-start justify-between gap-3">
