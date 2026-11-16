@@ -34,29 +34,28 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import os,json,pathlib,datetime,urllib.request,urllib.error,ssl
+            import pathlib,os,json,datetime,stat
             BASE=pathlib.Path('/var/www/hd-manager')
-            out={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'frontend release read-only capacity/version/Identity checks','productionChanged':False}
             current=(BASE/'current').resolve(strict=True)
-            assert str(current).startswith(str(BASE/'releases')+'/'),'CURRENT_OUT_OF_SCOPE'
-            out['currentRelease']=str(current)
-            out['currentSource']=json.loads((current/'version.json').read_text()).get('buildId')
-            out['currentFrontendBytes']=sum(p.stat().st_size for p in current.rglob('*') if p.is_file() and not p.is_symlink())
-            out['filesystems']={}
-            for name in ['/var/www/hd-manager','/var/backups','/var/tmp']:
-             s=os.statvfs(name);out['filesystems'][name]={'physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryFreeBytes':s.f_bavail*s.f_frsize,'freeInodes':s.f_favail,'readOnly':bool(s.f_flag&os.ST_RDONLY)}
-            out['identity']=[]
-            for method,expected in [('GET',405),('OPTIONS',204)]:
-             headers={'Origin':'https://app.hdconnect.net','Cache-Control':'no-cache'}
-             if method=='OPTIONS':headers.update({'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type,authorization'})
-             req=urllib.request.Request('https://app.hdconnect.net/api/identity/login',method=method,headers=headers)
-             try:r=urllib.request.urlopen(req,timeout=20,context=ssl.create_default_context())
-             except urllib.error.HTTPError as e:r=e
-             body=r.read(100000);row={'method':method,'status':r.status,'contentType':r.headers.get('Content-Type'),'allowOrigin':r.headers.get('Access-Control-Allow-Origin')}
-             if method=='GET':row['jsonFailure']=json.loads(body).get('success') is False
-             assert row['status']==expected and row['allowOrigin']=='https://app.hdconnect.net','IDENTITY_CONTRACT_OR_CORS_FAILED'
-             out['identity'].append(row)
-            out['status']='READ_ONLY_PREFLIGHT_COMPLETE'
+            assert str(current).startswith(str(BASE/'releases')+'/'),'CURRENT_OUTSIDE_RELEASES'
+            def info(p):
+                s=p.lstat()
+                if stat.S_ISLNK(s.st_mode):return {'path':str(p),'symlink':True}
+                total=0;count=0
+                if p.is_dir():
+                    for root,dirs,files in os.walk(p,followlinks=False):
+                        dirs[:]=[d for d in dirs if not (pathlib.Path(root)/d).is_symlink()]
+                        for name in files:
+                            f=pathlib.Path(root)/name
+                            if f.is_file() and not f.is_symlink():total+=f.stat().st_size;count+=1
+                elif p.is_file():total=s.st_size;count=1
+                return {'path':str(p),'bytes':total,'fileCount':count,'modifiedUtc':datetime.datetime.fromtimestamp(s.st_mtime,datetime.timezone.utc).isoformat(),'activeRelease':p==current}
+            groups={}
+            for key,folder,pattern in [('temporaryStaging','/var/tmp','hd-manager-home-*'),('temporaryArchives','/tmp','hd-manager*'),('frontendReleases','/var/www/hd-manager/releases','owner-home-*'),('frontendBackups','/var/backups','hd-manager-frontend')]:
+                d=pathlib.Path(folder)
+                groups[key]=[info(p) for p in sorted(d.glob(pattern))] if d.is_dir() else []
+            s=os.statvfs(BASE)
+            out={'status':'READ_ONLY_FRONTEND_CAPACITY_METADATA_COMPLETE','at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'Frontend current path, generated frontend artifact paths, sizes and modification dates only; no env, application logs or business data','currentRelease':str(current),'physicalFreeBytes':s.f_bfree*s.f_frsize,'groups':groups,'filesDeleted':0,'filesMoved':0,'productionChanged':False}
             print(json.dumps(out))
         run: |-
           node --input-type=module <<'HD_COMMISSION_OPERATION'
