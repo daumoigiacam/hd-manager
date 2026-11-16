@@ -67,6 +67,7 @@ const pickEmployeeSnapshot = (employee = {}) => ({
   department: employee?.department || '',
   commissionRate: employee?.commissionRate ?? 0,
   ...(employee?.commissionTiers !== undefined ? {commissionTiers:employee.commissionTiers} : {}),
+  ...(employee?.commissionPolicy ? {commissionPolicy:employee.commissionPolicy} : {}),
   startDate: employee?.startDate || '',
   basicSalary: employee?.basicSalary ?? 0,
   supportSalary: employee?.supportSalary ?? 0,

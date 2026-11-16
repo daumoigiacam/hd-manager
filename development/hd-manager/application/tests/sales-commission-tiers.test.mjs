@@ -54,7 +54,7 @@ test('the actual editor validates before saving, uses existing salary permission
  const editor=fs.readFileSync(new URL('../src/features/legacy/EmployeeView.jsx',import.meta.url),'utf8');
  assert.match(editor,/CommissionTierEditor[\s\S]*?disabled=\{!canManageSalaryPolicy\}/);assert.match(editor,/commissionTiersFromDraft\(empData.commissionTiers/);
  assert(editor.indexOf('commissionTiersFromDraft(empData.commissionTiers')<editor.indexOf('const result = editingEmp ? await onEditEmployee'));
- assert.match(editor,/preserveCommissionPolicyFields\(pData,editingEmp\)/);assert.match(editor,/effectiveFrom: empData.salaryPolicyEffectiveFrom/);
+ assert.match(editor,/preserveCommissionPolicyFields\(pData,editingEmp\)/);assert.match(editor,/effectiveFrom: pData.salaryPolicyEffectiveFrom/);
  for(const text of[source,domain])assert.match(text,/import \{salesCommissionBreakdown\} from .*salesCommissionTiers.js/);
 });
 
@@ -90,3 +90,5 @@ test('the actual form submit persists canonical tiers and policy history, reject
  assert(contactOnly.saved);assert.equal(contactOnly.saved.commissionRate,employee.commissionRate);
  assert(!Object.hasOwn(contactOnly.saved,'commissionTiers'));assert(!Object.hasOwn(contactOnly.saved,'payrollPolicies'));
 });
+
+test('percent suffix from the reported UI error is accepted without changing the rate',()=>{assert.deepEqual(commissionTiersFromDraft([{minExcessRevenue:'1000000',ratePercent:'2%'},{minExcessRevenue:'600000000',ratePercent:'2.5%'}],0.015),[{minExcessRevenue:1000000,rate:0.02},{minExcessRevenue:600000000,rate:0.025}]);assert.equal(commissionTiersFromDraft([{minExcessRevenue:'1',ratePercent:'2,5 %'}])[0].rate,0.025);});

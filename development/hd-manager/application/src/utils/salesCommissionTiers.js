@@ -1,5 +1,5 @@
 export const MAX_COMMISSION_TIERS = 5;
-export const COMMISSION_POLICY_KEYS = Object.freeze(['commissionTiers','commissionRate','commissionBaseMode','targetRevenue',
+export const COMMISSION_POLICY_KEYS = Object.freeze(['commissionTiers','commissionPolicy','commissionPolicyDraft','commissionRate','commissionBaseMode','targetRevenue',
   'payrollPolicies','salaryPolicyHistory','salaryPolicyVersion','salaryPolicyEffectiveFrom']);
 
 export function normalizeSalesCommissionTiers(value = [], baseRate = 0) {
@@ -24,7 +24,7 @@ export function commissionTiersToDraft(tiers = []) {
 }
 export function commissionTiersFromDraft(rows = [], baseRate = 0) {
   return normalizeSalesCommissionTiers(rows.map(row=>{
-    const text=String(row.ratePercent??'').trim().replace(',','.');
+    const text=String(row.ratePercent??'').trim().replace(/\s*%$/,'').trim().replace(',','.');
     if (!/^\d+(\.\d+)?$/.test(text)) throw Error('Vui lòng nhập tỷ lệ % hợp lệ cho từng mốc.');
     return {minExcessRevenue:Number(row.minExcessRevenue),rate:Number(text)/100};
   }),baseRate);

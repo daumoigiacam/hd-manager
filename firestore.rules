@@ -75,7 +75,7 @@ service cloud.firestore {
     }
 
     function employeeCommissionPolicyKeys() {
-      return ['commissionTiers','commissionRate','commissionBaseMode','targetRevenue',
+      return ['commissionTiers','commissionPolicy','commissionPolicyDraft','commissionRate','commissionBaseMode','targetRevenue',
         'payrollPolicies','salaryPolicyHistory','salaryPolicyVersion','salaryPolicyEffectiveFrom'];
     }
 
@@ -126,17 +126,50 @@ service cloud.firestore {
           && (tiers.size() <= 4 || validCommissionTierAt(tiers,4,baseRate))));
     }
 
+    function validCommissionRange(tier, start, last) {
+      let rate = tier.rate;
+      let end = tier.to;
+      let bonus = tier.fixedBonus;
+      return tier.from == start && tier.enabled is bool
+        && (last ? end == null : end is int && end > start && end <= 9007199254740991)
+        && rate >= 0 && rate <= 1
+        && bonus is int && bonus >= 0 && bonus <= 9007199254740991;
+    }
+
+    function validCommissionPolicy(policy, draft) {
+      let tiers = policy == null ? [] : policy.tiers;
+      let count = tiers.size();
+      return policy == null || (policy.schemaVersion == 2 && policy.cycle == 'months'
+        && policy.policyId is string && policy.policyId.size() > 0
+        && policy.method in ['fixed','above_kpi','progressive','retrospective']
+        && policy.revenueBasis in ['recognized_net','collected']
+        && (draft ? policy.status == 'draft' : policy.status in ['active','paused'])
+        && policy.targetRevenue is int && policy.targetRevenue >= 0 && policy.targetRevenue <= 9007199254740991
+        && policy.rate is number && policy.rate >= 0 && policy.rate <= 1
+        && policy.effectiveFrom is string && policy.effectiveFrom.matches('^[0-9]{4}-(0[1-9]|1[0-2])-01$')
+        && policy.effectiveTo is string && (policy.effectiveTo == '' || policy.effectiveTo >= policy.effectiveFrom)
+        && tiers is list && count <= 5
+        && (policy.method in ['fixed','above_kpi'] ? count == 0 : count > 0
+          && validCommissionRange(tiers[0], 0, count == 1)
+          && (count < 2 || validCommissionRange(tiers[1], tiers[0].to, count == 2))
+          && (count < 3 || validCommissionRange(tiers[2], tiers[1].to, count == 3))
+          && (count < 4 || validCommissionRange(tiers[3], tiers[2].to, count == 4))
+          && (count < 5 || validCommissionRange(tiers[4], tiers[3].to, true))));
+    }
+
     // A bounded employee-only branch avoids evaluating unrelated payroll,
     // customer, warehouse and messaging rules for each salary-policy write.
     function canWriteEmployeeDocument(appId, oldData, newData, creating) {
       let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
-      return request.auth.token.accountType == 'employee'
-        && newData.companyId == request.auth.token.companyId
-        && (creating ? isPayrollManager(appId)
-          : oldData.companyId == request.auth.token.companyId
-            && (!changed.hasAny(employeeAttendanceSecurityKeys()) || isPayrollManager(appId)))
-        && (!changed.hasAny(employeeCommissionPolicyKeys())
-          || (canManageEmployeeCommissionPolicy(appId) && validEmployeeCommissionTiers(newData)));
+      return request.auth.token.accountType != 'employee' ? false
+        : newData.companyId != request.auth.token.companyId ? false
+        : (!creating && oldData.companyId != request.auth.token.companyId) ? false
+        : ((creating || changed.hasAny(employeeAttendanceSecurityKeys())) && !isPayrollManager(appId)) ? false
+        : !changed.hasAny(employeeCommissionPolicyKeys()) ? true
+        : !canManageEmployeeCommissionPolicy(appId) ? false
+        : (changed.hasAny(['commissionTiers','commissionRate']) && !validEmployeeCommissionTiers(newData)) ? false
+        : (changed.hasAny(['commissionPolicy']) && !validCommissionPolicy(newData.get('commissionPolicy', null), false)) ? false
+        : !changed.hasAny(['commissionPolicyDraft']) || validCommissionPolicy(newData.get('commissionPolicyDraft', null), true);
     }
 
     function canChangeCompanyEmployeeReviews(appId) {
@@ -792,6 +825,7 @@ service cloud.firestore {
         && data.id == docId
         && data.companyId == request.auth.token.companyId
         && hasCompletePayrollSnapshot(data)
+        && data.salaryDetails.get('commissionCalculation', {}).get('ready', true) == true
         && existsAfter(payrollPeriodPath(appId, data.periodId))
         && period.companyId == data.companyId
         && period.monthKey == data.monthKey

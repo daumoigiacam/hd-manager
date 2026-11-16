@@ -1,3 +1,4 @@
+import {buildCommissionCalculation,assertCommissionCalculationReady} from './utils/commissionRevenue.js';
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
 import {isEmployeeReviewEnabled,employeeReviewFeaturePatch} from './utils/companyEmployeeReviews.js';
 import {salesCommissionBreakdown} from './utils/salesCommissionTiers.js';
@@ -8665,6 +8666,7 @@ const buildPositiveDailyPayrollRowsFromSalary = ({
     .filter(emp => emp?.role !== 'super_admin' && !isOwnerPosition(emp?.position))
     .map(emp => {
       const details = buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, monthKey);
+      assertCommissionCalculationReady(details,emp.id);
       const netSalary = parseLooseMoneyValue(details?.netSalary);
       if (netSalary <= 0) return null;
       const salaryMonthDays = resolveSalaryMonthDays(emp, monthKey);
@@ -8752,9 +8754,10 @@ const buildDashboardPayrollCostSteps = function* ({
         const details = locked
           ? snapshotRows.find(snapshot => snapshot.employeeId === emp.id)?.salaryDetails
           : applyEvaluationBonusToSalaryDetails(
-            buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true }),
+            buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true, commissionOrders: orders }),
             projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey })
           );
+        assertCommissionCalculationReady(details,emp.id);
         const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
         if (!amount) { yield; continue; }
         const earningDays = [...new Set((details.attendanceEntries || [])
@@ -9729,8 +9732,9 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers, monthKey) : (perf.revenue || 0);
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+  const commissionCalculation = buildCommissionCalculation({employee:emp,orders:allOrders,customers:allCustomers,payments:allPayments,monthKey});
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : (isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers, monthKey) : (perf.revenue || 0));
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
     ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
@@ -9786,6 +9790,7 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...(commissionCalculation ? {commissionCalculation} : {}),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,
@@ -9905,10 +9910,11 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp)
+  const commissionCalculation = buildCommissionCalculation({employee:emp,orders:options.commissionOrders||allOrders,customers:allCustomers,payments:allPayments,monthKey});
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : (isEmployeeSalesPosition(emp)
     ? calculateRevenueForMonth(empId, allOrders, allCustomers, monthKey)
-    : (perf.revenue || 0);
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+    : (perf.revenue || 0));
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
     ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
@@ -9989,6 +9995,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...(commissionCalculation ? {commissionCalculation} : {}),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,
@@ -18308,7 +18315,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     if (updatedData?.position !== undefined) {
       employeePayload.position = normalizeEmployeePosition(updatedData.position);
     }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), employeePayload, { merge: true });
+    delete employeePayload.commissionExpectedPolicyVersion;
+    const employeeRef=doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId);
+    if(Object.hasOwn(updatedData||{},'commissionExpectedPolicyVersion')) {
+      await runTransaction(db,async transaction=>{
+        const current=await transaction.get(employeeRef);
+        if(!current.exists()||current.data().companyId!==(myCompanyId||currentCompany?.id))throw Error('Hồ sơ không thuộc công ty hiện tại.');
+        if((current.data().salaryPolicyVersion||'')!==updatedData.commissionExpectedPolicyVersion)throw Error('Chính sách lương đã được người khác cập nhật. Mở lại hồ sơ trước khi lưu; nội dung đang nhập được giữ nguyên.');
+        transaction.set(employeeRef,employeePayload,{merge:true});
+      });
+    }else await setDoc(employeeRef, employeePayload, { merge: true });
     setRawEmployees(prev => prev.map(emp => emp.id === empId ? { ...emp, ...employeePayload } : emp));
     return { success: true, message: 'Đã lưu tài khoản nhân sự.' };
   };
@@ -22968,6 +22984,7 @@ const hasEmployeePayrollCompensationConfig = (employee = {}) => {
   const hasSalesCommission = isEmployeeSalesPosition(employee) && (
     (Number.isFinite(commissionRate) && commissionRate > 0)
     || (Array.isArray(employee.commissionTiers) && employee.commissionTiers.some(tier => tier?.rate > 0))
+    || employee.commissionPolicy?.status === 'active'
   );
   return hasDirectSalary || hasRoleSalary || hasSalesCommission;
 };
@@ -46332,6 +46349,7 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
     experienceSalaryPeriod: 'months',
     commissionRate: '',
     commissionTiers: [],
+    commissionPolicyForm: null,
     commissionBaseMode: isSalesCollaboratorPosition(position) ? 'total_revenue' : 'above_target',
     targetRevenue: '',
     salesLeaderId: '',

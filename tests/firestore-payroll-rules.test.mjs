@@ -576,8 +576,19 @@ try {
     });
   });
 
-  assert.equal(passed, 22);
-  console.log(`\nFirestore payroll rules: ${passed}/22 integration cases PASS`);
+  await test('unreconciled commission cannot lock payroll or leave partial period documents', async () => {
+    const control = buildLockDocuments({ targetAppId: 'test-app-commission-control', monthKey: '2026-08', endingDebt: 0 });
+    await assertSucceeds(writeAtomicLock(ownerDb, control));
+    const blocked = buildLockDocuments({ targetAppId: 'test-app-commission-unready', monthKey: '2026-08', endingDebt: 0 });
+    blocked.snapshot.salaryDetails.commissionCalculation = { ready: false, sourceEvidence: { blockers: ['Unconfirmed return financials'] } };
+    await assertFails(writeAtomicLock(ownerDb, blocked));
+    await testEnvironment.withSecurityRulesDisabled(async context => {
+      const record = await getDoc(doc(context.firestore(), pathFor(blocked.targetAppId, 'payrollPeriods', blocked.periodId)));
+      assert.equal(record.exists(), false);
+    });
+  });
+  assert.equal(passed, 23);
+  console.log(`\nFirestore payroll rules: ${passed}/23 integration cases PASS`);
 } finally {
   await testEnvironment.cleanup();
 }

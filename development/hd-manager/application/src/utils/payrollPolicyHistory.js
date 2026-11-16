@@ -26,6 +26,7 @@ export const PAYROLL_POLICY_FIELDS = Object.freeze([
   'salaryByDepartment',
   'commissionRate',
   'commissionTiers',
+  'commissionPolicy',
   'commissionBaseMode',
   'targetRevenue',
   'salesLeaderId',
@@ -189,6 +190,9 @@ export const applyEmployeePayrollPolicyForMonth = (employee = {}, monthKey = '')
     ...(Object.hasOwn(employee,'commissionTiers') || Object.hasOwn(policy.values,'commissionTiers')
       ? {commissionTiers:resolvePolicyFromHistory([policy],monthKey) ? cloneValue(policy.values.commissionTiers||[]) : []}
       : {}),
+    ...(Object.hasOwn(employee,'commissionPolicy') || Object.hasOwn(policy.values,'commissionPolicy')
+      ? {commissionPolicy:resolvePolicyFromHistory([policy],monthKey) ? cloneValue(policy.values.commissionPolicy||null) : null}
+      : {}),
     resolvedPayrollPolicy: cloneValue(policy),
     payrollPolicyVersion: policy.version,
     payrollPolicyEffectiveFrom: policy.effectiveFrom,
@@ -196,7 +200,14 @@ export const applyEmployeePayrollPolicyForMonth = (employee = {}, monthKey = '')
   };
 };
 
-const stablePolicyString = (employee = {}) => JSON.stringify(captureEmployeePayrollPolicy(employee));
+const canonicalPolicyValue = value => {
+  if(Array.isArray(value))return value.map(canonicalPolicyValue);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonicalPolicyValue(value[key])]));
+  return value;
+};
+// Firestore can reorder map keys on a read. Re-saving equal nested policies
+// must not create another salary-policy version or duplicate its audit history.
+const stablePolicyString = (employee = {}) => JSON.stringify(canonicalPolicyValue(captureEmployeePayrollPolicy(employee)));
 
 export const hasEmployeePayrollPolicyChanged = (employee = {}, nextEmployee = {}) => (
   stablePolicyString(employee) !== stablePolicyString(nextEmployee)

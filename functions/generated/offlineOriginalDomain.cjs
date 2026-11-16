@@ -22,6 +22,7 @@ __export(stdin_exports, {
   HOME_FEED_SOURCES: () => HOME_FEED_SOURCES,
   buildHomeProductDetail: () => buildHomeProductDetail,
   buildOrderDuplicateSignature: () => buildOrderDuplicateSignature,
+  buildSalaryDetails: () => buildSalaryDetails,
   hasCompanyRolePermissionAction: () => hasCompanyRolePermissionAction,
   projectCompanyHome: () => projectCompanyHome,
   resolveCashflowDateKey: () => resolveCashflowDateKey
@@ -235,8 +236,8 @@ function createCustomerLedgerMapBuilder(buildLedger) {
 }
 
 // development/hd-manager/application/src/features/customers/productCRMShared.jsx
-var getLocalDateInputValue = (date = new BusinessDate()) => {
-  const safeDate = date instanceof BusinessDate && !Number.isNaN(date.getTime()) ? date : new BusinessDate();
+var getLocalDateInputValue = (date2 = new BusinessDate()) => {
+  const safeDate = date2 instanceof BusinessDate && !Number.isNaN(date2.getTime()) ? date2 : new BusinessDate();
   const year = safeDate.getFullYear();
   const month = String(safeDate.getMonth() + 1).padStart(2, "0");
   const day = String(safeDate.getDate()).padStart(2, "0");
@@ -282,11 +283,11 @@ var normalizeEmployeePositionList = (positions = []) => Array.from(new Set(
 ));
 var normalizeEmployeeRoleSalaryComponents = (components = [], { keepEmpty = false } = {}) => (Array.isArray(components) ? components : []).map((row, index) => {
   const position = normalizeEmployeePosition(row?.position || row?.department || row?.role || "");
-  const amount = parseEmployeeRoleSalaryAmount(row?.amount ?? row?.salary ?? row?.monthlySalary ?? 0);
+  const amount2 = parseEmployeeRoleSalaryAmount(row?.amount ?? row?.salary ?? row?.monthlySalary ?? 0);
   return {
     id: `${row?.id || position || `role_${index}`}`,
     position,
-    amount,
+    amount: amount2,
     note: `${row?.note || ""}`.trim()
   };
 }).filter((row) => row.position && (keepEmpty || row.amount > 0 || row.note));
@@ -316,13 +317,13 @@ var parseInputCurrency = (val) => {
   const num = parseInt(val.toString().replace(/\D/g, ""), 10);
   return isNaN(num) ? "" : num;
 };
-var formatCurrency = (amount) => {
-  if (amount === void 0 || amount === null || isNaN(amount)) return "0";
-  return viNumberFormatter.format(Math.round(Number(amount) || 0));
+var formatCurrency = (amount2) => {
+  if (amount2 === void 0 || amount2 === null || isNaN(amount2)) return "0";
+  return viNumberFormatter.format(Math.round(Number(amount2) || 0));
 };
-var roundMoneyValue = (amount) => {
-  if (amount === void 0 || amount === null || Number.isNaN(Number(amount))) return 0;
-  return Math.round(Number(amount) || 0);
+var roundMoneyValue = (amount2) => {
+  if (amount2 === void 0 || amount2 === null || Number.isNaN(Number(amount2))) return 0;
+  return Math.round(Number(amount2) || 0);
 };
 var LOOKUP_NORMALIZATION_CACHE_LIMIT = 2048;
 var LOOKUP_NORMALIZATION_MAX_LENGTH = 256;
@@ -426,8 +427,8 @@ var requiresCashflowApproval = (item = {}) => Boolean(
   item.requiresApproval || item.approvalStatus === CASHFLOW_APPROVAL_STATUS.pending || item.approvalStatus === CASHFLOW_APPROVAL_STATUS.rejected || item.handoverStatus === "pending" || item.handoverStatus === "handed_over" || item.sourceType === "driver_delivery_expense" || item.sourceType === "employee_reported_expense" || item.sourceType === "employee_reported_income" || item.sourceType === "driver_cash" && item.createdByRole === "driver"
 );
 var isCashflowOfficial = (item = {}) => !isUnconfirmedPaymentIntent(item) && (!requiresCashflowApproval(item) || item.approvalStatus === CASHFLOW_APPROVAL_STATUS.approved);
-var toDateInputString = (date) => {
-  const normalized = new BusinessDate(date.getTime() - date.getTimezoneOffset() * 6e4);
+var toDateInputString = (date2) => {
+  const normalized = new BusinessDate(date2.getTime() - date2.getTimezoneOffset() * 6e4);
   return normalized.toISOString().split("T")[0];
 };
 var compareLedgerItems = (a, b, sortKeys = null) => {
@@ -577,25 +578,25 @@ var getCustomerOpeningPayableDate = (customer = {}) => {
 };
 var buildCustomerOpeningDebtOrder = (customer = null) => {
   if (!customer?.id) return null;
-  const amount = getCustomerOpeningDebtAmount(customer);
-  if (amount <= 0) return null;
-  const date = getCustomerOpeningDebtDate(customer);
+  const amount2 = getCustomerOpeningDebtAmount(customer);
+  if (amount2 <= 0) return null;
+  const date2 = getCustomerOpeningDebtDate(customer);
   return {
     id: `opening_debt_${customer.id}`,
     code: "N\u1EE3 c\u0169",
     orderCode: "N\u1EE3 c\u0169",
     customerId: customer.id,
     customerName: getCustomerDisplayName(customer) || customer.name || "",
-    date,
-    createdAt: customer.openingDebtCreatedAt || date,
-    amount,
-    totalAmount: amount,
+    date: date2,
+    createdAt: customer.openingDebtCreatedAt || date2,
+    amount: amount2,
+    totalAmount: amount2,
     paidAmount: 0,
     appliedAmount: 0,
     creditApplied: 0,
-    outstandingAmount: amount,
+    outstandingAmount: amount2,
     allocations: [],
-    items: [{ description: "N\u1EE3 c\u0169", productName: "N\u1EE3 c\u0169", quantity: 1, unitPrice: amount, total: amount }],
+    items: [{ description: "N\u1EE3 c\u0169", productName: "N\u1EE3 c\u0169", quantity: 1, unitPrice: amount2, total: amount2 }],
     note: customer.openingDebtNote || "N\u1EE3 c\u0169 tr\u01B0\u1EDBc khi s\u1EED d\u1EE5ng h\u1EC7 th\u1ED1ng",
     isOpeningDebt: true,
     sourceType: "opening_debt"
@@ -763,8 +764,8 @@ var buildCustomerSupplierPurchaseLedger = (customerOrId, warehouseImports = []) 
     const totalKg = parseLooseQuantityValue(item.totalKg ?? item.weightKg ?? item.kg);
     const unitPrice = parseLooseMoneyValue(item.unitPrice ?? item.price);
     const rawAmount = parseLooseMoneyValue(item.amount ?? item.totalAmount ?? item.value ?? item.total);
-    const amount = roundMoneyValue(item.amount != null || item.totalAmount != null || item.value != null || item.total != null ? rawAmount : purchaseAmount({ ...item, totalKg, quantity: parseLooseQuantityValue(item.quantity), unitPrice }, item.purchaseUnit || "Kg"));
-    return { ...item, amount };
+    const amount2 = roundMoneyValue(item.amount != null || item.totalAmount != null || item.value != null || item.total != null ? rawAmount : purchaseAmount({ ...item, totalKg, quantity: parseLooseQuantityValue(item.quantity), unitPrice }, item.purchaseUnit || "Kg"));
+    return { ...item, amount: amount2 };
   }).filter((item) => item.amount > 0).sort(compareLedgerItems);
   const purchaseImportAmount = roundMoneyValue(imports.reduce((sum, item) => sum + parseLooseMoneyValue(item.amount), 0));
   const totalPurchaseDebt = roundMoneyValue(openingPayableAmount + purchaseImportAmount);
@@ -988,6 +989,8 @@ var PAYROLL_POLICY_FIELDS = Object.freeze([
   "departmentSalaryComponents",
   "salaryByDepartment",
   "commissionRate",
+  "commissionTiers",
+  "commissionPolicy",
   "commissionBaseMode",
   "targetRevenue",
   "salesLeaderId",
@@ -1021,8 +1024,8 @@ var cloneValue = (value) => {
 var normalizeDateKey = (value = "") => {
   const raw = `${value || ""}`.trim().slice(0, 10);
   if (!DATE_KEY_PATTERN.test(raw)) return "";
-  const date = /* @__PURE__ */ new Date(`${raw}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? "" : raw;
+  const date2 = /* @__PURE__ */ new Date(`${raw}T00:00:00`);
+  return Number.isNaN(date2.getTime()) ? "" : raw;
 };
 var getMonthBounds = (monthKey2 = "") => {
   const match = `${monthKey2 || ""}`.match(/^(\d{4})-(\d{2})$/);
@@ -1094,6 +1097,10 @@ var applyEmployeePayrollPolicyForMonth = (employee = {}, monthKey2 = "") => {
   return {
     ...employee,
     ...cloneValue(policy.values),
+    // Legacy live-preview fallback can select the first policy even for an
+    // earlier month. Never backdate newly introduced tiers through that fallback.
+    ...Object.hasOwn(employee, "commissionTiers") || Object.hasOwn(policy.values, "commissionTiers") ? { commissionTiers: resolvePolicyFromHistory([policy], monthKey2) ? cloneValue(policy.values.commissionTiers || []) : [] } : {},
+    ...Object.hasOwn(employee, "commissionPolicy") || Object.hasOwn(policy.values, "commissionPolicy") ? { commissionPolicy: resolvePolicyFromHistory([policy], monthKey2) ? cloneValue(policy.values.commissionPolicy || null) : null } : {},
     resolvedPayrollPolicy: cloneValue(policy),
     payrollPolicyVersion: policy.version,
     payrollPolicyEffectiveFrom: policy.effectiveFrom,
@@ -1152,6 +1159,1018 @@ var normalizePayrollMonthKey = (value = "") => {
 var getLockedPayrollPeriod = (periods = [], companyId = "", monthKey2 = "") => {
   const normalizedMonthKey = normalizePayrollMonthKey(monthKey2);
   return (Array.isArray(periods) ? periods : []).find((period) => period?.companyId === companyId && normalizePayrollMonthKey(period?.monthKey) === normalizedMonthKey && isPayrollPeriodLocked(period) && !period?.isArchived) || null;
+};
+
+// development/hd-manager/application/src/utils/attendanceWorkRoles.js
+function getWorkRoleRecord(record, primaryPosition, position = primaryPosition) {
+  if (!record) return null;
+  if (record.workRoles?.[position]) return record.workRoles[position];
+  return position === primaryPosition && (!record.workRole || record.workRole === position) && (record.status || record.checkIn || record.checkOut) ? record : null;
+}
+function employeeForWorkRole(employee = {}, position = employee?.position) {
+  employee ||= {};
+  if (position === employee.position) return employee;
+  const components = employee.roleSalaryComponents || employee.departmentSalaryComponents || employee.salaryByDepartment;
+  const component = (Array.isArray(components) ? components : []).find((row) => (row?.position || row?.department || row?.role) === position) || {};
+  return {
+    ...employee,
+    position,
+    shiftName: component.shiftName || "",
+    shiftStart: component.shiftStart || "",
+    shiftEnd: component.shiftEnd || "",
+    graceMinutes: component.graceMinutes,
+    missingAlertMinutes: component.missingAlertMinutes
+  };
+}
+function getWorkRoleMonthEntries(attendance, employee, position, monthKey2, calculateTiming) {
+  const roleEmployee = employeeForWorkRole(employee, position);
+  return Object.entries(attendance || {}).filter(([key, record]) => key.endsWith(`_${employee.id}`) && key.startsWith(`${monthKey2}-`) && (!record?.companyId || !employee.companyId || record.companyId === employee.companyId)).flatMap(([key, record]) => {
+    const roleRecord = getWorkRoleRecord(record, employee.position, position);
+    if (!roleRecord) return [];
+    const entry = {
+      date: key.slice(0, 10),
+      workRole: position,
+      isPrimaryRole: position === employee.position,
+      status: roleRecord.status || "missing",
+      checkIn: roleRecord.checkIn || null,
+      checkOut: roleRecord.checkOut || null,
+      checkInMethod: roleRecord.checkInMethod || "",
+      checkOutMethod: roleRecord.checkOutMethod || ""
+    };
+    return [{ ...entry, ...calculateTiming(roleEmployee, entry) }];
+  }).sort((a, b) => a.date.localeCompare(b.date));
+}
+function calculateWorkRoleSalary(amount2, entries, monthDays, probationEndDate, probationRate = 1) {
+  const cutoff = probationEndDate ? new Date(probationEndDate).getTime() : NaN;
+  let workDaysProbation = 0;
+  let workDaysOfficial = 0;
+  for (const entry of entries) {
+    if (!["present", "late"].includes(entry.status) || entry.noSalaryDay) continue;
+    if ((/* @__PURE__ */ new Date(`${entry.date}T00:00:00`)).getTime() <= cutoff) workDaysProbation++;
+    else workDaysOfficial++;
+  }
+  return {
+    workDays: workDaysProbation + workDaysOfficial,
+    workDaysProbation,
+    workDaysOfficial,
+    calculatedAmount: monthDays > 0 ? Math.round(amount2 / monthDays * (workDaysOfficial + workDaysProbation * probationRate)) : 0
+  };
+}
+
+// development/hd-manager/application/src/utils/salesRevenuePeriod.js
+var normalizeId = (value) => `${value || ""}`.trim();
+var activeRevenueIndex = null;
+var createSalesRevenueIndexScope = () => {
+  const index = /* @__PURE__ */ new WeakMap();
+  return (calculate) => {
+    const previous = activeRevenueIndex;
+    activeRevenueIndex = index;
+    try {
+      return calculate();
+    } finally {
+      activeRevenueIndex = previous;
+    }
+  };
+};
+var withSalesRevenueIndex = (calculate) => createSalesRevenueIndexScope()(calculate);
+var toFiniteAmount = (value) => {
+  const amount2 = Number(value);
+  return Number.isFinite(amount2) ? amount2 : 0;
+};
+var normalizeSalesRevenueMonthKey = (value = "") => {
+  const text3 = `${value || ""}`.trim();
+  const directMatch = text3.match(/^(\d{4})-(\d{2})/);
+  if (directMatch) {
+    const month = Number(directMatch[2]);
+    return month >= 1 && month <= 12 ? `${directMatch[1]}-${directMatch[2]}` : "";
+  }
+  const date2 = value instanceof Date ? value : value && typeof value?.toDate === "function" ? value.toDate() : null;
+  if (!(date2 instanceof Date) || Number.isNaN(date2.getTime())) return "";
+  return `${date2.getFullYear()}-${String(date2.getMonth() + 1).padStart(2, "0")}`;
+};
+var getSalesOrderMonthKey = (order = {}) => {
+  const candidates = [order.date, order.orderDate, order.createdAt];
+  for (const candidate of candidates) {
+    const monthKey2 = normalizeSalesRevenueMonthKey(candidate);
+    if (monthKey2) return monthKey2;
+  }
+  return "";
+};
+var getSalesOrderEmployeeId = (order = {}, customerById = /* @__PURE__ */ new Map()) => {
+  const customer = customerById.get(normalizeId(order?.customerId));
+  return normalizeId(
+    order?.salesEmpId || customer?.empId || order?.createdByEmpId || order?.empId
+  );
+};
+var summarizeEmployeeSalesRevenueForMonth = ({
+  employeeId = "",
+  orders = [],
+  customers = [],
+  monthKey: monthKey2 = ""
+} = {}) => {
+  const safeEmployeeId = normalizeId(employeeId);
+  const safeMonthKey = normalizeSalesRevenueMonthKey(monthKey2);
+  if (!safeEmployeeId || !safeMonthKey) {
+    return { monthKey: safeMonthKey, revenue: 0, orderCount: 0, customerCount: 0, orderIds: [] };
+  }
+  const buildCustomerLookup = () => new Map(
+    (customers || []).filter((customer) => customer?.id).map((customer) => [normalizeId(customer.id), customer])
+  );
+  if (activeRevenueIndex && Array.isArray(orders) && Array.isArray(customers)) {
+    let byCustomers = activeRevenueIndex.get(orders);
+    if (!byCustomers) {
+      byCustomers = /* @__PURE__ */ new WeakMap();
+      activeRevenueIndex.set(orders, byCustomers);
+    }
+    let index = byCustomers.get(customers);
+    if (!index) {
+      const customerById2 = buildCustomerLookup();
+      index = /* @__PURE__ */ new Map();
+      for (const order of orders) {
+        if (!order || order.isArchived) continue;
+        const month = getSalesOrderMonthKey(order);
+        const owner = getSalesOrderEmployeeId(order, customerById2);
+        if (!month || !owner) continue;
+        if (!index.has(month)) index.set(month, /* @__PURE__ */ new Map());
+        const owners = index.get(month);
+        if (!owners.has(owner)) owners.set(owner, { revenue: 0, orderCount: 0, customers: /* @__PURE__ */ new Set(), orderIds: [] });
+        const row2 = owners.get(owner);
+        row2.revenue += toFiniteAmount(order.amount);
+        row2.orderCount += 1;
+        if (order.customerId) row2.customers.add(normalizeId(order.customerId));
+        if (order.id) row2.orderIds.push(normalizeId(order.id));
+      }
+      byCustomers.set(customers, index);
+    }
+    const row = index.get(safeMonthKey)?.get(safeEmployeeId);
+    return {
+      monthKey: safeMonthKey,
+      revenue: row?.revenue || 0,
+      orderCount: row?.orderCount || 0,
+      customerCount: row?.customers.size || 0,
+      orderIds: row ? [...row.orderIds] : []
+    };
+  }
+  const customerById = buildCustomerLookup();
+  const matchedCustomerIds = /* @__PURE__ */ new Set();
+  const orderIds = [];
+  let revenue = 0;
+  let orderCount = 0;
+  (orders || []).forEach((order) => {
+    if (!order || order.isArchived) return;
+    if (getSalesOrderMonthKey(order) !== safeMonthKey) return;
+    if (getSalesOrderEmployeeId(order, customerById) !== safeEmployeeId) return;
+    revenue += toFiniteAmount(order.amount);
+    orderCount += 1;
+    if (order.customerId) matchedCustomerIds.add(normalizeId(order.customerId));
+    if (order.id) orderIds.push(normalizeId(order.id));
+  });
+  return {
+    monthKey: safeMonthKey,
+    revenue,
+    orderCount,
+    customerCount: matchedCustomerIds.size,
+    orderIds
+  };
+};
+var calculateEmployeeSalesRevenueForMonth = (options = {}) => summarizeEmployeeSalesRevenueForMonth(options).revenue;
+
+// development/hd-manager/application/src/features/payroll/payrollOriginalShared.js
+var getLocalDateInputValue2 = (date2 = /* @__PURE__ */ new Date()) => {
+  const safeDate = date2 instanceof Date && !Number.isNaN(date2.getTime()) ? date2 : /* @__PURE__ */ new Date();
+  const year = safeDate.getFullYear();
+  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
+  const day = String(safeDate.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+var getTodayString2 = () => getLocalDateInputValue2(/* @__PURE__ */ new Date());
+var toTitleCase2 = (str) => {
+  if (!str) return "";
+  return str.toLowerCase().split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+};
+var viNumberFormatter2 = new Intl.NumberFormat("vi-VN");
+var roundMoneyValue2 = (amount2) => {
+  if (amount2 === void 0 || amount2 === null || Number.isNaN(Number(amount2))) return 0;
+  return Math.round(Number(amount2) || 0);
+};
+var LOOKUP_NORMALIZATION_CACHE_LIMIT2 = 2048;
+var LOOKUP_NORMALIZATION_MAX_LENGTH2 = 256;
+var lookupNormalizationCache2 = /* @__PURE__ */ new Map();
+var normalizeLookupText2 = (value = "") => {
+  const cacheable = typeof value === "string" && value.length <= LOOKUP_NORMALIZATION_MAX_LENGTH2;
+  if (cacheable) {
+    const cached = lookupNormalizationCache2.get(value);
+    if (cached !== void 0) return cached;
+  }
+  const normalized = `${value}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (cacheable) {
+    if (lookupNormalizationCache2.size >= LOOKUP_NORMALIZATION_CACHE_LIMIT2) {
+      lookupNormalizationCache2.delete(lookupNormalizationCache2.keys().next().value);
+    }
+    lookupNormalizationCache2.set(value, normalized);
+  }
+  return normalized;
+};
+var normalizeCustomerPhone2 = (value = "") => `${value}`.replace(/\D/g, "");
+var parseLooseQuantityValue2 = (value) => {
+  if (value === void 0 || value === null || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, value) : 0;
+  const matched = `${value}`.replace(/\s+/g, "").replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+  return matched ? Math.max(0, parseFloat(matched[0]) || 0) : 0;
+};
+var parseLooseMoneyValue2 = (value) => {
+  if (value === void 0 || value === null || value === "") return 0;
+  if (typeof value === "number") return Math.max(0, Math.round(value));
+  const digits = `${value}`.replace(/[^\d]/g, "");
+  return digits ? parseInt(digits, 10) : 0;
+};
+var normalizeCustomerHonorific2 = (value = "") => {
+  const normalized = normalizeLookupText2(value || "").replace(/\s+/g, "");
+  if (["a", "anh", "ong", "chu", "bacnam"].includes(normalized)) return "anh";
+  if (["c", "chi", "co", "bacnu"].includes(normalized)) return "chi";
+  return "";
+};
+var inferCustomerHonorificFromName2 = (name = "") => {
+  const firstToken = normalizeLookupText2(`${name || ""}`.trim().split(/\s+/)[0] || "").replace(/[.:,-]/g, "");
+  return normalizeCustomerHonorific2(firstToken);
+};
+var stripCustomerHonorificPrefix2 = (name = "") => {
+  const text3 = `${name || ""}`.trim();
+  if (!text3) return "";
+  const parts = text3.split(/\s+/);
+  const firstToken = normalizeLookupText2(parts[0] || "").replace(/[.:,-]/g, "");
+  return normalizeCustomerHonorific2(firstToken) ? parts.slice(1).join(" ") : text3;
+};
+var getCustomerHonorific2 = (customer = {}) => normalizeCustomerHonorific2(customer?.customerHonorific || customer?.honorific) || inferCustomerHonorificFromName2(customer?.name || customer?.customerName || "");
+var getCustomerPlainName2 = (customer = {}) => {
+  const rawName = `${customer?.plainName || customer?.customerName || customer?.name || ""}`.trim();
+  return toTitleCase2(stripCustomerHonorificPrefix2(rawName)).trim();
+};
+var getCustomerDisplayName2 = (customer = {}) => {
+  const plainName = getCustomerPlainName2(customer);
+  const honorific = getCustomerHonorific2(customer);
+  if (!plainName) return "";
+  if (honorific === "anh") return `Anh ${plainName}`;
+  if (honorific === "chi") return `Ch\u1ECB ${plainName}`;
+  return plainName;
+};
+var CASHFLOW_APPROVAL_STATUS2 = {
+  pending: "pending_handover",
+  approved: "approved",
+  rejected: "rejected"
+};
+var UNCONFIRMED_PAYMENT_STATUSES2 = /* @__PURE__ */ new Set([
+  "pending",
+  "created",
+  "initiated",
+  "processing",
+  "awaiting_payment",
+  "awaiting_transfer",
+  "unpaid",
+  "failed",
+  "cancelled",
+  "canceled",
+  "expired"
+]);
+var PAYMENT_INTENT_SOURCE_TYPES2 = /* @__PURE__ */ new Set([
+  "customer_debt_payment_intent",
+  "customer_payment_intent",
+  "sepay_customer_debt_intent",
+  "sepay_payment_intent",
+  "bank_qr_payment_intent"
+]);
+var isUnconfirmedPaymentIntent2 = (item = {}) => {
+  const sourceType = `${item.sourceType || item.type || ""}`.trim().toLowerCase();
+  const statuses = [
+    item.status,
+    item.paymentStatus,
+    item.settlementStatus,
+    item.reconciliationStatus
+  ].map((value) => `${value || ""}`.trim().toLowerCase()).filter(Boolean);
+  return Boolean(
+    item.isPaymentIntent === true || item.paymentIntent === true || item.isCustomerDebtPaymentIntent === true || PAYMENT_INTENT_SOURCE_TYPES2.has(sourceType) || statuses.some((status) => UNCONFIRMED_PAYMENT_STATUSES2.has(status))
+  );
+};
+var requiresCashflowApproval2 = (item = {}) => Boolean(
+  item.requiresApproval || item.approvalStatus === CASHFLOW_APPROVAL_STATUS2.pending || item.approvalStatus === CASHFLOW_APPROVAL_STATUS2.rejected || item.handoverStatus === "pending" || item.handoverStatus === "handed_over" || item.sourceType === "driver_delivery_expense" || item.sourceType === "employee_reported_expense" || item.sourceType === "employee_reported_income" || item.sourceType === "driver_cash" && item.createdByRole === "driver"
+);
+var isCashflowOfficial2 = (item = {}) => !isUnconfirmedPaymentIntent2(item) && (!requiresCashflowApproval2(item) || item.approvalStatus === CASHFLOW_APPROVAL_STATUS2.approved);
+var toDateInputString2 = (date2) => {
+  const normalized = new Date(date2.getTime() - date2.getTimezoneOffset() * 6e4);
+  return normalized.toISOString().split("T")[0];
+};
+var compareLedgerItems2 = (a, b, sortKeys = null) => {
+  const keyFor = (item) => {
+    if (sortKeys?.has(item)) return sortKeys.get(item);
+    const dateKey3 = getPaymentDateKey2(item) || getDateKeyFromAnyValue2(item?.paymentDate || item?.transactionDate || item?.transactionDateTime || item?.paidAt || item?.transactionAt || item?.date || item?.createdAt || getEntityTimestamp2(item));
+    const key = { day: (/* @__PURE__ */ new Date(`${dateKey3 || "1970-01-01"}T00:00:00`)).getTime(), timestamp: void 0 };
+    sortKeys?.set(item, key);
+    return key;
+  };
+  const aKey = keyFor(a), bKey = keyFor(b);
+  const dateCompare = aKey.day - bKey.day;
+  if (dateCompare !== 0) return dateCompare;
+  if (aKey.timestamp === void 0) aKey.timestamp = getPaymentTimestamp2(a) || getEntityTimestamp2(a) || 0;
+  if (bKey.timestamp === void 0) bKey.timestamp = getPaymentTimestamp2(b) || getEntityTimestamp2(b) || 0;
+  const timestampCompare = aKey.timestamp - bKey.timestamp;
+  if (timestampCompare !== 0) return timestampCompare;
+  return (a.id || "").localeCompare(b.id || "");
+};
+var parseVietnameseDateTimeString2 = (value = "") => {
+  const raw = `${value || ""}`.trim();
+  if (!raw) return null;
+  const match = raw.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const hour = Number(match[4] || 0);
+  const minute = Number(match[5] || 0);
+  const second = Number(match[6] || 0);
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
+  if (day < 1 || day > 31 || month < 1 || month > 12 || year < 1900) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return null;
+  const parsed = new Date(year, month - 1, day, hour, minute, second);
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) return null;
+  return parsed.getTime();
+};
+var ENTITY_TIMESTAMP_CACHE_LIMIT2 = 2048;
+var ENTITY_TIMESTAMP_CACHE_MAX_LENGTH2 = 64;
+var entityTimestampStringCache2 = /* @__PURE__ */ new Map();
+var parseEntityTimestampValue2 = (rawValue) => {
+  if (!rawValue) return null;
+  if (typeof rawValue === "number") {
+    if (!Number.isFinite(rawValue) || rawValue <= 0) return null;
+    return rawValue < 1e10 ? rawValue * 1e3 : rawValue;
+  }
+  if (typeof rawValue?.toDate === "function") {
+    const parsedDate = rawValue.toDate();
+    if (parsedDate instanceof Date && !Number.isNaN(parsedDate.getTime())) return parsedDate.getTime();
+  }
+  if (typeof rawValue === "object") {
+    const seconds = rawValue.seconds ?? rawValue._seconds;
+    const nanos = rawValue.nanoseconds ?? rawValue._nanoseconds ?? 0;
+    if (seconds !== void 0 && seconds !== null) {
+      const parsedSeconds = Number(seconds);
+      const parsedNanos = Number(nanos);
+      if (Number.isFinite(parsedSeconds)) {
+        return parsedSeconds * 1e3 + Math.floor((Number.isFinite(parsedNanos) ? parsedNanos : 0) / 1e6);
+      }
+    }
+    const nestedValue = rawValue.timestampValue ?? rawValue.stringValue ?? rawValue.integerValue ?? rawValue.doubleValue ?? rawValue.value;
+    if (nestedValue !== void 0 && nestedValue !== rawValue) {
+      return parseEntityTimestampValue2(nestedValue);
+    }
+  }
+  if (typeof rawValue === "string") {
+    const normalized = rawValue.trim();
+    if (!normalized) return null;
+    const cacheable = rawValue.length <= ENTITY_TIMESTAMP_CACHE_MAX_LENGTH2 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(normalized);
+    if (cacheable) {
+      const cached = entityTimestampStringCache2.get(normalized);
+      if (cached !== void 0) return cached;
+    }
+    if (/^\d{10,13}$/.test(normalized)) {
+      const parsedNumeric = Number(normalized);
+      if (Number.isFinite(parsedNumeric)) return normalized.length === 10 ? parsedNumeric * 1e3 : parsedNumeric;
+    }
+    const vietnameseTimestamp = parseVietnameseDateTimeString2(normalized);
+    if (vietnameseTimestamp) return vietnameseTimestamp;
+    const parsed = new Date(normalized).getTime();
+    if (!Number.isNaN(parsed)) {
+      if (cacheable && Number.isFinite(parsed)) {
+        if (entityTimestampStringCache2.size >= ENTITY_TIMESTAMP_CACHE_LIMIT2) {
+          entityTimestampStringCache2.delete(entityTimestampStringCache2.keys().next().value);
+        }
+        entityTimestampStringCache2.set(normalized, parsed);
+      }
+      return parsed;
+    }
+  }
+  return null;
+};
+var getEntityTimestamp2 = (entity = {}) => {
+  if (!entity || typeof entity !== "object") return parseEntityTimestampValue2(entity);
+  const timestamp = parseEntityTimestampValue2(entity.createdAt) || parseEntityTimestampValue2(entity.updatedAt) || parseEntityTimestampValue2(entity.timestamp) || parseEntityTimestampValue2(entity.receivedAt) || parseEntityTimestampValue2(entity.sentAt) || parseEntityTimestampValue2(entity.approvedAt) || parseEntityTimestampValue2(entity.paidAt) || parseEntityTimestampValue2(entity.lastMessageAt) || parseEntityTimestampValue2(entity.lastActivityAt);
+  if (timestamp) return timestamp;
+  if (typeof entity.date === "string" && entity.date.includes("T")) {
+    const parsed = new Date(entity.date).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  const idMatch = `${entity.id || ""}`.match(/_(\d{10,13})$/);
+  if (idMatch) {
+    const rawTimestamp = parseInt(idMatch[1], 10);
+    if (!Number.isNaN(rawTimestamp)) {
+      return idMatch[1].length === 10 ? rawTimestamp * 1e3 : rawTimestamp;
+    }
+  }
+  const embeddedIdTimestampMatch = `${entity.id || ""}`.match(/(?:^|_)(\d{13})(?:_|$)/);
+  if (embeddedIdTimestampMatch) {
+    const rawTimestamp = parseInt(embeddedIdTimestampMatch[1], 10);
+    if (!Number.isNaN(rawTimestamp)) return rawTimestamp;
+  }
+  return null;
+};
+var normalizeCustomerOpeningDebtAmount2 = (value) => Math.max(0, roundMoneyValue2(parseLooseMoneyValue2(value)));
+var normalizeCustomerOpeningPayableAmount2 = (value) => Math.max(0, roundMoneyValue2(parseLooseMoneyValue2(value)));
+var getCustomerOpeningDebtAmount2 = (customer = {}) => normalizeCustomerOpeningDebtAmount2(
+  customer?.openingDebtAmount ?? customer?.oldDebtAmount ?? customer?.legacyDebtAmount ?? 0
+);
+var getCustomerOpeningDebtDate2 = (customer = {}) => {
+  const rawDate = customer?.openingDebtDate || customer?.oldDebtDate || customer?.legacyDebtDate || customer?.createdAt || "";
+  if (typeof rawDate === "string" && rawDate.trim()) return rawDate.trim().slice(0, 10);
+  return getTodayString2();
+};
+var getCustomerOpeningPayableAmount2 = (customer = {}) => normalizeCustomerOpeningPayableAmount2(
+  customer?.openingPayableAmount ?? customer?.oldPayableAmount ?? customer?.legacyPayableAmount ?? customer?.companyOpeningDebtAmount ?? customer?.companyOldDebtAmount ?? 0
+);
+var getCustomerOpeningPayableDate2 = (customer = {}) => {
+  const rawDate = customer?.openingPayableDate || customer?.oldPayableDate || customer?.legacyPayableDate || customer?.companyOpeningDebtDate || customer?.createdAt || "";
+  if (typeof rawDate === "string" && rawDate.trim()) return rawDate.trim().slice(0, 10);
+  return getTodayString2();
+};
+var buildCustomerOpeningDebtOrder2 = (customer = null) => {
+  if (!customer?.id) return null;
+  const amount2 = getCustomerOpeningDebtAmount2(customer);
+  if (amount2 <= 0) return null;
+  const date2 = getCustomerOpeningDebtDate2(customer);
+  return {
+    id: `opening_debt_${customer.id}`,
+    code: "N\u1EE3 c\u0169",
+    orderCode: "N\u1EE3 c\u0169",
+    customerId: customer.id,
+    customerName: getCustomerDisplayName2(customer) || customer.name || "",
+    date: date2,
+    createdAt: customer.openingDebtCreatedAt || date2,
+    amount: amount2,
+    totalAmount: amount2,
+    paidAmount: 0,
+    appliedAmount: 0,
+    creditApplied: 0,
+    outstandingAmount: amount2,
+    allocations: [],
+    items: [{ description: "N\u1EE3 c\u0169", productName: "N\u1EE3 c\u0169", quantity: 1, unitPrice: amount2, total: amount2 }],
+    note: customer.openingDebtNote || "N\u1EE3 c\u0169 tr\u01B0\u1EDBc khi s\u1EED d\u1EE5ng h\u1EC7 th\u1ED1ng",
+    isOpeningDebt: true,
+    sourceType: "opening_debt"
+  };
+};
+var selectCustomerHistoryRows2 = createCustomerRecordSelector();
+var buildCustomerLedger2 = (customerOrId, allOrders = [], allPayments = [], { cooperative = false, historyAlreadySelected = false } = {}) => {
+  function* calculate() {
+    const sortKeys = /* @__PURE__ */ new Map();
+    const compareCustomerLedgerItems = (a, b) => compareLedgerItems2(a, b, sortKeys);
+    const customerRecord = typeof customerOrId === "object" && customerOrId !== null ? customerOrId : null;
+    const customerId = customerRecord?.id || customerOrId || "";
+    const openingDebtOrder = buildCustomerOpeningDebtOrder2(customerRecord);
+    let orders = [];
+    if (openingDebtOrder) orders.push(openingDebtOrder);
+    const customerOrders = historyAlreadySelected ? allOrders : selectCustomerHistoryRows2(allOrders, customerId);
+    for (const order of customerOrders) {
+      yield;
+      if (order.customerId !== customerId || order.isArchived) continue;
+      orders.push({
+        ...order,
+        appliedAmount: 0,
+        creditApplied: 0,
+        outstandingAmount: Math.max(0, order.amount || 0),
+        allocations: []
+      });
+    }
+    orders = cooperative ? yield* sortProjection(orders, compareCustomerLedgerItems) : orders.sort(compareCustomerLedgerItems);
+    let payments = [];
+    const customerPayments = historyAlreadySelected ? allPayments : selectCustomerHistoryRows2(allPayments, customerId);
+    for (const payment of customerPayments) {
+      yield;
+      if (payment.customerId !== customerId || payment.isArchived || !isCashflowOfficial2(payment)) continue;
+      payments.push({ ...payment, appliedAmount: 0, overpaidAmount: 0, allocations: [] });
+    }
+    payments = cooperative ? yield* sortProjection(payments, compareCustomerLedgerItems) : payments.sort(compareCustomerLedgerItems);
+    let timeline = [];
+    for (const order of orders) {
+      yield;
+      timeline.push({ type: "order", date: order.date, id: "order_" + order.id, ref: order });
+    }
+    for (const payment of payments) {
+      yield;
+      timeline.push({ type: "payment", date: getPaymentDateKey2(payment) || payment.date, id: "payment_" + payment.id, ref: payment });
+    }
+    const compareTimeline = (a, b) => {
+      const baseCompare = compareCustomerLedgerItems(a, b);
+      if (baseCompare !== 0) return baseCompare;
+      if (a.type === b.type) return 0;
+      return a.type === "order" ? -1 : 1;
+    };
+    timeline = cooperative ? yield* sortProjection(timeline, compareTimeline) : timeline.sort(compareTimeline);
+    const openOrders = [];
+    let customerCredit = 0;
+    for (const item of timeline) {
+      yield;
+      if (item.type === "order") {
+        const order = item.ref;
+        if (customerCredit > 0) {
+          const covered = Math.min(customerCredit, order.outstandingAmount);
+          order.appliedAmount += covered;
+          order.creditApplied += covered;
+          order.outstandingAmount -= covered;
+          customerCredit -= covered;
+        }
+        if (order.outstandingAmount > 0) {
+          openOrders.push(order);
+        }
+        continue;
+      }
+      const payment = item.ref;
+      let remaining = Math.max(0, payment.amount || 0);
+      const shouldPrioritizeMatchedOrder = payment.matchedOrderId && !payment.allocateOldestFirst && payment.allocationMode !== "oldest_first";
+      let prioritizedOrder = null;
+      if (shouldPrioritizeMatchedOrder) for (const order of orders) {
+        yield;
+        if (order.id === payment.matchedOrderId) {
+          prioritizedOrder = order;
+          break;
+        }
+      }
+      if (prioritizedOrder && prioritizedOrder.outstandingAmount > 0 && remaining > 0) {
+        const prioritizedAmount = Math.min(prioritizedOrder.outstandingAmount, remaining);
+        prioritizedOrder.outstandingAmount -= prioritizedAmount;
+        prioritizedOrder.appliedAmount += prioritizedAmount;
+        prioritizedOrder.allocations.push({ paymentId: payment.id, amount: prioritizedAmount, date: getPaymentDateKey2(payment) || payment.date, matchType: "order_code" });
+        payment.appliedAmount += prioritizedAmount;
+        payment.allocations.push({ orderId: prioritizedOrder.id, amount: prioritizedAmount, date: prioritizedOrder.date, matchType: "order_code" });
+        remaining -= prioritizedAmount;
+      }
+      for (const order of openOrders) {
+        yield;
+        if (remaining <= 0) break;
+        if (prioritizedOrder && order.id === prioritizedOrder.id) continue;
+        if (order.outstandingAmount <= 0) continue;
+        const applied = Math.min(order.outstandingAmount, remaining);
+        order.outstandingAmount -= applied;
+        order.appliedAmount += applied;
+        order.allocations.push({ paymentId: payment.id, amount: applied, date: getPaymentDateKey2(payment) || payment.date });
+        payment.appliedAmount += applied;
+        payment.allocations.push({ orderId: order.id, amount: applied, date: order.date });
+        remaining -= applied;
+      }
+      if (remaining > 0) {
+        payment.overpaidAmount = remaining;
+        customerCredit += remaining;
+      }
+    }
+    const orderDetails = [];
+    for (const order of orders) {
+      yield;
+      orderDetails.push({
+        ...order,
+        outstandingAmount: Math.max(0, order.outstandingAmount),
+        status: order.outstandingAmount <= 0 ? "paid" : order.appliedAmount > 0 ? "partial" : "unpaid"
+      });
+    }
+    let totalRevenue = 0, totalPaid = 0, currentDebt = 0;
+    for (const order of orderDetails) {
+      yield;
+      totalRevenue += order.isOpeningDebt ? 0 : order.amount || 0;
+    }
+    for (const payment of payments) {
+      yield;
+      totalPaid += payment.amount || 0;
+    }
+    for (const order of orderDetails) {
+      yield;
+      currentDebt += order.outstandingAmount || 0;
+    }
+    return {
+      orders: orderDetails,
+      payments,
+      totalRevenue,
+      totalPaid,
+      currentDebt,
+      creditBalance: Math.max(0, customerCredit)
+    };
+  }
+  const iterator = calculate();
+  if (cooperative) return iterator;
+  for (; ; ) {
+    const next = iterator.next();
+    if (next.done) return next.value;
+  }
+};
+var buildCustomerSupplierPurchaseLedger2 = (customerOrId, warehouseImports = []) => {
+  const customerRecord = typeof customerOrId === "object" && customerOrId !== null ? customerOrId : null;
+  const customerId = `${customerRecord?.id || (typeof customerOrId === "string" ? customerOrId : "") || ""}`.trim();
+  const customerPhone = normalizeCustomerPhone2(customerRecord?.phone || customerRecord?.phoneNumber || "");
+  const customerNameKey = normalizeLookupText2(getCustomerDisplayName2(customerRecord) || customerRecord?.name || "");
+  const openingPayableAmount = getCustomerOpeningPayableAmount2(customerRecord || {});
+  const openingPayableDate = getCustomerOpeningPayableDate2(customerRecord || {});
+  const openingPayableNote = `${customerRecord?.openingPayableNote || customerRecord?.oldPayableNote || customerRecord?.companyOpeningDebtNote || ""}`.trim();
+  const imports = (Array.isArray(warehouseImports) ? warehouseImports : []).filter((item) => item && !item.isArchived).filter((item) => {
+    const supplierCustomerId = `${item.supplierCustomerId || item.linkedCustomerId || item.customerId || ""}`.trim();
+    if (customerId && supplierCustomerId && supplierCustomerId === customerId) return true;
+    const supplierPhone = normalizeCustomerPhone2(item.supplierPhone || item.phone || item.customerPhone || "");
+    if (customerPhone && supplierPhone && supplierPhone === customerPhone) return true;
+    const supplierNameKey = normalizeLookupText2(item.supplier || item.supplierName || item.customerName || item.customerNameSnapshot || "");
+    return Boolean(customerNameKey && supplierNameKey && supplierNameKey === customerNameKey);
+  }).map((item) => {
+    const totalKg = parseLooseQuantityValue2(item.totalKg ?? item.weightKg ?? item.kg);
+    const unitPrice = parseLooseMoneyValue2(item.unitPrice ?? item.price);
+    const rawAmount = parseLooseMoneyValue2(item.amount ?? item.totalAmount ?? item.value ?? item.total);
+    const amount2 = roundMoneyValue2(item.amount != null || item.totalAmount != null || item.value != null || item.total != null ? rawAmount : purchaseAmount({ ...item, totalKg, quantity: parseLooseQuantityValue2(item.quantity), unitPrice }, item.purchaseUnit || "Kg"));
+    return { ...item, amount: amount2 };
+  }).filter((item) => item.amount > 0).sort(compareLedgerItems2);
+  const purchaseImportAmount = roundMoneyValue2(imports.reduce((sum, item) => sum + parseLooseMoneyValue2(item.amount), 0));
+  const totalPurchaseDebt = roundMoneyValue2(openingPayableAmount + purchaseImportAmount);
+  return {
+    imports,
+    purchaseImportAmount,
+    openingPayableAmount,
+    openingPayableDate,
+    openingPayableNote,
+    hasOpeningPayable: openingPayableAmount > 0,
+    totalPurchaseDebt
+  };
+};
+var applyCustomerSupplierReconciliation2 = (ledger = {}, purchaseLedger = {}, repayments = []) => {
+  const salesDebtBeforeReconcile = Math.max(0, roundMoneyValue2(parseLooseMoneyValue2(ledger.currentDebt)));
+  const customerCreditBeforeReconcile = Math.max(0, roundMoneyValue2(parseLooseMoneyValue2(ledger.creditBalance)));
+  const purchaseDebt = Math.max(0, roundMoneyValue2(parseLooseMoneyValue2(purchaseLedger.totalPurchaseDebt)));
+  const totalRepaid = roundMoneyValue2(repayments.reduce((sum, item) => sum + Math.max(0, parseLooseMoneyValue2(item.amount)), 0));
+  const companyOwesBeforeReconcile = roundMoneyValue2(customerCreditBeforeReconcile + purchaseDebt - totalRepaid);
+  const reconciliationOffset = Math.max(0, roundMoneyValue2(Math.min(salesDebtBeforeReconcile, companyOwesBeforeReconcile)));
+  const currentDebt = Math.max(0, roundMoneyValue2(salesDebtBeforeReconcile - companyOwesBeforeReconcile));
+  const creditBalance = Math.max(0, roundMoneyValue2(companyOwesBeforeReconcile - salesDebtBeforeReconcile));
+  return {
+    ...ledger,
+    repayments,
+    totalRepaid,
+    currentDebt,
+    creditBalance,
+    hasPurchaseReconciliation: (purchaseLedger.imports || []).length > 0 || purchaseDebt > 0,
+    salesDebtBeforeReconcile,
+    customerCreditBeforeReconcile,
+    openingPayableAmount: purchaseLedger.openingPayableAmount || 0,
+    openingPayableDate: purchaseLedger.openingPayableDate || "",
+    openingPayableNote: purchaseLedger.openingPayableNote || "",
+    purchaseImportAmount: purchaseLedger.purchaseImportAmount || 0,
+    purchaseDebt,
+    purchaseImports: purchaseLedger.imports || [],
+    companyOwesBeforeReconcile,
+    reconciliationOffset,
+    reconciliationNetAmount: currentDebt || creditBalance,
+    reconciliationStatus: currentDebt > 0 ? "customer_owes_company" : creditBalance > 0 ? "company_owes_customer" : "balanced"
+  };
+};
+var getCustomerDebtRepayments2 = (customerOrId, expenses = []) => {
+  const customerId = typeof customerOrId === "string" ? customerOrId : customerOrId?.id;
+  return expenses.filter((item) => item && !item.isArchived && item.sourceType === "customer_debt_repayment" && item.customerId === customerId && isCashflowOfficial2(item) && (!customerOrId?.companyId || item.companyId === customerOrId.companyId));
+};
+var buildCustomerReconciledLedger2 = (customerOrId, allOrders = [], allPayments = [], warehouseImports = [], expenses = []) => {
+  const ledger = buildCustomerLedger2(customerOrId, allOrders, allPayments);
+  const purchaseLedger = buildCustomerSupplierPurchaseLedger2(customerOrId, warehouseImports);
+  return applyCustomerSupplierReconciliation2(ledger, purchaseLedger, getCustomerDebtRepayments2(customerOrId, expenses));
+};
+var getDateKeyFromAnyValue2 = (value = "") => {
+  if (!value) return "";
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "" : toDateInputString2(value);
+  if (typeof value === "number" && Number.isFinite(value)) return toDateInputString2(new Date(value));
+  if (typeof value?.toDate === "function") {
+    const parsedDate = value.toDate();
+    return parsedDate instanceof Date && !Number.isNaN(parsedDate.getTime()) ? toDateInputString2(parsedDate) : "";
+  }
+  if (typeof value === "object") {
+    const timestamp = parseEntityTimestampValue2(value);
+    return timestamp ? toDateInputString2(new Date(timestamp)) : "";
+  }
+  const raw = `${value || ""}`.trim();
+  const directDate = raw.match(/\d{4}-\d{2}-\d{2}/)?.[0] || "";
+  if (directDate) return directDate;
+  const vietnameseTimestamp = parseVietnameseDateTimeString2(raw);
+  if (vietnameseTimestamp) return toDateInputString2(new Date(vietnameseTimestamp));
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? "" : toDateInputString2(parsed);
+};
+var getPaymentRawPayosData2 = (payment = {}) => {
+  const rawWebhook = payment.rawWebhook || payment.rawPayload || {};
+  const data = rawWebhook?.data || {};
+  const paymentLink = rawWebhook?.paymentLink || data?.paymentLink || {};
+  const latestTransaction = rawWebhook?.latestTransaction || data?.latestTransaction || {};
+  const transactions = Array.isArray(paymentLink?.transactions) ? paymentLink.transactions : [];
+  const latestLinkedTransaction = transactions.slice().sort((a, b) => `${b?.transactionDateTime || b?.transactionDate || b?.createdAt || ""}`.localeCompare(`${a?.transactionDateTime || a?.transactionDate || a?.createdAt || ""}`))[0] || {};
+  return {
+    rawWebhook,
+    data,
+    paymentLink,
+    latestTransaction,
+    latestLinkedTransaction
+  };
+};
+var getPaymentDateCandidates2 = (payment = {}) => {
+  const { rawWebhook, data, paymentLink, latestTransaction, latestLinkedTransaction } = getPaymentRawPayosData2(payment);
+  return [
+    payment.paymentDate,
+    payment.transactionDate,
+    payment.transactionDateTime,
+    payment.bankTransactionDate,
+    data.transactionDateTime,
+    data.transactionDate,
+    data.paymentTime,
+    data.completedTime,
+    data.paidAt,
+    latestTransaction.transactionDateTime,
+    latestTransaction.transactionDate,
+    latestTransaction.paymentTime,
+    latestTransaction.completedTime,
+    latestTransaction.paidAt,
+    latestTransaction.createdAt,
+    latestLinkedTransaction.transactionDateTime,
+    latestLinkedTransaction.transactionDate,
+    latestLinkedTransaction.paymentTime,
+    latestLinkedTransaction.completedTime,
+    latestLinkedTransaction.paidAt,
+    latestLinkedTransaction.createdAt,
+    paymentLink.transactionDateTime,
+    paymentLink.transactionDate,
+    paymentLink.paymentTime,
+    paymentLink.completedTime,
+    paymentLink.paidAt,
+    paymentLink.createdAt,
+    rawWebhook.transactionDateTime,
+    rawWebhook.transactionDate,
+    rawWebhook.paymentTime,
+    rawWebhook.completedTime,
+    rawWebhook.paidAt,
+    payment.paidAt,
+    payment.transactionAt,
+    payment.transactedAt,
+    payment.paymentTime,
+    payment.completedTime,
+    payment.completedAt,
+    data.createdAt,
+    rawWebhook.createdAt,
+    payment.date,
+    payment.createdAt,
+    payment.updatedAt,
+    getEntityTimestamp2(payment)
+  ];
+};
+var getPaymentDateSource2 = (payment = {}) => getPaymentDateCandidates2(payment).find((candidate) => getDateKeyFromAnyValue2(candidate)) || "";
+var getPaymentDateKey2 = (payment = {}) => getDateKeyFromAnyValue2(getPaymentDateSource2(payment));
+var getPaymentTimestamp2 = (payment = {}) => parseEntityTimestampValue2(getPaymentDateSource2(payment)) || getEntityTimestamp2(payment) || (getPaymentDateKey2(payment) ? (/* @__PURE__ */ new Date(`${getPaymentDateKey2(payment)}T12:00:00`)).getTime() : 0);
+
+// development/hd-manager/application/src/utils/salesCommissionTiers.js
+var MAX_COMMISSION_TIERS = 5;
+var COMMISSION_POLICY_KEYS = Object.freeze([
+  "commissionTiers",
+  "commissionPolicy",
+  "commissionPolicyDraft",
+  "commissionRate",
+  "commissionBaseMode",
+  "targetRevenue",
+  "payrollPolicies",
+  "salaryPolicyHistory",
+  "salaryPolicyVersion",
+  "salaryPolicyEffectiveFrom"
+]);
+function normalizeSalesCommissionTiers(value = [], baseRate = 0) {
+  if (!Array.isArray(value) || value.length > MAX_COMMISSION_TIERS) throw Error("Ch\u1EC9 \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh t\u1ED1i \u0111a 5 m\u1ED1c hoa h\u1ED3ng.");
+  if (!value.length) return [];
+  if (!Number.isFinite(baseRate) || baseRate < 0 || baseRate > 1) throw Error("T\u1EF7 l\u1EC7 hoa h\u1ED3ng c\u01A1 b\u1EA3n ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn 100%.");
+  const tiers = value.map((tier) => {
+    if (!tier || !Number.isSafeInteger(tier.minExcessRevenue) || tier.minExcessRevenue <= 0) throw Error("M\u1ED7i m\u1ED1c ph\u1EA3i c\xF3 s\u1ED1 doanh thu v\u01B0\u1EE3t ch\u1EC9 ti\xEAu l\u1EDBn h\u01A1n 0.");
+    if (!Number.isFinite(tier.rate) || tier.rate < 0 || tier.rate > 1) throw Error("T\u1EF7 l\u1EC7 c\u1EE7a m\u1ED7i m\u1ED1c ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn 100%.");
+    return { minExcessRevenue: tier.minExcessRevenue, rate: tier.rate };
+  }).sort((a, b) => a.minExcessRevenue - b.minExcessRevenue);
+  for (let i = 0; i < tiers.length; i++) {
+    if (i && tiers[i].minExcessRevenue === tiers[i - 1].minExcessRevenue) throw Error("C\xE1c m\u1ED1c doanh thu kh\xF4ng \u0111\u01B0\u1EE3c tr\xF9ng nhau.");
+    if (tiers[i].rate < (i ? tiers[i - 1].rate : baseRate)) throw Error("T\u1EF7 l\u1EC7 hoa h\u1ED3ng c\u1EE7a m\u1ED1c sau kh\xF4ng \u0111\u01B0\u1EE3c th\u1EA5p h\u01A1n m\u1ED1c tr\u01B0\u1EDBc.");
+  }
+  return tiers;
+}
+function salesCommissionBreakdown(revenue, target, baseRate, tiers = []) {
+  const actual = Number(revenue), goal = Number(target);
+  if (!Number.isFinite(actual) || !Number.isFinite(goal)) throw Error("Doanh thu ho\u1EB7c ch\u1EC9 ti\xEAu ch\u01B0a h\u1EE3p l\u1EC7.");
+  const excessRevenue = Math.max(0, actual - goal), normalized = normalizeSalesCommissionTiers(tiers, baseRate);
+  let rate = baseRate, matchedThreshold = null;
+  for (const tier of normalized) if (excessRevenue >= tier.minExcessRevenue) {
+    rate = tier.rate;
+    matchedThreshold = tier.minExcessRevenue;
+  } else break;
+  return { excessRevenue, rate, matchedThreshold, amount: excessRevenue * rate };
+}
+
+// development/hd-manager/application/src/utils/commissionPolicy.js
+var COMMISSION_METHODS = Object.freeze({ fixed: "T\u1EF7 l\u1EC7 c\u1ED1 \u0111\u1ECBnh tr\xEAn doanh thu", above_kpi: "T\u1EF7 l\u1EC7 tr\xEAn ph\u1EA7n v\u01B0\u1EE3t KPI", progressive: "L\u0169y ti\u1EBFn t\u1EEBng b\u1EADc", retrospective: "H\u1ED3i t\u1ED1 theo b\u1EADc \u0111\u1EA1t \u0111\u01B0\u1EE3c" });
+var COMMISSION_BASES = Object.freeze({ recognized_net: "Doanh thu \u0111\u01A1n h\u1EE3p l\u1EC7 sau gi\u1EA3m gi\xE1", collected: "Doanh thu th\u1EF1c thu \u0111\xE3 ph\xE2n b\u1ED5 v\xE0o \u0111\u01A1n" });
+var fail = (message) => {
+  throw Error(message);
+};
+var amount = (value, label) => {
+  const number2 = Number(value);
+  if (value === "" || value === null || !Number.isSafeInteger(number2) || number2 < 0) fail(`${label} ph\u1EA3i l\xE0 s\u1ED1 ti\u1EC1n nguy\xEAn, kh\xF4ng \xE2m.`);
+  return number2;
+};
+function date(value, label) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) fail(`${label} ch\u01B0a h\u1EE3p l\u1EC7.`);
+  const parsed = /* @__PURE__ */ new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) fail(`${label} ch\u01B0a h\u1EE3p l\u1EC7.`);
+  return value;
+}
+function normalizeCommissionPolicy(input) {
+  if (!input || input.schemaVersion !== 2 || !Object.hasOwn(COMMISSION_METHODS, input.method) || !Object.hasOwn(COMMISSION_BASES, input.revenueBasis)) fail("Ch\xEDnh s\xE1ch hoa h\u1ED3ng kh\xF4ng h\u1EE3p l\u1EC7.");
+  if (input.cycle !== "months") fail("Chu k\u1EF3 qu\xFD/n\u0103m c\u1EA7n quy t\u1EAFc ph\xE2n b\u1ED5 v\xE0o b\u1EA3ng l\u01B0\u01A1ng th\xE1ng tr\u01B0\u1EDBc khi \xE1p d\u1EE5ng.");
+  if (typeof input.policyId !== "string" || !/^[-\w]{1,100}$/.test(input.policyId)) fail("Thi\u1EBFu m\xE3 phi\xEAn b\u1EA3n ch\xEDnh s\xE1ch hoa h\u1ED3ng.");
+  if (!["draft", "active", "paused"].includes(input.status)) fail("Tr\u1EA1ng th\xE1i ch\xEDnh s\xE1ch ch\u01B0a h\u1EE3p l\u1EC7.");
+  const effectiveFrom = date(input.effectiveFrom, "Ng\xE0y b\u1EAFt \u0111\u1EA7u");
+  if (!effectiveFrom.endsWith("-01")) fail("Ch\xEDnh s\xE1ch hoa h\u1ED3ng theo th\xE1ng ph\u1EA3i b\u1EAFt \u0111\u1EA7u t\u1EEB ng\xE0y \u0111\u1EA7u th\xE1ng; kh\xF4ng t\u1EF1 chia KPI gi\u1EEFa th\xE1ng.");
+  const effectiveTo = input.effectiveTo ? date(input.effectiveTo, "Ng\xE0y k\u1EBFt th\xFAc") : "";
+  if (effectiveTo && (effectiveTo < effectiveFrom || (/* @__PURE__ */ new Date(`${effectiveTo}T00:00:00Z`)).getUTCDate() !== new Date(Number(effectiveTo.slice(0, 4)), Number(effectiveTo.slice(5, 7)), 0).getDate())) fail("Ng\xE0y k\u1EBFt th\xFAc ph\u1EA3i l\xE0 cu\u1ED1i th\xE1ng v\xE0 kh\xF4ng tr\u01B0\u1EDBc ng\xE0y b\u1EAFt \u0111\u1EA7u.");
+  const rate = Number(input.rate);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) fail("T\u1EF7 l\u1EC7 hoa h\u1ED3ng ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn 100%.");
+  const usesTiers = ["progressive", "retrospective"].includes(input.method);
+  if (!Array.isArray(input.tiers) || input.tiers.length > MAX_COMMISSION_TIERS || usesTiers && !input.tiers.length) fail(`C\u1EA7n t\u1EEB 1 \u0111\u1EBFn ${MAX_COMMISSION_TIERS} b\u1EADc cho ph\u01B0\u01A1ng ph\xE1p theo b\u1EADc.`);
+  const ids = /* @__PURE__ */ new Set();
+  const tiers = input.tiers.map((tier, index) => {
+    if (typeof tier.id !== "string" || !/^[-\w]{1,100}$/.test(tier.id) || ids.has(tier.id)) fail("M\xE3 b\u1EADc b\u1ECB thi\u1EBFu ho\u1EB7c tr\xF9ng.");
+    ids.add(tier.id);
+    const from = amount(tier.from, "M\u1ED1c b\u1EAFt \u0111\u1EA7u"), to = tier.to === null ? null : amount(tier.to, "M\u1ED1c k\u1EBFt th\xFAc");
+    if (to !== null && to <= from) fail(`B\u1EADc ${index + 1}: m\u1ED1c k\u1EBFt th\xFAc ph\u1EA3i l\u1EDBn h\u01A1n m\u1ED1c b\u1EAFt \u0111\u1EA7u.`);
+    if (!Number.isFinite(tier.rate) || tier.rate < 0 || tier.rate > 1 || typeof tier.enabled !== "boolean") fail(`B\u1EADc ${index + 1}: t\u1EF7 l\u1EC7 ho\u1EB7c tr\u1EA1ng th\xE1i kh\xF4ng h\u1EE3p l\u1EC7.`);
+    return { id: tier.id, from, to, rate: tier.rate, fixedBonus: amount(tier.fixedBonus ?? 0, "Th\u01B0\u1EDFng c\u1ED1 \u0111\u1ECBnh"), enabled: tier.enabled };
+  }).sort((a, b) => a.from - b.from);
+  if (usesTiers) for (let i = 0; i < tiers.length; i++) {
+    if (tiers[i].from !== (i ? tiers[i - 1].to : 0)) fail(`B\u1EADc ${i + 1}: c\xE1c kho\u1EA3ng ph\u1EA3i li\u1EC1n nhau t\u1EEB 0, kh\xF4ng \u0111\u01B0\u1EE3c tr\u1ED1ng ho\u1EB7c ch\u1ED3ng l\u1EA5n.`);
+    if (tiers[i].to === null !== (i === tiers.length - 1)) fail("Ch\u1EC9 b\u1EADc cu\u1ED1i \u0111\u01B0\u1EE3c kh\xF4ng gi\u1EDBi h\u1EA1n; b\u1EADc cu\u1ED1i ph\u1EA3i kh\xF4ng gi\u1EDBi h\u1EA1n.");
+  }
+  return { schemaVersion: 2, policyId: input.policyId, method: input.method, revenueBasis: input.revenueBasis, cycle: "months", status: input.status, targetRevenue: amount(input.targetRevenue, "Ch\u1EC9 ti\xEAu doanh thu"), rate, effectiveFrom, effectiveTo, tiers: usesTiers ? tiers : [] };
+}
+var SCALE = 100000000n;
+var rateUnits = (rate) => BigInt(Math.round(rate * Number(SCALE)));
+function moneyFromUnits(units) {
+  const cents = (units * 100n + SCALE / 2n) / SCALE;
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) fail("Hoa h\u1ED3ng v\u01B0\u1EE3t gi\u1EDBi h\u1EA1n t\xEDnh ti\u1EC1n an to\xE0n.");
+  return Number(cents) / 100;
+}
+function calculateCommissionPolicy(policy, revenue, { monthKey: monthKey2 = "", preview = false } = {}) {
+  const config = normalizeCommissionPolicy(policy), actual = amount(revenue, "Doanh thu"), excess = Math.max(0, actual - config.targetRevenue);
+  const inPeriod = !monthKey2 || monthKey2 >= config.effectiveFrom.slice(0, 7) && (!config.effectiveTo || monthKey2 <= config.effectiveTo.slice(0, 7));
+  const payable = inPeriod && (preview || config.status === "active");
+  let total = 0n;
+  const rows = [];
+  if (config.method === "fixed" || config.method === "above_kpi") {
+    const basis = config.method === "fixed" ? actual : excess;
+    total = BigInt(basis) * rateUnits(config.rate);
+    rows.push({ id: "flat", from: 0, to: null, amountWithinTier: basis, rate: config.rate, fixedBonus: 0, commission: moneyFromUnits(total) });
+  } else if (config.method === "progressive") {
+    for (const tier of config.tiers) {
+      const within = Math.max(0, Math.min(excess, tier.to ?? excess) - tier.from);
+      const bonus = within > 0 && tier.enabled ? tier.fixedBonus : 0;
+      const units = tier.enabled ? BigInt(within) * rateUnits(tier.rate) + BigInt(bonus) * SCALE : 0n;
+      total += units;
+      rows.push({ ...tier, amountWithinTier: within, fixedBonus: bonus, commission: moneyFromUnits(units) });
+    }
+  } else {
+    const tier = config.tiers.find((row) => excess > row.from && (row.to === null || excess <= row.to));
+    if (tier) {
+      const bonus = tier.enabled ? tier.fixedBonus : 0;
+      total = tier.enabled ? BigInt(excess) * rateUnits(tier.rate) + BigInt(bonus) * SCALE : 0n;
+      rows.push({ ...tier, fixedBonus: bonus, amountWithinTier: excess, commission: moneyFromUnits(total) });
+    }
+  }
+  const commission = payable ? moneyFromUnits(total) : 0;
+  const roundingAdjustment = payable ? Math.round(commission * 100 - rows.reduce((sum, row) => sum + Math.round(row.commission * 100), 0)) / 100 : 0;
+  return { schemaVersion: 2, policyId: config.policyId, method: config.method, revenueBasis: config.revenueBasis, status: config.status, monthKey: monthKey2, actualRevenue: actual, revenueTarget: config.targetRevenue, revenueExcess: excess, inPeriod, ready: true, commission, rows: payable ? rows : [], roundingAdjustment, rounding: "sum_exact_rate_units_then_round_to_2_decimals" };
+}
+
+// development/hd-manager/application/src/utils/commissionRevenue.js
+var invalidStatuses = /* @__PURE__ */ new Set(["cancelled", "canceled", "rejected", "reversed", "voided", "deleted"]);
+var confirmedReviews = /* @__PURE__ */ new Set(["confirmed", "completed", "approved", "approved_for_zalo"]);
+var cache = /* @__PURE__ */ new WeakMap();
+function unique(rows, companyId, label, blockers) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows || []) {
+    if (!row || row.companyId !== companyId || row.isArchived) continue;
+    if (!row.id) {
+      blockers.push(`${label} thi\u1EBFu ID ngu\u1ED3n.`);
+      continue;
+    }
+    if (map.has(row.id) && JSON.stringify(map.get(row.id)) !== JSON.stringify(row)) {
+      blockers.push(`${label} ${row.id}: c\xF3 c\xE1c phi\xEAn b\u1EA3n xung \u0111\u1ED9t.`);
+      continue;
+    }
+    map.set(row.id, row);
+  }
+  return [...map.values()];
+}
+function reconcileCommissionRevenue({ employee, policy, orders = [], customers = [], payments = [], monthKey: monthKey2 }) {
+  const config = normalizeCommissionPolicy(policy), companyId = employee?.companyId;
+  if (!companyId || !employee.id || !/^\d{4}-(0[1-9]|1[0-2])$/.test(monthKey2 || "")) throw Error("Thi\u1EBFu ph\u1EA1m vi c\xF4ng ty, nh\xE2n vi\xEAn ho\u1EB7c k\u1EF3 hoa h\u1ED3ng.");
+  let byCustomers = cache.get(orders);
+  if (!byCustomers) {
+    byCustomers = /* @__PURE__ */ new WeakMap();
+    cache.set(orders, byCustomers);
+  }
+  let byPayments = byCustomers.get(customers);
+  if (!byPayments) {
+    byPayments = /* @__PURE__ */ new WeakMap();
+    byCustomers.set(customers, byPayments);
+  }
+  let entries = byPayments.get(payments);
+  if (!entries) {
+    entries = /* @__PURE__ */ new Map();
+    byPayments.set(payments, entries);
+  }
+  const key = JSON.stringify([companyId, employee.id, monthKey2, config.revenueBasis]);
+  if (entries.has(key)) return entries.get(key);
+  const blockers = [], rows = [], excluded = [];
+  const customerRows = unique(customers, companyId, "Kh\xE1ch h\xE0ng", blockers), customerById = new Map(customerRows.map((row) => [row.id, row]));
+  const rawOrders = unique(orders, companyId, "\u0110\u01A1n h\xE0ng", blockers), accepted = [];
+  for (const order of rawOrders) {
+    const mine = getSalesOrderEmployeeId(order, customerById) === employee.id, inMonth2 = getSalesOrderMonthKey(order) === monthKey2;
+    let reason = "";
+    if (order.isReversed === true || invalidStatuses.has(String(order.status || "").toLowerCase()) || invalidStatuses.has(String(order.reviewStatus || "").toLowerCase())) reason = "\u0110\xE3 h\u1EE7y/\u0111\u1EA3o";
+    else if (!confirmedReviews.has(order.reviewStatus)) reason = "Ch\u01B0a x\xE1c nh\u1EADn doanh thu";
+    else if (order.returnFinancialStatus === "BUSINESS_RULE_REQUIRED" || (Number(order.returnTransactionCount) > 0 || [...order.returnGoods || [], ...order.returnedGoods || []].some((row) => row && !row.isArchived)) && order.returnFinancialStatus !== "CONFIRMED") {
+      reason = "H\xE0ng tr\u1EA3 ch\u01B0a c\xF3 x\xE1c nh\u1EADn \u0111i\u1EC1u ch\u1EC9nh ti\u1EC1n";
+      if (mine && (inMonth2 || config.revenueBasis === "collected")) blockers.push(`\u0110\u01A1n ${order.id}: ${reason}.`);
+    } else if (!Number.isSafeInteger(Number(order.amount)) || Number(order.amount) < 0) {
+      reason = "S\u1ED1 ti\u1EC1n ch\u1EE9ng t\u1EEB ch\u01B0a h\u1EE3p l\u1EC7";
+      if (mine && inMonth2) blockers.push(`\u0110\u01A1n ${order.id}: ${reason}.`);
+    }
+    if (reason) {
+      if (mine && inMonth2) excluded.push({ orderId: order.id, reason });
+      continue;
+    }
+    accepted.push(order);
+    if (config.revenueBasis === "recognized_net" && mine && inMonth2) rows.push({ orderId: order.id, customerId: order.customerId, employeeId: employee.id, date: order.date, amount: Number(order.amount), discount: Number(order.discount) || 0, revision: order.updatedAt || order.createdAt || null, source: "orders.amount" });
+  }
+  if (config.revenueBasis === "collected") {
+    const paymentRows = unique(payments, companyId, "Phi\u1EBFu thu", blockers).filter((row) => !row.isReversed && !invalidStatuses.has(String(row.status || "").toLowerCase()));
+    const orderById = new Map(accepted.map((row) => [row.id, row]));
+    for (const customer of customerRows) {
+      if (!accepted.some((row) => row.customerId === customer.id && getSalesOrderEmployeeId(row, customerById) === employee.id)) continue;
+      if (paymentRows.some((payment) => payment.customerId === customer.id && getPaymentDateKey2(payment).slice(0, 7) === monthKey2 && payment.matchedOrderId && !rawOrders.some((order) => order.id === payment.matchedOrderId))) blockers.push(`Kh\xE1ch ${customer.id}: thi\u1EBFu \u0111\u01A1n ngu\u1ED3n c\u1EE7a phi\u1EBFu thu \u0111\xE3 kh\u1EDBp; c\u1EA7n t\u1EA3i/\u0111\u1ED1i so\xE1t \u0111\u1EE7 l\u1ECBch s\u1EED.`);
+      const ledger = buildCustomerReconciledLedger2(customer, rawOrders, paymentRows);
+      if (ledger.orders.some((order) => order.creditApplied > 0 && orderById.has(order.id) && getSalesOrderEmployeeId(order, customerById) === employee.id)) blockers.push(`Kh\xE1ch ${customer.id}: ti\u1EC1n thu tr\u01B0\u1EDBc ch\u01B0a c\xF3 ph\xE2n b\u1ED5 v\u1EC1 phi\u1EBFu thu ngu\u1ED3n; c\u1EA7n \u0111\u1ED1i so\xE1t tr\u01B0\u1EDBc khi t\xEDnh hoa h\u1ED3ng th\u1EF1c thu.`);
+      for (const payment of ledger.payments) {
+        const paymentDate = getPaymentDateKey2(payment);
+        if (paymentDate.slice(0, 7) !== monthKey2) continue;
+        for (const allocation of payment.allocations || []) {
+          const order = orderById.get(allocation.orderId);
+          if (!order || order.isOpeningDebt || getSalesOrderEmployeeId(order, customerById) !== employee.id) continue;
+          rows.push({ orderId: order.id, paymentId: payment.id, customerId: customer.id, employeeId: employee.id, date: paymentDate, amount: allocation.amount, source: "payments.allocations", revision: payment.updatedAt || payment.createdAt || null });
+        }
+      }
+    }
+  }
+  const revenue = rows.reduce((sum, row) => sum + row.amount, 0);
+  if (!Number.isSafeInteger(revenue)) blockers.push("T\u1ED5ng doanh thu ch\u01B0a \u1EDF \u0111\u1ED9 ch\xEDnh x\xE1c ti\u1EC1n \u0111\u1ED3ng an to\xE0n.");
+  const result = Object.freeze({ ready: blockers.length === 0, revenue, companyId, employeeId: employee.id, monthKey: monthKey2, revenueBasis: config.revenueBasis, rows, excluded, blockers: [...new Set(blockers)] });
+  if (entries.size >= 128) entries.clear();
+  entries.set(key, result);
+  return result;
+}
+function buildCommissionCalculation({ employee, orders, customers, payments, monthKey: monthKey2 }) {
+  if (!employee?.commissionPolicy) return null;
+  try {
+    const policy = normalizeCommissionPolicy(employee.commissionPolicy);
+    const inactive = policy.status !== "active" || monthKey2 < policy.effectiveFrom.slice(0, 7) || policy.effectiveTo && monthKey2 > policy.effectiveTo.slice(0, 7);
+    const evidence = inactive ? { ready: true, revenue: 0, rows: [], excluded: [], blockers: [] } : reconcileCommissionRevenue({ employee, policy, orders, customers, payments, monthKey: monthKey2 });
+    const calculation = calculateCommissionPolicy(policy, evidence.revenue, { monthKey: monthKey2 });
+    return { ...calculation, actualRevenue: inactive ? null : calculation.actualRevenue, revenueNotEvaluated: inactive, ready: evidence.ready, commission: evidence.ready ? calculation.commission : 0, sourceEvidence: evidence, policy };
+  } catch (error) {
+    return { schemaVersion: 2, ready: false, commission: 0, rows: [], sourceEvidence: { ready: false, rows: [], excluded: [], blockers: [error.message] } };
+  }
+}
+function assertCommissionCalculationReady(details, employeeId) {
+  if (details?.commissionCalculation?.ready === false) throw Error(`Ch\u01B0a \u0111\u1ED1i so\xE1t hoa h\u1ED3ng ${employeeId}: ${(details.commissionCalculation.sourceEvidence?.blockers || []).join(" ")}`);
+}
+
+// development/hd-manager/application/src/utils/salaryAdvancePeriod.js
+var normalizeMonthCandidate = (value = "") => {
+  const text3 = `${value || ""}`.trim();
+  const match = text3.match(/^(\d{4})-(\d{2})/);
+  if (!match) return "";
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12 ? `${match[1]}-${match[2]}` : "";
+};
+var getSalaryAdvanceMonth = (record = {}) => {
+  const candidates = [
+    record.salaryMonth,
+    record.deductionMonth,
+    record.payrollMonth,
+    record.date,
+    record.createdAt
+  ];
+  for (const candidate of candidates) {
+    const monthKey2 = normalizeMonthCandidate(candidate);
+    if (monthKey2) return monthKey2;
+  }
+  return "";
+};
+var isSalaryAdvanceInMonth = (record = {}, monthKey2 = "") => {
+  const expectedMonth = normalizeMonthCandidate(monthKey2);
+  return Boolean(expectedMonth) && getSalaryAdvanceMonth(record) === expectedMonth;
 };
 
 // development/hd-manager/application/src/utils/employeeReviewSourceIndex.js
@@ -1423,7 +2442,7 @@ var collectLeaveDays = ({ entries, attendanceEntries, employeeId, companyId, mon
     status: "complete",
     value: days.length,
     records: filtered,
-    details: days.map((date) => ({ date }))
+    details: days.map((date2) => ({ date: date2 }))
   };
 };
 var collectValidatedComplaints = ({ complaints, employeeId, companyId, monthKey: monthKey2 } = {}) => {
@@ -1658,207 +2677,6 @@ var applyEvaluationBonusToSalaryDetails = (salaryDetails, evaluationResult) => {
     netSalary: Math.round(toFiniteNumber(salaryDetails.netSalary) + evaluationBonus)
   };
 };
-
-// development/hd-manager/application/src/utils/attendanceWorkRoles.js
-function getWorkRoleRecord(record, primaryPosition, position = primaryPosition) {
-  if (!record) return null;
-  if (record.workRoles?.[position]) return record.workRoles[position];
-  return position === primaryPosition && (!record.workRole || record.workRole === position) && (record.status || record.checkIn || record.checkOut) ? record : null;
-}
-function employeeForWorkRole(employee = {}, position = employee?.position) {
-  employee ||= {};
-  if (position === employee.position) return employee;
-  const components = employee.roleSalaryComponents || employee.departmentSalaryComponents || employee.salaryByDepartment;
-  const component = (Array.isArray(components) ? components : []).find((row) => (row?.position || row?.department || row?.role) === position) || {};
-  return {
-    ...employee,
-    position,
-    shiftName: component.shiftName || "",
-    shiftStart: component.shiftStart || "",
-    shiftEnd: component.shiftEnd || "",
-    graceMinutes: component.graceMinutes,
-    missingAlertMinutes: component.missingAlertMinutes
-  };
-}
-function getWorkRoleMonthEntries(attendance, employee, position, monthKey2, calculateTiming) {
-  const roleEmployee = employeeForWorkRole(employee, position);
-  return Object.entries(attendance || {}).filter(([key, record]) => key.endsWith(`_${employee.id}`) && key.startsWith(`${monthKey2}-`) && (!record?.companyId || !employee.companyId || record.companyId === employee.companyId)).flatMap(([key, record]) => {
-    const roleRecord = getWorkRoleRecord(record, employee.position, position);
-    if (!roleRecord) return [];
-    const entry = {
-      date: key.slice(0, 10),
-      workRole: position,
-      isPrimaryRole: position === employee.position,
-      status: roleRecord.status || "missing",
-      checkIn: roleRecord.checkIn || null,
-      checkOut: roleRecord.checkOut || null,
-      checkInMethod: roleRecord.checkInMethod || "",
-      checkOutMethod: roleRecord.checkOutMethod || ""
-    };
-    return [{ ...entry, ...calculateTiming(roleEmployee, entry) }];
-  }).sort((a, b) => a.date.localeCompare(b.date));
-}
-function calculateWorkRoleSalary(amount, entries, monthDays, probationEndDate, probationRate = 1) {
-  const cutoff = probationEndDate ? new Date(probationEndDate).getTime() : NaN;
-  let workDaysProbation = 0;
-  let workDaysOfficial = 0;
-  for (const entry of entries) {
-    if (!["present", "late"].includes(entry.status) || entry.noSalaryDay) continue;
-    if ((/* @__PURE__ */ new Date(`${entry.date}T00:00:00`)).getTime() <= cutoff) workDaysProbation++;
-    else workDaysOfficial++;
-  }
-  return {
-    workDays: workDaysProbation + workDaysOfficial,
-    workDaysProbation,
-    workDaysOfficial,
-    calculatedAmount: monthDays > 0 ? Math.round(amount / monthDays * (workDaysOfficial + workDaysProbation * probationRate)) : 0
-  };
-}
-
-// development/hd-manager/application/src/utils/salaryAdvancePeriod.js
-var normalizeMonthCandidate = (value = "") => {
-  const text3 = `${value || ""}`.trim();
-  const match = text3.match(/^(\d{4})-(\d{2})/);
-  if (!match) return "";
-  const month = Number(match[2]);
-  return month >= 1 && month <= 12 ? `${match[1]}-${match[2]}` : "";
-};
-var getSalaryAdvanceMonth = (record = {}) => {
-  const candidates = [
-    record.salaryMonth,
-    record.deductionMonth,
-    record.payrollMonth,
-    record.date,
-    record.createdAt
-  ];
-  for (const candidate of candidates) {
-    const monthKey2 = normalizeMonthCandidate(candidate);
-    if (monthKey2) return monthKey2;
-  }
-  return "";
-};
-var isSalaryAdvanceInMonth = (record = {}, monthKey2 = "") => {
-  const expectedMonth = normalizeMonthCandidate(monthKey2);
-  return Boolean(expectedMonth) && getSalaryAdvanceMonth(record) === expectedMonth;
-};
-
-// development/hd-manager/application/src/utils/salesRevenuePeriod.js
-var normalizeId = (value) => `${value || ""}`.trim();
-var activeRevenueIndex = null;
-var createSalesRevenueIndexScope = () => {
-  const index = /* @__PURE__ */ new WeakMap();
-  return (calculate) => {
-    const previous = activeRevenueIndex;
-    activeRevenueIndex = index;
-    try {
-      return calculate();
-    } finally {
-      activeRevenueIndex = previous;
-    }
-  };
-};
-var withSalesRevenueIndex = (calculate) => createSalesRevenueIndexScope()(calculate);
-var toFiniteAmount = (value) => {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? amount : 0;
-};
-var normalizeSalesRevenueMonthKey = (value = "") => {
-  const text3 = `${value || ""}`.trim();
-  const directMatch = text3.match(/^(\d{4})-(\d{2})/);
-  if (directMatch) {
-    const month = Number(directMatch[2]);
-    return month >= 1 && month <= 12 ? `${directMatch[1]}-${directMatch[2]}` : "";
-  }
-  const date = value instanceof Date ? value : value && typeof value?.toDate === "function" ? value.toDate() : null;
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-};
-var getSalesOrderMonthKey = (order = {}) => {
-  const candidates = [order.date, order.orderDate, order.createdAt];
-  for (const candidate of candidates) {
-    const monthKey2 = normalizeSalesRevenueMonthKey(candidate);
-    if (monthKey2) return monthKey2;
-  }
-  return "";
-};
-var getSalesOrderEmployeeId = (order = {}, customerById = /* @__PURE__ */ new Map()) => {
-  const customer = customerById.get(normalizeId(order?.customerId));
-  return normalizeId(
-    order?.salesEmpId || customer?.empId || order?.createdByEmpId || order?.empId
-  );
-};
-var summarizeEmployeeSalesRevenueForMonth = ({
-  employeeId = "",
-  orders = [],
-  customers = [],
-  monthKey: monthKey2 = ""
-} = {}) => {
-  const safeEmployeeId = normalizeId(employeeId);
-  const safeMonthKey = normalizeSalesRevenueMonthKey(monthKey2);
-  if (!safeEmployeeId || !safeMonthKey) {
-    return { monthKey: safeMonthKey, revenue: 0, orderCount: 0, customerCount: 0, orderIds: [] };
-  }
-  const buildCustomerLookup = () => new Map(
-    (customers || []).filter((customer) => customer?.id).map((customer) => [normalizeId(customer.id), customer])
-  );
-  if (activeRevenueIndex && Array.isArray(orders) && Array.isArray(customers)) {
-    let byCustomers = activeRevenueIndex.get(orders);
-    if (!byCustomers) {
-      byCustomers = /* @__PURE__ */ new WeakMap();
-      activeRevenueIndex.set(orders, byCustomers);
-    }
-    let index = byCustomers.get(customers);
-    if (!index) {
-      const customerById2 = buildCustomerLookup();
-      index = /* @__PURE__ */ new Map();
-      for (const order of orders) {
-        if (!order || order.isArchived) continue;
-        const month = getSalesOrderMonthKey(order);
-        const owner = getSalesOrderEmployeeId(order, customerById2);
-        if (!month || !owner) continue;
-        if (!index.has(month)) index.set(month, /* @__PURE__ */ new Map());
-        const owners = index.get(month);
-        if (!owners.has(owner)) owners.set(owner, { revenue: 0, orderCount: 0, customers: /* @__PURE__ */ new Set(), orderIds: [] });
-        const row2 = owners.get(owner);
-        row2.revenue += toFiniteAmount(order.amount);
-        row2.orderCount += 1;
-        if (order.customerId) row2.customers.add(normalizeId(order.customerId));
-        if (order.id) row2.orderIds.push(normalizeId(order.id));
-      }
-      byCustomers.set(customers, index);
-    }
-    const row = index.get(safeMonthKey)?.get(safeEmployeeId);
-    return {
-      monthKey: safeMonthKey,
-      revenue: row?.revenue || 0,
-      orderCount: row?.orderCount || 0,
-      customerCount: row?.customers.size || 0,
-      orderIds: row ? [...row.orderIds] : []
-    };
-  }
-  const customerById = buildCustomerLookup();
-  const matchedCustomerIds = /* @__PURE__ */ new Set();
-  const orderIds = [];
-  let revenue = 0;
-  let orderCount = 0;
-  (orders || []).forEach((order) => {
-    if (!order || order.isArchived) return;
-    if (getSalesOrderMonthKey(order) !== safeMonthKey) return;
-    if (getSalesOrderEmployeeId(order, customerById) !== safeEmployeeId) return;
-    revenue += toFiniteAmount(order.amount);
-    orderCount += 1;
-    if (order.customerId) matchedCustomerIds.add(normalizeId(order.customerId));
-    if (order.id) orderIds.push(normalizeId(order.id));
-  });
-  return {
-    monthKey: safeMonthKey,
-    revenue,
-    orderCount,
-    customerCount: matchedCustomerIds.size,
-    orderIds
-  };
-};
-var calculateEmployeeSalesRevenueForMonth = (options = {}) => summarizeEmployeeSalesRevenueForMonth(options).revenue;
 
 // hd-domain:company-home
 var DEFAULT_SHIFT_POLICY = {
@@ -2637,8 +3455,8 @@ var parseDateInputValue = (dateStr) => {
   const parsed = new BusinessDate(`${dateStr || getTodayString()}T12:00:00`);
   return Number.isNaN(parsed.getTime()) ? new BusinessDate(`${getTodayString()}T12:00:00`) : parsed;
 };
-var addMonthsClamped = (date, monthsToAdd = 0) => {
-  const baseDate = new BusinessDate(date);
+var addMonthsClamped = (date2, monthsToAdd = 0) => {
+  const baseDate = new BusinessDate(date2);
   const targetDay = baseDate.getDate();
   baseDate.setDate(1);
   baseDate.setMonth(baseDate.getMonth() + monthsToAdd);
@@ -2711,9 +3529,9 @@ var getAttendanceLocalDateKey = (value) => {
 var getAttendanceDateKeyOffset = (dateStr, days = 0) => {
   const [year, month, day] = `${dateStr || ""}`.split("-").map(Number);
   if (![year, month, day].every(Number.isFinite)) return `${dateStr || ""}`;
-  const date = new BusinessDate(year, month - 1, day, 12, 0, 0, 0);
-  date.setDate(date.getDate() + days);
-  return getAttendanceLocalDateKey(date);
+  const date2 = new BusinessDate(year, month - 1, day, 12, 0, 0, 0);
+  date2.setDate(date2.getDate() + days);
+  return getAttendanceLocalDateKey(date2);
 };
 var normalizeAttendanceTimestampForWorkDate = (value, workDate, employee = {}, field = "checkIn") => {
   const parsed = parseAttendanceTimestamp(value);
@@ -2756,6 +3574,9 @@ var calculateCommission = (revenue, target, rate) => {
 };
 var calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
+  if (Array.isArray(employee?.commissionTiers) && employee.commissionTiers.length) {
+    return roundMoneyValue(salesCommissionBreakdown(revenue || 0, employee?.targetRevenue || 0, commissionRate, employee.commissionTiers).amount);
+  }
   if (!commissionRate) return 0;
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
@@ -2791,7 +3612,7 @@ var getActualCalendarDaysInMonth = (monthKey2 = getTodayString().substring(0, 7)
   const [year, month] = safeMonthKey.split("-").map(Number);
   return new BusinessDate(year, month, 0).getDate();
 };
-var calculateExperienceSalaryAtDate = (startDate, amount, period = "months", referenceDate = getTodayString()) => {
+var calculateExperienceSalaryAtDate = (startDate, amount2, period = "months", referenceDate = getTodayString()) => {
   const cycleMeta = getExperienceCycleMeta(period);
   if (!startDate) {
     return { total: 0, expMonths: 0, experienceCycles: 0, experienceCycleLabel: cycleMeta.label };
@@ -2801,9 +3622,9 @@ var calculateExperienceSalaryAtDate = (startDate, amount, period = "months", ref
   let expMonths = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
   if (now.getDate() < start.getDate()) expMonths -= 1;
   if (expMonths < 0) expMonths = 0;
-  const experienceCycles = amount > 0 ? Math.floor(expMonths / cycleMeta.monthsPerCycle) : 0;
+  const experienceCycles = amount2 > 0 ? Math.floor(expMonths / cycleMeta.monthsPerCycle) : 0;
   return {
-    total: experienceCycles * (amount || 0),
+    total: experienceCycles * (amount2 || 0),
     expMonths,
     experienceCycles,
     experienceCycleLabel: cycleMeta.label
@@ -2891,23 +3712,24 @@ var buildDashboardPayrollCostSteps = function* ({
     yield;
     for (const emp of salaryEmployees.filter((emp2) => emp2?.id && !emp2.isArchived && emp2.role !== "super_admin" && !isOwnerPosition(emp2.position))) {
       const details = locked ? snapshotRows.find((snapshot) => snapshot.employeeId === emp.id)?.salaryDetails : applyEvaluationBonusToSalaryDetails(
-        buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance2, customers, monthOrders, payments, holidays, monthKey2, { skipDebt: true }),
+        buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance2, customers, monthOrders, payments, holidays, monthKey2, { skipDebt: true, commissionOrders: orders }),
         projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey: monthKey2 })
       );
-      const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
-      if (!amount) {
+      assertCommissionCalculationReady(details, emp.id);
+      const amount2 = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
+      if (!amount2) {
         yield;
         continue;
       }
       const earningDays = [...new Set((details.attendanceEntries || []).filter((entry) => (entry.status === "present" || entry.status === "late") && !entry.noSalaryDay && entry.date <= todayKey).map((entry) => entry.date))];
       const fallbackDate = monthKey2 === todayKey.slice(0, 7) ? todayKey : getDateKeyFromAnyValue(new BusinessDate(cursor.getFullYear(), cursor.getMonth() + 1, 0));
       const dates = earningDays.length ? earningDays : [fallbackDate];
-      const baseAmount = Math.floor(amount / dates.length);
-      dates.forEach((date, index) => rows.push({
-        date,
+      const baseAmount = Math.floor(amount2 / dates.length);
+      dates.forEach((date2, index) => rows.push({
+        date: date2,
         employeeId: emp.id,
         employeeName: emp.name,
-        amount: index === dates.length - 1 ? amount - baseAmount * (dates.length - 1) : baseAmount
+        amount: index === dates.length - 1 ? amount2 - baseAmount * (dates.length - 1) : baseAmount
       }));
       yield;
     }
@@ -2995,15 +3817,15 @@ var buildSalaryDetails = (empId, employees, attendance, financials, performance2
       else workDaysOfficial += 1;
       const matchedHolidays = holidays.filter((h) => h.date === entry.date && !h.isArchived);
       matchedHolidays.forEach((isHoliday) => {
-        const amount = isHoliday.type === "fixed" ? parseLooseMoneyValue(isHoliday.value) : dailyBaseWage * (parseLooseMoneyValue(isHoliday.value) / 100);
-        holidayBonus += amount;
+        const amount2 = isHoliday.type === "fixed" ? parseLooseMoneyValue(isHoliday.value) : dailyBaseWage * (parseLooseMoneyValue(isHoliday.value) / 100);
+        holidayBonus += amount2;
         holidayRecords.push({
           id: isHoliday.id || `${entry.date}-${isHoliday.name || "holiday"}`,
           date: entry.date,
           name: isHoliday.name || "Ng\xE0y l\u1EC5",
           type: isHoliday.type || "percentage",
           value: parseLooseMoneyValue(isHoliday.value),
-          amount: roundMoneyValue(amount)
+          amount: roundMoneyValue(amount2)
         });
       });
     }
@@ -3030,8 +3852,9 @@ var buildSalaryDetails = (empId, employees, attendance, financials, performance2
   const expMonths = experienceDetails.expMonths;
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
-  const effectiveRevenue = isEmployeeSalesPosition(emp) ? calculateRevenueForMonth(empId, allOrders, allCustomers, monthKey2) : perf.revenue || 0;
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+  const commissionCalculation = buildCommissionCalculation({ employee: emp, orders: options.commissionOrders || allOrders, customers: allCustomers, payments: allPayments, monthKey: monthKey2 });
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : isEmployeeSalesPosition(emp) ? calculateRevenueForMonth(empId, allOrders, allCustomers, monthKey2) : perf.revenue || 0;
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp) ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey2) : [];
   const downlineCommission = roundMoneyValue(downlineCommissionRows.reduce((sum, row) => sum + (row.commission || 0), 0));
   const commission = roundMoneyValue(directCommission + downlineCommission);
@@ -3087,6 +3910,7 @@ var buildSalaryDetails = (empId, employees, attendance, financials, performance2
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...commissionCalculation ? { commissionCalculation } : {},
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,
@@ -3161,12 +3985,12 @@ var getEmployeeAttendanceEntriesForMonth = (attendance = {}, empId = "", monthKe
     const documentId = `${key || record?.id || ""}`;
     const documentIdMatch = documentId.match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
     const employeeId = record?.empId || record?.employeeId || record?.targetEmployeeId || documentIdMatch?.[2] || "";
-    const date = documentIdMatch?.[1] || record?.date || record?.dateKey || record?.monthKey || documentIdMatch?.[1] || record?.createdAt || record?.updatedAt || getEntityTimestamp(record);
+    const date2 = documentIdMatch?.[1] || record?.date || record?.dateKey || record?.monthKey || documentIdMatch?.[1] || record?.createdAt || record?.updatedAt || getEntityTimestamp(record);
     return {
       ...record || {},
       id: documentId || record?.id,
       employeeId: record?.employeeId || employeeId,
-      date: documentIdMatch?.[1] || record?.date || date
+      date: documentIdMatch?.[1] || record?.date || date2
     };
   }).filter((record) => `${record?.employeeId || record?.empId || ""}` === `${empId || ""}` && normalizeEmployeeReviewMonthKey(record?.date || record?.dateKey || record?.createdAt || getEntityTimestamp(record)) === monthKey2 && (!companyId || `${record?.companyId || record?.appId || record?.tenantId || ""}` === `${companyId}`));
 };
@@ -3940,8 +4764,8 @@ var parseDate = (value) => {
   if (!value) return null;
   if (value instanceof BusinessDate) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value === "number") {
-    const date2 = new BusinessDate(value);
-    return Number.isNaN(date2.getTime()) ? null : date2;
+    const date3 = new BusinessDate(value);
+    return Number.isNaN(date3.getTime()) ? null : date3;
   }
   if (typeof value === "object") {
     if (typeof value.toDate === "function") return new BusinessDate(value.toDate());
@@ -3958,33 +4782,33 @@ var parseDate = (value) => {
     const minute = Number(minuteText);
     const second = Number(secondText);
     if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
-    const date2 = new BusinessDate(year, month - 1, day, hour, minute, second);
-    if (date2.getFullYear() !== year || date2.getMonth() !== month - 1 || date2.getDate() !== day) return null;
-    return date2;
+    const date3 = new BusinessDate(year, month - 1, day, hour, minute, second);
+    if (date3.getFullYear() !== year || date3.getMonth() !== month - 1 || date3.getDate() !== day) return null;
+    return date3;
   }
   const isoLike = raw.includes("T") ? raw : raw.replace(/(\d{2})\/(\d{2})\/(\d{4})/, "$3-$2-$1");
-  const date = new BusinessDate(isoLike);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const date2 = new BusinessDate(isoLike);
+  return Number.isNaN(date2.getTime()) ? null : date2;
 };
 var dateKey2 = (value) => {
-  const cache = typeof value === "string" || typeof value === "number" ? activeBuildCache?.dates : null;
-  if (cache?.has(value)) return cache.get(value);
-  const date = parseDate(value);
-  const key = date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : "";
-  cache?.set(value, key);
+  const cache2 = typeof value === "string" || typeof value === "number" ? activeBuildCache?.dates : null;
+  if (cache2?.has(value)) return cache2.get(value);
+  const date2 = parseDate(value);
+  const key = date2 ? `${date2.getFullYear()}-${String(date2.getMonth() + 1).padStart(2, "0")}-${String(date2.getDate()).padStart(2, "0")}` : "";
+  cache2?.set(value, key);
   return key;
 };
 var monthKey = (value) => dateKey2(value).slice(0, 7);
-var addDays = (date, days) => {
-  const next = new BusinessDate(date);
+var addDays = (date2, days) => {
+  const next = new BusinessDate(date2);
   next.setDate(next.getDate() + days);
   return next;
 };
-var addMonths = (date, months) => new BusinessDate(date.getFullYear(), date.getMonth() + months, 1);
-var getPreviousMonthKey = (date = new BusinessDate()) => monthKey(addMonths(date, -1));
+var addMonths = (date2, months) => new BusinessDate(date2.getFullYear(), date2.getMonth() + months, 1);
+var getPreviousMonthKey = (date2 = new BusinessDate()) => monthKey(addMonths(date2, -1));
 var getWeekStartDate = (value = new BusinessDate()) => {
-  const date = parseDate(value) || new BusinessDate();
-  const start = new BusinessDate(date.getFullYear(), date.getMonth(), date.getDate());
+  const date2 = parseDate(value) || new BusinessDate();
+  const start = new BusinessDate(date2.getFullYear(), date2.getMonth(), date2.getDate());
   start.setDate(start.getDate() - (start.getDay() + 6) % 7);
   return start;
 };
@@ -4002,11 +4826,11 @@ var itemCost = (item = {}) => toNumber(
   item.costPrice ?? item.cost ?? item.unitCost ?? item.purchasePrice
 );
 var itemBillingSnapshot = (item = {}) => {
-  const cache = item && typeof item === "object" ? activeBuildCache?.billing : null;
-  if (cache?.has(item)) return cache.get(item);
+  const cache2 = item && typeof item === "object" ? activeBuildCache?.billing : null;
+  if (cache2?.has(item)) return cache2.get(item);
   const snapshot = resolveTransactionBillingSnapshot({ record: item });
   const result = snapshot.hasFrozenPricing || toNumber(item.billingSnapshotVersion) > 0 ? snapshot : null;
-  cache?.set(item, result);
+  cache2?.set(item, result);
   return result;
 };
 var itemLineTotal = (item = {}) => {
@@ -4109,9 +4933,9 @@ var getPeriodTotals = (entities, amountGetter) => {
     const value = getDateValue(item);
     const day = dateKey2(value);
     const month = monthKey(value);
-    const amount = amountGetter(item);
+    const amount2 = amountGetter(item);
     for (const [map, key] of [[totals.date, day], [totals.month, month], [totals.year, day.slice(0, 4)]]) {
-      map.set(key, (map.get(key) || 0) + amount);
+      map.set(key, (map.get(key) || 0) + amount2);
     }
   }
   getters.set(amountGetter, totals);
@@ -4138,10 +4962,10 @@ var sumByDateRange = (entities, startKey, endKey, amountGetter) => toArray(entit
 }).reduce((sum, item) => sum + amountGetter(item), 0);
 var sumMapByDateRange = (costByDate = /* @__PURE__ */ new Map(), startKey = "", endKey = "") => [...costByDate.entries()].filter(([key]) => key && key >= startKey && key <= endKey).reduce((sum, [, value]) => sum + toNumber(value), 0);
 var isInQuarter = (entity, now) => {
-  const date = parseDate(getDateValue(entity));
-  if (!date) return false;
+  const date2 = parseDate(getDateValue(entity));
+  if (!date2) return false;
   const quarter = Math.floor(now.getMonth() / 3);
-  return date.getFullYear() === now.getFullYear() && Math.floor(date.getMonth() / 3) === quarter;
+  return date2.getFullYear() === now.getFullYear() && Math.floor(date2.getMonth() / 3) === quarter;
 };
 var buildSeriesDays = ({ orders, expenses, payments, today, days }) => {
   const rows = [];
@@ -5264,8 +6088,8 @@ var recordEmployeeIdOf = (entity = {}) => String(
   entity.employeeId || entity.empId || entity.userId || entity.staffId || entity.salesId || entity.assignedTo || entity.createdBy || ""
 );
 var employeeExperienceSalaryOf = (employee = {}, referenceDate = new BusinessDate()) => {
-  const amount = toNumber(employee.experienceSalary);
-  if (amount <= 0) return 0;
+  const amount2 = toNumber(employee.experienceSalary);
+  if (amount2 <= 0) return 0;
   const startDate = parseDate(employee.startDate || employee.hireDate || employee.joinDate);
   if (!startDate) return 0;
   const now = parseDate(referenceDate) || new BusinessDate();
@@ -5275,7 +6099,7 @@ var employeeExperienceSalaryOf = (employee = {}, referenceDate = new BusinessDat
   const periodText = normalizeText4(employee.experienceSalaryPeriod || "months");
   const monthsPerCycle = /year|nam/.test(periodText) ? 12 : 1;
   const cycles = Math.floor(months / monthsPerCycle);
-  return cycles > 0 ? amount * cycles : 0;
+  return cycles > 0 ? amount2 * cycles : 0;
 };
 var employeeSalaryOf = (employee = {}, referenceDate = new BusinessDate()) => {
   const baseSalary = toNumber(
@@ -5382,11 +6206,11 @@ var buildAdvanceRiskRows = (source = {}, currentMonthKey = "") => {
       count: 0,
       pending: 0
     };
-    const amount = advanceAmountOf(record);
-    current.amount += amount;
+    const amount2 = advanceAmountOf(record);
+    current.amount += amount2;
     current.count += 1;
     const status = normalizeText4(record.status || record.state || "");
-    if (!/approved|da duyet|paid|da chi|done|completed/.test(status)) current.pending += amount;
+    if (!/approved|da duyet|paid|da chi|done|completed/.test(status)) current.pending += amount2;
     grouped.set(key, current);
   });
   return [...grouped.values()].map((row) => {
@@ -5454,10 +6278,10 @@ var buildDebtRiskRows = (source = {}) => {
 };
 var buildLatestDebtOrderRows = (source = {}) => buildDebtRiskRows(source).filter((row) => row.orderCount > 0).sort((a, b) => b.orderCount - a.orderCount || b.debt - a.debt).slice(0, 10);
 var formatInsightMoney = (value = 0) => {
-  const amount = Math.round(toNumber(value));
-  if (Math.abs(amount) >= 1e9) return `${(amount / 1e9).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} t\u1EF7`;
-  if (Math.abs(amount) >= 1e6) return `${Math.round(amount / 1e6).toLocaleString("vi-VN")} tri\u1EC7u`;
-  return `${amount.toLocaleString("vi-VN")} \u0111`;
+  const amount2 = Math.round(toNumber(value));
+  if (Math.abs(amount2) >= 1e9) return `${(amount2 / 1e9).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} t\u1EF7`;
+  if (Math.abs(amount2) >= 1e6) return `${Math.round(amount2 / 1e6).toLocaleString("vi-VN")} tri\u1EC7u`;
+  return `${amount2.toLocaleString("vi-VN")} \u0111`;
 };
 var rangeChangePct = (values = []) => {
   const cleanValues = values.map((value) => toNumber(value)).filter((value) => value > 0);
@@ -5836,13 +6660,13 @@ var buildCashExpenseRows = (records) => Array.isArray(records) ? records.filter(
 var buildPayrollAccrualRows = (source, todayKey, employeesById) => {
   const rows = [];
   source.payrollCosts.forEach((row) => {
-    const date = dateKey2(getDateValue(row));
+    const date2 = dateKey2(getDateValue(row));
     const value = Math.max(0, moneyOfExpense(row));
-    if (!date || date > todayKey || !value) return;
+    if (!date2 || date2 > todayKey || !value) return;
     const employeeId = recordEmployeeIdOf(row);
     const employee = employeeId ? employeesById.get(employeeId) : null;
     rows.push({
-      date,
+      date: date2,
       employeeId,
       name: row.employeeName || row.staffName || employee?.name || employee?.fullName || "Nh\xE2n s\u1EF1 ch\u01B0a r\xF5",
       department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, "Ch\u01B0a ph\xE2n b\u1ED9 ph\u1EADn"),
@@ -5864,7 +6688,7 @@ function* buildDashboardSnapshotSteps(input = {}) {
     if (key && key <= finance.todayKey) payrollCostByDate.set(key, (payrollCostByDate.get(key) || 0) + Math.max(0, moneyOfExpense(row)));
   });
   const payrollByMonth = /* @__PURE__ */ new Map();
-  payrollCostByDate.forEach((amount, key) => payrollByMonth.set(key.slice(0, 7), (payrollByMonth.get(key.slice(0, 7)) || 0) + amount));
+  payrollCostByDate.forEach((amount2, key) => payrollByMonth.set(key.slice(0, 7), (payrollByMonth.get(key.slice(0, 7)) || 0) + amount2));
   const salaryDisbursementByMonth = /* @__PURE__ */ new Map();
   source.expenses.filter((expense) => isPayrollDisbursementExpense(expense) && !isSalaryAdvanceExpense(expense) && !isPayrollLiabilitySettlement(expense)).forEach((expense) => {
     const day = dateKey2(getDateValue(expense));
@@ -5958,8 +6782,8 @@ function* buildDashboardSnapshotSteps(input = {}) {
   const cashExpenseQuarter = source.expenses.filter((expense) => isInQuarter(expense, source.now)).reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
   const inventoryPurchaseExpenseQuarter = inventoryPurchaseExpenses.filter((expense) => isInQuarter(expense, source.now)).reduce((sum, expense) => sum + moneyOfExpense(expense), 0);
   const costOfGoodsQuarter = [...inventorySoldCostByDate.entries()].filter(([key]) => {
-    const date = parseDate(key);
-    return date && date.getFullYear() === source.now.getFullYear() && Math.floor(date.getMonth() / 3) === Math.floor(source.now.getMonth() / 3);
+    const date2 = parseDate(key);
+    return date2 && date2.getFullYear() === source.now.getFullYear() && Math.floor(date2.getMonth() / 3) === Math.floor(source.now.getMonth() / 3);
   }).reduce((sum, [, value]) => sum + toNumber(value), 0);
   const revenueQuarter = source.orders.filter((order) => isInQuarter(order, source.now)).reduce((sum, order) => sum + orderTotal(order), 0);
   const incomeQuarter = source.payments.filter((payment) => isInQuarter(payment, source.now)).reduce((sum, payment) => sum + moneyOfPayment(payment), 0);
@@ -5986,16 +6810,16 @@ function* buildDashboardSnapshotSteps(input = {}) {
   const salaryEmployeeRows = [];
   const reportEmployeesById = new Map(source.employees.map((employee) => [String(employee.id || employee.employeeId || employee.uid || employee.userId || ""), employee]));
   operatingExpenses.forEach((expense) => {
-    const date = dateKey2(getDateValue(expense));
+    const date2 = dateKey2(getDateValue(expense));
     const value = Math.max(0, toNumber(expense.amount));
-    if (!date || !value) return;
+    if (!date2 || !value) return;
     const category = classifyExpense(expense);
     const employeeId = recordEmployeeIdOf(expense);
     const employee = employeeId ? reportEmployeesById.get(employeeId) : null;
     const name = expense.name || expense.title || expense.description || expense.reason || expense.category || category;
-    expenseCategoryRows.push({ date, category, name: category, detail: name, value });
+    expenseCategoryRows.push({ date: date2, category, name: category, detail: name, value });
     expenseDetailRows.push({
-      date,
+      date: date2,
       category,
       name,
       detail: expense.note || expense.description || expense.reason || name,
@@ -6006,24 +6830,24 @@ function* buildDashboardSnapshotSteps(input = {}) {
       recipient: expense.recipient || expense.payee || expense.employeeName || expense.staffName || ""
     });
     if (category === "L\u01B0\u01A1ng") salaryEmployeeRows.push({
-      date,
+      date: date2,
       employeeId,
       name: expense.employeeName || expense.staffName || employee?.name || employee?.fullName || "L\u01B0\u01A1ng ch\u01B0a g\u1EAFn nh\xE2n s\u1EF1",
       department: formatDepartmentLabel(employee?.department || employee?.position || employee?.roleName, "Ch\u01B0a ph\xE2n b\u1ED9 ph\u1EADn"),
       value
     });
   });
-  inventorySoldCostByDate.forEach((value, date) => {
-    if (date <= finance.todayKey && toNumber(value) > 0) {
-      expenseCategoryRows.push({ date, category: "Gi\xE1 v\u1ED1n", name: "Gi\xE1 v\u1ED1n \u0111\xE3 d\xF9ng", detail: "H\xE0ng \u0111\xE3 b\xE1n", value: toNumber(value) });
-      expenseDetailRows.push({ date, category: "Gi\xE1 v\u1ED1n", name: "Gi\xE1 v\u1ED1n h\xE0ng \u0111\xE3 b\xE1n", detail: "Gi\xE1 v\u1ED1n h\xE0ng \u0111\xE3 b\xE1n trong ng\xE0y, kh\xF4ng ph\u1EA3i phi\u1EBFu chi ti\u1EC1n.", sourceType: "costOfGoods", value: toNumber(value) });
+  inventorySoldCostByDate.forEach((value, date2) => {
+    if (date2 <= finance.todayKey && toNumber(value) > 0) {
+      expenseCategoryRows.push({ date: date2, category: "Gi\xE1 v\u1ED1n", name: "Gi\xE1 v\u1ED1n \u0111\xE3 d\xF9ng", detail: "H\xE0ng \u0111\xE3 b\xE1n", value: toNumber(value) });
+      expenseDetailRows.push({ date: date2, category: "Gi\xE1 v\u1ED1n", name: "Gi\xE1 v\u1ED1n h\xE0ng \u0111\xE3 b\xE1n", detail: "Gi\xE1 v\u1ED1n h\xE0ng \u0111\xE3 b\xE1n trong ng\xE0y, kh\xF4ng ph\u1EA3i phi\u1EBFu chi ti\u1EC1n.", sourceType: "costOfGoods", value: toNumber(value) });
     }
   });
   const payrollEmployeeRows = buildPayrollAccrualRows(source, finance.todayKey, reportEmployeesById);
   payrollEmployeeRows.forEach((item) => {
-    const { date, employeeId, value } = item;
-    expenseCategoryRows.push({ date, category: "L\u01B0\u01A1ng", name: "L\u01B0\u01A1ng", detail: item.name, value });
-    expenseDetailRows.push({ date, category: "L\u01B0\u01A1ng", name: `L\u01B0\u01A1ng \u2022 ${item.name}`, detail: item.department, sourceType: "payroll", employeeId, value });
+    const { date: date2, employeeId, value } = item;
+    expenseCategoryRows.push({ date: date2, category: "L\u01B0\u01A1ng", name: "L\u01B0\u01A1ng", detail: item.name, value });
+    expenseDetailRows.push({ date: date2, category: "L\u01B0\u01A1ng", name: `L\u01B0\u01A1ng \u2022 ${item.name}`, detail: item.department, sourceType: "payroll", employeeId, value });
   });
   salaryEmployeeRows.push(...payrollEmployeeRows);
   const expenseByDepartmentMap = /* @__PURE__ */ new Map([["Gi\xE1 v\u1ED1n", costOfGoodsMonth]]);
@@ -6250,8 +7074,8 @@ function getCashExpenseFinance(finance = {}) {
   };
   const daily = new Map((finance.series30Days || []).map((row) => [row.date, row]));
   const monthly = new Map((finance.series12Months || []).map((row) => [row.month, row]));
-  for (const date of days.keys()) {
-    if (date > finance.todayKey && date.startsWith(finance.currentMonthKey) && !daily.has(date)) daily.set(date, { date });
+  for (const date2 of days.keys()) {
+    if (date2 > finance.todayKey && date2.startsWith(finance.currentMonthKey) && !daily.has(date2)) daily.set(date2, { date: date2 });
   }
   for (const month of months.keys()) {
     if (month > finance.currentMonthKey && month.startsWith(String(finance.todayKey).slice(0, 4)) && !monthly.has(month)) monthly.set(month, { month });
@@ -6288,8 +7112,8 @@ function getReportPeriod(finance = {}, period = "today", customRange = null) {
   const selected = map[period] || map.today;
   if (finance.expenseBasis === "cash-vouchers") {
     const lastDay = (yearValue, monthValue) => {
-      const date = new BusinessDate(Number(yearValue), Number(monthValue), 0);
-      return `${yearValue}-${String(monthValue).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      const date2 = new BusinessDate(Number(yearValue), Number(monthValue), 0);
+      return `${yearValue}-${String(monthValue).padStart(2, "0")}-${String(date2.getDate()).padStart(2, "0")}`;
     };
     if (period === "month") selected.endDate = lastDay(year, month.slice(5, 7));
     if (period === "quarter") selected.endDate = lastDay(year, (quarter + 1) * 3);
@@ -6374,6 +7198,7 @@ function projectCompanyHome({ sources, tenantId, asOfDay, payrollMonthCache }) {
   HOME_FEED_SOURCES,
   buildHomeProductDetail,
   buildOrderDuplicateSignature,
+  buildSalaryDetails,
   hasCompanyRolePermissionAction,
   projectCompanyHome,
   resolveCashflowDateKey
