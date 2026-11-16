@@ -9,6 +9,7 @@ import {parse} from '@babel/parser';
 import postcss from 'postcss';
 import tailwind from 'tailwindcss';
 import {chromium,webkit} from 'playwright-core';
+import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 
 // Layout-only scenarios use the real navigation, shell, viewport installer and
 // compiled production CSS. They do not simulate accounts, RBAC or business data.
@@ -24,7 +25,7 @@ test('Instant navigation fits visible viewport and actual 3/4/5-item layouts',as
  const evidence=process.env.HD_FOOTER_EVIDENCE;const results=[];if(evidence)await fs.mkdir(evidence,{recursive:true});
  const engines=process.env.HD_FOOTER_WEBKIT==='1'?['chromium','webkit']:['chromium'];
  for(const engine of engines){
-  const browser=await(engine==='webkit'?webkit:chromium).launch(engine==='chromium'?{executablePath:process.env.HD_TEST_CHROME||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true}:{headless:true});
+  const browser=await(engine==='webkit'?webkit:chromium).launch(engine==='chromium'?{...chromiumLaunchOptions(),...(process.env.HD_TEST_CHROME?{executablePath:process.env.HD_TEST_CHROME}:{})}:{headless:true});
   try{
    for(const kind of ['staff','customer'])for(const count of [3,4,5])for(const width of [320,393,430]){
     const context=await browser.newContext({viewport:{width,height:844},isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'}),page=await context.newPage();
